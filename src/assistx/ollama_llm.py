@@ -7,9 +7,15 @@ import orjson
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from .cache import cache_get, cache_set, make_key
 from .logging_utils import get_logger
+from .metrics import LLM_TOKENS
 
 logger = get_logger()
 client = Client(host=settings.ollama_host)
+
+def _estimate_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return max(1, len(text)//4)
 
 SYSTEM_BASE = (
     "You are a precise engineering assistant. Always return JSON strictly when asked."
@@ -38,7 +44,7 @@ def json_chat(prompt: str, schema_hint: str | None = None, temperature: float = 
         return resp["message"]["content"]
     raw = _cache_or_call(key, _do)
     try:
-        return orjson.loads(raw)
+        LLM_TOKENS.labels(model=settings.ollama_model, mode="json").inc(_estimate_tokens(prompt)); return orjson.loads(raw)
     except Exception as e:
         logger.warning("JSON parse failed; retrying...")
         raise LLMError("invalid json" )
@@ -53,4 +59,4 @@ def text_chat(prompt: str, temperature: float = 0.2) -> str:
         ]
         resp = client.chat(model=settings.ollama_model, messages=messages, options={"temperature": temperature, "num_ctx": 8192})
         return resp["message"]["content"].strip()
-    return _cache_or_call(key, _do)
+    LLM_TOKENS.labels(model=settings.ollama_model, mode="text").inc(_estimate_tokens(prompt)); return _cache_or_call(key, _do)

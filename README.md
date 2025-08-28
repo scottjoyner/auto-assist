@@ -41,3 +41,37 @@ export BASIC_AUTH_USER=admin
 export BASIC_AUTH_PASS=change-me
 ```
 They are required for all UI endpoints.
+
+
+## Prometheus metrics
+The API exposes Prometheus metrics at `GET /metrics` (Basic Auth protected). Common series:
+- `assistx_http_requests_total{path,method,status}`
+- `assistx_llm_tokens_total{model,mode}`
+- `assistx_tool_calls_total{tool,ok}` and `assistx_tool_latency_seconds_bucket`
+- `assistx_task_executions_total{status}`
+
+Scrape example:
+```yaml
+scrape_configs:
+  - job_name: 'assistx'
+    basic_auth:
+      username: ${BASIC_AUTH_USER}
+      password: ${BASIC_AUTH_PASS}
+    static_configs: [{ targets: ['localhost:8000'] }]
+    metrics_path: /metrics
+```
+
+## Background queue
+A Redis + RQ worker processes task executions off the web thread.
+
+Queue a task:
+```bash
+curl -u $BASIC_AUTH_USER:$BASIC_AUTH_PASS -X POST http://localhost:8000/tasks/<task_id>/enqueue
+```
+Worker logs will show progress; results and steps are written to Neo4j.
+
+## Token accounting
+Ollama does not currently return token counts. We record **estimated** tokens for prompts and tool IO. If you switch to a model/server that reports token usage, you can:
+- increment `LLM_TOKENS` with real counts in `ollama_llm.py` hooks, or
+- adapt `json_chat/text_chat` to parse usage from responses and call `LLM_TOKENS.labels(...).inc(actual)`.
+

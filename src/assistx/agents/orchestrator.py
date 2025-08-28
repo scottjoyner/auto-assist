@@ -11,6 +11,7 @@ from ..tools.files import write_text
 from ..neo4j_client import Neo4jClient
 from ..policy import tool_allowed
 from ..logging_utils import get_logger
+from ..metrics import TOOL_CALLS, TOOL_LATENCY, LLM_TOKENS
 
 logger = get_logger()
 
@@ -78,10 +79,14 @@ def decide(state: AgentState) -> AgentState:
             state.history.append({"error": f"unknown tool {tname}"})
             state.done = True
         else:
+            import time
+            t0=time.time()
             out = tool["func"](args)
+            dt=time.time()-t0
+            TOOL_LATENCY.labels(tool=tname).observe(dt)
+            TOOL_CALLS.labels(tool=tname, ok=str(True)).inc()
             usage = {"input_tokens_est": _estimate_tokens(json.dumps(args)),
                      "output_tokens_est": _estimate_tokens(json.dumps(out))}
-            # attach usage into output for logging
             if isinstance(out, dict):
                 out_with_usage = dict(out)
                 out_with_usage.setdefault("usage", usage)

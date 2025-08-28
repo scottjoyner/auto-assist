@@ -17,6 +17,7 @@
       <td>{{ "%.2f"|format(t.get("confidence", 0.0) or 0.0) }}</td>
       <td><code>{{ t.id }}</code></td><td>
         <form method="post" action="/tasks/{{ t.id }}/execute"><button type="submit">Execute</button></form>
+        <form style="display:inline" method="post" action="/tasks/{{ t.id }}/enqueue"><button type="submit">Enqueue</button></form>
       </td>
     </tr>
   {% endfor %}

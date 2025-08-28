@@ -2,13 +2,18 @@
 from __future__ import annotations
 import os
 from fastapi import FastAPI, Request, Form, HTTPException, Depends
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from .neo4j_client import Neo4jClient
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from .metrics import REQUESTS
 from .pipeline_execute import execute_ready
 from .agents.orchestrator import run_task
+from .queue import get_q
+from .jobs import execute_task_job
+from .metrics import EXECUTIONS, REQUESTS
 
 security = HTTPBasic()
 USER = os.getenv("BASIC_AUTH_USER", "admin")
@@ -83,3 +88,18 @@ def runs(request: Request, limit: int = 50, user: str = Depends(auth)):
         runs = [dict(r[0]) for r in res]
     neo.close()
     return templates.TemplateResponse("runs.html", {"request": request, "runs": runs})
+
+
+@app.get("/metrics")
+def metrics(user: str = Depends(auth)):
+    # protect or expose publicly by removing auth dependency
+    data = generate_latest()
+    return PlainTextResponse(data.decode("utf-8"), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.post("/tasks/{task_id}/enqueue")
+def enqueue_task(task_id: str, dry_run: bool = False, user: str = Depends(auth)):
+    q = get_q()
+    job = q.enqueue(execute_task_job, task_id, dry_run)
+    EXECUTIONS.labels(status="ENQUEUED").inc()
+    return {"enqueued": True, "job_id": job.get_id(), "task_id": task_id}
