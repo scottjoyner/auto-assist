@@ -1,0 +1,28 @@
+
+{% extends "base.html" %}
+{% block content %}
+<h2>Tasks in REVIEW</h2>
+{% if not tasks %}
+  <p>No tasks awaiting review.</p>
+{% else %}
+<table>
+  <thead>
+    <tr><th>Title</th><th>Priority</th><th>Confidence</th><th>Actions</th></tr>
+  </thead>
+  <tbody>
+  {% for t in tasks %}
+    <tr>
+      <td>{{ t.title }}</td>
+      <td>{{ t.priority }}</td>
+      <td>{{ "%.2f"|format(t.get("confidence", 0.0) or 0.0) }}</td>
+      <td>
+        <form method="post" action="/tasks/{{ t.id }}/approve">
+          <button type="submit">Approve → READY</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

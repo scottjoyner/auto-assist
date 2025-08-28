@@ -1,0 +1,12 @@
+
+:root { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Noto Sans, Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol; }
+body { margin: 0; padding: 0; background: #0b0f14; color: #e6edf3; }
+header { display:flex; align-items:center; justify-content:space-between; padding: 12px 16px; background:#0d1117; border-bottom:1px solid #30363d; }
+header h1 { margin:0; font-size: 18px; }
+nav a { color:#9ecbff; text-decoration:none; margin-right: 12px; }
+main { padding: 16px; }
+table { width:100%; border-collapse: collapse; margin-top: 12px; }
+th, td { border-bottom: 1px solid #30363d; padding: 8px; text-align: left; }
+button { background:#238636; color:white; border:none; padding: 6px 10px; border-radius:6px; cursor:pointer; }
+button:hover { filter: brightness(1.1); }
+code { background:#161b22; padding:2px 4px; border-radius:4px; }

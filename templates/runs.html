@@ -1,0 +1,22 @@
+
+{% extends "base.html" %}
+{% block content %}
+<h2>Agent Runs</h2>
+<table>
+  <thead>
+    <tr><th>Agent</th><th>Model</th><th>Status</th><th>Started</th><th>Ended</th><th>Run ID</th></tr>
+  </thead>
+  <tbody>
+  {% for r in runs %}
+    <tr>
+      <td>{{ r.agent }}</td>
+      <td>{{ r.model }}</td>
+      <td>{{ r.status }}</td>
+      <td>{{ r.get('started_at') }}</td>
+      <td>{{ r.get('ended_at') }}</td>
+      <td><code>{{ r.id }}</code></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

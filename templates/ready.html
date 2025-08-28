@@ -1,0 +1,24 @@
+
+{% extends "base.html" %}
+{% block content %}
+<h2>Tasks READY for execution</h2>
+{% if not tasks %}
+  <p>No READY tasks.</p>
+{% else %}
+<table>
+  <thead>
+    <tr><th>Title</th><th>Priority</th><th>Confidence</th><th>ID</th></tr>
+  </thead>
+  <tbody>
+  {% for t in tasks %}
+    <tr>
+      <td>{{ t.title }}</td>
+      <td>{{ t.priority }}</td>
+      <td>{{ "%.2f"|format(t.get("confidence", 0.0) or 0.0) }}</td>
+      <td><code>{{ t.id }}</code></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

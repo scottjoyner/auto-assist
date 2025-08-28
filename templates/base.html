@@ -1,0 +1,24 @@
+
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AssistX</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>AssistX</h1>
+      <nav>
+        <a href="/">Home</a>
+        <a href="/tasks/review">Review</a>
+        <a href="/tasks/ready">Ready</a>
+        <a href="/runs">Runs</a>
+      </nav>
+    </header>
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>
