@@ -32,3 +32,12 @@ docker exec -it assistx-api bash -lc "python -m assistx.cli init"
 - `/tasks/ready` — tasks queued for execution
 - `/runs` — recent agent runs
 
+
+
+### Basic Auth for the dashboard
+Set credentials (defaults `admin`/`admin`):
+```bash
+export BASIC_AUTH_USER=admin
+export BASIC_AUTH_PASS=change-me
+```
+They are required for all UI endpoints.

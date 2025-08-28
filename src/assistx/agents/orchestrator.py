@@ -4,6 +4,7 @@ from typing import Dict, Any, List
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel
 from ..ollama_llm import json_chat
+import json
 from ..tools.web_search import web_search
 from ..tools.python_exec import run_python
 from ..tools.files import write_text
@@ -12,6 +13,14 @@ from ..policy import tool_allowed
 from ..logging_utils import get_logger
 
 logger = get_logger()
+
+# naive token estimator (~4 chars/token)
+_def_ratio = 4
+
+def _estimate_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return max(1, len(text) // _def_ratio)
 
 TOOLS = {
     "web_search": {
@@ -70,7 +79,15 @@ def decide(state: AgentState) -> AgentState:
             state.done = True
         else:
             out = tool["func"](args)
-            state.history.append({"tool": tname, "input": args, "output": out})
+            usage = {"input_tokens_est": _estimate_tokens(json.dumps(args)),
+                     "output_tokens_est": _estimate_tokens(json.dumps(out))}
+            # attach usage into output for logging
+            if isinstance(out, dict):
+                out_with_usage = dict(out)
+                out_with_usage.setdefault("usage", usage)
+            else:
+                out_with_usage = {"result": out, "usage": usage}
+            state.history.append({"tool": tname, "input": args, "output": out_with_usage})
     else:
         state.done = True
     return state

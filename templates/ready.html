@@ -7,7 +7,7 @@
 {% else %}
 <table>
   <thead>
-    <tr><th>Title</th><th>Priority</th><th>Confidence</th><th>ID</th></tr>
+    <tr><th>Title</th><th>Priority</th><th>Confidence</th><th>ID</th><th>Actions</th></tr>
   </thead>
   <tbody>
   {% for t in tasks %}
@@ -15,7 +15,9 @@
       <td>{{ t.title }}</td>
       <td>{{ t.priority }}</td>
       <td>{{ "%.2f"|format(t.get("confidence", 0.0) or 0.0) }}</td>
-      <td><code>{{ t.id }}</code></td>
+      <td><code>{{ t.id }}</code></td><td>
+        <form method="post" action="/tasks/{{ t.id }}/execute"><button type="submit">Execute</button></form>
+      </td>
     </tr>
   {% endfor %}
   </tbody>
