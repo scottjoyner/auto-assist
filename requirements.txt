@@ -18,3 +18,5 @@ python-multipart==0.0.9
 prometheus-client==0.20.0
 rq==1.16.2
 redis==5.0.8
+requests==2.32.3
+rouge-score==0.1.2

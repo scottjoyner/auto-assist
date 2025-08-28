@@ -1,6 +1,6 @@
 
 from __future__ import annotations
-import sqlite3, os, hashlib, json
+import sqlite3, hashlib
 from typing import Optional
 from .config import settings
 
@@ -9,8 +9,7 @@ def _ensure(conn):
     conn.commit()
 
 def cache_get(key: str) -> Optional[str]:
-    path = settings.cache_path
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(settings.cache_path)
     try:
         _ensure(conn)
         cur = conn.execute("SELECT v FROM cache WHERE k=?", (key,))
@@ -20,8 +19,7 @@ def cache_get(key: str) -> Optional[str]:
         conn.close()
 
 def cache_set(key: str, value: str):
-    path = settings.cache_path
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(settings.cache_path)
     try:
         _ensure(conn)
         conn.execute("INSERT OR REPLACE INTO cache (k, v) VALUES (?,?)", (key, value))

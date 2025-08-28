@@ -16,7 +16,6 @@ class Settings:
 
     tavily_api_key: str | None = os.getenv("TAVILY_API_KEY")
 
-    # execution safety
     py_max_seconds: int = int(os.getenv("PY_MAX_SECONDS", "20"))
     py_max_mem_mb: int = int(os.getenv("PY_MAX_MEM_MB", "256"))
 

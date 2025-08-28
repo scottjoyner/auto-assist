@@ -30,7 +30,7 @@ class Neo4jClient:
         with self.driver.session() as s:
             rec = s.run(
                 "MERGE (c:Conversation {title:$title, source:$source}) "
-                "ON CREATE SET c.id=coalesce(c.id, randomUUID()), c.created_at=timestamp() "
+                "ON CREATE SET c.id = randomUUID(), c.created_at = timestamp() "
                 "RETURN c.id as id",
                 {"title": title, "source": source},
             ).single()
@@ -39,28 +39,31 @@ class Neo4jClient:
     def add_utterances(self, conversation_id: str, rows: Iterable[Dict[str, Any]]):
         with self.driver.session() as s:
             for r in rows:
+                if not r.get("id"):
+                    r["id"] = str(uuid.uuid4())
                 s.run(
-                    "MERGE (u:Utterance {id:$id}) SET u += $props "
+                    "MERGE (u:Utterance {id:$id}) "
+                    "SET u += $props "
                     "WITH u MATCH (c:Conversation{id:$cid}) MERGE (c)-[:HAS_UTTERANCE]->(u)",
-                    {"id": r.get("id") or str(uuid.uuid4()), "props": {**r, "conversation_id": conversation_id}, "cid": conversation_id},
+                    {"id": r["id"], "props": {**r, "conversation_id": conversation_id}, "cid": conversation_id},
                 )
 
     def add_summary_and_tasks(self, conversation_id: str, summary: Dict[str, Any], tasks: Iterable[Dict[str, Any]]):
         with self.driver.session() as s:
             sr = s.run(
-                "CREATE (m:Summary {id:randomUUID()}) SET m += $sprops "
+                "CREATE (m:Summary {id:randomUUID()}) SET m += $sprops, m.created_at = timestamp() "
                 "WITH m MATCH (c:Conversation{id:$cid}) MERGE (c)-[:HAS_SUMMARY]->(m) RETURN m.id as id",
-                {"sprops": {**summary, "conversation_id": conversation_id, "created_at": "timestamp()"}, "cid": conversation_id},
+                {"sprops": {**summary, "conversation_id": conversation_id}, "cid": conversation_id},
             ).single()
             sid = sr["id"]
             for t in tasks:
-                # default status REVIEW
-                tprops = {**t, "conversation_id": conversation_id, "status": t.get("status") or "REVIEW", "created_at": "timestamp()"}
+                tprops = {**t, "conversation_id": conversation_id}
                 s.run(
-                    "CREATE (t:Task {id:randomUUID()}) SET t += $tprops "
-                    "WITH t MATCH (m:Summary{id:$sid}) MERGE (m)-[:GENERATED_TASK]->(t) RETURN t.id as id",
+                    "CREATE (t:Task {id:randomUUID()}) SET t += $tprops, t.created_at = timestamp() "
+                    "WITH t MATCH (m:Summary{id:$sid}) MERGE (m)-[:GENERATED_TASK]->(t)",
                     {"tprops": tprops, "sid": sid},
                 )
+            return sid
 
     def get_ready_tasks(self, limit: int = 10):
         with self.driver.session() as s:
@@ -107,3 +110,20 @@ class Neo4jClient:
                 "MERGE (r)-[:PRODUCED]->(a)",
                 {"rid": run_id, "k": kind, "p": path, "h": sha256},
             )
+
+    def add_evidence(self, summary_id: str, evidences):
+        with self.driver.session() as s:
+            for ev in evidences:
+                s.run(
+                    "MATCH (s:Summary{id:$sid}), (u:Utterance{id:$uid}) "
+                    "MERGE (s)-[:EVIDENCE {bullet_index:$bi, quote:$q, char_start:$cs, char_end:$ce, rationale:$ra}]->(u)",
+                    {
+                        "sid": summary_id,
+                        "uid": ev.get("utterance_id"),
+                        "bi": ev.get("bullet_index"),
+                        "q": ev.get("quote"),
+                        "cs": ev.get("char_start"),
+                        "ce": ev.get("char_end"),
+                        "ra": ev.get("rationale","")
+                    }
+                )

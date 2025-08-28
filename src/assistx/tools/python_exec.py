@@ -13,9 +13,7 @@ def run_python(code: str, input_json: Dict[str, Any] | None = None) -> Dict[str,
     wrapper = f"""
 import json, sys
 inp = json.loads(sys.stdin.read()) if not sys.stdin.closed else None
-# user code starts
 {code}
-# user code may set `result` variable
 out = locals().get('result', None)
 print(json.dumps({{'result': out}}, ensure_ascii=False))
 """

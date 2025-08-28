@@ -1,6 +1,6 @@
 
 from __future__ import annotations
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 from typing import List, Optional, Any, Literal, Dict
 
 class Utterance(BaseModel):
@@ -11,12 +11,17 @@ class Utterance(BaseModel):
     started_at: Optional[str] = None
     ended_at: Optional[str] = None
 
+class AcceptanceCheck(BaseModel):
+    type: Literal["file_exists","contains","regex","http_ok"]
+    args: Dict[str, Any] = {}
+
 class TaskModel(BaseModel):
     title: str
     description: str = ""
     priority: Literal["LOW","MEDIUM","HIGH"] = "MEDIUM"
     due: Optional[str] = None
     confidence: float | None = None
+    acceptance: Optional[List[AcceptanceCheck]] = None
 
 class Summary(BaseModel):
     id: str
@@ -34,6 +39,7 @@ class Task(BaseModel):
     due: Optional[str] = None
     status: Literal["REVIEW","READY","RUNNING","DONE","FAILED"] = "REVIEW"
     confidence: float | None = None
+    acceptance: Optional[List[AcceptanceCheck]] = None
 
 class ToolCall(BaseModel):
     id: str
