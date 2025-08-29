@@ -1,32 +1,91 @@
-
 from __future__ import annotations
+
 import os
-from fastapi import FastAPI, Request, HTTPException, Depends
+import uuid
+import json
+import pathlib
+import shutil
+from typing import Optional, Dict, Any, List
+from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, Form, Header
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-from .neo4j_client import Neo4jClient
+
+from .neo4j_client import Neo4jClient  # unified client
 from .agents.orchestrator import run_task
 from .queue import get_q
 from .jobs import execute_task_job
 from .metrics import EXECUTIONS
 
+# -----------------------
+# Config / Security
+# -----------------------
 security = HTTPBasic()
 USER = os.getenv("BASIC_AUTH_USER", "admin")
 PASS = os.getenv("BASIC_AUTH_PASS", "admin")
 
-app = FastAPI(title="AssistX UI")
-templates = Jinja2Templates(directory=str(__import__("pathlib").Path(__file__).resolve().parents[2] / "templates"))
-app.mount("/static", StaticFiles(directory=str(__import__("pathlib").Path(__file__).resolve().parents[2] / "static")), name="static")
+API_TOKEN: Optional[str] = os.getenv("API_TOKEN")  # If set, required for /upload-audio
 
-def auth(credentials: HTTPBasicCredentials = Depends(security)):
+TRANSCRIPTIONS_ROOT = pathlib.Path(os.getenv("TRANSCRIPTIONS_ROOT", "./transcriptions")).resolve()
+TRANSCRIPTIONS_ROOT.mkdir(parents=True, exist_ok=True)
+
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")        # e.g., "cuda", "cpu", "auto"
+WHISPER_COMPUTE = os.getenv("WHISPER_COMPUTE_TYPE", "int8") # e.g., "float16", "int8"
+
+# -----------------------
+# App + Static/Template
+# -----------------------
+app = FastAPI(title="AssistX API & UI")
+
+# CORS is useful for the ingestion endpoints (web UIs, local tools, etc.)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "*").split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Mount static & templates like v1
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+templates = Jinja2Templates(directory=str(ROOT / "templates"))
+app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
+
+
+def auth(credentials: HTTPBasicCredentials = Depends(security)) -> str:
     if not (credentials.username == USER and credentials.password == PASS):
         raise HTTPException(status_code=401, detail="Unauthorized", headers={"WWW-Authenticate": "Basic"})
     return credentials.username
 
-def _neo(): return Neo4jClient()
+
+def _neo() -> Neo4jClient:
+    neo = Neo4jClient()
+    return neo
+
+
+# -----------------------
+# Whisper model cache
+# -----------------------
+# Lazy-load and reuse models by name to avoid reinitializing on every request
+_WHISPER_CACHE: Dict[str, Any] = {}
+
+def get_whisper_model(model_name: str):
+    from faster_whisper import WhisperModel
+    if model_name not in _WHISPER_CACHE:
+        _WHISPER_CACHE[model_name] = WhisperModel(
+            model_name,
+            device=WHISPER_DEVICE,
+            compute_type=WHISPER_COMPUTE
+        )
+    return _WHISPER_CACHE[model_name]
+
+
+# =======================
+# UI / Orchestration (v1)
+# =======================
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, user: str = Depends(auth)):
@@ -36,7 +95,14 @@ def home(request: Request, user: str = Depends(auth)):
 def tasks_review(request: Request, limit: int = 50, user: str = Depends(auth)):
     neo = _neo()
     with neo.driver.session() as s:
-        res = s.run("MATCH (s:Summary)-[:GENERATED_TASK]->(t:Task {status:'REVIEW'}) RETURN t,s ORDER BY t.created_at LIMIT $limit", {"limit": limit})
+        res = s.run(
+            """
+            MATCH (s:Summary)-[:GENERATED_TASK]->(t:Task {status:'REVIEW'})
+            RETURN t,s
+            ORDER BY t.created_at LIMIT $limit
+            """,
+            {"limit": limit},
+        )
         rows = [(dict(r[0]), dict(r[1])) for r in res]
     neo.close()
     enriched = []
@@ -48,21 +114,28 @@ def tasks_review(request: Request, limit: int = 50, user: str = Depends(auth)):
 
 @app.post("/tasks/{task_id}/approve")
 def approve_task(task_id: str, user: str = Depends(auth)):
-    neo = _neo(); neo.update_task_status(task_id, "READY"); neo.close()
+    neo = _neo()
+    neo.update_task_status(task_id, "READY")
+    neo.close()
     return RedirectResponse(url="/tasks/review", status_code=303)
 
 @app.get("/tasks/ready", response_class=HTMLResponse)
 def tasks_ready(request: Request, limit: int = 50, user: str = Depends(auth)):
     neo = _neo()
     with neo.driver.session() as s:
-        res = s.run("""
+        res = s.run(
+            """
             MATCH (t:Task {status:'READY'})
             OPTIONAL MATCH (t)-[:EXECUTED_BY]->(r:AgentRun)
             WITH t, r ORDER BY r.started_at DESC
             WITH t, collect(r)[0] AS lr
             OPTIONAL MATCH (lr)-[:USED_TOOL]->(k:ToolCall {tool:'acceptance'})
-            RETURN t, k ORDER BY t.created_at LIMIT $limit
-        """, {"limit": limit})
+            RETURN t, k
+            ORDER BY t.created_at
+            LIMIT $limit
+            """,
+            {"limit": limit},
+        )
         rows = [(dict(r[0]), (dict(r[1]) if r[1] else None)) for r in res]
     neo.close()
     enriched = []
@@ -81,7 +154,8 @@ def execute_task(task_id: str, dry_run: bool = False, user: str = Depends(auth))
     with neo.driver.session() as s:
         rec = s.run("MATCH (t:Task{id:$id}) RETURN t", {"id": task_id}).single()
         if not rec:
-            neo.close(); raise HTTPException(status_code=404, detail="Task not found")
+            neo.close()
+            raise HTTPException(status_code=404, detail="Task not found")
         t = dict(rec[0])
     neo.update_task_status(task_id, "RUNNING")
     try:
@@ -90,6 +164,7 @@ def execute_task(task_id: str, dry_run: bool = False, user: str = Depends(auth))
         return JSONResponse({"status": "DONE", "task_id": task_id, "state": result})
     except Exception as e:
         neo.update_task_status(task_id, "FAILED")
+        # Let FastAPI's default error handler produce the stack for logs
         raise
     finally:
         neo.close()
@@ -114,3 +189,112 @@ def runs(request: Request, limit: int = 50, user: str = Depends(auth)):
 def metrics(user: str = Depends(auth)):
     data = generate_latest()
     return PlainTextResponse(data.decode("utf-8"), media_type=CONTENT_TYPE_LATEST)
+
+
+# =======================
+# Ingestion (v2)
+# =======================
+
+@app.get("/ingest", response_class=HTMLResponse)
+def ingest_ui(request: Request, user: str = Depends(auth)):
+    # We don’t leak the token; we only tell the UI whether it’s required.
+    token_required = bool(os.getenv("API_TOKEN"))
+    return templates.TemplateResponse(
+        "ingest.html",
+        {
+            "request": request,
+            "token_required": token_required,
+            "upload_endpoint": "/upload-audio",
+            "suggested_models": ["tiny", "base", "small", "medium", "large-v3"],
+        },
+    )
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+@app.post("/upload-audio")
+async def upload_audio(
+    file: UploadFile,
+    model: str = Form("tiny"),
+    x_api_token: Optional[str] = Header(default=None, convert_underscores=False),
+):
+    """
+    Upload an audio file; transcribe with faster-whisper; persist JSON + TXT to disk;
+    upsert (Transcription -> Segment) into Neo4j.
+
+    Security:
+      - If API_TOKEN env var is set, a matching 'x-api-token' header is required.
+    """
+    if API_TOKEN:
+        if not x_api_token or x_api_token != API_TOKEN:
+            raise HTTPException(status_code=401, detail="Unauthorized (missing/invalid API token)")
+
+    # Save to temp, keeping original filename stem for output files
+    tmp_path = pathlib.Path("/tmp") / f"{uuid.uuid4().hex}_{file.filename}"
+    with open(tmp_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    # Transcribe (cached model)
+    wm = get_whisper_model(model)
+    segments, info = wm.transcribe(str(tmp_path), beam_size=1)
+
+    segs: List[Dict[str, Any]] = []
+    stem = pathlib.Path(file.filename).stem
+    for i, seg in enumerate(segments):
+        segs.append({
+            "id": f"{stem}_{i}",
+            "idx": i,
+            "start": round(seg.start or 0.0, 3),
+            "end": round(seg.end or 0.0, 3),
+            "text": (seg.text or "").strip(),
+            "tokens_count": None
+        })
+
+    full_text = "\n".join(s["text"] for s in segs if s.get("text"))
+
+    obj: Dict[str, Any] = {
+        "id": uuid.uuid4().hex,
+        "key": stem,
+        "text": full_text,
+        "source_json": str((TRANSCRIPTIONS_ROOT / f"{stem}_transcription.json").resolve()),
+        "source_rttm": None,
+        "segments": segs,
+        # you can include model/meta if useful downstream:
+        "model": model,
+        "language": getattr(info, "language", None),
+    }
+
+    # Persist JSON + TXT
+    json_path = TRANSCRIPTIONS_ROOT / f"{stem}_transcription.json"
+    txt_path = TRANSCRIPTIONS_ROOT / f"{stem}_transcription.txt"
+    json_path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+    txt_path.write_text(full_text, encoding="utf-8")
+
+    # Upsert into Neo4j (Transcription + Segment graph)
+    neo = _neo()
+    try:
+        neo.ingest_transcription(
+            {
+                "id": obj["id"],
+                "key": obj["key"],
+                "text": obj["text"],
+                "source_json": obj["source_json"],
+                "source_rttm": obj["source_rttm"],
+                "embedding": None,  # attach later if you run embeddings
+            },
+            obj["segments"],
+        )
+    finally:
+        neo.close()
+
+    # Cleanup tmp
+    tmp_path.unlink(missing_ok=True)
+
+    return JSONResponse({
+        "ok": True,
+        "transcription_id": obj["id"],
+        "segments": len(obj["segments"]),
+        "json_path": obj["source_json"],
+        "txt_path": str(txt_path),
+        "model_used": model,
+    })

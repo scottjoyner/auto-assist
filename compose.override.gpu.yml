@@ -1,0 +1,18 @@
+# compose.override.gpu.yml
+services:
+  api:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: ["gpu"]
+    environment:
+      - WHISPER_DEVICE=cuda
+      - WHISPER_COMPUTE_TYPE=float16
+
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: ["gpu"]

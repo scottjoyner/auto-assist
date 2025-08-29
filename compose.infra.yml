@@ -1,0 +1,41 @@
+services:
+  neo4j:
+    image: neo4j:5.22
+    container_name: assistx-neo4j
+    environment:
+      - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-password}
+      - NEO4J_server_memory_heap_initial__size=1G
+      - NEO4J_server_memory_heap_max__size=1G
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: assistx-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # GPU (optional):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - capabilities: ["gpu"]
+
+  api:
+    depends_on:
+      - neo4j
+      - ollama
+
+  worker:
+    depends_on:
+      - neo4j
+      - ollama
+
+volumes:
+  neo4j_data: {}
+  ollama_data: {}

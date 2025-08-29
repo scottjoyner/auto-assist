@@ -1,0 +1,227 @@
+(() => {
+    const uploadEndpoint = window.ASSISTX_CFG?.uploadEndpoint || "/upload-audio";
+  
+    // Elements
+    const btnRecord = document.getElementById("btnRecord");
+    const btnStop = document.getElementById("btnStop");
+    const btnUpload = document.getElementById("btnUpload");
+    const timerEl = document.getElementById("timer");
+    const preview = document.getElementById("preview");
+    const filenameEl = document.getElementById("filename");
+    const dropZone = document.getElementById("dropZone");
+    const fileInput = document.getElementById("fileInput");
+    const pickedFile = document.getElementById("pickedFile");
+    const modelSel = document.getElementById("model");
+    const apiTokenEl = document.getElementById("apiToken");
+    const progress = document.getElementById("progress");
+    const progressBar = document.getElementById("progressBar");
+    const result = document.getElementById("result");
+  
+    // Persist token locally (don’t hardcode it server-side)
+    apiTokenEl.value = localStorage.getItem("assistx_api_token") || "";
+    apiTokenEl.addEventListener("change", () => {
+      localStorage.setItem("assistx_api_token", apiTokenEl.value || "");
+    });
+  
+    // State
+    let mediaStream = null;
+    let mediaRecorder = null;
+    let chunks = [];
+    let recTimer = null;
+    let seconds = 0;
+    let recordedBlob = null;
+    let pickedBlob = null;
+  
+    // Audio meter
+    const meterBar = document.getElementById("meterBar");
+    let audioCtx, analyser, source, meterRAF;
+  
+    function fmtTime(s) {
+      const m = Math.floor(s / 60).toString().padStart(2, "0");
+      const ss = (s % 60).toString().padStart(2, "0");
+      return `${m}:${ss}`;
+    }
+  
+    function startTimer() {
+      seconds = 0;
+      timerEl.textContent = "00:00";
+      recTimer = setInterval(() => {
+        seconds += 1;
+        timerEl.textContent = fmtTime(seconds);
+      }, 1000);
+    }
+  
+    function stopTimer() {
+      clearInterval(recTimer);
+      recTimer = null;
+    }
+  
+    async function initAudioMeter(stream) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 2048;
+      source = audioCtx.createMediaStreamSource(stream);
+      source.connect(analyser);
+  
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      const loop = () => {
+        analyser.getByteTimeDomainData(data);
+        // Rough RMS
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) {
+          const v = (data[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / data.length);
+        const pct = Math.min(100, Math.max(1, Math.round(rms * 140)));
+        meterBar.style.width = pct + "%";
+        meterRAF = requestAnimationFrame(loop);
+      };
+      loop();
+    }
+  
+    function stopAudioMeter() {
+      if (meterRAF) cancelAnimationFrame(meterRAF);
+      if (audioCtx) audioCtx.close();
+      meterRAF = null; audioCtx = null; analyser = null; source = null;
+      meterBar.style.width = "0%";
+    }
+  
+    async function startRecording() {
+      if (!mediaStream) {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+      chunks = [];
+      mediaRecorder = new MediaRecorder(mediaStream, { mimeType: "audio/webm" });
+      mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+      mediaRecorder.onstop = () => {
+        recordedBlob = new Blob(chunks, { type: "audio/webm" });
+        preview.src = URL.createObjectURL(recordedBlob);
+        preview.style.display = "block";
+        pickedBlob = null;
+        pickedFile.textContent = "";
+        btnUpload.disabled = false;
+        if (!filenameEl.value) {
+          filenameEl.value = "recording-" + new Date().toISOString().replace(/[:.]/g, "-");
+        }
+      };
+      mediaRecorder.start(50);
+      startTimer();
+      await initAudioMeter(mediaStream);
+      btnRecord.disabled = true;
+      btnStop.disabled = false;
+    }
+  
+    function stopRecording() {
+      if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop();
+      }
+      stopTimer();
+      stopAudioMeter();
+      btnRecord.disabled = false;
+      btnStop.disabled = true;
+    }
+  
+    btnRecord.addEventListener("click", startRecording);
+    btnStop.addEventListener("click", stopRecording);
+  
+    // Drag/drop & file picker
+    dropZone.addEventListener("click", () => fileInput.click());
+    ;["dragenter","dragover"].forEach(ev =>
+      dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.add("over"); })
+    );
+    ;["dragleave","drop"].forEach(ev =>
+      dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.remove("over"); })
+    );
+    dropZone.addEventListener("drop", e => {
+      const f = e.dataTransfer.files?.[0];
+      if (f) handlePickedFile(f);
+    });
+    fileInput.addEventListener("change", e => {
+      const f = e.target.files?.[0];
+      if (f) handlePickedFile(f);
+    });
+  
+    function handlePickedFile(file) {
+      pickedBlob = file;
+      recordedBlob = null;
+      preview.src = URL.createObjectURL(file);
+      preview.style.display = "block";
+      pickedFile.textContent = `${file.name} (${Math.round(file.size/1024)} KB)`;
+      btnUpload.disabled = false;
+      if (!filenameEl.value) {
+        const stem = file.name.replace(/\.[^.]+$/, "");
+        filenameEl.value = stem;
+      }
+    }
+  
+    // Upload with progress (XHR so we can show progress)
+    btnUpload.addEventListener("click", () => {
+      const model = modelSel.value || "tiny";
+      const name = (filenameEl.value || "recording").replace(/[^a-zA-Z0-9._-]/g, "_");
+      const token = apiTokenEl.value || "";
+  
+      // pick the data source
+      let fileBlob = recordedBlob || pickedBlob;
+      if (!fileBlob) {
+        alert("Record audio or choose a file first.");
+        return;
+      }
+      // Ensure has extension
+      let filename = name.endsWith(".webm") || name.match(/\.[a-z0-9]+$/i) ? name : (name + ".webm");
+  
+      const fd = new FormData();
+      fd.append("file", fileBlob, filename);
+      fd.append("model", model);
+  
+      result.hidden = true;
+      result.textContent = "";
+      progress.hidden = false;
+      progressBar.style.width = "0%";
+      btnUpload.disabled = true;
+  
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", uploadEndpoint, true);
+      if (token) xhr.setRequestHeader("x-api-token", token);
+  
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          progressBar.style.width = pct + "%";
+        }
+      };
+  
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState === 4) {
+          progress.hidden = true;
+          btnUpload.disabled = false;
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const resp = JSON.parse(xhr.responseText);
+              result.textContent = JSON.stringify(resp, null, 2);
+              result.hidden = false;
+            } catch (err) {
+              result.textContent = xhr.responseText || "Upload complete.";
+              result.hidden = false;
+            }
+          } else {
+            result.textContent = `Error ${xhr.status}: ${xhr.responseText}`;
+            result.hidden = false;
+          }
+        }
+      };
+  
+      xhr.send(fd);
+    });
+  
+    // Clean up on unload
+    window.addEventListener("beforeunload", () => {
+      if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop();
+      }
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(t => t.stop());
+      }
+    });
+  })();
+  
