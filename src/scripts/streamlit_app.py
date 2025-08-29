@@ -10,6 +10,19 @@ AUTH = HTTPBasicAuth(USER, PASS)
 st.set_page_config(page_title="AssistX", layout="wide")
 st.title("AssistX Control Panel")
 
+
+st.header("Adsk (async)")
+q = st.text_area("Question", "")
+if st.button("Ask"):
+    r = requests.post(f"{API}/api/ask_async", json={"question": q}, auth=AUTH)
+    st.session_state["last_answer_id"] = r.json()["answer_id"]
+    st.success(r.json())
+
+ans_id = st.session_state.get("last_answer_id")
+if ans_id and st.button("Refresh status"):
+    r = requests.get(f"{API}/api/answers/{ans_id}", auth=AUTH)
+    st.write(r.json())
+
 tab1, tab2 = st.tabs(["Transcriptions", "Tasks"])
 
 with tab1:

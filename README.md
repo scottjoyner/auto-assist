@@ -53,3 +53,8 @@ docker compose -f docker-compose.yml -f compose.override.yml config
 # bring up with host services (no infra)
 docker compose -f docker-compose.yml -f compose.override.yml up -d
 ```
+
+### HOW TO RUN STREAMLIT
+```
+BASIC_AUTH_USER=admin BASIC_AUTH_PASS=change-me streamlit run streamlit_app.py
+```
