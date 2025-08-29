@@ -3,6 +3,12 @@ from __future__ import annotations
 from .neo4j_client import Neo4jClient
 from .agents.orchestrator import run_task
 from .acceptance import evaluate_acceptance
+import os, traceback
+from typing import Optional
+from .neo4j_client import Neo4jClient
+from agents.pipeline.qa_pipeline import answer_question
+from .answers_store import set_status, set_result, set_error
+
 
 def execute_task_job(task_id: str, dry_run: bool = False):
     neo = Neo4jClient()
@@ -24,5 +30,25 @@ def execute_task_job(task_id: str, dry_run: bool = False):
     except Exception as e:
         neo.update_task_status(task_id, "FAILED")
         return {"status": "FAILED", "error": str(e), "task_id": task_id}
+    finally:
+        neo.close()
+
+
+def ask_question_job(answer_id: str, question: str, model: Optional[str] = None, max_repairs: int = 3) -> None:
+    """
+    RQ job: runs the full QA pipeline and persists the result in Redis.
+    Status transitions: QUEUED (init) -> RUNNING -> DONE | FAILED
+    """
+    set_status(answer_id, "RUNNING")
+    neo = Neo4jClient()
+    try:
+        out = answer_question(neo, question=question, model=model, max_repairs=max_repairs, log_to_neo=True)
+        # propagate run_id to the answer record
+        set_status(answer_id, "RUNNING", run_id=out.get("run_id"))
+        set_result(answer_id, out)
+    except Exception as e:
+        tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+        set_error(answer_id, tb)
+        raise
     finally:
         neo.close()

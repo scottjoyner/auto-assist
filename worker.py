@@ -1,13 +1,18 @@
-
+# /app/worker.py
+import os, sys, signal, time
+import redis
 from rq import Worker, Queue, Connection
-from redis import Redis
-import os
 
-listen = ['assistx']
-redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
-conn = Redis.from_url(redis_url)
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+QUEUE_NAME = os.getenv("RQ_QUEUE", "assistx")
 
-if __name__ == '__main__':
+listen = [QUEUE_NAME]
+conn = redis.from_url(REDIS_URL)
+
+def main():
     with Connection(conn):
         worker = Worker(list(map(Queue, listen)))
-        worker.work()
+        worker.work(with_scheduler=True)
+
+if __name__ == "__main__":
+    main()

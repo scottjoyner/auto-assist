@@ -18,10 +18,26 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from .neo4j_client import Neo4jClient  # unified client
 from .agents.orchestrator import *
 from .agents.pipeline import *
-from .queue import get_q
-from .jobs import execute_task_job
+from .queue import *
+from .jobs import *
 from .metrics import EXECUTIONS
 from pydantic import BaseModel
+from .answers_store import *
+
+
+class AskAsyncIn(BaseModel):
+    question: str
+    model: str | None = None
+    max_repairs: int = 3
+    # optional: arbitrary metadata to store alongside the answer (e.g., user/session)
+    meta: dict | None = None
+
+class AskIn(BaseModel):
+    question: str
+    model: str | None = None
+    max_repairs: int = 3
+
+
 # -----------------------
 # Config / Security
 # -----------------------
@@ -486,11 +502,6 @@ def api_get_task(task_id: str, user: str = Depends(auth)):
     finally:
         neo.close()
 
-class AskIn(BaseModel):
-    question: str
-    model: str | None = None
-    max_repairs: int = 3
-
 @app.post("/api/ask")
 def api_ask(body: AskIn, user: str = Depends(auth)):
     neo = _neo()
@@ -500,3 +511,25 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
         return out
     finally:
         neo.close()
+
+@app.post("/api/ask_async")
+def api_ask_async(body: AskAsyncIn, user: str = Depends(auth)):
+    """
+    Enqueue a background Q&A job.
+    Returns an answer_id you can poll at /api/answers/{answer_id}.
+    """
+    answer_id = new_answer_id()
+    init_answer(answer_id, body.question, user_meta=body.meta)
+
+    q = get_q()  # your existing RQ queue helper
+    job = q.enqueue(ask_question_job, answer_id, body.question, body.model, body.max_repairs)
+    set_status(answer_id, "QUEUED", job_id=job.get_id())
+
+    return {"answer_id": answer_id, "job_id": job.get_id(), "status_url": f"/api/answers/{answer_id}"}
+
+@app.get("/api/answers/{answer_id}")
+def api_get_answer(answer_id: str, user: str = Depends(auth)):
+    obj = get_answer(answer_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Answer not found")
+    return obj
