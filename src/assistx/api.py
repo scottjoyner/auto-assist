@@ -16,7 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from .neo4j_client import Neo4jClient  # unified client
-from .agents.orchestrator import run_task
+from .agents.orchestrator import *
+from .agents.pipeline import *
 from .queue import get_q
 from .jobs import execute_task_job
 from .metrics import EXECUTIONS
@@ -482,5 +483,20 @@ def api_get_task(task_id: str, user: str = Depends(auth)):
             tr = dict(rec["tr"]) if rec["tr"] else None
             runs = [dict(r) for r in rec["runs"] if r]
             return {"task": t, "transcription": tr, "runs": runs}
+    finally:
+        neo.close()
+
+class AskIn(BaseModel):
+    question: str
+    model: str | None = None
+    max_repairs: int = 3
+
+@app.post("/api/ask")
+def api_ask(body: AskIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        neo.ensure_schema()  # safe
+        out = answer_question(neo, body.question, model=body.model, max_repairs=body.max_repairs)
+        return out
     finally:
         neo.close()
