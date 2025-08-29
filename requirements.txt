@@ -21,7 +21,6 @@ redis==5.0.8
 requests==2.32.3
 rouge-score==0.1.2
 faster-whisper==1.0.2
-pydantic==2.11.7
+pydantic
 streamlit
 rq
-jinja2

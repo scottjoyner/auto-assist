@@ -58,3 +58,18 @@ docker compose -f docker-compose.yml -f compose.override.yml up -d
 ```
 BASIC_AUTH_USER=admin BASIC_AUTH_PASS=change-me streamlit run streamlit_app.py
 ```
+
+
+```
+# Rebuild and up
+docker compose -f docker-compose.yml -f compose.infra.yml up --build -d
+# or with host mode: -f compose.host.yml
+
+# Hit the dashboard (Basic Auth protected)
+open http://localhost:8000/answers
+
+# In another terminal, enqueue a question to see live "new"/"update"
+curl -u admin:change-me -X POST -H "Content-Type: application/json" \
+  -d '{"question":"What tasks are READY by kind?","mode":"async"}' \
+  http://localhost:8000/api/ask
+```

@@ -17,7 +17,8 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
-
+from .metrics import QA_REQUESTS, JOBS_ENQUEUED
+from .idempotency_store import save as idemp_save, load as idemp_load
 from .neo4j_client import Neo4jClient  # unified client
 from .agents.orchestrator import *
 from .agents.pipeline import *
@@ -31,14 +32,16 @@ class AskAsyncIn(BaseModel):
     question: str
     model: str | None = None
     max_repairs: int = 3
-    # optional: arbitrary metadata to store alongside the answer (e.g., user/session)
     meta: dict | None = None
+    idempotency_key: str | None = None   # <--- NEW
 
 class AskIn(BaseModel):
     question: str
     model: str | None = None
     max_repairs: int = 3
-
+    mode: str = "auto"
+    timeout_s: float = 8.0
+    idempotency_key: str | None = None   # <--- NEW
 
 # -----------------------
 # Config / Security
@@ -78,7 +81,16 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 templates = Jinja2Templates(directory=str(ROOT / "templates"))
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 
-
+@app.on_event("startup")
+def _startup():
+    # create constraints on boot
+    try:
+        neo = Neo4jClient()
+        neo.ensure_schema()
+        neo.close()
+    except Exception:
+        pass
+    
 def auth(credentials: HTTPBasicCredentials = Depends(security)) -> str:
     if not (credentials.username == USER and credentials.password == PASS):
         raise HTTPException(status_code=401, detail="Unauthorized", headers={"WWW-Authenticate": "Basic"})
@@ -106,11 +118,26 @@ def get_whisper_model(model_name: str):
         )
     return _WHISPER_CACHE[model_name]
 
+# =======================
+# Startup
+# =======================
 
+# @app.on_event("startup")
+# def _startup():
+#     # create constraints on boot
+#     try:
+#         neo = Neo4jClient()
+#         neo.ensure_schema()
+#         neo.close()
+#     except Exception:
+#         pass
+
+@app.get("/health")
+def health():
+    return {"ok": True}
 # =======================
 # UI / Orchestration (v1)
 # =======================
-
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, user: str = Depends(auth)):
     return templates.TemplateResponse("index.html", {"request": request})
@@ -512,31 +539,85 @@ def api_get_task(task_id: str, user: str = Depends(auth)):
     finally:
         neo.close()
 
-@app.post("/api/ask")
-def api_ask(body: AskIn, user: str = Depends(auth)):
-    neo = _neo()
-    try:
-        neo.ensure_schema()  # safe
-        out = answer_question(neo, body.question, model=body.model, max_repairs=body.max_repairs)
-        return out
-    finally:
-        neo.close()
-
 @app.post("/api/ask_async")
 def api_ask_async(body: AskAsyncIn, user: str = Depends(auth)):
-    """
-    Enqueue a background Q&A job.
-    Returns an answer_id you can poll at /api/answers/{answer_id}.
-    """
+    # Idempotency: if key maps to an existing answer, return it
+    if body.idempotency_key:
+        hit = idemp_load(body.idempotency_key)
+        if hit:
+            # ensure the referenced answer still exists
+            existing = get_answer(hit.get("answer_id",""))
+            if existing:
+                return {"answer_id": existing["id"], "job_id": existing.get("job_id"), "status_url": f"/api/answers/{existing['id']}", "idempotent": True}
+
     answer_id = new_answer_id()
     init_answer(answer_id, body.question, user_meta=body.meta)
-
-    q = get_q()  # your existing RQ queue helper
+    q = get_q()
     job = q.enqueue(ask_question_job, answer_id, body.question, body.model, body.max_repairs)
     set_status(answer_id, "QUEUED", job_id=job.get_id())
 
+    if body.idempotency_key:
+        idemp_save(body.idempotency_key, {"answer_id": answer_id})
+
+    JOBS_ENQUEUED.inc()
     return {"answer_id": answer_id, "job_id": job.get_id(), "status_url": f"/api/answers/{answer_id}"}
 
+@app.post("/api/ask")
+def api_ask(body: AskIn, user: str = Depends(auth)):
+    mode = (body.mode or "auto").lower()
+    if mode not in ("sync", "async", "auto"):
+        raise HTTPException(status_code=400, detail="mode must be one of: sync, async, auto")
+
+    # Idempotency in auto/async: reuse existing answer if present
+    if body.idempotency_key and mode in ("async", "auto"):
+        hit = idemp_load(body.idempotency_key)
+        if hit:
+            existing = get_answer(hit.get("answer_id",""))
+            if existing:
+                if mode == "async":
+                    return JSONResponse(status_code=202, content={"answer_id": existing["id"], "job_id": existing.get("job_id"), "status_url": f"/api/answers/{existing['id']}", "idempotent": True})
+                # mode auto: if already DONE return data, else return 202
+                if existing.get("status") == "DONE" and existing.get("data"):
+                    return existing["data"]
+                return JSONResponse(status_code=202, content={"answer_id": existing["id"], "job_id": existing.get("job_id"), "status_url": f"/api/answers/{existing['id']}", "status": existing.get("status"), "idempotent": True})
+
+    if mode == "sync":
+        QA_REQUESTS.labels(mode="sync", status="started").inc()
+        neo = _neo()
+        try:
+            out = answer_question(neo, body.question, model=body.model, max_repairs=body.max_repairs, log_to_neo=True)
+            QA_REQUESTS.labels(mode="sync", status="done").inc()
+            return out
+        except Exception:
+            QA_REQUESTS.labels(mode="sync", status="failed").inc()
+            raise
+        finally:
+            neo.close()
+
+    # async/auto enqueue
+    answer_id = new_answer_id()
+    init_answer(answer_id, body.question, user_meta={"mode": mode})
+    q = get_q()
+    job = q.enqueue(ask_question_job, answer_id, body.question, body.model, body.max_repairs)
+    set_status(answer_id, "QUEUED", job_id=job.get_id())
+    JOBS_ENQUEUED.inc()
+    if body.idempotency_key:
+        idemp_save(body.idempotency_key, {"answer_id": answer_id})
+
+    if mode == "async":
+        return JSONResponse(status_code=202, content={"answer_id": answer_id, "job_id": job.get_id(), "status_url": f"/api/answers/{answer_id}"})
+
+    # mode == auto: wait budget, else 202
+    import time as _time
+    deadline = _time.time() + max(0.0, float(body.timeout_s))
+    while _time.time() < deadline:
+        obj = get_answer(answer_id)
+        if obj and obj.get("status") in ("DONE", "FAILED"):
+            if obj.get("status") == "DONE" and obj.get("data"):
+                return obj["data"]
+            return JSONResponse(status_code=200, content=obj)
+        _time.sleep(0.25)
+    return JSONResponse(status_code=202, content={"answer_id": answer_id, "job_id": job.get_id(), "status": "PENDING", "status_url": f"/api/answers/{answer_id}"})
 @app.get("/api/answers/{answer_id}")
 def api_get_answer(answer_id: str, user: str = Depends(auth)):
     obj = get_answer(answer_id)

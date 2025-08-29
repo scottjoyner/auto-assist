@@ -8,7 +8,7 @@ from typing import Optional
 from .neo4j_client import Neo4jClient
 from agents.pipeline.qa_pipeline import answer_question
 from .answers_store import set_status, set_result, set_error
-
+from .metrics import JOBS_STARTED, JOBS_SUCCEEDED, JOBS_FAILED
 
 def execute_task_job(task_id: str, dry_run: bool = False):
     neo = Neo4jClient()
@@ -35,20 +35,20 @@ def execute_task_job(task_id: str, dry_run: bool = False):
 
 
 def ask_question_job(answer_id: str, question: str, model: Optional[str] = None, max_repairs: int = 3) -> None:
-    """
-    RQ job: runs the full QA pipeline and persists the result in Redis.
-    Status transitions: QUEUED (init) -> RUNNING -> DONE | FAILED
-    """
+    from .answers_store import set_status, set_result, set_error
+    JOBS_STARTED.inc()
     set_status(answer_id, "RUNNING")
     neo = Neo4jClient()
     try:
         out = answer_question(neo, question=question, model=model, max_repairs=max_repairs, log_to_neo=True)
-        # propagate run_id to the answer record
         set_status(answer_id, "RUNNING", run_id=out.get("run_id"))
         set_result(answer_id, out)
+        JOBS_SUCCEEDED.inc()
     except Exception as e:
+        import traceback
         tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         set_error(answer_id, tb)
+        JOBS_FAILED.inc()
         raise
     finally:
         neo.close()

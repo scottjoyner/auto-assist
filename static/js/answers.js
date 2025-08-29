@@ -7,19 +7,19 @@
     const liveBadge = document.getElementById("liveBadge");
   
     let nextCursor = null;
-    let rows = []; // local cache by id
     const byId = new Map();
   
     function fmtTime(ms) {
-      const d = new Date(ms);
+      const d = new Date(ms || Date.now());
       return d.toLocaleString();
     }
   
     function renderRow(obj) {
       const tr = document.createElement("tr");
       tr.id = `row_${obj.id}`;
+      const updated = obj.updated_at || obj.created_at || Date.now();
       tr.innerHTML = `
-        <td>${fmtTime(obj.updated_at || obj.created_at || Date.now())}</td>
+        <td>${fmtTime(updated)}</td>
         <td><span class="status ${obj.status||''}">${obj.status||''}</span></td>
         <td>${(obj.question || "").replace(/</g,"&lt;")}</td>
         <td><code>${obj.id}</code></td>
@@ -32,19 +32,23 @@
       return tr;
     }
   
-    function upsert(obj) {
-      // optional client-side filters
+    function passesFilters(obj) {
       const qf = (filterQ.value || "").toLowerCase();
       const sf = (filterStatus.value || "");
-      if (qf && !(obj.question || "").toLowerCase().includes(qf)) return;
-      if (sf && obj.status !== sf) return;
+      if (qf && !(obj.question || "").toLowerCase().includes(qf)) return false;
+      if (sf && obj.status !== sf) return false;
+      return true;
+    }
+  
+    function upsert(obj) {
+      if (!obj || !obj.id) return;
+      if (!passesFilters(obj)) return;
   
       const existing = document.getElementById(`row_${obj.id}`);
       const tr = renderRow(obj);
       if (existing) {
         tbody.replaceChild(tr, existing);
       } else {
-        // prepend newest at top
         tbody.insertBefore(tr, tbody.firstChild);
       }
       byId.set(obj.id, obj);
@@ -69,7 +73,7 @@
       btnLoadMore.disabled = !nextCursor;
     }
   
-    // initial
+    // initial load
     fetchPage(true);
   
     // controls
@@ -78,17 +82,102 @@
     filterQ.addEventListener("input", () => fetchPage(true));
     filterStatus.addEventListener("change", () => fetchPage(true));
   
-    // live SSE
-    try {
-      const es = new EventSource("/api/answers/events", { withCredentials: true });
-      liveBadge.textContent = "Live: connected";
-      es.addEventListener("welcome", e => {});
-      es.addEventListener("new", e => { upsert(JSON.parse(e.data)); });
-      es.addEventListener("update", e => { upsert(JSON.parse(e.data)); });
-      es.addEventListener("ping", e => {});
-      es.onerror = () => { liveBadge.textContent = "Live: disconnected"; };
-    } catch (e) {
-      liveBadge.textContent = "Live: unsupported";
+    // ---------------------------
+    // Live updates: WS first, SSE fallback + reconnect
+    // ---------------------------
+    let transport = null;  // "ws" | "sse"
+    let ws = null;
+    let es = null;
+    let reconnectDelay = 1000; // backoff to 8s max
+  
+    function handleLiveEvent(payload) {
+      // payload is {"type":"new|update|ping|welcome","data":{...}}
+      if (!payload || !payload.type) return;
+      if (payload.type === "new" || payload.type === "update") {
+        upsert(payload.data);
+      }
+      if (payload.type === "ping") {
+        // noop; keepalive
+      }
     }
+  
+    function connectWS() {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      const url = `${proto}://${location.host}/ws/answers`;
+      try {
+        ws = new WebSocket(url);
+      } catch (e) {
+        return false;
+      }
+  
+      ws.onopen = () => {
+        transport = "ws";
+        reconnectDelay = 1000;
+        liveBadge.textContent = "Live: WebSocket";
+      };
+  
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          handleLiveEvent(msg);
+        } catch {
+          // ignore malformed
+        }
+      };
+  
+      ws.onclose = () => {
+        if (transport === "ws") {
+          liveBadge.textContent = "Live: reconnecting…";
+          ws = null;
+          setTimeout(() => {
+            if (!connectWS()) connectSSE();
+          }, reconnectDelay);
+          reconnectDelay = Math.min(reconnectDelay * 2, 8000);
+        }
+      };
+  
+      ws.onerror = () => {
+        // immediate fallback to SSE
+        try { ws.close(); } catch {}
+        ws = null;
+        connectSSE();
+      };
+  
+      return true;
+    }
+  
+    function connectSSE() {
+      try {
+        es = new EventSource("/api/answers/events", { withCredentials: true });
+      } catch {
+        liveBadge.textContent = "Live: unavailable";
+        return false;
+      }
+      transport = "sse";
+      reconnectDelay = 1000;
+      liveBadge.textContent = "Live: SSE";
+  
+      es.addEventListener("welcome", () => {});
+      es.addEventListener("new", (e) => handleLiveEvent({type:"new", data: JSON.parse(e.data)}));
+      es.addEventListener("update", (e) => handleLiveEvent({type:"update", data: JSON.parse(e.data)}));
+      es.addEventListener("ping", () => {});
+  
+      es.onerror = () => {
+        // try to reconnect with backoff
+        try { es.close(); } catch {}
+        es = null;
+        liveBadge.textContent = "Live: reconnecting…";
+        setTimeout(() => {
+          // try WS again first (maybe network changed)
+          if (!connectWS()) connectSSE();
+        }, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 8000);
+      };
+  
+      return true;
+    }
+  
+    // Start: try WS, fallback to SSE
+    if (!connectWS()) connectSSE();
   })();
   

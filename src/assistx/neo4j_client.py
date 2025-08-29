@@ -84,25 +84,29 @@ class Neo4jClient:
 
     # ---------- schema ----------
 
-    def ensure_schema(self) -> None:
-        """
-        Create constraints/indices for both v1 and v2 graphs (id uniqueness).
-        Also safe to call repeatedly.
-        """
+    def ensure_schema(self):
         cypher = [
-            # v1 entities
+            # Uniqueness
             "CREATE CONSTRAINT IF NOT EXISTS FOR (c:Conversation) REQUIRE c.id IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (u:Utterance)    REQUIRE u.id IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (s:Summary)      REQUIRE s.id IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (t:Task)         REQUIRE t.id IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (r:AgentRun)     REQUIRE r.id IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (k:ToolCall)     REQUIRE k.id IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (a:Artifact)     REQUIRE a.id IS UNIQUE",
-            # v2 entities
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (u:Utterance)   REQUIRE u.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (s:Summary)     REQUIRE s.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (t:Task)        REQUIRE t.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (r:AgentRun)    REQUIRE r.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (k:ToolCall)    REQUIRE k.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (a:Artifact)    REQUIRE a.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (tr:Transcription) REQUIRE tr.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (sg:Segment)       REQUIRE sg.id IS UNIQUE",
+
+            # Helpful indexes
+            "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.status)",
+            "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.kind)",
+            "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.created_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (tr:Transcription)  ON (tr.key)",
+            "CREATE INDEX IF NOT EXISTS FOR (tr:Transcription)  ON (tr.created_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (r:AgentRun)        ON (r.started_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (k:ToolCall)        ON (k.started_at_ts)",
         ]
-        with self._session() as s:
+        with self.driver.session() as s:
             for q in cypher:
                 s.run(q)
 
@@ -151,37 +155,23 @@ class Neo4jClient:
                 props = {**r, "conversation_id": conversation_id}
                 s.run(q, {"id": r["id"], "props": props, "cid": conversation_id})
 
-    def add_summary_and_tasks(
-        self,
-        conversation_id: str,
-        summary: Dict[str, Any],
-        tasks: Iterable[Dict[str, Any]],
-    ) -> str:
-        """
-        Create a Summary attached to the conversation and Task nodes linked from it.
-        Returns the summary id.
-        """
-        q_sum = (
-            "CREATE (m:Summary {id:randomUUID()}) "
-            "SET m += $sprops, m.created_at = datetime(), m.created_at_ts = timestamp() "
-            "WITH m "
-            "MATCH (c:Conversation {id:$cid}) "
-            "MERGE (c)-[:HAS_SUMMARY]->(m) "
-            "RETURN m.id as id"
-        )
-        q_task = (
-            "CREATE (t:Task {id:randomUUID()}) "
-            "SET t += $tprops, t.created_at = datetime(), t.created_at_ts = timestamp() "
-            "WITH t "
-            "MATCH (m:Summary {id:$sid}) "
-            "MERGE (m)-[:GENERATED_TASK]->(t)"
-        )
-        with self._session() as s:
-            sr = s.run(q_sum, {"sprops": {**summary, "conversation_id": conversation_id}, "cid": conversation_id}).single()
+    def add_summary_and_tasks(self, conversation_id: str, summary: Dict[str, Any], tasks: Iterable[Dict[str, Any]]):
+        with self.driver.session() as s:
+            sr = s.run(
+                "CREATE (m:Summary {id:randomUUID()}) "
+                "SET m += $sprops, m.created_at = timestamp(), m.created_at_ts = timestamp() "
+                "WITH m MATCH (c:Conversation{id:$cid}) MERGE (c)-[:HAS_SUMMARY]->(m) RETURN m.id as id",
+                {"sprops": {**summary, "conversation_id": conversation_id}, "cid": conversation_id},
+            ).single()
             sid = sr["id"]
             for t in tasks:
                 tprops = {**t, "conversation_id": conversation_id}
-                s.run(q_task, {"tprops": tprops, "sid": sid})
+                s.run(
+                    "CREATE (t:Task {id:randomUUID()}) "
+                    "SET t += $tprops, t.created_at = timestamp(), t.created_at_ts = timestamp() "
+                    "WITH t MATCH (m:Summary{id:$sid}) MERGE (m)-[:GENERATED_TASK]->(t)",
+                    {"tprops": tprops, "sid": sid},
+                )
             return sid
 
     def get_ready_tasks(self, limit: int = 10) -> List[Dict[str, Any]]:
@@ -202,63 +192,43 @@ class Neo4jClient:
             res = s.run(q, {"limit": limit})
             return [dict(r["t"]) for r in res]
 
-    def update_task_status(self, task_id: str, status: str) -> None:
-        q = (
-            "MATCH (t:Task {id:$id}) "
-            "SET t.status=$st, t.updated_at = datetime()"
-        )
-        with self._session() as s:
-            s.run(q, {"id": task_id, "st": status})
+    def update_task_status(self, task_id: str, status: str):
+        with self.driver.session() as s:
+            s.run("MATCH (t:Task{id:$id}) SET t.status=$st, t.updated_at_ts = timestamp()", {"id": task_id, "st": status})
 
-    def create_run(self, task_id: str, agent: str, model: str, manifest: Dict[str, Any]) -> str:
-        q = (
-            "MATCH (t:Task {id:$tid}) "
-            "CREATE (r:AgentRun {id:randomUUID(), task_id:$tid, agent:$agent, model:$model, "
-            "                   status:'RUNNING', started_at:datetime(), started_at_ts:timestamp(), "
-            "                   manifest_json:$manifest}) "
-            "MERGE (t)-[:EXECUTED_BY]->(r) "
-            "RETURN r.id as id"
-        )
-        with self._session() as s:
-            rec = s.run(q, {"tid": task_id, "agent": agent, "model": model, "manifest": manifest}).single()
+    def create_run(self, task_id: str, agent: str, model: str, manifest: Dict[str, Any]):
+        with self.driver.session() as s:
+            rec = s.run(
+                "MATCH (t:Task{id:$tid}) "
+                "CREATE (r:AgentRun {id:randomUUID(), task_id:$tid, agent:$agent, model:$model, status:'RUNNING', "
+                " started_at:timestamp(), started_at_ts:timestamp(), manifest_json:$manifest}) "
+                "MERGE (t)-[:EXECUTED_BY]->(r) RETURN r.id as id",
+                {"tid": task_id, "agent": agent, "model": model, "manifest": manifest},
+            ).single()
             return rec["id"]
 
-    def complete_run(self, run_id: str, status: str) -> None:
-        q = (
-            "MATCH (r:AgentRun {id:$id}) "
-            "SET r.status=$st, r.ended_at=datetime(), r.ended_at_ts=timestamp()"
-        )
-        with self._session() as s:
-            s.run(q, {"id": run_id, "st": status})
+    def complete_run(self, run_id: str, status: str):
+        with self.driver.session() as s:
+            s.run("MATCH (r:AgentRun{id:$id}) SET r.status=$st, r.ended_at=timestamp(), r.ended_at_ts=timestamp()", {"id": run_id, "st": status})
 
-    def log_tool_call(
-        self,
-        run_id: str,
-        tool: str,
-        input_json: Dict[str, Any],
-        output_json: Optional[Dict[str, Any]],
-        ok: bool,
-    ) -> None:
-        q = (
-            "MATCH (r:AgentRun {id:$rid}) "
-            "CREATE (k:ToolCall {id:randomUUID(), run_id:$rid, tool:$tool, input_json:$in, output_json:$out, "
-            "                    ok:$ok, started_at:datetime(), started_at_ts:timestamp(), "
-            "                    ended_at:datetime(), ended_at_ts:timestamp()}) "
-            "MERGE (r)-[:USED_TOOL]->(k)"
-        )
-        with self._session() as s:
-            s.run(q, {"rid": run_id, "tool": tool, "in": input_json, "out": output_json, "ok": ok})
+    def log_tool_call(self, run_id: str, tool: str, input_json: Dict[str, Any], output_json: Dict[str, Any] | None, ok: bool):
+        with self.driver.session() as s:
+            s.run(
+                "MATCH (r:AgentRun{id:$rid}) "
+                "CREATE (k:ToolCall {id:randomUUID(), run_id:$rid, tool:$tool, input_json:$in, output_json:$out, ok:$ok, "
+                " started_at:timestamp(), started_at_ts:timestamp(), ended_at:timestamp(), ended_at_ts:timestamp()}) "
+                "MERGE (r)-[:USED_TOOL]->(k)",
+                {"rid": run_id, "tool": tool, "in": input_json, "out": output_json, "ok": ok},
+            )
 
-    def log_artifact(self, run_id: str, kind: str, path: str, sha256: Optional[str]) -> None:
-        q = (
-            "MATCH (r:AgentRun {id:$rid}) "
-            "CREATE (a:Artifact {id:randomUUID(), run_id:$rid, kind:$k, path:$p, sha256:$h, "
-            "                   created_at:datetime(), created_at_ts:timestamp()}) "
-            "MERGE (r)-[:PRODUCED]->(a)"
-        )
-        with self._session() as s:
-            s.run(q, {"rid": run_id, "k": kind, "p": path, "h": sha256})
-
+    def log_artifact(self, run_id: str, kind: str, path: str, sha256: str | None):
+        with self.driver.session() as s:
+            s.run(
+                "MATCH (r:AgentRun{id:$rid}) "
+                "CREATE (a:Artifact {id:randomUUID(), run_id:$rid, kind:$k, path:$p, sha256:$h, created_at:timestamp(), created_at_ts:timestamp()}) "
+                "MERGE (r)-[:PRODUCED]->(a)",
+                {"rid": run_id, "k": kind, "p": path, "h": sha256},
+            )
     def add_evidence(self, summary_id: str, evidences: Iterable[Dict[str, Any]]) -> None:
         q = (
             "MATCH (s:Summary {id:$sid}), (u:Utterance {id:$uid}) "

@@ -45,6 +45,12 @@ services:
       - ./artifacts:/app/artifacts
       - transcriptions:/app/transcriptions
       - ./.assistx_cache.sqlite:/app/.assistx_cache.sqlite
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
 
   worker:
     build:
@@ -70,6 +76,16 @@ services:
       - ./artifacts:/app/artifacts
       - transcriptions:/app/transcriptions
       - ./.assistx_cache.sqlite:/app/.assistx_cache.sqlite
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python - <<'PY'\nimport urllib.request,sys\ntry:\n  urllib.request.urlopen('http://localhost:8000/health', timeout=2)\n  print('ok')\n  sys.exit(0)\nexcept Exception as e:\n  print(e); sys.exit(1)\nPY"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
 volumes:
   assistx_cache: {}
