@@ -6,7 +6,7 @@ from .acceptance import evaluate_acceptance
 import os, traceback
 from typing import Optional
 from .neo4j_client import Neo4jClient
-from .agents.pipeline.qa_pipeline import answer_question
+from .pipeline.qa_pipeline import answer_question
 from .answers_store import set_status, set_result, set_error
 from .metrics import JOBS_STARTED, JOBS_SUCCEEDED, JOBS_FAILED
 

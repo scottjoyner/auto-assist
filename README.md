@@ -93,3 +93,9 @@ docker logs -n 100 assistx-api
 # health
 curl -fsS http://localhost:8000/health
 ```
+
+```
+docker compose -f docker-compose.yml -f compose.host.yml down --remove-orphans
+docker compose -f docker-compose.yml -f compose.host.yml build --no-cache api worker
+docker compose -f docker-compose.yml -f compose.host.yml up -d
+```
