@@ -5,15 +5,18 @@ import uuid
 import json
 import pathlib
 import shutil
+import json, asyncio, os
+import redis.asyncio as aioredis
 from typing import Optional, Dict, Any, List
 from fastapi.responses import HTMLResponse
-from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, Form, Header, Query, Body
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse
+from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, Form, Header, Query, Body, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from pydantic import BaseModel
 
 from .neo4j_client import Neo4jClient  # unified client
 from .agents.orchestrator import *
@@ -21,7 +24,6 @@ from .agents.pipeline import *
 from .queue import *
 from .jobs import *
 from .metrics import EXECUTIONS
-from pydantic import BaseModel
 from .answers_store import *
 
 
@@ -53,6 +55,11 @@ TRANSCRIPTIONS_ROOT.mkdir(parents=True, exist_ok=True)
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")        # e.g., "cuda", "cpu", "auto"
 WHISPER_COMPUTE = os.getenv("WHISPER_COMPUTE_TYPE", "int8") # e.g., "float16", "int8"
 
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+
+def _sse_format(event: str, data: dict | str) -> str:
+    payload = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata: {payload}\n\n"
 # -----------------------
 # App + Static/Template
 # -----------------------
@@ -207,6 +214,9 @@ def metrics(user: str = Depends(auth)):
     data = generate_latest()
     return PlainTextResponse(data.decode("utf-8"), media_type=CONTENT_TYPE_LATEST)
 
+@app.get("/answers", response_class=HTMLResponse)
+def answers_dashboard(request: Request, user: str = Depends(auth)):
+    return templates.TemplateResponse("answers.html", {"request": request})
 
 # =======================
 # Ingestion (v2)
@@ -533,3 +543,144 @@ def api_get_answer(answer_id: str, user: str = Depends(auth)):
     if not obj:
         raise HTTPException(status_code=404, detail="Answer not found")
     return obj
+
+@app.get("/api/answers")
+def api_list_answers(
+    status: str | None = Query(None, description="QUEUED|RUNNING|DONE|FAILED"),
+    q: str | None = Query(None, description="Substring in question"),
+    limit: int = Query(50, ge=1, le=200),
+    cursor: str | None = Query(None, description="Opaque cursor: '<score>:<id>' from previous page"),
+    user: str = Depends(auth),
+):
+    return list_answers_paginated(status=status, q=q, limit=limit, cursor=cursor)
+
+@app.post("/api/answers/reindex")
+def api_answers_reindex(user: str = Depends(auth)):
+    return rebuild_index()
+
+@app.websocket("/ws/answers/{answer_id}")
+async def ws_answer_events(websocket: WebSocket, answer_id: str):
+    # Basic Auth doesn't apply to WS; do a simple token if you want. For now, accept all.
+    await websocket.accept()
+    r = aioredis.from_url(REDIS_URL, decode_responses=True)
+    pubsub = r.pubsub()
+    chan = _answer_channel(answer_id)
+    await pubsub.subscribe(chan)
+
+    # initial payload
+    await websocket.send_text(json.dumps({"type": "init", "data": get_answer(answer_id) or {"id": answer_id, "status": "UNKNOWN"}}))
+
+    try:
+        last_ping = asyncio.get_event_loop().time()
+        while True:
+            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            now = asyncio.get_event_loop().time()
+
+            if msg and msg.get("type") == "message":
+                await websocket.send_text(msg["data"])
+
+            # keepalive ping every 15s
+            if now - last_ping > 15:
+                await websocket.send_text(json.dumps({"type": "ping", "ts": int(now)}))
+                last_ping = now
+
+            await asyncio.sleep(0.2)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        try:
+            await pubsub.unsubscribe(chan)
+        except Exception:
+            pass
+        await pubsub.close()
+        await r.aclose()
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/answers/events")
+async def api_answers_events(
+    status: str | None = Query(None, description="Optional client-side filter hint"),
+    user: str = Depends(auth),
+):
+    """
+    Global SSE stream of ALL answer events (new/update). Clients can filter by status on their side.
+    """
+    r = aioredis.from_url(REDIS_URL, decode_responses=True)
+    pubsub = r.pubsub()
+    chan = _global_chan()
+    await pubsub.subscribe(chan)
+
+    async def event_stream():
+        # initial ping
+        yield _sse_format("welcome", {"channel": chan})
+        last_ping = asyncio.get_event_loop().time()
+        try:
+            while True:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                now = asyncio.get_event_loop().time()
+
+                if msg and msg.get("type") == "message":
+                    # payload already JSON string with {"type":"new|update","data":{...}}
+                    data = json.loads(msg["data"])
+                    # Optional: filter by status hint
+                    if status and data.get("data", {}).get("status") != status:
+                        pass
+                    else:
+                        yield _sse_format(data.get("type", "update"), data.get("data", {}))
+
+                if now - last_ping > 15:
+                    yield _sse_format("ping", {"ts": int(now)})
+                    last_ping = now
+                await asyncio.sleep(0.2)
+        finally:
+            try:
+                await pubsub.unsubscribe(chan)
+            except Exception:
+                pass
+            await pubsub.close()
+            await r.aclose()
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.websocket("/ws/answers")
+async def ws_answers(websocket: WebSocket):
+    # Basic Auth doesn't apply to WS; keep simple open for now (or add a token param).
+    await websocket.accept()
+    r = aioredis.from_url(REDIS_URL, decode_responses=True)
+    pubsub = r.pubsub()
+    chan = _global_chan()
+    await pubsub.subscribe(chan)
+
+    try:
+        # optional hello
+        await websocket.send_text(json.dumps({"type": "welcome", "channel": chan}))
+        last_ping = asyncio.get_event_loop().time()
+        while True:
+            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            now = asyncio.get_event_loop().time()
+
+            if msg and msg.get("type") == "message":
+                await websocket.send_text(msg["data"])  # passthrough JSON
+
+            if now - last_ping > 15:
+                await websocket.send_text(json.dumps({"type": "ping", "ts": int(now)}))
+                last_ping = now
+
+            await asyncio.sleep(0.2)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        try:
+            await pubsub.unsubscribe(chan)
+        except Exception:
+            pass
+        await pubsub.close()
+        await r.aclose()
+        try:
+            await websocket.close()
+        except Exception:
+            pass

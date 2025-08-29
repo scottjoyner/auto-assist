@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>AssistX • Answers Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="stylesheet" href="{{ url_for('static', path='css/ingest.css') }}">
+  <style>
+    .status { padding:2px 8px; border-radius:10px; font-size:12px; }
+    .QUEUED { background:#334155; }
+    .RUNNING { background:#1d4ed8; }
+    .DONE { background:#16a34a; }
+    .FAILED { background:#b91c1c; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding:8px; border-bottom:1px solid #26305f; text-align:left; }
+    .toolbar { display:flex; gap:8px; align-items:center; margin: 8px 0 16px; }
+  </style>
+</head>
+<body>
+<header class="topbar">
+  <h1>AssistX • Answers</h1>
+  <nav><a href="/">Home</a> · <a href="/ingest">Ingest</a></nav>
+</header>
+
+<main class="container">
+  <section class="card">
+    <div class="toolbar">
+      <input id="filterQ" placeholder="Filter by question..." />
+      <select id="filterStatus">
+        <option value="">All statuses</option>
+        <option>QUEUED</option><option>RUNNING</option><option>DONE</option><option>FAILED</option>
+      </select>
+      <button id="btnRefresh">Refresh</button>
+      <span id="liveBadge" class="muted">Live: connecting…</span>
+    </div>
+
+    <table id="tbl">
+      <thead>
+        <tr><th>Updated</th><th>Status</th><th>Question</th><th>Answer ID</th><th>Actions</th></tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="actions">
+      <button id="btnLoadMore">Load more</button>
+    </div>
+  </section>
+</main>
+
+<script src="{{ url_for('static', path='js/answers.js') }}"></script>
+</body>
+</html>
