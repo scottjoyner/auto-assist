@@ -7,7 +7,7 @@ import pathlib
 import shutil
 from typing import Optional, Dict, Any, List
 from fastapi.responses import HTMLResponse
-from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, Form, Header
+from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, Form, Header, Query, Body
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -20,7 +20,7 @@ from .agents.orchestrator import run_task
 from .queue import get_q
 from .jobs import execute_task_job
 from .metrics import EXECUTIONS
-
+from pydantic import BaseModel
 # -----------------------
 # Config / Security
 # -----------------------
@@ -298,3 +298,189 @@ async def upload_audio(
         "txt_path": str(txt_path),
         "model_used": model,
     })
+
+@app.get("/api/transcriptions")
+def api_list_transcriptions(
+    q: Optional[str] = Query(None, description="text contains (case-insensitive)"),
+    limit: int = Query(50, ge=1, le=500),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        with neo.driver.session() as s:
+            if q:
+                res = s.run(
+                    """
+                    MATCH (tr:Transcription)
+                    WHERE toLower(tr.text) CONTAINS toLower($q)
+                    RETURN tr
+                    ORDER BY coalesce(tr.created_at_ts,0) DESC
+                    LIMIT $limit
+                    """,
+                    {"q": q, "limit": limit},
+                )
+            else:
+                res = s.run(
+                    """
+                    MATCH (tr:Transcription)
+                    RETURN tr
+                    ORDER BY coalesce(tr.created_at_ts,0) DESC
+                    LIMIT $limit
+                    """,
+                    {"limit": limit},
+                )
+            items = [dict(r["tr"]) for r in res]
+            return {"items": items, "count": len(items)}
+    finally:
+        neo.close()
+
+
+@app.get("/api/transcriptions/{tid}")
+def api_get_transcription(tid: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        with neo.driver.session() as s:
+            rec = s.run(
+                """
+                MATCH (tr:Transcription {id:$id})
+                OPTIONAL MATCH (tr)<-[:ABOUT]-(t:Task)
+                RETURN tr, collect(t) AS tasks
+                """,
+                {"id": tid},
+            ).single()
+            if not rec:
+                raise HTTPException(status_code=404, detail="Transcription not found")
+            tr = dict(rec["tr"])
+            tasks = [dict(t) for t in rec["tasks"] if t]
+            return {"transcription": tr, "tasks": tasks}
+    finally:
+        neo.close()
+
+# ---------- Create Task from a transcription ----------
+class CreateTaskIn(BaseModel):
+    title: str
+    status: str = "REVIEW"           # READY/REVIEW/RUNNING/DONE/FAILED
+    kind: Optional[str] = "transcription_summary"
+    payload: Optional[Dict[str, Any]] = None
+
+@app.post("/api/transcriptions/{tid}/task")
+def api_create_task_from_transcription(tid: str, body: CreateTaskIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        with neo.driver.session() as s:
+            has = s.run("MATCH (tr:Transcription {id:$id}) RETURN tr", {"id": tid}).single()
+            if not has:
+                raise HTTPException(status_code=404, detail="Transcription not found")
+
+            res = s.run(
+                """
+                CREATE (t:Task {id:randomUUID()})
+                SET t += $props,
+                    t.created_at = datetime(), t.created_at_ts = timestamp()
+                WITH t
+                MATCH (tr:Transcription {id:$tid})
+                MERGE (t)-[:ABOUT]->(tr)
+                RETURN t.id AS id
+                """,
+                {
+                    "props": {
+                        "title": body.title,
+                        "status": body.status,
+                        "kind": body.kind,
+                        "payload": body.payload or {},
+                        "transcription_id": tid,
+                    },
+                    "tid": tid,
+                },
+            ).single()
+            return {"task_id": res["id"]}
+    finally:
+        neo.close()
+
+# ---------- Optional: enqueue an "embed" job as a Task ----------
+@app.post("/api/transcriptions/{tid}/embed")
+def api_embed_transcription(tid: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        with neo.driver.session() as s:
+            rec = s.run("MATCH (tr:Transcription {id:$id}) RETURN tr", {"id": tid}).single()
+            if not rec:
+                raise HTTPException(status_code=404, detail="Transcription not found")
+
+            res = s.run(
+                """
+                CREATE (t:Task {id:randomUUID()})
+                SET t.title='Embed transcription',
+                    t.status='READY',
+                    t.kind='embed_transcription',
+                    t.transcription_id=$tid,
+                    t.created_at=datetime(), t.created_at_ts=timestamp()
+                WITH t
+                MATCH (tr:Transcription {id:$tid})
+                MERGE (t)-[:ABOUT]->(tr)
+                RETURN t.id AS id
+                """,
+                {"tid": tid},
+            ).single()
+            return {"task_id": res["id"], "status": "READY"}
+    finally:
+        neo.close()
+
+# ---------- TASKS: list/get (JSON) ----------
+@app.get("/api/tasks")
+def api_list_tasks(
+    status: Optional[str] = Query(None, description="filter by status"),
+    limit: int = Query(50, ge=1, le=500),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        with neo.driver.session() as s:
+            if status:
+                res = s.run(
+                    """
+                    MATCH (t:Task {status:$st})
+                    RETURN t
+                    ORDER BY coalesce(t.created_at_ts,0) DESC
+                    LIMIT $limit
+                    """,
+                    {"st": status, "limit": limit},
+                )
+            else:
+                res = s.run(
+                    """
+                    MATCH (t:Task)
+                    RETURN t
+                    ORDER BY coalesce(t.created_at_ts,0) DESC
+                    LIMIT $limit
+                    """,
+                    {"limit": limit},
+                )
+            items = [dict(r["t"]) for r in res]
+            return {"items": items, "count": len(items)}
+    finally:
+        neo.close()
+
+
+@app.get("/api/tasks/{task_id}")
+def api_get_task(task_id: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        with neo.driver.session() as s:
+            rec = s.run(
+                """
+                MATCH (t:Task {id:$id})
+                OPTIONAL MATCH (t)-[:ABOUT]->(tr:Transcription)
+                OPTIONAL MATCH (t)-[:EXECUTED_BY]->(r:AgentRun)
+                RETURN t, tr, collect(r) AS runs
+                """,
+                {"id": task_id},
+            ).single()
+            if not rec:
+                raise HTTPException(status_code=404, detail="Task not found")
+            t = dict(rec["t"])
+            tr = dict(rec["tr"]) if rec["tr"] else None
+            runs = [dict(r) for r in rec["runs"] if r]
+            return {"task": t, "transcription": tr, "runs": runs}
+    finally:
+        neo.close()
