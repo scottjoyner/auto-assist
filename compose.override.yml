@@ -1,0 +1,21 @@
+# compose.override.yml (place next to docker-compose.yml)
+services:
+  api:
+    volumes:
+      - /mnt/8TB_2025:/data:ro  # host -> container
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - NEO4J_URI=bolt://host.docker.internal:7687
+
+  worker:
+    volumes:
+      - /mnt/8TB_2025:/data:ro
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - NEO4J_URI=bolt://host.docker.internal:7687
+
+  # OPTIONAL: prevent accidental start of infra you already run locally
+  neo4j:
+    profiles: ["infra"]
+  ollama:
+    profiles: ["infra"]
