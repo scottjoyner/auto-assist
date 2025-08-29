@@ -28,3 +28,28 @@ python -m assistx.cli execute --limit 5
 python -m assistx.cli export-pred --out ./eval/pred
 python -m assistx.cli eval --gold ./eval/gold --pred ./eval/pred
 ```
+
+
+How to use
+### All-in-Docker (Compose runs Neo4j + Ollama)
+```
+docker compose -f docker-compose.yml -f compose.infra.yml config
+docker compose -f docker-compose.yml -f compose.infra.yml up -d
+```
+### Use host Neo4j + Ollama
+```
+docker compose -f docker-compose.yml -f compose.host.yml config
+docker compose -f docker-compose.yml -f compose.host.yml up -d
+```
+
+### Sanity Help
+```
+# stop whatever’s running
+docker compose -f docker-compose.yml -f compose.override.yml --profile infra stop
+
+# validate config after your edits
+docker compose -f docker-compose.yml -f compose.override.yml config
+
+# bring up with host services (no infra)
+docker compose -f docker-compose.yml -f compose.override.yml up -d
+```
