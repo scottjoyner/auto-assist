@@ -73,3 +73,23 @@ curl -u admin:change-me -X POST -H "Content-Type: application/json" \
   -d '{"question":"What tasks are READY by kind?","mode":"async"}' \
   http://localhost:8000/api/ask
 ```
+### Bring it up clean
+```
+# stop current stack
+docker compose -f docker-compose.yml -f compose.host.yml down --remove-orphans
+
+# rebuild with the new Dockerfile and deps
+docker compose -f docker-compose.yml -f compose.host.yml build --no-cache
+
+# start
+docker compose -f docker-compose.yml -f compose.host.yml up -d
+
+# verify containers (api & worker should appear, not just redis)
+docker compose -f docker-compose.yml -f compose.host.yml ps
+
+# check logs for the API
+docker logs -n 100 assistx-api
+
+# health
+curl -fsS http://localhost:8000/health
+```
