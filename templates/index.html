@@ -17,7 +17,23 @@
       <!-- dynamically filled -->
     </div>
   </section>
-
+  <section class="card half">
+    <h2>Model stream (live thoughts)</h2>
+    <p class="muted">Streams tokens from your Ollama model. Nothing here is stored.</p>
+    <div style="display:grid; gap:.5rem;">
+      <input id="llm-model" type="text" placeholder="model (defaults to OLLAMA_MODEL)" />
+      <textarea id="llm-system" rows="2" placeholder="optional system prompt"></textarea>
+      <textarea id="llm-prompt" rows="4" placeholder="prompt (or use messages with JSON below)"></textarea>
+      <textarea id="llm-messages" rows="4" placeholder='optional messages JSON, e.g. [{"role":"user","content":"hi"}]'></textarea>
+      <div style="display:flex; gap:.5rem;">
+        <button class="btn" id="llm-start">Start</button>
+        <button class="btn secondary" id="llm-stop">Stop</button>
+        <span id="llm-status" class="muted"></span>
+      </div>
+      <pre id="llm-out" class="feed" style="max-height:260px; white-space:pre-wrap; padding:8px;"></pre>
+    </div>
+  </section>
+  
   <!-- Live Answers feed (WebSocket with SSE fallback) -->
   <section class="card half">
     <h2>Live answers</h2>
@@ -64,4 +80,6 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', path='js/home.js') }}"></script>
+<script src="{{ url_for('static', path='js/llm_stream.js') }}"></script>
 {% endblock %}
+

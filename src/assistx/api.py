@@ -9,6 +9,9 @@ import json, asyncio, os
 import redis.asyncio as aioredis
 from rq import Queue
 import redis
+import os, json, time, requests
+from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, Form, Header, Query, Body, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse, StreamingResponse
@@ -69,6 +72,7 @@ TRANSCRIPTIONS_ROOT.mkdir(parents=True, exist_ok=True)
 
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")        # e.g., "cuda", "cpu", "auto"
 WHISPER_COMPUTE = os.getenv("WHISPER_COMPUTE_TYPE", "int8") # e.g., "float16", "int8"
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 _rconn = redis.from_url(REDIS_URL)
@@ -142,6 +146,32 @@ def get_whisper_model(model_name: str):
             compute_type=WHISPER_COMPUTE
         )
     return _WHISPER_CACHE[model_name]
+
+
+
+
+
+
+
+def _sse(event: str, data: dict | str) -> str:
+    payload = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata: {payload}\n\n"
+
+
+
+class LLMStreamIn(BaseModel):
+    prompt: Optional[str] = None                          # one-shot prompt
+    messages: Optional[List[Dict[str, str]]] = None       # chat format: [{"role":"user","content":"..."}]
+    model: Optional[str] = None                           # defaults to OLLAMA_MODEL env
+    options: Optional[Dict[str, Any]] = None              # temperature, top_p, etc.
+    system: Optional[str] = Field(default=None, description="Optional system instruction")
+
+
+
+
+
+
+
 
 # =======================
 # Startup
@@ -647,6 +677,8 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
             return JSONResponse(status_code=200, content=obj)
         _time.sleep(0.25)
     return JSONResponse(status_code=202, content={"answer_id": answer_id, "job_id": job.get_id(), "status": "PENDING", "status_url": f"/api/answers/{answer_id}"})
+
+
 @app.get("/api/answers/{answer_id}")
 def api_get_answer(answer_id: str, user: str = Depends(auth)):
     obj = answers_store.get_answer(answer_id)
@@ -873,3 +905,81 @@ async def api_answer_events(answer_id: str, user: str = Depends(auth)):
             await r.aclose()
 
     return StreamingResponse(stream(), media_type="text/event-stream")
+
+@app.post("/api/llm/stream")
+def llm_stream(body: LLMStreamIn, user: str = Depends(auth)):
+    """
+    Proxies Ollama /api/chat with stream=true and re-emits as SSE:
+      - 'model'  : the model name (defaults to OLLAMA_MODEL)
+      - 'delta'  : token/partial text chunks (safe: not persisted)
+      - 'done'   : final stats (no output text)
+      - 'error'  : error info if upstream fails
+    """
+    model = body.model or os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+    if not model:
+        return StreamingResponse(iter([_sse("error", {"error": "No model configured"})]),
+                                 media_type="text/event-stream")
+
+    # Build Ollama payload
+    msgs: List[Dict[str, str]] = []
+    if body.system:
+        msgs.append({"role": "system", "content": body.system})
+    if body.messages and len(body.messages) > 0:
+        msgs.extend(body.messages)
+    elif body.prompt:
+        msgs.append({"role": "user", "content": body.prompt})
+    else:
+        return StreamingResponse(iter([_sse("error", {"error": "Provide 'prompt' or 'messages'"})]),
+                                 media_type="text/event-stream")
+
+    payload = {
+        "model": model,
+        "messages": msgs,
+        "stream": True,
+    }
+    if body.options:
+        payload["options"] = body.options
+
+    # Stream from Ollama using requests (no new deps)
+    def gen():
+        url = f"{OLLAMA_HOST}/api/chat"
+        try:
+            with requests.post(url, json=payload, stream=True, timeout=(5, 600)) as r:
+                r.raise_for_status()
+                yield _sse("model", {"model": model})
+
+                buf_total = 0
+                for raw in r.iter_lines(decode_unicode=True):
+                    if not raw:
+                        continue
+                    try:
+                        data = json.loads(raw)
+                    except Exception:
+                        # Defensive: forward unparsed line
+                        yield _sse("delta", raw)
+                        continue
+
+                    # Standard Ollama chat stream fields:
+                    # { "message": {"role":"assistant","content":"...partial..."}, "done": false, ... }
+                    if data.get("message") and isinstance(data["message"], dict):
+                        piece = data["message"].get("content") or ""
+                        if piece:
+                            buf_total += len(piece)
+                            # stream just the token/partial to the UI
+                            yield _sse("delta", piece)
+
+                    if data.get("done"):
+                        stats = {
+                            "total_ms": data.get("total_duration"),
+                            "eval_count": data.get("eval_count"),
+                            "prompt_eval_count": data.get("prompt_eval_count"),
+                        }
+                        yield _sse("done", {k: v for k, v in stats.items() if v is not None})
+                        break
+        except requests.HTTPError as e:
+            yield _sse("error", {"error": f"HTTP {e.response.status_code}", "detail": e.response.text[:500]})
+        except requests.RequestException as e:
+            yield _sse("error", {"error": "Upstream unreachable", "detail": str(e)})
+
+    # Important: we do NOT persist streamed tokens; this is transient UI-only.
+    return StreamingResponse(gen(), media_type="text/event-stream")
