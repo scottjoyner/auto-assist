@@ -5,7 +5,12 @@ from typing import Optional, Dict, Any, List, Tuple
 
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+
+
+
 ANSWERS_TTL_S = int(os.getenv("ANSWERS_TTL_S", "86400"))  # 24h
+
 CHANNEL_PREFIX = "assistx:answers"  # base keyspace
 GLOBAL_CHAN = f"{CHANNEL_PREFIX}:events"  # <--- add this
 INDEX_ALL = f"{CHANNEL_PREFIX}:index:updated_at"                    # ZSET score=updated_at

@@ -8,7 +8,6 @@ import shutil
 import json, asyncio, os
 import redis.asyncio as aioredis
 from typing import Optional, Dict, Any, List
-from fastapi.responses import HTMLResponse
 from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, Form, Header, Query, Body, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,7 +24,17 @@ from .pipeline import *
 from .queue import *
 from .jobs import *
 from .metrics import EXECUTIONS
-from .answers_store import *
+from .answers_store import get_answer, _chan as _answer_channel
+from .answers_store import _global_chan
+# add this near your other imports
+try:
+    from . import answers_store
+    chan = answers_store._global_chan()
+except ImportError:
+    import assistx.answers_store as answers_store
+    chan = answers_store._global_chan()
+
+# from .answers_store import *
 
 class AskAsyncIn(BaseModel):
     question: str
@@ -46,8 +55,8 @@ class AskIn(BaseModel):
 # Config / Security
 # -----------------------
 security = HTTPBasic()
-USER = os.getenv("BASIC_AUTH_USER", "admin")
-PASS = os.getenv("BASIC_AUTH_PASS", "admin")
+USER = os.getenv("BASIC_AUTH_USER", "neo4j")
+PASS = os.getenv("BASIC_AUTH_PASS", "livelongandprosper")
 
 API_TOKEN: Optional[str] = os.getenv("API_TOKEN")  # If set, required for /upload-audio
 
@@ -549,15 +558,15 @@ def api_ask_async(body: AskAsyncIn, user: str = Depends(auth)):
         hit = idemp_load(body.idempotency_key)
         if hit:
             # ensure the referenced answer still exists
-            existing = get_answer(hit.get("answer_id",""))
+            existing = answers_store.get_answer(hit.get("answer_id",""))
             if existing:
                 return {"answer_id": existing["id"], "job_id": existing.get("job_id"), "status_url": f"/api/answers/{existing['id']}", "idempotent": True}
 
-    answer_id = new_answer_id()
-    init_answer(answer_id, body.question, user_meta=body.meta)
+    answer_id = answers_store.new_answer_id()
+    answers_store.init_answer(answer_id, body.question, user_meta=body.meta)
     q = get_q()
     job = q.enqueue(ask_question_job, answer_id, body.question, body.model, body.max_repairs)
-    set_status(answer_id, "QUEUED", job_id=job.get_id())
+    answers_store.set_status(answer_id, "QUEUED", job_id=job.get_id())
 
     if body.idempotency_key:
         idemp_save(body.idempotency_key, {"answer_id": answer_id})
@@ -575,7 +584,7 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
     if body.idempotency_key and mode in ("async", "auto"):
         hit = idemp_load(body.idempotency_key)
         if hit:
-            existing = get_answer(hit.get("answer_id",""))
+            existing = answers_store.get_answer(hit.get("answer_id",""))
             if existing:
                 if mode == "async":
                     return JSONResponse(status_code=202, content={"answer_id": existing["id"], "job_id": existing.get("job_id"), "status_url": f"/api/answers/{existing['id']}", "idempotent": True})
@@ -598,11 +607,11 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
             neo.close()
 
     # async/auto enqueue
-    answer_id = new_answer_id()
-    init_answer(answer_id, body.question, user_meta={"mode": mode})
+    answer_id = answers_store.new_answer_id()
+    answers_store.init_answer(answer_id, body.question, user_meta={"mode": mode})
     q = get_q()
     job = q.enqueue(ask_question_job, answer_id, body.question, body.model, body.max_repairs)
-    set_status(answer_id, "QUEUED", job_id=job.get_id())
+    answers_store.set_status(answer_id, "QUEUED", job_id=job.get_id())
     JOBS_ENQUEUED.inc()
     if body.idempotency_key:
         idemp_save(body.idempotency_key, {"answer_id": answer_id})
@@ -614,7 +623,7 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
     import time as _time
     deadline = _time.time() + max(0.0, float(body.timeout_s))
     while _time.time() < deadline:
-        obj = get_answer(answer_id)
+        obj = answers_store.get_answer(answer_id)
         if obj and obj.get("status") in ("DONE", "FAILED"):
             if obj.get("status") == "DONE" and obj.get("data"):
                 return obj["data"]
@@ -623,7 +632,7 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
     return JSONResponse(status_code=202, content={"answer_id": answer_id, "job_id": job.get_id(), "status": "PENDING", "status_url": f"/api/answers/{answer_id}"})
 @app.get("/api/answers/{answer_id}")
 def api_get_answer(answer_id: str, user: str = Depends(auth)):
-    obj = get_answer(answer_id)
+    obj = answers_store.get_answer(answer_id)
     if not obj:
         raise HTTPException(status_code=404, detail="Answer not found")
     return obj
@@ -636,11 +645,11 @@ def api_list_answers(
     cursor: str | None = Query(None, description="Opaque cursor: '<score>:<id>' from previous page"),
     user: str = Depends(auth),
 ):
-    return list_answers_paginated(status=status, q=q, limit=limit, cursor=cursor)
+    return answers_store.list_answers_paginated(status=status, q=q, limit=limit, cursor=cursor)
 
 @app.post("/api/answers/reindex")
 def api_answers_reindex(user: str = Depends(auth)):
-    return rebuild_index()
+    return answers_store.rebuild_index()
 
 @app.websocket("/ws/answers/{answer_id}")
 async def ws_answer_events(websocket: WebSocket, answer_id: str):
@@ -652,7 +661,7 @@ async def ws_answer_events(websocket: WebSocket, answer_id: str):
     await pubsub.subscribe(chan)
 
     # initial payload
-    await websocket.send_text(json.dumps({"type": "init", "data": get_answer(answer_id) or {"id": answer_id, "status": "UNKNOWN"}}))
+    await websocket.send_text(json.dumps({"type": "init", "data": answers_store.get_answer(answer_id) or {"id": answer_id, "status": "UNKNOWN"}}))
 
     try:
         last_ping = asyncio.get_event_loop().time()
@@ -732,15 +741,13 @@ async def api_answers_events(
 
 @app.websocket("/ws/answers")
 async def ws_answers(websocket: WebSocket):
-    # Basic Auth doesn't apply to WS; keep simple open for now (or add a token param).
     await websocket.accept()
     r = aioredis.from_url(REDIS_URL, decode_responses=True)
     pubsub = r.pubsub()
-    chan = _global_chan()
+    chan = answers_store._global_chan()     # <— FIX: use module
     await pubsub.subscribe(chan)
 
     try:
-        # optional hello
         await websocket.send_text(json.dumps({"type": "welcome", "channel": chan}))
         last_ping = asyncio.get_event_loop().time()
         while True:
@@ -748,7 +755,7 @@ async def ws_answers(websocket: WebSocket):
             now = asyncio.get_event_loop().time()
 
             if msg and msg.get("type") == "message":
-                await websocket.send_text(msg["data"])  # passthrough JSON
+                await websocket.send_text(msg["data"])  # already JSON
 
             if now - last_ping > 15:
                 await websocket.send_text(json.dumps({"type": "ping", "ts": int(now)}))
@@ -758,13 +765,54 @@ async def ws_answers(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
-        try:
-            await pubsub.unsubscribe(chan)
-        except Exception:
-            pass
+        try: await pubsub.unsubscribe(chan)
+        except Exception: pass
         await pubsub.close()
         await r.aclose()
+        try: await websocket.close()
+        except Exception: pass
+
+@app.get("/api/answers/events")
+async def api_answers_events(
+    status: str | None = Query(None, description="Optional filter hint; client can also filter"),
+    user: str = Depends(auth),
+):
+    r = aioredis.from_url(REDIS_URL, decode_responses=True)
+    pubsub = r.pubsub()
+    chan = answers_store._global_chan()
+    await pubsub.subscribe(chan)
+
+    async def event_stream():
+        # initial hello
+        yield _sse_format("welcome", {"channel": chan})
+        last_ping = asyncio.get_event_loop().time()
         try:
-            await websocket.close()
-        except Exception:
-            pass
+            while True:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                now = asyncio.get_event_loop().time()
+
+                if msg and msg.get("type") == "message":
+                    try:
+                        data = json.loads(msg["data"])  # {"type":"new|update","data":{...}}
+                    except Exception:
+                        data = {"type": "update", "data": msg["data"]}
+                    if status and data.get("data", {}).get("status") != status:
+                        pass
+                    else:
+                        yield _sse_format(data.get("type", "update"), data.get("data", {}))
+
+                # keepalive
+                if now - last_ping > 15:
+                    yield _sse_format("ping", {"ts": int(now)})
+                    last_ping = now
+
+                await asyncio.sleep(0.2)
+        finally:
+            try:
+                await pubsub.unsubscribe(chan)
+            except Exception:
+                pass
+            await pubsub.close()
+            await r.aclose()
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
