@@ -1,6 +1,11 @@
 # src/assistx/answers_store.py
 import os, json, time, uuid, redis
 from typing import Optional, Dict, Any, List, Tuple
+import time
+
+def _now_ms() -> int:
+    """UTC wall-clock in milliseconds, for created_at/updated_at fields."""
+    return int(time.time() * 1000)
 
 
 
@@ -23,29 +28,75 @@ _r = redis.from_url(REDIS_URL, decode_responses=True)
 def _key(answer_id: str) -> str:
     return f"{CHANNEL_PREFIX}:{answer_id}"
 
-# keep _chan(answer_id) for per-answer streams
+# globals near the top
+CHANNEL_PREFIX = "assistx:answers"
+GLOBAL_CHAN = f"{CHANNEL_PREFIX}:events"
+
 def _chan(answer_id: str) -> str:
     return f"{CHANNEL_PREFIX}:{answer_id}:events"
 
-# helper (export if you like)
 def _global_chan() -> str:
     return GLOBAL_CHAN
 
-# update publisher to emit to both per-answer and global channels
-def _publish(answer: Dict[str, Any], ev_type: str = "update") -> None:
+def _publish(answer: dict, ev_type: str = "update", **_ignore) -> None:
+    """
+    Publish an event to both the per-answer channel and the global channel.
+    Accepts ev_type for new/update; **_ignore makes older call sites safe.
+    """
+    import json
     payload = {"type": ev_type, "data": answer}
     try:
         _r.publish(_chan(answer["id"]), json.dumps(payload))
-        _r.publish(GLOBAL_CHAN, json.dumps(payload))  # <--- global broadcast
+        _r.publish(GLOBAL_CHAN, json.dumps(payload))
     except Exception:
+        # don't let pubsub failures break the request path
         pass
 
-# -------- Pub/Sub --------
-def _publish(answer: Dict[str, Any]) -> None:
-    try:
-        _r.publish(_chan(answer["id"]), json.dumps({"type": "update", "data": answer}))
-    except Exception:
-        pass
+# ensure these call _publish with the proper ev_type
+def init_answer(answer_id: str, question: str, user_meta: dict | None = None) -> None:
+    obj = {
+        "id": answer_id,
+        "question": question,
+        "status": "QUEUED",
+        "created_at": _now_ms(),
+        "updated_at": _now_ms(),
+        "error": None,
+        "data": None,
+        "meta": user_meta or {},
+    }
+    _r.setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
+    _index_upsert(obj)
+    _publish(obj, ev_type="new")          # <-- important
+
+def set_status(answer_id: str, status: str, *, job_id: str | None = None, run_id: str | None = None) -> None:
+    obj = get_answer(answer_id) or {}
+    obj["status"] = status
+    if job_id is not None:
+        obj["job_id"] = job_id
+    if run_id is not None:
+        obj["run_id"] = run_id
+    obj["updated_at"] = _now_ms()
+    _r.setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
+    _index_upsert(obj)
+    _publish(obj, ev_type="update")       # <-- explicit
+
+def set_result(answer_id: str, data: dict) -> None:
+    obj = get_answer(answer_id) or {}
+    obj["data"] = data
+    obj["status"] = obj.get("status") or "DONE"
+    obj["updated_at"] = _now_ms()
+    _r.setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
+    _index_upsert(obj)
+    _publish(obj, ev_type="update")
+
+def set_error(answer_id: str, err: str) -> None:
+    obj = get_answer(answer_id) or {}
+    obj["error"] = err
+    obj["status"] = "FAILED"
+    obj["updated_at"] = _now_ms()
+    _r.setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
+    _index_upsert(obj)
+    _publish(obj, ev_type="update")
 
 # -------- Index helpers --------
 def _index_key_for_status(st: Optional[str]) -> str:

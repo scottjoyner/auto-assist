@@ -7,6 +7,8 @@ import pathlib
 import shutil
 import json, asyncio, os
 import redis.asyncio as aioredis
+from rq import Queue
+import redis
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, Form, Header, Query, Body, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse, StreamingResponse
@@ -16,6 +18,8 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
+from starlette.responses import PlainTextResponse
+from neo4j.exceptions import ServiceUnavailable
 from .metrics import QA_REQUESTS, JOBS_ENQUEUED
 from .idempotency_store import save as idemp_save, load as idemp_load
 from .neo4j_client import Neo4jClient  # unified client
@@ -67,7 +71,8 @@ WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")        # e.g., "cuda", "cpu
 WHISPER_COMPUTE = os.getenv("WHISPER_COMPUTE_TYPE", "int8") # e.g., "float16", "int8"
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-
+_rconn = redis.from_url(REDIS_URL)
+_q = Queue(connection=_rconn)
 def _sse_format(event: str, data: dict | str) -> str:
     payload = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n"
@@ -88,6 +93,18 @@ app.add_middleware(
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 templates = Jinja2Templates(directory=str(ROOT / "templates"))
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
+
+
+@app.middleware("http")
+async def neo4j_guard(request, call_next):
+    try:
+        return await call_next(request)
+    except ServiceUnavailable:
+        return PlainTextResponse("Neo4j unavailable. In host mode, set NEO4J_URI=bolt://host.docker.internal:7687 and add extra_hosts.", status_code=503)
+    except ValueError as e:
+        if "Cannot resolve address" in str(e):
+            return PlainTextResponse("Neo4j hostname not resolvable from container. Use host.docker.internal (with host-gateway) or run neo4j in Compose.", status_code=503)
+        raise
 
 @app.on_event("startup")
 def _startup():
@@ -816,3 +833,43 @@ async def api_answers_events(
             await r.aclose()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.get("/api/answers/{answer_id}/events")
+async def api_answer_events(answer_id: str, user: str = Depends(auth)):
+    r = aioredis.from_url(REDIS_URL, decode_responses=True)
+    pubsub = r.pubsub()
+    chan = answers_store._chan(answer_id)
+    await pubsub.subscribe(chan)
+
+    async def stream():
+        # initial snapshot so the client shows current status immediately
+        snap = answers_store.get_answer(answer_id)
+        if snap:
+            yield _sse_format("init", {"status": snap.get("status"), "data": snap.get("data"), "error": snap.get("error")})
+
+        last_ping = asyncio.get_event_loop().time()
+        try:
+            while True:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                now = asyncio.get_event_loop().time()
+
+                if msg and msg.get("type") == "message":
+                    try:
+                        payload = json.loads(msg["data"])  # {"type":"new|update","data":{...}}
+                    except Exception:
+                        payload = {"type": "update", "data": msg["data"]}
+                    yield _sse_format(payload.get("type", "update"), payload.get("data", {}))
+
+                if now - last_ping > 15:
+                    yield _sse_format("ping", {"ts": int(now)})
+                    last_ping = now
+
+                await asyncio.sleep(0.2)
+        finally:
+            try: await pubsub.unsubscribe(chan)
+            except: pass
+            await pubsub.close()
+            await r.aclose()
+
+    return StreamingResponse(stream(), media_type="text/event-stream")

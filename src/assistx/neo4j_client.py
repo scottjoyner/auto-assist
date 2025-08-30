@@ -63,7 +63,7 @@ class Neo4jClient:
             "password": os.getenv("NEO4J_PASSWORD"),
             "database": os.getenv("NEO4J_DATABASE"),
         }
-
+        print(cfg)
         # Try relative import first (package layout like assistx.config)
         for modpath in (".config", "config"):
             try:

@@ -3,12 +3,26 @@ from __future__ import annotations
 from .neo4j_client import Neo4jClient
 from .agents.orchestrator import run_task
 from .acceptance import evaluate_acceptance
-import os, traceback
+import os, traceback, time
 from typing import Optional
 from .neo4j_client import Neo4jClient
-from .pipeline.qa_pipeline import answer_question
+from pipeline.qa_pipeline import answer_question
 from .answers_store import set_status, set_result, set_error
 from .metrics import JOBS_STARTED, JOBS_SUCCEEDED, JOBS_FAILED
+from . import answers_store
+
+
+def ask_job(answer_id: str, question: str):
+    answers_store.set_status(answer_id, "RUNNING")
+    # TODO: call your real pipeline here, publish intermediate statuses if you want
+    time.sleep(1.0)
+    result = {
+        "answer": f"Echo: {question}",
+        "data_preview": {"note": "This is a stub result; wire your real QA pipeline here."},
+        "cypher": "/* generated cypher would go here */",
+        "analysis_code": "# python analysis would go here",
+    }
+    answers_store.set_result(answer_id, result)
 
 def execute_task_job(task_id: str, dry_run: bool = False):
     neo = Neo4jClient()

@@ -9,10 +9,10 @@ load_dotenv()
 class Settings:
     neo4j_uri: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
     neo4j_user: str = os.getenv("NEO4J_USER", "neo4j")
-    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "neo4j")
+    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "livelongandprosper")
 
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+    ollama_model: str = os.getenv("OLLAMA_MODEL", "gemma:2b")
 
     tavily_api_key: str | None = os.getenv("TAVILY_API_KEY")
 
