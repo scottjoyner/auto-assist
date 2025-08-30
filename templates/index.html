@@ -1,8 +1,67 @@
-
 {% extends "base.html" %}
+{% block title %}AssistX – Home{% endblock %}
+
 {% block content %}
-<section>
-  <h2>Welcome</h2>
-  <p>Use the navigation to review tasks, approve them, and monitor agent runs.</p>
-</section>
+<div class="grid">
+  <!-- Ask anything (auto mode: async with short inline wait) -->
+  <section class="card half">
+    <h2>Ask</h2>
+    <p class="muted">Type a question. We’ll derive Cypher from your Neo4j schema, fetch data, analyze in a sandbox, and compose the answer. Uses <code>/api/ask</code> (mode=<b>auto</b>).</p>
+    <textarea id="ask-q" rows="5" placeholder="e.g., How many READY tasks by kind in the last 24h?"></textarea>
+    <div style="margin-top:.6rem; display:flex; gap:.5rem; align-items:center;">
+      <button class="btn" id="ask-btn">Ask</button>
+      <button class="btn secondary" id="ask-clear">Clear</button>
+      <span id="ask-status" class="muted"></span>
+    </div>
+    <div id="ask-output" style="margin-top:1rem;">
+      <!-- dynamically filled -->
+    </div>
+  </section>
+
+  <!-- Live Answers feed (WebSocket with SSE fallback) -->
+  <section class="card half">
+    <h2>Live answers</h2>
+    <p class="muted">New/updated answers as they happen (global stream).</p>
+    <div class="feed" id="live-feed"></div>
+    <div style="margin-top:.6rem;">
+      <a class="btn secondary" href="/answers" target="_blank">Open dashboard</a>
+    </div>
+  </section>
+
+  <!-- Quick shortcuts -->
+  <section class="card third">
+    <h3>Shortcuts</h3>
+    <p><a class="btn" href="/ingest">Record / Upload audio</a></p>
+    <p><a class="btn" href="/tasks/ready">Review READY tasks</a></p>
+    <p><a class="btn" href="/runs">Inspect recent runs</a></p>
+  </section>
+
+  <!-- System status tips -->
+  <section class="card third">
+    <h3>System status</h3>
+    <ul class="muted">
+      <li>Redis queue needed for async <code>/api/ask</code></li>
+      <li>Neo4j required for data-backed answers</li>
+      <li>Ollama for LLMs (set <code>OLLAMA_HOST</code>)</li>
+    </ul>
+    <p class="muted">If Neo4j is down, the app still starts; live data pages will 500 until it’s up.</p>
+  </section>
+
+  <!-- Docs -->
+  <section class="card third">
+    <h3>Endpoints</h3>
+    <ul class="muted">
+      <li><code>POST /api/ask</code> – sync/async/auto</li>
+      <li><code>POST /api/ask_async</code></li>
+      <li><code>GET /api/answers</code>, <code>/api/answers/{id}</code></li>
+      <li><code>GET /api/answers/{id}/events</code> (SSE)</li>
+      <li><code>WS /ws/answers</code>, <code>WS /ws/answers/{id}</code></li>
+      <li><code>GET /health</code>, <code>/metrics</code></li>
+    </ul>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', path='js/home.js') }}"></script>
 {% endblock %}

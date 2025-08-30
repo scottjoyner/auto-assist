@@ -1,22 +1,66 @@
-
 <!doctype html>
-<html><head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>AssistX</title>
-<link rel="stylesheet" href="/static/styles.css" />
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>{% block title %}AssistX{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <!-- reuse your existing styles; add tiny base overrides -->
+  <link rel="stylesheet" href="{{ url_for('static', path='css/ingest.css') }}">
+  <style>
+    :root { --bg:#0b1224; --panel:#0f1a33; --muted:#94a3b8; --text:#e2e8f0; --brand:#60a5fa; --ok:#16a34a; --bad:#ef4444; --accent:#1d4ed8; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto; background:var(--bg); color:var(--text); }
+    a { color: var(--brand); text-decoration: none; }
+    header.topbar { position:sticky; top:0; z-index:50; background:rgba(11,18,36,.85); backdrop-filter: blur(6px); border-bottom:1px solid #1f2a4d; }
+    header .wrap { display:flex; align-items:center; justify-content:space-between; padding:0.75rem 1rem; max-width:1200px; margin:0 auto; }
+    .brand { display:flex; gap:.6rem; align-items:center; font-weight:700; letter-spacing:.3px; }
+    .brand .dot { width:10px; height:10px; border-radius:50%; background:var(--brand); box-shadow:0 0 12px var(--brand); }
+    nav a { margin:0 .5rem; padding:.35rem .6rem; border-radius:.5rem; }
+    nav a:hover { background:#0f1a33; }
+    .badge { font-size:.8rem; padding:.15rem .5rem; border-radius:999px; border:1px solid #1f2a4d; color:var(--muted); }
+    .badge.ok { color:#bbf7d0; border-color:#134e4a; }
+    .badge.err { color:#fecaca; border-color:#7f1d1d; }
+    main.container { max-width:1200px; margin:1rem auto; padding:1rem; }
+    .grid { display:grid; grid-template-columns: repeat(12, 1fr); gap:16px; }
+    .card { grid-column: span 12; background:var(--panel); border:1px solid #1f2a4d; border-radius:12px; padding:16px; }
+    @media (min-width: 900px) {
+      .card.half { grid-column: span 6; }
+      .card.third { grid-column: span 4; }
+    }
+    .muted{ color: var(--muted); }
+    .btn { display:inline-block; background:var(--accent); color:white; border:none; padding:.6rem .9rem; border-radius:.6rem; cursor:pointer; }
+    .btn.secondary { background:#334155; }
+    textarea, input[type="text"] { width:100%; background:#0b132a; color:var(--text); border:1px solid #26305f; border-radius:.6rem; padding:.6rem .7rem; }
+    pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .feed { max-height:320px; overflow:auto; border:1px solid #243158; border-radius:.6rem; background:#0c1430; }
+    .feed .row{ padding:.5rem .7rem; border-bottom:1px solid #18254a; }
+    .row .status{ font-size:.75rem; padding:.1rem .5rem; border-radius:999px; background:#18254a; margin-left:.4rem; }
+  </style>
+  {% block head %}{% endblock %}
 </head>
 <body>
-<header>
-  <h1>AssistX</h1>
-  <nav>
-    <a href="/">Home</a>
-    <a href="/tasks/review">Review</a>
-    <a href="/tasks/ready">Ready</a>
-    <a href="/runs">Runs</a>
-  </nav>
+<header class="topbar">
+  <div class="wrap">
+    <div class="brand">
+      <span class="dot"></span>
+      <span>AssistX</span>
+    </div>
+    <nav>
+      <a href="/">Home</a>
+      <a href="/ingest">Ingest</a>
+      <a href="/answers">Answers</a>
+      <a href="/tasks/ready">Tasks: Ready</a>
+      <a href="/tasks/review">Tasks: Review</a>
+      <a href="/runs">Runs</a>
+      <span id="live-badge" class="badge">live: connecting…</span>
+    </nav>
+  </div>
 </header>
-<main>
+
+<main class="container">
   {% block content %}{% endblock %}
 </main>
-</body></html>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

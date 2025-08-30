@@ -1,8 +1,8 @@
 services:
   api:
     environment:
-      - NEO4J_URI=bolt://host.docker.internal:7687
-      - OLLAMA_HOST=http://host.docker.internal:11434
+      - NEO4J_URI=bolt://neo4j:7687
+      - OLLAMA_HOST=http://ollama:11434
     volumes:
       - /mnt/8TB_2025:/data:ro
     # Helpful on Linux if host.docker.internal isn't resolvable:
@@ -11,8 +11,8 @@ services:
 
   worker:
     environment:
-      - NEO4J_URI=bolt://host.docker.internal:7687
-      - OLLAMA_HOST=http://host.docker.internal:11434
+      - NEO4J_URI=bolt://neo4j:7687
+      - OLLAMA_HOST=http://ollama:11434
     volumes:
       - /mnt/8TB_2025:/data:ro
     extra_hosts:

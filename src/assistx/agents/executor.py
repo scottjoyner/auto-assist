@@ -1,5 +1,4 @@
 from typing import List, Dict, Any, Tuple
-from neo4j import Neo4jError
 from ..neo4j_client import Neo4jClient
 from .engineer import draft_cypher, repair_cypher
 

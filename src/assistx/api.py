@@ -21,12 +21,11 @@ from .metrics import QA_REQUESTS, JOBS_ENQUEUED
 from .idempotency_store import save as idemp_save, load as idemp_load
 from .neo4j_client import Neo4jClient  # unified client
 from .agents.orchestrator import *
-from .agents.pipeline import *
+from .pipeline import *
 from .queue import *
 from .jobs import *
 from .metrics import EXECUTIONS
 from .answers_store import *
-
 
 class AskAsyncIn(BaseModel):
     question: str
@@ -121,20 +120,24 @@ def get_whisper_model(model_name: str):
 # =======================
 # Startup
 # =======================
+@app.on_event("startup")
+def _startup():
+    # Don’t block server startup if Neo4j is down
+    try:
+        neo = Neo4jClient()
+        # optional: only try if you *want* to bootstrap
+        neo.ensure_schema()
+    except Exception as e:
+        # log; keep going so UI can load
+        import logging
+        logging.getLogger("uvicorn.error").warning(f"Neo4j not reachable at startup: {e}")
+    finally:
+        try:
+            neo.close()
+        except Exception:
+            pass
 
-# @app.on_event("startup")
-# def _startup():
-#     # create constraints on boot
-#     try:
-#         neo = Neo4jClient()
-#         neo.ensure_schema()
-#         neo.close()
-#     except Exception:
-#         pass
 
-@app.get("/health")
-def health():
-    return {"ok": True}
 # =======================
 # UI / Orchestration (v1)
 # =======================
