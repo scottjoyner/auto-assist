@@ -1,0 +1,35 @@
+# vLLM on ROCm base image (tuned for low VRAM)
+ARG BASE=rocm/pytorch:rocm6.4.2_ubuntu24.04_py3.12_pytorch_release_2.6.0
+FROM ${BASE}
+
+# Basic deps
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    git python3-pip python3-venv build-essential cmake && \
+    rm -rf /var/lib/apt/lists/*
+
+# vLLM (build ROCm-enabled)
+ARG VLLM_TAG=v0.6.5
+RUN git clone --branch ${VLLM_TAG} https://github.com/vllm-project/vllm.git /opt/vllm && \
+    pip install --upgrade pip && \
+    (test -f /opt/vllm/requirements-rocm.txt && pip install --no-cache-dir -r /opt/vllm/requirements-rocm.txt || true) && \
+    pip install --no-build-isolation --no-cache-dir /opt/vllm
+
+ENV HF_HOME=/opt/hf \
+    TRANSFORMERS_CACHE=/opt/hf
+RUN mkdir -p /opt/hf
+
+WORKDIR /srv
+EXPOSE 8000
+
+# Low-VRAM defaults:
+#  • Qwen2.5-0.5B (≈500M params)
+#  • fp16, AWQ quantization
+#  • single-GPU, limited batch size
+CMD ["python","-m","vllm.entrypoints.openai.api_server", \
+     "--model","Qwen/Qwen2.5-0.5B", \
+     "--dtype","float16", \
+     "--quantization","awq", \
+     "--tensor-parallel-size","1", \
+     "--max-model-len","2048", \
+     "--max-num-batched-tokens","512", \
+     "--host","0.0.0.0","--port","8000"]

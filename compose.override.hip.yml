@@ -1,0 +1,34 @@
+# Enable with: docker compose --profile hip up -d
+services:
+  vllm:
+    build:
+      context: .
+      dockerfile: Dockerfile.vllm-rocm
+    image: vllm-rocm:latest
+    profiles: ["hip"]
+    devices:
+      - "/dev/dxg:/dev/dxg"   # WSL GPU device for AMD
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: ["gpu"]
+    environment:
+      - HF_HOME=/opt/hf
+      - TRANSFORMERS_CACHE=/opt/hf
+    volumes:
+      - hf_cache:/opt/hf
+    ports:
+      - "8000:8000"
+
+  api:
+    profiles: ["hip"]
+    environment:
+      - OPENAI_BASE_URL=http://vllm:8000/v1
+      - WHISPER_DEVICE=hip
+      - WHISPER_COMPUTE_TYPE=float16
+    depends_on:
+      - vllm
+
+volumes:
+  hf_cache:
