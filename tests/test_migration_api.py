@@ -290,3 +290,112 @@ def test_ask_deliverable_breakdown(seeded_neo4j):
 
     assert completed["status"] == "DONE"
     assert completed["event_id"]
+
+
+def test_command_center_intents(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    client.post("/api/intents", json={"source": "voice", "text": "Intent one", "idempotency_key": "cc-intent-1"}, auth=auth)
+    client.post("/api/intents", json={"source": "ui", "text": "Intent two", "idempotency_key": "cc-intent-2"}, auth=auth)
+
+    r = client.get("/api/intents", auth=auth)
+    assert r.status_code == 200
+    assert r.json()["count"] >= 2
+
+    r = client.get("/api/intents?source=voice", auth=auth)
+    assert r.status_code == 200
+    assert all(i["source"] == "voice" for i in r.json()["items"])
+
+    intent_id = r.json()["items"][0]["id"]
+    r = client.get(f"/api/intents/{intent_id}", auth=auth)
+    assert r.status_code == 200
+    assert r.json()["intent"]["id"] == intent_id
+
+
+def test_command_center_memory(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    client.post("/api/memory/items", json={"kind": "note", "text": "Memory one", "source": "hermes"}, auth=auth)
+    client.post("/api/memory/items", json={"kind": "fact", "text": "Memory two", "source": "voice"}, auth=auth)
+
+    r = client.get("/api/memory", auth=auth)
+    assert r.status_code == 200
+    assert r.json()["count"] >= 2
+
+    r = client.get("/api/memory?kind=fact", auth=auth)
+    assert r.status_code == 200
+    assert all(m["kind"] == "fact" for m in r.json()["items"])
+
+    memory_id = r.json()["items"][0]["id"]
+    r = client.get(f"/api/memory/{memory_id}", auth=auth)
+    assert r.status_code == 200
+    assert r.json()["memory"]["id"] == memory_id
+
+
+def test_command_center_devices(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+
+    neo.upsert_agent_device("device-cc-1", hostname="host1", platform="linux", capabilities=["code"])
+    neo.upsert_agent_device("device-cc-2", hostname="host2", platform="macos", capabilities=["web"])
+
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    r = client.get("/api/devices", auth=auth)
+    assert r.status_code == 200
+    assert r.json()["count"] >= 2
+
+    r = client.get("/api/devices/device-cc-1", auth=auth)
+    assert r.status_code == 200
+    assert r.json()["device"]["id"] == "device-cc-1"
+    assert r.json()["device"]["hostname"] == "host1"
+
+
+def test_command_center_task_controls(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    task = neo.get_ready_tasks()[0]
+
+    r = client.post(f"/api/tasks/{task['id']}/cancel", auth=auth)
+    assert r.status_code == 200
+    assert r.json()["status"] == "CANCELLED"
+
+    assert neo.get_task(task["id"])["status"] == "CANCELLED"
+
+
+def test_command_center_reassign(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    task = neo.get_ready_tasks()[0]
+    dispatch = client.post(
+        "/api/dispatch",
+        json={"task_id": task["id"], "target": {"paperclip_agent_id": "agent-old"}, "priority": "MEDIUM"},
+        auth=auth,
+    )
+    dispatch_id = dispatch.json()["dispatch_id"]
+
+    r = client.post(
+        f"/api/dispatches/{dispatch_id}/reassign",
+        json={"paperclip_agent_id": "agent-new"},
+        auth=auth,
+    )
+    assert r.status_code == 200
+    assert r.json()["reassigned"] is True

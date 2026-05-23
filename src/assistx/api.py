@@ -1,30 +1,32 @@
 from __future__ import annotations
 
-import os
-import uuid
+import asyncio
+import hashlib
+import hmac
 import json
+import logging
+import os
 import pathlib
 import shutil
-import hmac
-import hashlib
-import json, asyncio, os
-import redis.asyncio as aioredis
-from rq import Queue
+import time as _time
+import uuid
+from typing import Any, Dict, List, Optional
+
 import redis
-import os, json, time, requests
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List
-from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, File, Form, Header, Query, Body, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse, StreamingResponse
+import redis.asyncio as aioredis
+import requests
+from fastapi import (Body, Depends, FastAPI, File, Form, Header, HTTPException,
+                     Query, Request, UploadFile, WebSocket, WebSocketDisconnect)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
+                               RedirectResponse, StreamingResponse)
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.middleware.cors import CORSMiddleware
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-from pydantic import BaseModel
-from starlette.responses import PlainTextResponse
 from neo4j.exceptions import ServiceUnavailable
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from pydantic import BaseModel, Field
+from rq import Queue
 from .metrics import QA_REQUESTS, JOBS_ENQUEUED, TASK_CLAIMS, TASK_COMPLETIONS, TASK_HEARTBEATS, CONTEXT_PACKETS
 from .metrics import RQ_JOBS_IN_QUEUE, RQ_JOBS_RUNNING, RQ_JOBS_FAILED
 from .idempotency_store import save as idemp_save, load as idemp_load
@@ -173,9 +175,6 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 _rconn = redis.from_url(REDIS_URL)
 _q = Queue(connection=_rconn)
-def _sse_format(event: str, data: dict | str) -> str:
-    payload = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
-    return f"event: {event}\ndata: {payload}\n\n"
 # -----------------------
 # App + Static/Template
 # -----------------------
@@ -206,16 +205,6 @@ async def neo4j_guard(request, call_next):
             return PlainTextResponse("Neo4j hostname not resolvable from container. Use host.docker.internal (with host-gateway) or run neo4j in Compose.", status_code=503)
         raise
 
-@app.on_event("startup")
-def _startup():
-    # create constraints on boot
-    try:
-        neo = Neo4jClient()
-        neo.ensure_schema()
-        neo.close()
-    except Exception:
-        pass
-    
 def auth(credentials: HTTPBasicCredentials = Depends(security)) -> str:
     if not (credentials.username == USER and credentials.password == PASS):
         raise HTTPException(status_code=401, detail="Unauthorized", headers={"WWW-Authenticate": "Basic"})
@@ -267,15 +256,9 @@ def get_whisper_model(model_name: str):
     return _WHISPER_CACHE[model_name]
 
 
-
-
-
-
-
 def _sse(event: str, data: dict | str) -> str:
     payload = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n"
-
 
 
 class LLMStreamIn(BaseModel):
@@ -284,12 +267,6 @@ class LLMStreamIn(BaseModel):
     model: Optional[str] = None                           # defaults to OLLAMA_MODEL env
     options: Optional[Dict[str, Any]] = None              # temperature, top_p, etc.
     system: Optional[str] = Field(default=None, description="Optional system instruction")
-
-
-
-
-
-
 
 
 # =======================
@@ -303,8 +280,6 @@ def _startup():
         # optional: only try if you *want* to bootstrap
         neo.ensure_schema()
     except Exception as e:
-        # log; keep going so UI can load
-        import logging
         logging.getLogger("uvicorn.error").warning(f"Neo4j not reachable at startup: {e}")
     finally:
         try:
@@ -1404,7 +1379,6 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
         return JSONResponse(status_code=202, content={"answer_id": answer_id, "job_id": job.get_id(), "status_url": f"/api/answers/{answer_id}", **deliverable})
 
     # mode == auto: wait budget, else 202
-    import time as _time
     deadline = _time.time() + max(0.0, float(body.timeout_s))
     while _time.time() < deadline:
         obj = answers_store.get_answer(answer_id)
@@ -1524,7 +1498,7 @@ async def api_answers_events(
 
     async def event_stream():
         # initial hello
-        yield _sse_format("welcome", {"channel": chan})
+        yield _sse("welcome", {"channel": chan})
         last_ping = asyncio.get_event_loop().time()
         try:
             while True:
@@ -1539,11 +1513,11 @@ async def api_answers_events(
                     if status and data.get("data", {}).get("status") != status:
                         pass
                     else:
-                        yield _sse_format(data.get("type", "update"), data.get("data", {}))
+                        yield _sse(data.get("type", "update"), data.get("data", {}))
 
-                # keepalive
-                if now - last_ping > 15:
-                    yield _sse_format("ping", {"ts": int(now)})
+                    # keepalive
+                    if now - last_ping > 15:
+                        yield _sse("ping", {"ts": int(now)})
                     last_ping = now
 
                 await asyncio.sleep(0.2)
@@ -1569,7 +1543,7 @@ async def api_answer_events(answer_id: str, user: str = Depends(auth)):
         # initial snapshot so the client shows current status immediately
         snap = answers_store.get_answer(answer_id)
         if snap:
-            yield _sse_format("init", {"status": snap.get("status"), "data": snap.get("data"), "error": snap.get("error")})
+            yield _sse("init", {"status": snap.get("status"), "data": snap.get("data"), "error": snap.get("error")})
 
         last_ping = asyncio.get_event_loop().time()
         try:
@@ -1582,10 +1556,10 @@ async def api_answer_events(answer_id: str, user: str = Depends(auth)):
                         payload = json.loads(msg["data"])  # {"type":"new|update","data":{...}}
                     except Exception:
                         payload = {"type": "update", "data": msg["data"]}
-                    yield _sse_format(payload.get("type", "update"), payload.get("data", {}))
+                    yield _sse(payload.get("type", "update"), payload.get("data", {}))
 
-                if now - last_ping > 15:
-                    yield _sse_format("ping", {"ts": int(now)})
+                    if now - last_ping > 15:
+                        yield _sse("ping", {"ts": int(now)})
                     last_ping = now
 
                 await asyncio.sleep(0.2)

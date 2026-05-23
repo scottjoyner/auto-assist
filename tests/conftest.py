@@ -81,6 +81,9 @@ def neo4j_client(neo4j_container):
 
 @pytest.fixture
 def seeded_neo4j(neo4j_client):
+    with neo4j_client.driver.session() as s:
+        s.run("MATCH (n) DETACH DELETE n")
+    neo4j_client.ensure_schema()
     conversation_id = neo4j_client.upsert_conversation("pytest conversation", "pytest")
     neo4j_client.add_utterances(
         conversation_id,

@@ -347,22 +347,23 @@ class Neo4jClient:
         if idempotency_key:
             q = (
                 "MERGE (d:Dispatch {idempotency_key:$idempotency_key}) "
-                "ON CREATE SET d.id=randomUUID(), d.created_at=datetime(), d.created_at_ts=timestamp(), d.status='OPEN' "
+                "ON CREATE SET d.id=$did, d.created_at=datetime(), d.created_at_ts=timestamp(), d.status='OPEN' "
                 "SET d += $props "
                 "RETURN d.id AS id"
             )
+            dispatch_id = uuid.uuid4().hex
             with self._session() as s:
-                rec = s.run(q, {"idempotency_key": idempotency_key, "props": props}).single()
+                rec = s.run(q, {"idempotency_key": idempotency_key, "props": props, "did": dispatch_id}).single()
                 dispatch_id = rec["id"]
         else:
-            q = (
-                "CREATE (d:Dispatch {id:randomUUID()}) "
-                "SET d += $props, d.created_at=datetime(), d.created_at_ts=timestamp() "
-                "RETURN d.id AS id"
-            )
+            dispatch_id = uuid.uuid4().hex
             with self._session() as s:
-                rec = s.run(q, {"props": props}).single()
-                dispatch_id = rec["id"]
+                s.run(
+                    "CREATE (d:Dispatch {id:$did}) "
+                    "SET d += $props, d.created_at=datetime(), d.created_at_ts=timestamp() "
+                    "RETURN d.id AS id",
+                    {"did": dispatch_id, "props": props},
+                ).single()
         with self._session() as s:
             s.run(
                 "MATCH (t:Task {id:$tid}), (d:Dispatch {id:$did}) "
@@ -370,12 +371,13 @@ class Neo4jClient:
                 {"tid": task_id, "did": dispatch_id},
             )
             if target.get("paperclip_agent_id"):
+                session_id = uuid.uuid4().hex
                 s.run(
                     "MERGE (a:AgentSession {paperclip_agent_id:$aid}) "
-                    "ON CREATE SET a.id=randomUUID(), a.created_at=datetime(), a.created_at_ts=timestamp() "
+                    "ON CREATE SET a.id=$sid, a.created_at=datetime(), a.created_at_ts=timestamp() "
                     "SET a.paperclip_agent_id=$aid, a.updated_at=datetime(), a.updated_at_ts=timestamp() "
                     "MERGE (d:Dispatch {id:$did})-[:ASSIGNED_TO]->(a)",
-                    {"aid": target["paperclip_agent_id"], "did": dispatch_id},
+                    {"aid": target["paperclip_agent_id"], "did": dispatch_id, "sid": session_id},
                 )
         return dispatch_id
 
@@ -995,15 +997,16 @@ class Neo4jClient:
             if device_id:
                 s.run(
                     """
-                    MERGE (d:Device {device_id:$device_id})
-                      ON CREATE SET d.created_at=datetime(), d.created_at_ts=timestamp()
+                    MERGE (d:AgentDevice {id:$device_id})
+                      ON CREATE SET d.created_at=datetime(), d.created_at_ts=timestamp(),
+                                    d.device_id=$device_id
                     SET d.fingerprint=$device_fingerprint,
                         d.user_agent=$user_agent,
                         d.platform=$platform,
                         d.language=$language,
                         d.timezone=$timezone,
                         d.last_seen_at=datetime(),
-                        d.updated_at_ts=timestamp()
+                        d.last_seen_at_ts=timestamp()
                     WITH d
                     MATCH (c:MediaCapture {id:$capture_id})
                     MERGE (d)-[:RECORDED]->(c)
@@ -1230,8 +1233,8 @@ class Neo4jClient:
         q = (
             "MERGE (u:Utterance {id:$id}) "
             "SET u += $props "
-            "FOREACH (_ IN CASE WHEN NOT EXISTS(u.created_at) THEN [1] ELSE [] END | "
-            "  SET u.created_at = datetime(), u.created_at_ts = timestamp()) "
+            "SET u.created_at = coalesce(u.created_at, datetime()), "
+            "    u.created_at_ts = coalesce(u.created_at_ts, timestamp()) "
             "SET u.updated_at = datetime() "
             "WITH u "
             "MATCH (c:Conversation {id:$cid}) "
