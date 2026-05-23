@@ -1,227 +1,423 @@
+{% extends "base.html" %}
+
+{% block title %}AssistX Capture{% endblock %}
+
+{% block content %}
+<section class="card capture-panel">
+  <div class="capture-header">
+    <div>
+      <h1>Capture</h1>
+      <p class="muted">Record audio or video, add transcript/context, and write the intake record to Neo4j.</p>
+    </div>
+    <span id="captureStatus" class="badge">ready</span>
+  </div>
+
+  <div class="row two">
+    <div>
+      <label for="userId">User</label>
+      <input id="userId" type="text" value="scott" autocomplete="username">
+    </div>
+    <div>
+      <label for="sessionId">Session</label>
+      <input id="sessionId" type="text" value="mobile">
+    </div>
+  </div>
+
+  <div class="row two">
+    <div>
+      <label for="captureMode">Mode</label>
+      <select id="captureMode">
+        <option value="audio">Audio</option>
+        <option value="video">Video</option>
+      </select>
+    </div>
+    <div>
+      <label for="filename">Name</label>
+      <input id="filename" type="text" placeholder="capture name">
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="btnRecord" class="btn">Start</button>
+    <button id="btnStop" class="btn secondary" disabled>Stop</button>
+    <span id="timer" class="timer">00:00</span>
+  </div>
+
+  <div class="meter"><div id="meterBar"></div></div>
+  <video id="videoPreview" controls playsinline hidden></video>
+  <audio id="audioPreview" controls hidden></audio>
+
+  <div id="fallback" class="drop">
+    <input id="fileInput" type="file" accept="audio/*,video/*" capture>
+    <strong>Upload or camera fallback</strong>
+    <span id="pickedFile" class="muted">Drop a file here, or tap to record/upload on mobile.</span>
+  </div>
+</section>
+
+<section class="card">
+  <label for="transcript">Transcript or note</label>
+  <textarea id="transcript" rows="8" placeholder="Optional transcript, observation, command, or context from this capture."></textarea>
+
+  <label for="activityContext">Activity context</label>
+  <input id="activityContext" type="text" placeholder="Optional: where you are, what this is for, or why it matters">
+
+  <div class="actions">
+    <button id="btnSave" class="btn" disabled>Save capture</button>
+    <button id="btnClear" class="btn secondary">Clear</button>
+  </div>
+
+  <div id="progress" class="progress" hidden><div id="progressBar"></div></div>
+  <pre id="result" class="result" hidden></pre>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
 (() => {
-    const uploadEndpoint = window.ASSISTX_CFG?.uploadEndpoint || "/upload-audio";
-  
-    // Elements
-    const btnRecord = document.getElementById("btnRecord");
-    const btnStop = document.getElementById("btnStop");
-    const btnUpload = document.getElementById("btnUpload");
-    const timerEl = document.getElementById("timer");
-    const preview = document.getElementById("preview");
-    const filenameEl = document.getElementById("filename");
-    const dropZone = document.getElementById("dropZone");
-    const fileInput = document.getElementById("fileInput");
-    const pickedFile = document.getElementById("pickedFile");
-    const modelSel = document.getElementById("model");
-    const apiTokenEl = document.getElementById("apiToken");
-    const progress = document.getElementById("progress");
-    const progressBar = document.getElementById("progressBar");
-    const result = document.getElementById("result");
-  
-    // Persist token locally (don’t hardcode it server-side)
-    apiTokenEl.value = localStorage.getItem("assistx_api_token") || "";
-    apiTokenEl.addEventListener("change", () => {
-      localStorage.setItem("assistx_api_token", apiTokenEl.value || "");
+  const captureEndpoint = "/api/captures";
+  const btnRecord = document.getElementById("btnRecord");
+  const btnStop = document.getElementById("btnStop");
+  const btnSave = document.getElementById("btnSave");
+  const btnClear = document.getElementById("btnClear");
+  const timerEl = document.getElementById("timer");
+  const statusEl = document.getElementById("captureStatus");
+  const modeEl = document.getElementById("captureMode");
+  const filenameEl = document.getElementById("filename");
+  const transcriptEl = document.getElementById("transcript");
+  const activityContext = document.getElementById("activityContext");
+  const fileInput = document.getElementById("fileInput");
+  const pickedFile = document.getElementById("pickedFile");
+  const dropZone = document.getElementById("fallback");
+  const audioPreview = document.getElementById("audioPreview");
+  const videoPreview = document.getElementById("videoPreview");
+  const meterBar = document.getElementById("meterBar");
+  const progress = document.getElementById("progress");
+  const progressBar = document.getElementById("progressBar");
+  const result = document.getElementById("result");
+
+  let stream = null;
+  let recorder = null;
+  let chunks = [];
+  let recordedBlob = null;
+  let selectedFile = null;
+  let startedAt = 0;
+  let timer = null;
+  let seconds = 0;
+  let audioCtx = null;
+  let analyser = null;
+  let meterRAF = null;
+  let recognition = null;
+
+  function setStatus(text) {
+    statusEl.textContent = text;
+  }
+
+  function fmtTime(value) {
+    const min = Math.floor(value / 60).toString().padStart(2, "0");
+    const sec = (value % 60).toString().padStart(2, "0");
+    return `${min}:${sec}`;
+  }
+
+  function startTimer() {
+    seconds = 0;
+    timerEl.textContent = "00:00";
+    timer = setInterval(() => {
+      seconds += 1;
+      timerEl.textContent = fmtTime(seconds);
+    }, 1000);
+  }
+
+  function stopTimer() {
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  function deviceId() {
+    const key = "assistx_device_id";
+    let value = localStorage.getItem(key);
+    if (!value) {
+      value = (crypto.randomUUID && crypto.randomUUID()) || `device-${Date.now()}`;
+      localStorage.setItem(key, value);
+    }
+    return value;
+  }
+
+  async function sha256(text) {
+    if (!crypto.subtle) return btoa(text).slice(0, 64);
+    const bytes = new TextEncoder().encode(text);
+    const hash = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  function position() {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) return resolve({});
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({
+          location_lat: pos.coords.latitude,
+          location_lng: pos.coords.longitude,
+          location_accuracy_m: pos.coords.accuracy
+        }),
+        () => resolve({}),
+        { enableHighAccuracy: false, timeout: 3500, maximumAge: 300000 }
+      );
     });
-  
-    // State
-    let mediaStream = null;
-    let mediaRecorder = null;
-    let chunks = [];
-    let recTimer = null;
-    let seconds = 0;
-    let recordedBlob = null;
-    let pickedBlob = null;
-  
-    // Audio meter
-    const meterBar = document.getElementById("meterBar");
-    let audioCtx, analyser, source, meterRAF;
-  
-    function fmtTime(s) {
-      const m = Math.floor(s / 60).toString().padStart(2, "0");
-      const ss = (s % 60).toString().padStart(2, "0");
-      return `${m}:${ss}`;
-    }
-  
-    function startTimer() {
-      seconds = 0;
-      timerEl.textContent = "00:00";
-      recTimer = setInterval(() => {
-        seconds += 1;
-        timerEl.textContent = fmtTime(seconds);
-      }, 1000);
-    }
-  
-    function stopTimer() {
-      clearInterval(recTimer);
-      recTimer = null;
-    }
-  
-    async function initAudioMeter(stream) {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 2048;
-      source = audioCtx.createMediaStreamSource(stream);
-      source.connect(analyser);
-  
-      const data = new Uint8Array(analyser.frequencyBinCount);
-      const loop = () => {
-        analyser.getByteTimeDomainData(data);
-        // Rough RMS
-        let sum = 0;
-        for (let i = 0; i < data.length; i++) {
-          const v = (data[i] - 128) / 128;
-          sum += v * v;
-        }
-        const rms = Math.sqrt(sum / data.length);
-        const pct = Math.min(100, Math.max(1, Math.round(rms * 140)));
-        meterBar.style.width = pct + "%";
-        meterRAF = requestAnimationFrame(loop);
-      };
-      loop();
-    }
-  
-    function stopAudioMeter() {
-      if (meterRAF) cancelAnimationFrame(meterRAF);
-      if (audioCtx) audioCtx.close();
-      meterRAF = null; audioCtx = null; analyser = null; source = null;
-      meterBar.style.width = "0%";
-    }
-  
-    async function startRecording() {
-      if (!mediaStream) {
-        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  }
+
+  async function clientContext() {
+    const base = {
+      device_id: deviceId(),
+      user_agent: navigator.userAgent,
+      platform: navigator.platform || "",
+      language: navigator.language || "",
+      languages: navigator.languages || [],
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+      timezone_offset_minutes: new Date().getTimezoneOffset(),
+      screen: { width: screen.width, height: screen.height, pixel_ratio: window.devicePixelRatio || 1 },
+      online: navigator.onLine,
+      visibility_state: document.visibilityState,
+      page_url: location.href,
+      referrer: document.referrer || "",
+      activity_context: activityContext.value || "",
+      captured_at: new Date().toISOString()
+    };
+    base.device_fingerprint = await sha256(JSON.stringify({
+      ua: base.user_agent,
+      platform: base.platform,
+      language: base.language,
+      timezone: base.timezone,
+      screen: base.screen
+    }));
+    return Object.assign(base, await position());
+  }
+
+  function canRecord() {
+    return Boolean(window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+  }
+
+  function bestMime(mode) {
+    const choices = mode === "video"
+      ? ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
+      : ["audio/webm;codecs=opus", "audio/webm"];
+    return choices.find((type) => window.MediaRecorder && MediaRecorder.isTypeSupported(type)) || "";
+  }
+
+  function makeRecognition() {
+    const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Ctor) return null;
+    const rec = new Ctor();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = "en-US";
+    rec.onresult = (event) => {
+      let finalText = "";
+      let interim = "";
+      for (let i = 0; i < event.results.length; i += 1) {
+        const text = event.results[i][0].transcript;
+        if (event.results[i].isFinal) finalText += `${text} `;
+        else interim += text;
       }
-      chunks = [];
-      mediaRecorder = new MediaRecorder(mediaStream, { mimeType: "audio/webm" });
-      mediaRecorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-      mediaRecorder.onstop = () => {
-        recordedBlob = new Blob(chunks, { type: "audio/webm" });
-        preview.src = URL.createObjectURL(recordedBlob);
-        preview.style.display = "block";
-        pickedBlob = null;
-        pickedFile.textContent = "";
-        btnUpload.disabled = false;
-        if (!filenameEl.value) {
-          filenameEl.value = "recording-" + new Date().toISOString().replace(/[:.]/g, "-");
-        }
-      };
-      mediaRecorder.start(50);
-      startTimer();
-      await initAudioMeter(mediaStream);
-      btnRecord.disabled = true;
-      btnStop.disabled = false;
+      transcriptEl.value = (finalText + interim).trim();
+      updateSaveState();
+    };
+    rec.onerror = () => setStatus("speech paused");
+    return rec;
+  }
+
+  function startMeter(inputStream) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioCtx.createMediaStreamSource(inputStream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    const tick = () => {
+      analyser.getByteFrequencyData(data);
+      const avg = data.reduce((sum, value) => sum + value, 0) / data.length;
+      meterBar.style.width = `${Math.min(100, avg * 1.6)}%`;
+      meterRAF = requestAnimationFrame(tick);
+    };
+    tick();
+  }
+
+  function stopMeter() {
+    if (meterRAF) cancelAnimationFrame(meterRAF);
+    if (audioCtx) audioCtx.close();
+    meterRAF = null;
+    audioCtx = null;
+    analyser = null;
+    meterBar.style.width = "0%";
+  }
+
+  function previewUrl(blobOrFile, kind) {
+    const url = URL.createObjectURL(blobOrFile);
+    audioPreview.hidden = kind !== "audio";
+    videoPreview.hidden = kind !== "video";
+    if (kind === "video") videoPreview.src = url;
+    else audioPreview.src = url;
+  }
+
+  function updateSaveState() {
+    btnSave.disabled = !(recordedBlob || selectedFile || transcriptEl.value.trim());
+  }
+
+  async function startRecording() {
+    if (!canRecord()) {
+      setStatus("use upload fallback");
+      fileInput.click();
+      return;
     }
-  
-    function stopRecording() {
-      if (mediaRecorder && mediaRecorder.state !== "inactive") {
-        mediaRecorder.stop();
-      }
-      stopTimer();
-      stopAudioMeter();
-      btnRecord.disabled = false;
-      btnStop.disabled = true;
+    const mode = modeEl.value;
+    chunks = [];
+    selectedFile = null;
+    recordedBlob = null;
+    result.hidden = true;
+    const constraints = mode === "video" ? { audio: true, video: { facingMode: "environment" } } : { audio: true };
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    if (mode === "video") {
+      videoPreview.srcObject = stream;
+      videoPreview.hidden = false;
+      audioPreview.hidden = true;
+      try { await videoPreview.play(); } catch {}
     }
-  
-    btnRecord.addEventListener("click", startRecording);
-    btnStop.addEventListener("click", stopRecording);
-  
-    // Drag/drop & file picker
-    dropZone.addEventListener("click", () => fileInput.click());
-    ;["dragenter","dragover"].forEach(ev =>
-      dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.add("over"); })
-    );
-    ;["dragleave","drop"].forEach(ev =>
-      dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.remove("over"); })
-    );
-    dropZone.addEventListener("drop", e => {
-      const f = e.dataTransfer.files?.[0];
-      if (f) handlePickedFile(f);
-    });
-    fileInput.addEventListener("change", e => {
-      const f = e.target.files?.[0];
-      if (f) handlePickedFile(f);
-    });
-  
-    function handlePickedFile(file) {
-      pickedBlob = file;
-      recordedBlob = null;
-      preview.src = URL.createObjectURL(file);
-      preview.style.display = "block";
-      pickedFile.textContent = `${file.name} (${Math.round(file.size/1024)} KB)`;
-      btnUpload.disabled = false;
-      if (!filenameEl.value) {
-        const stem = file.name.replace(/\.[^.]+$/, "");
-        filenameEl.value = stem;
+    const mimeType = bestMime(mode);
+    recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+    recorder.onstop = () => {
+      const type = recorder.mimeType || (mode === "video" ? "video/webm" : "audio/webm");
+      recordedBlob = new Blob(chunks, { type });
+      previewUrl(recordedBlob, mode);
+      updateSaveState();
+      if (!filenameEl.value) filenameEl.value = `capture-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    };
+    recognition = mode === "audio" ? makeRecognition() : null;
+    try { recognition && recognition.start(); } catch {}
+    recorder.start();
+    startedAt = Date.now();
+    startTimer();
+    startMeter(stream);
+    btnRecord.disabled = true;
+    btnStop.disabled = false;
+    setStatus("recording");
+  }
+
+  function stopRecording() {
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+    if (recognition) { try { recognition.stop(); } catch {} }
+    if (stream) stream.getTracks().forEach((track) => track.stop());
+    if (videoPreview.srcObject) videoPreview.srcObject = null;
+    stopTimer();
+    stopMeter();
+    btnRecord.disabled = false;
+    btnStop.disabled = true;
+    setStatus("review");
+  }
+
+  function selectFile(file) {
+    selectedFile = file;
+    recordedBlob = null;
+    const kind = file.type.startsWith("video/") ? "video" : "audio";
+    modeEl.value = kind;
+    previewUrl(file, kind);
+    pickedFile.textContent = `${file.name} (${Math.round(file.size / 1024)} KB)`;
+    if (!filenameEl.value) filenameEl.value = file.name.replace(/\.[^.]+$/, "");
+    startedAt = Date.now();
+    updateSaveState();
+  }
+
+  async function saveCapture() {
+    const source = recordedBlob || selectedFile;
+    const context = await clientContext();
+    const name = (filenameEl.value || "capture").replace(/[^a-zA-Z0-9._-]/g, "_");
+    let filename = name.match(/\.[a-z0-9]+$/i) ? name : `${name}.${modeEl.value === "video" ? "webm" : "webm"}`;
+    if (selectedFile && !filenameEl.value) filename = selectedFile.name;
+    const form = new FormData();
+    if (source) form.append("media", source, filename);
+    form.append("transcript", transcriptEl.value || "");
+    form.append("user_id", document.getElementById("userId").value || "default");
+    form.append("session_id", document.getElementById("sessionId").value || "mobile");
+    form.append("duration_ms", String(startedAt ? Date.now() - startedAt : 0));
+    form.append("device_id", context.device_id || "");
+    form.append("device_fingerprint", context.device_fingerprint || "");
+    form.append("client_context", JSON.stringify(context));
+    form.append("activity_context", activityContext.value || "");
+
+    progress.hidden = false;
+    progressBar.style.width = "0%";
+    result.hidden = true;
+    btnSave.disabled = true;
+    setStatus("saving");
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", captureEndpoint, true);
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) progressBar.style.width = `${Math.round((event.loaded / event.total) * 100)}%`;
+    };
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState !== 4) return;
+      progress.hidden = true;
+      btnSave.disabled = false;
+      result.hidden = false;
+      try {
+        result.textContent = JSON.stringify(JSON.parse(xhr.responseText), null, 2);
+      } catch {
+        result.textContent = xhr.responseText || "Saved.";
       }
-    }
-  
-    // Upload with progress (XHR so we can show progress)
-    btnUpload.addEventListener("click", () => {
-      const model = modelSel.value || "tiny";
-      const name = (filenameEl.value || "recording").replace(/[^a-zA-Z0-9._-]/g, "_");
-      const token = apiTokenEl.value || "";
-  
-      // pick the data source
-      let fileBlob = recordedBlob || pickedBlob;
-      if (!fileBlob) {
-        alert("Record audio or choose a file first.");
-        return;
-      }
-      // Ensure has extension
-      let filename = name.endsWith(".webm") || name.match(/\.[a-z0-9]+$/i) ? name : (name + ".webm");
-  
-      const fd = new FormData();
-      fd.append("file", fileBlob, filename);
-      fd.append("model", model);
-  
-      result.hidden = true;
-      result.textContent = "";
-      progress.hidden = false;
-      progressBar.style.width = "0%";
-      btnUpload.disabled = true;
-  
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", uploadEndpoint, true);
-      if (token) xhr.setRequestHeader("x-api-token", token);
-  
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-          const pct = Math.round((e.loaded / e.total) * 100);
-          progressBar.style.width = pct + "%";
-        }
-      };
-  
-      xhr.onreadystatechange = () => {
-        if (xhr.readyState === 4) {
-          progress.hidden = true;
-          btnUpload.disabled = false;
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              const resp = JSON.parse(xhr.responseText);
-              result.textContent = JSON.stringify(resp, null, 2);
-              result.hidden = false;
-            } catch (err) {
-              result.textContent = xhr.responseText || "Upload complete.";
-              result.hidden = false;
-            }
-          } else {
-            result.textContent = `Error ${xhr.status}: ${xhr.responseText}`;
-            result.hidden = false;
-          }
-        }
-      };
-  
-      xhr.send(fd);
-    });
-  
-    // Clean up on unload
-    window.addEventListener("beforeunload", () => {
-      if (mediaRecorder && mediaRecorder.state !== "inactive") {
-        mediaRecorder.stop();
-      }
-      if (mediaStream) {
-        mediaStream.getTracks().forEach(t => t.stop());
-      }
-    });
-  })();
-  
+      setStatus(xhr.status >= 200 && xhr.status < 300 ? "saved" : "error");
+    };
+    xhr.send(form);
+  }
+
+  function clearAll() {
+    transcriptEl.value = "";
+    activityContext.value = "";
+    filenameEl.value = "";
+    selectedFile = null;
+    recordedBlob = null;
+    fileInput.value = "";
+    pickedFile.textContent = "Drop a file here, or tap to record/upload on mobile.";
+    audioPreview.hidden = true;
+    videoPreview.hidden = true;
+    result.hidden = true;
+    timerEl.textContent = "00:00";
+    updateSaveState();
+    setStatus("ready");
+  }
+
+  btnRecord.onclick = () => startRecording().catch((error) => {
+    setStatus("fallback");
+    result.hidden = false;
+    result.textContent = error && error.message ? error.message : "Recording unavailable; use upload fallback.";
+  });
+  btnStop.onclick = stopRecording;
+  btnSave.onclick = () => saveCapture().catch((error) => {
+    result.hidden = false;
+    result.textContent = error && error.message ? error.message : "Save failed.";
+    setStatus("error");
+    btnSave.disabled = false;
+  });
+  btnClear.onclick = clearAll;
+  transcriptEl.oninput = updateSaveState;
+  fileInput.onchange = () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (file) selectFile(file);
+  };
+  dropZone.ondragover = (event) => { event.preventDefault(); dropZone.classList.add("over"); };
+  dropZone.ondragleave = () => dropZone.classList.remove("over");
+  dropZone.ondrop = (event) => {
+    event.preventDefault();
+    dropZone.classList.remove("over");
+    const file = event.dataTransfer.files && event.dataTransfer.files[0];
+    if (file) selectFile(file);
+  };
+  modeEl.onchange = () => {
+    fileInput.setAttribute("accept", modeEl.value === "video" ? "video/*,audio/*" : "audio/*,video/*");
+  };
+  window.addEventListener("beforeunload", () => {
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+    if (stream) stream.getTracks().forEach((track) => track.stop());
+  });
+  if (!canRecord()) setStatus("fallback");
+})();
+</script>
+{% endblock %}

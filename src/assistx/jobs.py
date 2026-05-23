@@ -6,7 +6,7 @@ from .acceptance import evaluate_acceptance
 import os, traceback, time
 from typing import Optional
 from .neo4j_client import Neo4jClient
-from pipeline.qa_pipeline import answer_question
+from .pipeline.qa_pipeline import answer_question
 from .answers_store import set_status, set_result, set_error
 from .metrics import JOBS_STARTED, JOBS_SUCCEEDED, JOBS_FAILED
 from . import answers_store
@@ -48,7 +48,13 @@ def execute_task_job(task_id: str, dry_run: bool = False):
         neo.close()
 
 
-def ask_question_job(answer_id: str, question: str, model: Optional[str] = None, max_repairs: int = 3) -> None:
+def ask_question_job(
+    answer_id: str,
+    question: str,
+    model: Optional[str] = None,
+    max_repairs: int = 3,
+    deliverable_id: Optional[str] = None,
+) -> None:
     from .answers_store import set_status, set_result, set_error
     JOBS_STARTED.inc()
     set_status(answer_id, "RUNNING")
@@ -56,9 +62,49 @@ def ask_question_job(answer_id: str, question: str, model: Optional[str] = None,
     try:
         out = answer_question(neo, question=question, model=model, max_repairs=max_repairs, log_to_neo=True)
         set_status(answer_id, "RUNNING", run_id=out.get("run_id"))
+        if deliverable_id:
+            completed = neo.complete_deliverable(
+                deliverable_id=deliverable_id,
+                answer_id=answer_id,
+                status="DONE",
+                summary=out.get("answer"),
+                result=out,
+            )
+            out["deliverable_id"] = deliverable_id
+            out["deliverable_status"] = completed.get("status") if completed else "UNKNOWN"
         set_result(answer_id, out)
+        if deliverable_id:
+            answers_store.publish_event(
+                answer_id,
+                "deliverable_completed",
+                {
+                    "deliverable_id": deliverable_id,
+                    "deliverable_status": "DONE",
+                    "summary": out.get("answer"),
+                },
+            )
         JOBS_SUCCEEDED.inc()
     except Exception as e:
+        if deliverable_id:
+            try:
+                neo.complete_deliverable(
+                    deliverable_id=deliverable_id,
+                    answer_id=answer_id,
+                    status="FAILED",
+                    summary=str(e),
+                    result={"error": str(e)},
+                )
+                answers_store.publish_event(
+                    answer_id,
+                    "deliverable_completed",
+                    {
+                        "deliverable_id": deliverable_id,
+                        "deliverable_status": "FAILED",
+                        "summary": str(e),
+                    },
+                )
+            except Exception:
+                pass
         import traceback
         tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         set_error(answer_id, tb)

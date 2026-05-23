@@ -1,18 +1,12 @@
 # src/assistx/answers_store.py
 import os, json, time, uuid, redis
 from typing import Optional, Dict, Any, List, Tuple
-import time
 
 def _now_ms() -> int:
     """UTC wall-clock in milliseconds, for created_at/updated_at fields."""
     return int(time.time() * 1000)
 
-
-
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-
-
-
 
 ANSWERS_TTL_S = int(os.getenv("ANSWERS_TTL_S", "86400"))  # 24h
 
@@ -27,10 +21,6 @@ _r = redis.from_url(REDIS_URL, decode_responses=True)
 # -------- Keys / indexes --------
 def _key(answer_id: str) -> str:
     return f"{CHANNEL_PREFIX}:{answer_id}"
-
-# globals near the top
-CHANNEL_PREFIX = "assistx:answers"
-GLOBAL_CHAN = f"{CHANNEL_PREFIX}:events"
 
 def _chan(answer_id: str) -> str:
     return f"{CHANNEL_PREFIX}:{answer_id}:events"
@@ -52,51 +42,11 @@ def _publish(answer: dict, ev_type: str = "update", **_ignore) -> None:
         # don't let pubsub failures break the request path
         pass
 
-# ensure these call _publish with the proper ev_type
-def init_answer(answer_id: str, question: str, user_meta: dict | None = None) -> None:
-    obj = {
-        "id": answer_id,
-        "question": question,
-        "status": "QUEUED",
-        "created_at": _now_ms(),
-        "updated_at": _now_ms(),
-        "error": None,
-        "data": None,
-        "meta": user_meta or {},
-    }
-    _r.setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
-    _index_upsert(obj)
-    _publish(obj, ev_type="new")          # <-- important
-
-def set_status(answer_id: str, status: str, *, job_id: str | None = None, run_id: str | None = None) -> None:
-    obj = get_answer(answer_id) or {}
-    obj["status"] = status
-    if job_id is not None:
-        obj["job_id"] = job_id
-    if run_id is not None:
-        obj["run_id"] = run_id
-    obj["updated_at"] = _now_ms()
-    _r.setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
-    _index_upsert(obj)
-    _publish(obj, ev_type="update")       # <-- explicit
-
-def set_result(answer_id: str, data: dict) -> None:
-    obj = get_answer(answer_id) or {}
-    obj["data"] = data
-    obj["status"] = obj.get("status") or "DONE"
-    obj["updated_at"] = _now_ms()
-    _r.setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
-    _index_upsert(obj)
-    _publish(obj, ev_type="update")
-
-def set_error(answer_id: str, err: str) -> None:
-    obj = get_answer(answer_id) or {}
-    obj["error"] = err
-    obj["status"] = "FAILED"
-    obj["updated_at"] = _now_ms()
-    _r.setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
-    _index_upsert(obj)
-    _publish(obj, ev_type="update")
+def publish_event(answer_id: str, ev_type: str, data: Dict[str, Any]) -> None:
+    obj = get_answer(answer_id) or {"id": answer_id}
+    payload = {**obj, **data}
+    payload["id"] = answer_id
+    _publish(payload, ev_type=ev_type)
 
 # -------- Index helpers --------
 def _index_key_for_status(st: Optional[str]) -> str:
@@ -129,7 +79,7 @@ def new_answer_id() -> str:
     return uuid.uuid4().hex
 
 def init_answer(answer_id: str, question: str, user_meta: Optional[Dict[str, Any]] = None) -> None:
-    now = int(time.time() * 1000)
+    now = _now_ms()
     obj = {
         "id": answer_id,
         "question": question,
@@ -155,7 +105,7 @@ def set_status(answer_id: str, status: str, *, job_id: str = None, run_id: str =
         obj["job_id"] = job_id
     if run_id is not None:
         obj["run_id"] = run_id
-    obj["updated_at"] = int(time.time() * 1000)
+    obj["updated_at"] = _now_ms()
     _r.setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
     _index_upsert(obj)
     _publish(obj, ev_type="update")
@@ -167,7 +117,7 @@ def set_result(answer_id: str, data: Dict[str, Any]) -> None:
     obj["data"] = data
     obj["error"] = None
     obj["status"] = "DONE"
-    obj["updated_at"] = int(time.time() * 1000)
+    obj["updated_at"] = _now_ms()
     _r.setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
     _index_upsert(obj)
     _publish(obj, ev_type="update")
@@ -178,7 +128,7 @@ def set_error(answer_id: str, err: str) -> None:
         return
     obj["error"] = err
     obj["status"] = "FAILED"
-    obj["updated_at"] = int(time.time() * 1000)
+    obj["updated_at"] = _now_ms()
     _r.setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
     _index_upsert(obj)
     _publish(obj, ev_type="update")

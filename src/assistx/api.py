@@ -5,6 +5,8 @@ import uuid
 import json
 import pathlib
 import shutil
+import hmac
+import hashlib
 import json, asyncio, os
 import redis.asyncio as aioredis
 from rq import Queue
@@ -13,7 +15,7 @@ import os, json, time, requests
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
-from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, Form, Header, Query, Body, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, File, Form, Header, Query, Body, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -23,9 +25,11 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 from starlette.responses import PlainTextResponse
 from neo4j.exceptions import ServiceUnavailable
-from .metrics import QA_REQUESTS, JOBS_ENQUEUED
+from .metrics import QA_REQUESTS, JOBS_ENQUEUED, TASK_CLAIMS, TASK_COMPLETIONS, TASK_HEARTBEATS, CONTEXT_PACKETS
+from .metrics import RQ_JOBS_IN_QUEUE, RQ_JOBS_RUNNING, RQ_JOBS_FAILED
 from .idempotency_store import save as idemp_save, load as idemp_load
 from .neo4j_client import Neo4jClient  # unified client
+from .paperclip_client import PaperclipClient
 from .agents.orchestrator import *
 from .pipeline import *
 from .queue import *
@@ -58,6 +62,95 @@ class AskIn(BaseModel):
     timeout_s: float = 8.0
     idempotency_key: str | None = None   # <--- NEW
 
+class IntentIn(BaseModel):
+    source: str
+    text: str
+    idempotency_key: str | None = None
+    client_ts: str | None = None
+    metadata: Optional[Dict[str, Any]] = None
+
+class ContextPacketIn(BaseModel):
+    query: str
+    task_id: Optional[str] = None
+    session_id: Optional[str] = None
+    max_items: int = 20
+    include_sources: Optional[List[str]] = None
+
+class DispatchTarget(BaseModel):
+    paperclip_agent_id: Optional[str] = None
+    paperclip_issue_id: Optional[str] = None
+    capabilities: Optional[List[str]] = None
+
+class DispatchIn(BaseModel):
+    task_id: str
+    target: DispatchTarget
+    priority: str = "MEDIUM"
+    idempotency_key: Optional[str] = None
+
+class TicketIn(BaseModel):
+    title: str
+    ticket_type: str = "task"
+    status: str = "READY"
+    kind: Optional[str] = None
+    parent_id: Optional[str] = None
+    required_capabilities: Optional[List[str]] = None
+    target_agent_id: Optional[str] = None
+    priority: Optional[str] = None
+    payload: Optional[Dict[str, Any]] = None
+    idempotency_key: Optional[str] = None
+
+class TaskClaimIn(BaseModel):
+    agent_id: str
+    capabilities: Optional[List[str]] = None
+    session_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+
+class TaskHeartbeatIn(BaseModel):
+    agent_id: str
+    status: Optional[str] = None
+    session_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+class TaskCompleteIn(BaseModel):
+    agent_id: str
+    status: str = "DONE"
+    summary: Optional[str] = None
+    result: Optional[Dict[str, Any]] = None
+    session_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+
+class PaperclipEventIn(BaseModel):
+    event_type: str
+    paperclip_issue_id: str
+    paperclip_agent_id: Optional[str] = None
+    paperclip_run_id: Optional[str] = None
+    event_id: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+class MemoryWriteIn(BaseModel):
+    kind: str
+    text: str
+    source: str
+    session_id: Optional[str] = None
+    task_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+class SignalEventIn(BaseModel):
+    event_id: str
+    event_type: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    session_id: Optional[str] = None
+    paperclip_issue_id: Optional[str] = None
+    paperclip_run_id: Optional[str] = None
+
+class SessionUpdateIn(BaseModel):
+    paperclip_agent_id: Optional[str] = None
+    hermes_session_id: Optional[str] = None
+    agent_identity: Optional[str] = None
+    device_id: Optional[str] = None
+    platform: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
 # -----------------------
 # Config / Security
 # -----------------------
@@ -66,9 +159,12 @@ USER = os.getenv("BASIC_AUTH_USER", "neo4j")
 PASS = os.getenv("BASIC_AUTH_PASS", "livelongandprosper")
 
 API_TOKEN: Optional[str] = os.getenv("API_TOKEN")  # If set, required for /upload-audio
+PAPERCLIP_WEBHOOK_SECRET: Optional[str] = os.getenv("PAPERCLIP_WEBHOOK_SECRET")
 
 TRANSCRIPTIONS_ROOT = pathlib.Path(os.getenv("TRANSCRIPTIONS_ROOT", "./transcriptions")).resolve()
 TRANSCRIPTIONS_ROOT.mkdir(parents=True, exist_ok=True)
+CAPTURES_ROOT = pathlib.Path(os.getenv("CAPTURES_ROOT", "./artifacts/captures")).resolve()
+CAPTURES_ROOT.mkdir(parents=True, exist_ok=True)
 
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")        # e.g., "cuda", "cpu", "auto"
 WHISPER_COMPUTE = os.getenv("WHISPER_COMPUTE_TYPE", "int8") # e.g., "float16", "int8"
@@ -129,6 +225,29 @@ def auth(credentials: HTTPBasicCredentials = Depends(security)) -> str:
 def _neo() -> Neo4jClient:
     neo = Neo4jClient()
     return neo
+
+_paperclip_client: Optional[PaperclipClient] = None
+
+def get_paperclip_client() -> Optional[PaperclipClient]:
+    global _paperclip_client
+    if _paperclip_client is not None:
+        return _paperclip_client
+    try:
+        _paperclip_client = PaperclipClient()
+        return _paperclip_client
+    except ValueError:
+        return None
+
+def _verify_optional_paperclip_signature(body: BaseModel, signature: Optional[str]) -> None:
+    if not PAPERCLIP_WEBHOOK_SECRET:
+        return
+    if not signature:
+        raise HTTPException(status_code=401, detail="Missing Paperclip signature")
+    payload = body.model_dump_json(exclude_none=True).encode("utf-8")
+    expected = hmac.new(PAPERCLIP_WEBHOOK_SECRET.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+    accepted = {expected, f"sha256={expected}"}
+    if not any(hmac.compare_digest(signature, candidate) for candidate in accepted):
+        raise HTTPException(status_code=401, detail="Invalid Paperclip signature")
 
 
 # -----------------------
@@ -297,6 +416,19 @@ def runs(request: Request, limit: int = 50, user: str = Depends(auth)):
 
 @app.get("/metrics")
 def metrics(user: str = Depends(auth)):
+    try:
+        q = get_q()
+        running_count = q.started_job_registry.count
+        failed_count = q.failed_job_registry.count
+        if callable(running_count):
+            running_count = running_count()
+        if callable(failed_count):
+            failed_count = failed_count()
+        RQ_JOBS_IN_QUEUE.set(len(q))
+        RQ_JOBS_RUNNING.set(running_count)
+        RQ_JOBS_FAILED.set(failed_count)
+    except Exception:
+        pass
     data = generate_latest()
     return PlainTextResponse(data.decode("utf-8"), media_type=CONTENT_TYPE_LATEST)
 
@@ -324,6 +456,110 @@ def ingest_ui(request: Request, user: str = Depends(auth)):
 @app.get("/health")
 def health():
     return {"ok": True}
+
+def _safe_upload_name(name: str, fallback: str = "capture") -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in {".", "_", "-"} else "_" for ch in (name or fallback))
+    return cleaned.strip("._") or fallback
+
+def _media_kind(content_type: str, filename: str) -> str:
+    value = (content_type or "").lower()
+    suffix = pathlib.Path(filename or "").suffix.lower()
+    if value.startswith("video/") or suffix in {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}:
+        return "video"
+    if value.startswith("audio/") or suffix in {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus"}:
+        return "audio"
+    if value.startswith("image/") or suffix in {".jpg", ".jpeg", ".png", ".heic", ".webp"}:
+        return "image"
+    return "media"
+
+def _json_object(value: str) -> Dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {"raw": value}
+    return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+@app.post("/api/captures")
+async def api_create_capture(
+    request: Request,
+    media: UploadFile | None = File(default=None),
+    file: UploadFile | None = File(default=None),
+    transcript: str = Form(default=""),
+    user_id: str = Form(default="default"),
+    session_id: str = Form(default="mobile"),
+    duration_ms: int = Form(default=0),
+    device_id: str = Form(default=""),
+    device_fingerprint: str = Form(default=""),
+    client_context: str = Form(default=""),
+    activity_context: str = Form(default=""),
+    user: str = Depends(auth),
+):
+    upload = media or file
+    capture_id = uuid.uuid4().hex
+    media_path = ""
+    filename = ""
+    byte_count = 0
+    content_type = upload.content_type if upload else "text/plain"
+    if upload is not None:
+        filename = _safe_upload_name(upload.filename or f"{capture_id}.bin")
+        suffix = pathlib.Path(filename).suffix or ".bin"
+        stored_name = f"{capture_id}{suffix.lower()}"
+        target = CAPTURES_ROOT / stored_name
+        with target.open("wb") as handle:
+            shutil.copyfileobj(upload.file, handle)
+        media_path = str(target)
+        byte_count = target.stat().st_size
+    context = _json_object(client_context)
+    headers = request.headers
+    context.update(
+        {
+            "device_id": device_id or context.get("device_id", ""),
+            "device_fingerprint": device_fingerprint or context.get("device_fingerprint", ""),
+            "client_ip": headers.get("x-forwarded-for", "").split(",")[0].strip()
+            or (request.client.host if request.client else ""),
+            "user_agent": headers.get("user-agent", context.get("user_agent", "")),
+            "language": headers.get("accept-language", context.get("language", "")),
+            "activity_context": activity_context or context.get("activity_context", ""),
+        }
+    )
+    kind = _media_kind(content_type, filename)
+    neo = _neo()
+    try:
+        graph = neo.ingest_media_capture(
+            capture_id=capture_id,
+            user_id=user_id or user,
+            session_id=session_id or "mobile",
+            transcript=transcript,
+            media_path=media_path,
+            filename=filename,
+            content_type=content_type,
+            media_kind=kind,
+            duration_ms=duration_ms,
+            byte_count=byte_count,
+            device_id=str(context.get("device_id") or ""),
+            device_fingerprint=str(context.get("device_fingerprint") or ""),
+            activity_context=str(context.get("activity_context") or ""),
+            client_context=context,
+            metadata={"authenticated_user": user},
+        )
+    finally:
+        neo.close()
+    return {
+        "ok": True,
+        "capture_id": capture_id,
+        "session_id": session_id or "mobile",
+        "user_id": user_id or user,
+        "media_path": media_path,
+        "filename": filename,
+        "bytes": byte_count,
+        "content_type": content_type,
+        "media_kind": kind,
+        "duration_ms": duration_ms,
+        "transcript_saved": bool(transcript.strip()),
+        **graph,
+    }
 
 @app.post("/upload-audio")
 async def upload_audio(
@@ -598,6 +834,458 @@ def api_get_task(task_id: str, user: str = Depends(auth)):
     finally:
         neo.close()
 
+@app.get("/api/agent/tasks")
+def api_agent_tasks(
+    status: str = Query("READY", description="task status to poll"),
+    capabilities: Optional[List[str]] = Query(None, description="agent capabilities"),
+    agent_id: Optional[str] = Query(None, description="optional agent id for targeted tasks"),
+    limit: int = Query(20, ge=1, le=100),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        items = neo.list_agent_tasks(
+            status=status,
+            capabilities=capabilities,
+            agent_id=agent_id,
+            limit=limit,
+        )
+        return {"items": items, "count": len(items)}
+    finally:
+        neo.close()
+
+@app.post("/api/tasks/{task_id}/claim")
+def api_claim_task(task_id: str, body: TaskClaimIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        result = neo.claim_task(
+            task_id=task_id,
+            agent_id=body.agent_id,
+            capabilities=body.capabilities,
+            session_id=body.session_id,
+            idempotency_key=body.idempotency_key,
+        )
+        if result.get("claimed"):
+            TASK_CLAIMS.labels(result="claimed").inc()
+            return result
+        if result.get("reason") == "not_found":
+            raise HTTPException(status_code=404, detail="Task not found")
+        TASK_CLAIMS.labels(result=result.get("reason", "conflict")).inc()
+        raise HTTPException(status_code=409, detail=result)
+    finally:
+        neo.close()
+
+@app.post("/api/tasks/{task_id}/heartbeat")
+def api_heartbeat_task(task_id: str, body: TaskHeartbeatIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        task = neo.heartbeat_task(
+            task_id=task_id,
+            agent_id=body.agent_id,
+            status=body.status,
+            session_id=body.session_id,
+            metadata=body.metadata,
+        )
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        TASK_HEARTBEATS.labels(status=task.get("status", body.status or "unknown")).inc()
+        return {"task": task}
+    finally:
+        neo.close()
+
+@app.post("/api/tasks/{task_id}/complete")
+def api_complete_task(task_id: str, body: TaskCompleteIn, user: str = Depends(auth)):
+    if body.status not in {"DONE", "FAILED", "CANCELLED"}:
+        raise HTTPException(status_code=400, detail="status must be DONE, FAILED, or CANCELLED")
+    neo = _neo()
+    try:
+        task = neo.complete_task(
+            task_id=task_id,
+            agent_id=body.agent_id,
+            status=body.status,
+            summary=body.summary,
+            result=body.result,
+            session_id=body.session_id,
+            idempotency_key=body.idempotency_key,
+        )
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        TASK_COMPLETIONS.labels(status=body.status).inc()
+        return {"task": task}
+    finally:
+        neo.close()
+
+@app.post("/api/tickets")
+def api_create_ticket(body: TicketIn, user: str = Depends(auth)):
+    if body.status not in {"READY", "CLAIMED", "RUNNING", "DONE", "FAILED", "CANCELLED", "REVIEW"}:
+        raise HTTPException(status_code=400, detail="Unsupported ticket status")
+    if body.ticket_type not in {"deliverable", "epic", "story", "task", "bug", "chore"}:
+        raise HTTPException(status_code=400, detail="ticket_type must be deliverable, epic, story, task, bug, or chore")
+    neo = _neo()
+    try:
+        ticket_id = neo.upsert_ticket(
+            title=body.title,
+            ticket_type=body.ticket_type,
+            status=body.status,
+            kind=body.kind,
+            parent_id=body.parent_id,
+            required_capabilities=body.required_capabilities,
+            target_agent_id=body.target_agent_id,
+            priority=body.priority,
+            payload=body.payload,
+            idempotency_key=body.idempotency_key,
+        )
+        return {"ticket_id": ticket_id}
+    finally:
+        neo.close()
+
+@app.get("/api/tickets/{ticket_id}/tree")
+def api_get_ticket_tree(ticket_id: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        tree = neo.get_ticket_tree(ticket_id)
+        if not tree:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        return tree
+    finally:
+        neo.close()
+
+@app.post("/api/intents")
+def api_create_intent(body: IntentIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        intent_id = neo.upsert_intent(
+            source=body.source,
+            text=body.text,
+            idempotency_key=body.idempotency_key,
+            client_ts=body.client_ts,
+            metadata=body.metadata,
+        )
+        return {"intent_id": intent_id}
+    finally:
+        neo.close()
+
+@app.post("/api/brain/context")
+def api_create_context_packet(body: ContextPacketIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        packet = neo.create_context_packet(
+            query=body.query,
+            task_id=body.task_id,
+            session_id=body.session_id,
+            max_items=body.max_items,
+            include_sources=body.include_sources or ["memory", "knowledge", "orchestration"],
+        )
+        CONTEXT_PACKETS.inc()
+        return {"context_packet": packet}
+    finally:
+        neo.close()
+
+@app.get("/api/context-packets/{packet_id}")
+def api_get_context_packet(packet_id: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        packet = neo.get_context_packet(packet_id)
+        if not packet:
+            raise HTTPException(status_code=404, detail="ContextPacket not found")
+        return {"context_packet": packet}
+    finally:
+        neo.close()
+
+@app.post("/api/dispatch")
+def api_create_dispatch(body: DispatchIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        pc = get_paperclip_client()
+        result = neo.create_dispatch_with_paperclip(
+            task_id=body.task_id,
+            target=body.target.model_dump(),
+            priority=body.priority,
+            idempotency_key=body.idempotency_key,
+            paperclip_client=pc,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        neo.close()
+
+@app.post("/api/paperclip/events")
+def api_paperclip_event(
+    body: PaperclipEventIn,
+    user: str = Depends(auth),
+    x_paperclip_signature: Optional[str] = Header(None),
+):
+    _verify_optional_paperclip_signature(body, x_paperclip_signature)
+    neo = _neo()
+    try:
+        issue_id = neo.ingest_paperclip_event(
+            event_type=body.event_type,
+            paperclip_issue_id=body.paperclip_issue_id,
+            paperclip_agent_id=body.paperclip_agent_id,
+            paperclip_run_id=body.paperclip_run_id,
+            event_id=body.event_id,
+            payload=body.payload,
+        )
+        return {"paperclip_issue_id": issue_id}
+    finally:
+        neo.close()
+
+@app.post("/api/memory/items")
+def api_write_memory(body: MemoryWriteIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        memory_id = neo.upsert_memory_item(
+            kind=body.kind,
+            text=body.text,
+            source=body.source,
+            session_id=body.session_id,
+            task_id=body.task_id,
+            metadata=body.metadata,
+        )
+        return {"memory_item_id": memory_id}
+    finally:
+        neo.close()
+
+@app.post("/api/brain/signals")
+def api_create_signal_event(body: SignalEventIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        event_id = neo.create_signal_event(
+            event_id=body.event_id,
+            event_type=body.event_type,
+            payload=body.payload,
+            session_id=body.session_id,
+            paperclip_issue_id=body.paperclip_issue_id,
+            paperclip_run_id=body.paperclip_run_id,
+        )
+        return {"signal_event_id": event_id}
+    finally:
+        neo.close()
+
+@app.post("/api/sessions/{session_id}")
+def api_update_session(session_id: str, body: SessionUpdateIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        updated_id = neo.upsert_agent_session(
+            session_id=session_id,
+            paperclip_agent_id=body.paperclip_agent_id,
+            hermes_session_id=body.hermes_session_id,
+            agent_identity=body.agent_identity,
+            device_id=body.device_id,
+            platform=body.platform,
+            metadata=body.metadata,
+        )
+        return {"session_id": updated_id}
+    finally:
+        neo.close()
+
+@app.get("/api/dispatches")
+def api_list_dispatches(
+    status: Optional[str] = Query(None, description="Dispatch status filter"),
+    limit: int = Query(50, ge=1, le=500),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        items = neo.list_dispatches(status=status, limit=limit)
+        return {"items": items, "count": len(items)}
+    finally:
+        neo.close()
+
+@app.get("/api/sessions")
+def api_list_sessions(
+    limit: int = Query(50, ge=1, le=500),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        items = neo.list_agent_sessions(limit=limit)
+        return {"items": items, "count": len(items)}
+    finally:
+        neo.close()
+
+# ---------- Phase 4: Command Center APIs ----------
+
+@app.get("/api/intents")
+def api_list_intents(
+    source: Optional[str] = Query(None, description="filter by source"),
+    limit: int = Query(50, ge=1, le=500),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        with neo.driver.session() as s:
+            if source:
+                res = s.run(
+                    "MATCH (i:Intent {source:$source}) "
+                    "RETURN i ORDER BY i.created_at_ts DESC LIMIT $limit",
+                    {"source": source, "limit": limit},
+                )
+            else:
+                res = s.run(
+                    "MATCH (i:Intent) RETURN i ORDER BY i.created_at_ts DESC LIMIT $limit",
+                    {"limit": limit},
+                )
+            items = [dict(r["i"]) for r in res]
+            return {"items": items, "count": len(items)}
+    finally:
+        neo.close()
+
+@app.get("/api/intents/{intent_id}")
+def api_get_intent(intent_id: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        with neo.driver.session() as s:
+            rec = s.run(
+                "MATCH (i:Intent {id:$id}) "
+                "OPTIONAL MATCH (i)-[:CREATED_TASK]->(t:Task) "
+                "RETURN i, collect(t) AS tasks",
+                {"id": intent_id},
+            ).single()
+            if not rec:
+                raise HTTPException(status_code=404, detail="Intent not found")
+            intent = dict(rec["i"])
+            tasks = [dict(t) for t in rec["tasks"] if t]
+            return {"intent": intent, "tasks": tasks}
+    finally:
+        neo.close()
+
+@app.get("/api/devices")
+def api_list_devices(
+    limit: int = Query(50, ge=1, le=500),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        items = neo.list_agent_devices(limit=limit)
+        return {"items": items, "count": len(items)}
+    finally:
+        neo.close()
+
+@app.get("/api/devices/{device_id}")
+def api_get_device(device_id: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        device = neo.get_agent_device(device_id)
+        if not device:
+            raise HTTPException(status_code=404, detail="Device not found")
+        with neo.driver.session() as s:
+            sessions = s.run(
+                "MATCH (s:AgentSession) WHERE s.device_id=$did "
+                "RETURN s ORDER BY s.updated_at_ts DESC LIMIT 10",
+                {"did": device_id},
+            )
+            agent_sessions = [dict(s["s"]) for s in sessions]
+        return {"device": device, "agent_sessions": agent_sessions}
+    finally:
+        neo.close()
+
+@app.get("/api/memory")
+def api_list_memory(
+    kind: Optional[str] = Query(None, description="filter by memory kind"),
+    source: Optional[str] = Query(None, description="filter by source"),
+    limit: int = Query(50, ge=1, le=500),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        with neo.driver.session() as s:
+            q = "MATCH (m:MemoryItem)"
+            params = {"limit": limit}
+            conditions = []
+            if kind:
+                conditions.append("m.kind=$kind")
+                params["kind"] = kind
+            if source:
+                conditions.append("m.source=$source")
+                params["source"] = source
+            if conditions:
+                q += " WHERE " + " AND ".join(conditions)
+            q += " RETURN m ORDER BY m.updated_at_ts DESC LIMIT $limit"
+            res = s.run(q, params)
+            items = [dict(r["m"]) for r in res]
+            return {"items": items, "count": len(items)}
+    finally:
+        neo.close()
+
+@app.get("/api/memory/{memory_id}")
+def api_get_memory(memory_id: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        with neo.driver.session() as s:
+            rec = s.run(
+                "MATCH (m:MemoryItem {id:$id}) "
+                "OPTIONAL MATCH (m)<-[:WROTE_MEMORY]-(s:AgentSession) "
+                "OPTIONAL MATCH (m)<-[:RELATED_MEMORY]-(t:Task) "
+                "RETURN m, collect(DISTINCT s) AS sessions, collect(DISTINCT t) AS tasks",
+                {"id": memory_id},
+            ).single()
+            if not rec:
+                raise HTTPException(status_code=404, detail="Memory not found")
+            memory = dict(rec["m"])
+            sessions = [dict(s) for s in rec["sessions"] if s]
+            tasks = [dict(t) for t in rec["tasks"] if t]
+            return {"memory": memory, "sessions": sessions, "tasks": tasks}
+    finally:
+        neo.close()
+
+@app.post("/api/tasks/{task_id}/cancel")
+def api_cancel_task(task_id: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        neo.update_task_status(task_id, "CANCELLED")
+        return {"task_id": task_id, "status": "CANCELLED"}
+    finally:
+        neo.close()
+
+@app.post("/api/tasks/{task_id}/pause")
+def api_pause_task(task_id: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        with neo.driver.session() as s:
+            s.run(
+                "MATCH (t:Task {id:$id}) SET t.paused=true, t.paused_at=datetime(), t.paused_at_ts=timestamp()",
+                {"id": task_id},
+            )
+        return {"task_id": task_id, "paused": True}
+    finally:
+        neo.close()
+
+@app.post("/api/tasks/{task_id}/resume")
+def api_resume_task(task_id: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        with neo.driver.session() as s:
+            s.run(
+                "MATCH (t:Task {id:$id}) SET t.paused=false, t.resumed_at=datetime(), t.resumed_at_ts=timestamp()",
+                {"id": task_id},
+            )
+        return {"task_id": task_id, "paused": False}
+    finally:
+        neo.close()
+
+@app.post("/api/dispatches/{dispatch_id}/reassign")
+def api_reassign_dispatch(dispatch_id: str, target: DispatchTarget, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        with neo.driver.session() as s:
+            s.run(
+                "MATCH (d:Dispatch {id:$id}) "
+                "SET d.paperclip_agent_id=$agent_id, d.updated_at=datetime(), d.updated_at_ts=timestamp()",
+                {"id": dispatch_id, "agent_id": target.paperclip_agent_id},
+            )
+            if target.paperclip_agent_id:
+                s.run(
+                    "MERGE (a:AgentSession {paperclip_agent_id:$aid}) "
+                    "ON CREATE SET a.id=randomUUID(), a.created_at=datetime(), a.created_at_ts=timestamp() "
+                    "MERGE (d:Dispatch {id:$did})-[:ASSIGNED_TO]->(a)",
+                    {"aid": target.paperclip_agent_id, "did": dispatch_id},
+                )
+        return {"dispatch_id": dispatch_id, "reassigned": True}
+    finally:
+        neo.close()
+
 @app.post("/api/ask_async")
 def api_ask_async(body: AskAsyncIn, user: str = Depends(auth)):
     # Idempotency: if key maps to an existing answer, return it
@@ -607,19 +1295,31 @@ def api_ask_async(body: AskAsyncIn, user: str = Depends(auth)):
             # ensure the referenced answer still exists
             existing = answers_store.get_answer(hit.get("answer_id",""))
             if existing:
-                return {"answer_id": existing["id"], "job_id": existing.get("job_id"), "status_url": f"/api/answers/{existing['id']}", "idempotent": True}
+                return {"answer_id": existing["id"], "job_id": existing.get("job_id"), "status_url": f"/api/answers/{existing['id']}", "idempotent": True, **(existing.get("meta") or {})}
 
     answer_id = answers_store.new_answer_id()
-    answers_store.init_answer(answer_id, body.question, user_meta=body.meta)
+    neo = _neo()
+    try:
+        deliverable = neo.create_deliverable_from_ask(
+            question=body.question,
+            answer_id=answer_id,
+            mode="async",
+            user=user,
+            idempotency_key=body.idempotency_key or answer_id,
+        )
+    finally:
+        neo.close()
+    meta = {**(body.meta or {}), **deliverable}
+    answers_store.init_answer(answer_id, body.question, user_meta=meta)
     q = get_q()
-    job = q.enqueue(ask_question_job, answer_id, body.question, body.model, body.max_repairs)
+    job = q.enqueue(ask_question_job, answer_id, body.question, body.model, body.max_repairs, deliverable["deliverable_id"])
     answers_store.set_status(answer_id, "QUEUED", job_id=job.get_id())
 
     if body.idempotency_key:
         idemp_save(body.idempotency_key, {"answer_id": answer_id})
 
     JOBS_ENQUEUED.inc()
-    return {"answer_id": answer_id, "job_id": job.get_id(), "status_url": f"/api/answers/{answer_id}"}
+    return {"answer_id": answer_id, "job_id": job.get_id(), "status_url": f"/api/answers/{answer_id}", **deliverable}
 
 @app.post("/api/ask")
 def api_ask(body: AskIn, user: str = Depends(auth)):
@@ -634,20 +1334,46 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
             existing = answers_store.get_answer(hit.get("answer_id",""))
             if existing:
                 if mode == "async":
-                    return JSONResponse(status_code=202, content={"answer_id": existing["id"], "job_id": existing.get("job_id"), "status_url": f"/api/answers/{existing['id']}", "idempotent": True})
+                    return JSONResponse(status_code=202, content={"answer_id": existing["id"], "job_id": existing.get("job_id"), "status_url": f"/api/answers/{existing['id']}", "idempotent": True, **(existing.get("meta") or {})})
                 # mode auto: if already DONE return data, else return 202
                 if existing.get("status") == "DONE" and existing.get("data"):
                     return existing["data"]
-                return JSONResponse(status_code=202, content={"answer_id": existing["id"], "job_id": existing.get("job_id"), "status_url": f"/api/answers/{existing['id']}", "status": existing.get("status"), "idempotent": True})
+                return JSONResponse(status_code=202, content={"answer_id": existing["id"], "job_id": existing.get("job_id"), "status_url": f"/api/answers/{existing['id']}", "status": existing.get("status"), "idempotent": True, **(existing.get("meta") or {})})
 
     if mode == "sync":
         QA_REQUESTS.labels(mode="sync", status="started").inc()
         neo = _neo()
+        deliverable = None
         try:
+            deliverable = neo.create_deliverable_from_ask(
+                question=body.question,
+                answer_id=None,
+                mode="sync",
+                user=user,
+                idempotency_key=body.idempotency_key,
+            )
             out = answer_question(neo, body.question, model=body.model, max_repairs=body.max_repairs, log_to_neo=True)
+            completed = neo.complete_deliverable(
+                deliverable_id=deliverable["deliverable_id"],
+                status="DONE",
+                summary=out.get("answer"),
+                result=out,
+            )
+            out.update(deliverable)
+            out["deliverable_status"] = completed.get("status") if completed else "UNKNOWN"
             QA_REQUESTS.labels(mode="sync", status="done").inc()
             return out
-        except Exception:
+        except Exception as e:
+            if deliverable:
+                try:
+                    neo.complete_deliverable(
+                        deliverable_id=deliverable["deliverable_id"],
+                        status="FAILED",
+                        summary=str(e),
+                        result={"error": str(e)},
+                    )
+                except Exception:
+                    pass
             QA_REQUESTS.labels(mode="sync", status="failed").inc()
             raise
         finally:
@@ -655,16 +1381,27 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
 
     # async/auto enqueue
     answer_id = answers_store.new_answer_id()
-    answers_store.init_answer(answer_id, body.question, user_meta={"mode": mode})
+    neo = _neo()
+    try:
+        deliverable = neo.create_deliverable_from_ask(
+            question=body.question,
+            answer_id=answer_id,
+            mode=mode,
+            user=user,
+            idempotency_key=body.idempotency_key or answer_id,
+        )
+    finally:
+        neo.close()
+    answers_store.init_answer(answer_id, body.question, user_meta={"mode": mode, **deliverable})
     q = get_q()
-    job = q.enqueue(ask_question_job, answer_id, body.question, body.model, body.max_repairs)
+    job = q.enqueue(ask_question_job, answer_id, body.question, body.model, body.max_repairs, deliverable["deliverable_id"])
     answers_store.set_status(answer_id, "QUEUED", job_id=job.get_id())
     JOBS_ENQUEUED.inc()
     if body.idempotency_key:
         idemp_save(body.idempotency_key, {"answer_id": answer_id})
 
     if mode == "async":
-        return JSONResponse(status_code=202, content={"answer_id": answer_id, "job_id": job.get_id(), "status_url": f"/api/answers/{answer_id}"})
+        return JSONResponse(status_code=202, content={"answer_id": answer_id, "job_id": job.get_id(), "status_url": f"/api/answers/{answer_id}", **deliverable})
 
     # mode == auto: wait budget, else 202
     import time as _time
@@ -676,7 +1413,7 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
                 return obj["data"]
             return JSONResponse(status_code=200, content=obj)
         _time.sleep(0.25)
-    return JSONResponse(status_code=202, content={"answer_id": answer_id, "job_id": job.get_id(), "status": "PENDING", "status_url": f"/api/answers/{answer_id}"})
+    return JSONResponse(status_code=202, content={"answer_id": answer_id, "job_id": job.get_id(), "status": "PENDING", "status_url": f"/api/answers/{answer_id}", **deliverable})
 
 
 @app.get("/api/answers/{answer_id}")
@@ -740,52 +1477,6 @@ async def ws_answer_events(websocket: WebSocket, answer_id: str):
             await websocket.close()
         except Exception:
             pass
-
-
-@app.get("/api/answers/events")
-async def api_answers_events(
-    status: str | None = Query(None, description="Optional client-side filter hint"),
-    user: str = Depends(auth),
-):
-    """
-    Global SSE stream of ALL answer events (new/update). Clients can filter by status on their side.
-    """
-    r = aioredis.from_url(REDIS_URL, decode_responses=True)
-    pubsub = r.pubsub()
-    chan = _global_chan()
-    await pubsub.subscribe(chan)
-
-    async def event_stream():
-        # initial ping
-        yield _sse_format("welcome", {"channel": chan})
-        last_ping = asyncio.get_event_loop().time()
-        try:
-            while True:
-                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                now = asyncio.get_event_loop().time()
-
-                if msg and msg.get("type") == "message":
-                    # payload already JSON string with {"type":"new|update","data":{...}}
-                    data = json.loads(msg["data"])
-                    # Optional: filter by status hint
-                    if status and data.get("data", {}).get("status") != status:
-                        pass
-                    else:
-                        yield _sse_format(data.get("type", "update"), data.get("data", {}))
-
-                if now - last_ping > 15:
-                    yield _sse_format("ping", {"ts": int(now)})
-                    last_ping = now
-                await asyncio.sleep(0.2)
-        finally:
-            try:
-                await pubsub.unsubscribe(chan)
-            except Exception:
-                pass
-            await pubsub.close()
-            await r.aclose()
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.websocket("/ws/answers")

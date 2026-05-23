@@ -11,8 +11,9 @@ h1,h2 { margin: 0 0 12px 0; }
 .recorder button { padding:8px 14px; border-radius:8px; border:1px solid #26305f; background:#18214a; color:var(--fg); cursor:pointer; }
 .recorder button:disabled { opacity: 0.5; cursor: not-allowed; }
 .row { display:grid; gap:6px; margin-top:10px; }
+.row.two { grid-template-columns: repeat(2, minmax(0, 1fr)); gap:12px; }
 .row label { font-size: 0.9rem; color: var(--muted); }
-.row input, select { padding:8px 10px; border-radius:8px; border:1px solid #26305f; background:#0e1530; color: var(--fg); }
+.row input, select { width:100%; padding:8px 10px; border-radius:8px; border:1px solid #26305f; background:#0e1530; color: var(--fg); }
 small { color: var(--muted); }
 .meter { height: 10px; background:#101738; border-radius:6px; overflow:hidden; }
 .meter #meterBar { height:100%; width:0%; background: linear-gradient(to right, #14f195, #2dd4bf); transition: width 0.08s linear; }
@@ -24,4 +25,14 @@ small { color: var(--muted); }
 .progress { margin-top:12px; background:#0e1530; border:1px solid #26305f; border-radius:8px; height:12px; overflow:hidden; }
 .progress #progressBar { height:100%; width:0%; background: linear-gradient(to right, #4ea1ff, #60a5fa); transition: width .15s linear; }
 .result { margin-top:12px; background:#0e1530; border:1px solid #26305f; border-radius:8px; padding:12px; white-space:pre-wrap; overflow:auto; }
-audio { margin-top: 10px; width: 100%; }
+.capture-header { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:8px; }
+.capture-header h1 { margin-bottom:4px; }
+.capture-panel .controls { display:flex; gap:12px; align-items:center; margin:14px 0; flex-wrap:wrap; }
+.timer { color:var(--muted); font-variant-numeric: tabular-nums; min-width:48px; }
+audio, video { margin-top: 10px; width: 100%; max-height: 460px; border-radius:8px; background:#050816; }
+.drop strong, .drop span { display:block; }
+textarea { margin:8px 0 12px; min-height:160px; resize:vertical; }
+@media (max-width: 640px) {
+  .row.two { grid-template-columns: 1fr; }
+  .capture-header { display:block; }
+}

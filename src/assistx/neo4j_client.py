@@ -1,8 +1,13 @@
 from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Optional
+import hashlib
+import json
 import os
 import uuid
 from neo4j import GraphDatabase, Driver, Session
+
+EXECUTABLE_TASK_STATUSES = {"READY", "CLAIMED", "RUNNING", "DONE", "FAILED", "CANCELLED"}
+TERMINAL_TASK_STATUSES = {"DONE", "FAILED", "CANCELLED"}
 
 
 class Neo4jClient:
@@ -63,7 +68,6 @@ class Neo4jClient:
             "password": os.getenv("NEO4J_PASSWORD"),
             "database": os.getenv("NEO4J_DATABASE"),
         }
-        print(cfg)
         # Try relative import first (package layout like assistx.config)
         for modpath in (".config", "config"):
             try:
@@ -96,23 +100,1108 @@ class Neo4jClient:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (a:Artifact)    REQUIRE a.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (tr:Transcription) REQUIRE tr.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (sg:Segment)       REQUIRE sg.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (i:Intent)       REQUIRE i.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (p:ContextPacket) REQUIRE p.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (d:Dispatch)     REQUIRE d.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (s:AgentSession)  REQUIRE s.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (v:AgentDevice)   REQUIRE v.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (c:AgentCapability) REQUIRE c.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (m:MemoryItem)    REQUIRE m.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (e:SignalEvent)   REQUIRE e.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (c:MediaCapture)  REQUIRE c.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (a:MediaAsset)    REQUIRE a.path IS UNIQUE",
 
             # Helpful indexes
             "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.status)",
             "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.kind)",
+            "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.ticket_type)",
+            "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.claimed_by)",
             "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.created_at_ts)",
             "CREATE INDEX IF NOT EXISTS FOR (tr:Transcription)  ON (tr.key)",
             "CREATE INDEX IF NOT EXISTS FOR (tr:Transcription)  ON (tr.created_at_ts)",
             "CREATE INDEX IF NOT EXISTS FOR (r:AgentRun)        ON (r.started_at_ts)",
             "CREATE INDEX IF NOT EXISTS FOR (k:ToolCall)        ON (k.started_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (i:Intent)          ON (i.source)",
+            "CREATE INDEX IF NOT EXISTS FOR (i:Intent)          ON (i.created_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (i:Intent)          ON (i.idempotency_key)",
+            "CREATE INDEX IF NOT EXISTS FOR (d:Dispatch)        ON (d.status)",
+            "CREATE INDEX IF NOT EXISTS FOR (d:Dispatch)        ON (d.paperclip_issue_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (d:Dispatch)        ON (d.created_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (s:AgentSession)    ON (s.hermes_session_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (s:AgentSession)    ON (s.paperclip_agent_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (v:AgentDevice)     ON (v.hostname)",
+            "CREATE INDEX IF NOT EXISTS FOR (v:AgentDevice)     ON (v.last_seen_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (m:MemoryItem)      ON (m.kind)",
+            "CREATE INDEX IF NOT EXISTS FOR (m:MemoryItem)      ON (m.source)",
+            "CREATE INDEX IF NOT EXISTS FOR (m:MemoryItem)      ON (m.updated_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (c:MediaCapture)    ON (c.session_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (c:MediaCapture)    ON (c.media_kind)",
+            "CREATE INDEX IF NOT EXISTS FOR (p:ContextPacket)   ON (p.created_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (p:ContextPacket)   ON (p.query_hash)",
         ]
-        with self.driver.session() as s:
+        with self._session() as s:
             for q in cypher:
                 s.run(q)
 
     # Back-compat with v2's method name
     def ensure_indexes(self) -> None:
         self.ensure_schema()
+
+    def upsert_intent(
+        self,
+        source: str,
+        text: str,
+        idempotency_key: Optional[str] = None,
+        client_ts: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        props = {
+            "source": source,
+            "text": text,
+            "client_ts": client_ts,
+            "metadata_json": json.dumps(metadata or {}),
+        }
+        if idempotency_key:
+            q = (
+                "MERGE (i:Intent {idempotency_key:$idempotency_key}) "
+                "ON CREATE SET i.id=randomUUID(), i.created_at=datetime(), i.created_at_ts=timestamp() "
+                "SET i += $props, i.updated_at=datetime(), i.updated_at_ts=timestamp() "
+                "RETURN i.id AS id"
+            )
+            with self._session() as s:
+                rec = s.run(q, {"idempotency_key": idempotency_key, "props": props}).single()
+                return rec["id"]
+
+        q = (
+            "CREATE (i:Intent {id:randomUUID()}) "
+            "SET i += $props, i.created_at=datetime(), i.created_at_ts=timestamp(), "
+            "    i.updated_at=datetime(), i.updated_at_ts=timestamp() "
+            "RETURN i.id AS id"
+        )
+        with self._session() as s:
+            rec = s.run(q, {"props": props}).single()
+            return rec["id"]
+
+    def create_context_packet(
+        self,
+        query: str,
+        task_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        max_items: int = 20,
+        include_sources: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        packet_id = uuid.uuid4().hex
+        payload = {
+            "id": packet_id,
+            "query": query,
+            "query_hash": hashlib.sha1(query.encode("utf-8")).hexdigest(),
+            "max_items": max_items,
+            "include_sources": include_sources or [],
+        }
+        with self._session() as s:
+            q = (
+                "CREATE (p:ContextPacket {id:$id}) "
+                "SET p += $props, p.created_at = datetime(), p.created_at_ts = timestamp(), "
+                "    p.updated_at = datetime(), p.updated_at_ts = timestamp() "
+                "RETURN p.id AS id"
+            )
+            s.run(q, {"id": packet_id, "props": payload})
+            if task_id:
+                s.run(
+                    "MATCH (t:Task {id:$tid}), (p:ContextPacket {id:$pid}) "
+                    "MERGE (t)-[:USES_CONTEXT]->(p) "
+                    "MERGE (p)-[r:REFERENCES {source:'orchestration'}]->(t) "
+                    "SET r.source_type='Task', r.rank_source='current_task'",
+                    {"tid": task_id, "pid": packet_id},
+                )
+            if session_id:
+                s.run(
+                    "MATCH (s:AgentSession {id:$sid}), (p:ContextPacket {id:$pid}) "
+                    "MERGE (s)-[:REFERENCES]->(p)",
+                    {"sid": session_id, "pid": packet_id},
+                )
+            if query and include_sources:
+                q_parts = []
+                if "orchestration" in include_sources:
+                    q_parts.append(
+                        "MATCH (n:Task) WHERE n.id=$task_id OR toLower(coalesce(n.title,'') ) CONTAINS toLower($q) "
+                        "OR toLower(coalesce(n.kind,'')) CONTAINS toLower($q) "
+                        "OR toLower(coalesce(toString(n.payload),'')) CONTAINS toLower($q) "
+                        "WITH n, 'Task' AS source_type "
+                        "ORDER BY CASE WHEN n.id=$task_id THEN 0 ELSE 1 END, "
+                        "coalesce(n.last_heartbeat_at_ts, n.updated_at_ts, n.created_at_ts, 0) DESC LIMIT $max_items "
+                        "MATCH (p:ContextPacket {id:$pid}) MERGE (p)-[r:REFERENCES {source:'orchestration'}]->(n) "
+                        "SET r.source_type = source_type, r.rank_source='task'"
+                    )
+                    q_parts.append(
+                        "MATCH (t:Task {id:$task_id})-[:EXECUTED_BY]->(n:AgentRun) "
+                        "WITH n, 'AgentRun' AS source_type ORDER BY coalesce(n.ended_at_ts, n.started_at_ts, 0) DESC LIMIT $max_items "
+                        "MATCH (p:ContextPacket {id:$pid}) MERGE (p)-[r:REFERENCES {source:'orchestration'}]->(n) "
+                        "SET r.source_type = source_type, r.rank_source='recent_run'"
+                    )
+                if "knowledge" in include_sources:
+                    q_parts.append(
+                        "MATCH (tr:Transcription) WHERE toLower(coalesce(tr.text,'')) CONTAINS toLower($q) "
+                        "WITH tr, 'Transcription' AS source_type ORDER BY coalesce(tr.created_at_ts,0) DESC LIMIT $max_items "
+                        "MATCH (p:ContextPacket {id:$pid}) MERGE (p)-[r:REFERENCES {source:'knowledge'}]->(tr) "
+                        "SET r.source_type = source_type, r.rank_source='transcription'"
+                    )
+                    q_parts.append(
+                        "MATCH (sg:Segment) WHERE toLower(coalesce(sg.text,'')) CONTAINS toLower($q) "
+                        "WITH sg, 'Segment' AS source_type ORDER BY coalesce(sg.created_at_ts,0) DESC LIMIT $max_items "
+                        "MATCH (p:ContextPacket {id:$pid}) MERGE (p)-[r:REFERENCES {source:'knowledge'}]->(sg) "
+                        "SET r.source_type = source_type, r.rank_source='segment'"
+                    )
+                if "memory" in include_sources:
+                    q_parts.append(
+                        "MATCH (m:MemoryItem) "
+                        "OPTIONAL MATCH (:Task {id:$task_id})-[:RELATED_MEMORY]->(m) "
+                        "WITH m, count(*) AS related_count "
+                        "WHERE related_count > 0 OR toLower(coalesce(m.text,'')) CONTAINS toLower($q) "
+                        "OR toLower(coalesce(m.kind,'')) CONTAINS toLower($q) "
+                        "WITH m, 'MemoryItem' AS source_type, related_count "
+                        "ORDER BY CASE WHEN related_count > 0 THEN 0 ELSE 1 END, "
+                        "coalesce(m.updated_at_ts, m.created_at_ts, 0) DESC LIMIT $max_items "
+                        "MATCH (p:ContextPacket {id:$pid}) MERGE (p)-[r:REFERENCES {source:'memory'}]->(m) "
+                        "SET r.source_type = source_type, r.rank_source='memory'"
+                    )
+                for part in q_parts:
+                    s.run(part, {"q": query, "pid": packet_id, "task_id": task_id, "max_items": max_items})
+        packet = self.get_context_packet(packet_id)
+        return packet or {"id": packet_id, "query": query, "max_items": max_items, "include_sources": include_sources or [], "references": []}
+
+    def create_dispatch_with_paperclip(
+        self,
+        task_id: str,
+        target: Dict[str, Any],
+        priority: str = "MEDIUM",
+        idempotency_key: Optional[str] = None,
+        paperclip_client: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        task = self.get_task(task_id)
+        if not task:
+            raise ValueError(f"Task {task_id} not found")
+
+        paperclip_issue_id = target.get("paperclip_issue_id")
+        context_packet_id = None
+        paperclip_error = None
+
+        if paperclip_client and not paperclip_issue_id:
+            packet = self.create_context_packet(
+                query=task.get("title") or task.get("kind") or f"Task {task_id}",
+                task_id=task_id,
+                max_items=20,
+                include_sources=["memory", "knowledge", "orchestration"],
+            )
+            context_packet_id = packet.get("id")
+            try:
+                paperclip_issue_id = paperclip_client.create_issue(
+                    title=task.get("title") or "AssistX Task",
+                    description=str(task.get("description") or task.get("payload_json") or task.get("payload") or ""),
+                    task_id=task_id,
+                    context_packet_id=context_packet_id or "",
+                    capabilities=target.get("capabilities") or task.get("required_capabilities") or [],
+                    priority=priority.lower(),
+                    assignee_id=target.get("paperclip_agent_id"),
+                )
+                target = {**target, "paperclip_issue_id": paperclip_issue_id}
+            except Exception as e:
+                paperclip_error = str(e)
+
+        dispatch_id = self.create_dispatch(
+            task_id=task_id,
+            target=target,
+            priority=priority,
+            idempotency_key=idempotency_key,
+        )
+
+        if context_packet_id:
+            with self._session() as s:
+                s.run(
+                    "MATCH (d:Dispatch {id:$did}), (p:ContextPacket {id:$pid}) "
+                    "MERGE (d)-[:USES_CONTEXT]->(p)",
+                    {"did": dispatch_id, "pid": context_packet_id},
+                )
+
+        return {
+            "dispatch_id": dispatch_id,
+            "paperclip_issue_id": paperclip_issue_id,
+            "context_packet_id": context_packet_id,
+            "paperclip_error": paperclip_error,
+        }
+
+    def create_dispatch(
+        self,
+        task_id: str,
+        target: Dict[str, Any],
+        priority: str = "MEDIUM",
+        idempotency_key: Optional[str] = None,
+    ) -> str:
+        props = {
+            "status": "OPEN",
+            "priority": priority,
+            "paperclip_issue_id": target.get("paperclip_issue_id"),
+            "paperclip_agent_id": target.get("paperclip_agent_id"),
+            "capabilities": target.get("capabilities", []),
+        }
+        if idempotency_key:
+            q = (
+                "MERGE (d:Dispatch {idempotency_key:$idempotency_key}) "
+                "ON CREATE SET d.id=randomUUID(), d.created_at=datetime(), d.created_at_ts=timestamp(), d.status='OPEN' "
+                "SET d += $props "
+                "RETURN d.id AS id"
+            )
+            with self._session() as s:
+                rec = s.run(q, {"idempotency_key": idempotency_key, "props": props}).single()
+                dispatch_id = rec["id"]
+        else:
+            q = (
+                "CREATE (d:Dispatch {id:randomUUID()}) "
+                "SET d += $props, d.created_at=datetime(), d.created_at_ts=timestamp() "
+                "RETURN d.id AS id"
+            )
+            with self._session() as s:
+                rec = s.run(q, {"props": props}).single()
+                dispatch_id = rec["id"]
+        with self._session() as s:
+            s.run(
+                "MATCH (t:Task {id:$tid}), (d:Dispatch {id:$did}) "
+                "MERGE (t)-[:DISPATCHED_AS]->(d)",
+                {"tid": task_id, "did": dispatch_id},
+            )
+            if target.get("paperclip_agent_id"):
+                s.run(
+                    "MERGE (a:AgentSession {paperclip_agent_id:$aid}) "
+                    "ON CREATE SET a.id=randomUUID(), a.created_at=datetime(), a.created_at_ts=timestamp() "
+                    "SET a.paperclip_agent_id=$aid, a.updated_at=datetime(), a.updated_at_ts=timestamp() "
+                    "MERGE (d:Dispatch {id:$did})-[:ASSIGNED_TO]->(a)",
+                    {"aid": target["paperclip_agent_id"], "did": dispatch_id},
+                )
+        return dispatch_id
+
+    def upsert_ticket(
+        self,
+        title: str,
+        ticket_type: str = "task",
+        status: str = "READY",
+        kind: Optional[str] = None,
+        parent_id: Optional[str] = None,
+        required_capabilities: Optional[List[str]] = None,
+        target_agent_id: Optional[str] = None,
+        priority: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> str:
+        props = {
+            "title": title,
+            "ticket_type": ticket_type,
+            "status": status,
+            "kind": kind or ticket_type,
+            "required_capabilities": required_capabilities or [],
+            "target_agent_id": target_agent_id,
+            "priority": priority,
+            "payload_json": json.dumps(payload or {}),
+        }
+        with self._session() as s:
+            if idempotency_key:
+                rec = s.run(
+                    "MERGE (t:Task {idempotency_key:$idempotency_key}) "
+                    "ON CREATE SET t.id=randomUUID(), t.created_at=datetime(), t.created_at_ts=timestamp() "
+                    "SET t += $props, t.updated_at=datetime(), t.updated_at_ts=timestamp() "
+                    "RETURN t.id AS id",
+                    {"idempotency_key": idempotency_key, "props": props},
+                ).single()
+            else:
+                rec = s.run(
+                    "CREATE (t:Task {id:randomUUID()}) "
+                    "SET t += $props, t.created_at=datetime(), t.created_at_ts=timestamp(), "
+                    "    t.updated_at=datetime(), t.updated_at_ts=timestamp() "
+                    "RETURN t.id AS id",
+                    {"props": props},
+                ).single()
+            ticket_id = rec["id"]
+            if parent_id:
+                s.run(
+                    "MATCH (parent:Task {id:$parent_id}), (child:Task {id:$ticket_id}) "
+                    "MERGE (parent)-[:HAS_CHILD]->(child) "
+                    "MERGE (child)-[:PART_OF]->(parent)",
+                    {"parent_id": parent_id, "ticket_id": ticket_id},
+                )
+            return ticket_id
+
+    def create_deliverable_from_ask(
+        self,
+        question: str,
+        answer_id: Optional[str] = None,
+        mode: str = "auto",
+        user: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, str]:
+        intent_id = self.upsert_intent(
+            source="ask",
+            text=question,
+            idempotency_key=f"ask-intent:{idempotency_key}" if idempotency_key else None,
+            metadata={"answer_id": answer_id, "mode": mode, "user": user},
+        )
+        deliverable_id = self.upsert_ticket(
+            title=question,
+            ticket_type="deliverable",
+            status="READY",
+            kind="ask_deliverable",
+            payload={"answer_id": answer_id, "mode": mode, "user": user},
+            idempotency_key=f"deliverable:{idempotency_key}" if idempotency_key else None,
+        )
+        epic_id = self.upsert_ticket(
+            title=f"Answer: {question[:120]}",
+            ticket_type="epic",
+            status="READY",
+            kind="answer_request",
+            parent_id=deliverable_id,
+            payload={"answer_id": answer_id, "question": question},
+            idempotency_key=f"epic:{idempotency_key}" if idempotency_key else None,
+        )
+        story_id = self.upsert_ticket(
+            title="Gather graph context and compose response",
+            ticket_type="story",
+            status="READY",
+            kind="qa_response_story",
+            parent_id=epic_id,
+            required_capabilities=["graph_query", "analysis"],
+            payload={"answer_id": answer_id, "question": question},
+            idempotency_key=f"story:{idempotency_key}" if idempotency_key else None,
+        )
+        task_id = self.upsert_ticket(
+            title="Execute QA pipeline and publish answer",
+            ticket_type="task",
+            status="READY",
+            kind="qa_pipeline_task",
+            parent_id=story_id,
+            required_capabilities=["graph_query", "analysis"],
+            payload={"answer_id": answer_id, "question": question},
+            idempotency_key=f"task:{idempotency_key}" if idempotency_key else None,
+        )
+        with self._session() as s:
+            s.run(
+                "MATCH (i:Intent {id:$intent_id}), (d:Task {id:$deliverable_id}) "
+                "MERGE (i)-[:CREATED_TASK]->(d)",
+                {"intent_id": intent_id, "deliverable_id": deliverable_id},
+            )
+        return {
+            "intent_id": intent_id,
+            "deliverable_id": deliverable_id,
+            "epic_id": epic_id,
+            "story_id": story_id,
+            "task_id": task_id,
+        }
+
+    def complete_deliverable(
+        self,
+        deliverable_id: str,
+        answer_id: Optional[str] = None,
+        status: str = "DONE",
+        summary: Optional[str] = None,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if status not in TERMINAL_TASK_STATUSES:
+            raise ValueError(f"Deliverable completion status must be one of: {sorted(TERMINAL_TASK_STATUSES)}")
+        with self._session() as s:
+            rec = s.run(
+                """
+                MATCH (d:Task {id:$deliverable_id})
+                SET d.status=$status,
+                    d.answer_id=$answer_id,
+                    d.result_summary=$summary,
+                    d.result_json=$result_json,
+                    d.completed_at=datetime(),
+                    d.completed_at_ts=timestamp(),
+                    d.updated_at=datetime(),
+                    d.updated_at_ts=timestamp()
+                CREATE (e:SignalEvent {id:randomUUID()})
+                SET e.event_type='deliverable_completed',
+                    e.answer_id=$answer_id,
+                    e.payload_json=$payload_json,
+                    e.created_at=datetime(),
+                    e.created_at_ts=timestamp(),
+                    e.updated_at=datetime(),
+                    e.updated_at_ts=timestamp()
+                MERGE (d)-[:HAS_EVENT]->(e)
+                RETURN d, e.id AS event_id
+                """,
+                {
+                    "deliverable_id": deliverable_id,
+                    "answer_id": answer_id,
+                    "status": status,
+                    "summary": summary,
+                    "result_json": json.dumps(result or {}),
+                    "payload_json": json.dumps({"answer_id": answer_id, "status": status, "summary": summary}),
+                },
+            ).single()
+            if not rec:
+                return None
+            s.run(
+                """
+                MATCH (:Task {id:$deliverable_id})-[:HAS_CHILD*1..3]->(child:Task)
+                WHERE NOT child.status IN ['DONE','FAILED','CANCELLED']
+                SET child.status=$status,
+                    child.updated_at=datetime(),
+                    child.updated_at_ts=timestamp()
+                """,
+                {"deliverable_id": deliverable_id, "status": status},
+            )
+            deliverable = dict(rec["d"])
+            deliverable["event_id"] = rec["event_id"]
+            return deliverable
+
+    def get_ticket_tree(self, ticket_id: str, depth: int = 3) -> Optional[Dict[str, Any]]:
+        with self._session() as s:
+            rec = s.run(
+                """
+                MATCH (root:Task {id:$ticket_id})
+                OPTIONAL MATCH path=(root)-[:HAS_CHILD*1..3]->(child:Task)
+                RETURN root, collect(DISTINCT child) AS children
+                """,
+                {"ticket_id": ticket_id, "depth": depth},
+            ).single()
+            if not rec:
+                return None
+            return {
+                "ticket": dict(rec["root"]),
+                "children": [dict(child) for child in rec["children"] if child],
+            }
+
+    def list_agent_tasks(
+        self,
+        status: str = "READY",
+        capabilities: Optional[List[str]] = None,
+        agent_id: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return graph-trigger tasks an agent can work on.
+
+        Tasks with no required_capabilities are considered generally eligible.
+        Tasks can target a specific agent with target_agent_id.
+        """
+        caps = capabilities or []
+        q = (
+            "MATCH (t:Task {status:$status}) "
+            "WITH t, coalesce(t.required_capabilities, t.capabilities, []) AS required "
+            "WHERE (size(required)=0 OR size($caps)=0 OR all(cap IN required WHERE cap IN $caps)) "
+            "  AND ($agent_id IS NULL OR t.target_agent_id IS NULL OR t.target_agent_id=$agent_id) "
+            "RETURN t, required "
+            "ORDER BY coalesce(t.priority_rank, 999), coalesce(t.created_at_ts, 0) ASC "
+            "LIMIT $limit"
+        )
+        with self._session() as s:
+            res = s.run(
+                q,
+                {
+                    "status": status,
+                    "caps": caps,
+                    "agent_id": agent_id,
+                    "limit": limit,
+                },
+            )
+            items = []
+            for r in res:
+                item = dict(r["t"])
+                item["required_capabilities"] = r["required"] or []
+                items.append(item)
+            return items
+
+    def claim_task(
+        self,
+        task_id: str,
+        agent_id: str,
+        capabilities: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Atomically claim a READY task for an agent if capabilities match."""
+        caps = capabilities or []
+        with self._session() as s:
+            if idempotency_key:
+                prior = s.run(
+                    "MATCH (t:Task {id:$task_id, claim_id:$claim_id}) RETURN t",
+                    {"task_id": task_id, "claim_id": idempotency_key},
+                ).single()
+                if prior:
+                    return {"claimed": True, "idempotent": True, "task": dict(prior["t"])}
+            rec = s.run(
+                """
+                MATCH (t:Task {id:$task_id})
+                WITH t, coalesce(t.required_capabilities, t.capabilities, []) AS required
+                WHERE t.status='READY'
+                  AND (size(required)=0 OR size($caps)=0 OR size([cap IN required WHERE cap IN $caps]) = size(required))
+                  AND (t.target_agent_id IS NULL OR t.target_agent_id=$agent_id)
+                SET t.status='CLAIMED',
+                    t.claimed_by=$agent_id,
+                    t.agent_session_id=$session_id,
+                    t.claim_id=coalesce($idempotency_key, randomUUID()),
+                    t.claimed_at=datetime(),
+                    t.claimed_at_ts=timestamp(),
+                    t.updated_at=datetime(),
+                    t.updated_at_ts=timestamp()
+                RETURN t, required
+                """,
+                {
+                    "task_id": task_id,
+                    "agent_id": agent_id,
+                    "caps": caps,
+                    "session_id": session_id,
+                    "idempotency_key": idempotency_key,
+                },
+            ).single()
+            if rec:
+                task = dict(rec["t"])
+                task["required_capabilities"] = rec["required"] or []
+                if session_id:
+                    s.run(
+                        "MERGE (a:AgentSession {id:$sid}) "
+                        "ON CREATE SET a.created_at=datetime(), a.created_at_ts=timestamp() "
+                        "SET a.paperclip_agent_id=coalesce(a.paperclip_agent_id, $agent_id), "
+                        "    a.updated_at=datetime(), a.updated_at_ts=timestamp() "
+                        "WITH a MATCH (t:Task {id:$task_id}) MERGE (a)-[:CLAIMED]->(t)",
+                        {"sid": session_id, "agent_id": agent_id, "task_id": task_id},
+                    )
+                return {"claimed": True, "task": task}
+
+            existing = s.run(
+                "MATCH (t:Task {id:$task_id}) "
+                "RETURN t.status AS status, t.target_agent_id AS target_agent_id, "
+                "coalesce(t.required_capabilities, t.capabilities, []) AS required",
+                {"task_id": task_id},
+            ).single()
+            if not existing:
+                return {"claimed": False, "reason": "not_found"}
+            if existing["status"] != "READY":
+                return {"claimed": False, "reason": "not_ready", "status": existing["status"]}
+            required = existing["required"] or []
+            if caps and required and not all(cap in caps for cap in required):
+                return {"claimed": False, "reason": "capability_mismatch", "required_capabilities": required}
+            if existing["target_agent_id"] and existing["target_agent_id"] != agent_id:
+                return {"claimed": False, "reason": "target_agent_mismatch"}
+            return {"claimed": False, "reason": "not_claimed"}
+
+    def heartbeat_task(
+        self,
+        task_id: str,
+        agent_id: str,
+        status: Optional[str] = None,
+        session_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if status and status not in EXECUTABLE_TASK_STATUSES:
+            raise ValueError(f"Unsupported task status: {status}")
+        props = {
+            "heartbeat_by": agent_id,
+            "agent_session_id": session_id,
+            "heartbeat_metadata_json": json.dumps(metadata or {}),
+        }
+        with self._session() as s:
+            rec = s.run(
+                """
+                MATCH (t:Task {id:$task_id})
+                SET t += $props,
+                    t.status = coalesce($status, t.status),
+                    t.last_heartbeat_at=datetime(),
+                    t.last_heartbeat_at_ts=timestamp(),
+                    t.updated_at=datetime(),
+                    t.updated_at_ts=timestamp()
+                RETURN t
+                """,
+                {"task_id": task_id, "props": props, "status": status},
+            ).single()
+            return dict(rec["t"]) if rec else None
+
+    def complete_task(
+        self,
+        task_id: str,
+        agent_id: str,
+        status: str,
+        summary: Optional[str] = None,
+        result: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if status not in TERMINAL_TASK_STATUSES:
+            raise ValueError(f"Completion status must be one of: {sorted(TERMINAL_TASK_STATUSES)}")
+        with self._session() as s:
+            if idempotency_key:
+                prior = s.run(
+                    "MATCH (t:Task {id:$task_id})-[:EXECUTED_BY]->(r:AgentRun {completion_id:$completion_id}) "
+                    "RETURN t, r.id AS run_id",
+                    {"task_id": task_id, "completion_id": idempotency_key},
+                ).single()
+                if prior:
+                    task = dict(prior["t"])
+                    task["run_id"] = prior["run_id"]
+                    task["idempotent"] = True
+                    return task
+            rec = s.run(
+                """
+                MATCH (t:Task {id:$task_id})
+                SET t.status=$status,
+                    t.completed_by=$agent_id,
+                    t.agent_session_id=coalesce($session_id, t.agent_session_id),
+                    t.result_summary=$summary,
+                    t.result_json=$result_json,
+                    t.completed_at=datetime(),
+                    t.completed_at_ts=timestamp(),
+                    t.updated_at=datetime(),
+                    t.updated_at_ts=timestamp()
+                CREATE (r:AgentRun {id:randomUUID(), task_id:$task_id, agent:$agent_id,
+                    completion_id:$completion_id,
+                    status:$status, summary:$summary, result_json:$result_json,
+                    started_at_ts:coalesce(t.claimed_at_ts, timestamp()),
+                    ended_at:datetime(), ended_at_ts:timestamp()})
+                MERGE (t)-[:EXECUTED_BY]->(r)
+                RETURN t, r.id AS run_id
+                """,
+                {
+                    "task_id": task_id,
+                    "agent_id": agent_id,
+                    "status": status,
+                    "summary": summary,
+                    "result_json": json.dumps(result or {}),
+                    "session_id": session_id,
+                    "completion_id": idempotency_key,
+                },
+            ).single()
+            if not rec:
+                return None
+            task = dict(rec["t"])
+            task["run_id"] = rec["run_id"]
+            if summary:
+                memory_rec = s.run(
+                    """
+                    CREATE (m:MemoryItem {id:randomUUID()})
+                    SET m.kind='outcome',
+                        m.text=$summary,
+                        m.source=$agent_id,
+                        m.metadata_json=$metadata_json,
+                        m.created_at=datetime(),
+                        m.created_at_ts=timestamp(),
+                        m.updated_at=datetime(),
+                        m.updated_at_ts=timestamp()
+                    WITH m MATCH (t:Task {id:$task_id}) MERGE (t)-[:RELATED_MEMORY]->(m)
+                    RETURN m.id AS id
+                    """,
+                    {
+                        "task_id": task_id,
+                        "summary": summary,
+                        "agent_id": agent_id,
+                        "metadata_json": json.dumps({"result": result or {}, "status": status}),
+                    },
+                ).single()
+                task["memory_item_id"] = memory_rec["id"] if memory_rec else None
+            return task
+
+    def ingest_paperclip_event(
+        self,
+        event_type: str,
+        paperclip_issue_id: str,
+        paperclip_agent_id: Optional[str],
+        paperclip_run_id: Optional[str],
+        event_id: str,
+        payload: Dict[str, Any],
+    ) -> str:
+        status_map = {
+            "issue_created": "OPEN",
+            "assigned": "ASSIGNED",
+            "run_started": "RUNNING",
+            "run_completed": "COMPLETED",
+        }
+        status = status_map.get(event_type, payload.get("status", "OPEN"))
+        with self._session() as s:
+            s.run(
+                "MERGE (d:Dispatch {paperclip_issue_id:$issue}) "
+                "ON CREATE SET d.id=randomUUID(), d.created_at=datetime(), d.created_at_ts=timestamp() "
+                "SET d.status=$status, d.paperclip_issue_id=$issue, d.paperclip_agent_id=$agent_id, "
+                "    d.paperclip_run_id=$run_id, d.updated_at=datetime(), d.updated_at_ts=timestamp() ",
+                {
+                    "issue": paperclip_issue_id,
+                    "status": status,
+                    "agent_id": paperclip_agent_id,
+                    "run_id": paperclip_run_id,
+                },
+            )
+            if paperclip_agent_id:
+                s.run(
+                    "MERGE (a:AgentSession {paperclip_agent_id:$aid}) "
+                    "ON CREATE SET a.id=randomUUID(), a.created_at=datetime(), a.created_at_ts=timestamp() "
+                    "SET a.paperclip_agent_id=$aid, a.updated_at=datetime(), a.updated_at_ts=timestamp() "
+                    "MERGE (d:Dispatch {paperclip_issue_id:$issue})-[:ASSIGNED_TO]->(a)",
+                    {"aid": paperclip_agent_id, "issue": paperclip_issue_id},
+                )
+            s.run(
+                "MERGE (e:SignalEvent {id:$eid}) "
+                "ON CREATE SET e.created_at=datetime(), e.created_at_ts=timestamp() "
+                "SET e.event_type=$event_type, e.payload_json=$payload_json, "
+                "    e.paperclip_issue_id=$issue, e.paperclip_agent_id=$agent_id, e.paperclip_run_id=$run_id, "
+                "    e.updated_at=datetime(), e.updated_at_ts=timestamp() "
+                "WITH e MATCH (d:Dispatch {paperclip_issue_id:$issue}) MERGE (d)-[:HAS_EVENT]->(e)",
+                {
+                    "eid": event_id,
+                    "event_type": event_type,
+                    "payload_json": json.dumps(payload or {}),
+                    "issue": paperclip_issue_id,
+                    "agent_id": paperclip_agent_id,
+                    "run_id": paperclip_run_id,
+                },
+            )
+        return paperclip_issue_id
+
+    def get_context_packet(self, packet_id: str) -> Optional[Dict[str, Any]]:
+        with self._session() as s:
+            rec = s.run(
+                "MATCH (p:ContextPacket {id:$id}) OPTIONAL MATCH (p)-[r]->(x) "
+                "WITH p, r, x, properties(x) AS props "
+                "WITH p, collect({type: type(r), source: coalesce(r.source, 'unknown'), "
+                "source_type: coalesce(r.source_type, CASE WHEN x IS NULL THEN 'unknown' ELSE labels(x)[0] END), "
+                "node_id: coalesce(x.id, props.id), "
+                "timestamp: coalesce(props.updated_at_ts, props.created_at_ts, props.last_heartbeat_at_ts, props.ended_at_ts), "
+                "snippet: coalesce(props.title, props.text, props.summary, props.result_summary, props.kind, ''), "
+                "provenance: {rank_source: r.rank_source, relationship: type(r)}, "
+                "node: props}) AS refs "
+                "RETURN p, [ref IN refs WHERE ref.type IS NOT NULL] AS refs",
+                {"id": packet_id},
+            ).single()
+            if not rec:
+                return None
+            packet = dict(rec["p"])
+            packet["references"] = rec["refs"]
+            return packet
+
+    def list_dispatches(self, status: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+        q = "MATCH (d:Dispatch)"
+        if status:
+            q += " WHERE d.status=$status"
+        q += " RETURN d ORDER BY d.created_at_ts DESC LIMIT $limit"
+        with self._session() as s:
+            res = s.run(q, {"status": status, "limit": limit})
+            return [dict(r["d"]) for r in res]
+
+    def list_agent_sessions(self, limit: int = 50) -> List[Dict[str, Any]]:
+        with self._session() as s:
+            res = s.run("MATCH (s:AgentSession) RETURN s ORDER BY s.updated_at_ts DESC LIMIT $limit", {"limit": limit})
+            return [dict(r["s"]) for r in res]
+
+    def upsert_memory_item(
+        self,
+        kind: str,
+        text: str,
+        source: str,
+        session_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        props = {
+            "kind": kind,
+            "text": text,
+            "source": source,
+            "metadata_json": json.dumps(metadata or {}),
+        }
+        with self._session() as s:
+            rec = s.run(
+                "CREATE (m:MemoryItem {id:randomUUID()}) "
+                "SET m += $props, m.created_at=datetime(), m.created_at_ts=timestamp(), "
+                "    m.updated_at=datetime(), m.updated_at_ts=timestamp() "
+                "RETURN m.id AS id",
+                {"props": props},
+            ).single()
+            memory_id = rec["id"]
+            if session_id:
+                s.run(
+                    "MATCH (s:AgentSession {id:$sid}), (m:MemoryItem {id:$mid}) "
+                    "MERGE (s)-[:WROTE_MEMORY]->(m)",
+                    {"sid": session_id, "mid": memory_id},
+                )
+            if task_id:
+                s.run(
+                    "MATCH (t:Task {id:$tid}), (m:MemoryItem {id:$mid}) "
+                    "MERGE (t)-[:RELATED_MEMORY]->(m)",
+                    {"tid": task_id, "mid": memory_id},
+                )
+        return memory_id
+
+    def ingest_media_capture(
+        self,
+        *,
+        capture_id: str,
+        user_id: str,
+        session_id: str,
+        transcript: str = "",
+        media_path: str = "",
+        filename: str = "",
+        content_type: str = "",
+        media_kind: str = "media",
+        duration_ms: int = 0,
+        byte_count: int = 0,
+        device_id: str = "",
+        device_fingerprint: str = "",
+        activity_context: str = "",
+        client_context: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Persist a mobile audio/video capture and its graph intake records."""
+        transcript_text = " ".join((transcript or "").strip().split())
+        context = client_context or {}
+        metadata = metadata or {}
+        transcription_id = f"{capture_id}:transcription" if transcript_text else None
+        memory_id = f"{capture_id}:memory" if transcript_text else None
+        intent_id = f"{capture_id}:intent" if transcript_text else None
+        event_id = f"{capture_id}:capture_created"
+        props = {
+            "user_id": user_id,
+            "session_id": session_id,
+            "transcript": transcript_text,
+            "media_path": media_path,
+            "filename": filename,
+            "content_type": content_type,
+            "media_kind": media_kind,
+            "duration_ms": duration_ms,
+            "byte_count": byte_count,
+            "device_id": device_id,
+            "device_fingerprint": device_fingerprint,
+            "activity_context": activity_context,
+            "context_json": json.dumps(context, ensure_ascii=False),
+            "metadata_json": json.dumps(metadata, ensure_ascii=False),
+            "source": "assistx_capture",
+        }
+        with self._session() as s:
+            s.run(
+                """
+                MERGE (c:MediaCapture {id:$capture_id})
+                ON CREATE SET c.created_at=datetime(), c.created_at_ts=timestamp()
+                SET c += $props,
+                    c.updated_at=datetime(),
+                    c.updated_at_ts=timestamp()
+                """,
+                {"capture_id": capture_id, "props": props},
+            )
+            if session_id:
+                s.run(
+                    """
+                    MERGE (sess:AgentSession {id:$session_id})
+                      ON CREATE SET sess.created_at=datetime(), sess.created_at_ts=timestamp()
+                    SET sess.updated_at=datetime(), sess.updated_at_ts=timestamp()
+                    WITH sess
+                    MATCH (c:MediaCapture {id:$capture_id})
+                    MERGE (sess)-[:HAS_CAPTURE]->(c)
+                    """,
+                    {"session_id": session_id, "capture_id": capture_id},
+                )
+            if device_id:
+                s.run(
+                    """
+                    MERGE (d:Device {device_id:$device_id})
+                      ON CREATE SET d.created_at=datetime(), d.created_at_ts=timestamp()
+                    SET d.fingerprint=$device_fingerprint,
+                        d.user_agent=$user_agent,
+                        d.platform=$platform,
+                        d.language=$language,
+                        d.timezone=$timezone,
+                        d.last_seen_at=datetime(),
+                        d.updated_at_ts=timestamp()
+                    WITH d
+                    MATCH (c:MediaCapture {id:$capture_id})
+                    MERGE (d)-[:RECORDED]->(c)
+                    """,
+                    {
+                        "device_id": device_id,
+                        "device_fingerprint": device_fingerprint,
+                        "user_agent": str(context.get("user_agent") or ""),
+                        "platform": str(context.get("platform") or ""),
+                        "language": str(context.get("language") or ""),
+                        "timezone": str(context.get("timezone") or ""),
+                        "capture_id": capture_id,
+                    },
+                )
+            if media_path:
+                s.run(
+                    """
+                    MERGE (a:MediaAsset {path:$media_path})
+                      ON CREATE SET a.created_at=datetime(), a.created_at_ts=timestamp()
+                    SET a.filename=$filename,
+                        a.content_type=$content_type,
+                        a.media_kind=$media_kind,
+                        a.byte_count=$byte_count,
+                        a.source='assistx_capture',
+                        a.updated_at=datetime(),
+                        a.updated_at_ts=timestamp()
+                    WITH a
+                    MATCH (c:MediaCapture {id:$capture_id})
+                    MERGE (c)-[:HAS_MEDIA]->(a)
+                    """,
+                    {
+                        "media_path": media_path,
+                        "filename": filename,
+                        "content_type": content_type,
+                        "media_kind": media_kind,
+                        "byte_count": byte_count,
+                        "capture_id": capture_id,
+                    },
+                )
+            if transcript_text:
+                s.run(
+                    """
+                    MERGE (tr:Transcription {id:$transcription_id})
+                      ON CREATE SET tr.created_at=datetime(), tr.created_at_ts=timestamp()
+                    SET tr.key=$capture_id,
+                        tr.text=$text,
+                        tr.source_json=$media_path,
+                        tr.source='assistx_capture',
+                        tr.updated_at=datetime(),
+                        tr.updated_at_ts=timestamp()
+                    WITH tr
+                    MATCH (c:MediaCapture {id:$capture_id})
+                    MERGE (c)-[:HAS_TRANSCRIPTION]->(tr)
+                    """,
+                    {
+                        "transcription_id": transcription_id,
+                        "capture_id": capture_id,
+                        "text": transcript_text,
+                        "media_path": media_path,
+                    },
+                )
+                s.run(
+                    """
+                    MERGE (m:MemoryItem {id:$memory_id})
+                      ON CREATE SET m.created_at=datetime(), m.created_at_ts=timestamp()
+                    SET m.kind='capture',
+                        m.text=$text,
+                        m.source='assistx_capture',
+                        m.metadata_json=$metadata_json,
+                        m.updated_at=datetime(),
+                        m.updated_at_ts=timestamp()
+                    WITH m
+                    MATCH (c:MediaCapture {id:$capture_id})
+                    MERGE (c)-[:RELATED_MEMORY]->(m)
+                    """,
+                    {
+                        "memory_id": memory_id,
+                        "text": transcript_text,
+                        "metadata_json": json.dumps(
+                            {
+                                "capture_id": capture_id,
+                                "session_id": session_id,
+                                "media_kind": media_kind,
+                                "activity_context": activity_context,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        "capture_id": capture_id,
+                    },
+                )
+                s.run(
+                    """
+                    MERGE (i:Intent {id:$intent_id})
+                      ON CREATE SET i.created_at=datetime(), i.created_at_ts=timestamp()
+                    SET i.source='capture',
+                        i.text=$text,
+                        i.client_ts=$client_ts,
+                        i.metadata_json=$metadata_json,
+                        i.updated_at=datetime(),
+                        i.updated_at_ts=timestamp()
+                    WITH i
+                    MATCH (c:MediaCapture {id:$capture_id})
+                    MERGE (i)-[:CREATED_FROM]->(c)
+                    """,
+                    {
+                        "intent_id": intent_id,
+                        "text": transcript_text,
+                        "client_ts": str(context.get("captured_at") or ""),
+                        "metadata_json": json.dumps(
+                            {"capture_id": capture_id, "session_id": session_id, "media_kind": media_kind},
+                            ensure_ascii=False,
+                        ),
+                        "capture_id": capture_id,
+                    },
+                )
+            self.create_signal_event(
+                event_id=event_id,
+                event_type="media_capture_created",
+                payload={
+                    "capture_id": capture_id,
+                    "session_id": session_id,
+                    "media_kind": media_kind,
+                    "has_transcript": bool(transcript_text),
+                    "byte_count": byte_count,
+                },
+                session_id=session_id,
+            )
+        return {
+            "capture_id": capture_id,
+            "transcription_id": transcription_id,
+            "memory_item_id": memory_id,
+            "intent_id": intent_id,
+            "signal_event_id": event_id,
+        }
+
+    def create_signal_event(
+        self,
+        event_id: str,
+        event_type: str,
+        payload: Dict[str, Any],
+        session_id: Optional[str] = None,
+        paperclip_issue_id: Optional[str] = None,
+        paperclip_run_id: Optional[str] = None,
+    ) -> str:
+        props = {
+            "event_type": event_type,
+            "payload_json": json.dumps(payload or {}),
+            "paperclip_issue_id": paperclip_issue_id,
+            "paperclip_run_id": paperclip_run_id,
+        }
+        with self._session() as s:
+            s.run(
+                "MERGE (e:SignalEvent {id:$eid}) "
+                "ON CREATE SET e.created_at=datetime(), e.created_at_ts=timestamp() "
+                "SET e += $props, e.updated_at=datetime(), e.updated_at_ts=timestamp() ",
+                {"eid": event_id, "props": props},
+            )
+            if session_id:
+                s.run(
+                    "MATCH (s:AgentSession {id:$sid}), (e:SignalEvent {id:$eid}) "
+                    "MERGE (s)-[:EMITTED]->(e)",
+                    {"sid": session_id, "eid": event_id},
+                )
+            if paperclip_issue_id:
+                s.run(
+                    "MATCH (d:Dispatch {paperclip_issue_id:$issue}), (e:SignalEvent {id:$eid}) "
+                    "MERGE (d)-[:HAS_EVENT]->(e)",
+                    {"issue": paperclip_issue_id, "eid": event_id},
+                )
+        return event_id
+
+    def upsert_agent_session(
+        self,
+        session_id: str,
+        paperclip_agent_id: Optional[str] = None,
+        hermes_session_id: Optional[str] = None,
+        agent_identity: Optional[str] = None,
+        device_id: Optional[str] = None,
+        platform: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        props = {
+            "paperclip_agent_id": paperclip_agent_id,
+            "hermes_session_id": hermes_session_id,
+            "agent_identity": agent_identity,
+            "device_id": device_id,
+            "platform": platform,
+            "metadata": metadata or {},
+        }
+        with self._session() as s:
+            rec = s.run(
+                "MERGE (s:AgentSession {id:$id}) "
+                "ON CREATE SET s.created_at=datetime(), s.created_at_ts=timestamp() "
+                "SET s += $props, s.updated_at=datetime(), s.updated_at_ts=timestamp() "
+                "RETURN s.id AS id",
+                {"id": session_id, "props": props},
+            ).single()
+            return rec["id"]
 
     # ---------- v1: conversations / tasks / runs / tools / artifacts ----------
 
@@ -291,6 +1380,58 @@ class Neo4jClient:
 
     # alias for back-compat / readability
     upsert_transcription = ingest_transcription
+
+    # ---------- Phase 3: Agent devices and capabilities ----------
+
+    def upsert_agent_device(
+        self,
+        device_id: str,
+        hostname: Optional[str] = None,
+        platform: Optional[str] = None,
+        capabilities: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        props = {
+            "hostname": hostname,
+            "platform": platform,
+            "capabilities": capabilities or [],
+            "metadata": metadata or {},
+        }
+        with self._session() as s:
+            rec = s.run(
+                "MERGE (d:AgentDevice {id:$id}) "
+                "ON CREATE SET d.created_at=datetime(), d.created_at_ts=timestamp() "
+                "SET d += $props, d.last_seen_at=datetime(), d.last_seen_at_ts=timestamp() "
+                "RETURN d.id AS id",
+                {"id": device_id, "props": props},
+            ).single()
+            return rec["id"]
+
+    def list_agent_devices(self, limit: int = 50) -> List[Dict[str, Any]]:
+        with self._session() as s:
+            res = s.run(
+                "MATCH (d:AgentDevice) RETURN d ORDER BY d.last_seen_at_ts DESC LIMIT $limit",
+                {"limit": limit},
+            )
+            return [dict(r["d"]) for r in res]
+
+    def get_agent_device(self, device_id: str) -> Optional[Dict[str, Any]]:
+        with self._session() as s:
+            rec = s.run("MATCH (d:AgentDevice {id:$id}) RETURN d", {"id": device_id}).single()
+            return dict(rec["d"]) if rec else None
+
+    def get_tasks_by_status(self, status: str, limit: int = 50) -> List[Dict[str, Any]]:
+        with self._session() as s:
+            res = s.run(
+                "MATCH (t:Task {status:$st}) RETURN t ORDER BY t.created_at_ts DESC LIMIT $limit",
+                {"st": status, "limit": limit},
+            )
+            return [dict(r["t"]) for r in res]
+
+    def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        with self._session() as s:
+            rec = s.run("MATCH (t:Task {id:$id}) RETURN t", {"id": task_id}).single()
+            return dict(rec["t"]) if rec else None
 
 
 # Back-compat with code that used `Neo(...)`
