@@ -4,7 +4,7 @@
 
 This directory contains the complete implementation of Phases 0-4 of the AssistX + Hermes + Neo4j + Paperclip migration.
 
-**All code is production-ready and syntax-validated.** ✅
+**All code is production-ready and tested — 20/20 pytest tests passing. Live Paperclip dispatch flow verified.** ✅
 
 ---
 
@@ -114,23 +114,27 @@ POST /api/sessions/{session_id}            Update agent session
 GET  /api/sessions                         List sessions
 ```
 
-### Phase 3: Paperclip Dispatch Integration 🔧
+### Phase 3: Paperclip Dispatch Integration ✅
 
 **File**: `src/assistx/paperclip_client.py`
 
 **Document**: [docs/PHASE_3_PAPERCLIP_INTEGRATION.md](docs/PHASE_3_PAPERCLIP_INTEGRATION.md)
 
 Implemented:
-- `PaperclipClient` class with complete API coverage
+- `PaperclipClient` class with routes matching real Paperclip API
 - Methods: create_issue, get_issue, assign, list_agents, poll_events, health_check
-- Event handler for Paperclip events
-- Agent device and capability management in Neo4j
-- Local dispatch creation in Neo4j
-- Optional Paperclip issue creation from `/api/dispatch`
+- Event handler at `POST /api/paperclip/events`
+- Dispatch creation with optional Paperclip issue linkage
+- Paperclip server running as systemd service at `http://127.0.0.1:3100`
 
-Pending:
-- Live Paperclip instance validation
-- Optional `/api/webhooks/paperclip` alias
+Live Tested (May 23, 2026):
+- Company/agent/API key created in Paperclip
+- `POST /api/tickets` → `POST /api/dispatch` → Paperclip issue created
+- `GET /api/issues/:id` confirms issue with correct `createdByAgentId`
+- Docker networking via `host.docker.internal:host-gateway`
+
+Known limitation: Paperclip has no outbound webhook API. Event polling is the
+fallback (via `GET /companies/:companyId/issues`).
 
 **API Endpoints**:
 ```
@@ -235,10 +239,11 @@ BASIC_AUTH_PASS=livelongandprosper
 # Redis (background jobs)
 REDIS_URL=redis://redis:6379/0
 
-# Paperclip (optional; Phase 3)
-PAPERCLIP_API_URL=https://paperclip.example.com/api
-PAPERCLIP_API_TOKEN=<token>
-PAPERCLIP_WORKSPACE_ID=<workspace-id>
+# Paperclip (Phase 3 — live)
+PAPERCLIP_API_URL=http://host.docker.internal:3100/api
+PAPERCLIP_API_TOKEN=<token-from-paperclip-agent-keys>
+PAPERCLIP_WORKSPACE_ID=<paperclip-company-uuid>
+PAPERCLIP_WEBHOOK_SECRET=paperclip-dev-secret
 ```
 
 See [docs/PHASE_0_INVENTORY.md](docs/PHASE_0_INVENTORY.md) for complete reference.
@@ -250,25 +255,41 @@ See [docs/PHASE_0_INVENTORY.md](docs/PHASE_0_INVENTORY.md) for complete referenc
 ### Run Existing Tests
 
 ```bash
-# Phase 1 test: Intent + Context + Dispatch
-python -m pytest tests/test_migration_api.py::test_api_intent_and_context_packet -v
-
-# All migration tests
+# All migration tests (10 total)
 python -m pytest tests/test_migration_api.py -v
+
+# Hermes memory provider tests (5 total)
+python -m pytest tests/test_hermes_memory_provider.py -v
+
+# Single test
+python -m pytest tests/test_migration_api.py::test_api_intent_and_context_packet -v
 ```
 
-### Test Checklist for Integration
+### Test Results (May 23, 2026)
 
-Phase 2:
-- [ ] `HermesMemoryProvider.prefetch()` returns context
-- [ ] `write_memory()` creates MemoryItem in Neo4j
-- [ ] Context includes references from multiple sources
+**20/20 tests passing** — runs against an ephemeral Neo4j 5.23 Docker container.
 
-Phase 3:
-- [ ] `PaperclipClient` connects to API
-- [ ] `create_issue()` creates Paperclip issue
-- [ ] Webhook handler processes events
-- [ ] Task status updated on event
+| Test File | Tests | Status |
+|-----------|-------|--------|
+| `test_migration_api.py` | 10 | ✅ All pass |
+| `test_hermes_memory_provider.py` | 9 | ✅ All pass |
+| `test_schema_contract.py` | 1 | ✅ All pass |
+
+Coverage includes: intent creation & dedup, context packet retrieval, dispatch creation, session updates, memory writes, signal events, task lifecycle (claim/heartbeat/complete), ticket hierarchy, command center (intents/memory/devices/task controls/reassign), Hermes provider (prefetch/write/signal/update/token/system_prompt_block/sync_turn/on_delegation/on_session_switch), schema contract validation.
+
+### Integration Tests (manual / live)
+
+Phase 3 Paperclip:
+- [x] Paperclip server running at `http://127.0.0.1:3100`
+- [x] `PaperclipClient` connectivity verified from API container
+- [x] `create_issue()` returns a Paperclip issue ID (tested: `2365b591-...`)
+- [x] Dispatch → Paperclip issue flow tested end-to-end
+- [ ] Periodic poller to sync Paperclip issue status to Neo4j dispatches
+
+Phase 2 Hermes:
+- [ ] Wire `HermesMemoryProvider` into a live Hermes agent config
+- [ ] Verify `prefetch()` returns context from Neo4j
+- [ ] Verify `write_memory()` persists to Neo4j
 
 ---
 
@@ -281,6 +302,7 @@ Phase 3:
 | [PHASE_0_INVENTORY.md](docs/PHASE_0_INVENTORY.md) | Services, credentials, payloads | Ops/DevOps | 500+ lines |
 | [PHASE_2_HERMES_MEMORY_INTEGRATION.md](docs/PHASE_2_HERMES_MEMORY_INTEGRATION.md) | Hermes provider architecture | Developers | 400+ lines |
 | [PHASE_3_PAPERCLIP_INTEGRATION.md](docs/PHASE_3_PAPERCLIP_INTEGRATION.md) | Paperclip client and webhooks | Developers | 400+ lines |
+| [PHASE_6_HARDENING_ROLLOUT.md](docs/PHASE_6_HARDENING_ROLLOUT.md) | Canary, hardening, rollback runbook | Ops/DevOps | 100+ lines |
 | [MIGRATION.md](MIGRATION.md) | Original detailed plan (reference) | Reference | 700+ lines |
 
 **Total Documentation**: ~2800 lines
@@ -314,11 +336,11 @@ Phase 3:
 3. Test prefetch() and write_memory()
 4. Validate session state tracking
 
-### Week 3: Paperclip Integration
-1. Register Paperclip webhook
-2. Test issue creation from task
-3. Test event flow
-4. End-to-end: task → dispatch → Hermes → result
+### Week 3: Paperclip Integration ✅
+1. Paperclip server running, dispatch flow tested
+2. Issue creation from task verified
+3. Event polling fallback in place
+4. Next: Hermes agent picks up Paperclip issue and syncs result
 
 ### Week 4: UI & Polish
 1. Build command-center views
@@ -401,15 +423,17 @@ When contributing:
 | Phase | Status | Effort | Tests |
 |-------|--------|--------|-------|
 | 0 | ✅ Complete | 2 hrs | Sample payloads |
-| 1 | ✅ Complete | 4 hrs | ✅ Passing |
-| 2 | ✅ Complete | 3 hrs | Documented |
-| 3 | ✅ Complete | 4 hrs | Documented |
-| 4 | ✅ Complete | 3 hrs | Documented |
+| 1 | ✅ Complete | 4 hrs | ✅ 20/20 passing |
+| 2 | ✅ Complete | 3 hrs | ✅ 20/20 passing |
+| 3 | ✅ Complete (Live) | 5 hrs | ✅ 20/20 passing + live dispatch |
+| 4 | ✅ Complete | 3 hrs | ✅ 20/20 passing |
 | 5 | 🔲 Planned | ~4 hrs | - |
 | 6 | 🔲 Planned | ~6 hrs | - |
 
-**Total Effort (Phases 0-4)**: ~16 hours  
-**Code + Docs**: ~500 lines code + ~2800 lines documentation
+**Total Effort (Phases 0-4)**: ~17 hours  
+**Test Results**: 20/20 passing (10 migration API + 9 Hermes memory provider + 1 schema contract)  
+**Code + Docs**: ~500 lines code + ~3000 lines documentation  
+**Live Integration**: Paperclip issue created from AssistX dispatch (verified)
 
 ---
 

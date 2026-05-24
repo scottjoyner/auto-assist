@@ -105,11 +105,11 @@ class Neo4jClient:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (d:Dispatch)     REQUIRE d.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (s:AgentSession)  REQUIRE s.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (v:AgentDevice)   REQUIRE v.id IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (c:AgentCapability) REQUIRE c.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (m:MemoryItem)    REQUIRE m.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (e:SignalEvent)   REQUIRE e.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (c:MediaCapture)  REQUIRE c.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (a:MediaAsset)    REQUIRE a.path IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (r:Requirement)  REQUIRE r.id IS UNIQUE",
 
             # Helpful indexes
             "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.status)",
@@ -127,6 +127,7 @@ class Neo4jClient:
             "CREATE INDEX IF NOT EXISTS FOR (d:Dispatch)        ON (d.status)",
             "CREATE INDEX IF NOT EXISTS FOR (d:Dispatch)        ON (d.paperclip_issue_id)",
             "CREATE INDEX IF NOT EXISTS FOR (d:Dispatch)        ON (d.created_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (d:Dispatch)        ON (d.target_device_id)",
             "CREATE INDEX IF NOT EXISTS FOR (s:AgentSession)    ON (s.hermes_session_id)",
             "CREATE INDEX IF NOT EXISTS FOR (s:AgentSession)    ON (s.paperclip_agent_id)",
             "CREATE INDEX IF NOT EXISTS FOR (v:AgentDevice)     ON (v.hostname)",
@@ -138,6 +139,7 @@ class Neo4jClient:
             "CREATE INDEX IF NOT EXISTS FOR (c:MediaCapture)    ON (c.media_kind)",
             "CREATE INDEX IF NOT EXISTS FOR (p:ContextPacket)   ON (p.created_at_ts)",
             "CREATE INDEX IF NOT EXISTS FOR (p:ContextPacket)   ON (p.query_hash)",
+            "CREATE INDEX IF NOT EXISTS FOR (r:Requirement)    ON (r.source_intent_id)",
         ]
         with self._session() as s:
             for q in cypher:
@@ -154,32 +156,39 @@ class Neo4jClient:
         idempotency_key: Optional[str] = None,
         client_ts: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        classification: Optional[str] = None,
+        intent_outcome: Optional[str] = None,
+        intent_confidence: Optional[float] = None,
     ) -> str:
         props = {
             "source": source,
             "text": text,
             "client_ts": client_ts,
             "metadata_json": json.dumps(metadata or {}),
+            "classification": classification,
+            "intent_outcome": intent_outcome,
+            "intent_confidence": intent_confidence,
         }
+        intent_id = uuid.uuid4().hex
         if idempotency_key:
             q = (
                 "MERGE (i:Intent {idempotency_key:$idempotency_key}) "
-                "ON CREATE SET i.id=randomUUID(), i.created_at=datetime(), i.created_at_ts=timestamp() "
+                "ON CREATE SET i.id=$id, i.created_at=datetime(), i.created_at_ts=timestamp() "
                 "SET i += $props, i.updated_at=datetime(), i.updated_at_ts=timestamp() "
                 "RETURN i.id AS id"
             )
             with self._session() as s:
-                rec = s.run(q, {"idempotency_key": idempotency_key, "props": props}).single()
+                rec = s.run(q, {"idempotency_key": idempotency_key, "id": intent_id, "props": props}).single()
                 return rec["id"]
 
         q = (
-            "CREATE (i:Intent {id:randomUUID()}) "
+            "CREATE (i:Intent {id:$id}) "
             "SET i += $props, i.created_at=datetime(), i.created_at_ts=timestamp(), "
             "    i.updated_at=datetime(), i.updated_at_ts=timestamp() "
             "RETURN i.id AS id"
         )
         with self._session() as s:
-            rec = s.run(q, {"props": props}).single()
+            rec = s.run(q, {"id": intent_id, "props": props}).single()
             return rec["id"]
 
     def create_context_packet(
@@ -323,10 +332,14 @@ class Neo4jClient:
                     {"did": dispatch_id, "pid": context_packet_id},
                 )
 
+        dispatch = self.get_dispatch(dispatch_id)
+        target_device_id = (dispatch or {}).get("target_device_id")
+
         return {
             "dispatch_id": dispatch_id,
             "paperclip_issue_id": paperclip_issue_id,
             "context_packet_id": context_packet_id,
+            "target_device_id": target_device_id,
             "paperclip_error": paperclip_error,
         }
 
@@ -337,48 +350,53 @@ class Neo4jClient:
         priority: str = "MEDIUM",
         idempotency_key: Optional[str] = None,
     ) -> str:
+        target_device_id = target.get("target_device_id")
+        if not target_device_id:
+            caps = target.get("capabilities", [])
+            devices = self.select_device_for_task(required_capabilities=caps, limit=1)
+            if devices:
+                target_device_id = devices[0].get("id")
         props = {
             "status": "OPEN",
             "priority": priority,
             "paperclip_issue_id": target.get("paperclip_issue_id"),
             "paperclip_agent_id": target.get("paperclip_agent_id"),
+            "target_device_id": target_device_id,
             "capabilities": target.get("capabilities", []),
         }
-        if idempotency_key:
-            q = (
-                "MERGE (d:Dispatch {idempotency_key:$idempotency_key}) "
-                "ON CREATE SET d.id=$did, d.created_at=datetime(), d.created_at_ts=timestamp(), d.status='OPEN' "
-                "SET d += $props "
-                "RETURN d.id AS id"
-            )
-            dispatch_id = uuid.uuid4().hex
-            with self._session() as s:
-                rec = s.run(q, {"idempotency_key": idempotency_key, "props": props, "did": dispatch_id}).single()
+        dispatch_id = uuid.uuid4().hex
+        with self._session() as s:
+            if idempotency_key:
+                rec = s.run(
+                    "MERGE (d:Dispatch {idempotency_key:$idempotency_key}) "
+                    "ON CREATE SET d.id=$did, d.created_at=datetime(), d.created_at_ts=timestamp(), d.status='OPEN' "
+                    "SET d += $props "
+                    "RETURN d.id AS id",
+                    {"idempotency_key": idempotency_key, "props": props, "did": dispatch_id},
+                ).single()
                 dispatch_id = rec["id"]
-        else:
-            dispatch_id = uuid.uuid4().hex
-            with self._session() as s:
+            else:
                 s.run(
                     "CREATE (d:Dispatch {id:$did}) "
                     "SET d += $props, d.created_at=datetime(), d.created_at_ts=timestamp() "
                     "RETURN d.id AS id",
                     {"did": dispatch_id, "props": props},
                 ).single()
-        with self._session() as s:
             s.run(
                 "MATCH (t:Task {id:$tid}), (d:Dispatch {id:$did}) "
                 "MERGE (t)-[:DISPATCHED_AS]->(d)",
                 {"tid": task_id, "did": dispatch_id},
-            )
+            ).consume()
             if target.get("paperclip_agent_id"):
                 session_id = uuid.uuid4().hex
                 s.run(
+                    "MATCH (d:Dispatch {id:$did}) "
                     "MERGE (a:AgentSession {paperclip_agent_id:$aid}) "
                     "ON CREATE SET a.id=$sid, a.created_at=datetime(), a.created_at_ts=timestamp() "
                     "SET a.paperclip_agent_id=$aid, a.updated_at=datetime(), a.updated_at_ts=timestamp() "
-                    "MERGE (d:Dispatch {id:$did})-[:ASSIGNED_TO]->(a)",
+                    "MERGE (d)-[:ASSIGNED_TO]->(a)",
                     {"aid": target["paperclip_agent_id"], "did": dispatch_id, "sid": session_id},
-                )
+                ).consume()
         return dispatch_id
 
     def upsert_ticket(
@@ -404,22 +422,23 @@ class Neo4jClient:
             "priority": priority,
             "payload_json": json.dumps(payload or {}),
         }
+        task_id = uuid.uuid4().hex
         with self._session() as s:
             if idempotency_key:
                 rec = s.run(
                     "MERGE (t:Task {idempotency_key:$idempotency_key}) "
-                    "ON CREATE SET t.id=randomUUID(), t.created_at=datetime(), t.created_at_ts=timestamp() "
+                    "ON CREATE SET t.id=$id, t.created_at=datetime(), t.created_at_ts=timestamp() "
                     "SET t += $props, t.updated_at=datetime(), t.updated_at_ts=timestamp() "
                     "RETURN t.id AS id",
-                    {"idempotency_key": idempotency_key, "props": props},
+                    {"idempotency_key": idempotency_key, "id": task_id, "props": props},
                 ).single()
             else:
                 rec = s.run(
-                    "CREATE (t:Task {id:randomUUID()}) "
+                    "CREATE (t:Task {id:$id}) "
                     "SET t += $props, t.created_at=datetime(), t.created_at_ts=timestamp(), "
                     "    t.updated_at=datetime(), t.updated_at_ts=timestamp() "
                     "RETURN t.id AS id",
-                    {"props": props},
+                    {"id": task_id, "props": props},
                 ).single()
             ticket_id = rec["id"]
             if parent_id:
@@ -507,6 +526,7 @@ class Neo4jClient:
         if status not in TERMINAL_TASK_STATUSES:
             raise ValueError(f"Deliverable completion status must be one of: {sorted(TERMINAL_TASK_STATUSES)}")
         with self._session() as s:
+            event_id = uuid.uuid4().hex
             rec = s.run(
                 """
                 MATCH (d:Task {id:$deliverable_id})
@@ -518,7 +538,7 @@ class Neo4jClient:
                     d.completed_at_ts=timestamp(),
                     d.updated_at=datetime(),
                     d.updated_at_ts=timestamp()
-                CREATE (e:SignalEvent {id:randomUUID()})
+                CREATE (e:SignalEvent {id:$event_id})
                 SET e.event_type='deliverable_completed',
                     e.answer_id=$answer_id,
                     e.payload_json=$payload_json,
@@ -531,6 +551,7 @@ class Neo4jClient:
                 """,
                 {
                     "deliverable_id": deliverable_id,
+                    "event_id": event_id,
                     "answer_id": answer_id,
                     "status": status,
                     "summary": summary,
@@ -621,6 +642,7 @@ class Neo4jClient:
     ) -> Dict[str, Any]:
         """Atomically claim a READY task for an agent if capabilities match."""
         caps = capabilities or []
+        claim_id = idempotency_key or uuid.uuid4().hex
         with self._session() as s:
             if idempotency_key:
                 prior = s.run(
@@ -629,34 +651,31 @@ class Neo4jClient:
                 ).single()
                 if prior:
                     return {"claimed": True, "idempotent": True, "task": dict(prior["t"])}
+
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
-                WITH t, coalesce(t.required_capabilities, t.capabilities, []) AS required
                 WHERE t.status='READY'
-                  AND (size(required)=0 OR size($caps)=0 OR size([cap IN required WHERE cap IN $caps]) = size(required))
-                  AND (t.target_agent_id IS NULL OR t.target_agent_id=$agent_id)
                 SET t.status='CLAIMED',
                     t.claimed_by=$agent_id,
                     t.agent_session_id=$session_id,
-                    t.claim_id=coalesce($idempotency_key, randomUUID()),
+                    t.claim_id=$claim_id,
                     t.claimed_at=datetime(),
                     t.claimed_at_ts=timestamp(),
                     t.updated_at=datetime(),
                     t.updated_at_ts=timestamp()
-                RETURN t, required
+                RETURN t
                 """,
                 {
                     "task_id": task_id,
                     "agent_id": agent_id,
-                    "caps": caps,
                     "session_id": session_id,
-                    "idempotency_key": idempotency_key,
+                    "claim_id": claim_id,
                 },
             ).single()
+
             if rec:
                 task = dict(rec["t"])
-                task["required_capabilities"] = rec["required"] or []
                 if session_id:
                     s.run(
                         "MERGE (a:AgentSession {id:$sid}) "
@@ -671,14 +690,15 @@ class Neo4jClient:
             existing = s.run(
                 "MATCH (t:Task {id:$task_id}) "
                 "RETURN t.status AS status, t.target_agent_id AS target_agent_id, "
-                "coalesce(t.required_capabilities, t.capabilities, []) AS required",
+                "t.required_capabilities AS required_capabilities, "
+                "t.capabilities AS capabilities",
                 {"task_id": task_id},
             ).single()
             if not existing:
                 return {"claimed": False, "reason": "not_found"}
             if existing["status"] != "READY":
                 return {"claimed": False, "reason": "not_ready", "status": existing["status"]}
-            required = existing["required"] or []
+            required = existing.get("required_capabilities") or existing.get("capabilities") or []
             if caps and required and not all(cap in caps for cap in required):
                 return {"claimed": False, "reason": "capability_mismatch", "required_capabilities": required}
             if existing["target_agent_id"] and existing["target_agent_id"] != agent_id:
@@ -740,6 +760,7 @@ class Neo4jClient:
                     task["run_id"] = prior["run_id"]
                     task["idempotent"] = True
                     return task
+            run_id = uuid.uuid4().hex
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
@@ -752,7 +773,7 @@ class Neo4jClient:
                     t.completed_at_ts=timestamp(),
                     t.updated_at=datetime(),
                     t.updated_at_ts=timestamp()
-                CREATE (r:AgentRun {id:randomUUID(), task_id:$task_id, agent:$agent_id,
+                CREATE (r:AgentRun {id:$run_id, task_id:$task_id, agent:$agent_id,
                     completion_id:$completion_id,
                     status:$status, summary:$summary, result_json:$result_json,
                     started_at_ts:coalesce(t.claimed_at_ts, timestamp()),
@@ -762,6 +783,7 @@ class Neo4jClient:
                 """,
                 {
                     "task_id": task_id,
+                    "run_id": run_id,
                     "agent_id": agent_id,
                     "status": status,
                     "summary": summary,
@@ -775,9 +797,10 @@ class Neo4jClient:
             task = dict(rec["t"])
             task["run_id"] = rec["run_id"]
             if summary:
+                memory_id = uuid.uuid4().hex
                 memory_rec = s.run(
                     """
-                    CREATE (m:MemoryItem {id:randomUUID()})
+                    CREATE (m:MemoryItem {id:$memory_id})
                     SET m.kind='outcome',
                         m.text=$summary,
                         m.source=$agent_id,
@@ -791,6 +814,7 @@ class Neo4jClient:
                     """,
                     {
                         "task_id": task_id,
+                        "memory_id": memory_id,
                         "summary": summary,
                         "agent_id": agent_id,
                         "metadata_json": json.dumps({"result": result or {}, "status": status}),
@@ -818,10 +842,11 @@ class Neo4jClient:
         with self._session() as s:
             s.run(
                 "MERGE (d:Dispatch {paperclip_issue_id:$issue}) "
-                "ON CREATE SET d.id=randomUUID(), d.created_at=datetime(), d.created_at_ts=timestamp() "
+                "ON CREATE SET d.id=$did, d.created_at=datetime(), d.created_at_ts=timestamp() "
                 "SET d.status=$status, d.paperclip_issue_id=$issue, d.paperclip_agent_id=$agent_id, "
                 "    d.paperclip_run_id=$run_id, d.updated_at=datetime(), d.updated_at_ts=timestamp() ",
                 {
+                    "did": uuid.uuid4().hex,
                     "issue": paperclip_issue_id,
                     "status": status,
                     "agent_id": paperclip_agent_id,
@@ -831,10 +856,10 @@ class Neo4jClient:
             if paperclip_agent_id:
                 s.run(
                     "MERGE (a:AgentSession {paperclip_agent_id:$aid}) "
-                    "ON CREATE SET a.id=randomUUID(), a.created_at=datetime(), a.created_at_ts=timestamp() "
+                    "ON CREATE SET a.id=$sid, a.created_at=datetime(), a.created_at_ts=timestamp() "
                     "SET a.paperclip_agent_id=$aid, a.updated_at=datetime(), a.updated_at_ts=timestamp() "
                     "MERGE (d:Dispatch {paperclip_issue_id:$issue})-[:ASSIGNED_TO]->(a)",
-                    {"aid": paperclip_agent_id, "issue": paperclip_issue_id},
+                    {"aid": paperclip_agent_id, "sid": uuid.uuid4().hex, "issue": paperclip_issue_id},
                 )
             s.run(
                 "MERGE (e:SignalEvent {id:$eid}) "
@@ -884,6 +909,11 @@ class Neo4jClient:
             res = s.run(q, {"status": status, "limit": limit})
             return [dict(r["d"]) for r in res]
 
+    def get_dispatch(self, dispatch_id: str) -> Optional[Dict[str, Any]]:
+        with self._session() as s:
+            rec = s.run("MATCH (d:Dispatch {id:$id}) RETURN d", {"id": dispatch_id}).single()
+            return dict(rec["d"]) if rec else None
+
     def list_agent_sessions(self, limit: int = 50) -> List[Dict[str, Any]]:
         with self._session() as s:
             res = s.run("MATCH (s:AgentSession) RETURN s ORDER BY s.updated_at_ts DESC LIMIT $limit", {"limit": limit})
@@ -904,15 +934,15 @@ class Neo4jClient:
             "source": source,
             "metadata_json": json.dumps(metadata or {}),
         }
+        memory_id = uuid.uuid4().hex
         with self._session() as s:
             rec = s.run(
-                "CREATE (m:MemoryItem {id:randomUUID()}) "
+                "CREATE (m:MemoryItem {id:$id}) "
                 "SET m += $props, m.created_at=datetime(), m.created_at_ts=timestamp(), "
                 "    m.updated_at=datetime(), m.updated_at_ts=timestamp() "
                 "RETURN m.id AS id",
-                {"props": props},
+                {"id": memory_id, "props": props},
             ).single()
-            memory_id = rec["id"]
             if session_id:
                 s.run(
                     "MATCH (s:AgentSession {id:$sid}), (m:MemoryItem {id:$mid}) "
@@ -945,6 +975,7 @@ class Neo4jClient:
         activity_context: str = "",
         client_context: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        intent_classification: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Persist a mobile audio/video capture and its graph intake records."""
         transcript_text = " ".join((transcript or "").strip().split())
@@ -953,6 +984,7 @@ class Neo4jClient:
         transcription_id = f"{capture_id}:transcription" if transcript_text else None
         memory_id = f"{capture_id}:memory" if transcript_text else None
         intent_id = f"{capture_id}:intent" if transcript_text else None
+        task_id: Optional[str] = None
         event_id = f"{capture_id}:capture_created"
         props = {
             "user_id": user_id,
@@ -1097,6 +1129,7 @@ class Neo4jClient:
                         "capture_id": capture_id,
                     },
                 )
+                classification = intent_classification or "unknown"
                 s.run(
                     """
                     MERGE (i:Intent {id:$intent_id})
@@ -1104,6 +1137,7 @@ class Neo4jClient:
                     SET i.source='capture',
                         i.text=$text,
                         i.client_ts=$client_ts,
+                        i.classification=$classification,
                         i.metadata_json=$metadata_json,
                         i.updated_at=datetime(),
                         i.updated_at_ts=timestamp()
@@ -1114,6 +1148,7 @@ class Neo4jClient:
                     {
                         "intent_id": intent_id,
                         "text": transcript_text,
+                        "classification": classification,
                         "client_ts": str(context.get("captured_at") or ""),
                         "metadata_json": json.dumps(
                             {"capture_id": capture_id, "session_id": session_id, "media_kind": media_kind},
@@ -1122,6 +1157,31 @@ class Neo4jClient:
                         "capture_id": capture_id,
                     },
                 )
+                if classification == "task":
+                    task_id = uuid.uuid4().hex
+                    s.run(
+                        """
+                        MATCH (i:Intent {id:$intent_id})
+                        CREATE (t:Task {id:$task_id})
+                        SET t.title=$title,
+                            t.description=$text,
+                            t.status='READY',
+                            t.kind='capture',
+                            t.source='capture',
+                            t.ticket_type='task',
+                            t.created_at=datetime(),
+                            t.created_at_ts=timestamp(),
+                            t.updated_at=datetime(),
+                            t.updated_at_ts=timestamp()
+                        MERGE (i)-[:CREATED_TASK]->(t)
+                        """,
+                        {
+                            "intent_id": intent_id,
+                            "task_id": task_id,
+                            "title": transcript_text[:120],
+                            "text": transcript_text,
+                        },
+                    )
             self.create_signal_event(
                 event_id=event_id,
                 event_type="media_capture_created",
@@ -1134,13 +1194,17 @@ class Neo4jClient:
                 },
                 session_id=session_id,
             )
-        return {
+        result = {
             "capture_id": capture_id,
             "transcription_id": transcription_id,
             "memory_item_id": memory_id,
             "intent_id": intent_id,
             "signal_event_id": event_id,
+            "intent_classification": intent_classification,
         }
+        if task_id:
+            result["task_id"] = task_id
+        return result
 
     def create_signal_event(
         self,
@@ -1194,7 +1258,7 @@ class Neo4jClient:
             "agent_identity": agent_identity,
             "device_id": device_id,
             "platform": platform,
-            "metadata": metadata or {},
+            "metadata_json": json.dumps(metadata or {}),
         }
         with self._session() as s:
             rec = s.run(
@@ -1213,16 +1277,17 @@ class Neo4jClient:
         Merge conversation by (title, source). On first create, assigns a UUID id.
         Returns the conversation id.
         """
+        conv_id = uuid.uuid4().hex
         q = (
             "MERGE (c:Conversation {title:$title, source:$source}) "
-            "ON CREATE SET c.id = randomUUID(), "
+            "ON CREATE SET c.id = $id, "
             "              c.created_at = datetime(), "
             "              c.created_at_ts = timestamp() "
             "ON MATCH  SET c.updated_at = datetime() "
             "RETURN c.id as id"
         )
         with self._session() as s:
-            rec = s.run(q, {"title": title, "source": source}).single()
+            rec = s.run(q, {"title": title, "source": source, "id": conv_id}).single()
             return rec["id"]
 
     def add_utterances(self, conversation_id: str, rows: Iterable[Dict[str, Any]]) -> None:
@@ -1248,21 +1313,23 @@ class Neo4jClient:
                 s.run(q, {"id": r["id"], "props": props, "cid": conversation_id})
 
     def add_summary_and_tasks(self, conversation_id: str, summary: Dict[str, Any], tasks: Iterable[Dict[str, Any]]):
+        summary_id = uuid.uuid4().hex
         with self.driver.session() as s:
             sr = s.run(
-                "CREATE (m:Summary {id:randomUUID()}) "
+                "CREATE (m:Summary {id:$id}) "
                 "SET m += $sprops, m.created_at = timestamp(), m.created_at_ts = timestamp() "
                 "WITH m MATCH (c:Conversation{id:$cid}) MERGE (c)-[:HAS_SUMMARY]->(m) RETURN m.id as id",
-                {"sprops": {**summary, "conversation_id": conversation_id}, "cid": conversation_id},
+                {"id": summary_id, "sprops": {**summary, "conversation_id": conversation_id}, "cid": conversation_id},
             ).single()
             sid = sr["id"]
             for t in tasks:
+                task_id = uuid.uuid4().hex
                 tprops = {**t, "conversation_id": conversation_id}
                 s.run(
-                    "CREATE (t:Task {id:randomUUID()}) "
+                    "CREATE (t:Task {id:$task_id}) "
                     "SET t += $tprops, t.created_at = timestamp(), t.created_at_ts = timestamp() "
                     "WITH t MATCH (m:Summary{id:$sid}) MERGE (m)-[:GENERATED_TASK]->(t)",
-                    {"tprops": tprops, "sid": sid},
+                    {"tprops": tprops, "sid": sid, "task_id": task_id},
                 )
             return sid
 
@@ -1289,13 +1356,14 @@ class Neo4jClient:
             s.run("MATCH (t:Task{id:$id}) SET t.status=$st, t.updated_at_ts = timestamp()", {"id": task_id, "st": status})
 
     def create_run(self, task_id: str, agent: str, model: str, manifest: Dict[str, Any]):
+        run_id = uuid.uuid4().hex
         with self.driver.session() as s:
             rec = s.run(
                 "MATCH (t:Task{id:$tid}) "
-                "CREATE (r:AgentRun {id:randomUUID(), task_id:$tid, agent:$agent, model:$model, status:'RUNNING', "
+                "CREATE (r:AgentRun {id:$run_id, task_id:$tid, agent:$agent, model:$model, status:'RUNNING', "
                 " started_at:timestamp(), started_at_ts:timestamp(), manifest_json:$manifest}) "
                 "MERGE (t)-[:EXECUTED_BY]->(r) RETURN r.id as id",
-                {"tid": task_id, "agent": agent, "model": model, "manifest": manifest},
+                {"tid": task_id, "run_id": run_id, "agent": agent, "model": model, "manifest": json.dumps(manifest)},
             ).single()
             return rec["id"]
 
@@ -1304,22 +1372,24 @@ class Neo4jClient:
             s.run("MATCH (r:AgentRun{id:$id}) SET r.status=$st, r.ended_at=timestamp(), r.ended_at_ts=timestamp()", {"id": run_id, "st": status})
 
     def log_tool_call(self, run_id: str, tool: str, input_json: Dict[str, Any], output_json: Dict[str, Any] | None, ok: bool):
+        call_id = uuid.uuid4().hex
         with self.driver.session() as s:
             s.run(
                 "MATCH (r:AgentRun{id:$rid}) "
-                "CREATE (k:ToolCall {id:randomUUID(), run_id:$rid, tool:$tool, input_json:$in, output_json:$out, ok:$ok, "
+                "CREATE (k:ToolCall {id:$call_id, run_id:$rid, tool:$tool, input_json:$in, output_json:$out, ok:$ok, "
                 " started_at:timestamp(), started_at_ts:timestamp(), ended_at:timestamp(), ended_at_ts:timestamp()}) "
                 "MERGE (r)-[:USED_TOOL]->(k)",
-                {"rid": run_id, "tool": tool, "in": input_json, "out": output_json, "ok": ok},
+                {"rid": run_id, "call_id": call_id, "tool": tool, "in": input_json, "out": output_json, "ok": ok},
             )
 
     def log_artifact(self, run_id: str, kind: str, path: str, sha256: str | None):
+        artifact_id = uuid.uuid4().hex
         with self.driver.session() as s:
             s.run(
                 "MATCH (r:AgentRun{id:$rid}) "
-                "CREATE (a:Artifact {id:randomUUID(), run_id:$rid, kind:$k, path:$p, sha256:$h, created_at:timestamp(), created_at_ts:timestamp()}) "
+                "CREATE (a:Artifact {id:$artifact_id, run_id:$rid, kind:$k, path:$p, sha256:$h, created_at:timestamp(), created_at_ts:timestamp()}) "
                 "MERGE (r)-[:PRODUCED]->(a)",
-                {"rid": run_id, "k": kind, "p": path, "h": sha256},
+                {"rid": run_id, "artifact_id": artifact_id, "k": kind, "p": path, "h": sha256},
             )
     def add_evidence(self, summary_id: str, evidences: Iterable[Dict[str, Any]]) -> None:
         q = (
@@ -1398,7 +1468,7 @@ class Neo4jClient:
             "hostname": hostname,
             "platform": platform,
             "capabilities": capabilities or [],
-            "metadata": metadata or {},
+            "metadata_json": json.dumps(metadata or {}),
         }
         with self._session() as s:
             rec = s.run(
@@ -1409,6 +1479,97 @@ class Neo4jClient:
                 {"id": device_id, "props": props},
             ).single()
             return rec["id"]
+
+    def register_device(
+        self,
+        device_id: str,
+        hostname: str,
+        platform: Optional[str] = None,
+        capabilities: Optional[List[str]] = None,
+        resources: Optional[Dict[str, Any]] = None,
+        max_concurrent_tasks: int = 1,
+        available_agents: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
+    ) -> str:
+        props = {
+            "hostname": hostname,
+            "platform": platform or "",
+            "capabilities": capabilities or [],
+            "resources_json": json.dumps(resources or {}),
+            "max_concurrent_tasks": max_concurrent_tasks,
+            "current_load": 0,
+            "queue_depth": 0,
+            "available_agents": available_agents or [],
+            "tags": tags or [],
+        }
+        with self._session() as s:
+            rec = s.run(
+                """
+                MERGE (d:AgentDevice {id:$id})
+                ON CREATE SET d.created_at=datetime(), d.created_at_ts=timestamp()
+                SET d += $props,
+                    d.last_seen_at=datetime(),
+                    d.last_seen_at_ts=timestamp(),
+                    d.updated_at=datetime(),
+                    d.updated_at_ts=timestamp()
+                RETURN d.id AS id
+                """,
+                {"id": device_id, "props": props},
+            ).single()
+            return rec["id"]
+
+    def heartbeat_device(
+        self,
+        device_id: str,
+        current_load: int = 0,
+        queue_depth: int = 0,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        with self._session() as s:
+            rec = s.run(
+                """
+                MATCH (d:AgentDevice {id:$id})
+                SET d.current_load=$load,
+                    d.queue_depth=$queue,
+                    d.last_seen_at=datetime(),
+                    d.last_seen_at_ts=timestamp(),
+                    d.updated_at=datetime(),
+                    d.updated_at_ts=timestamp()
+                RETURN d
+                """,
+                {"id": device_id, "load": current_load, "queue": queue_depth, "props": metadata or {}},
+            ).single()
+            return dict(rec["d"]) if rec else None
+
+    def select_device_for_task(
+        self,
+        required_capabilities: Optional[List[str]] = None,
+        exclude_device_id: Optional[str] = None,
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        caps = required_capabilities or []
+        with self._session() as s:
+            q = """
+                MATCH (d:AgentDevice)
+                WHERE d.last_seen_at_ts > (timestamp() - 300000)
+                  AND d.current_load < d.max_concurrent_tasks
+                """
+            params: Dict[str, Any] = {"limit": limit, "caps": caps}
+            if caps:
+                q += " AND all(cap IN $caps WHERE cap IN d.capabilities)"
+            if exclude_device_id:
+                q += " AND d.id <> $exclude"
+                params["exclude"] = exclude_device_id
+            q += """
+                RETURN d
+                ORDER BY
+                  CASE WHEN size($caps) > 0 AND all(cap IN $caps WHERE cap IN d.capabilities)
+                    THEN 0 ELSE 1 END,
+                  toFloat(d.current_load) / toFloat(d.max_concurrent_tasks) ASC
+                LIMIT $limit
+                """
+            res = s.run(q, params)
+            return [dict(r["d"]) for r in res]
 
     def list_agent_devices(self, limit: int = 50) -> List[Dict[str, Any]]:
         with self._session() as s:
@@ -1435,6 +1596,125 @@ class Neo4jClient:
         with self._session() as s:
             rec = s.run("MATCH (t:Task {id:$id}) RETURN t", {"id": task_id}).single()
             return dict(rec["t"]) if rec else None
+
+    # ---------- Intent Orchestrator ----------
+
+    def get_unprocessed_intents(
+        self,
+        limit: int = 5,
+        classifications: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        q = "MATCH (i:Intent) WHERE i.orchestrated_at IS NULL"
+        params: Dict[str, Any] = {"limit": limit}
+        if classifications:
+            q += " AND coalesce(i.classification, 'unknown') IN $classifications"
+            params["classifications"] = classifications
+        q += " RETURN i ORDER BY i.created_at_ts ASC LIMIT $limit"
+        with self._session() as s:
+            res = s.run(q, params)
+            return [dict(r["i"]) for r in res]
+
+    def mark_intent_orchestrated(self, intent_id: str) -> None:
+        with self._session() as s:
+            s.run(
+                "MATCH (i:Intent {id:$id}) "
+                "SET i.orchestrated_at=datetime(), i.orchestrated_at_ts=timestamp(), "
+                "    i.updated_at=datetime(), i.updated_at_ts=timestamp()",
+                {"id": intent_id},
+            ).consume()
+
+    def upsert_requirement(
+        self,
+        text: str,
+        epic_id: str,
+        intent_id: Optional[str] = None,
+    ) -> str:
+        req_id = uuid.uuid4().hex
+        with self._session() as s:
+            s.run(
+                """
+                CREATE (r:Requirement {id:$id})
+                SET r.text=$text,
+                    r.source_intent_id=$intent_id,
+                    r.created_at=datetime(),
+                    r.created_at_ts=timestamp()
+                WITH r
+                MATCH (e:Task {id:$epic_id})
+                MERGE (e)-[:HAS_REQUIREMENT]->(r)
+                """,
+                {"id": req_id, "text": text, "epic_id": epic_id, "intent_id": intent_id},
+            ).consume()
+        return req_id
+
+    def get_epic_progress(self, epic_id: str) -> Dict[str, Any]:
+        with self._session() as s:
+            rec = s.run(
+                """
+                MATCH (e:Task {id:$epic_id})
+                OPTIONAL MATCH (e)-[:HAS_CHILD*1..3]->(child:Task)
+                WITH e, child
+                RETURN
+                    e.id AS epic_id,
+                    e.status AS epic_status,
+                    count(child) AS total_children,
+                    sum(CASE WHEN child.status IN ['DONE','FAILED','CANCELLED'] THEN 1 ELSE 0 END) AS completed_children,
+                    collect(DISTINCT child.id) AS child_ids
+                """,
+                {"epic_id": epic_id},
+            ).single()
+            if not rec:
+                return {"epic_id": epic_id, "found": False}
+            return dict(rec)
+
+    def create_task_with_context(
+        self,
+        title: str,
+        task_type: str = "task",
+        status: str = "READY",
+        kind: Optional[str] = None,
+        parent_id: Optional[str] = None,
+        required_capabilities: Optional[List[str]] = None,
+        target_agent_id: Optional[str] = None,
+        priority: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+        context_query: Optional[str] = None,
+        context_sources: Optional[List[str]] = None,
+        auto_dispatch: bool = False,
+    ) -> Dict[str, Any]:
+        task_id = self.upsert_ticket(
+            title=title,
+            ticket_type=task_type,
+            status=status,
+            kind=kind or task_type,
+            parent_id=parent_id,
+            required_capabilities=required_capabilities,
+            target_agent_id=target_agent_id,
+            priority=priority,
+            payload=payload,
+            idempotency_key=idempotency_key,
+        )
+        result: Dict[str, Any] = {"task_id": task_id, "context_packet_id": None, "dispatch_id": None}
+
+        if context_query:
+            packet = self.create_context_packet(
+                query=context_query,
+                task_id=task_id,
+                max_items=30,
+                include_sources=context_sources or ["memory", "knowledge", "orchestration"],
+            )
+            result["context_packet_id"] = packet.get("id")
+
+        if auto_dispatch:
+            dispatch = self.create_dispatch_with_paperclip(
+                task_id=task_id,
+                target={"capabilities": required_capabilities or ["terminal"]},
+                priority=priority or "MEDIUM",
+            )
+            result["dispatch_id"] = dispatch.get("dispatch_id")
+            result["target_device_id"] = dispatch.get("target_device_id")
+
+        return result
 
 
 # Back-compat with code that used `Neo(...)`

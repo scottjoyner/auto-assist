@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}AssistX – Dispatches{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Dispatches</h2>
+  <p class="muted">AssistX dispatch records linking tasks to Paperclip/Hermes execution.</p>
+
+  <div style="display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap;">
+    <a class="btn secondary" href="/dispatches">All</a>
+    <a class="btn secondary" href="/dispatches?status=OPEN">Open</a>
+    <a class="btn secondary" href="/dispatches?status=ASSIGNED">Assigned</a>
+    <a class="btn secondary" href="/dispatches?status=RUNNING">Running</a>
+    <a class="btn secondary" href="/dispatches?status=DONE">Done</a>
+    <a class="btn secondary" href="/dispatches?status=FAILED">Failed</a>
+    <a class="btn secondary" href="/dispatches?status=CANCELLED">Cancelled</a>
+  </div>
+
+  <div id="dispatch-list" class="feed" style="max-height:600px;">
+    <div class="row muted">Loading dispatches…</div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(async () => {
+  const params = new URLSearchParams(window.location.search);
+  const status = params.get('status') || '';
+  const url = status ? `/api/dispatches?status=${status}&limit=100` : '/api/dispatches?limit=100';
+  const r = await fetch(url);
+  const data = await r.json();
+  const list = document.getElementById('dispatch-list');
+  list.innerHTML = '';
+  if (!data || !data.items || data.items.length === 0) {
+    list.innerHTML = '<div class="row muted">No dispatches found.</div>';
+    return;
+  }
+  data.items.forEach(d => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `
+      <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+        <code style="font-size:.75rem;">${(d.id || '').substring(0, 8)}…</code>
+        <span class="badge">${d.status || '?'}</span>
+        <span class="muted" style="font-size:.8rem;">priority: ${d.priority || '—'}</span>
+        ${d.paperclip_issue_id ? `<span class="badge">issue: ${d.paperclip_issue_id}</span>` : ''}
+        ${d.paperclip_agent_id ? `<span class="muted" style="font-size:.8rem;">agent: ${d.paperclip_agent_id}</span>` : ''}
+      </div>
+      <div style="margin-top:.3rem;font-size:.85rem;">
+        task: <code>${(d.task_id || '').substring(0, 12)}…</code>
+        ${d.created_at_ts ? `· ${new Date(d.created_at_ts).toLocaleString()}` : ''}
+      </div>
+    `;
+    list.appendChild(row);
+  });
+})();
+</script>
+{% endblock %}

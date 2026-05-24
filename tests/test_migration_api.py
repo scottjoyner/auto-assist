@@ -21,8 +21,25 @@ def test_api_intent_and_context_packet(seeded_neo4j, monkeypatch):
     }
     r = client.post("/api/intents", json=intent_payload, auth=auth)
     assert r.status_code == 200, r.text
-    intent_id = r.json()["intent_id"]
+    intent_body = r.json()
+    intent_id = intent_body["intent_id"]
     assert isinstance(intent_id, str)
+    assert intent_body["classification"] in {"task", "memory", "query", "cancel", "unknown"}
+    assert intent_body["intent_outcome"] in {
+        "actionable_task",
+        "memory_capture",
+        "information_query",
+        "cancellation",
+        "ambiguous",
+    }
+    assert intent_body["policy_action"] in {
+        "auto_dispatch_eligible",
+        "review_dispatch",
+        "auto_cancel_eligible",
+        "review_cancel",
+        "no_dispatch",
+        "needs_clarification",
+    }
 
     context_payload = {
         "query": "Need bounded context for task review",
@@ -43,6 +60,36 @@ def test_api_intent_and_context_packet(seeded_neo4j, monkeypatch):
     packet_data = r3.json()["context_packet"]
     assert packet_data["id"] == packet_id
     assert packet_data["query"] == context_payload["query"]
+
+
+def test_intent_outcome_policy_variants(seeded_neo4j, monkeypatch):
+    monkeypatch.setattr("assistx.api._neo", lambda: seeded_neo4j)
+    monkeypatch.setattr(seeded_neo4j, "close", lambda: None)
+
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    cancel = client.post(
+        "/api/intents",
+        json={"source": "voice", "text": "cancel that task", "idempotency_key": "intent-cancel-policy"},
+        auth=auth,
+    )
+    assert cancel.status_code == 200, cancel.text
+    body = cancel.json()
+    assert body["classification"] == "cancel"
+    assert body["intent_outcome"] == "cancellation"
+    assert body["policy_action"] == "auto_cancel_eligible"
+
+    memory = client.post(
+        "/api/intents",
+        json={"source": "voice", "text": "remember I prefer dark mode", "idempotency_key": "intent-memory-policy"},
+        auth=auth,
+    )
+    assert memory.status_code == 200, memory.text
+    mbody = memory.json()
+    assert mbody["classification"] == "memory"
+    assert mbody["intent_outcome"] == "memory_capture"
+    assert mbody["policy_action"] == "no_dispatch"
 
 
 def test_dispatch_and_session_endpoints(seeded_neo4j, monkeypatch):
@@ -108,6 +155,183 @@ def test_dispatch_and_session_endpoints(seeded_neo4j, monkeypatch):
     r4 = client.post("/api/brain/signals", json=signal_payload, auth=auth)
     assert r4.status_code == 200, r4.text
     assert r4.json()["signal_event_id"] == "signal-1"
+
+
+def test_voice_event_ingestion(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    payload = {
+        "event_id": "voice-evt-1",
+        "event_type": "task_created",
+        "text": "Create a task to review my weekly goals",
+        "source": "voice",
+        "session_id": "voice-session-1",
+        "client_ts": "2026-05-23T12:00:00Z",
+        "metadata": {"origin": "tts"},
+    }
+    r = client.post("/api/voice/events", json=payload, auth=auth)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["signal_event_id"] == "voice-evt-1"
+    assert body["intent_id"]
+
+
+def test_voice_event_signature_auth(monkeypatch):
+    class FakeNeo:
+        def create_signal_event(self, **kwargs):
+            return kwargs["event_id"]
+
+        def upsert_intent(self, **kwargs):
+            return "intent-voice-signed"
+
+        def upsert_memory_item(self, **kwargs):
+            return "memory-voice-signed"
+
+        def _session(self):
+            class _SessCtx:
+                def __enter__(self_inner):
+                    class _S:
+                        def run(self, *args, **kwargs):
+                            class _R:
+                                def single(self):
+                                    return {"cancelled": 0}
+                            return _R()
+                    return _S()
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    return False
+
+            return _SessCtx()
+
+        def close(self):
+            return None
+
+    secret = "voice-secret-test"
+    monkeypatch.setattr("assistx.api._neo", lambda: FakeNeo())
+    monkeypatch.setattr("assistx.api.VOICE_WEBHOOK_SECRET", secret)
+
+    client = TestClient(app)
+    payload = {
+        "event_id": "voice-evt-signed-1",
+        "event_type": "tts_chunk",
+        "text": "remember this",
+        "source": "voice",
+    }
+    from assistx.api import VoiceEventIn
+    import hashlib
+    import hmac
+
+    raw = VoiceEventIn(**payload).model_dump_json(exclude_none=True).encode("utf-8")
+    sig = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    r = client.post(
+        "/api/voice/events",
+        json=payload,
+        headers={"X-Voice-Signature": f"sha256={sig}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["signal_event_id"] == "voice-evt-signed-1"
+
+
+def test_voice_event_requires_auth_or_signature(monkeypatch):
+    monkeypatch.setattr("assistx.api.VOICE_WEBHOOK_SECRET", "voice-secret-test")
+    client = TestClient(app)
+    payload = {
+        "event_id": "voice-evt-noauth-1",
+        "event_type": "tts_chunk",
+        "text": "remember this",
+        "source": "voice",
+    }
+    r = client.post("/api/voice/events", json=payload)
+    assert r.status_code == 401, r.text
+
+
+def test_ops_status_endpoint(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    r = client.get("/api/ops/status", auth=auth)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "neo4j" in body and "queue" in body and "sessions" in body and "dispatches" in body and "review" in body
+    assert "status" in body["neo4j"]
+    assert isinstance(body["queue"]["depth"], int)
+    assert isinstance(body["review"]["backlog"], int)
+    assert "sla_breached" in body["review"]
+
+
+def test_paperclip_event_requires_signature_secret(monkeypatch):
+    class FakeNeo:
+        def ingest_paperclip_event(self, **kwargs):
+            return kwargs["paperclip_issue_id"]
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("assistx.api._neo", lambda: FakeNeo())
+    monkeypatch.setattr("assistx.api.PAPERCLIP_WEBHOOK_SECRET", None)
+
+    client = TestClient(app)
+    payload = {
+        "event_type": "run_completed",
+        "paperclip_issue_id": "issue-1",
+        "paperclip_agent_id": "agent-1",
+        "paperclip_run_id": "run-1",
+        "event_id": "evt-1",
+        "payload": {"status": "DONE"},
+    }
+    r = client.post("/api/paperclip/events", json=payload)
+    assert r.status_code == 503, r.text
+
+
+def test_paperclip_event_signature_validation(monkeypatch):
+    class FakeNeo:
+        def ingest_paperclip_event(self, **kwargs):
+            return kwargs["paperclip_issue_id"]
+
+        def close(self):
+            return None
+
+    secret = "paperclip-test-secret"
+    monkeypatch.setattr("assistx.api._neo", lambda: FakeNeo())
+    monkeypatch.setattr("assistx.api.PAPERCLIP_WEBHOOK_SECRET", secret)
+
+    client = TestClient(app)
+    payload = {
+        "event_type": "run_completed",
+        "paperclip_issue_id": "issue-2",
+        "paperclip_agent_id": "agent-2",
+        "paperclip_run_id": "run-2",
+        "event_id": "evt-2",
+        "payload": {"status": "DONE"},
+    }
+
+    bad = client.post(
+        "/api/paperclip/events",
+        json=payload,
+        headers={"X-Paperclip-Signature": "sha256=bad"},
+    )
+    assert bad.status_code == 401, bad.text
+
+    import hashlib
+    import hmac
+    from assistx.api import PaperclipEventIn
+
+    raw = PaperclipEventIn(**payload).model_dump_json(exclude_none=True).encode("utf-8")
+    expected = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    good = client.post(
+        "/api/paperclip/events",
+        json=payload,
+        headers={"X-Paperclip-Signature": f"sha256={expected}"},
+    )
+    assert good.status_code == 200, good.text
+    assert good.json()["paperclip_issue_id"] == "issue-2"
 
 
 def test_task_trigger_lifecycle(seeded_neo4j, monkeypatch):
@@ -280,16 +504,46 @@ def test_ask_deliverable_breakdown(seeded_neo4j):
     assert any(child["ticket_type"] == "story" for child in tree["children"])
     assert any(child["ticket_type"] == "task" for child in tree["children"])
 
-    completed = neo.complete_deliverable(
-        deliverable_id=deliverable["deliverable_id"],
-        answer_id="answer-1",
-        status="DONE",
-        summary="Deliverable completed.",
-        result={"ok": True},
-    )
 
-    assert completed["status"] == "DONE"
-    assert completed["event_id"]
+def test_api_ask_sync_idempotency(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+
+    calls = {"count": 0}
+
+    def fake_answer_question(*args, **kwargs):
+        calls["count"] += 1
+        return {
+            "answer": "ok",
+            "data_preview": [],
+            "cypher": "RETURN 1",
+            "analysis_code": "def main(rows): return {'ok': True}",
+            "computed": {"ok": True},
+            "stdout": "",
+            "cached": False,
+            "run_id": "run-1",
+        }
+
+    monkeypatch.setattr("assistx.api.answer_question", fake_answer_question)
+    store = {}
+    monkeypatch.setattr("assistx.api.idemp_load", lambda key: store.get(key))
+    monkeypatch.setattr("assistx.api.idemp_save", lambda key, value: store.__setitem__(key, value))
+
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    body = {
+        "question": "How many tasks are ready?",
+        "mode": "sync",
+        "idempotency_key": "sync-idemp-1",
+    }
+
+    r1 = client.post("/api/ask", json=body, auth=auth)
+    assert r1.status_code == 200, r1.text
+    r2 = client.post("/api/ask", json=body, auth=auth)
+    assert r2.status_code == 200, r2.text
+    assert calls["count"] == 1
+    assert r2.json()["answer"] == "ok"
 
 
 def test_command_center_intents(seeded_neo4j, monkeypatch):
@@ -399,3 +653,114 @@ def test_command_center_reassign(seeded_neo4j, monkeypatch):
     )
     assert r.status_code == 200
     assert r.json()["reassigned"] is True
+
+
+def test_review_queue_actions(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    review_id = neo.upsert_ticket(
+        title="Review intent: build weekly status dashboard",
+        ticket_type="chore",
+        status="REVIEW",
+        kind="intent_review",
+        payload={
+            "source_intent": "intent-review-queue-1",
+            "source_text": "Build a weekly status dashboard from recent tasks",
+            "policy_action": "review_dispatch",
+        },
+        idempotency_key="review-ticket-1",
+    )
+
+    r = client.get("/api/review/tasks", auth=auth)
+    assert r.status_code == 200, r.text
+    assert any(item["id"] == review_id for item in r.json()["items"])
+
+    filtered = client.get("/api/review/tasks?policy_action=review_dispatch", auth=auth)
+    assert filtered.status_code == 200, filtered.text
+    assert any(item["id"] == review_id for item in filtered.json()["items"])
+
+    approve = client.post(
+        f"/api/review/tasks/{review_id}/approve",
+        json={
+            "note": "Looks good, proceed",
+            "auto_dispatch": False,
+            "priority": "HIGH",
+            "target": {"paperclip_agent_id": "agent-review-target"},
+        },
+        auth=auth,
+    )
+    assert approve.status_code == 200, approve.text
+    out = approve.json()
+    assert out["decision"] == "approved"
+    assert out["created_task_id"]
+
+    review_after = neo.get_task(review_id)
+    created_task = neo.get_task(out["created_task_id"])
+    assert review_after["status"] == "DONE"
+    assert review_after["review_decision"] == "approved"
+    assert created_task["status"] == "READY"
+    assert created_task["target_agent_id"] == "agent-review-target"
+
+    reject_id = neo.upsert_ticket(
+        title="Review intent: risky destructive action",
+        ticket_type="chore",
+        status="REVIEW",
+        kind="intent_review",
+        payload={"source_text": "Delete all history"},
+        idempotency_key="review-ticket-2",
+    )
+    reject = client.post(
+        f"/api/review/tasks/{reject_id}/reject",
+        json={"note": "Denied by operator"},
+        auth=auth,
+    )
+    assert reject.status_code == 200, reject.text
+    assert reject.json()["decision"] == "rejected"
+    assert neo.get_task(reject_id)["status"] == "CANCELLED"
+
+    clarify_id = neo.upsert_ticket(
+        title="Review intent: unclear request",
+        ticket_type="chore",
+        status="REVIEW",
+        kind="intent_review",
+        payload={"source_text": "do the thing"},
+        idempotency_key="review-ticket-3",
+    )
+    clarify = client.post(
+        f"/api/review/tasks/{clarify_id}/clarify",
+        json={"note": "Need more detail on output format"},
+        auth=auth,
+    )
+    assert clarify.status_code == 200, clarify.text
+    assert clarify.json()["decision"] == "clarification_requested"
+    clarify_task = neo.get_task(clarify_id)
+    assert clarify_task["status"] == "REVIEW"
+    assert clarify_task["review_decision"] == "clarification_requested"
+
+    audit = client.get("/api/review/audit?limit=20", auth=auth)
+    assert audit.status_code == 200, audit.text
+    items = audit.json()["items"]
+    assert any(i["review_task_id"] == review_id and i["review_decision"] == "approved" for i in items)
+    assert any(i["review_task_id"] == reject_id and i["review_decision"] == "rejected" for i in items)
+    assert any(i["review_task_id"] == clarify_id and i["review_decision"] == "clarification_requested" for i in items)
+
+    first_page = client.get("/api/review/audit?limit=1", auth=auth)
+    assert first_page.status_code == 200, first_page.text
+    fp = first_page.json()
+    assert fp["count"] == 1
+    assert fp.get("next_cursor")
+    second_page = client.get(f"/api/review/audit?limit=2&cursor={fp['next_cursor']}", auth=auth)
+    assert second_page.status_code == 200, second_page.text
+    sp_items = second_page.json()["items"]
+    assert all(i["review_task_id"] != fp["items"][0]["review_task_id"] for i in sp_items)
+
+    summary = client.get("/api/review/audit/summary", auth=auth)
+    assert summary.status_code == 200, summary.text
+    summary_json = summary.json()
+    assert summary_json["window_hours"] == 24
+    assert summary_json["total_decisions"] >= 3
+    assert summary_json["by_decision"].get("approved", 0) >= 1

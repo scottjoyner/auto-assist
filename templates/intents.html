@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}AssistX – Intents{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Intents</h2>
+  <p class="muted">Raw incoming intents from voice, UI, webhook, schedule, and other sources.</p>
+  <div class="grid" style="margin-top:1rem;">
+    <div class="card half">
+      <h3>Filters</h3>
+      <select id="source-filter" onchange="window.location.href=this.value ? `/intents?source=${this.value}` : '/intents'">
+        <option value="">All sources</option>
+        <option value="voice" {% if request.query_params.get('source') == 'voice' %}selected{% endif %}>Voice</option>
+        <option value="ui" {% if request.query_params.get('source') == 'ui' %}selected{% endif %}>UI</option>
+        <option value="webhook" {% if request.query_params.get('source') == 'webhook' %}selected{% endif %}>Webhook</option>
+        <option value="schedule" {% if request.query_params.get('source') == 'schedule' %}selected{% endif %}>Schedule</option>
+        <option value="manual" {% if request.query_params.get('source') == 'manual' %}selected{% endif %}>Manual</option>
+      </select>
+    </div>
+  </div>
+
+  <div id="intent-list" class="feed" style="max-height:600px;margin-top:1rem;">
+    <div class="row muted">Loading intents…</div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(async () => {
+  const params = new URLSearchParams(window.location.search);
+  const source = params.get('source') || '';
+  const url = source ? `/api/intents?source=${source}&limit=100` : '/api/intents?limit=100';
+  const r = await fetch(url);
+  const data = await r.json();
+  const list = document.getElementById('intent-list');
+  list.innerHTML = '';
+  if (!data || !data.items || data.items.length === 0) {
+    list.innerHTML = '<div class="row muted">No intents found.</div>';
+    return;
+  }
+  data.items.forEach(i => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `
+      <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+        <span class="badge">${i.source || '?'}</span>
+        <span class="muted" style="font-size:.8rem;">${i.client_ts || new Date(i.created_at_ts || Date.now()).toISOString()}</span>
+        <code style="font-size:.75rem;">${(i.id || '').substring(0, 8)}…</code>
+      </div>
+      <div style="margin-top:.3rem;">${(i.text || '').replace(/</g, '&lt;')}</div>
+    `;
+    list.appendChild(row);
+  });
+})();
+</script>
+{% endblock %}

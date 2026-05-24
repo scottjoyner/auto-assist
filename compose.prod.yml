@@ -1,0 +1,51 @@
+services:
+  redis:
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  api:
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python - <<'PY'\nimport urllib.request,sys\ntry:\n  urllib.request.urlopen('http://localhost:8000/health', timeout=2)\n  print('ok')\n  sys.exit(0)\nexcept Exception as e:\n  print(e); sys.exit(1)\nPY"
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "10"
+
+  worker:
+    restart: unless-stopped
+    environment:
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-2}
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python - <<'PY'\nimport os,sys,redis\ntry:\n  redis.from_url(os.environ.get('REDIS_URL','redis://redis:6379/0')).ping()\n  print('ok')\n  sys.exit(0)\nexcept Exception as e:\n  print(e); sys.exit(1)\nPY"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "10"

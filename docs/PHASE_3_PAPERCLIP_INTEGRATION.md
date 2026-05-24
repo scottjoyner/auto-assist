@@ -4,537 +4,335 @@
 
 Phase 3 adds Paperclip as an optional assignment transport around the
 graph-first Task trigger flow:
+
 1. AssistX creates or updates a `Task` in Neo4j
 2. Agents can poll and claim `READY` tasks directly from AssistX
 3. AssistX may also create a Paperclip issue for cross-device assignment
 4. Hermes executes → writes results back
 5. AssistX ingests results → updates graph
 
-Neo4j remains the source of truth. Paperclip issue state should reconcile back
+Neo4j remains the source of truth. Paperclip issue state reconciles back
 to `Task`, `Dispatch`, `AgentRun`, `SignalEvent`, and `MemoryItem` nodes.
 
+**Status**: ✅ Live dispatch flow tested end-to-end (May 23, 2026).
+
 ---
 
-## 1. Implementation Checklist
+## 1. Paperclip Server Setup
 
-### 1.1 Paperclip API Client
+### Local Development
 
-**Goal**: Create a helper class to interact with Paperclip API
+Paperclip runs as a systemd user service at `http://127.0.0.1:3100`:
 
-**Current status**: implemented in `src/assistx/paperclip_client.py`.
+```
+~/.config/systemd/user/paperclip.service
 
-**File**: `src/assistx/paperclip_client.py` (NEW)
+[Unit]
+Description=Paperclip AI Server
 
-```python
-import os
-import requests
-from typing import Optional, Dict, Any, List
+[Service]
+ExecStart=/home/scott/git/hermes-agent/paperclip/server/node_modules/.bin/tsx /home/scott/git/hermes-agent/paperclip/server/src/index.ts
+WorkingDirectory=/home/scott/git/hermes-agent/paperclip/server
+Environment=BETTER_AUTH_SECRET=paperclip-dev-secret
+Environment=PAPERCLIP_DEPLOYMENT_MODE=local_trusted
+Environment=HOST=0.0.0.0
+Environment=PAPERCLIP_ALLOWED_HOSTNAMES=host.docker.internal
+Environment=PORT=3100
+Restart=on-failure
 
-class PaperclipClient:
-    def __init__(
-        self,
-        api_url: Optional[str] = None,
-        api_token: Optional[str] = None,
-        workspace_id: Optional[str] = None,
-    ):
-        self.api_url = api_url or os.getenv("PAPERCLIP_API_URL")
-        self.api_token = api_token or os.getenv("PAPERCLIP_API_TOKEN")
-        self.workspace_id = workspace_id or os.getenv("PAPERCLIP_WORKSPACE_ID")
-        
-        if not (self.api_url and self.api_token and self.workspace_id):
-            raise ValueError(
-                "Paperclip requires PAPERCLIP_API_URL, PAPERCLIP_API_TOKEN, "
-                "and PAPERCLIP_WORKSPACE_ID environment variables."
-            )
-        
-        self.headers = {
-            "Authorization": f"Bearer {self.api_token}",
-            "Content-Type": "application/json",
-        }
-    
-    def create_issue(
-        self,
-        title: str,
-        description: str,
-        task_id: str,
-        context_packet_id: str,
-        capabilities: List[str],
-        priority: str = "normal",
-        assignee_id: Optional[str] = None,
-    ) -> str:
-        """Create a Paperclip issue from an AssistX task."""
-        payload = {
-            "workspace_id": self.workspace_id,
-            "title": title,
-            "description": description,
-            "assignee_id": assignee_id,
-            "priority": priority,
-            "metadata": {
-                "assistx_task_id": task_id,
-                "assistx_context_packet_id": context_packet_id,
-                "required_capabilities": capabilities,
-                "source": "assistx-migration",
-            },
-        }
-        resp = requests.post(
-            f"{self.api_url}/issues",
-            json=payload,
-            headers=self.headers,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json()["id"]
-    
-    def get_issue(self, issue_id: str) -> Dict[str, Any]:
-        """Fetch issue details."""
-        resp = requests.get(
-            f"{self.api_url}/issues/{issue_id}",
-            headers=self.headers,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json()
-    
-    def list_agents(self, workspace_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """List registered agents."""
-        params = {"workspace_id": workspace_id or self.workspace_id}
-        resp = requests.get(
-            f"{self.api_url}/agents",
-            params=params,
-            headers=self.headers,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json().get("agents", [])
-    
-    def assign_issue(self, issue_id: str, agent_id: str) -> bool:
-        """Assign issue to an agent."""
-        payload = {"agent_id": agent_id}
-        resp = requests.post(
-            f"{self.api_url}/issues/{issue_id}/assign",
-            json=payload,
-            headers=self.headers,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json().get("success", False)
+[Install]
+WantedBy=default.target
 ```
 
-### 1.2 Enhanced Neo4j Dispatch Methods
+### Dev Override (Paperclip source patches)
 
-**Goal**: Update dispatch creation to optionally call Paperclip
+Paperclip in `local_trusted` mode normally enforces `loopback` bind (127.0.0.1).
+To allow Docker containers to reach it, 3 lines were commented out:
 
-**Current status**: implemented. The live API creates local Neo4j dispatch
-records, creates a Paperclip issue when `PAPERCLIP_*` configuration is present,
-falls back to local-only dispatch when Paperclip is not configured, and ingests
-Paperclip events via `/api/paperclip/events`.
+| File | Lines | Purpose |
+|------|-------|---------|
+| `server/src/config.ts` | 275-277 | Bypass `validateConfiguredBindMode` error for `local_trusted` + non-loopback |
+| `server/src/config.ts` | 284-286 | Bypass `resolveRuntimeBind` errors |
+| `server/src/index.ts` | 447-452 | Bypass startup check enforcing loopback for `local_trusted` |
 
-**File**: `src/assistx/neo4j_client.py` (UPDATE)
+> **Warning**: These patches will be overwritten on Paperclip version updates.
 
-```python
-def create_dispatch_with_paperclip(
-    self,
-    task_id: str,
-    context_packet_id: str,
-    target: Dict[str, Any],
-    priority: str = "MEDIUM",
-    idempotency_key: Optional[str] = None,
-    paperclip_client: Optional["PaperclipClient"] = None,
-) -> str:
-    """
-    Create dispatch and optionally create a Paperclip issue.
-    
-    If paperclip_client is provided and no paperclip_issue_id in target,
-    creates an issue and links it.
-    """
-    # Get task details for Paperclip issue creation
-    task = self.get_task(task_id)
-    if not task:
-        raise ValueError(f"Task {task_id} not found")
-    
-    paperclip_issue_id = target.get("paperclip_issue_id")
-    
-    # Create Paperclip issue if client provided
-    if paperclip_client and not paperclip_issue_id:
-        try:
-            paperclip_issue_id = paperclip_client.create_issue(
-                title=task.get("title", "Unnamed Task"),
-                description=task.get("payload", {}).get("description", ""),
-                task_id=task_id,
-                context_packet_id=context_packet_id,
-                capabilities=target.get("capabilities", []),
-                priority=priority.lower(),
-                assignee_id=target.get("paperclip_agent_id"),
-            )
-            target = {**target, "paperclip_issue_id": paperclip_issue_id}
-        except Exception as e:
-            # Log but don't fail; dispatch can still be created locally
-            import logging
-            logging.getLogger(__name__).warning(f"Failed to create Paperclip issue: {e}")
-    
-    # Create dispatch in Neo4j
-    dispatch_id = self.create_dispatch(
-        task_id=task_id,
-        target=target,
-        priority=priority,
-        idempotency_key=idempotency_key,
-    )
-    
-    # Link context packet to dispatch
-    with self._session() as s:
-        s.run(
-            "MATCH (d:Dispatch {id:$did}), (p:ContextPacket {id:$pid}) "
-            "MERGE (d)-[:USES_CONTEXT]->(p)",
-            {"did": dispatch_id, "pid": context_packet_id},
-        )
-    
-    return dispatch_id
+### Paperclip Resources Created
+
+| Resource | ID | Notes |
+|----------|-----|-------|
+| Company | `23328778-bb2e-4261-8e8e-4221021753d5` | Named "AssistX Workspace" |
+| Agent | `cfecc886-befc-4fa9-a91e-3e9a707b4a4f` | Named "hermes-local", capabilities: terminal, file, code_execution, web |
+| API Key | `pcp_1966f1eb...` | Bearer token for API authentication |
+
+### Docker Container Access
+
+The API container accesses Paperclip via `host.docker.internal:3100`:
+
+```yaml
+# docker-compose.yml
+services:
+  api:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - PAPERCLIP_API_URL=http://host.docker.internal:3100/api
+      - PAPERCLIP_API_TOKEN=${PAPERCLIP_API_TOKEN}
+      - PAPERCLIP_WORKSPACE_ID=${PAPERCLIP_WORKSPACE_ID}
+      - PAPERCLIP_WEBHOOK_SECRET=${PAPERCLIP_WEBHOOK_SECRET}
 ```
 
-### 1.3 Enhanced API Endpoint
+---
 
-**File**: `src/assistx/api.py` (UPDATE)
+## 2. Paperclip API Client
 
-Add Paperclip client initialization and update dispatch endpoint:
+**File**: `src/assistx/paperclip_client.py`
 
-```python
-from .paperclip_client import PaperclipClient
+### Architecture
 
-_paperclip_client: Optional[PaperclipClient] = None
+The client wraps Paperclip's Express REST API. Routes were discovered from
+Paperclip's route definitions in `server/src/routes/`. Key paths:
 
-def get_paperclip_client() -> Optional[PaperclipClient]:
-    global _paperclip_client
-    if _paperclip_client is None:
-        try:
-            _paperclip_client = PaperclipClient()
-        except (ValueError, KeyError):
-            # Paperclip not configured; dispatch remains local-only
-            return None
-    return _paperclip_client
+| Operation | Paperclip API Route | Method |
+|-----------|---------------------|--------|
+| Create issue | `/api/companies/:companyId/issues` | POST |
+| Get issue | `/api/issues/:id` | GET |
+| Update issue | `/api/issues/:id` | PATCH |
+| List issues | `/api/companies/:companyId/issues` | GET |
+| List agents | `/api/companies/:companyId/agents` | GET |
+| Get agent | `/api/agents/:id` | GET |
+| List runs (issue) | `/api/issues/:id/runs` | GET |
+| List runs (company) | `/api/companies/:companyId/live-runs` | GET |
+| Get run | `/api/heartbeat-runs/:runId` | GET |
+| Get run log | `/api/heartbeat-runs/:runId/log` | GET |
+| Add comment | `/api/issues/:id/comments` | POST |
+| Health check | `/api/health` | GET |
 
-@app.post("/api/dispatch")
-def api_create_dispatch(body: DispatchIn, user: str = Depends(auth)):
-    neo = _neo()
-    pc = get_paperclip_client()
-    try:
-        # Create context packet first if not provided
-        if not body.task_id:
-            raise HTTPException(status_code=400, detail="task_id required")
-        
-        # Get or create context packet
-        task = neo.get_task(body.task_id)
-        if not task:
-            raise HTTPException(status_code=404, detail="Task not found")
-        
-        packet = neo.create_context_packet(
-            query=task.get("title", "Task context"),
-            task_id=body.task_id,
-            max_items=20,
-            include_sources=["memory", "orchestration", "knowledge"],
-        )
-        
-        # Create dispatch (with optional Paperclip issue)
-        dispatch_id = neo.create_dispatch_with_paperclip(
-            task_id=body.task_id,
-            context_packet_id=packet["id"],
-            target=body.target.model_dump(),
-            priority=body.priority,
-            idempotency_key=body.idempotency_key,
-            paperclip_client=pc,
-        )
-        return {"dispatch_id": dispatch_id, "context_packet_id": packet["id"]}
-    finally:
-        neo.close()
+### Key Methods
+
+- `create_issue(title, description, task_id, context_packet_id, capabilities, priority, assignee_id)` → Paperclip issue ID
+- `get_issue(issue_id)` → issue dict
+- `update_issue(issue_id, **kwargs)` → updated issue dict
+- `assign_issue(issue_id, agent_id)` → bool (via PATCH)
+- `list_agents(company_id)` → list of agent dicts
+- `list_issues(status, agent_id, limit, offset)` → list of issue dicts
+- `list_runs(issue_id, agent_id, limit)` → list of run dicts
+- `get_run(run_id)` → run dict
+- `get_run_output(run_id)` → log string
+- `create_comment(issue_id, text, author)` → comment ID
+- `poll_events(event_types, limit, since_timestamp)` → list of issues (polling fallback)
+- `health_check()` → bool
+
+### Authentication
+
+The client uses Bearer token authentication. In `local_trusted` mode,
+Paperclip accepts agent API keys as Bearer tokens. The API key is stored
+in `PAPERCLIP_API_TOKEN` env var.
+
+---
+
+## 3. Dispatch Flow
+
+### AssistX → Paperclip
+
+When `POST /api/dispatch` is called:
+
+1. `api.py:get_paperclip_client()` initializes a `PaperclipClient` from env vars
+2. `neo4j.create_dispatch_with_paperclip()` loads the task
+3. Creates a `ContextPacket` from graph-memory context
+4. Calls `PaperclipClient.create_issue()` → Paperclip issue created
+5. Creates local `Dispatch` node in Neo4j with `paperclip_issue_id` linkage
+6. Returns `dispatch_id`, `paperclip_issue_id`, `context_packet_id`
+
+### Live Test Result (May 23, 2026)
+
+```
+# Create ticket
+POST /api/tickets → {"ticket_id": "af1cffab6a67449380d76be2440c0e71"}
+
+# Dispatch it
+POST /api/dispatch → {
+  "dispatch_id": "b622a5f0f54a44029add999f124ffd40",
+  "paperclip_issue_id": "2365b591-8fd2-4aa5-86b1-9cdc1c298600",
+  "context_packet_id": "b8294090994c4740908589929239f45c",
+  "paperclip_error": null
+}
+
+# Verify in Paperclip
+GET /api/issues/2365b591 → {
+  "title": "Test Paperclip dispatch",
+  "status": "backlog",
+  "priority": "high",
+  "createdByAgentId": "cfecc886-..."
+}
 ```
 
-### 1.4 Webhook Handler for Paperclip Events
+### Paperclip → AssistX (Event Ingestion)
 
-**File**: `src/assistx/api.py` (ADD)
+Paperclip has **no outbound webhook API** for issue lifecycle events.
+Event ingestion is handled via:
+
+1. **Polling fallback**: `PaperclipClient.poll_events()` polls
+   `GET /companies/:companyId/issues` for status changes.
+2. **Webhook endpoint** (ready but unused): `POST /api/paperclip/events`
+   accepts Paperclip events with HMAC-SHA256 signature verification.
+
+Future work: Add a periodic worker that polls Paperclip and syncs status
+changes to Neo4j dispatches.
+
+---
+
+## 4. Webhook Handler
+
+**Endpoint**: `POST /api/paperclip/events`
 
 ```python
-class PaperclipWebhookIn(BaseModel):
-    """Webhook payload from Paperclip → AssistX"""
-    event_type: str  # issue_created, assigned, run_started, run_completed, commented
-    issue_id: str
-    agent_id: Optional[str] = None
-    run_id: Optional[str] = None
-    timestamp: str
+class PaperclipEventIn(BaseModel):
+    event_type: str
+    paperclip_issue_id: str
+    paperclip_agent_id: Optional[str] = None
+    paperclip_run_id: Optional[str] = None
+    event_id: Optional[str] = None
     payload: Dict[str, Any] = Field(default_factory=dict)
-
-@app.post("/api/webhooks/paperclip")
-async def webhook_paperclip(
-    body: PaperclipWebhookIn,
-    x_webhook_signature: Optional[str] = Header(None),
-):
-    """
-    Receive webhook events from Paperclip.
-    
-    Signature validation recommended (using HMAC-SHA256 if PAPERCLIP_WEBHOOK_SECRET set).
-    """
-    # TODO: Validate webhook signature if secret available
-    
-    neo = _neo()
-    try:
-        # Route by event type
-        if body.event_type == "run_completed":
-            # Extract result and update dispatch
-            result = body.payload.get("result", {})
-            summary = body.payload.get("summary", "")
-            
-            issue_id = neo.ingest_paperclip_event(
-                event_type=body.event_type,
-                paperclip_issue_id=body.issue_id,
-                paperclip_agent_id=body.agent_id,
-                paperclip_run_id=body.run_id,
-                event_id=f"{body.issue_id}-{body.run_id}",
-                payload={
-                    "result": result,
-                    "summary": summary,
-                    "timestamp": body.timestamp,
-                },
-            )
-            
-            # Update related task if result indicates completion
-            with neo.driver.session() as s:
-                rec = s.run(
-                    "MATCH (d:Dispatch {paperclip_issue_id:$iid})-[:DISPATCHED_AS]-(t:Task) "
-                    "RETURN t.id AS task_id",
-                    {"iid": body.issue_id},
-                ).single()
-                if rec:
-                    task_id = rec["task_id"]
-                    if result.get("success"):
-                        neo.update_task_status(task_id, "DONE")
-                        # Optionally log outcome
-                        neo.upsert_memory_item(
-                            kind="outcome",
-                            text=summary or f"Task completed: {result}",
-                            source="paperclip",
-                            task_id=task_id,
-                            metadata={"result": result},
-                        )
-                    else:
-                        neo.update_task_status(task_id, "FAILED")
-            
-            return {"ok": True, "processed": True}
-        else:
-            # Other event types (assigned, run_started, etc.)
-            neo.ingest_paperclip_event(
-                event_type=body.event_type,
-                paperclip_issue_id=body.issue_id,
-                paperclip_agent_id=body.agent_id,
-                paperclip_run_id=body.run_id,
-                event_id=f"{body.issue_id}-{body.event_type}-{body.timestamp}",
-                payload=body.payload,
-            )
-            return {"ok": True, "processed": True}
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).exception(f"Webhook processing failed: {e}")
-        return {"ok": False, "error": str(e)}, 500
-    finally:
-        neo.close()
 ```
 
-### 1.5 Agent Discovery and Capability Matching
+The handler verifies HMAC-SHA256 signature (if `PAPERCLIP_WEBHOOK_SECRET` set)
+and routes to `Neo4jClient.ingest_paperclip_event()`.
 
-**File**: `src/assistx/neo4j_client.py` (ADD)
-
-```python
-def find_agent_by_capabilities(
-    self,
-    required_capabilities: List[str],
-    agent_devices: Optional[List[str]] = None,
-) -> Optional[str]:
-    """
-    Find the best-matching agent device ID based on required capabilities.
-    
-    For now, simple matching: returns first device with all required capabilities.
-    Can be enhanced with scoring/ranking logic.
-    """
-    with self._session() as s:
-        q = "MATCH (d:AgentDevice)"
-        if agent_devices:
-            q += f" WHERE d.id IN {agent_devices}"
-        q += " RETURN d.id AS device_id, d.capabilities AS caps"
-        
-        res = s.run(q)
-        for r in res:
-            device_caps = r["caps"] or []
-            if all(cap in device_caps for cap in required_capabilities):
-                return r["device_id"]
-    
-    return None
-```
+**Security note**: Signature verification is optional. If `PAPERCLIP_WEBHOOK_SECRET`
+is not set, the endpoint accepts unauthenticated events. In production, the
+secret must be configured and verification enforced.
 
 ---
 
-## 2. Configuration and Secrets
+## 5. Configuration and Secrets
 
 ### Environment Variables
 
 ```bash
-# Paperclip integration
-PAPERCLIP_API_URL=https://paperclip.example.com/api
-PAPERCLIP_API_TOKEN=<token>
-PAPERCLIP_WORKSPACE_ID=<workspace-id>
-PAPERCLIP_WEBHOOK_SECRET=<hmac-secret-for-validation>  # optional
+# Paperclip integration (required for dispatch to create Paperclip issues)
+PAPERCLIP_API_URL=http://host.docker.internal:3100/api
+PAPERCLIP_API_TOKEN=pcp_1966f1eb...
+PAPERCLIP_WORKSPACE_ID=23328778-...
+
+# Webhook signature (optional; required for production)
+PAPERCLIP_WEBHOOK_SECRET=paperclip-dev-secret
 ```
 
-### Docker Compose Example
-
-Add to `docker-compose.yml`:
+### Docker Compose
 
 ```yaml
 services:
-  assistx:
+  api:
     environment:
-      - PAPERCLIP_API_URL=${PAPERCLIP_API_URL}
+      - PAPERCLIP_API_URL=http://host.docker.internal:3100/api
       - PAPERCLIP_API_TOKEN=${PAPERCLIP_API_TOKEN}
       - PAPERCLIP_WORKSPACE_ID=${PAPERCLIP_WORKSPACE_ID}
+      - PAPERCLIP_WEBHOOK_SECRET=${PAPERCLIP_WEBHOOK_SECRET}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./src:/app/src
 ```
 
 ---
 
-## 3. Testing Strategy
+## 6. Paperclip API Routes Reference
 
-### Unit Tests
+All routes are under `/api` prefix. Key routes for AssistX integration:
 
-**File**: `tests/test_paperclip_integration.py` (NEW)
+### Issues
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/companies/:companyId/issues` | List issues |
+| POST | `/api/companies/:companyId/issues` | Create issue |
+| GET | `/api/issues/:id` | Get issue by UUID |
+| PATCH | `/api/issues/:id` | Update issue |
+| DELETE | `/api/issues/:id` | Delete issue |
+| GET | `/api/issues/:id/comments` | List comments |
+| POST | `/api/issues/:id/comments` | Add comment |
 
-```python
-import pytest
-from unittest.mock import patch, MagicMock
-from assistx.paperclip_client import PaperclipClient
-from assistx.neo4j_client import Neo4jClient
+### Agents
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/companies/:companyId/agents` | List agents |
+| POST | `/api/companies/:companyId/agents` | Create agent |
+| GET | `/api/agents/:id` | Get agent |
+| POST | `/api/agents/:id/keys` | Create API key |
 
-def test_paperclip_client_create_issue():
-    """Test Paperclip issue creation"""
-    with patch("requests.post") as mock_post:
-        mock_post.return_value.json.return_value = {"id": "issue-123"}
-        
-        pc = PaperclipClient(
-            api_url="https://api.example.com",
-            api_token="token",
-            workspace_id="ws-1",
-        )
-        issue_id = pc.create_issue(
-            title="Test task",
-            description="Do something",
-            task_id="task-1",
-            context_packet_id="packet-1",
-            capabilities=["code_execution"],
-        )
-        
-        assert issue_id == "issue-123"
-        mock_post.assert_called_once()
+### Runs
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/issues/:id/runs` | List runs for issue |
+| GET | `/api/companies/:companyId/live-runs` | List live runs |
+| GET | `/api/heartbeat-runs/:runId` | Get run |
+| GET | `/api/heartbeat-runs/:runId/log` | Get run log |
+| POST | `/api/heartbeat-runs/:runId/cancel` | Cancel run |
 
-def test_create_dispatch_with_paperclip(seeded_neo4j, monkeypatch):
-    """Test dispatch creation with Paperclip issue"""
-    neo = seeded_neo4j
-    
-    # Mock Paperclip client
-    mock_pc = MagicMock()
-    mock_pc.create_issue.return_value = "paperclip-issue-456"
-    
-    task = neo.get_ready_tasks()[0]
-    packet = neo.create_context_packet(
-        query="test",
-        task_id=task["id"],
-        include_sources=["memory"],
-    )
-    
-    dispatch_id = neo.create_dispatch_with_paperclip(
-        task_id=task["id"],
-        context_packet_id=packet["id"],
-        target={"capabilities": ["code"]},
-        paperclip_client=mock_pc,
-    )
-    
-    assert dispatch_id
-    mock_pc.create_issue.assert_called_once()
+---
 
-def test_webhook_run_completed(seeded_neo4j, monkeypatch):
-    """Test Paperclip webhook for run_completed"""
-    from assistx.api import app
-    from fastapi.testclient import TestClient
-    
-    neo = seeded_neo4j
-    monkeypatch.setattr("assistx.api._neo", lambda: neo)
-    
-    client = TestClient(app)
-    auth = ("neo4j", "livelongandprosper")
-    
-    webhook_payload = {
-        "event_type": "run_completed",
-        "issue_id": "paperclip-issue-1",
-        "agent_id": "agent-1",
-        "run_id": "run-1",
-        "timestamp": "2026-05-22T15:00:00Z",
-        "payload": {
-            "result": {"success": True, "output": "Task done"},
-            "summary": "Successfully processed",
-        },
-    }
-    
-    r = client.post(
-        "/api/webhooks/paperclip",
-        json=webhook_payload,
-        auth=auth,
-    )
-    assert r.status_code == 200
+## 7. Testing
+
+### Live Integration Test
+
+Tested end-to-end manually:
+
+```bash
+# 1. Create ticket
+curl -u admin:change-me -X POST http://localhost:8000/api/tickets \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Test dispatch","ticket_type":"task","required_capabilities":["terminal"]}'
+
+# 2. Dispatch
+curl -u admin:change-me -X POST http://localhost:8000/api/dispatch \
+  -H 'Content-Type: application/json' \
+  -d '{"task_id":"<ticket_id>","target":{"capabilities":["terminal"]},"priority":"HIGH"}'
+
+# 3. Verify Paperclip issue
+curl -H "Authorization: Bearer $PAPERCLIP_API_TOKEN" \
+  http://localhost:3100/api/issues/<paperclip_issue_id>
+
+# 4. List dispatches
+curl -u admin:change-me http://localhost:8000/api/dispatches
 ```
 
-### Integration Tests
+### Future Tests
 
-1. **Task → Dispatch → Paperclip Issue**: Create task, dispatch, verify issue created
-2. **Paperclip Webhook → Result Sync**: Send webhook, verify task status updated
-3. **Agent Capability Matching**: Register agent, dispatch with required caps, verify assignment
-
----
-
-## 4. Deployment Steps
-
-### Pre-Deployment
-
-1. [ ] Confirm Paperclip API is accessible and authenticated
-2. [ ] Set `PAPERCLIP_API_URL`, `PAPERCLIP_API_TOKEN`, `PAPERCLIP_WORKSPACE_ID`
-3. [ ] Register Paperclip webhook endpoint with AssistX (configure in Paperclip UI)
-4. [ ] List available agents and register their capabilities in Neo4j
-5. [ ] Test PaperclipClient connectivity
-
-### Deployment
-
-1. Deploy `paperclip_client.py` to AssistX
-2. Deploy updated `neo4j_client.py` with `create_dispatch_with_paperclip`
-3. Deploy updated `api.py` with webhook handler
-4. Restart AssistX API
-5. Run integration tests
-
-### Post-Deployment
-
-1. [ ] Monitor webhook delivery logs
-2. [ ] Verify task → dispatch → issue → completion flow
-3. [ ] Check Neo4j for dispatch state consistency
-4. [ ] Monitor error rates and latency
+- Automated test with mocked Paperclip client
+- Hermes agent picks up Paperclip issue and completes it
+- Sync result back to Neo4j via webhook/polling
 
 ---
 
-## 5. Rollback Plan
+## 8. Deployment
 
-If Paperclip integration fails:
-1. Set `PAPERCLIP_API_URL=""` to disable client initialization
+### Prerequisites
+
+- [x] Paperclip server running and healthy
+- [x] Company/agent/API key created
+- [x] `PAPERCLIP_API_URL`, `PAPERCLIP_API_TOKEN`, `PAPERCLIP_WORKSPACE_ID` set
+- [x] Docker containers can reach Paperclip (`host.docker.internal` resolved)
+- [x] Dispatch flow tested
+
+### Rollback
+
+1. Unset `PAPERCLIP_API_URL=""` to disable client initialization
 2. Dispatch creation reverts to local-only mode
-3. Existing tasks/dispatches remain intact
-4. No data loss; can re-enable later
+3. Existing dispatches and Paperclip issues remain intact
 
 ---
 
-## 6. Future Enhancements
+## 9. Security
 
-- [ ] Agent capability scoring and ranking
-- [ ] Round-robin agent assignment for load balancing
-- [ ] Webhook signature validation (HMAC-SHA256)
-- [ ] Retry logic for failed Paperclip API calls
-- [ ] Batch issue creation for bulk dispatches
-- [ ] Cost tracking and agent utilization metrics
+Reviewed May 23, 2026. Findings:
+
+| Severity | Finding | Status |
+|----------|---------|--------|
+| HIGH | HMAC webhook verification is optional (bypassable) | Known |
+| HIGH | No rate limiting on dispatch/event endpoints | Known |
+| MEDIUM | Basic Auth uses plain `==` comparison | Known |
+| MEDIUM | CORS wide open (`*`) | Known |
+| LOW | Cypher queries properly parameterized | ✅ Good |
+| LOW | HMAC implementation correct when enabled | ✅ Good |
+
+See MIGRATION.md section 15 for detailed next actions.

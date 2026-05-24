@@ -432,9 +432,13 @@ def extract_tasks_json(model: str, summary_obj: Dict[str, Any]) -> Dict[str, Any
 
 # ============== Write-back ==============
 def write_back(session, trans_id: str, final_obj: Dict[str, Any], write_notes: bool=False) -> str:
+    summary_id = uuid.uuid4().hex
+    tasks = final_obj.get("tasks", [])
+    for t in tasks:
+        t["id"] = uuid.uuid4().hex
     q = """
     MATCH (t:Transcription {id:$tid})
-    CREATE (s:Summary {id: randomUUID(), text:$text, bullets:$bullets, created_at: datetime()})
+    CREATE (s:Summary {id: $sid, text:$text, bullets:$bullets, created_at: datetime()})
     MERGE (t)-[:HAS_SUMMARY]->(s)
     WITH t, s
     FOREACH (_ IN (CASE WHEN $write_notes THEN [1] ELSE [] END) |
@@ -443,7 +447,7 @@ def write_back(session, trans_id: str, final_obj: Dict[str, Any], write_notes: b
     WITH s
     UNWIND $tasks AS tsk
       CREATE (tk:Task {
-        id: randomUUID(),
+        id: tsk.id,
         title: tsk.title,
         description: coalesce(tsk.description,""),
         priority: coalesce(tsk.priority,"MEDIUM"),
@@ -459,9 +463,10 @@ def write_back(session, trans_id: str, final_obj: Dict[str, Any], write_notes: b
     sid = session.run(
         q,
         tid=trans_id,
+        sid=summary_id,
         text=final_obj.get("summary",""),
         bullets=bullets,
-        tasks=final_obj.get("tasks",[]),
+        tasks=tasks,
         write_notes=bool(write_notes)
     ).single()["sid"]
     return sid

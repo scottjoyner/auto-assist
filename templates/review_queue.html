@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+{% block title %}AssistX – Review Queue{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Review Queue</h2>
+  <p class="muted">Operator triage for intents requiring approval, rejection, or clarification.</p>
+
+  <div class="grid" style="margin-top:1rem;">
+    <div class="card third">
+      <h3>Status</h3>
+      <select id="status-filter">
+        <option value="REVIEW">REVIEW</option>
+        <option value="DONE">DONE</option>
+        <option value="CANCELLED">CANCELLED</option>
+      </select>
+    </div>
+    <div class="card third">
+      <h3>Policy</h3>
+      <select id="policy-filter">
+        <option value="">All policy actions</option>
+        <option value="review_dispatch">review_dispatch</option>
+        <option value="needs_clarification">needs_clarification</option>
+        <option value="review_cancel">review_cancel</option>
+        <option value="auto_dispatch_eligible">auto_dispatch_eligible</option>
+      </select>
+    </div>
+    <div class="card third">
+      <h3>Decision</h3>
+      <select id="decision-filter">
+        <option value="">All decisions</option>
+        <option value="approved">approved</option>
+        <option value="rejected">rejected</option>
+        <option value="clarification_requested">clarification_requested</option>
+      </select>
+    </div>
+  </div>
+
+  <div style="margin-top:.75rem;">
+    <button class="btn" id="refresh-btn">Refresh</button>
+  </div>
+
+  <div id="review-list" class="feed" style="max-height:700px;margin-top:1rem;">
+    <div class="row muted">Loading review tasks…</div>
+  </div>
+</section>
+
+<section class="card" style="margin-top:1rem;">
+  <h3>Review Audit Timeline</h3>
+  <p class="muted">Recent operator decisions across review tasks.</p>
+  <div id="audit-list" class="feed" style="max-height:360px;margin-top:.75rem;">
+    <div class="row muted">Loading audit events…</div>
+  </div>
+  <div style="margin-top:.55rem;">
+    <button class="btn secondary" id="audit-more-btn">Load More Audit</button>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const list = document.getElementById('review-list');
+const statusFilter = document.getElementById('status-filter');
+const policyFilter = document.getElementById('policy-filter');
+const decisionFilter = document.getElementById('decision-filter');
+const auditList = document.getElementById('audit-list');
+const auditMoreBtn = document.getElementById('audit-more-btn');
+let auditCursor = null;
+
+function esc(s) {
+  return (s || '').toString().replace(/</g, '&lt;');
+}
+
+function shortId(s) {
+  return (s || '').substring(0, 8) + '…';
+}
+
+async function loadReviewTasks() {
+  const params = new URLSearchParams();
+  params.set('status', statusFilter.value || 'REVIEW');
+  params.set('limit', '100');
+  if (policyFilter.value) params.set('policy_action', policyFilter.value);
+  if (decisionFilter.value) params.set('review_decision', decisionFilter.value);
+
+  const r = await fetch(`/api/review/tasks?${params.toString()}`);
+  const data = await r.json();
+  list.innerHTML = '';
+  if (!data || !data.items || data.items.length === 0) {
+    list.innerHTML = '<div class="row muted">No review tasks found.</div>';
+    return;
+  }
+
+  data.items.forEach((t) => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const payload = (() => {
+      try { return t.payload_json ? JSON.parse(t.payload_json) : {}; } catch (_) { return {}; }
+    })();
+    const sourceText = payload.source_text || t.title || '';
+    row.innerHTML = `
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;">
+        <code>${shortId(t.id)}</code>
+        <span class="badge">${esc(t.status || '?')}</span>
+        <span class="badge">${esc(t.kind || '?')}</span>
+        <span class="badge">${esc(t.policy_action || payload.policy_action || 'n/a')}</span>
+        <span class="muted">${esc(t.review_decision || '')}</span>
+      </div>
+      <div style="margin-top:.35rem;">${esc(sourceText).slice(0, 220)}</div>
+      <div style="margin-top:.55rem;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;">
+        <input data-role="note" placeholder="Operator note" style="min-width:260px;" />
+        <input data-role="agent" placeholder="Target agent (optional)" style="min-width:220px;" />
+        <button class="btn" data-action="approve">Approve</button>
+        <button class="btn danger" data-action="reject">Reject</button>
+        <button class="btn" data-action="clarify">Request Clarification</button>
+      </div>
+    `;
+
+    row.addEventListener('click', async (ev) => {
+      const btn = ev.target.closest('button[data-action]');
+      if (!btn) return;
+      const action = btn.getAttribute('data-action');
+      const note = row.querySelector('input[data-role="note"]').value || '';
+      const agent = row.querySelector('input[data-role="agent"]').value || '';
+
+      const body = { note };
+      if (action === 'approve') {
+        body.auto_dispatch = true;
+        if (agent) body.target = { paperclip_agent_id: agent };
+      }
+      const resp = await fetch(`/api/review/tasks/${t.id}/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) {
+        const txt = await resp.text();
+        alert(`Action failed: ${txt}`);
+        return;
+      }
+      await loadReviewTasks();
+    });
+
+    list.appendChild(row);
+  });
+}
+
+async function loadAuditTimeline(reset = true) {
+  const qs = new URLSearchParams({ limit: '40' });
+  if (!reset && auditCursor) qs.set('cursor', auditCursor);
+  const r = await fetch(`/api/review/audit?${qs.toString()}`);
+  const data = await r.json();
+  if (reset) {
+    auditList.innerHTML = '';
+    auditCursor = null;
+  }
+  if (!data || !data.items || data.items.length === 0) {
+    if (reset) {
+      auditList.innerHTML = '<div class="row muted">No review audit events yet.</div>';
+    }
+    auditMoreBtn.disabled = true;
+    return;
+  }
+  auditCursor = data.next_cursor || null;
+  auditMoreBtn.disabled = !auditCursor;
+  data.items.forEach((a) => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const when = a.reviewed_at_ts ? new Date(a.reviewed_at_ts).toISOString() : '';
+    row.innerHTML = `
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;">
+        <span class="badge">${esc(a.review_decision || '?')}</span>
+        <span class="badge">${esc(a.policy_action || 'n/a')}</span>
+        <code>${shortId(a.review_task_id || '')}</code>
+        <span class="muted">${esc(a.reviewed_by || '')}</span>
+        <span class="muted">${esc(when)}</span>
+      </div>
+      <div style="margin-top:.25rem;">${esc(a.source_text || '').slice(0, 180)}</div>
+      <div class="muted" style="margin-top:.15rem;">
+        ${a.approved_task_id ? `approved task: ${esc(a.approved_task_id)} (${esc(a.approved_task_status || '')})` : ''}
+      </div>
+    `;
+    auditList.appendChild(row);
+  });
+}
+
+document.getElementById('refresh-btn').addEventListener('click', async () => {
+  await loadReviewTasks();
+  await loadAuditTimeline(true);
+});
+auditMoreBtn.addEventListener('click', async () => {
+  await loadAuditTimeline(false);
+});
+statusFilter.addEventListener('change', loadReviewTasks);
+policyFilter.addEventListener('change', loadReviewTasks);
+decisionFilter.addEventListener('change', loadReviewTasks);
+loadReviewTasks();
+loadAuditTimeline(true);
+</script>
+{% endblock %}

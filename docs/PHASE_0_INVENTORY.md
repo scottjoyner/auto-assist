@@ -16,7 +16,7 @@ This document captures the baseline infrastructure, services, ports, credentials
 | Neo4j | 7687 | ✅ Configured | Multi-database capable, 5.23.0+ |
 | Redis | 6379 | ✅ Configured | For RQ queues and caching |
 | Ollama (Optional) | 11434 | ⚠️ Optional | For local LLM inference |
-| Paperclip | TBD | ⚠️ External | Requires registration & endpoint mapping |
+| Paperclip | 3100 | ✅ Running | systemd user service on host, `local_trusted` mode, embedded PostgreSQL |
 | Hermes Agent (Local) | TBD | ⚠️ External | CLI-based via hermes-paperclip-adapter |
 | Hermes Agent (Remote) | TBD | ⚠️ External | Multiple devices, coordinated via Paperclip |
 
@@ -184,16 +184,16 @@ WHISPER_DEVICE=auto
 WHISPER_COMPUTE_TYPE=int8
 ```
 
-### Paperclip Integration (TODO)
+### Paperclip Integration ✅
 
 ```bash
-# Required for Paperclip dispatch
-PAPERCLIP_API_URL=<endpoint>
-PAPERCLIP_API_TOKEN=<token>
-PAPERCLIP_WORKSPACE_ID=<workspace-id>
+# Required for Paperclip dispatch (local dev)
+PAPERCLIP_API_URL=http://host.docker.internal:3100/api
+PAPERCLIP_API_TOKEN=<token-from-paperclip-agent-keys>
+PAPERCLIP_WORKSPACE_ID=<company-uuid-from-paperclip>
 
-# Optional: Webhook signing
-PAPERCLIP_WEBHOOK_SECRET=<hmac-secret>
+# Required for webhook signature verification
+PAPERCLIP_WEBHOOK_SECRET=paperclip-dev-secret
 ```
 
 ### Hermes Agent (TODO)

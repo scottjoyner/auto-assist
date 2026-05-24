@@ -1,4 +1,4 @@
-import os, sys, json, io, contextlib, resource, signal
+import os, sys, json, io, contextlib, resource, socket
 
 TIMEOUT_S = float(os.getenv("ANALYSIS_TIMEOUT_S", "8"))
 MEM_MB = int(os.getenv("ANALYSIS_MEM_MB", "512"))
@@ -7,6 +7,7 @@ SAFE_BUILTINS = {
     "len": len, "range": range, "min": min, "max": max, "sum": sum,
     "sorted": sorted, "enumerate": enumerate, "zip": zip, "abs": abs,
     "round": round, "any": any, "all": all, "list": list, "dict": dict, "set": set, "tuple": tuple,
+    "print": print,
 }
 
 ALLOW_IMPORTS = {"pandas", "math", "statistics"}
@@ -42,6 +43,10 @@ def main():
     # disable open
     def _no_open(*args, **kwargs): raise PermissionError("file I/O disabled")
     g["__builtins__"]["open"] = _no_open
+
+    # disable direct network access from executed code
+    def _no_socket(*args, **kwargs): raise PermissionError("network disabled")
+    socket.socket = _no_socket
 
     l = {"rows": rows, "pd": pd}
 

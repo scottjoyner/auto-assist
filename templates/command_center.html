@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block title %}AssistX – Command Center{% endblock %}
+
+{% block content %}
+<div class="grid">
+  <section class="card">
+    <h2>Command Center</h2>
+    <p class="muted">Overview of intents, dispatches, sessions, and memory.</p>
+  </section>
+
+  <section class="card third">
+    <h3>Intents</h3>
+    <p class="muted">Incoming voice, UI, webhook, and schedule intents.</p>
+    <div id="intent-summary">Loading…</div>
+    <div style="margin-top:.6rem;"><a class="btn" href="/intents">View intents</a></div>
+  </section>
+
+  <section class="card third">
+    <h3>Dispatches</h3>
+    <p class="muted">Queued, assigned, running, and completed dispatches.</p>
+    <div id="dispatch-summary">Loading…</div>
+    <div style="margin-top:.6rem;"><a class="btn" href="/dispatches">View dispatches</a></div>
+  </section>
+
+  <section class="card third">
+    <h3>Sessions</h3>
+    <p class="muted">Hermes agent sessions, devices, and capabilities.</p>
+    <div id="session-summary">Loading…</div>
+    <div style="margin-top:.6rem;"><a class="btn" href="/sessions">View sessions</a></div>
+  </section>
+
+  <section class="card third">
+    <h3>Review Queue</h3>
+    <p class="muted">Operator triage for review-dispatch and clarification intents.</p>
+    <div id="review-summary">Loading…</div>
+    <div id="review-audit-summary" style="margin-top:.45rem;" class="muted">Loading audit summary…</div>
+    <div style="margin-top:.6rem;"><a class="btn" href="/review">Open review queue</a></div>
+  </section>
+
+  <section class="card half">
+    <h3>Memory</h3>
+    <p class="muted">Recent memory writes, freshness, and source.</p>
+    <div id="memory-feed" class="feed">Loading…</div>
+    <div style="margin-top:.6rem;"><a class="btn" href="/memory">View memory</a></div>
+  </section>
+
+  <section class="card half">
+    <h3>Devices</h3>
+    <p class="muted">Registered agent devices and last seen times.</p>
+    <div id="device-summary">Loading…</div>
+    <div style="margin-top:.6rem;"><a class="btn" href="/devices">View devices</a></div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(async () => {
+  async function loadJSON(url) {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    return r.json();
+  }
+
+  function el(tag, cls, txt) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (txt) e.textContent = txt;
+    return e;
+  }
+
+  // intents summary
+  const intents = await loadJSON('/api/intents?limit=5');
+  const is = document.getElementById('intent-summary');
+  if (intents && intents.items) {
+    is.innerHTML = `<span class="badge">${intents.count} total</span>`;
+    const list = el('ul');
+    intents.items.slice(0, 3).forEach(i => {
+      const li = el('li');
+      li.innerHTML = `<span class="muted">[${i.source}]</span> ${(i.text||'').substring(0, 60)}`;
+      list.appendChild(li);
+    });
+    is.appendChild(list);
+  } else {
+    is.textContent = 'No intents found.';
+  }
+
+  // dispatches summary
+  const dispatches = await loadJSON('/api/dispatches?limit=5');
+  const ds = document.getElementById('dispatch-summary');
+  if (dispatches && dispatches.items) {
+    const statusCounts = {};
+    dispatches.items.forEach(d => { statusCounts[d.status] = (statusCounts[d.status] || 0) + 1; });
+    ds.innerHTML = Object.entries(statusCounts).map(([k, v]) => `<span class="badge">${k}: ${v}</span>`).join(' ');
+  } else {
+    ds.textContent = 'No dispatches found.';
+  }
+
+  // sessions summary
+  const sessions = await loadJSON('/api/sessions?limit=5');
+  const ss = document.getElementById('session-summary');
+  if (sessions && sessions.items) {
+    ss.innerHTML = `<span class="badge">${sessions.count} sessions</span>`;
+    const list = el('ul');
+    sessions.items.slice(0, 3).forEach(s => {
+      const li = el('li');
+      li.innerHTML = `<code>${s.id.substring(0, 8)}…</code> ${s.paperclip_agent_id || s.hermes_session_id || ''} <span class="muted">${s.platform || ''}</span>`;
+      list.appendChild(li);
+    });
+    ss.appendChild(list);
+  } else {
+    ss.textContent = 'No sessions found.';
+  }
+
+  // memory feed
+  const memory = await loadJSON('/api/memory?limit=10');
+  const mf = document.getElementById('memory-feed');
+  if (memory && memory.items) {
+    mf.innerHTML = '';
+    memory.items.forEach(m => {
+      const row = el('div', 'row');
+      row.innerHTML = `<span class="badge">${m.kind}</span> <span class="muted">[${m.source}]</span> ${(m.text||'').substring(0, 80)}`;
+      mf.appendChild(row);
+    });
+  } else {
+    mf.textContent = 'No memory items found.';
+  }
+
+  // devices summary
+  const devices = await loadJSON('/api/devices?limit=5');
+  const dv = document.getElementById('device-summary');
+  if (devices && devices.items) {
+    dv.innerHTML = `<span class="badge">${devices.count} devices</span>`;
+    const list = el('ul');
+    devices.items.slice(0, 3).forEach(d => {
+      const li = el('li');
+      li.innerHTML = `<code>${d.hostname || d.id}</code> <span class="muted">${d.platform || ''}</span>`;
+      list.appendChild(li);
+    });
+    dv.appendChild(list);
+  } else {
+    dv.textContent = 'No devices found.';
+  }
+
+  // review summary
+  const review = await loadJSON('/api/review/tasks?status=REVIEW&limit=100');
+  const rv = document.getElementById('review-summary');
+  if (review && review.items) {
+    const byPolicy = {};
+    review.items.forEach(t => {
+      const policy = t.policy_action || 'unlabeled';
+      byPolicy[policy] = (byPolicy[policy] || 0) + 1;
+    });
+    rv.innerHTML = `<span class="badge">${review.count} in review</span> ` +
+      Object.entries(byPolicy).slice(0, 3).map(([k, v]) => `<span class="badge">${k}: ${v}</span>`).join(' ');
+  } else {
+    rv.textContent = 'No review tasks.';
+  }
+
+  const reviewAudit = await loadJSON('/api/review/audit/summary');
+  const ras = document.getElementById('review-audit-summary');
+  if (reviewAudit && reviewAudit.by_decision) {
+    const parts = Object.entries(reviewAudit.by_decision)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(' · ');
+    ras.innerHTML = `24h decisions: <span class="badge">${reviewAudit.total_decisions || 0}</span> ${parts}`;
+  } else {
+    ras.textContent = '24h decisions unavailable.';
+  }
+})();
+</script>
+{% endblock %}

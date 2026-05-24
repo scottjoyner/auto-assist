@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -43,6 +44,78 @@ class HermesMemoryProvider:
         }
         data = self._post("/api/brain/context", payload)
         return data["context_packet"]
+
+    def system_prompt_block(self, session_id: Optional[str] = None) -> str:
+        return (
+            "You have access to shared graph memory through the AssistX/Neo4j brain. "
+            "Before acting on a task, call prefetch or graph_context_search to load "
+            "relevant context. After completing work, use write_memory to persist "
+            "durable facts, observations, and outcomes. Use signal_event to record "
+            "lifecycle events. Your memory writes are visible to other agents and sessions."
+        )
+
+    def sync_turn(
+        self,
+        session_id: str,
+        user_text: str,
+        assistant_text: str,
+        task_id: Optional[str] = None,
+    ) -> str:
+        event_id = uuid.uuid4().hex
+        payload = {
+            "user_text": user_text,
+            "assistant_text": assistant_text,
+        }
+        event_type = "turn_sync"
+        return self.signal_event(
+            event_id=event_id,
+            event_type=event_type,
+            payload=payload,
+            session_id=session_id,
+        )
+
+    def on_delegation(
+        self,
+        session_id: str,
+        child_task_id: str,
+        child_result: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        event_id = uuid.uuid4().hex
+        payload = {
+            "child_task_id": child_task_id,
+            "child_result": child_result or {},
+        }
+        event_type = "delegation"
+        return self.signal_event(
+            event_id=event_id,
+            event_type=event_type,
+            payload=payload,
+            session_id=session_id,
+        )
+
+    def on_session_switch(
+        self,
+        session_id: str,
+        previous_session_id: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> str:
+        if previous_session_id:
+            self.update_session(
+                session_id=session_id,
+                metadata={"previous_session_id": previous_session_id, "switch_reason": reason or "unknown"},
+            )
+        event_id = uuid.uuid4().hex
+        payload = {
+            "previous_session_id": previous_session_id,
+            "reason": reason or "unknown",
+        }
+        event_type = "session_switch"
+        return self.signal_event(
+            event_id=event_id,
+            event_type=event_type,
+            payload=payload,
+            session_id=session_id,
+        )
 
     def write_memory(
         self,

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}AssistX – Sessions & Devices{% endblock %}
+
+{% block content %}
+<div class="grid">
+  <section class="card half">
+    <h2>Agent Sessions</h2>
+    <p class="muted">Hermes agent sessions, device assignments, and last seen times.</p>
+    <div id="session-list" class="feed" style="max-height:500px;">
+      <div class="row muted">Loading sessions…</div>
+    </div>
+  </section>
+
+  <section class="card half">
+    <h2>Devices</h2>
+    <p class="muted">Registered agent devices and capabilities.</p>
+    <div id="device-list" class="feed" style="max-height:500px;">
+      <div class="row muted">Loading devices…</div>
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(async () => {
+  // sessions
+  const sr = await fetch('/api/sessions?limit=100');
+  const sdata = await sr.json();
+  const sl = document.getElementById('session-list');
+  sl.innerHTML = '';
+  if (!sdata || !sdata.items || sdata.items.length === 0) {
+    sl.innerHTML = '<div class="row muted">No sessions found.</div>';
+  } else {
+    sdata.items.forEach(s => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML = `
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+          <code style="font-size:.75rem;">${(s.id || '').substring(0, 8)}…</code>
+          ${s.paperclip_agent_id ? `<span class="badge">${s.paperclip_agent_id}</span>` : ''}
+          ${s.hermes_session_id ? `<span class="muted" style="font-size:.8rem;">hermes: ${s.hermes_session_id}</span>` : ''}
+          ${s.platform ? `<span class="muted" style="font-size:.8rem;">${s.platform}</span>` : ''}
+        </div>
+        <div style="margin-top:.3rem;font-size:.8rem;color:var(--muted);">
+          ${s.agent_identity || ''}
+          ${s.device_id ? `· device: <code>${(s.device_id || '').substring(0, 12)}</code>` : ''}
+          ${s.updated_at_ts ? `· last seen: ${new Date(s.updated_at_ts).toLocaleString()}` : ''}
+        </div>
+      `;
+      sl.appendChild(row);
+    });
+  }
+
+  // devices
+  const dr = await fetch('/api/devices?limit=100');
+  const ddata = await dr.json();
+  const dl = document.getElementById('device-list');
+  dl.innerHTML = '';
+  if (!ddata || !ddata.items || ddata.items.length === 0) {
+    dl.innerHTML = '<div class="row muted">No devices found.</div>';
+  } else {
+    ddata.items.forEach(d => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const caps = d.capabilities ? (Array.isArray(d.capabilities) ? d.capabilities.join(', ') : d.capabilities) : '';
+      row.innerHTML = `
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+          <code>${d.hostname || d.id}</code>
+          ${d.platform ? `<span class="muted" style="font-size:.8rem;">${d.platform}</span>` : ''}
+          ${d.last_seen_at_ts ? `<span class="muted" style="font-size:.8rem;">seen: ${new Date(d.last_seen_at_ts).toLocaleString()}</span>` : ''}
+        </div>
+        ${caps ? `<div style="margin-top:.3rem;font-size:.8rem;color:var(--muted);">capabilities: ${caps}</div>` : ''}
+      `;
+      dl.appendChild(row);
+    });
+  }
+})();
+</script>
+{% endblock %}

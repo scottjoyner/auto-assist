@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}AssistX – Devices{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Devices</h2>
+  <p class="muted">Registered agent devices, capabilities, and last seen times.</p>
+  <div id="device-list" class="feed" style="max-height:600px;margin-top:1rem;">
+    <div class="row muted">Loading devices…</div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(async () => {
+  const r = await fetch('/api/devices?limit=100');
+  const data = await r.json();
+  const list = document.getElementById('device-list');
+  list.innerHTML = '';
+  if (!data || !data.items || data.items.length === 0) {
+    list.innerHTML = '<div class="row muted">No devices found.</div>';
+    return;
+  }
+  data.items.forEach(d => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const caps = d.capabilities ? (Array.isArray(d.capabilities) ? d.capabilities.join(', ') : d.capabilities) : '';
+    row.innerHTML = `
+      <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+        <code>${d.hostname || d.id}</code>
+        <span class="badge">${d.platform || 'unknown'}</span>
+        ${d.last_seen_at_ts ? `<span class="muted" style="font-size:.8rem;">last seen: ${new Date(d.last_seen_at_ts).toLocaleString()}</span>` : ''}
+      </div>
+      ${caps ? `<div style="margin-top:.3rem;font-size:.8rem;color:var(--muted);">capabilities: ${caps}</div>` : ''}
+      <div style="margin-top:.2rem;font-size:.75rem;color:var(--muted);">
+        id: <code>${d.id}</code>
+      </div>
+    `;
+    list.appendChild(row);
+  });
+})();
+</script>
+{% endblock %}

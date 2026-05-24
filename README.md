@@ -1,12 +1,16 @@
 
-# AssistX — Transcripts → Summaries → Tasks → Executions (Neo4j + Ollama)
+# AssistX — Multi-Agent Orchestration Platform (Neo4j + Paperclip + Hermes)
 
-This repository contains a local-first, production-minded pipeline:
-- Ingest transcripts
-- Summarize + extract tasks (Ollama)
-- Store in Neo4j
-- Execute tasks with a tool-using agent
-- Log provenance (ToolCalls, Artifacts), metrics, and acceptance checks
+Command center for cross-device agent work with Neo4j graph memory,
+Paperclip assignment hub, and Hermes agent sessions.
+
+Key integrations:
+- **Paperclip** (live): dispatch tasks → create issues → route to agents
+- **Neo4j**: orchestration state, knowledge graph, memory, provenance
+- **Hermes**: persistent agent sessions with external memory provider
+- **Voice/TTS**: intent capture via browser media recording
+
+Legacy pipeline (transcripts → summaries → tasks → executions) still active.
 
 ## Run (Compose)
 See `docker-compose.yml`. Once up:
@@ -14,9 +18,48 @@ See `docker-compose.yml`. Once up:
    `docker exec -it assistx-ollama ollama pull ${OLLAMA_MODEL:-llama3.1:8b}`
 2) Init Neo4j schema:
    `docker exec -it assistx-api bash -lc "python -m assistx.cli init"`
+3) Ensure Paperclip server is running (see [docs/PHASE_3_PAPERCLIP_INTEGRATION.md](docs/PHASE_3_PAPERCLIP_INTEGRATION.md)):
+   `systemctl --user status paperclip`
+
+Dispatch API:
+```
+curl -u admin:change-me http://localhost:8000/api/dispatches
+```
 
 Review UI: http://localhost:8000 (Basic Auth)  
 Metrics: http://localhost:8000/metrics (Basic Auth)
+
+## Go-Live Checklist (Phase 6)
+
+1. Set required secrets in `.env`:
+   - `PAPERCLIP_API_TOKEN`
+   - `PAPERCLIP_WEBHOOK_SECRET`
+   - `VOICE_WEBHOOK_SECRET`
+   - `WS_AUTH_TOKEN`
+2. Restart API/worker with current env:
+   - `docker compose up -d api worker`
+3. Ensure host Hermes adapter is running:
+   - `systemctl --user status hermes-agent-adapter.service`
+4. Run rollout checks:
+   - `src/scripts/phase6_preflight.sh`
+   - `src/scripts/phase6_callback_smoke.sh`
+   - `src/scripts/phase6_canary_gate.sh`
+5. Run a live canary task and verify `READY -> RUNNING -> DONE`.
+
+See [docs/PHASE_6_HARDENING_ROLLOUT.md](docs/PHASE_6_HARDENING_ROLLOUT.md) and
+[docs/CANARY_ACCEPTANCE_2026-05-24.md](docs/CANARY_ACCEPTANCE_2026-05-24.md).
+
+## Go-Live Commands (Copy/Paste)
+
+```bash
+set -a; source .env; set +a
+docker compose up -d api worker
+systemctl --user restart hermes-agent-adapter.service
+
+BASE_URL=http://localhost:8000 src/scripts/phase6_preflight.sh
+BASE_URL=http://localhost:8000 src/scripts/phase6_callback_smoke.sh
+BASE_URL=http://localhost:8000 src/scripts/phase6_canary_gate.sh
+```
 
 ## CLI
 ```bash
@@ -99,3 +142,11 @@ docker compose -f docker-compose.yml -f compose.host.yml down --remove-orphans
 docker compose -f docker-compose.yml -f compose.host.yml build --no-cache api worker
 docker compose -f docker-compose.yml -f compose.host.yml up -d
 ```
+
+## Documentation
+
+See [docs/INDEX.md](docs/INDEX.md) for the complete implementation package index.
+- [Migration Plan](MIGRATION.md) — full architecture and phased plan
+- [Implementation Guide](docs/IMPLEMENTATION_GUIDE.md) — setup and API reference
+- [Phase 3: Paperclip Integration](docs/PHASE_3_PAPERCLIP_INTEGRATION.md) — dispatch setup
+- [Execution Summary](docs/EXECUTION_SUMMARY.md) — what's built and tested

@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}AssistX – Memory{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Memory</h2>
+  <p class="muted">Durable memory items from Hermes, voice, and direct writes. Includes facts, notes, preferences, plans, and summaries.</p>
+
+  <div style="display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap;">
+    <a class="btn secondary" href="/memory">All</a>
+    <a class="btn secondary" href="/memory?kind=note">Notes</a>
+    <a class="btn secondary" href="/memory?kind=fact">Facts</a>
+    <a class="btn secondary" href="/memory?kind=preference">Preferences</a>
+    <a class="btn secondary" href="/memory?kind=plan">Plans</a>
+    <a class="btn secondary" href="/memory?kind=summary">Summaries</a>
+  </div>
+
+  <div id="memory-list" class="feed" style="max-height:600px;">
+    <div class="row muted">Loading memory…</div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(async () => {
+  const params = new URLSearchParams(window.location.search);
+  const kind = params.get('kind') || '';
+  let url = '/api/memory?limit=100';
+  if (kind) url += `&kind=${kind}`;
+  const r = await fetch(url);
+  const data = await r.json();
+  const list = document.getElementById('memory-list');
+  list.innerHTML = '';
+  if (!data || !data.items || data.items.length === 0) {
+    list.innerHTML = '<div class="row muted">No memory items found.</div>';
+    return;
+  }
+  data.items.forEach(m => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const meta = [];
+    if (m.source) meta.push(`source: ${m.source}`);
+    if (m.session_id) meta.push(`session: ${(m.session_id || '').substring(0, 12)}…`);
+    if (m.task_id) meta.push(`task: ${(m.task_id || '').substring(0, 12)}…`);
+    if (m.updated_at_ts) meta.push(new Date(m.updated_at_ts).toLocaleString());
+    row.innerHTML = `
+      <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+        <span class="badge">${m.kind || '?'}</span>
+        <span class="muted" style="font-size:.8rem;">${meta.join(' · ')}</span>
+      </div>
+      <div style="margin-top:.3rem;">${(m.text || '').replace(/</g, '&lt;')}</div>
+    `;
+    list.appendChild(row);
+  });
+})();
+</script>
+{% endblock %}

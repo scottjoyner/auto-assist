@@ -1,16 +1,19 @@
 
 from __future__ import annotations
+import logging
 from .neo4j_client import Neo4jClient
 from .agents.orchestrator import run_task
 from .acceptance import evaluate_acceptance
 import os, traceback, time
 from typing import Optional
+from rq import get_current_job
 from .neo4j_client import Neo4jClient
 from .pipeline.qa_pipeline import answer_question
 from .answers_store import set_status, set_result, set_error
 from .metrics import JOBS_STARTED, JOBS_SUCCEEDED, JOBS_FAILED
 from . import answers_store
 
+logger = logging.getLogger(__name__)
 
 def ask_job(answer_id: str, question: str):
     answers_store.set_status(answer_id, "RUNNING")
@@ -56,12 +59,28 @@ def ask_question_job(
     deliverable_id: Optional[str] = None,
 ) -> None:
     from .answers_store import set_status, set_result, set_error
+    job = get_current_job()
+    job_id = job.get_id() if job else None
     JOBS_STARTED.inc()
     set_status(answer_id, "RUNNING")
+    logger.info(
+        "qa_job_start answer_id=%s job_id=%s deliverable_id=%s model=%s",
+        answer_id,
+        job_id,
+        deliverable_id,
+        model,
+    )
     neo = Neo4jClient()
     try:
         out = answer_question(neo, question=question, model=model, max_repairs=max_repairs, log_to_neo=True)
         set_status(answer_id, "RUNNING", run_id=out.get("run_id"))
+        logger.info(
+            "qa_job_pipeline_done answer_id=%s job_id=%s run_id=%s cached=%s",
+            answer_id,
+            job_id,
+            out.get("run_id"),
+            out.get("cached"),
+        )
         if deliverable_id:
             completed = neo.complete_deliverable(
                 deliverable_id=deliverable_id,
@@ -73,6 +92,13 @@ def ask_question_job(
             out["deliverable_id"] = deliverable_id
             out["deliverable_status"] = completed.get("status") if completed else "UNKNOWN"
         set_result(answer_id, out)
+        logger.info(
+            "qa_job_success answer_id=%s job_id=%s run_id=%s deliverable_id=%s",
+            answer_id,
+            job_id,
+            out.get("run_id"),
+            deliverable_id,
+        )
         if deliverable_id:
             answers_store.publish_event(
                 answer_id,
@@ -108,6 +134,12 @@ def ask_question_job(
         import traceback
         tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         set_error(answer_id, tb)
+        logger.exception(
+            "qa_job_failed answer_id=%s job_id=%s deliverable_id=%s",
+            answer_id,
+            job_id,
+            deliverable_id,
+        )
         JOBS_FAILED.inc()
         raise
     finally:

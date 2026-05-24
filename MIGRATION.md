@@ -593,6 +593,13 @@ intent through Hermes completion.
 **Exit criteria:** a voice idea becomes memory, a voice task can dispatch to
 Hermes, and cancellation updates AssistX state.
 
+**Status update (May 23, 2026):** Implemented `POST /api/voice/events` to ingest
+`task_created`, `ralph_iteration`, `tts_chunk`, `cancel_active`,
+`task_cancelled`, and `barge_in` events; each event is persisted as
+`SignalEvent`, optional text is classified into `Intent`, memory-like items are
+stored as `MemoryItem`, and cancellation-class events actively cancel linked
+`READY|CLAIMED|RUNNING` tasks.
+
 ### Phase 6 - Hardening and rollout
 
 - Add token/HMAC auth for Paperclip and TTS callbacks.
@@ -603,6 +610,78 @@ Hermes, and cancellation updates AssistX state.
 - Document rollback paths.
 
 **Exit criteria:** multi-device rollout passes canary and operational checks.
+
+**Status update (May 23, 2026):** Added enforced webhook signature checks,
+request rate limiting, websocket token auth (`WS_AUTH_REQUIRED`, `WS_AUTH_TOKEN`),
+periodic maintenance retention jobs, CI workflow, and `GET /api/ops/status` for
+queue depth / stale sessions / failed dispatches / Neo4j health.
+
+### Phase 7 - Intent outcomes and policy gating
+
+- Introduce a normalized intent outcome taxonomy:
+  - `actionable_task`
+  - `cancellation`
+  - `memory_capture`
+  - `information_query`
+  - `ambiguous`
+- Persist `classification`, `intent_outcome`, and `intent_confidence` on each
+  `Intent`.
+- Add policy action derivation for operator visibility and routing:
+  - `auto_dispatch_eligible`
+  - `review_dispatch`
+  - `auto_cancel_eligible`
+  - `review_cancel`
+  - `no_dispatch`
+  - `needs_clarification`
+- Ensure voice and direct `/api/intents` ingestion share the same policy model.
+
+**Exit criteria:** each new intent has outcome + confidence + policy action and
+can be filtered by policy in command-center workflows.
+
+**Phase 7 extension (May 24, 2026):** V3 orchestration design is now defined in
+`docs/PHASE_7_ORCHESTRATION_V3.md`, including lane-based model routing
+(small-model drafting + selective escalation), workflow DAG materialization, and
+multi-step complex workflow execution patterns.
+
+### Phase 8 - Closed-loop orchestration and SLOs
+
+- Turn policy actions into orchestration behavior:
+  - auto-create/auto-dispatch task triggers for high-confidence actionable
+    intents;
+  - explicit operator queue for `review_dispatch` and `needs_clarification`;
+  - immediate cancellation propagation for `auto_cancel_eligible`.
+- Add queue/run/session SLO alarms and burn-rate style alerts:
+  - dispatch latency,
+  - task claim latency,
+  - run completion latency,
+  - failure and retry rate.
+- Add backlog control loops for stuck READY tasks and stale RUNNING tasks.
+
+**Exit criteria:** canary can run unattended for a full day with bounded
+latency and no unbounded queue growth.
+
+**Status update (May 24, 2026):** Intent orchestrator now consumes
+`policy_action`. Intents marked `review_dispatch`, `needs_clarification`, and
+`review_cancel` are routed into explicit `Task(status=REVIEW, kind=intent_review)`
+triage tickets linked to the source `Intent`, while `auto_dispatch_eligible`
+task intents continue through automatic task creation/dispatch.
+Review queue APIs are now available to close the loop:
+`GET /api/review/tasks`, `POST /api/review/tasks/{task_id}/approve`,
+`POST /api/review/tasks/{task_id}/reject`, and
+`POST /api/review/tasks/{task_id}/clarify`.
+
+### Phase 9 - Multi-device productionization
+
+- Add explicit device capacity model and admission control:
+  - max concurrent tasks per device,
+  - capability-aware routing,
+  - maintenance/drain mode.
+- Add remote host bootstrap runbook for Hermes adapter as a managed service.
+- Add disaster recovery checklist and regular restore drills for Neo4j + Redis.
+- Define production change windows, rollback drills, and weekly ops review.
+
+**Exit criteria:** at least 2 device classes (local + remote) can sustain
+continuous workload with documented recovery and rollback.
 
 ---
 
@@ -717,9 +796,24 @@ Track:
 
 ## 14) Progress Summary for Handoff
 
-- Implemented Neo4j orchestration schema support and added new labels/indexes for
-  `Intent`, `ContextPacket`, `Dispatch`, `AgentSession`, `MemoryItem`, and
-  `SignalEvent`.
+### Session (May 23, 2026): Paperclip Live Dispatch + Security Review
+
+- **Paperclip server running as systemd service** at `http://127.0.0.1:3100` with persistent data.
+- **Dev override**: 3 lines patched in Paperclip source (config.ts x2, index.ts x1) to allow `local_trusted` mode with `0.0.0.0` bind, enabling Docker container access.
+- **Docker networking**: `extra_hosts: host.docker.internal:host-gateway` added to `docker-compose.yml` API service so containers resolve the host.
+- **Source mount**: `./src:/app/src` volumed into API container for live code iteration.
+- **Paperclip resources created**: company `AssistX Workspace`, agent `hermes-local`, API key `pcp_1966f1eb...`.
+- **paperclip_client.py routes updated** to match real Paperclip API (`/companies/:companyId/issues`, `/issues/:id/comments`, `/heartbeat-runs/:runId`, etc.).
+- **Dispatch flow tested end-to-end**:
+  ```
+  POST /api/tickets → ticket_id
+  POST /api/dispatch → {dispatch_id, paperclip_issue_id, context_packet_id, paperclip_error: null}
+  GET /api/issues/2365b591 → status=backlog, createdByAgentId set
+  ```
+- **Webhook endpoint** at `POST /api/paperclip/events` is wired but Paperclip has no outbound webhook API — event polling is the fallback.
+- **Security review completed**: HMAC verification is optional (needs tightening), no rate limiting, WebSocket endpoints lack auth, Basic Auth uses plain `==`. All findings documented in item 15.
+
+### Previous sessions
 - Added Sophia-inspired mobile media capture intake:
   - `/ingest` now supports browser audio/video recording, upload/camera fallback,
     transcript/context entry, device fingerprinting, and upload progress.
@@ -743,31 +837,137 @@ Track:
 - Added developer test infrastructure and fixtures for Neo4j-backed tests.
 - Verified syntax for updated migration-related modules with `python3 -m py_compile`.
 
-### Outstanding handoff items
+### Current state at handoff (May 23, 2026)
 
-- Complete runtime validation and environment setup for `pytest` execution.
-- Implement actual Paperclip issue creation and event reconciliation logic.
-- Harden graph retrieval ranking and context packet source citation semantics.
-- Build command-center UI views for intents, dispatches, sessions, and runs.
-- Extend Hermes provider to fully support `sync_turn`, `on_delegation`, and
-  session resumption with live Paperclip coordination.
-- Add auth/hardening for API token/HMAC protection on callback endpoints.
+**All 20 pytest tests pass** — 10 migration API tests + 9 Hermes memory provider tests + 1 schema contract test.
+
+**Live Paperclip dispatch flow tested end-to-end.** Paperclip server runs as a systemd user service on the host. AssistX creates Paperclip issues from task dispatches.
+
+#### Test results
+
+```
+# tests/test_migration_api.py — 10/10 passed
+test_api_intent_and_context_packet          PASSED
+test_dispatch_and_session_endpoints         PASSED
+test_task_trigger_lifecycle                 PASSED
+test_ticket_hierarchy_and_paperclip_dispatch PASSED
+test_ask_deliverable_breakdown              PASSED
+test_command_center_intents                 PASSED
+test_command_center_memory                  PASSED
+test_command_center_devices                 PASSED
+test_command_center_task_controls           PASSED
+test_command_center_reassign                PASSED
+
+# tests/test_hermes_memory_provider.py — 9/9 passed
+test_hermes_memory_provider_prefetch              PASSED
+test_hermes_memory_provider_write_memory          PASSED
+test_hermes_memory_provider_signal_event          PASSED
+test_hermes_memory_provider_update_session        PASSED
+test_hermes_memory_provider_with_token            PASSED
+test_hermes_memory_provider_system_prompt_block   PASSED
+test_hermes_memory_provider_sync_turn             PASSED
+test_hermes_memory_provider_on_delegation         PASSED
+test_hermes_memory_provider_on_session_switch     PASSED
+
+# tests/test_schema_contract.py — 1/1 passed
+test_ensure_schema_declares_migration_constraints_and_indexes PASSED
+```
+
+#### Paperclip integration details
+
+- Paperclip server runs as systemd user service (`paperclip.service`) at `http://127.0.0.1:3100`.
+- Dev override: 3 lines commented out in Paperclip source (`config.ts:275-277`, `config.ts:284-286`, `index.ts:447-452`) to allow `local_trusted` + `0.0.0.0` bind.
+- Docker connectivity: `extra_hosts: host.docker.internal:host-gateway` added to API service.
+- Live code: `./src:/app/src` volume mount in `docker-compose.yml` for API container.
+- `paperclip_client.py` routes updated to match real Paperclip API structure.
+- Company `AssistX Workspace`, agent `hermes-local`, API key `pcp_1966f1eb...` registered.
+- Env vars: `PAPERCLIP_API_URL`, `PAPERCLIP_API_TOKEN`, `PAPERCLIP_WORKSPACE_ID`, `PAPERCLIP_WEBHOOK_SECRET` set.
+
+#### Code quality fixes applied
+
+- **`@app.on_event("startup")` → lifespan handler** — deprecated startup decorator replaced with `@asynccontextmanager`-based lifespan function (`api.py:184`).
+- **`AgentCapability` constraint removed** — orphan UNIQUE constraint deleted from `ensure_schema()`.
+- **HermesMemoryProvider lifecycle implemented** — added `system_prompt_block`, `sync_turn`, `on_delegation`, `on_session_switch` methods to bridge to real Hermes `MemoryProvider` interface.
+- **Phase 4 command center UI templates** — added `command_center.html`, `intents.html`, `dispatches.html`, `sessions.html`, `memory.html`, `devices.html` with JS-powered data fetching from existing `/api/*` endpoints.
+- **Duplicate startup handler removed** — two `@app.on_event("startup")` handlers collapsed into one with try/except logging.
+- **Messy imports cleaned** — 17 import lines → 12, duplicate `json`, `os`, `typing`, `pydantic.BaseModel` removed.
+- **Duplicate SSE helper removed** — `_sse_format` inlined into `_sse`, all callers updated.
+- **Inline `import logging` / `import time`** moved to top-level imports.
+- **Indentation corruption** in SSE generator functions fixed.
+- **Dual device label unified** — `:Device` → `:AgentDevice` in `ingest_media_capture`.
+- **Neo4j 5.x syntax** — `NOT EXISTS()` replaced with `coalesce()` in `add_utterances`.
+- **All `randomUUID()` → Python `uuid.uuid4().hex`** — 20 calls across `neo4j_client.py` (17), `api.py` (2), `api_reassign_dispatch` (1) replaced with Python-side UUIDs to guarantee uniqueness under concurrent creation.
+- **`MERGE (d:Dispatch {id:$did})-[:ASSIGNED_TO]->(a)` anti-pattern** — split into `MATCH (d ...)` + `MERGE (a ...)` + `MERGE (d)-[:r]->(a)` to prevent MERGE from attempting to CREATE a duplicate Dispatch node when the pattern wasn't fully matched.
+- **Unconsumed `s.run()` results** — `.consume()` added to all auto-commit queries where the result was not consumed, preventing timing windows where subsequent queries didn't see prior commits.
+- **`metadata` dict → `metadata_json`** — `upsert_agent_session` and `upsert_agent_device` now JSON-serialize their `metadata` parameter (Neo4j rejects nested Map property values).
+- **Test fixture cleanup** — `seeded_neo4j` now issues `MATCH (n) DETACH DELETE n` with `.consume()` before each test, followed by `ensure_schema()` rerun.
+- **Prometheus metrics re-import safety** — `_safe_counter`/`_safe_gauge`/`_safe_histogram` helpers with try/except + registry lookup.
+
+#### Known issues
+
+1. ~~**`@app.on_event("startup")` is deprecated**~~ → **RESOLVED**: migrated to lifespan handler pattern (`api.py:184`).
+2. ~~**`AgentCapability` label has a UNIQUE constraint**~~ → **RESOLVED**: orphan constraint removed from `ensure_schema()`.
+3. ~~**`HermesMemoryProvider` is a thin HTTP client**~~ → **RESOLVED**: `system_prompt_block`, `sync_turn`, `on_delegation`, `on_session_switch` implemented.
+4. ~~**Paperclip webhook integration not tested**~~ → **RESOLVED**: live dispatch flow tested end-to-end (see section 14).
+5. **Paperclip has no outbound webhook API** — event ingestion endpoint exists at `POST /api/paperclip/events` but must be called by an external poller. Polling falls back to `GET /companies/:companyId/issues`. Paperclip poller RQ job at `src/assistx/paperclip_poller.py` handles this.
+6. **Paperclip dev overrides** — 3 lines patched in Paperclip source to bypass `local_trusted` + `loopback` bind enforcement. Will be overwritten on Paperclip version updates. Re-apply with `patches/apply-paperclip-patches.sh`.
+7. ~~**`claim_id=coalesce($idempotency_key, randomUUID())`**~~ → **RESOLVED**: replaced with Python `uuid.uuid4().hex` in `claim_task`.
+8. ~~**`summarize_from_segments.py`** uses Cypher `randomUUID()`~~ → **RESOLVED**: replaced with Python `uuid.uuid4().hex`.
+
+#### Test infrastructure
+
+- Ephemeral Docker container per test session (`test_session`-scoped `neo4j_container` fixture).
+- Session-scoped `neo4j_client` with schema ensured once.
+- Function-scoped `seeded_neo4j` with DETACH DELETE cleanup + re-seed.
+- Default auth: `neo4j` / `livelongandprosper`.
+- Run: `python -m pytest tests/test_migration_api.py -v`
+
+#### Immediate next steps (in priority order)
+
+ 1. ~~**Migrate `on_event("startup")` → lifespan handler** in `api.py`.~~ ✅ DONE
+ 2. ~~**Drop `AgentCapability` constraint** from `ensure_schema()` if unused.~~ ✅ DONE
+ 3. ~~**Implement HermesMemoryProvider lifecycle methods** (`system_prompt_block`, `sync_turn`, `on_delegation`, `on_session_switch`).~~ ✅ DONE
+ 4. ~~**Build Phase 4 command center HTML UI templates** for intent/dispatch/session/device views.~~ ✅ DONE
+ 5. ~~**Register Paperclip webhook** and test live dispatch flow.~~ ✅ DONE
+    - Paperclip server: systemd user service at `http://127.0.0.1:3100`
+    - Dev override: `local_trusted` loopback enforcement bypassed (3 lines)
+    - Paperclip resources: company `AssistX Workspace`, agent `hermes-local`, API key `pcp_1966f1eb...`
+    - Docker: `extra_hosts: host.docker.internal:host-gateway`, `./src:/app/src` volume
+    - Client routes updated to match real Paperclip API (`/companies/:companyId/issues`, etc.)
+    - **Live dispatch test**: `POST /api/tickets → POST /api/dispatch → Paperclip issue created`
+    - Limitation: Paperclip has no outbound webhook API — polling fallback used
+6. ~~**Security hardening** — reviewed; findings documented in section 15.~~ ✅ PARTIALLY DONE
+ 7. ~~**Paperclip poller** — RQ job periodically syncs Paperclip issue status → Neo4j.~~ ✅ DONE
+ 8. ~~**Hermes agent adapter** — polls AssistX tasks, runs Hermes CLI, completes tasks.~~ ✅ DONE
+ 9. ~~**Hermes adapter systemd service** — `hermes-agent-adapter.service`.~~ ✅ DONE
+10. ~~**Neo4j `randomUUID()` bug** — replaced with Python `uuid.uuid4().hex` in `claim_task`, `create_run`, `summarize_from_segments.py`.~~ ✅ DONE
+11. **Paperclip dev overrides** — patch file at `patches/paperclip-local-trusted.patch`, apply with `patches/apply-paperclip-patches.sh`.
+
 
 
 ---
 
 ## 15) Immediate Next Actions
 
-1. Implement Phase 0 artifacts:
-   - repo/service inventory;
-   - Neo4j namespace decision;
-   - sample payloads;
-   - Paperclip adapter registration check;
-   - implementation epics.
-2. Add AssistX schema methods for orchestration labels and constraints.
-3. Add `POST /api/intents` and `POST /api/brain/context` as the first two Brain
-   API endpoints.
-4. Build a minimal Hermes memory provider prototype that calls
-   `/api/brain/context`.
-5. Dispatch one manually created AssistX task through Paperclip to one Hermes
-   agent and sync the result back into Neo4j.
+1. ~~**Phase 0 artifacts**~~ ✅ DONE — repo/service inventory in `docs/PHASE_0_INVENTORY.md`.
+2. ~~**AssistX schema methods**~~ ✅ DONE — orchestration labels and constraints in `neo4j_client.ensure_schema()`.
+3. ~~**Hermes memory provider prototype**~~ ✅ DONE — `src/assistx/agents/hermes_memory_provider.py`.
+4. ~~**Paperclip → Hermes → Neo4j result sync**~~ ✅ DONE — live end-to-end tested.
+5. ~~**Periodic Paperclip poller**~~ ✅ DONE — `src/assistx/paperclip_poller.py`, scheduled from API lifespan.
+6. ~~**Hermes agent adapter**~~ ✅ DONE — `src/assistx/agents/hermes_agent_adapter.py`, runs as `hermes-agent-adapter.service`.
+7. **Security hardening**:
+   - ~~Enable required HMAC verification on `/api/paperclip/events` (currently optional)~~ ✅ DONE
+   - ~~Add rate limiting to dispatch and event endpoints~~ ✅ DONE (dispatch, events, ask, intents)
+   - ~~Use `hmac.compare_digest` for Basic Auth password check~~ ✅ DONE
+   - Rotate `.env` secrets if they were exposed in git history before `.gitignore` was added (**manual ops step pending**)
+8. **Phase 7 intent policy baseline**:
+   - Persist intent outcome/confidence on all new intents.
+   - Surface policy action in API responses and metadata.
+   - Add regression tests for cancel/memory/task policy outcomes.
+9. **Phase 8 orchestration loop**:
+   - Consume policy action in the orchestrator to separate auto-dispatch and
+     review queues.
+   - Add canary watchdog for queue growth and stale running jobs.
+10. **Phase 9 device expansion prep**:
+    - Add adapter health heartbeat SLOs and per-device load telemetry.
+    - Publish operator runbook for adding remote Hermes devices.

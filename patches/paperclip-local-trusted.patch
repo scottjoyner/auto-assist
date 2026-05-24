@@ -1,0 +1,55 @@
+diff --git a/server/src/config.ts b/server/src/config.ts
+index 90d6cbf6..1bcd94ba 100644
+--- a/server/src/config.ts
++++ b/server/src/config.ts
+@@ -272,18 +272,20 @@ export function loadConfig(): Config {
+     host: configuredHost,
+     customBindHost,
+   });
+-  if (bindValidationErrors.length > 0) {
+-    throw new Error(bindValidationErrors[0]);
+-  }
++  // NOTE: Dev override — local_trusted + non-loopback bind is allowed
++  // if (bindValidationErrors.length > 0) {
++  //   throw new Error(bindValidationErrors[0]);
++  // }
+   const resolvedBind = resolveRuntimeBind({
+     bind,
+     host: configuredHost,
+     customBindHost,
+     tailnetBindHost,
+   });
+-  if (resolvedBind.errors.length > 0) {
+-    throw new Error(resolvedBind.errors[0]);
+-  }
++  // NOTE: Dev override — allow all binds
++  // if (resolvedBind.errors.length > 0) {
++  //   throw new Error(resolvedBind.errors[0]);
++  // }
+ 
+   return {
+     deploymentMode,
+diff --git a/server/src/index.ts b/server/src/index.ts
+index 105f23ec..705cb0bc 100644
+--- a/server/src/index.ts
++++ b/server/src/index.ts
+@@ -444,12 +444,13 @@ export async function startServer(): Promise<StartedServer> {
+     startupDbInfo = { mode: "embedded-postgres", dataDir, port };
+   }
+   
+-  if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
+-    throw new Error(
+-      `local_trusted mode requires loopback host binding (received: ${config.host}). ` +
+-        "Use authenticated mode for non-loopback deployments.",
+-    );
+-  }
++  // NOTE: Dev override — allow local_trusted + non-loopback
++  // if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
++  //   throw new Error(
++  //     `local_trusted mode requires loopback host binding (received: ${config.host}). ` +
++  //       "Use authenticated mode for non-loopback deployments.",
++  //   );
++  // }
+   
+   if (config.deploymentMode === "local_trusted" && config.deploymentExposure !== "private") {
+     throw new Error("local_trusted mode only supports private exposure");

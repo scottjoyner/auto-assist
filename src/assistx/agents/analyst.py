@@ -1,4 +1,7 @@
-import io, contextlib, json
+import json
+import os
+import subprocess
+import sys
 from typing import List, Dict, Any, Tuple
 from .llm import tool_json
 
@@ -24,16 +27,38 @@ def generate_analysis_code(question: str, rows: List[Dict[str, Any]]) -> Dict[st
 
 def run_user_code(code: str, rows: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], str]:
     """
-    Executes user code safely-ish. Provides 'rows' and 'pd' in locals.
-    Captures stdout. Expects a function main(rows)->dict.
+    Executes analysis code in an isolated subprocess sandbox.
+    Captures stdout emitted by the user code and returns JSON-compatible results.
+    Expects a function main(rows)->dict.
     """
-    import pandas as pd
-    safe_globals = {"__builtins__": {"len": len, "range": range, "min": min, "max": max, "sum": sum, "sorted": sorted}}
-    env = {"rows": rows, "pd": pd}
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        exec(code, safe_globals, env)
-        if "main" not in env:
-            raise RuntimeError("No main(rows) found")
-        result = env["main"](rows)
-    return result, out.getvalue()
+    timeout_s = float(os.getenv("ANALYSIS_TIMEOUT_S", "8"))
+    cmd = [sys.executable, "-m", "assistx.sandbox_runner"]
+    payload = json.dumps({"code": code, "rows": rows}, ensure_ascii=False).encode("utf-8")
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=payload,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=max(1.0, timeout_s + 1.0),
+            check=False,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Analysis sandbox timed out after {timeout_s}s") from exc
+
+    if proc.returncode != 0:
+        err = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"Analysis sandbox failed (exit={proc.returncode}): {err}")
+
+    try:
+        data = json.loads(proc.stdout.decode("utf-8"))
+    except Exception as exc:
+        out = proc.stdout.decode("utf-8", errors="replace")
+        raise RuntimeError(f"Analysis sandbox returned invalid JSON: {out[:400]}") from exc
+
+    result = data.get("result")
+    stdout = data.get("stdout", "")
+    if not isinstance(result, dict):
+        raise RuntimeError("Analysis main(rows) must return a dict result")
+    return result, stdout

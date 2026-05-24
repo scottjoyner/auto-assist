@@ -19,7 +19,10 @@ services:
       # --- AssistX core ---
       - BASIC_AUTH_USER=${BASIC_AUTH_USER:-admin}
       - BASIC_AUTH_PASS=${BASIC_AUTH_PASS:-change-me}
+      - TRUSTED_AUTH_HEADER=${TRUSTED_AUTH_HEADER:-}
       - API_TOKEN=${API_TOKEN:-}                    # if set, /upload-audio requires x-api-token
+      - WS_AUTH_REQUIRED=${WS_AUTH_REQUIRED:-1}
+      - WS_AUTH_TOKEN=${WS_AUTH_TOKEN:-}
       - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS:-*}
 
       # --- Datastores (defaults assume containerized infra) ---
@@ -38,6 +41,13 @@ services:
       - TRANSCRIPTIONS_ROOT=/app/transcriptions
       - XDG_CACHE_HOME=/app/.cache
 
+      # --- Paperclip dispatch ---
+      - PAPERCLIP_API_URL=http://host.docker.internal:3100/api
+      - PAPERCLIP_API_TOKEN=${PAPERCLIP_API_TOKEN:-}
+      - PAPERCLIP_WORKSPACE_ID=${PAPERCLIP_WORKSPACE_ID:-}
+      - PAPERCLIP_WEBHOOK_SECRET=${PAPERCLIP_WEBHOOK_SECRET:-}
+      - VOICE_WEBHOOK_SECRET=${VOICE_WEBHOOK_SECRET:-}
+
       # --- App paths ---
       - CACHE_PATH=/app/.assistx_cache.sqlite
     depends_on:
@@ -45,7 +55,10 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
+      - ./src:/app/src
       - assistx_cache:/app/.cache
       - ./artifacts:/app/artifacts
       - transcriptions:/app/transcriptions
@@ -69,6 +82,7 @@ services:
     environment:
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - RQ_QUEUE=${RQ_QUEUE:-assistx}
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-1}
       - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-livelongandprosper}
@@ -79,10 +93,22 @@ services:
       - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
       - TRANSCRIPTIONS_ROOT=/app/transcriptions
       - XDG_CACHE_HOME=/app/.cache
+      - PAPERCLIP_API_URL=${PAPERCLIP_API_URL:-http://host.docker.internal:3100/api}
+      - PAPERCLIP_API_TOKEN=${PAPERCLIP_API_TOKEN:-}
+      - PAPERCLIP_WORKSPACE_ID=${PAPERCLIP_WORKSPACE_ID:-}
+      - PAPERCLIP_WEBHOOK_SECRET=${PAPERCLIP_WEBHOOK_SECRET:-}
+      - ORCHESTRATOR_INTERVAL=${ORCHESTRATOR_INTERVAL:-15}
+      - ORCHESTRATOR_INTENTS_PER_CYCLE=${ORCHESTRATOR_INTENTS_PER_CYCLE:-3}
+      - MAINTENANCE_INTERVAL_SECONDS=${MAINTENANCE_INTERVAL_SECONDS:-1800}
+      - TASK_RETENTION_DAYS=${TASK_RETENTION_DAYS:-30}
+      - MEMORY_RETENTION_DAYS=${MEMORY_RETENTION_DAYS:-90}
     depends_on:
       redis:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
+      - ./src:/app/src
       - assistx_cache:/app/.cache
       - ./artifacts:/app/artifacts
       - transcriptions:/app/transcriptions

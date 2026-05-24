@@ -10,6 +10,7 @@ import pathlib
 import shutil
 import time as _time
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 import redis
@@ -29,9 +30,18 @@ from pydantic import BaseModel, Field
 from rq import Queue
 from .metrics import QA_REQUESTS, JOBS_ENQUEUED, TASK_CLAIMS, TASK_COMPLETIONS, TASK_HEARTBEATS, CONTEXT_PACKETS
 from .metrics import RQ_JOBS_IN_QUEUE, RQ_JOBS_RUNNING, RQ_JOBS_FAILED
+from .metrics import REQUESTS
 from .idempotency_store import save as idemp_save, load as idemp_load
 from .neo4j_client import Neo4jClient  # unified client
 from .paperclip_client import PaperclipClient
+from .rate_limiter import DISPATCH_LIMITER, EVENT_LIMITER, ASK_LIMITER, INTENT_LIMITER
+from .intent_classifier import (
+    classify_text,
+    CLASSIFICATION_TASK,
+    CLASSIFICATION_CANCEL,
+    CLASSIFICATION_QUERY,
+    CLASSIFICATION_MEMORY,
+)
 from .agents.orchestrator import *
 from .pipeline import *
 from .queue import *
@@ -145,6 +155,16 @@ class SignalEventIn(BaseModel):
     paperclip_issue_id: Optional[str] = None
     paperclip_run_id: Optional[str] = None
 
+class VoiceEventIn(BaseModel):
+    event_id: str
+    event_type: str
+    text: Optional[str] = None
+    source: str = "voice"
+    session_id: Optional[str] = None
+    client_ts: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    auto_dispatch: bool = True
+
 class SessionUpdateIn(BaseModel):
     paperclip_agent_id: Optional[str] = None
     hermes_session_id: Optional[str] = None
@@ -153,15 +173,42 @@ class SessionUpdateIn(BaseModel):
     platform: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
 
+class DeviceRegisterIn(BaseModel):
+    device_id: str
+    hostname: str
+    platform: Optional[str] = None
+    capabilities: Optional[List[str]] = None
+    resources: Optional[Dict[str, Any]] = None
+    max_concurrent_tasks: int = 1
+    available_agents: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
+
+class DeviceHeartbeatIn(BaseModel):
+    current_load: int = 0
+    queue_depth: int = 0
+
+
+class ReviewDecisionIn(BaseModel):
+    note: Optional[str] = None
+    auto_dispatch: bool = True
+    target: Optional[DispatchTarget] = None
+    priority: str = "MEDIUM"
+
 # -----------------------
 # Config / Security
 # -----------------------
-security = HTTPBasic()
+security = HTTPBasic(auto_error=False)
 USER = os.getenv("BASIC_AUTH_USER", "neo4j")
 PASS = os.getenv("BASIC_AUTH_PASS", "livelongandprosper")
+TRUSTED_AUTH_HEADER = os.getenv("TRUSTED_AUTH_HEADER", "").strip()
 
 API_TOKEN: Optional[str] = os.getenv("API_TOKEN")  # If set, required for /upload-audio
 PAPERCLIP_WEBHOOK_SECRET: Optional[str] = os.getenv("PAPERCLIP_WEBHOOK_SECRET")
+VOICE_WEBHOOK_SECRET: Optional[str] = os.getenv("VOICE_WEBHOOK_SECRET")
+WS_AUTH_REQUIRED = os.getenv("WS_AUTH_REQUIRED", "1").strip().lower() not in {"0", "false", "no", "off"}
+WS_AUTH_TOKEN = os.getenv("WS_AUTH_TOKEN", API_TOKEN or "")
+INTENT_AUTO_DISPATCH_CONFIDENCE = float(os.getenv("INTENT_AUTO_DISPATCH_CONFIDENCE", "0.72"))
+INTENT_AUTO_CANCEL_CONFIDENCE = float(os.getenv("INTENT_AUTO_CANCEL_CONFIDENCE", "0.80"))
 
 TRANSCRIPTIONS_ROOT = pathlib.Path(os.getenv("TRANSCRIPTIONS_ROOT", "./transcriptions")).resolve()
 TRANSCRIPTIONS_ROOT.mkdir(parents=True, exist_ok=True)
@@ -178,7 +225,39 @@ _q = Queue(connection=_rconn)
 # -----------------------
 # App + Static/Template
 # -----------------------
-app = FastAPI(title="AssistX API & UI")
+_lifespan_logger = logging.getLogger("uvicorn.error")
+_api_logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        neo = Neo4jClient()
+        neo.ensure_schema()
+    except Exception as e:
+        _lifespan_logger.warning(f"Neo4j not reachable at startup: {e}")
+    finally:
+        try:
+            neo.close()
+        except Exception:
+            pass
+    try:
+        from .paperclip_poller import schedule_paperclip_poller
+        schedule_paperclip_poller()
+    except Exception as e:
+        _lifespan_logger.warning(f"Paperclip poller not scheduled: {e}")
+    try:
+        from .intent_orchestrator import schedule_intent_orchestrator
+        schedule_intent_orchestrator()
+    except Exception as e:
+        _lifespan_logger.warning(f"Intent orchestrator not scheduled: {e}")
+    try:
+        from .maintenance import schedule_maintenance_job
+        schedule_maintenance_job()
+    except Exception as e:
+        _lifespan_logger.warning(f"Maintenance job not scheduled: {e}")
+    yield
+
+app = FastAPI(title="AssistX API & UI", lifespan=lifespan)
 
 # CORS is useful for the ingestion endpoints (web UIs, local tools, etc.)
 app.add_middleware(
@@ -194,6 +273,37 @@ templates = Jinja2Templates(directory=str(ROOT / "templates"))
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 
 
+RATE_LIMITED_ROUTES = [
+    ("POST", "/api/dispatch", DISPATCH_LIMITER),
+    ("POST", "/api/paperclip/events", EVENT_LIMITER),
+    ("POST", "/api/ask", ASK_LIMITER),
+    ("POST", "/api/intents", INTENT_LIMITER),
+]
+
+def _rate_limit_key(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if request.client:
+        return request.client.host or "unknown"
+    return "unknown"
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    for method, path, limiter in RATE_LIMITED_ROUTES:
+        if request.method == method and request.url.path == path:
+            client_key = _rate_limit_key(request)
+            allowed, remaining, retry_after = limiter.check(client_key)
+            if not allowed:
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "Rate limit exceeded", "retry_after_seconds": retry_after},
+                    headers={"Retry-After": str(retry_after)},
+                )
+            break
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def neo4j_guard(request, call_next):
     try:
@@ -205,10 +315,43 @@ async def neo4j_guard(request, call_next):
             return PlainTextResponse("Neo4j hostname not resolvable from container. Use host.docker.internal (with host-gateway) or run neo4j in Compose.", status_code=503)
         raise
 
-def auth(credentials: HTTPBasicCredentials = Depends(security)) -> str:
-    if not (credentials.username == USER and credentials.password == PASS):
+@app.middleware("http")
+async def request_metrics_middleware(request: Request, call_next):
+    response = await call_next(request)
+    try:
+        REQUESTS.labels(
+            path=request.url.path,
+            method=request.method,
+            status=str(response.status_code),
+        ).inc()
+    except Exception:
+        pass
+    return response
+
+def _auth_user_from_credentials(
+    request: Request,
+    credentials: HTTPBasicCredentials | None,
+) -> Optional[str]:
+    if TRUSTED_AUTH_HEADER:
+        trusted_user = request.headers.get(TRUSTED_AUTH_HEADER)
+        if trusted_user:
+            return trusted_user
+    if credentials is None:
+        return None
+    username_ok = hmac.compare_digest(credentials.username, USER)
+    password_ok = hmac.compare_digest(credentials.password, PASS)
+    if username_ok and password_ok:
+        return credentials.username
+    return None
+
+def auth(
+    request: Request,
+    credentials: HTTPBasicCredentials | None = Depends(security),
+) -> str:
+    user = _auth_user_from_credentials(request, credentials)
+    if user is None:
         raise HTTPException(status_code=401, detail="Unauthorized", headers={"WWW-Authenticate": "Basic"})
-    return credentials.username
+    return user
 
 
 def _neo() -> Neo4jClient:
@@ -227,16 +370,99 @@ def get_paperclip_client() -> Optional[PaperclipClient]:
     except ValueError:
         return None
 
-def _verify_optional_paperclip_signature(body: BaseModel, signature: Optional[str]) -> None:
+def _verify_paperclip_signature(body: BaseModel, signature: Optional[str]) -> None:
     if not PAPERCLIP_WEBHOOK_SECRET:
-        return
+        _api_logger.error("PAPERCLIP_WEBHOOK_SECRET not set; refusing unauthenticated Paperclip webhook")
+        raise HTTPException(status_code=503, detail="Paperclip webhook secret not configured")
     if not signature:
-        raise HTTPException(status_code=401, detail="Missing Paperclip signature")
+        raise HTTPException(status_code=401, detail="Missing Paperclip signature header (X-Paperclip-Signature)")
     payload = body.model_dump_json(exclude_none=True).encode("utf-8")
     expected = hmac.new(PAPERCLIP_WEBHOOK_SECRET.encode("utf-8"), payload, hashlib.sha256).hexdigest()
     accepted = {expected, f"sha256={expected}"}
     if not any(hmac.compare_digest(signature, candidate) for candidate in accepted):
         raise HTTPException(status_code=401, detail="Invalid Paperclip signature")
+
+def _verify_voice_signature(body: BaseModel, signature: Optional[str]) -> None:
+    if not VOICE_WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="Voice webhook secret not configured")
+    if not signature:
+        raise HTTPException(status_code=401, detail="Missing voice signature header (X-Voice-Signature)")
+    payload = body.model_dump_json(exclude_none=True).encode("utf-8")
+    expected = hmac.new(VOICE_WEBHOOK_SECRET.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+    accepted = {expected, f"sha256={expected}"}
+    if not any(hmac.compare_digest(signature, candidate) for candidate in accepted):
+        raise HTTPException(status_code=401, detail="Invalid voice signature")
+
+def _require_ws_auth(token: Optional[str]) -> None:
+    if not WS_AUTH_REQUIRED:
+        return
+    if not WS_AUTH_TOKEN:
+        raise HTTPException(status_code=503, detail="WebSocket auth token not configured")
+    if not token or not hmac.compare_digest(token, WS_AUTH_TOKEN):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+def _cancel_tasks_for_intent(neo: Neo4jClient, intent_id: str, reason: str) -> int:
+    with neo._session() as s:
+        rec = s.run(
+            """
+            MATCH (i:Intent {id:$intent_id})-[:CREATED_TASK]->(t:Task)
+            WHERE t.status IN ['READY','CLAIMED','RUNNING']
+            SET t.status='CANCELLED',
+                t.cancelled_reason=$reason,
+                t.updated_at=datetime(),
+                t.updated_at_ts=timestamp()
+            RETURN count(t) AS cancelled
+            """,
+            {"intent_id": intent_id, "reason": reason[:500]},
+        ).single()
+    return int(rec["cancelled"] if rec else 0)
+
+
+def _intent_outcome_and_confidence(text: str, classification: str) -> tuple[str, float]:
+    text_l = (text or "").strip().lower()
+    words = len(text_l.split())
+    questionish = "?" in text_l or text_l.startswith(("what", "who", "where", "when", "why", "how"))
+
+    if classification == CLASSIFICATION_CANCEL:
+        direct_cancel = any(k in text_l for k in ("cancel", "stop", "never mind", "scratch that"))
+        return "cancellation", 0.94 if direct_cancel else 0.85
+    if classification == CLASSIFICATION_MEMORY:
+        explicit_memory = any(k in text_l for k in ("remember", "note", "for the record", "keep in mind"))
+        return "memory_capture", 0.86 if explicit_memory else 0.72
+    if classification == CLASSIFICATION_QUERY:
+        return "information_query", 0.90 if questionish else 0.75
+    if classification == CLASSIFICATION_TASK:
+        if words <= 2:
+            return "ambiguous", 0.42
+        direct_request = any(
+            k in text_l
+            for k in ("please", "can you", "could you", "i need you", "create", "build", "fix", "update")
+        )
+        return "actionable_task", 0.83 if direct_request else 0.70
+    return "ambiguous", 0.35
+
+
+def _intent_policy_action(outcome: str, confidence: float) -> str:
+    if outcome == "cancellation":
+        return "auto_cancel_eligible" if confidence >= INTENT_AUTO_CANCEL_CONFIDENCE else "review_cancel"
+    if outcome == "actionable_task":
+        return "auto_dispatch_eligible" if confidence >= INTENT_AUTO_DISPATCH_CONFIDENCE else "review_dispatch"
+    if outcome in {"memory_capture", "information_query"}:
+        return "no_dispatch"
+    return "needs_clarification"
+
+
+def _json_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
 
 
 # -----------------------
@@ -270,30 +496,43 @@ class LLMStreamIn(BaseModel):
 
 
 # =======================
-# Startup
-# =======================
-@app.on_event("startup")
-def _startup():
-    # Don’t block server startup if Neo4j is down
-    try:
-        neo = Neo4jClient()
-        # optional: only try if you *want* to bootstrap
-        neo.ensure_schema()
-    except Exception as e:
-        logging.getLogger("uvicorn.error").warning(f"Neo4j not reachable at startup: {e}")
-    finally:
-        try:
-            neo.close()
-        except Exception:
-            pass
-
-
-# =======================
 # UI / Orchestration (v1)
 # =======================
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, user: str = Depends(auth)):
     return templates.TemplateResponse("index.html", {"request": request})
+
+# ---------- Phase 4 Command Center UI ----------
+
+@app.get("/command-center", response_class=HTMLResponse)
+def command_center(request: Request, user: str = Depends(auth)):
+    return templates.TemplateResponse("command_center.html", {"request": request})
+
+@app.get("/intents", response_class=HTMLResponse)
+def intents_ui(request: Request, user: str = Depends(auth)):
+    return templates.TemplateResponse("intents.html", {"request": request})
+
+@app.get("/dispatches", response_class=HTMLResponse)
+def dispatches_ui(request: Request, user: str = Depends(auth)):
+    return templates.TemplateResponse("dispatches.html", {"request": request})
+
+@app.get("/sessions", response_class=HTMLResponse)
+def sessions_ui(request: Request, user: str = Depends(auth)):
+    return templates.TemplateResponse("sessions.html", {"request": request})
+
+@app.get("/memory", response_class=HTMLResponse)
+def memory_ui(request: Request, user: str = Depends(auth)):
+    return templates.TemplateResponse("memory.html", {"request": request})
+
+@app.get("/devices", response_class=HTMLResponse)
+def devices_ui(request: Request, user: str = Depends(auth)):
+    return templates.TemplateResponse("devices.html", {"request": request})
+
+@app.get("/review", response_class=HTMLResponse)
+def review_ui(request: Request, user: str = Depends(auth)):
+    return templates.TemplateResponse("review_queue.html", {"request": request})
+
+# ------------------------------------------------
 
 @app.get("/tasks/review", response_class=HTMLResponse)
 def tasks_review(request: Request, limit: int = 50, user: str = Depends(auth)):
@@ -432,6 +671,97 @@ def ingest_ui(request: Request, user: str = Depends(auth)):
 def health():
     return {"ok": True}
 
+@app.get("/api/ops/status")
+def api_ops_status(
+    stale_minutes: int = Query(30, ge=1, le=24 * 60),
+    review_sla_minutes: int = Query(60, ge=1, le=24 * 60),
+    review_backlog_threshold: int = Query(25, ge=1, le=2000),
+    user: str = Depends(auth),
+):
+    queue_depth = 0
+    running_count = 0
+    failed_count = 0
+    try:
+        q = get_q()
+        queue_depth = len(q)
+        running_count = q.started_job_registry.count
+        failed_count = q.failed_job_registry.count
+        if callable(running_count):
+            running_count = running_count()
+        if callable(failed_count):
+            failed_count = failed_count()
+    except Exception:
+        pass
+
+    neo_health = "ok"
+    stale_sessions = 0
+    failed_dispatches = 0
+    review_backlog = 0
+    oldest_review_age_minutes = 0.0
+    review_sla_breached = False
+    try:
+        neo = _neo()
+        with neo.driver.session() as s:
+            stale_rec = s.run(
+                """
+                MATCH (sess:AgentSession)
+                WHERE coalesce(sess.last_seen_at_ts, sess.updated_at_ts, sess.created_at_ts, 0)
+                      < (timestamp() - ($mins * 60 * 1000))
+                RETURN count(sess) AS cnt
+                """,
+                {"mins": stale_minutes},
+            ).single()
+            stale_sessions = int(stale_rec["cnt"] if stale_rec else 0)
+            fail_rec = s.run(
+                """
+                MATCH (d:Dispatch)
+                WHERE d.status IN ['FAILED','CANCELLED']
+                RETURN count(d) AS cnt
+                """
+            ).single()
+            failed_dispatches = int(fail_rec["cnt"] if fail_rec else 0)
+            review_rec = s.run(
+                """
+                MATCH (t:Task)
+                WHERE t.status='REVIEW'
+                RETURN
+                    count(t) AS cnt,
+                    min(coalesce(t.created_at_ts, t.updated_at_ts, t.reviewed_at_ts, timestamp())) AS oldest_created_ts
+                """
+            ).single()
+            review_backlog = int(review_rec["cnt"] if review_rec else 0)
+            oldest_ts = int(review_rec["oldest_created_ts"] if review_rec and review_rec["oldest_created_ts"] is not None else 0)
+            if review_backlog > 0 and oldest_ts > 0:
+                oldest_review_age_minutes = max(0.0, (int(_time.time() * 1000) - oldest_ts) / 60000.0)
+                review_sla_breached = oldest_review_age_minutes > float(review_sla_minutes)
+            if review_backlog > int(review_backlog_threshold):
+                review_sla_breached = True
+    except Exception:
+        neo_health = "degraded"
+    finally:
+        try:
+            neo.close()
+        except Exception:
+            pass
+
+    return {
+        "neo4j": {"status": neo_health},
+        "queue": {
+            "depth": int(queue_depth),
+            "running": int(running_count),
+            "failed": int(failed_count),
+        },
+        "dispatches": {"failed_or_cancelled": failed_dispatches},
+        "sessions": {"stale": stale_sessions, "stale_threshold_minutes": stale_minutes},
+        "review": {
+            "backlog": review_backlog,
+            "backlog_threshold": int(review_backlog_threshold),
+            "oldest_age_minutes": round(oldest_review_age_minutes, 2),
+            "sla_minutes": int(review_sla_minutes),
+            "sla_breached": bool(review_sla_breached),
+        },
+    }
+
 def _safe_upload_name(name: str, fallback: str = "capture") -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in {".", "_", "-"} else "_" for ch in (name or fallback))
     return cleaned.strip("._") or fallback
@@ -500,6 +830,7 @@ async def api_create_capture(
         }
     )
     kind = _media_kind(content_type, filename)
+    classification = classify_text(transcript) if transcript.strip() else None
     neo = _neo()
     try:
         graph = neo.ingest_media_capture(
@@ -518,6 +849,7 @@ async def api_create_capture(
             activity_context=str(context.get("activity_context") or ""),
             client_context=context,
             metadata={"authenticated_user": user},
+            intent_classification=classification,
         )
     finally:
         neo.close()
@@ -696,9 +1028,10 @@ def api_create_task_from_transcription(tid: str, body: CreateTaskIn, user: str =
             if not has:
                 raise HTTPException(status_code=404, detail="Transcription not found")
 
+            task_id = uuid.uuid4().hex
             res = s.run(
                 """
-                CREATE (t:Task {id:randomUUID()})
+                CREATE (t:Task {id:$task_id})
                 SET t += $props,
                     t.created_at = datetime(), t.created_at_ts = timestamp()
                 WITH t
@@ -707,6 +1040,7 @@ def api_create_task_from_transcription(tid: str, body: CreateTaskIn, user: str =
                 RETURN t.id AS id
                 """,
                 {
+                    "task_id": task_id,
                     "props": {
                         "title": body.title,
                         "status": body.status,
@@ -731,9 +1065,10 @@ def api_embed_transcription(tid: str, user: str = Depends(auth)):
             if not rec:
                 raise HTTPException(status_code=404, detail="Transcription not found")
 
+            task_id = uuid.uuid4().hex
             res = s.run(
                 """
-                CREATE (t:Task {id:randomUUID()})
+                CREATE (t:Task {id:$task_id})
                 SET t.title='Embed transcription',
                     t.status='READY',
                     t.kind='embed_transcription',
@@ -744,7 +1079,7 @@ def api_embed_transcription(tid: str, user: str = Depends(auth)):
                 MERGE (t)-[:ABOUT]->(tr)
                 RETURN t.id AS id
                 """,
-                {"tid": tid},
+                {"task_id": task_id, "tid": tid},
             ).single()
             return {"task_id": res["id"], "status": "READY"}
     finally:
@@ -929,14 +1264,27 @@ def api_get_ticket_tree(ticket_id: str, user: str = Depends(auth)):
 def api_create_intent(body: IntentIn, user: str = Depends(auth)):
     neo = _neo()
     try:
+        classification = classify_text(body.text)
+        intent_outcome, intent_confidence = _intent_outcome_and_confidence(body.text, classification)
+        policy_action = _intent_policy_action(intent_outcome, intent_confidence)
+        metadata = {**(body.metadata or {}), "policy_action": policy_action}
         intent_id = neo.upsert_intent(
             source=body.source,
             text=body.text,
             idempotency_key=body.idempotency_key,
             client_ts=body.client_ts,
-            metadata=body.metadata,
+            metadata=metadata,
+            classification=classification,
+            intent_outcome=intent_outcome,
+            intent_confidence=intent_confidence,
         )
-        return {"intent_id": intent_id}
+        return {
+            "intent_id": intent_id,
+            "classification": classification,
+            "intent_outcome": intent_outcome,
+            "intent_confidence": intent_confidence,
+            "policy_action": policy_action,
+        }
     finally:
         neo.close()
 
@@ -988,10 +1336,9 @@ def api_create_dispatch(body: DispatchIn, user: str = Depends(auth)):
 @app.post("/api/paperclip/events")
 def api_paperclip_event(
     body: PaperclipEventIn,
-    user: str = Depends(auth),
     x_paperclip_signature: Optional[str] = Header(None),
 ):
-    _verify_optional_paperclip_signature(body, x_paperclip_signature)
+    _verify_paperclip_signature(body, x_paperclip_signature)
     neo = _neo()
     try:
         issue_id = neo.ingest_paperclip_event(
@@ -1035,6 +1382,128 @@ def api_create_signal_event(body: SignalEventIn, user: str = Depends(auth)):
             paperclip_run_id=body.paperclip_run_id,
         )
         return {"signal_event_id": event_id}
+    finally:
+        neo.close()
+
+@app.post("/api/voice/events")
+def api_voice_event(
+    request: Request,
+    body: VoiceEventIn,
+    credentials: HTTPBasicCredentials | None = Depends(security),
+    x_voice_signature: Optional[str] = Header(None),
+):
+    # Allow either operator auth (Basic/trusted header) or signed callback auth.
+    user = _auth_user_from_credentials(request, credentials)
+    if user is None:
+        _verify_voice_signature(body, x_voice_signature)
+        user = "voice_webhook"
+
+    supported = {
+        "task_created",
+        "ralph_iteration",
+        "tts_chunk",
+        "cancel_active",
+        "task_cancelled",
+        "barge_in",
+    }
+    if body.event_type not in supported:
+        raise HTTPException(status_code=400, detail=f"Unsupported voice event type: {body.event_type}")
+
+    event_payload = {
+        "event_id": body.event_id,
+        "event_type": body.event_type,
+        "text": body.text or "",
+        "source": body.source,
+        "client_ts": body.client_ts,
+        "metadata": body.metadata or {},
+    }
+    neo = _neo()
+    try:
+        signal_id = neo.create_signal_event(
+            event_id=body.event_id,
+            event_type=body.event_type,
+            payload=event_payload,
+            session_id=body.session_id,
+        )
+
+        created_intent_id: Optional[str] = None
+        created_memory_id: Optional[str] = None
+        cancelled_tasks = 0
+        text = (body.text or "").strip()
+        if text:
+            classification = classify_text(text)
+            intent_outcome, intent_confidence = _intent_outcome_and_confidence(text, classification)
+            policy_action = _intent_policy_action(intent_outcome, intent_confidence)
+            intent_key = f"voice:{body.event_id}"
+            created_intent_id = neo.upsert_intent(
+                source=body.source,
+                text=text,
+                idempotency_key=intent_key,
+                client_ts=body.client_ts,
+                metadata={
+                    "voice_event_type": body.event_type,
+                    "session_id": body.session_id,
+                    "policy_action": policy_action,
+                    **(body.metadata or {}),
+                },
+                classification=classification,
+                intent_outcome=intent_outcome,
+                intent_confidence=intent_confidence,
+            )
+
+            if classification in (CLASSIFICATION_MEMORY, CLASSIFICATION_QUERY):
+                created_memory_id = neo.upsert_memory_item(
+                    kind="voice_note" if classification == CLASSIFICATION_MEMORY else "voice_query",
+                    text=text,
+                    source=body.source,
+                    session_id=body.session_id,
+                    metadata={
+                        "voice_event_id": body.event_id,
+                        "voice_event_type": body.event_type,
+                        "classification": classification,
+                    },
+                )
+
+            if classification == CLASSIFICATION_CANCEL:
+                cancelled_tasks = _cancel_tasks_for_intent(
+                    neo,
+                    created_intent_id,
+                    f"Cancelled by voice event {body.event_type}",
+                )
+
+        if body.event_type in {"cancel_active", "task_cancelled", "barge_in"} and not created_intent_id:
+            intent_outcome, intent_confidence = _intent_outcome_and_confidence(
+                text or f"{body.event_type} requested",
+                CLASSIFICATION_CANCEL,
+            )
+            policy_action = _intent_policy_action(intent_outcome, intent_confidence)
+            cancel_intent_id = neo.upsert_intent(
+                source=body.source,
+                text=text or f"{body.event_type} requested",
+                idempotency_key=f"voice-cancel:{body.event_id}",
+                client_ts=body.client_ts,
+                metadata={
+                    "voice_event_type": body.event_type,
+                    "policy_action": policy_action,
+                    **(body.metadata or {}),
+                },
+                classification=CLASSIFICATION_CANCEL,
+                intent_outcome=intent_outcome,
+                intent_confidence=intent_confidence,
+            )
+            cancelled_tasks = _cancel_tasks_for_intent(
+                neo,
+                cancel_intent_id,
+                f"Cancelled by voice event {body.event_type}",
+            )
+            created_intent_id = cancel_intent_id
+
+        return {
+            "signal_event_id": signal_id,
+            "intent_id": created_intent_id,
+            "memory_item_id": created_memory_id,
+            "cancelled_tasks": cancelled_tasks,
+        }
     finally:
         neo.close()
 
@@ -1126,6 +1595,251 @@ def api_get_intent(intent_id: str, user: str = Depends(auth)):
     finally:
         neo.close()
 
+
+@app.get("/api/review/tasks")
+def api_list_review_tasks(
+    status: Optional[str] = Query("REVIEW", description="Task status filter"),
+    policy_action: Optional[str] = Query(None, description="Intent policy action filter"),
+    review_decision: Optional[str] = Query(None, description="Review decision filter"),
+    limit: int = Query(50, ge=1, le=500),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        if status == "REVIEW":
+            items = neo.get_review_tasks(limit=limit)
+        else:
+            items = neo.get_tasks_by_status(status=status or "REVIEW", limit=limit)
+        normalized = []
+        for item in items:
+            payload = _json_dict(item.get("payload_json"))
+            inferred_policy = payload.get("policy_action")
+            if inferred_policy and not item.get("policy_action"):
+                item["policy_action"] = inferred_policy
+            normalized.append(item)
+
+        if policy_action:
+            normalized = [i for i in normalized if (i.get("policy_action") or "") == policy_action]
+        if review_decision:
+            normalized = [i for i in normalized if (i.get("review_decision") or "") == review_decision]
+
+        normalized = normalized[:limit]
+        return {"items": normalized, "count": len(normalized)}
+    finally:
+        neo.close()
+
+
+@app.get("/api/review/audit")
+def api_review_audit(
+    cursor: Optional[str] = Query(None, description="Opaque cursor: '<reviewed_at_ts>:<task_id>'"),
+    limit: int = Query(100, ge=1, le=500),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        cursor_ts: Optional[int] = None
+        cursor_id: Optional[str] = None
+        if cursor:
+            try:
+                ts_part, id_part = cursor.split(":", 1)
+                cursor_ts = int(ts_part)
+                cursor_id = id_part
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid cursor format")
+        with neo.driver.session() as s:
+            where_cursor = ""
+            params: Dict[str, Any] = {"limit": limit}
+            if cursor_ts is not None and cursor_id is not None:
+                where_cursor = (
+                    " AND (coalesce(r.reviewed_at_ts, r.updated_at_ts, r.created_at_ts, 0) < $cursor_ts "
+                    "OR (coalesce(r.reviewed_at_ts, r.updated_at_ts, r.created_at_ts, 0) = $cursor_ts AND r.id < $cursor_id)) "
+                )
+                params["cursor_ts"] = cursor_ts
+                params["cursor_id"] = cursor_id
+            res = s.run(
+                """
+                MATCH (r:Task)
+                WHERE r.kind='intent_review' AND r.review_decision IS NOT NULL
+                """ + where_cursor + """
+                OPTIONAL MATCH (r)-[:APPROVED_AS]->(approved:Task)
+                RETURN r, approved
+                ORDER BY coalesce(r.reviewed_at_ts, r.updated_at_ts, r.created_at_ts, 0) DESC
+                LIMIT $limit
+                """,
+                params,
+            )
+            items: List[Dict[str, Any]] = []
+            for row in res:
+                review_task = dict(row["r"])
+                payload = _json_dict(review_task.get("payload_json"))
+                approved = dict(row["approved"]) if row["approved"] else None
+                reviewed_ts = review_task.get("reviewed_at_ts") or review_task.get("updated_at_ts") or review_task.get("created_at_ts")
+                items.append(
+                    {
+                        "review_task_id": review_task.get("id"),
+                        "review_decision": review_task.get("review_decision"),
+                        "review_note": review_task.get("review_note"),
+                        "reviewed_by": review_task.get("reviewed_by"),
+                        "reviewed_at_ts": reviewed_ts,
+                        "status": review_task.get("status"),
+                        "policy_action": review_task.get("policy_action") or payload.get("policy_action"),
+                        "source_intent": payload.get("source_intent"),
+                        "source_text": payload.get("source_text") or review_task.get("title"),
+                        "approved_task_id": approved.get("id") if approved else None,
+                        "approved_task_status": approved.get("status") if approved else None,
+                    }
+                )
+        next_cursor = None
+        if items:
+            last = items[-1]
+            if last.get("reviewed_at_ts") is not None and last.get("review_task_id"):
+                next_cursor = f"{int(last['reviewed_at_ts'])}:{last['review_task_id']}"
+        return {"items": items, "count": len(items), "next_cursor": next_cursor}
+    finally:
+        neo.close()
+
+
+@app.get("/api/review/audit/summary")
+def api_review_audit_summary(user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        cutoff_ts = int(_time.time() * 1000) - (24 * 60 * 60 * 1000)
+        with neo.driver.session() as s:
+            rows = s.run(
+                """
+                MATCH (r:Task)
+                WHERE r.kind='intent_review'
+                  AND r.review_decision IS NOT NULL
+                  AND coalesce(r.reviewed_at_ts, r.updated_at_ts, r.created_at_ts, 0) >= $cutoff_ts
+                RETURN r.review_decision AS decision, count(r) AS cnt
+                """,
+                {"cutoff_ts": cutoff_ts},
+            ).data()
+        by_decision = {str(r["decision"]): int(r["cnt"]) for r in rows if r.get("decision")}
+        total = sum(by_decision.values())
+        return {"window_hours": 24, "total_decisions": total, "by_decision": by_decision}
+    finally:
+        neo.close()
+
+
+@app.post("/api/review/tasks/{task_id}/approve")
+def api_approve_review_task(task_id: str, body: ReviewDecisionIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        review_task = neo.get_task(task_id)
+        if not review_task:
+            raise HTTPException(status_code=404, detail="Review task not found")
+        if review_task.get("status") != "REVIEW":
+            raise HTTPException(status_code=400, detail="Task is not in REVIEW status")
+
+        payload = _json_dict(review_task.get("payload_json"))
+        source_text = payload.get("source_text") or review_task.get("title") or ""
+        source_intent = payload.get("source_intent")
+        policy_action = payload.get("policy_action")
+
+        result = neo.create_task_with_context(
+            title=(source_text[:120] + "...") if len(source_text) > 120 else source_text,
+            task_type="task",
+            kind="approved_intent",
+            required_capabilities=(body.target.capabilities if body.target else None) or ["terminal"],
+            target_agent_id=body.target.paperclip_agent_id if body.target else None,
+            priority=body.priority,
+            payload={
+                "source_intent": source_intent,
+                "source_text": source_text,
+                "approved_from_review_task": task_id,
+                "policy_action": policy_action,
+                "operator_note": body.note,
+            },
+            context_query=source_text,
+            context_sources=["memory", "knowledge", "orchestration"],
+            auto_dispatch=body.auto_dispatch,
+        )
+
+        created_task_id = result["task_id"]
+        with neo.driver.session() as s:
+            s.run(
+                "MATCH (r:Task {id:$rid}), (t:Task {id:$tid}) "
+                "SET r.status='DONE', "
+                "    r.review_decision='approved', "
+                "    r.review_note=$note, "
+                "    r.reviewed_by=$user, "
+                "    r.reviewed_at=datetime(), "
+                "    r.reviewed_at_ts=timestamp(), "
+                "    r.updated_at=datetime(), "
+                "    r.updated_at_ts=timestamp() "
+                "MERGE (r)-[:APPROVED_AS]->(t)",
+                {"rid": task_id, "tid": created_task_id, "note": (body.note or "")[:1000], "user": user},
+            ).consume()
+            if source_intent:
+                s.run(
+                    "MATCH (i:Intent {id:$iid}), (t:Task {id:$tid}) "
+                    "MERGE (i)-[:CREATED_TASK]->(t)",
+                    {"iid": source_intent, "tid": created_task_id},
+                ).consume()
+
+        return {
+            "review_task_id": task_id,
+            "decision": "approved",
+            "created_task_id": created_task_id,
+            "dispatch_id": result.get("dispatch_id"),
+        }
+    finally:
+        neo.close()
+
+
+@app.post("/api/review/tasks/{task_id}/reject")
+def api_reject_review_task(task_id: str, body: ReviewDecisionIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        review_task = neo.get_task(task_id)
+        if not review_task:
+            raise HTTPException(status_code=404, detail="Review task not found")
+        if review_task.get("status") != "REVIEW":
+            raise HTTPException(status_code=400, detail="Task is not in REVIEW status")
+        with neo.driver.session() as s:
+            s.run(
+                "MATCH (r:Task {id:$rid}) "
+                "SET r.status='CANCELLED', "
+                "    r.review_decision='rejected', "
+                "    r.review_note=$note, "
+                "    r.reviewed_by=$user, "
+                "    r.reviewed_at=datetime(), "
+                "    r.reviewed_at_ts=timestamp(), "
+                "    r.updated_at=datetime(), "
+                "    r.updated_at_ts=timestamp()",
+                {"rid": task_id, "note": (body.note or "")[:1000], "user": user},
+            ).consume()
+        return {"review_task_id": task_id, "decision": "rejected"}
+    finally:
+        neo.close()
+
+
+@app.post("/api/review/tasks/{task_id}/clarify")
+def api_clarify_review_task(task_id: str, body: ReviewDecisionIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        review_task = neo.get_task(task_id)
+        if not review_task:
+            raise HTTPException(status_code=404, detail="Review task not found")
+        if review_task.get("status") != "REVIEW":
+            raise HTTPException(status_code=400, detail="Task is not in REVIEW status")
+        with neo.driver.session() as s:
+            s.run(
+                "MATCH (r:Task {id:$rid}) "
+                "SET r.review_decision='clarification_requested', "
+                "    r.review_note=$note, "
+                "    r.reviewed_by=$user, "
+                "    r.reviewed_at=datetime(), "
+                "    r.reviewed_at_ts=timestamp(), "
+                "    r.updated_at=datetime(), "
+                "    r.updated_at_ts=timestamp()",
+                {"rid": task_id, "note": (body.note or "")[:1000], "user": user},
+            ).consume()
+        return {"review_task_id": task_id, "decision": "clarification_requested"}
+    finally:
+        neo.close()
+
 @app.get("/api/devices")
 def api_list_devices(
     limit: int = Query(50, ge=1, le=500),
@@ -1153,6 +1867,39 @@ def api_get_device(device_id: str, user: str = Depends(auth)):
             )
             agent_sessions = [dict(s["s"]) for s in sessions]
         return {"device": device, "agent_sessions": agent_sessions}
+    finally:
+        neo.close()
+
+@app.post("/api/devices/register")
+def api_register_device(body: DeviceRegisterIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        device_id = neo.register_device(
+            device_id=body.device_id,
+            hostname=body.hostname,
+            platform=body.platform,
+            capabilities=body.capabilities,
+            resources=body.resources,
+            max_concurrent_tasks=body.max_concurrent_tasks,
+            available_agents=body.available_agents,
+            tags=body.tags,
+        )
+        return {"device_id": device_id, "ok": True}
+    finally:
+        neo.close()
+
+@app.post("/api/devices/{device_id}/heartbeat")
+def api_heartbeat_device(device_id: str, body: DeviceHeartbeatIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        device = neo.heartbeat_device(
+            device_id=device_id,
+            current_load=body.current_load,
+            queue_depth=body.queue_depth,
+        )
+        if not device:
+            raise HTTPException(status_code=404, detail="Device not found")
+        return {"device_id": device_id, "ok": True}
     finally:
         neo.close()
 
@@ -1249,14 +1996,16 @@ def api_reassign_dispatch(dispatch_id: str, target: DispatchTarget, user: str = 
                 "MATCH (d:Dispatch {id:$id}) "
                 "SET d.paperclip_agent_id=$agent_id, d.updated_at=datetime(), d.updated_at_ts=timestamp()",
                 {"id": dispatch_id, "agent_id": target.paperclip_agent_id},
-            )
+            ).consume()
             if target.paperclip_agent_id:
+                session_id = uuid.uuid4().hex
                 s.run(
+                    "MATCH (d:Dispatch {id:$did}) "
                     "MERGE (a:AgentSession {paperclip_agent_id:$aid}) "
-                    "ON CREATE SET a.id=randomUUID(), a.created_at=datetime(), a.created_at_ts=timestamp() "
-                    "MERGE (d:Dispatch {id:$did})-[:ASSIGNED_TO]->(a)",
-                    {"aid": target.paperclip_agent_id, "did": dispatch_id},
-                )
+                    "ON CREATE SET a.id=$sid, a.created_at=datetime(), a.created_at_ts=timestamp() "
+                    "MERGE (d)-[:ASSIGNED_TO]->(a)",
+                    {"aid": target.paperclip_agent_id, "did": dispatch_id, "sid": session_id},
+                ).consume()
         return {"dispatch_id": dispatch_id, "reassigned": True}
     finally:
         neo.close()
@@ -1302,6 +2051,11 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
     if mode not in ("sync", "async", "auto"):
         raise HTTPException(status_code=400, detail="mode must be one of: sync, async, auto")
 
+    if body.idempotency_key and mode == "sync":
+        hit = idemp_load(body.idempotency_key)
+        if hit and hit.get("sync_result"):
+            return hit["sync_result"]
+
     # Idempotency in auto/async: reuse existing answer if present
     if body.idempotency_key and mode in ("async", "auto"):
         hit = idemp_load(body.idempotency_key)
@@ -1336,6 +2090,8 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
             )
             out.update(deliverable)
             out["deliverable_status"] = completed.get("status") if completed else "UNKNOWN"
+            if body.idempotency_key:
+                idemp_save(body.idempotency_key, {"sync_result": out})
             QA_REQUESTS.labels(mode="sync", status="done").inc()
             return out
         except Exception as e:
@@ -1412,8 +2168,12 @@ def api_answers_reindex(user: str = Depends(auth)):
     return answers_store.rebuild_index()
 
 @app.websocket("/ws/answers/{answer_id}")
-async def ws_answer_events(websocket: WebSocket, answer_id: str):
-    # Basic Auth doesn't apply to WS; do a simple token if you want. For now, accept all.
+async def ws_answer_events(websocket: WebSocket, answer_id: str, token: Optional[str] = Query(None)):
+    try:
+        _require_ws_auth(token)
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     r = aioredis.from_url(REDIS_URL, decode_responses=True)
     pubsub = r.pubsub()
@@ -1454,7 +2214,12 @@ async def ws_answer_events(websocket: WebSocket, answer_id: str):
 
 
 @app.websocket("/ws/answers")
-async def ws_answers(websocket: WebSocket):
+async def ws_answers(websocket: WebSocket, token: Optional[str] = Query(None)):
+    try:
+        _require_ws_auth(token)
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     r = aioredis.from_url(REDIS_URL, decode_responses=True)
     pubsub = r.pubsub()

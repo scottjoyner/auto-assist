@@ -4,9 +4,10 @@
 
 This guide provides step-by-step instructions for implementing the complete AssistX migration to become a multi-agent orchestration platform.
 
-**Status**: Phases 0-4 infrastructure code completed. Graph-first Task
-triggers are implemented for agent polling, claiming, heartbeats, and
-completion. Paperclip remains an optional assignment transport.
+**Status**: Phases 0-4 infrastructure code completed, 15/15 tests passing
+(10 migration API + 5 Hermes memory provider). Graph-first Task triggers
+are implemented for agent polling, claiming, heartbeats, and completion.
+Paperclip remains an optional assignment transport.
 
 ---
 
@@ -114,36 +115,46 @@ Hermes external memory provider for graph-backed context and memory writes.
 
 ---
 
-### Phase 3: Paperclip Dispatch Integration 🔧
+### Phase 3: Paperclip Dispatch Integration ✅
 **Deliverable**: [docs/PHASE_3_PAPERCLIP_INTEGRATION.md](docs/PHASE_3_PAPERCLIP_INTEGRATION.md)
 
 Optional task dispatch through Paperclip to Hermes agents. Neo4j `Task` nodes
 remain the source of truth and the primary executable trigger.
 
 **Completed**:
-- ✅ `PaperclipClient` class (src/assistx/paperclip_client.py)
-- ✅ Issue creation, agent listing, event polling
+- ✅ Paperclip server running as systemd service at `http://127.0.0.1:3100`
+- ✅ 3-line source patch for `local_trusted` + non-loopback bind (dev)
+- ✅ `PaperclipClient` with routes matching real Paperclip API
+- ✅ Company/agent/API key created in Paperclip
+- ✅ Docker networking via `host.docker.internal:host-gateway`
 - ✅ Optional Paperclip issue creation from `/api/dispatch`
 - ✅ Local-only dispatch fallback when Paperclip is not configured
 - ✅ Event ingestion endpoint: `/api/paperclip/events`
-- ✅ Agent device management
-- ✅ Documentation and test strategy
+- ✅ **Live test verified**: dispatch → Paperclip issue created
 
 **Clarification**:
 - Paperclip is optional transport, not the source of truth.
 - `/api/dispatch` creates local Neo4j dispatch records and adds `paperclip_issue_id` when Paperclip is configured.
+- Paperclip has no outbound webhook API — event polling is the fallback.
 
-**Status**: ✅ Optional Paperclip transport wired for dispatch creation and event ingest
+**Live Test Result (May 23, 2026)**:
+```
+POST /api/tickets → {"ticket_id": "af1cffab..."}
+POST /api/dispatch → {"dispatch_id": "b622a5f0...", "paperclip_issue_id": "2365b591...", "paperclip_error": null}
+GET /api/issues/2365b591 → status=backlog, createdByAgentId=cfecc886-...
+```
 
-**Prerequisites**:
-- [ ] Paperclip API endpoint available and authenticated
-- [ ] Hermes agents registered with Paperclip
-- [ ] Webhook endpoint configured (if using push delivery)
+**Security Review**:
+- HMAC webhook verification is optional (needs tightening for production)
+- No rate limiting on dispatch/event endpoints
+- Basic Auth uses plain string comparison
+- See MIGRATION.md section 15 for hardening tasks
 
 **Next**:
-- [ ] Test against a live Paperclip instance
+- [x] Test against a live Paperclip instance
+- [ ] Add periodic poller to sync Paperclip issue status to Neo4j
 - [ ] Verify live assignment to Hermes agents
-- [ ] End-to-end: task → dispatch → issue → Hermes → result
+- [ ] End-to-end: task → dispatch → issue → Hermes → result → sync
 
 ---
 
@@ -169,16 +180,18 @@ remain the source of truth and the primary executable trigger.
 
 ---
 
-### Phase 5: Voice/TTS Integration 📱
-**Deliverable**: TTS events → Intents, cancellation handling
+### Phase 5: Voice/TTS and Media Capture 📱
+**Deliverable**: Browser/media capture intake, TTS events → Intents, cancellation handling
 
-**Status**: 🔲 Not started
+**Partially implemented**:
+- ✅ `/ingest` page with audio/video browser recording
+- ✅ `POST /api/captures` stores media + writes `MediaCapture`/`MediaAsset`/`Transcription`/`MemoryItem`/`Intent`/`SignalEvent` to Neo4j
+- 🔲 Classify capture intents (memory-only, executable task, cancellation, etc.)
+- 🔲 Connect TTS task events to `/api/intents` endpoint
+- 🔲 Handle cancellation/barge-in events
+- 🔲 Update active Task/Dispatch/AgentRun status
 
-**Scope**:
-- Connect TTS task events to `/api/intents` endpoint
-- Store voice-origin ideas as MemoryItems
-- Handle cancellation/barge-in events
-- Update active Task/Dispatch/AgentRun status
+**Status**: 🔧 Media capture infrastructure done, classification and TTS wiring pending
 
 ---
 
@@ -219,10 +232,11 @@ BASIC_AUTH_PASS=livelongandprosper
 # Redis (for RQ queues)
 REDIS_URL=redis://redis:6379/0
 
-# Paperclip (when ready for Phase 3)
-# PAPERCLIP_API_URL=...
-# PAPERCLIP_API_TOKEN=...
-# PAPERCLIP_WORKSPACE_ID=...
+# Paperclip (Phase 3 — live, local dev)
+PAPERCLIP_API_URL=http://host.docker.internal:3100/api
+PAPERCLIP_API_TOKEN=<agent-api-key>
+PAPERCLIP_WORKSPACE_ID=<company-uuid>
+PAPERCLIP_WEBHOOK_SECRET=paperclip-dev-secret
 
 # Hermes (when ready for Phase 2)
 # HERMES_MEMORY_PROVIDER_ENABLED=true
@@ -436,39 +450,41 @@ curl http://localhost:8000/api/sessions -u "neo4j:livelongandprosper"
 ### Run All Tests
 
 ```bash
-# Phase 1 tests (brain schema and retrieval)
-python -m pytest tests/test_migration_api.py -v
+# All migration + Hermes tests (15 total)
+python -m pytest tests/test_migration_api.py tests/test_hermes_memory_provider.py -v
 
-# Specific test
+# Single test
 python -m pytest tests/test_migration_api.py::test_api_intent_and_context_packet -v
 ```
 
-### Manual Testing Checklist
+### Test Status (May 22, 2026)
+
+**15/15 tests passing** — automated via ephemeral Neo4j 5.23 Docker container.
+
+- `test_migration_api.py` — 10 tests covering intents, context, dispatch, sessions, memory, signals, task lifecycle, tickets, command center endpoints, and reassign.
+- `test_hermes_memory_provider.py` — 5 tests covering prefetch, write, signal, session update, and token auth.
+
+### Manual / Live Integration Tests
+
+These require a running Paperclip instance or live Hermes agent:
 
 #### Phase 1: Intent and Context
 
-- [ ] Create intent via `/api/intents`
-- [ ] Verify intent persisted in Neo4j
-- [ ] Create context packet for task
-- [ ] Verify references include correct sources
-- [ ] Get context packet and verify citations
+- ✅ Verified automatically in `test_api_intent_and_context_packet`
 
 #### Phase 2: Hermes Memory Provider
 
-- [ ] Configure HermesMemoryProvider with AssistX URL
-- [ ] Call `prefetch()` and verify context returned
-- [ ] Call `write_memory()` and verify MemoryItem created in Neo4j
-- [ ] Call `signal_event()` and verify SignalEvent created
-- [ ] Update session and verify AgentSession record
+- ✅ Provider unit tests pass (`test_hermes_memory_provider_*`)
+- [ ] Configure real Hermes agent with AssistX URL
+- [ ] Wire `HermesMemoryProvider` into agent config
+- [ ] Verify end-to-end prefetch/write with live agent
 
 #### Phase 3: Paperclip Dispatch
 
+- ✅ Paperclip client mock tested in `test_ticket_hierarchy_and_paperclip_dispatch`
 - [ ] Set up PAPERCLIP_* environment variables
-- [ ] Test PaperclipClient.health_check()
-- [ ] Create dispatch and verify Paperclip issue created
-- [ ] List Paperclip agents
-- [ ] Send webhook event via `/api/webhooks/paperclip`
-- [ ] Verify task status updated based on event
+- [ ] Register webhook URL with Paperclip
+- [ ] Test live `create_issue()` → webhook event → status update
 
 ---
 
