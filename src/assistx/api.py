@@ -35,6 +35,8 @@ from .idempotency_store import save as idemp_save, load as idemp_load
 from .neo4j_client import Neo4jClient  # unified client
 from .paperclip_client import PaperclipClient
 from .rate_limiter import DISPATCH_LIMITER, EVENT_LIMITER, ASK_LIMITER, INTENT_LIMITER
+from .feed_registry import feed_health_summary
+from .evaluation_registry import suites_summary
 from .intent_classifier import (
     classify_text,
     CLASSIFICATION_TASK,
@@ -165,6 +167,19 @@ class VoiceEventIn(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
     auto_dispatch: bool = True
 
+
+class SophiaVoiceEventIn(BaseModel):
+    event_id: str
+    event_type: str
+    session_id: Optional[str] = None
+    transcript_text: Optional[str] = None
+    auth_state: Optional[str] = None
+    speaker_identity: Optional[str] = None
+    speaker_confidence: Optional[float] = None
+    policy_version: Optional[str] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Optional[Dict[str, Any]] = None
+
 class SessionUpdateIn(BaseModel):
     paperclip_agent_id: Optional[str] = None
     hermes_session_id: Optional[str] = None
@@ -193,6 +208,53 @@ class ReviewDecisionIn(BaseModel):
     auto_dispatch: bool = True
     target: Optional[DispatchTarget] = None
     priority: str = "MEDIUM"
+
+
+class FeedConnectorUpsertIn(BaseModel):
+    id: str
+    name: str
+    category: str = "general"
+    endpoint: str
+    enabled: bool = True
+    health_status: str = "healthy"
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class EvaluationRunIn(BaseModel):
+    suite_name: str
+    agent_class: str
+    status: str = "completed"
+    score: Optional[float] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class EvaluationSuiteUpsertIn(BaseModel):
+    name: str
+    agent_class: str
+    enabled: bool = True
+    cadence: str = "daily"
+    threshold: float = 0.8
+    description: str = ""
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class WorkflowControlIn(BaseModel):
+    action: str  # drain | resume | set_limits
+    max_concurrent_workflows: Optional[int] = None
+    max_batch_backlog: Optional[int] = None
+
+
+class WorkflowReplanIn(BaseModel):
+    reason: str
+    severity: str = "warning"
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class WorkflowBudgetUpdateIn(BaseModel):
+    token_budget: Optional[int] = None
+    time_budget_s: Optional[int] = None
+    retry_budget: Optional[int] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 # -----------------------
 # Config / Security
@@ -359,6 +421,12 @@ def _neo() -> Neo4jClient:
     return neo
 
 _paperclip_client: Optional[PaperclipClient] = None
+_workflow_control_state: Dict[str, Any] = {
+    "mode": "resume",  # resume | drain
+    "max_concurrent_workflows": 20,
+    "max_batch_backlog": 200,
+    "updated_at_ts": 0,
+}
 
 def get_paperclip_client() -> Optional[PaperclipClient]:
     global _paperclip_client
@@ -463,6 +531,75 @@ def _json_dict(value: Any) -> Dict[str, Any]:
         except Exception:
             return {}
     return {}
+
+
+def _is_claim_allowed_for_workflow_control(task: Dict[str, Any]) -> tuple[bool, str]:
+    mode = str(_workflow_control_state.get("mode") or "resume")
+    if mode != "drain":
+        return True, ""
+    payload = _json_dict(task.get("payload_json"))
+    queue_class = str(payload.get("queue_class") or task.get("queue_class") or "interactive")
+    # During drain mode, only critical queue-class tasks can be newly claimed.
+    if queue_class == "critical":
+        return True, ""
+    return False, f"workflow control is in drain mode; queue_class={queue_class} is paused"
+
+
+def _queue_class_for_task(task: Dict[str, Any]) -> str:
+    payload = _json_dict(task.get("payload_json"))
+    qclass = str(payload.get("queue_class") or task.get("queue_class") or "interactive")
+    if qclass not in {"interactive", "batch", "critical"}:
+        return "interactive"
+    return qclass
+
+
+def _workflow_runtime_snapshot(neo: Neo4jClient) -> Dict[str, int]:
+    with neo.driver.session() as s:
+        rec = s.run(
+            """
+            MATCH (t:Task)
+            WHERE t.status IN ['READY','CLAIMED','RUNNING']
+            RETURN
+              sum(CASE WHEN t.status='RUNNING' THEN 1 ELSE 0 END) AS running,
+              sum(CASE WHEN coalesce(t.status,'')='READY'
+                        AND coalesce(t.queue_class, '')='batch'
+                       THEN 1 ELSE 0 END) AS batch_ready_direct
+            """
+        ).single()
+        running = int(rec["running"] if rec and rec["running"] is not None else 0)
+        batch_ready_direct = int(rec["batch_ready_direct"] if rec and rec["batch_ready_direct"] is not None else 0)
+    return {"running": running, "batch_ready_direct": batch_ready_direct}
+
+
+def _apply_workflow_admission(tasks: List[Dict[str, Any]], runtime: Dict[str, int]) -> List[Dict[str, Any]]:
+    mode = str(_workflow_control_state.get("mode") or "resume")
+    max_running = int(_workflow_control_state.get("max_concurrent_workflows") or 20)
+    max_batch_backlog = int(_workflow_control_state.get("max_batch_backlog") or 200)
+    running = int(runtime.get("running") or 0)
+    batch_ready = int(runtime.get("batch_ready_direct") or 0)
+
+    filtered: List[Dict[str, Any]] = []
+    for task in tasks:
+        qclass = _queue_class_for_task(task)
+        if mode == "drain" and qclass != "critical":
+            continue
+        if running >= max_running and qclass != "critical":
+            continue
+        if batch_ready > max_batch_backlog and qclass == "batch":
+            continue
+        task["queue_class"] = qclass
+        filtered.append(task)
+    return filtered
+
+
+def _sophia_queue_class(event_type: str, auth_state: Optional[str]) -> str:
+    et = (event_type or "").strip().lower()
+    st = (auth_state or "").strip().lower()
+    if "meeting" in et or "batch" in et:
+        return "batch"
+    if st in {"not_scott_known", "unknown_unverified"}:
+        return "critical"
+    return "interactive"
 
 
 # -----------------------
@@ -699,6 +836,19 @@ def api_ops_status(
     review_backlog = 0
     oldest_review_age_minutes = 0.0
     review_sla_breached = False
+    workflow_backlog = 0
+    workflow_running = 0
+    escalation_backlog = 0
+    feeds = {"total": 0, "enabled": 0, "by_status": {"healthy": 0, "degraded": 0, "down": 0}, "connectors": []}
+    evaluation_suites = {"total": 0, "enabled": 0, "by_agent_class": {}, "suites": []}
+    try:
+        feeds = feed_health_summary()
+    except Exception:
+        pass
+    try:
+        evaluation_suites = suites_summary()
+    except Exception:
+        pass
     try:
         neo = _neo()
         with neo.driver.session() as s:
@@ -736,6 +886,27 @@ def api_ops_status(
                 review_sla_breached = oldest_review_age_minutes > float(review_sla_minutes)
             if review_backlog > int(review_backlog_threshold):
                 review_sla_breached = True
+            wf_rec = s.run(
+                """
+                MATCH (t:Task)
+                WHERE t.status IN ['READY','CLAIMED','RUNNING']
+                RETURN
+                    count(t) AS backlog,
+                    sum(CASE WHEN t.status='RUNNING' THEN 1 ELSE 0 END) AS running
+                """
+            ).single()
+            workflow_backlog = int(wf_rec["backlog"] if wf_rec and wf_rec["backlog"] is not None else 0)
+            workflow_running = int(wf_rec["running"] if wf_rec and wf_rec["running"] is not None else 0)
+            esc_rec = s.run(
+                """
+                MATCH (t:Task)
+                WHERE t.kind='intent_review'
+                  AND t.status='REVIEW'
+                  AND coalesce(t.policy_action, '') IN ['review_dispatch','review_cancel','needs_clarification']
+                RETURN count(t) AS cnt
+                """
+            ).single()
+            escalation_backlog = int(esc_rec["cnt"] if esc_rec else 0)
     except Exception:
         neo_health = "degraded"
     finally:
@@ -760,6 +931,14 @@ def api_ops_status(
             "sla_minutes": int(review_sla_minutes),
             "sla_breached": bool(review_sla_breached),
         },
+        "workflow": {
+            "backlog": workflow_backlog,
+            "running": workflow_running,
+            "escalation_backlog": escalation_backlog,
+            "control": dict(_workflow_control_state),
+        },
+        "feeds": feeds,
+        "evaluation_suites": evaluation_suites,
     }
 
 def _safe_upload_name(name: str, fallback: str = "capture") -> str:
@@ -1160,7 +1339,19 @@ def api_agent_tasks(
             agent_id=agent_id,
             limit=limit,
         )
-        return {"items": items, "count": len(items)}
+        runtime = _workflow_runtime_snapshot(neo)
+        admitted = _apply_workflow_admission(items, runtime)
+        return {
+            "items": admitted,
+            "count": len(admitted),
+            "admission": {
+                "mode": _workflow_control_state.get("mode"),
+                "max_concurrent_workflows": _workflow_control_state.get("max_concurrent_workflows"),
+                "max_batch_backlog": _workflow_control_state.get("max_batch_backlog"),
+                "running": runtime.get("running"),
+                "batch_ready_direct": runtime.get("batch_ready_direct"),
+            },
+        }
     finally:
         neo.close()
 
@@ -1168,6 +1359,13 @@ def api_agent_tasks(
 def api_claim_task(task_id: str, body: TaskClaimIn, user: str = Depends(auth)):
     neo = _neo()
     try:
+        task_obj = neo.get_task(task_id)
+        if not task_obj:
+            raise HTTPException(status_code=404, detail="Task not found")
+        allowed, reason = _is_claim_allowed_for_workflow_control(task_obj)
+        if not allowed:
+            TASK_CLAIMS.labels(result="drain_blocked").inc()
+            raise HTTPException(status_code=409, detail={"claimed": False, "reason": "drain_mode_block", "message": reason})
         result = neo.claim_task(
             task_id=task_id,
             agent_id=body.agent_id,
@@ -1178,9 +1376,9 @@ def api_claim_task(task_id: str, body: TaskClaimIn, user: str = Depends(auth)):
         if result.get("claimed"):
             TASK_CLAIMS.labels(result="claimed").inc()
             return result
+        TASK_CLAIMS.labels(result=result.get("reason", "conflict")).inc()
         if result.get("reason") == "not_found":
             raise HTTPException(status_code=404, detail="Task not found")
-        TASK_CLAIMS.labels(result=result.get("reason", "conflict")).inc()
         raise HTTPException(status_code=409, detail=result)
     finally:
         neo.close()
@@ -1405,6 +1603,10 @@ def api_voice_event(
         "cancel_active",
         "task_cancelled",
         "barge_in",
+        "voice_auth",
+        "meeting_transcript",
+        "voice_enrolled",
+        "speaker_identified",
     }
     if body.event_type not in supported:
         raise HTTPException(status_code=400, detail=f"Unsupported voice event type: {body.event_type}")
@@ -1507,6 +1709,176 @@ def api_voice_event(
     finally:
         neo.close()
 
+
+@app.post("/api/sophia/events")
+def api_sophia_event(body: SophiaVoiceEventIn, user: str = Depends(auth)):
+    allowed_auth = {None, "authenticated_scott", "not_scott_known", "unknown_unverified"}
+    if body.auth_state not in allowed_auth:
+        raise HTTPException(status_code=400, detail="Unsupported auth_state")
+
+    qclass = _sophia_queue_class(body.event_type, body.auth_state)
+    payload = {
+        "source": "sophia_voice",
+        "event_type": body.event_type,
+        "session_id": body.session_id,
+        "auth_state": body.auth_state,
+        "speaker_identity": body.speaker_identity,
+        "speaker_confidence": body.speaker_confidence,
+        "policy_version": body.policy_version,
+        "transcript_text": body.transcript_text,
+        "queue_class": qclass,
+        "payload": body.payload,
+        "metadata": body.metadata or {},
+    }
+    neo = _neo()
+    try:
+        signal_id = neo.create_signal_event(
+            event_id=body.event_id,
+            event_type=f"sophia_{body.event_type}",
+            payload=payload,
+            session_id=body.session_id,
+        )
+
+        created_task_id: Optional[str] = None
+        created_intent_id: Optional[str] = None
+        incident_id: Optional[str] = None
+
+        text = (body.transcript_text or "").strip()
+        if text:
+            classification = classify_text(text)
+            intent_outcome, intent_confidence = _intent_outcome_and_confidence(text, classification)
+            policy_action = _intent_policy_action(intent_outcome, intent_confidence)
+            created_intent_id = neo.upsert_intent(
+                source="sophia_voice",
+                text=text,
+                idempotency_key=f"sophia:{body.event_id}",
+                metadata={
+                    "session_id": body.session_id,
+                    "auth_state": body.auth_state,
+                    "speaker_identity": body.speaker_identity,
+                    "policy_version": body.policy_version,
+                    "policy_action": policy_action,
+                    "queue_class": qclass,
+                    **(body.metadata or {}),
+                },
+                classification=classification,
+                intent_outcome=intent_outcome,
+                intent_confidence=intent_confidence,
+            )
+
+            if classification == CLASSIFICATION_TASK and body.event_type in {"intent", "voice_chat", "meeting_action_items"}:
+                task_res = neo.create_task_with_context(
+                    title=(text[:120] + "...") if len(text) > 120 else text,
+                    task_type="task",
+                    kind="sophia_voice",
+                    required_capabilities=["terminal"],
+                    payload={
+                        "source_event_id": body.event_id,
+                        "source_intent": created_intent_id,
+                        "queue_class": qclass,
+                        "auth_state": body.auth_state,
+                        "speaker_identity": body.speaker_identity,
+                    },
+                    context_query=text,
+                    context_sources=["memory", "knowledge", "orchestration"],
+                    auto_dispatch=(qclass != "critical"),
+                )
+                created_task_id = task_res["task_id"]
+                with neo.driver.session() as s:
+                    s.run(
+                        "MATCH (i:Intent {id:$iid}), (t:Task {id:$tid}) "
+                        "MERGE (i)-[:CREATED_TASK]->(t)",
+                        {"iid": created_intent_id, "tid": created_task_id},
+                    ).consume()
+
+        if body.auth_state in {"not_scott_known", "unknown_unverified"}:
+            incident_id = neo.create_workflow_incident(
+                workflow_id=created_task_id or (created_intent_id or body.event_id),
+                incident_type="auth_state_anomaly",
+                severity="warning",
+                detail=f"Sophia auth_state={body.auth_state}",
+                metadata={
+                    "event_id": body.event_id,
+                    "speaker_identity": body.speaker_identity,
+                    "speaker_confidence": body.speaker_confidence,
+                    "queue_class": qclass,
+                },
+            )
+
+        return {
+            "signal_event_id": signal_id,
+            "intent_id": created_intent_id,
+            "task_id": created_task_id,
+            "queue_class": qclass,
+            "incident_id": incident_id,
+        }
+    finally:
+        neo.close()
+
+
+@app.get("/api/sophia/summary")
+def api_sophia_summary(
+    limit: int = Query(300, ge=10, le=5000),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        auth_states: Dict[str, int] = {
+            "authenticated_scott": 0,
+            "not_scott_known": 0,
+            "unknown_unverified": 0,
+            "unknown": 0,
+        }
+        by_event_type: Dict[str, int] = {}
+        by_queue_class: Dict[str, int] = {"interactive": 0, "batch": 0, "critical": 0, "unknown": 0}
+
+        with neo.driver.session() as s:
+            rows = s.run(
+                """
+                MATCH (e:SignalEvent)
+                WHERE coalesce(e.event_type, '') STARTS WITH 'sophia_'
+                RETURN e
+                ORDER BY coalesce(e.created_at_ts, e.updated_at_ts, 0) DESC
+                LIMIT $limit
+                """,
+                {"limit": limit},
+            )
+            items = [dict(r["e"]) for r in rows]
+
+            for ev in items:
+                payload = _json_dict(ev.get("payload_json"))
+                st = str(payload.get("auth_state") or "unknown")
+                if st not in auth_states:
+                    st = "unknown"
+                auth_states[st] += 1
+
+                et = str(payload.get("event_type") or ev.get("event_type") or "unknown")
+                by_event_type[et] = by_event_type.get(et, 0) + 1
+
+                qclass = str(payload.get("queue_class") or "unknown")
+                if qclass not in by_queue_class:
+                    qclass = "unknown"
+                by_queue_class[qclass] += 1
+
+            incident_rec = s.run(
+                """
+                MATCH (w:WorkflowIncident)
+                WHERE w.incident_type='auth_state_anomaly'
+                RETURN count(w) AS cnt
+                """
+            ).single()
+            auth_anomaly_incidents = int(incident_rec["cnt"] if incident_rec else 0)
+
+        return {
+            "sample_size": len(items),
+            "auth_states": auth_states,
+            "by_event_type": by_event_type,
+            "by_queue_class": by_queue_class,
+            "auth_anomaly_incidents": auth_anomaly_incidents,
+        }
+    finally:
+        neo.close()
+
 @app.post("/api/sessions/{session_id}")
 def api_update_session(session_id: str, body: SessionUpdateIn, user: str = Depends(auth)):
     neo = _neo()
@@ -1592,6 +1964,315 @@ def api_get_intent(intent_id: str, user: str = Depends(auth)):
             intent = dict(rec["i"])
             tasks = [dict(t) for t in rec["tasks"] if t]
             return {"intent": intent, "tasks": tasks}
+    finally:
+        neo.close()
+
+
+@app.get("/api/feeds")
+def api_list_feeds(
+    limit: int = Query(200, ge=1, le=1000),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        # Sync configured connectors into graph for persistence and querying.
+        summary = feed_health_summary()
+        for c in summary.get("connectors", []):
+            neo.upsert_data_feed_connector(
+                connector_id=str(c.get("id")),
+                name=str(c.get("name")),
+                category=str(c.get("category") or "general"),
+                endpoint=str(c.get("endpoint") or ""),
+                enabled=bool(c.get("enabled")),
+                health_status=str(c.get("health_status") or "degraded"),
+                metadata={"source": "registry_sync", "updated_at_ts": c.get("updated_at_ts")},
+            )
+        items = neo.list_data_feed_connectors(limit=limit)
+        return {"items": items, "count": len(items)}
+    finally:
+        neo.close()
+
+
+@app.post("/api/feeds")
+def api_upsert_feed(body: FeedConnectorUpsertIn, user: str = Depends(auth)):
+    if body.health_status not in {"healthy", "degraded", "down"}:
+        raise HTTPException(status_code=400, detail="health_status must be healthy, degraded, or down")
+    neo = _neo()
+    try:
+        connector_id = neo.upsert_data_feed_connector(
+            connector_id=body.id,
+            name=body.name,
+            category=body.category,
+            endpoint=body.endpoint,
+            enabled=body.enabled,
+            health_status=body.health_status,
+            metadata=body.metadata,
+        )
+        return {"id": connector_id, "ok": True}
+    finally:
+        neo.close()
+
+
+@app.get("/api/evaluations")
+def api_list_evaluations(
+    status: Optional[str] = Query(None, description="Evaluation run status filter"),
+    limit: int = Query(100, ge=1, le=1000),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        items = neo.list_evaluation_runs(limit=limit, status=status)
+        return {"items": items, "count": len(items)}
+    finally:
+        neo.close()
+
+
+@app.get("/api/evaluations/suites")
+def api_list_evaluation_suites(
+    enabled: Optional[bool] = Query(None, description="Filter suites by enabled flag"),
+    limit: int = Query(200, ge=1, le=1000),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        # Sync configured suite registry into graph for persistence/querying.
+        summary = suites_summary()
+        for suite in summary.get("suites", []):
+            neo.upsert_evaluation_suite(
+                name=str(suite.get("name")),
+                agent_class=str(suite.get("agent_class")),
+                enabled=bool(suite.get("enabled")),
+                cadence=str(suite.get("cadence") or "daily"),
+                threshold=float(suite.get("threshold") or 0.8),
+                description=str(suite.get("description") or ""),
+                metadata={"source": "registry_sync"},
+            )
+        items = neo.list_evaluation_suites(limit=limit, enabled=enabled)
+        return {"items": items, "count": len(items)}
+    finally:
+        neo.close()
+
+
+@app.post("/api/evaluations/suites")
+def api_upsert_evaluation_suite(body: EvaluationSuiteUpsertIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        suite_id = neo.upsert_evaluation_suite(
+            name=body.name,
+            agent_class=body.agent_class,
+            enabled=body.enabled,
+            cadence=body.cadence,
+            threshold=body.threshold,
+            description=body.description,
+            metadata={**(body.metadata or {}), "updated_by": user},
+        )
+        return {"suite_id": suite_id, "ok": True}
+    finally:
+        neo.close()
+
+
+@app.post("/api/evaluations")
+def api_create_evaluation(body: EvaluationRunIn, user: str = Depends(auth)):
+    allowed = {"queued", "running", "completed", "failed", "cancelled"}
+    if body.status not in allowed:
+        raise HTTPException(status_code=400, detail=f"status must be one of: {', '.join(sorted(allowed))}")
+    neo = _neo()
+    try:
+        run_id = neo.create_evaluation_run(
+            suite_name=body.suite_name,
+            agent_class=body.agent_class,
+            status=body.status,
+            score=body.score,
+            metadata={**(body.metadata or {}), "recorded_by": user},
+        )
+        return {"evaluation_run_id": run_id}
+    finally:
+        neo.close()
+
+
+@app.get("/api/workflows/queue")
+def api_workflows_queue(
+    limit: int = Query(500, ge=1, le=2000),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        with neo.driver.session() as s:
+            rows = s.run(
+                """
+                MATCH (t:Task)
+                WHERE t.status IN ['READY','CLAIMED','RUNNING','REVIEW']
+                RETURN t
+                ORDER BY coalesce(t.created_at_ts, t.updated_at_ts, 0) DESC
+                LIMIT $limit
+                """,
+                {"limit": limit},
+            )
+            by_queue = {"interactive": 0, "batch": 0, "critical": 0, "unknown": 0}
+            by_status: Dict[str, int] = {}
+            items: List[Dict[str, Any]] = []
+            for r in rows:
+                task = dict(r["t"])
+                payload = _json_dict(task.get("payload_json"))
+                qclass = str(payload.get("queue_class") or task.get("queue_class") or "unknown")
+                if qclass not in by_queue:
+                    qclass = "unknown"
+                by_queue[qclass] += 1
+                st = str(task.get("status") or "UNKNOWN")
+                by_status[st] = by_status.get(st, 0) + 1
+                task["queue_class"] = qclass
+                items.append(task)
+        return {
+            "control": dict(_workflow_control_state),
+            "by_queue_class": by_queue,
+            "by_status": by_status,
+            "items": items[:100],
+            "count": len(items),
+        }
+    finally:
+        neo.close()
+
+
+@app.get("/api/workflows/slo")
+def api_workflows_slo(
+    window_hours: int = Query(24, ge=1, le=168),
+    user: str = Depends(auth),
+):
+    cutoff = int(_time.time() * 1000) - (window_hours * 60 * 60 * 1000)
+    neo = _neo()
+    try:
+        with neo.driver.session() as s:
+            rows = s.run(
+                """
+                MATCH (t:Task)
+                WHERE coalesce(t.created_at_ts, t.updated_at_ts, 0) >= $cutoff
+                RETURN t
+                """,
+                {"cutoff": cutoff},
+            )
+            start_latencies: List[float] = []
+            completion_latencies: List[float] = []
+            completed = 0
+            failed = 0
+            total = 0
+            for r in rows:
+                t = dict(r["t"])
+                total += 1
+                cts = t.get("created_at_ts")
+                claimed = t.get("claimed_at_ts")
+                done = t.get("completed_at_ts")
+                status = str(t.get("status") or "")
+                if cts and claimed:
+                    start_latencies.append(max(0.0, (float(claimed) - float(cts)) / 1000.0))
+                if cts and done and status in {"DONE", "FAILED", "CANCELLED"}:
+                    completion_latencies.append(max(0.0, (float(done) - float(cts)) / 1000.0))
+                if status == "DONE":
+                    completed += 1
+                if status in {"FAILED", "CANCELLED"}:
+                    failed += 1
+
+        def _p95(values: List[float]) -> float:
+            if not values:
+                return 0.0
+            vals = sorted(values)
+            idx = int(round(0.95 * (len(vals) - 1)))
+            return float(vals[idx])
+
+        success_rate = (completed / total) if total else 0.0
+        return {
+            "window_hours": window_hours,
+            "workflow_count": total,
+            "completed": completed,
+            "failed_or_cancelled": failed,
+            "success_rate": round(success_rate, 4),
+            "p95_start_latency_s": round(_p95(start_latencies), 2),
+            "p95_completion_latency_s": round(_p95(completion_latencies), 2),
+            "control": dict(_workflow_control_state),
+        }
+    finally:
+        neo.close()
+
+
+@app.post("/api/workflows/control")
+def api_workflows_control(body: WorkflowControlIn, user: str = Depends(auth)):
+    action = body.action.strip().lower()
+    if action not in {"drain", "resume", "set_limits"}:
+        raise HTTPException(status_code=400, detail="action must be drain, resume, or set_limits")
+
+    if action in {"drain", "resume"}:
+        _workflow_control_state["mode"] = action
+    if action == "set_limits":
+        if body.max_concurrent_workflows is not None:
+            _workflow_control_state["max_concurrent_workflows"] = max(1, int(body.max_concurrent_workflows))
+        if body.max_batch_backlog is not None:
+            _workflow_control_state["max_batch_backlog"] = max(1, int(body.max_batch_backlog))
+    _workflow_control_state["updated_at_ts"] = int(_time.time() * 1000)
+    _workflow_control_state["updated_by"] = user
+    return {"ok": True, "control": dict(_workflow_control_state)}
+
+
+@app.post("/api/workflows/{workflow_id}/replan")
+def api_workflow_replan(workflow_id: str, body: WorkflowReplanIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        workflow_task = neo.get_task(workflow_id)
+        if not workflow_task:
+            raise HTTPException(status_code=404, detail="Workflow task not found")
+        incident_id = neo.create_workflow_incident(
+            workflow_id=workflow_id,
+            incident_type="replan_requested",
+            severity=body.severity,
+            detail=body.reason,
+            metadata={**(body.metadata or {}), "requested_by": user},
+        )
+        with neo.driver.session() as s:
+            s.run(
+                """
+                MATCH (t:Task {id:$id})
+                SET t.replan_requested=true,
+                    t.replan_reason=$reason,
+                    t.replan_requested_by=$user,
+                    t.replan_requested_at=datetime(),
+                    t.replan_requested_at_ts=timestamp(),
+                    t.updated_at=datetime(),
+                    t.updated_at_ts=timestamp()
+                """,
+                {"id": workflow_id, "reason": body.reason[:2000], "user": user},
+            ).consume()
+        return {"workflow_id": workflow_id, "incident_id": incident_id, "replan_requested": True}
+    finally:
+        neo.close()
+
+
+@app.post("/api/workflows/{workflow_id}/budget/update")
+def api_workflow_budget_update(workflow_id: str, body: WorkflowBudgetUpdateIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        workflow_task = neo.get_task(workflow_id)
+        if not workflow_task:
+            raise HTTPException(status_code=404, detail="Workflow task not found")
+        budget_id = neo.upsert_workflow_budget(
+            workflow_id=workflow_id,
+            token_budget=body.token_budget,
+            time_budget_s=body.time_budget_s,
+            retry_budget=body.retry_budget,
+            metadata={**(body.metadata or {}), "updated_by": user},
+        )
+        return {"workflow_id": workflow_id, "budget_id": budget_id, "updated": True}
+    finally:
+        neo.close()
+
+
+@app.get("/api/workflows/{workflow_id}/incidents")
+def api_workflow_incidents(
+    workflow_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        items = neo.list_workflow_incidents(workflow_id=workflow_id, limit=limit)
+        return {"workflow_id": workflow_id, "items": items, "count": len(items)}
     finally:
         neo.close()
 
