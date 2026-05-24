@@ -643,22 +643,30 @@ can be filtered by policy in command-center workflows.
 (small-model drafting + selective escalation), workflow DAG materialization, and
 multi-step complex workflow execution patterns.
 
+**Expanded Phase 7 execution focus:**
+- Stand up model registry + lane router (`draft`, `verify`, `escalate`) with
+  provider-aware health/fallback.
+- Add `Workflow` / `WorkflowStep` / `WorkflowDecision` graph schema and APIs.
+- Run v3 orchestrator in `shadow -> assist -> primary` rollout modes with
+  automatic V2 fallback on v3 failure paths.
+- Add workflow-level observability and replay benchmark harness for V2-vs-V3
+  comparison before primary cutover.
+
 ### Phase 8 - Closed-loop orchestration and SLOs
 
-- Turn policy actions into orchestration behavior:
-  - auto-create/auto-dispatch task triggers for high-confidence actionable
-    intents;
-  - explicit operator queue for `review_dispatch` and `needs_clarification`;
-  - immediate cancellation propagation for `auto_cancel_eligible`.
-- Add queue/run/session SLO alarms and burn-rate style alerts:
-  - dispatch latency,
-  - task claim latency,
-  - run completion latency,
-  - failure and retry rate.
-- Add backlog control loops for stuck READY tasks and stale RUNNING tasks.
+Phase 8 proposal is defined in
+`docs/PHASE_8_AUTONOMOUS_WORKFLOW_OPERATIONS.md` and shifts from “policy loop”
+to autonomous multi-workflow operations:
 
-**Exit criteria:** canary can run unattended for a full day with bounded
-latency and no unbounded queue growth.
+- Admission control + scheduler with queue classes (`interactive`, `batch`,
+  `critical`).
+- Budgeted autonomy (time/token/retry envelopes per workflow).
+- Autonomous repair/replan with dead-letter review handoff.
+- Device/model capacity economics and escalation budget controls.
+- Workflow-centric SLOs, burn-rate alerts, and incident taxonomy.
+
+**Exit criteria:** 24h autonomous canary passes queue, latency, retry, and
+escalation budget gates with reduced operator review load per workflow.
 
 **Status update (May 24, 2026):** Intent orchestrator now consumes
 `policy_action`. Intents marked `review_dispatch`, `needs_clarification`, and
