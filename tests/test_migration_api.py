@@ -259,11 +259,16 @@ def test_ops_status_endpoint(seeded_neo4j, monkeypatch):
     r = client.get("/api/ops/status", auth=auth)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert "neo4j" in body and "queue" in body and "sessions" in body and "dispatches" in body and "review" in body
+    assert "neo4j" in body and "queue" in body and "sessions" in body and "dispatches" in body and "review" in body and "feeds" in body
     assert "status" in body["neo4j"]
     assert isinstance(body["queue"]["depth"], int)
     assert isinstance(body["review"]["backlog"], int)
     assert "sla_breached" in body["review"]
+    assert isinstance(body["feeds"]["total"], int)
+    assert isinstance(body["feeds"]["enabled"], int)
+    assert "by_status" in body["feeds"]
+    assert "evaluation_suites" in body
+    assert isinstance(body["evaluation_suites"]["total"], int)
 
 
 def test_paperclip_event_requires_signature_secret(monkeypatch):
@@ -653,6 +658,257 @@ def test_command_center_reassign(seeded_neo4j, monkeypatch):
     )
     assert r.status_code == 200
     assert r.json()["reassigned"] is True
+
+
+def test_phase9_feeds_and_evaluations_api(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    feeds = client.get("/api/feeds", auth=auth)
+    assert feeds.status_code == 200, feeds.text
+    assert feeds.json()["count"] >= 1
+    assert any(item["id"] == "sophia-voice-auth" for item in feeds.json()["items"])
+
+    upsert = client.post(
+        "/api/feeds",
+        json={
+            "id": "fundamentals-feed",
+            "name": "Fundamentals Feed",
+            "category": "financial",
+            "endpoint": "local://fundamentals",
+            "enabled": True,
+            "health_status": "healthy",
+        },
+        auth=auth,
+    )
+    assert upsert.status_code == 200, upsert.text
+    assert upsert.json()["ok"] is True
+
+    feeds2 = client.get("/api/feeds", auth=auth)
+    assert feeds2.status_code == 200, feeds2.text
+    assert any(item["id"] == "fundamentals-feed" for item in feeds2.json()["items"])
+
+    eval_create_1 = client.post(
+        "/api/evaluations",
+        json={
+            "suite_name": "financial_health_daily",
+            "agent_class": "financial_health_analyst",
+            "status": "completed",
+            "score": 0.91,
+            "metadata": {"window": "1d"},
+        },
+        auth=auth,
+    )
+    assert eval_create_1.status_code == 200, eval_create_1.text
+    assert eval_create_1.json()["evaluation_run_id"]
+
+    eval_create_2 = client.post(
+        "/api/evaluations",
+        json={
+            "suite_name": "research_quality_daily",
+            "agent_class": "research_agent",
+            "status": "failed",
+            "score": 0.42,
+        },
+        auth=auth,
+    )
+    assert eval_create_2.status_code == 200, eval_create_2.text
+
+    evals_all = client.get("/api/evaluations", auth=auth)
+    assert evals_all.status_code == 200, evals_all.text
+    assert evals_all.json()["count"] >= 2
+
+    evals_failed = client.get("/api/evaluations?status=failed", auth=auth)
+    assert evals_failed.status_code == 200, evals_failed.text
+    assert all(item["status"] == "failed" for item in evals_failed.json()["items"])
+
+    suites = client.get("/api/evaluations/suites", auth=auth)
+    assert suites.status_code == 200, suites.text
+    assert suites.json()["count"] >= 2
+    assert any(item["name"] == "sophia_auth_quality_daily" for item in suites.json()["items"])
+
+    suite_upsert = client.post(
+        "/api/evaluations/suites",
+        json={
+            "name": "sophia_policy_routing_daily",
+            "agent_class": "voice_policy_analyst",
+            "enabled": True,
+            "cadence": "daily",
+            "threshold": 0.81,
+            "description": "Validate auth-state to response-voice policy routing.",
+        },
+        auth=auth,
+    )
+    assert suite_upsert.status_code == 200, suite_upsert.text
+    assert suite_upsert.json()["ok"] is True
+
+
+def test_sophia_event_ingestion(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    payload = {
+        "event_id": "sophia-evt-1",
+        "event_type": "intent",
+        "session_id": "sophia-session-1",
+        "transcript_text": "Create a follow-up task for my meeting notes",
+        "auth_state": "authenticated_scott",
+        "speaker_identity": "scott",
+        "speaker_confidence": 0.93,
+        "policy_version": "v1",
+        "payload": {"source": "ws"},
+    }
+    r = client.post("/api/sophia/events", json=payload, auth=auth)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["signal_event_id"] == "sophia-evt-1"
+    assert body["intent_id"]
+    assert body["queue_class"] == "interactive"
+
+    anomaly = {
+        "event_id": "sophia-evt-2",
+        "event_type": "voice_chat",
+        "session_id": "sophia-session-2",
+        "transcript_text": "Summarize what was said",
+        "auth_state": "unknown_unverified",
+        "speaker_identity": "unknown",
+        "speaker_confidence": 0.22,
+        "policy_version": "v1",
+        "payload": {},
+    }
+    r2 = client.post("/api/sophia/events", json=anomaly, auth=auth)
+    assert r2.status_code == 200, r2.text
+    b2 = r2.json()
+    assert b2["queue_class"] == "critical"
+    assert b2["incident_id"]
+
+    summary = client.get("/api/sophia/summary?limit=50", auth=auth)
+    assert summary.status_code == 200, summary.text
+    sj = summary.json()
+    assert sj["sample_size"] >= 2
+    assert sj["auth_states"]["authenticated_scott"] >= 1
+    assert sj["auth_states"]["unknown_unverified"] >= 1
+    assert sj["by_queue_class"]["critical"] >= 1
+
+
+def test_phase8_workflow_ops_endpoints(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    # Seed some queue-class tasks
+    batch_id = neo.upsert_ticket(
+        title="Batch workflow task",
+        ticket_type="task",
+        status="READY",
+        kind="workflow_step",
+        payload={"queue_class": "batch"},
+        idempotency_key="wf-batch-1",
+    )
+    critical_id = neo.upsert_ticket(
+        title="Critical workflow task",
+        ticket_type="task",
+        status="RUNNING",
+        kind="workflow_step",
+        payload={"queue_class": "critical"},
+        idempotency_key="wf-critical-1",
+    )
+    assert batch_id and critical_id
+
+    q = client.get("/api/workflows/queue", auth=auth)
+    assert q.status_code == 200, q.text
+    qj = q.json()
+    assert "by_queue_class" in qj and "control" in qj
+    assert qj["by_queue_class"]["batch"] >= 1
+    assert qj["by_queue_class"]["critical"] >= 1
+
+    # Drain mode should block non-critical claims
+    ctl_drain = client.post("/api/workflows/control", json={"action": "drain"}, auth=auth)
+    assert ctl_drain.status_code == 200, ctl_drain.text
+    polled = client.get("/api/agent/tasks?status=READY&agent_id=agent-8&limit=50", auth=auth)
+    assert polled.status_code == 200, polled.text
+    for item in polled.json()["items"]:
+        assert item["queue_class"] == "critical"
+    claim_block = client.post(
+        f"/api/tasks/{batch_id}/claim",
+        json={"agent_id": "agent-8", "capabilities": ["terminal"], "session_id": "sess-8"},
+        auth=auth,
+    )
+    assert claim_block.status_code == 409, claim_block.text
+    assert claim_block.json()["detail"]["reason"] == "drain_mode_block"
+
+    # Critical claims are still allowed in drain mode
+    critical_ready_id = neo.upsert_ticket(
+        title="Critical ready task",
+        ticket_type="task",
+        status="READY",
+        kind="workflow_step",
+        payload={"queue_class": "critical"},
+        idempotency_key="wf-critical-ready-1",
+    )
+    claim_ok = client.post(
+        f"/api/tasks/{critical_ready_id}/claim",
+        json={"agent_id": "agent-8", "capabilities": ["terminal"], "session_id": "sess-8b"},
+        auth=auth,
+    )
+    assert claim_ok.status_code == 200, claim_ok.text
+    assert claim_ok.json()["claimed"] is True
+
+    slo = client.get("/api/workflows/slo?window_hours=24", auth=auth)
+    assert slo.status_code == 200, slo.text
+    sj = slo.json()
+    assert sj["window_hours"] == 24
+    assert "p95_start_latency_s" in sj and "success_rate" in sj
+
+    ctl1 = client.post("/api/workflows/control", json={"action": "drain"}, auth=auth)
+    assert ctl1.status_code == 200, ctl1.text
+    assert ctl1.json()["control"]["mode"] == "drain"
+
+    ctl2 = client.post(
+        "/api/workflows/control",
+        json={"action": "set_limits", "max_concurrent_workflows": 7, "max_batch_backlog": 99},
+        auth=auth,
+    )
+    assert ctl2.status_code == 200, ctl2.text
+    assert ctl2.json()["control"]["max_concurrent_workflows"] == 7
+    assert ctl2.json()["control"]["max_batch_backlog"] == 99
+
+    budget = client.post(
+        f"/api/workflows/{batch_id}/budget/update",
+        json={"token_budget": 25000, "time_budget_s": 1800, "retry_budget": 3},
+        auth=auth,
+    )
+    assert budget.status_code == 200, budget.text
+    assert budget.json()["updated"] is True
+
+    replan = client.post(
+        f"/api/workflows/{batch_id}/replan",
+        json={"reason": "verification_failed", "severity": "warning"},
+        auth=auth,
+    )
+    assert replan.status_code == 200, replan.text
+    assert replan.json()["replan_requested"] is True
+
+    incidents = client.get(f"/api/workflows/{batch_id}/incidents", auth=auth)
+    assert incidents.status_code == 200, incidents.text
+    assert incidents.json()["count"] >= 1
+
+    ctl_resume = client.post("/api/workflows/control", json={"action": "resume"}, auth=auth)
+    assert ctl_resume.status_code == 200, ctl_resume.text
+    assert ctl_resume.json()["control"]["mode"] == "resume"
+
+    ops = client.get("/api/ops/status", auth=auth)
+    assert ops.status_code == 200, ops.text
+    assert "workflow" in ops.json()
+    assert "escalation_backlog" in ops.json()["workflow"]
 
 
 def test_review_queue_actions(seeded_neo4j, monkeypatch):

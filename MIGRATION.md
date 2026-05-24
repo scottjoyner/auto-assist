@@ -677,8 +677,78 @@ Review queue APIs are now available to close the loop:
 `GET /api/review/tasks`, `POST /api/review/tasks/{task_id}/approve`,
 `POST /api/review/tasks/{task_id}/reject`, and
 `POST /api/review/tasks/{task_id}/clarify`.
+Phase 8 workflow ops skeleton now in place:
+`GET /api/workflows/queue`, `GET /api/workflows/slo`,
+`POST /api/workflows/control`, plus `workflow` block in `/api/ops/status`
+(backlog, running, escalation backlog, control state).
+Phase 8 control behavior and incident/budget APIs implemented:
+drain mode now blocks non-critical task claims, critical claims remain allowed;
+added `POST /api/workflows/{workflow_id}/replan`,
+`POST /api/workflows/{workflow_id}/budget/update`, and
+`GET /api/workflows/{workflow_id}/incidents` with workflow incident/budget graph
+entities.
+Admission filtering is now enforced in `/api/agent/tasks` so drain-mode and
+workflow-capacity gates reduce non-admissible task offers before claim attempts.
 
-### Phase 9 - Multi-device productionization
+### Phase 9 - Evaluation fabric and data feed integrations
+
+Phase 9 proposal is defined in
+`docs/PHASE_9_EVALUATION_AND_DATA_FEEDS.md` and focuses on expanding coverage
+with evaluation-governed integrations:
+
+- Build a cross-workflow evaluation fabric (`EvaluationRun`,
+  `EvaluationSuite`) with agent scorecards.
+- Integrate prioritized external/internal feed connectors with normalized
+  schemas, freshness, replay safety, and health telemetry.
+- Gate promotion from sandbox/shadow to active automation via objective quality
+  thresholds.
+- Add degradation behavior (advisory-only fallback) on score drift.
+
+**Exit criteria:** at least three critical feed classes are integrated and
+continuously evaluated with enforced promotion/demotion gates.
+
+**Status update (May 24, 2026):** Phase 9 Sprint 1 foundation implemented:
+evaluation/feed schema placeholders added (`EvaluationRun`, `EvaluationSuite`,
+`DataFeedConnector` constraints/indexes), feed registry skeleton added
+(`feed_registry.py`), and feed health now surfaced in `GET /api/ops/status`
+under `feeds`.
+Phase 9 Sprint 2 API scaffolding implemented:
+`GET/POST /api/feeds` for connector persistence/sync and
+`GET/POST /api/evaluations` for evaluation run ingestion and filtering.
+Cross-repo voice integration plan added:
+`docs/SOPHIA_TO_ASSISTX_INTEGRATION_PLAN.md` maps Sophia voice runtime/auth and
+meeting-mode outputs into AssistX workflow queues, feed connectors, and
+evaluation suites for Phase 8/9/10 execution.
+Sophia connector/suite defaults now implemented in code:
+feed registry includes Sophia voice feeds, evaluation registry includes Sophia
+auth/meeting suites, and APIs now expose/sync them
+(`GET/POST /api/feeds`, `GET/POST /api/evaluations/suites`).
+Sophia voice ingress contract implemented:
+`POST /api/sophia/events` now ingests structured Sophia runtime events into
+`SignalEvent`, derives workflow queue class, creates intent/task when
+transcript payload is actionable, and records workflow incidents for anomalous
+auth states.
+Sophia operational visibility added:
+`GET /api/sophia/summary` plus command-center Sophia card showing auth-state
+distribution, queue-class mix, and anomaly incident counts.
+
+### Phase 10 - Persistent research and analyst agent fleet
+
+Phase 10 proposal is defined in
+`docs/PHASE_10_PERSISTENT_RESEARCH_AND_ANALYST_AGENTS.md` and operationalizes
+always-on domain intelligence:
+
+- Persistent research agents (continuous thematic/company/macro synthesis).
+- Technical analyst agents (market structure, regime shifts, signal ranking).
+- Financial health analyst agents (liquidity/leverage/profitability/cashflow
+  trajectory monitoring).
+- Continuous scheduling, heartbeat supervision, evaluation gating, and
+  alert-routing with dedupe/severity controls.
+
+**Exit criteria:** always-on domain agents run for 14 days with bounded
+failures and evaluation-qualified output quality.
+
+### Phase 11 - Multi-device productionization
 
 - Add explicit device capacity model and admission control:
   - max concurrent tasks per device,
@@ -976,6 +1046,12 @@ test_ensure_schema_declares_migration_constraints_and_indexes PASSED
    - Consume policy action in the orchestrator to separate auto-dispatch and
      review queues.
    - Add canary watchdog for queue growth and stale running jobs.
-10. **Phase 9 device expansion prep**:
+10. **Phase 9 evaluation + feed integration prep**:
+    - Add evaluation suite scaffolding and scorecard schema.
+    - Define prioritized market/financial/research feed connectors with health checks.
+11. **Phase 10 persistent analyst agents prep**:
+    - Define always-on research, technical analyst, and financial-health agent templates.
+    - Add continuous scheduling/heartbeat plan for persistent agent fleet.
+12. **Phase 11 device expansion prep**:
     - Add adapter health heartbeat SLOs and per-device load telemetry.
     - Publish operator runbook for adding remote Hermes devices.

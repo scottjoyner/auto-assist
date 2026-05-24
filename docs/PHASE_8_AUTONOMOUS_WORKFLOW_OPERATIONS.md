@@ -181,3 +181,41 @@ Workflow Intake
 2. Implement scheduler skeleton with admission-control decision logs.
 3. Add workflow incident taxonomy and dead-letter path.
 4. Extend ops endpoint and dashboards with workflow SLO data.
+
+---
+
+## Implementation Status (May 24, 2026)
+
+Completed scaffolding in code:
+
+1. Workflow operations APIs:
+- `GET /api/workflows/queue`
+- `GET /api/workflows/slo`
+- `POST /api/workflows/control`
+- `POST /api/workflows/{workflow_id}/replan`
+- `POST /api/workflows/{workflow_id}/budget/update`
+- `GET /api/workflows/{workflow_id}/incidents`
+
+2. Ops visibility:
+- `/api/ops/status` now includes `workflow` block:
+  - `backlog`,
+  - `running`,
+  - `escalation_backlog`,
+  - current workflow control state.
+
+3. Control enforcement:
+- drain mode now actively blocks new claims for non-critical queue-class tasks;
+- critical queue-class tasks remain claimable during drain mode.
+ - admission filtering is also applied at task polling (`/api/agent/tasks`) so
+   non-admissible tasks are not offered to agents in the first place.
+
+4. Graph schema additions for workflow ops:
+- `WorkflowBudget`
+- `WorkflowIncident`
+
+Remaining high-priority Phase 8 work:
+
+1. Scheduler loop enforcement for admission decisions beyond claim-time gating.
+2. Weighted fairness and queue aging.
+3. Automated dead-letter routing for exhausted retry budgets.
+4. Burn-rate style workflow alerts and incident grouping.

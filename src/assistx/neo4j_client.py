@@ -110,6 +110,11 @@ class Neo4jClient:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (c:MediaCapture)  REQUIRE c.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (a:MediaAsset)    REQUIRE a.path IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (r:Requirement)  REQUIRE r.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (e:EvaluationRun) REQUIRE e.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (s:EvaluationSuite) REQUIRE s.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (f:DataFeedConnector) REQUIRE f.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (b:WorkflowBudget) REQUIRE b.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (w:WorkflowIncident) REQUIRE w.id IS UNIQUE",
 
             # Helpful indexes
             "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.status)",
@@ -140,6 +145,15 @@ class Neo4jClient:
             "CREATE INDEX IF NOT EXISTS FOR (p:ContextPacket)   ON (p.created_at_ts)",
             "CREATE INDEX IF NOT EXISTS FOR (p:ContextPacket)   ON (p.query_hash)",
             "CREATE INDEX IF NOT EXISTS FOR (r:Requirement)    ON (r.source_intent_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (e:EvaluationRun)   ON (e.created_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (e:EvaluationRun)   ON (e.status)",
+            "CREATE INDEX IF NOT EXISTS FOR (s:EvaluationSuite) ON (s.name)",
+            "CREATE INDEX IF NOT EXISTS FOR (f:DataFeedConnector) ON (f.name)",
+            "CREATE INDEX IF NOT EXISTS FOR (f:DataFeedConnector) ON (f.health_status)",
+            "CREATE INDEX IF NOT EXISTS FOR (f:DataFeedConnector) ON (f.updated_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (b:WorkflowBudget) ON (b.workflow_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (w:WorkflowIncident) ON (w.workflow_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (w:WorkflowIncident) ON (w.created_at_ts)",
         ]
         with self._session() as s:
             for q in cypher:
@@ -1596,6 +1610,272 @@ class Neo4jClient:
         with self._session() as s:
             rec = s.run("MATCH (t:Task {id:$id}) RETURN t", {"id": task_id}).single()
             return dict(rec["t"]) if rec else None
+
+    # ---------- Phase 9: feeds + evaluations ----------
+
+    def upsert_data_feed_connector(
+        self,
+        connector_id: str,
+        name: str,
+        category: str,
+        endpoint: str,
+        enabled: bool,
+        health_status: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        with self._session() as s:
+            rec = s.run(
+                """
+                MERGE (f:DataFeedConnector {id:$id})
+                ON CREATE SET f.created_at=datetime(), f.created_at_ts=timestamp()
+                SET f.name=$name,
+                    f.category=$category,
+                    f.endpoint=$endpoint,
+                    f.enabled=$enabled,
+                    f.health_status=$health_status,
+                    f.metadata_json=$metadata_json,
+                    f.updated_at=datetime(),
+                    f.updated_at_ts=timestamp()
+                RETURN f.id AS id
+                """,
+                {
+                    "id": connector_id,
+                    "name": name,
+                    "category": category,
+                    "endpoint": endpoint,
+                    "enabled": enabled,
+                    "health_status": health_status,
+                    "metadata_json": json.dumps(metadata or {}),
+                },
+            ).single()
+            return str(rec["id"])
+
+    def list_data_feed_connectors(self, limit: int = 100) -> List[Dict[str, Any]]:
+        with self._session() as s:
+            res = s.run(
+                """
+                MATCH (f:DataFeedConnector)
+                RETURN f
+                ORDER BY coalesce(f.updated_at_ts, f.created_at_ts, 0) DESC
+                LIMIT $limit
+                """,
+                {"limit": limit},
+            )
+            return [dict(r["f"]) for r in res]
+
+    def create_evaluation_run(
+        self,
+        suite_name: str,
+        agent_class: str,
+        status: str,
+        score: Optional[float] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        run_id = uuid.uuid4().hex
+        suite_id = hashlib.sha1(suite_name.strip().lower().encode("utf-8")).hexdigest()[:16]
+        with self._session() as s:
+            rec = s.run(
+                """
+                MERGE (suite:EvaluationSuite {id:$suite_id})
+                ON CREATE SET suite.created_at=datetime(), suite.created_at_ts=timestamp()
+                SET suite.name=$suite_name,
+                    suite.updated_at=datetime(),
+                    suite.updated_at_ts=timestamp()
+                WITH suite
+                CREATE (run:EvaluationRun {id:$run_id})
+                SET run.status=$status,
+                    run.agent_class=$agent_class,
+                    run.score=$score,
+                    run.metadata_json=$metadata_json,
+                    run.created_at=datetime(),
+                    run.created_at_ts=timestamp(),
+                    run.updated_at=datetime(),
+                    run.updated_at_ts=timestamp()
+                MERGE (suite)-[:HAS_RUN]->(run)
+                RETURN run.id AS id
+                """,
+                {
+                    "suite_id": suite_id,
+                    "suite_name": suite_name,
+                    "run_id": run_id,
+                    "status": status,
+                    "agent_class": agent_class,
+                    "score": score,
+                    "metadata_json": json.dumps(metadata or {}),
+                },
+            ).single()
+            return str(rec["id"])
+
+    def upsert_evaluation_suite(
+        self,
+        name: str,
+        agent_class: str,
+        enabled: bool,
+        cadence: str,
+        threshold: float,
+        description: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        suite_id = hashlib.sha1(name.strip().lower().encode("utf-8")).hexdigest()[:16]
+        with self._session() as s:
+            rec = s.run(
+                """
+                MERGE (suite:EvaluationSuite {id:$id})
+                ON CREATE SET suite.created_at=datetime(), suite.created_at_ts=timestamp()
+                SET suite.name=$name,
+                    suite.agent_class=$agent_class,
+                    suite.enabled=$enabled,
+                    suite.cadence=$cadence,
+                    suite.threshold=$threshold,
+                    suite.description=$description,
+                    suite.metadata_json=$metadata_json,
+                    suite.updated_at=datetime(),
+                    suite.updated_at_ts=timestamp()
+                RETURN suite.id AS id
+                """,
+                {
+                    "id": suite_id,
+                    "name": name,
+                    "agent_class": agent_class,
+                    "enabled": enabled,
+                    "cadence": cadence,
+                    "threshold": threshold,
+                    "description": description,
+                    "metadata_json": json.dumps(metadata or {}),
+                },
+            ).single()
+            return str(rec["id"])
+
+    def list_evaluation_suites(self, limit: int = 200, enabled: Optional[bool] = None) -> List[Dict[str, Any]]:
+        with self._session() as s:
+            q = "MATCH (suite:EvaluationSuite) "
+            params: Dict[str, Any] = {"limit": limit}
+            if enabled is not None:
+                q += "WHERE suite.enabled=$enabled "
+                params["enabled"] = enabled
+            q += (
+                "RETURN suite "
+                "ORDER BY coalesce(suite.updated_at_ts, suite.created_at_ts, 0) DESC "
+                "LIMIT $limit"
+            )
+            res = s.run(q, params)
+            return [dict(r["suite"]) for r in res]
+
+    def list_evaluation_runs(self, limit: int = 100, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        with self._session() as s:
+            q = (
+                "MATCH (suite:EvaluationSuite)-[:HAS_RUN]->(run:EvaluationRun) "
+            )
+            params: Dict[str, Any] = {"limit": limit}
+            if status:
+                q += "WHERE run.status=$status "
+                params["status"] = status
+            q += (
+                "RETURN run, suite "
+                "ORDER BY coalesce(run.created_at_ts, run.updated_at_ts, 0) DESC "
+                "LIMIT $limit"
+            )
+            res = s.run(q, params)
+            items: List[Dict[str, Any]] = []
+            for row in res:
+                run = dict(row["run"])
+                suite = dict(row["suite"])
+                run["suite_id"] = suite.get("id")
+                run["suite_name"] = suite.get("name")
+                items.append(run)
+            return items
+
+    def upsert_workflow_budget(
+        self,
+        workflow_id: str,
+        token_budget: Optional[int] = None,
+        time_budget_s: Optional[int] = None,
+        retry_budget: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        budget_id = f"budget:{workflow_id}"
+        with self._session() as s:
+            rec = s.run(
+                """
+                MERGE (b:WorkflowBudget {id:$id})
+                ON CREATE SET b.created_at=datetime(), b.created_at_ts=timestamp()
+                SET b.workflow_id=$workflow_id,
+                    b.token_budget=coalesce($token_budget, b.token_budget),
+                    b.time_budget_s=coalesce($time_budget_s, b.time_budget_s),
+                    b.retry_budget=coalesce($retry_budget, b.retry_budget),
+                    b.metadata_json=$metadata_json,
+                    b.updated_at=datetime(),
+                    b.updated_at_ts=timestamp()
+                WITH b
+                OPTIONAL MATCH (t:Task {id:$workflow_id})
+                FOREACH (_ IN CASE WHEN t IS NULL THEN [] ELSE [1] END |
+                    MERGE (t)-[:HAS_BUDGET]->(b)
+                )
+                RETURN b.id AS id
+                """,
+                {
+                    "id": budget_id,
+                    "workflow_id": workflow_id,
+                    "token_budget": token_budget,
+                    "time_budget_s": time_budget_s,
+                    "retry_budget": retry_budget,
+                    "metadata_json": json.dumps(metadata or {}),
+                },
+            ).single()
+            return str(rec["id"])
+
+    def create_workflow_incident(
+        self,
+        workflow_id: str,
+        incident_type: str,
+        severity: str = "warning",
+        detail: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        incident_id = uuid.uuid4().hex
+        with self._session() as s:
+            rec = s.run(
+                """
+                CREATE (w:WorkflowIncident {id:$id})
+                SET w.workflow_id=$workflow_id,
+                    w.incident_type=$incident_type,
+                    w.severity=$severity,
+                    w.detail=$detail,
+                    w.metadata_json=$metadata_json,
+                    w.created_at=datetime(),
+                    w.created_at_ts=timestamp(),
+                    w.updated_at=datetime(),
+                    w.updated_at_ts=timestamp()
+                WITH w
+                OPTIONAL MATCH (t:Task {id:$workflow_id})
+                FOREACH (_ IN CASE WHEN t IS NULL THEN [] ELSE [1] END |
+                    MERGE (t)-[:HAS_INCIDENT]->(w)
+                )
+                RETURN w.id AS id
+                """,
+                {
+                    "id": incident_id,
+                    "workflow_id": workflow_id,
+                    "incident_type": incident_type,
+                    "severity": severity,
+                    "detail": detail,
+                    "metadata_json": json.dumps(metadata or {}),
+                },
+            ).single()
+            return str(rec["id"])
+
+    def list_workflow_incidents(self, workflow_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        with self._session() as s:
+            res = s.run(
+                """
+                MATCH (w:WorkflowIncident {workflow_id:$workflow_id})
+                RETURN w
+                ORDER BY coalesce(w.created_at_ts, w.updated_at_ts, 0) DESC
+                LIMIT $limit
+                """,
+                {"workflow_id": workflow_id, "limit": limit},
+            )
+            return [dict(r["w"]) for r in res]
 
     # ---------- Intent Orchestrator ----------
 

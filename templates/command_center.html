@@ -37,6 +37,12 @@
     <div style="margin-top:.6rem;"><a class="btn" href="/review">Open review queue</a></div>
   </section>
 
+  <section class="card third">
+    <h3>Sophia Voice</h3>
+    <p class="muted">Auth-state and queue distribution for Sophia voice ingress.</p>
+    <div id="sophia-summary">Loading…</div>
+  </section>
+
   <section class="card half">
     <h3>Memory</h3>
     <p class="muted">Recent memory writes, freshness, and source.</p>
@@ -166,6 +172,25 @@
     ras.innerHTML = `24h decisions: <span class="badge">${reviewAudit.total_decisions || 0}</span> ${parts}`;
   } else {
     ras.textContent = '24h decisions unavailable.';
+  }
+
+  const sophia = await loadJSON('/api/sophia/summary?limit=200');
+  const sv = document.getElementById('sophia-summary');
+  if (sophia && sophia.auth_states) {
+    const authParts = Object.entries(sophia.auth_states)
+      .filter(([, v]) => v > 0)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(' · ');
+    const queueParts = Object.entries(sophia.by_queue_class || {})
+      .filter(([, v]) => v > 0)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(' · ');
+    sv.innerHTML = `<span class="badge">events: ${sophia.sample_size || 0}</span>` +
+      `<div class="muted" style="margin-top:.35rem;">auth ${authParts || 'none'}</div>` +
+      `<div class="muted" style="margin-top:.2rem;">queue ${queueParts || 'none'}</div>` +
+      `<div class="muted" style="margin-top:.2rem;">auth incidents ${sophia.auth_anomaly_incidents || 0}</div>`;
+  } else {
+    sv.textContent = 'No Sophia data yet.';
   }
 })();
 </script>
