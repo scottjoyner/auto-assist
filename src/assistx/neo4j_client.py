@@ -6,6 +6,7 @@ import os
 import uuid
 from neo4j import GraphDatabase, Driver, Session
 
+_UNSET = object()
 EXECUTABLE_TASK_STATUSES = {"READY", "CLAIMED", "RUNNING", "DONE", "FAILED", "CANCELLED"}
 TERMINAL_TASK_STATUSES = {"DONE", "FAILED", "CANCELLED"}
 
@@ -27,7 +28,7 @@ class Neo4jClient:
         uri: Optional[str] = None,
         user: Optional[str] = None,
         password: Optional[str] = None,
-        database: Optional[str] = None,
+        database: object = _UNSET,
     ):
         # Try explicit args → config.settings → environment
         cfg = self._load_settings_fallback()
@@ -35,7 +36,7 @@ class Neo4jClient:
         self.uri = uri or cfg.get("uri")
         self.user = user or cfg.get("user")
         self.password = password or cfg.get("password")
-        self.database = database or cfg.get("database")  # may be None (use default db)
+        self.database = database if database is not _UNSET else cfg.get("database")  # may be None (use default db)
 
         if not (self.uri and self.user and self.password):
             raise ValueError(
@@ -384,7 +385,7 @@ class Neo4jClient:
                 rec = s.run(
                     "MERGE (d:Dispatch {idempotency_key:$idempotency_key}) "
                     "ON CREATE SET d.id=$did, d.created_at=datetime(), d.created_at_ts=timestamp(), d.status='OPEN' "
-                    "SET d += $props "
+                    "SET d += $props, d.updated_at=datetime(), d.updated_at_ts=timestamp() "
                     "RETURN d.id AS id",
                     {"idempotency_key": idempotency_key, "props": props, "did": dispatch_id},
                 ).single()
@@ -392,7 +393,8 @@ class Neo4jClient:
             else:
                 s.run(
                     "CREATE (d:Dispatch {id:$did}) "
-                    "SET d += $props, d.created_at=datetime(), d.created_at_ts=timestamp() "
+                    "SET d += $props, d.created_at=datetime(), d.created_at_ts=timestamp(), "
+                    "    d.updated_at=datetime(), d.updated_at_ts=timestamp() "
                     "RETURN d.id AS id",
                     {"did": dispatch_id, "props": props},
                 ).single()
@@ -783,6 +785,10 @@ class Neo4jClient:
                     t.agent_session_id=coalesce($session_id, t.agent_session_id),
                     t.result_summary=$summary,
                     t.result_json=$result_json,
+                    t.failure_count=CASE
+                        WHEN $status IN ['FAILED','CANCELLED'] THEN coalesce(t.failure_count, 0) + 1
+                        ELSE coalesce(t.failure_count, 0)
+                    END,
                     t.completed_at=datetime(),
                     t.completed_at_ts=timestamp(),
                     t.updated_at=datetime(),
@@ -791,7 +797,9 @@ class Neo4jClient:
                     completion_id:$completion_id,
                     status:$status, summary:$summary, result_json:$result_json,
                     started_at_ts:coalesce(t.claimed_at_ts, timestamp()),
-                    ended_at:datetime(), ended_at_ts:timestamp()})
+                    ended_at:datetime(), ended_at_ts:timestamp(),
+                    created_at:datetime(), created_at_ts:timestamp(),
+                    updated_at:datetime(), updated_at_ts:timestamp()})
                 MERGE (t)-[:EXECUTED_BY]->(r)
                 RETURN t, r.id AS run_id
                 """,
@@ -1052,7 +1060,9 @@ class Neo4jClient:
                         d.language=$language,
                         d.timezone=$timezone,
                         d.last_seen_at=datetime(),
-                        d.last_seen_at_ts=timestamp()
+                        d.last_seen_at_ts=timestamp(),
+                        d.updated_at=datetime(),
+                        d.updated_at_ts=timestamp()
                     WITH d
                     MATCH (c:MediaCapture {id:$capture_id})
                     MERGE (d)-[:RECORDED]->(c)
@@ -1297,7 +1307,8 @@ class Neo4jClient:
             "ON CREATE SET c.id = $id, "
             "              c.created_at = datetime(), "
             "              c.created_at_ts = timestamp() "
-            "ON MATCH  SET c.updated_at = datetime() "
+            "ON MATCH  SET c.updated_at = datetime(), "
+            "              c.updated_at_ts = timestamp() "
             "RETURN c.id as id"
         )
         with self._session() as s:
@@ -1314,7 +1325,8 @@ class Neo4jClient:
             "SET u += $props "
             "SET u.created_at = coalesce(u.created_at, datetime()), "
             "    u.created_at_ts = coalesce(u.created_at_ts, timestamp()) "
-            "SET u.updated_at = datetime() "
+            "SET u.updated_at = datetime(), "
+            "    u.updated_at_ts = timestamp() "
             "WITH u "
             "MATCH (c:Conversation {id:$cid}) "
             "MERGE (c)-[:HAS_UTTERANCE]->(u)"
@@ -1330,9 +1342,10 @@ class Neo4jClient:
         summary_id = uuid.uuid4().hex
         with self.driver.session() as s:
             sr = s.run(
-                "CREATE (m:Summary {id:$id}) "
-                "SET m += $sprops, m.created_at = timestamp(), m.created_at_ts = timestamp() "
-                "WITH m MATCH (c:Conversation{id:$cid}) MERGE (c)-[:HAS_SUMMARY]->(m) RETURN m.id as id",
+            "CREATE (m:Summary {id:$id}) "
+            "SET m += $sprops, m.created_at = timestamp(), m.created_at_ts = timestamp(), "
+            "    m.updated_at = timestamp(), m.updated_at_ts = timestamp() "
+            "WITH m MATCH (c:Conversation{id:$cid}) MERGE (c)-[:HAS_SUMMARY]->(m) RETURN m.id as id",
                 {"id": summary_id, "sprops": {**summary, "conversation_id": conversation_id}, "cid": conversation_id},
             ).single()
             sid = sr["id"]
@@ -1341,7 +1354,8 @@ class Neo4jClient:
                 tprops = {**t, "conversation_id": conversation_id}
                 s.run(
                     "CREATE (t:Task {id:$task_id}) "
-                    "SET t += $tprops, t.created_at = timestamp(), t.created_at_ts = timestamp() "
+                    "SET t += $tprops, t.created_at = timestamp(), t.created_at_ts = timestamp(), "
+                    "    t.updated_at = timestamp(), t.updated_at_ts = timestamp() "
                     "WITH t MATCH (m:Summary{id:$sid}) MERGE (m)-[:GENERATED_TASK]->(t)",
                     {"tprops": tprops, "sid": sid, "task_id": task_id},
                 )
@@ -1375,7 +1389,9 @@ class Neo4jClient:
             rec = s.run(
                 "MATCH (t:Task{id:$tid}) "
                 "CREATE (r:AgentRun {id:$run_id, task_id:$tid, agent:$agent, model:$model, status:'RUNNING', "
-                " started_at:timestamp(), started_at_ts:timestamp(), manifest_json:$manifest}) "
+                " started_at:timestamp(), started_at_ts:timestamp(), manifest_json:$manifest, "
+                " created_at:timestamp(), created_at_ts:timestamp(), "
+                " updated_at:timestamp(), updated_at_ts:timestamp()}) "
                 "MERGE (t)-[:EXECUTED_BY]->(r) RETURN r.id as id",
                 {"tid": task_id, "run_id": run_id, "agent": agent, "model": model, "manifest": json.dumps(manifest)},
             ).single()
@@ -1391,9 +1407,11 @@ class Neo4jClient:
             s.run(
                 "MATCH (r:AgentRun{id:$rid}) "
                 "CREATE (k:ToolCall {id:$call_id, run_id:$rid, tool:$tool, input_json:$in, output_json:$out, ok:$ok, "
-                " started_at:timestamp(), started_at_ts:timestamp(), ended_at:timestamp(), ended_at_ts:timestamp()}) "
+                " started_at:timestamp(), started_at_ts:timestamp(), ended_at:timestamp(), ended_at_ts:timestamp(), "
+                " created_at:timestamp(), created_at_ts:timestamp(), "
+                " updated_at:timestamp(), updated_at_ts:timestamp()}) "
                 "MERGE (r)-[:USED_TOOL]->(k)",
-                {"rid": run_id, "call_id": call_id, "tool": tool, "in": input_json, "out": output_json, "ok": ok},
+                {"rid": run_id, "call_id": call_id, "tool": tool, "in": json.dumps(input_json), "out": json.dumps(output_json) if output_json is not None else None, "ok": ok},
             )
 
     def log_artifact(self, run_id: str, kind: str, path: str, sha256: str | None):
@@ -1401,7 +1419,7 @@ class Neo4jClient:
         with self.driver.session() as s:
             s.run(
                 "MATCH (r:AgentRun{id:$rid}) "
-                "CREATE (a:Artifact {id:$artifact_id, run_id:$rid, kind:$k, path:$p, sha256:$h, created_at:timestamp(), created_at_ts:timestamp()}) "
+                "CREATE (a:Artifact {id:$artifact_id, run_id:$rid, kind:$k, path:$p, sha256:$h, created_at:timestamp(), created_at_ts:timestamp(), updated_at:timestamp(), updated_at_ts:timestamp()}) "
                 "MERGE (r)-[:PRODUCED]->(a)",
                 {"rid": run_id, "artifact_id": artifact_id, "k": kind, "p": path, "h": sha256},
             )
@@ -1443,14 +1461,14 @@ class Neo4jClient:
           ON CREATE SET tr.key=$key, tr.text=$text, tr.source_json=$source_json, tr.source_rttm=$source_rttm,
                         tr.embedding=$embedding, tr.created_at=datetime(), tr.created_at_ts=timestamp()
           ON MATCH  SET tr.text=$text, tr.source_json=$source_json, tr.source_rttm=$source_rttm,
-                        tr.updated_at=datetime()
+                        tr.updated_at=datetime(), tr.updated_at_ts=timestamp()
         WITH tr
         UNWIND $segments AS seg
           MERGE (s:Segment {id: seg.id})
             ON CREATE SET s.idx=seg.idx, s.start=seg.start, s.end=seg.end, s.text=seg.text,
                           s.tokens_count=seg.tokens_count, s.created_at=datetime(), s.created_at_ts=timestamp()
             ON MATCH  SET s.idx=seg.idx, s.start=seg.start, s.end=seg.end, s.text=seg.text,
-                          s.tokens_count=seg.tokens_count, s.updated_at=datetime()
+                          s.tokens_count=seg.tokens_count, s.updated_at=datetime(), s.updated_at_ts=timestamp()
           MERGE (tr)-[:HAS_SEGMENT]->(s)
         """
         with self._session() as s:
@@ -1488,7 +1506,8 @@ class Neo4jClient:
             rec = s.run(
                 "MERGE (d:AgentDevice {id:$id}) "
                 "ON CREATE SET d.created_at=datetime(), d.created_at_ts=timestamp() "
-                "SET d += $props, d.last_seen_at=datetime(), d.last_seen_at_ts=timestamp() "
+                "SET d += $props, d.last_seen_at=datetime(), d.last_seen_at_ts=timestamp(), "
+                "    d.updated_at=datetime(), d.updated_at_ts=timestamp() "
                 "RETURN d.id AS id",
                 {"id": device_id, "props": props},
             ).single()
@@ -1917,7 +1936,9 @@ class Neo4jClient:
                 SET r.text=$text,
                     r.source_intent_id=$intent_id,
                     r.created_at=datetime(),
-                    r.created_at_ts=timestamp()
+                    r.created_at_ts=timestamp(),
+                    r.updated_at=datetime(),
+                    r.updated_at_ts=timestamp()
                 WITH r
                 MATCH (e:Task {id:$epic_id})
                 MERGE (e)-[:HAS_REQUIREMENT]->(r)

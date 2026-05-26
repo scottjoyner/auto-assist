@@ -731,6 +731,17 @@ auth states.
 Sophia operational visibility added:
 `GET /api/sophia/summary` plus command-center Sophia card showing auth-state
 distribution, queue-class mix, and anomaly incident counts.
+Sophia queue routing is now configuration-driven via
+`ASSISTX_SOPHIA_ROUTING_POLICY` with runtime inspection endpoint
+`GET /api/sophia/policy`.
+Routing-policy audit fingerprinting added (`routing_policy_fingerprint`) across
+Sophia event ingestion and summary/policy endpoints for historical traceability.
+Automatic routing-policy change incidents now recorded as
+`WorkflowIncident(incident_type=routing_policy_changed)` under
+`workflow_id=sophia-policy`, with incident history available via
+`GET /api/workflows/sophia-policy/incidents`.
+Command-center Sophia Voice panel now renders a policy-drift timeline from
+that incident stream (latest routing policy changes with timestamp/severity).
 
 ### Phase 10 - Persistent research and analyst agent fleet
 
@@ -967,6 +978,34 @@ test_ensure_schema_declares_migration_constraints_and_indexes PASSED
 - **`AgentCapability` constraint removed** — orphan UNIQUE constraint deleted from `ensure_schema()`.
 - **HermesMemoryProvider lifecycle implemented** — added `system_prompt_block`, `sync_turn`, `on_delegation`, `on_session_switch` methods to bridge to real Hermes `MemoryProvider` interface.
 - **Phase 4 command center UI templates** — added `command_center.html`, `intents.html`, `dispatches.html`, `sessions.html`, `memory.html`, `devices.html` with JS-powered data fetching from existing `/api/*` endpoints.
+- **UI cleanup pass (May 24, 2026)** — improved command-center and review-queue ergonomics:
+  responsive nav/filter layout, removal of nested-card review filters, unified
+  action/button/input styling, and clearer summary/badge hierarchy for
+  operations cards.
+  Expanded to home + answers surfaces: `index.html` now uses the same panel
+  action layout patterns, and `answers.html` now extends shared `base.html`
+  with consistent controls and typography.
+  Additional normalization: removed inline style usage across command-center
+  templates in favor of shared utility classes (spacing, feed sizing, action
+  rows, and responsive input widths).
+  UI hardening follow-up: command-center summary rendering now escapes dynamic
+  text fields, and answers dashboard live-status badge now uses explicit
+  healthy/reconnect/error visual states.
+  Extended escaping standard to list pages (`intents`, `dispatches`, `memory`,
+  `sessions`, `devices`) so client-rendered rows consistently sanitize dynamic
+  content before injection.
+  Shared front-end utility introduced: `static/js/ui_utils.js` now provides
+  global `UIUtils.escapeHtml` and `UIUtils.shortId`, with templates and
+  dashboard scripts migrated to consume it (replacing duplicated helpers).
+  Follow-up cleanup: per-page scripts now define local aliases for shared
+  helpers (`esc`/`shortId`) so rendering code stays compact and avoids repeated
+  fallback expressions.
+  JS consistency pass completed for home/review surfaces: `static/js/home.js`
+  now uses shared helper aliases for escaped live-feed/answer rendering, and
+  `review_queue.html` short-id logic is aligned to `UIUtils.shortId`.
+  UI utility expansion in progress: `UIUtils.renderBadgeLine`/`renderMetaLine`
+  added and applied to dispatches/sessions list rendering to reduce repeated
+  summary-line template fragments.
 - **Duplicate startup handler removed** — two `@app.on_event("startup")` handlers collapsed into one with try/except logging.
 - **Messy imports cleaned** — 17 import lines → 12, duplicate `json`, `os`, `typing`, `pydantic.BaseModel` removed.
 - **Duplicate SSE helper removed** — `_sse_format` inlined into `_sse`, all callers updated.
@@ -1045,6 +1084,9 @@ test_ensure_schema_declares_migration_constraints_and_indexes PASSED
 9. **Phase 8 orchestration loop**:
    - Consume policy action in the orchestrator to separate auto-dispatch and
      review queues.
+   - ~~Automate dead-letter routing for exhausted retry budgets~~ ✅ DONE
+     (`/api/tasks/{id}/complete` now enforces retry-budget dead-letter +
+     workflow incident creation).
    - Add canary watchdog for queue growth and stale running jobs.
 10. **Phase 9 evaluation + feed integration prep**:
     - Add evaluation suite scaffolding and scorecard schema.

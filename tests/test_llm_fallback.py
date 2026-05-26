@@ -1,6 +1,6 @@
 import pytest
 
-from assistx.agents import llm
+from assistx import llm_client
 
 
 class _Resp:
@@ -17,8 +17,8 @@ class _Resp:
 
 
 def test_chat_falls_back_when_primary_fails(monkeypatch):
-    monkeypatch.setattr(llm, "FALLBACK_MODELS", ["fallback-a"])
-    llm._CB_STATE.clear()
+    monkeypatch.setattr(llm_client, "FALLBACK_MODELS", ["fallback-a"])
+    llm_client._CB_STATE.clear()
 
     calls = []
 
@@ -28,25 +28,28 @@ def test_chat_falls_back_when_primary_fails(monkeypatch):
             raise RuntimeError("primary down")
         return _Resp(payload={"message": {"content": "from-fallback"}})
 
-    monkeypatch.setattr(llm.requests, "post", fake_post)
-    out = llm.chat([{"role": "user", "content": "hi"}], model="primary")
+    monkeypatch.setattr(llm_client.requests, "post", fake_post)
+    # Force ollama backend so the fake_post signature matches
+    monkeypatch.setattr(llm_client, "LLM_BACKEND", "ollama")
+    out = llm_client.chat([{"role": "user", "content": "hi"}], model="primary")
     assert out == "from-fallback"
     assert calls == ["primary", "fallback-a"]
 
 
 def test_circuit_breaker_opens_after_threshold(monkeypatch):
-    monkeypatch.setattr(llm, "CB_FAIL_THRESHOLD", 2)
-    monkeypatch.setattr(llm, "CB_OPEN_S", 60)
-    monkeypatch.setattr(llm, "FALLBACK_MODELS", [])
-    llm._CB_STATE.clear()
+    monkeypatch.setattr(llm_client, "CB_FAIL_THRESHOLD", 2)
+    monkeypatch.setattr(llm_client, "CB_OPEN_S", 60)
+    monkeypatch.setattr(llm_client, "FALLBACK_MODELS", [])
+    llm_client._CB_STATE.clear()
 
     def always_fail(url, json, timeout):
         raise RuntimeError("down")
 
-    monkeypatch.setattr(llm.requests, "post", always_fail)
+    monkeypatch.setattr(llm_client.requests, "post", always_fail)
+    monkeypatch.setattr(llm_client, "LLM_BACKEND", "ollama")
     with pytest.raises(RuntimeError):
-        llm.chat([{"role": "user", "content": "hi"}], model="m1")
+        llm_client.chat([{"role": "user", "content": "hi"}], model="m1")
     with pytest.raises(RuntimeError):
-        llm.chat([{"role": "user", "content": "hi"}], model="m1")
+        llm_client.chat([{"role": "user", "content": "hi"}], model="m1")
 
-    assert llm._CB_STATE["m1"]["open_until"] > 0
+    assert llm_client._CB_STATE["m1"]["open_until"] > 0

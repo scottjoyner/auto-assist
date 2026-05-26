@@ -141,6 +141,22 @@ Required fields:
   - reports auth-state mix, event-type distribution, queue-class distribution,
     and auth anomaly incident counts.
 - Command center now surfaces Sophia summary metrics for quick operator review.
+- Sophia routing is now policy-configurable:
+  - env override: `ASSISTX_SOPHIA_ROUTING_POLICY` (JSON)
+  - inspect active policy: `GET /api/sophia/policy`
+  - summary includes effective `routing_policy`.
+- Policy auditability now includes stable fingerprinting:
+  - `routing_policy_fingerprint` is emitted in Sophia ingress responses and
+  summary/policy endpoints, and stored in event/incident metadata paths.
+- Policy-change incident tracking is now active:
+  - when routing-policy fingerprint changes, a `WorkflowIncident` is recorded
+    under workflow id `sophia-policy` (`incident_type=routing_policy_changed`).
+  - history is queryable via `GET /api/workflows/sophia-policy/incidents`.
+- Command center Sophia card now includes a policy-drift timeline:
+  - pulls latest `routing_policy_changed` incidents from
+    `GET /api/workflows/sophia-policy/incidents`
+  - renders a recent drift list with timestamp and severity for operator
+    visibility.
 
 ## 6. Risks and Mitigations
 

@@ -86,21 +86,25 @@ POST /api/tasks/{task_id}/resume    # Resume task
 
 ### Current Setup
 
-- **Version**: 5.23.0+
-- **Auth**: Basic (NEO4J_USER, NEO4J_PASSWORD)
-- **URI**: NEO4J_URI (default: `bolt://neo4j:7687`)
-- **Database**: NEO4J_DATABASE (optional; uses default if unset)
+- **Version**: 5.24-enterprise (host container), 5.22+ (test ephemeral)
+- **Auth**: Basic (`NEO4J_USER`/`NEO4J_PASSWORD`)
+- **URI**: `NEO4J_URI` (default: `bolt://host.docker.internal:7687`)
+- **Database**: `NEO4J_DATABASE=assistx` — dedicated database on the host enterprise instance
 
-### Database/Namespace Strategy
+### Database Strategy
 
-**Decision: Single Database with Label Namespaces**
+**Decision: Dedicated Database (Enterprise)**
 
-We use a single Neo4j database with label-based namespacing to simplify initial deployment. If multi-database Neo4j becomes available, migrate to:
-- `knowledge`: auto-ingest corpus (PhoneLog, Transcription, Segment, etc.)
-- `memory`: Sophia, voice, notes, durable facts (MemoryItem, SignalEvent)
-- `orchestration`: AssistX/Hermes/Paperclip state (Intent, Task, Dispatch, AgentSession, etc.)
+We create a dedicated `assistx` database on the existing host `neo4j:5.24-enterprise` container (not a compose-managed service). This leverages the host's Enterprise Edition for multi-database support, giving clear data isolation vs. the label-namespacing approach in the original `neo4j` database.
 
-**Label Namespaces (Current)**
+The `assistx` database is created via:
+```cypher
+CREATE DATABASE assistx IF NOT EXISTS
+```
+
+All AssistX graph operations (constraints, indexes, CRUD) target this database.
+
+**Label Categories**
 
 - `v1` nodes: Conversation, Utterance, Summary, Task, AgentRun, ToolCall, Artifact
 - `v2` nodes: Transcription, Segment
@@ -161,21 +165,28 @@ CREATE INDEX IF NOT EXISTS FOR (p:ContextPacket)   ON (p.query_hash)
 ### AssistX
 
 ```bash
-# Neo4j
-NEO4J_URI=bolt://neo4j:7687
+# Neo4j (host enterprise container, not an infra service)
+NEO4J_URI=bolt://host.docker.internal:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=livelongandprosper
-NEO4J_DATABASE=neo4j  # optional
+NEO4J_PASSWORD=knowledge_graph_2026
+NEO4J_DATABASE=assistx
 
 # API Security
-BASIC_AUTH_USER=neo4j
-BASIC_AUTH_PASS=livelongandprosper
+BASIC_AUTH_USER=admin
+BASIC_AUTH_PASS=change-me
 API_TOKEN=<optional-token-for-/upload-audio>
 
 # Redis
 REDIS_URL=redis://redis:6379/0
 
-# LLM
+# LLM Backend — "openai" (LM Studio / OpenAI API) or "ollama"
+LLM_BACKEND=openai
+OPENAI_BASE_URL=http://host.docker.internal:1234/v1
+OPENAI_API_KEY=not-needed
+LLM_MODEL=llama3.1:8b
+EMBED_MODEL=nomic-embed-text
+
+# Ollama (legacy, only if LLM_BACKEND=ollama)
 OLLAMA_HOST=http://ollama:11434
 
 # Optional Paths

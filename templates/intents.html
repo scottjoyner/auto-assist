@@ -4,10 +4,10 @@
 {% block content %}
 <section class="card">
   <h2>Intents</h2>
-  <p class="muted">Raw incoming intents from voice, UI, webhook, schedule, and other sources.</p>
-  <div class="grid" style="margin-top:1rem;">
-    <div class="card half">
-      <h3>Filters</h3>
+  <p class="kicker">Raw incoming intents from voice, UI, webhook, schedule, and other sources.</p>
+  <div class="grid mt-5">
+    <div class="half panel">
+      <label class="label" for="source-filter">Source</label>
       <select id="source-filter" onchange="window.location.href=this.value ? `/intents?source=${this.value}` : '/intents'">
         <option value="">All sources</option>
         <option value="voice" {% if request.query_params.get('source') == 'voice' %}selected{% endif %}>Voice</option>
@@ -19,7 +19,7 @@
     </div>
   </div>
 
-  <div id="intent-list" class="feed" style="max-height:600px;margin-top:1rem;">
+  <div id="intent-list" class="feed feed-lg mt-5">
     <div class="row muted">Loading intents…</div>
   </div>
 </section>
@@ -28,6 +28,9 @@
 {% block scripts %}
 <script>
 (async () => {
+  const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString());
+  const shortId = window.UIUtils?.shortId || ((v, n = 8) => (v || '').toString().slice(0, n));
+
   const params = new URLSearchParams(window.location.search);
   const source = params.get('source') || '';
   const url = source ? `/api/intents?source=${source}&limit=100` : '/api/intents?limit=100';
@@ -42,13 +45,15 @@
   data.items.forEach(i => {
     const row = document.createElement('div');
     row.className = 'row';
+    const idShort = shortId(i.id, 8);
+    const ts = i.client_ts || new Date(i.created_at_ts || Date.now()).toISOString();
     row.innerHTML = `
-      <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
-        <span class="badge">${i.source || '?'}</span>
-        <span class="muted" style="font-size:.8rem;">${i.client_ts || new Date(i.created_at_ts || Date.now()).toISOString()}</span>
-        <code style="font-size:.75rem;">${(i.id || '').substring(0, 8)}…</code>
+      <div class="summary-line">
+        <span class="badge">${esc(i.source || '?')}</span>
+        <span class="muted">${esc(ts)}</span>
+        <code>${esc(idShort)}</code>
       </div>
-      <div style="margin-top:.3rem;">${(i.text || '').replace(/</g, '&lt;')}</div>
+      <div class="mt-2">${esc(i.text || '')}</div>
     `;
     list.appendChild(row);
   });

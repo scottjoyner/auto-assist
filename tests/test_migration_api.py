@@ -770,6 +770,7 @@ def test_sophia_event_ingestion(seeded_neo4j, monkeypatch):
     assert body["signal_event_id"] == "sophia-evt-1"
     assert body["intent_id"]
     assert body["queue_class"] == "interactive"
+    assert body["routing_policy_fingerprint"]
 
     anomaly = {
         "event_id": "sophia-evt-2",
@@ -795,6 +796,83 @@ def test_sophia_event_ingestion(seeded_neo4j, monkeypatch):
     assert sj["auth_states"]["authenticated_scott"] >= 1
     assert sj["auth_states"]["unknown_unverified"] >= 1
     assert sj["by_queue_class"]["critical"] >= 1
+    assert "routing_policy" in sj
+    assert sj["routing_policy_fingerprint"]
+
+
+def test_sophia_routing_policy_override(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+    monkeypatch.setenv(
+        "ASSISTX_SOPHIA_ROUTING_POLICY",
+        '{"default_queue_class":"batch","by_auth_state":{"authenticated_scott":"interactive","unknown_unverified":"critical"},"by_event_type_prefix":{"intent":"interactive","meeting":"batch"}}',
+    )
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    r1 = client.post(
+        "/api/sophia/events",
+        json={
+            "event_id": "sophia-evt-policy-1",
+            "event_type": "intent",
+            "session_id": "sophia-policy-1",
+            "transcript_text": "Do a quick follow up",
+            "auth_state": "authenticated_scott",
+        },
+        auth=auth,
+    )
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["queue_class"] == "interactive"
+
+    r2 = client.post(
+        "/api/sophia/events",
+        json={
+            "event_id": "sophia-evt-policy-2",
+            "event_type": "meeting_process",
+            "session_id": "sophia-policy-2",
+            "transcript_text": "process meeting notes",
+            "auth_state": "authenticated_scott",
+        },
+        auth=auth,
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["queue_class"] == "interactive"  # auth-state override takes precedence
+
+    policy = client.get("/api/sophia/policy", auth=auth)
+    assert policy.status_code == 200, policy.text
+    assert policy.json()["routing_policy"]["default_queue_class"] == "batch"
+    assert policy.json()["routing_policy_fingerprint"]
+
+
+def test_sophia_policy_change_incident_tracking(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    monkeypatch.setenv(
+        "ASSISTX_SOPHIA_ROUTING_POLICY",
+        '{"default_queue_class":"interactive","by_auth_state":{"unknown_unverified":"critical"},"by_event_type_prefix":{"meeting":"batch"}}',
+    )
+    p1 = client.get("/api/sophia/policy", auth=auth)
+    assert p1.status_code == 200, p1.text
+    fp1 = p1.json()["routing_policy_fingerprint"]
+
+    monkeypatch.setenv(
+        "ASSISTX_SOPHIA_ROUTING_POLICY",
+        '{"default_queue_class":"batch","by_auth_state":{"unknown_unverified":"critical"},"by_event_type_prefix":{"meeting":"batch"}}',
+    )
+    p2 = client.get("/api/sophia/policy", auth=auth)
+    assert p2.status_code == 200, p2.text
+    fp2 = p2.json()["routing_policy_fingerprint"]
+    assert fp2 != fp1
+    assert p2.json()["policy_change_incident_id"]
+
+    incidents = client.get("/api/workflows/sophia-policy/incidents?limit=20", auth=auth)
+    assert incidents.status_code == 200, incidents.text
+    assert incidents.json()["count"] >= 1
 
 
 def test_phase8_workflow_ops_endpoints(seeded_neo4j, monkeypatch):
@@ -909,6 +987,47 @@ def test_phase8_workflow_ops_endpoints(seeded_neo4j, monkeypatch):
     assert ops.status_code == 200, ops.text
     assert "workflow" in ops.json()
     assert "escalation_backlog" in ops.json()["workflow"]
+
+
+def test_phase8_retry_budget_dead_letter(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    task_id = neo.upsert_ticket(
+        title="Retry budget bounded workflow step",
+        ticket_type="task",
+        status="RUNNING",
+        kind="workflow_step",
+        payload={"queue_class": "batch"},
+        idempotency_key="wf-dead-letter-1",
+    )
+    assert task_id
+
+    budget = client.post(
+        f"/api/workflows/{task_id}/budget/update",
+        json={"retry_budget": 0},
+        auth=auth,
+    )
+    assert budget.status_code == 200, budget.text
+
+    done = client.post(
+        f"/api/tasks/{task_id}/complete",
+        json={"agent_id": "agent-deadletter", "status": "FAILED", "summary": "tool timeout"},
+        auth=auth,
+    )
+    assert done.status_code == 200, done.text
+    body = done.json()
+    assert body["dead_letter_incident_id"]
+    assert body["task"]["status"] == "REVIEW"
+    assert body["task"]["dead_lettered"] is True
+    assert body["task"]["dead_letter_reason"] == "retry_budget_exhausted"
+
+    incidents = client.get(f"/api/workflows/{task_id}/incidents?limit=20", auth=auth)
+    assert incidents.status_code == 200, incidents.text
+    assert any(i.get("incident_type") == "retry_budget_exhausted" for i in incidents.json()["items"])
 
 
 def test_review_queue_actions(seeded_neo4j, monkeypatch):

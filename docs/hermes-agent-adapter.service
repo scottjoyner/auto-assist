@@ -1,0 +1,26 @@
+[Unit]
+Description=Hermes Agent Adapter (AssistX task poller)
+Documentation=https://github.com/scottjoyner/auto-assist
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/scott/git/auto-assist/venv/bin/python -m assistx.agents.hermes_agent_adapter
+WorkingDirectory=/home/scott/git/auto-assist
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONPATH=/home/scott/git/auto-assist/src
+Environment=ASSISTX_URL=http://localhost:8000
+Environment=ASSISTX_USER=admin
+Environment=ASSISTX_PASS=change-me
+Environment=HERMES_AGENT_ID=hermes-local
+Environment=HERMES_BIN=/home/scott/.local/bin/hermes
+Environment=HERMES_TASK_TIMEOUT=600
+Environment=HERMES_POLL_INTERVAL=15
+Environment=HERMES_MAX_TASKS_PER_LOOP=3
+Environment=HERMES_LOG_LEVEL=INFO
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

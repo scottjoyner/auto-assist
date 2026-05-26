@@ -6,8 +6,10 @@
     const btnLoadMore = document.getElementById("btnLoadMore");
     const liveBadge = document.getElementById("liveBadge");
   
-    let nextCursor = null;
-    const byId = new Map();
+  let nextCursor = null;
+  const byId = new Map();
+
+  const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString());
   
     function fmtTime(ms) {
       const d = new Date(ms || Date.now());
@@ -21,8 +23,8 @@
       tr.innerHTML = `
         <td>${fmtTime(updated)}</td>
         <td><span class="status ${obj.status||''}">${obj.status||''}</span></td>
-        <td>${(obj.question || "").replace(/</g,"&lt;")}</td>
-        <td><code>${obj.id}</code></td>
+        <td>${esc(obj.question || "")}</td>
+        <td><code>${esc(obj.id)}</code></td>
         <td>
           <a href="/api/answers/${obj.id}" target="_blank">JSON</a>
           &nbsp;|&nbsp;
@@ -86,9 +88,29 @@
     // Live updates: WS first, SSE fallback + reconnect
     // ---------------------------
     let transport = null;  // "ws" | "sse"
-    let ws = null;
-    let es = null;
-    let reconnectDelay = 1000; // backoff to 8s max
+  let ws = null;
+  let es = null;
+  let reconnectDelay = 1000; // backoff to 8s max
+
+  function setLiveBadge(state) {
+    liveBadge.classList.remove("ok", "err");
+    if (state === "ws") {
+      liveBadge.textContent = "Live: WebSocket";
+      liveBadge.classList.add("ok");
+      return;
+    }
+    if (state === "sse") {
+      liveBadge.textContent = "Live: SSE";
+      liveBadge.classList.add("ok");
+      return;
+    }
+    if (state === "reconnect") {
+      liveBadge.textContent = "Live: reconnecting…";
+      return;
+    }
+    liveBadge.textContent = "Live: unavailable";
+    liveBadge.classList.add("err");
+  }
   
     function handleLiveEvent(payload) {
       // payload is {"type":"new|update|ping|welcome","data":{...}}
@@ -113,7 +135,7 @@
       ws.onopen = () => {
         transport = "ws";
         reconnectDelay = 1000;
-        liveBadge.textContent = "Live: WebSocket";
+        setLiveBadge("ws");
       };
   
       ws.onmessage = (e) => {
@@ -127,7 +149,7 @@
   
       ws.onclose = () => {
         if (transport === "ws") {
-          liveBadge.textContent = "Live: reconnecting…";
+          setLiveBadge("reconnect");
           ws = null;
           setTimeout(() => {
             if (!connectWS()) connectSSE();
@@ -150,12 +172,12 @@
       try {
         es = new EventSource("/api/answers/events", { withCredentials: true });
       } catch {
-        liveBadge.textContent = "Live: unavailable";
+        setLiveBadge("down");
         return false;
       }
       transport = "sse";
       reconnectDelay = 1000;
-      liveBadge.textContent = "Live: SSE";
+      setLiveBadge("sse");
   
       es.addEventListener("welcome", () => {});
       es.addEventListener("new", (e) => handleLiveEvent({type:"new", data: JSON.parse(e.data)}));
@@ -166,7 +188,7 @@
         // try to reconnect with backoff
         try { es.close(); } catch {}
         es = null;
-        liveBadge.textContent = "Live: reconnecting…";
+        setLiveBadge("reconnect");
         setTimeout(() => {
           // try WS again first (maybe network changed)
           if (!connectWS()) connectSSE();

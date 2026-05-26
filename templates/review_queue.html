@@ -4,19 +4,19 @@
 {% block content %}
 <section class="card">
   <h2>Review Queue</h2>
-  <p class="muted">Operator triage for intents requiring approval, rejection, or clarification.</p>
+  <p class="kicker">Operator triage for intents requiring approval, rejection, or clarification.</p>
 
-  <div class="grid" style="margin-top:1rem;">
-    <div class="card third">
-      <h3>Status</h3>
+  <div class="grid mt-5">
+    <div class="third panel">
+      <label class="label" for="status-filter">Status</label>
       <select id="status-filter">
         <option value="REVIEW">REVIEW</option>
         <option value="DONE">DONE</option>
         <option value="CANCELLED">CANCELLED</option>
       </select>
     </div>
-    <div class="card third">
-      <h3>Policy</h3>
+    <div class="third panel">
+      <label class="label" for="policy-filter">Policy</label>
       <select id="policy-filter">
         <option value="">All policy actions</option>
         <option value="review_dispatch">review_dispatch</option>
@@ -25,8 +25,8 @@
         <option value="auto_dispatch_eligible">auto_dispatch_eligible</option>
       </select>
     </div>
-    <div class="card third">
-      <h3>Decision</h3>
+    <div class="third panel">
+      <label class="label" for="decision-filter">Decision</label>
       <select id="decision-filter">
         <option value="">All decisions</option>
         <option value="approved">approved</option>
@@ -36,22 +36,22 @@
     </div>
   </div>
 
-  <div style="margin-top:.75rem;">
+  <div class="actions mt-4">
     <button class="btn" id="refresh-btn">Refresh</button>
   </div>
 
-  <div id="review-list" class="feed" style="max-height:700px;margin-top:1rem;">
+  <div id="review-list" class="feed feed-xl mt-5">
     <div class="row muted">Loading review tasks…</div>
   </div>
 </section>
 
-<section class="card" style="margin-top:1rem;">
+<section class="card mt-5">
   <h3>Review Audit Timeline</h3>
-  <p class="muted">Recent operator decisions across review tasks.</p>
-  <div id="audit-list" class="feed" style="max-height:360px;margin-top:.75rem;">
+  <p class="kicker">Recent operator decisions across review tasks.</p>
+  <div id="audit-list" class="feed feed-audit mt-4">
     <div class="row muted">Loading audit events…</div>
   </div>
-  <div style="margin-top:.55rem;">
+  <div class="mt-3">
     <button class="btn secondary" id="audit-more-btn">Load More Audit</button>
   </div>
 </section>
@@ -67,13 +67,8 @@ const auditList = document.getElementById('audit-list');
 const auditMoreBtn = document.getElementById('audit-more-btn');
 let auditCursor = null;
 
-function esc(s) {
-  return (s || '').toString().replace(/</g, '&lt;');
-}
-
-function shortId(s) {
-  return (s || '').substring(0, 8) + '…';
-}
+const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString());
+const shortId = window.UIUtils?.shortId || ((v, n = 8) => (v || '').toString().slice(0, n));
 
 async function loadReviewTasks() {
   const params = new URLSearchParams();
@@ -98,17 +93,17 @@ async function loadReviewTasks() {
     })();
     const sourceText = payload.source_text || t.title || '';
     row.innerHTML = `
-      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;">
+      <div class="summary-line">
         <code>${shortId(t.id)}</code>
         <span class="badge">${esc(t.status || '?')}</span>
         <span class="badge">${esc(t.kind || '?')}</span>
         <span class="badge">${esc(t.policy_action || payload.policy_action || 'n/a')}</span>
         <span class="muted">${esc(t.review_decision || '')}</span>
       </div>
-      <div style="margin-top:.35rem;">${esc(sourceText).slice(0, 220)}</div>
-      <div style="margin-top:.55rem;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;">
-        <input data-role="note" placeholder="Operator note" style="min-width:260px;" />
-        <input data-role="agent" placeholder="Target agent (optional)" style="min-width:220px;" />
+      <div class="mt-2">${esc(sourceText).slice(0, 220)}</div>
+      <div class="actions mt-3">
+        <input data-role="note" class="input-flex-wide" placeholder="Operator note" />
+        <input data-role="agent" class="input-flex" placeholder="Target agent (optional)" />
         <button class="btn" data-action="approve">Approve</button>
         <button class="btn danger" data-action="reject">Reject</button>
         <button class="btn" data-action="clarify">Request Clarification</button>
@@ -167,15 +162,15 @@ async function loadAuditTimeline(reset = true) {
     row.className = 'row';
     const when = a.reviewed_at_ts ? new Date(a.reviewed_at_ts).toISOString() : '';
     row.innerHTML = `
-      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;">
+      <div class="summary-line">
         <span class="badge">${esc(a.review_decision || '?')}</span>
         <span class="badge">${esc(a.policy_action || 'n/a')}</span>
         <code>${shortId(a.review_task_id || '')}</code>
         <span class="muted">${esc(a.reviewed_by || '')}</span>
         <span class="muted">${esc(when)}</span>
       </div>
-      <div style="margin-top:.25rem;">${esc(a.source_text || '').slice(0, 180)}</div>
-      <div class="muted" style="margin-top:.15rem;">
+      <div class="mt-2">${esc(a.source_text || '').slice(0, 180)}</div>
+      <div class="muted mt-2">
         ${a.approved_task_id ? `approved task: ${esc(a.approved_task_id)} (${esc(a.approved_task_status || '')})` : ''}
       </div>
     `;

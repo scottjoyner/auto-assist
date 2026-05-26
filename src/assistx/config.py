@@ -7,12 +7,19 @@ load_dotenv()
 
 @dataclass
 class Settings:
-    neo4j_uri: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    neo4j_uri: str = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
     neo4j_user: str = os.getenv("NEO4J_USER", "neo4j")
-    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "livelongandprosper")
+    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "knowledge_graph_2026")
+    neo4j_database: str | None = os.getenv("NEO4J_DATABASE")
 
-    ollama_host: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-    ollama_model: str = os.getenv("OLLAMA_MODEL", "gemma:2b")
+    llm_backend: str = os.getenv("LLM_BACKEND", "openai")
+    llm_model: str = os.getenv("LLM_MODEL", os.getenv("OLLAMA_MODEL", "llama3.1:8b"))
+    openai_base_url: str = os.getenv("OPENAI_BASE_URL", "http://host.docker.internal:1234/v1")
+    openai_api_key: str = os.getenv("OPENAI_API_KEY", "not-needed")
+    embed_model: str = os.getenv("EMBED_MODEL", os.getenv("QA_EMBED_MODEL", "nomic-embed-text"))
+
+    ollama_host: str = os.getenv("OLLAMA_HOST", "http://ollama:11434")
+    ollama_model: str = os.getenv("OLLAMA_MODEL", "gemma2:2b")
 
     tavily_api_key: str | None = os.getenv("TAVILY_API_KEY")
 

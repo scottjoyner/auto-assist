@@ -5,56 +5,57 @@
 <div class="grid">
   <section class="card">
     <h2>Command Center</h2>
-    <p class="muted">Overview of intents, dispatches, sessions, and memory.</p>
+    <p class="kicker">Overview of intents, dispatches, sessions, review operations, and memory.</p>
   </section>
 
   <section class="card third">
     <h3>Intents</h3>
-    <p class="muted">Incoming voice, UI, webhook, and schedule intents.</p>
-    <div id="intent-summary">Loading…</div>
-    <div style="margin-top:.6rem;"><a class="btn" href="/intents">View intents</a></div>
+    <p class="kicker">Incoming voice, UI, webhook, and schedule intents.</p>
+    <div id="intent-summary" class="stack-xs">Loading…</div>
+    <div class="actions mt-3"><a class="btn" href="/intents">View intents</a></div>
   </section>
 
   <section class="card third">
     <h3>Dispatches</h3>
-    <p class="muted">Queued, assigned, running, and completed dispatches.</p>
-    <div id="dispatch-summary">Loading…</div>
-    <div style="margin-top:.6rem;"><a class="btn" href="/dispatches">View dispatches</a></div>
+    <p class="kicker">Queued, assigned, running, and completed dispatches.</p>
+    <div id="dispatch-summary" class="stack-xs">Loading…</div>
+    <div class="actions mt-3"><a class="btn" href="/dispatches">View dispatches</a></div>
   </section>
 
   <section class="card third">
     <h3>Sessions</h3>
-    <p class="muted">Hermes agent sessions, devices, and capabilities.</p>
-    <div id="session-summary">Loading…</div>
-    <div style="margin-top:.6rem;"><a class="btn" href="/sessions">View sessions</a></div>
+    <p class="kicker">Hermes agent sessions, devices, and capabilities.</p>
+    <div id="session-summary" class="stack-xs">Loading…</div>
+    <div class="actions mt-3"><a class="btn" href="/sessions">View sessions</a></div>
   </section>
 
   <section class="card third">
     <h3>Review Queue</h3>
-    <p class="muted">Operator triage for review-dispatch and clarification intents.</p>
-    <div id="review-summary">Loading…</div>
-    <div id="review-audit-summary" style="margin-top:.45rem;" class="muted">Loading audit summary…</div>
-    <div style="margin-top:.6rem;"><a class="btn" href="/review">Open review queue</a></div>
+    <p class="kicker">Operator triage for review-dispatch and clarification intents.</p>
+    <div id="review-summary" class="stack-xs">Loading…</div>
+    <div id="review-audit-summary" class="muted mt-2">Loading audit summary…</div>
+    <div class="actions mt-3"><a class="btn" href="/review">Open review queue</a></div>
   </section>
 
   <section class="card third">
     <h3>Sophia Voice</h3>
-    <p class="muted">Auth-state and queue distribution for Sophia voice ingress.</p>
-    <div id="sophia-summary">Loading…</div>
+    <p class="kicker">Auth-state and queue distribution for Sophia voice ingress.</p>
+    <div id="sophia-summary" class="stack-xs">Loading…</div>
+    <div id="sophia-policy-drift" class="muted stack-xs mt-2">Loading policy drift…</div>
   </section>
 
   <section class="card half">
     <h3>Memory</h3>
-    <p class="muted">Recent memory writes, freshness, and source.</p>
+    <p class="kicker">Recent memory writes, freshness, and source.</p>
     <div id="memory-feed" class="feed">Loading…</div>
-    <div style="margin-top:.6rem;"><a class="btn" href="/memory">View memory</a></div>
+    <div class="actions mt-3"><a class="btn" href="/memory">View memory</a></div>
   </section>
 
   <section class="card half">
     <h3>Devices</h3>
-    <p class="muted">Registered agent devices and last seen times.</p>
-    <div id="device-summary">Loading…</div>
-    <div style="margin-top:.6rem;"><a class="btn" href="/devices">View devices</a></div>
+    <p class="kicker">Registered agent devices and last seen times.</p>
+    <div id="device-summary" class="stack-xs">Loading…</div>
+    <div class="actions mt-3"><a class="btn" href="/devices">View devices</a></div>
   </section>
 </div>
 {% endblock %}
@@ -62,6 +63,9 @@
 {% block scripts %}
 <script>
 (async () => {
+  const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString());
+  const short = window.UIUtils?.shortId || ((v, n = 8) => (v || "").toString().slice(0, n));
+
   async function loadJSON(url) {
     const r = await fetch(url);
     if (!r.ok) return null;
@@ -79,11 +83,11 @@
   const intents = await loadJSON('/api/intents?limit=5');
   const is = document.getElementById('intent-summary');
   if (intents && intents.items) {
-    is.innerHTML = `<span class="badge">${intents.count} total</span>`;
+    is.innerHTML = `<div class="summary-line"><span class="badge">${intents.count} total</span></div>`;
     const list = el('ul');
     intents.items.slice(0, 3).forEach(i => {
       const li = el('li');
-      li.innerHTML = `<span class="muted">[${i.source}]</span> ${(i.text||'').substring(0, 60)}`;
+      li.innerHTML = `<span class="muted">[${esc(i.source || '?')}]</span> ${esc((i.text || '').substring(0, 60))}`;
       list.appendChild(li);
     });
     is.appendChild(list);
@@ -97,7 +101,7 @@
   if (dispatches && dispatches.items) {
     const statusCounts = {};
     dispatches.items.forEach(d => { statusCounts[d.status] = (statusCounts[d.status] || 0) + 1; });
-    ds.innerHTML = Object.entries(statusCounts).map(([k, v]) => `<span class="badge">${k}: ${v}</span>`).join(' ');
+    ds.innerHTML = `<div class="summary-line">` + Object.entries(statusCounts).map(([k, v]) => `<span class="badge">${k}: ${v}</span>`).join(' ') + `</div>`;
   } else {
     ds.textContent = 'No dispatches found.';
   }
@@ -106,11 +110,11 @@
   const sessions = await loadJSON('/api/sessions?limit=5');
   const ss = document.getElementById('session-summary');
   if (sessions && sessions.items) {
-    ss.innerHTML = `<span class="badge">${sessions.count} sessions</span>`;
+    ss.innerHTML = `<div class="summary-line"><span class="badge">${sessions.count} sessions</span></div>`;
     const list = el('ul');
     sessions.items.slice(0, 3).forEach(s => {
       const li = el('li');
-      li.innerHTML = `<code>${s.id.substring(0, 8)}…</code> ${s.paperclip_agent_id || s.hermes_session_id || ''} <span class="muted">${s.platform || ''}</span>`;
+      li.innerHTML = `<code>${short(s.id, 8)}</code> ${esc(s.paperclip_agent_id || s.hermes_session_id || '')} <span class="muted">${esc(s.platform || '')}</span>`;
       list.appendChild(li);
     });
     ss.appendChild(list);
@@ -125,7 +129,7 @@
     mf.innerHTML = '';
     memory.items.forEach(m => {
       const row = el('div', 'row');
-      row.innerHTML = `<span class="badge">${m.kind}</span> <span class="muted">[${m.source}]</span> ${(m.text||'').substring(0, 80)}`;
+      row.innerHTML = `<span class="badge">${esc(m.kind || '?')}</span> <span class="muted">[${esc(m.source || '?')}]</span> ${esc((m.text || '').substring(0, 80))}`;
       mf.appendChild(row);
     });
   } else {
@@ -136,11 +140,11 @@
   const devices = await loadJSON('/api/devices?limit=5');
   const dv = document.getElementById('device-summary');
   if (devices && devices.items) {
-    dv.innerHTML = `<span class="badge">${devices.count} devices</span>`;
+    dv.innerHTML = `<div class="summary-line"><span class="badge">${devices.count} devices</span></div>`;
     const list = el('ul');
     devices.items.slice(0, 3).forEach(d => {
       const li = el('li');
-      li.innerHTML = `<code>${d.hostname || d.id}</code> <span class="muted">${d.platform || ''}</span>`;
+      li.innerHTML = `<code>${esc(d.hostname || d.id || '')}</code> <span class="muted">${esc(d.platform || '')}</span>`;
       list.appendChild(li);
     });
     dv.appendChild(list);
@@ -157,8 +161,8 @@
       const policy = t.policy_action || 'unlabeled';
       byPolicy[policy] = (byPolicy[policy] || 0) + 1;
     });
-    rv.innerHTML = `<span class="badge">${review.count} in review</span> ` +
-      Object.entries(byPolicy).slice(0, 3).map(([k, v]) => `<span class="badge">${k}: ${v}</span>`).join(' ');
+    rv.innerHTML = `<div class="summary-line"><span class="badge">${review.count} in review</span> ` +
+      Object.entries(byPolicy).slice(0, 3).map(([k, v]) => `<span class="badge">${k}: ${v}</span>`).join(' ') + `</div>`;
   } else {
     rv.textContent = 'No review tasks.';
   }
@@ -169,13 +173,14 @@
     const parts = Object.entries(reviewAudit.by_decision)
       .map(([k, v]) => `${k}: ${v}`)
       .join(' · ');
-    ras.innerHTML = `24h decisions: <span class="badge">${reviewAudit.total_decisions || 0}</span> ${parts}`;
+    ras.innerHTML = `<div class="summary-line">24h decisions: <span class="badge">${reviewAudit.total_decisions || 0}</span> <span>${parts}</span></div>`;
   } else {
     ras.textContent = '24h decisions unavailable.';
   }
 
   const sophia = await loadJSON('/api/sophia/summary?limit=200');
   const sv = document.getElementById('sophia-summary');
+  const spd = document.getElementById('sophia-policy-drift');
   if (sophia && sophia.auth_states) {
     const authParts = Object.entries(sophia.auth_states)
       .filter(([, v]) => v > 0)
@@ -185,12 +190,27 @@
       .filter(([, v]) => v > 0)
       .map(([k, v]) => `${k}: ${v}`)
       .join(' · ');
-    sv.innerHTML = `<span class="badge">events: ${sophia.sample_size || 0}</span>` +
-      `<div class="muted" style="margin-top:.35rem;">auth ${authParts || 'none'}</div>` +
-      `<div class="muted" style="margin-top:.2rem;">queue ${queueParts || 'none'}</div>` +
-      `<div class="muted" style="margin-top:.2rem;">auth incidents ${sophia.auth_anomaly_incidents || 0}</div>`;
+    sv.innerHTML = `<div class="summary-line"><span class="badge">events: ${sophia.sample_size || 0}</span></div>` +
+      `<div class="muted">auth ${authParts || 'none'}</div>` +
+      `<div class="muted">queue ${queueParts || 'none'}</div>` +
+      `<div class="muted">auth incidents ${sophia.auth_anomaly_incidents || 0}</div>`;
   } else {
     sv.textContent = 'No Sophia data yet.';
+  }
+
+  const drift = await loadJSON('/api/workflows/sophia-policy/incidents?limit=5');
+  if (drift && drift.items && drift.items.length > 0) {
+    const rows = drift.items
+      .filter(i => (i.incident_type || '') === 'routing_policy_changed')
+      .slice(0, 3)
+      .map(i => {
+        const ts = i.created_at_ts ? new Date(i.created_at_ts).toISOString() : '';
+        return `<div>${ts} <span class="badge">${i.severity || 'info'}</span></div>`;
+      })
+      .join('');
+    spd.innerHTML = rows || 'No routing-policy changes recorded.';
+  } else {
+    spd.textContent = 'No routing-policy changes recorded.';
   }
 })();
 </script>

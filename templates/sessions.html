@@ -5,16 +5,16 @@
 <div class="grid">
   <section class="card half">
     <h2>Agent Sessions</h2>
-    <p class="muted">Hermes agent sessions, device assignments, and last seen times.</p>
-    <div id="session-list" class="feed" style="max-height:500px;">
+    <p class="kicker">Hermes agent sessions, device assignments, and last seen times.</p>
+    <div id="session-list" class="feed feed-md">
       <div class="row muted">Loading sessions…</div>
     </div>
   </section>
 
   <section class="card half">
     <h2>Devices</h2>
-    <p class="muted">Registered agent devices and capabilities.</p>
-    <div id="device-list" class="feed" style="max-height:500px;">
+    <p class="kicker">Registered agent devices and capabilities.</p>
+    <div id="device-list" class="feed feed-md">
       <div class="row muted">Loading devices…</div>
     </div>
   </section>
@@ -24,6 +24,10 @@
 {% block scripts %}
 <script>
 (async () => {
+  const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString());
+  const shortId = window.UIUtils?.shortId || ((v, n = 8) => (v || '').toString().slice(0, n));
+  const badgeLine = window.UIUtils?.renderBadgeLine || ((parts) => `<div class="summary-line">${(parts || []).filter(Boolean).join(" ")}</div>`);
+
   // sessions
   const sr = await fetch('/api/sessions?limit=100');
   const sdata = await sr.json();
@@ -35,17 +39,20 @@
     sdata.items.forEach(s => {
       const row = document.createElement('div');
       row.className = 'row';
+      const sid = shortId(s.id, 8);
+      const did = shortId(s.device_id, 12);
+      const line = badgeLine([
+        `<code>${esc(sid)}</code>`,
+        s.paperclip_agent_id ? `<span class="badge">${esc(s.paperclip_agent_id)}</span>` : '',
+        s.hermes_session_id ? `<span class="muted">hermes: ${esc(s.hermes_session_id)}</span>` : '',
+        s.platform ? `<span class="muted">${esc(s.platform)}</span>` : '',
+      ]);
       row.innerHTML = `
-        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
-          <code style="font-size:.75rem;">${(s.id || '').substring(0, 8)}…</code>
-          ${s.paperclip_agent_id ? `<span class="badge">${s.paperclip_agent_id}</span>` : ''}
-          ${s.hermes_session_id ? `<span class="muted" style="font-size:.8rem;">hermes: ${s.hermes_session_id}</span>` : ''}
-          ${s.platform ? `<span class="muted" style="font-size:.8rem;">${s.platform}</span>` : ''}
-        </div>
-        <div style="margin-top:.3rem;font-size:.8rem;color:var(--muted);">
-          ${s.agent_identity || ''}
-          ${s.device_id ? `· device: <code>${(s.device_id || '').substring(0, 12)}</code>` : ''}
-          ${s.updated_at_ts ? `· last seen: ${new Date(s.updated_at_ts).toLocaleString()}` : ''}
+        ${line}
+        <div class="muted mt-2">
+          ${esc(s.agent_identity || '')}
+          ${did ? `· device: <code>${esc(did)}</code>` : ''}
+          ${s.updated_at_ts ? `· last seen: ${esc(new Date(s.updated_at_ts).toLocaleString())}` : ''}
         </div>
       `;
       sl.appendChild(row);
@@ -64,13 +71,14 @@
       const row = document.createElement('div');
       row.className = 'row';
       const caps = d.capabilities ? (Array.isArray(d.capabilities) ? d.capabilities.join(', ') : d.capabilities) : '';
+      const line = badgeLine([
+        `<code>${esc(d.hostname || d.id)}</code>`,
+        d.platform ? `<span class="muted">${esc(d.platform)}</span>` : '',
+        d.last_seen_at_ts ? `<span class="muted">seen: ${esc(new Date(d.last_seen_at_ts).toLocaleString())}</span>` : '',
+      ]);
       row.innerHTML = `
-        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
-          <code>${d.hostname || d.id}</code>
-          ${d.platform ? `<span class="muted" style="font-size:.8rem;">${d.platform}</span>` : ''}
-          ${d.last_seen_at_ts ? `<span class="muted" style="font-size:.8rem;">seen: ${new Date(d.last_seen_at_ts).toLocaleString()}</span>` : ''}
-        </div>
-        ${caps ? `<div style="margin-top:.3rem;font-size:.8rem;color:var(--muted);">capabilities: ${caps}</div>` : ''}
+        ${line}
+        ${caps ? `<div class="muted mt-2">capabilities: ${esc(caps)}</div>` : ''}
       `;
       dl.appendChild(row);
     });

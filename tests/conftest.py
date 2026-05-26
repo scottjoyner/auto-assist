@@ -73,6 +73,7 @@ def neo4j_client(neo4j_container):
         uri=neo4j_container["uri"],
         user=neo4j_container["user"],
         password=neo4j_container["password"],
+        database=None,  # use default db (tests run ephemeral CE container without 'assistx' db)
     )
     client.ensure_schema()
     yield client

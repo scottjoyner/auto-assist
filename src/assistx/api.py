@@ -44,10 +44,10 @@ from .intent_classifier import (
     CLASSIFICATION_QUERY,
     CLASSIFICATION_MEMORY,
 )
-from .agents.orchestrator import *
-from .pipeline import *
-from .queue import *
-from .jobs import *
+from .agents.orchestrator import run_task
+from .pipeline.qa_pipeline import answer_question
+from .queue import get_q
+from .jobs import execute_task_job, ask_question_job
 from .metrics import EXECUTIONS
 from .answers_store import get_answer, _chan as _answer_channel
 from .answers_store import _global_chan
@@ -279,8 +279,6 @@ CAPTURES_ROOT.mkdir(parents=True, exist_ok=True)
 
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")        # e.g., "cuda", "cpu", "auto"
 WHISPER_COMPUTE = os.getenv("WHISPER_COMPUTE_TYPE", "int8") # e.g., "float16", "int8"
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://ollama:11434")
-
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 _rconn = redis.from_url(REDIS_URL)
 _q = Queue(connection=_rconn)
@@ -427,6 +425,10 @@ _workflow_control_state: Dict[str, Any] = {
     "max_batch_backlog": 200,
     "updated_at_ts": 0,
 }
+_sophia_policy_state: Dict[str, Any] = {
+    "last_fingerprint": None,
+    "last_seen_ts": 0,
+}
 
 def get_paperclip_client() -> Optional[PaperclipClient]:
     global _paperclip_client
@@ -571,6 +573,82 @@ def _workflow_runtime_snapshot(neo: Neo4jClient) -> Dict[str, int]:
     return {"running": running, "batch_ready_direct": batch_ready_direct}
 
 
+def _maybe_dead_letter_exhausted_task(
+    neo: Neo4jClient,
+    task_id: str,
+    completed_status: str,
+    actor: str,
+) -> Optional[str]:
+    if completed_status not in {"FAILED", "CANCELLED"}:
+        return None
+    try:
+        with neo.driver.session() as s:
+            rec = s.run(
+                """
+                MATCH (t:Task {id:$task_id})
+                OPTIONAL MATCH p=(t)-[:PART_OF|HAS_CHILD*0..4]-(wf:Task)-[:HAS_BUDGET]->(b:WorkflowBudget)
+                WITH t, wf, b,
+                     CASE WHEN p IS NULL THEN 999 ELSE length(p) END AS depth
+                ORDER BY depth ASC
+                WITH t, wf, b
+                LIMIT 1
+                RETURN
+                    t.id AS task_id,
+                    coalesce(t.failure_count, 0) AS failure_count,
+                    coalesce(t.dead_lettered, false) AS dead_lettered,
+                    b.retry_budget AS retry_budget,
+                    coalesce(wf.id, t.id) AS workflow_id
+                """,
+                {"task_id": task_id},
+            ).single()
+            if not rec:
+                return None
+            retry_budget = rec["retry_budget"]
+            if retry_budget is None:
+                return None
+            failure_count = int(rec["failure_count"] if rec["failure_count"] is not None else 0)
+            if failure_count <= int(retry_budget):
+                return None
+            if bool(rec["dead_lettered"]):
+                return None
+            workflow_id = str(rec["workflow_id"] or task_id)
+            detail = (
+                f"Task {task_id} exceeded retry budget: "
+                f"failure_count={failure_count}, retry_budget={int(retry_budget)}"
+            )
+            incident_id = neo.create_workflow_incident(
+                workflow_id=workflow_id,
+                incident_type="retry_budget_exhausted",
+                severity="warning",
+                detail=detail,
+                metadata={
+                    "task_id": task_id,
+                    "failure_count": failure_count,
+                    "retry_budget": int(retry_budget),
+                    "completed_status": completed_status,
+                    "dead_lettered_by": actor,
+                },
+            )
+            s.run(
+                """
+                MATCH (t:Task {id:$task_id})
+                SET t.status='REVIEW',
+                    t.dead_lettered=true,
+                    t.dead_letter_reason='retry_budget_exhausted',
+                    t.dead_letter_incident_id=$incident_id,
+                    t.dead_lettered_by=$actor,
+                    t.dead_lettered_at=datetime(),
+                    t.dead_lettered_at_ts=timestamp(),
+                    t.updated_at=datetime(),
+                    t.updated_at_ts=timestamp()
+                """,
+                {"task_id": task_id, "incident_id": incident_id, "actor": actor},
+            ).consume()
+            return incident_id
+    except Exception:
+        return None
+
+
 def _apply_workflow_admission(tasks: List[Dict[str, Any]], runtime: Dict[str, int]) -> List[Dict[str, Any]]:
     mode = str(_workflow_control_state.get("mode") or "resume")
     max_running = int(_workflow_control_state.get("max_concurrent_workflows") or 20)
@@ -595,11 +673,83 @@ def _apply_workflow_admission(tasks: List[Dict[str, Any]], runtime: Dict[str, in
 def _sophia_queue_class(event_type: str, auth_state: Optional[str]) -> str:
     et = (event_type or "").strip().lower()
     st = (auth_state or "").strip().lower()
-    if "meeting" in et or "batch" in et:
-        return "batch"
-    if st in {"not_scott_known", "unknown_unverified"}:
-        return "critical"
-    return "interactive"
+    policy = _sophia_routing_policy()
+    by_auth = policy.get("by_auth_state", {})
+    by_event_prefix = policy.get("by_event_type_prefix", {})
+    default_class = str(policy.get("default_queue_class", "interactive"))
+    if st and st in by_auth:
+        return str(by_auth[st])
+    for prefix, qclass in by_event_prefix.items():
+        if et.startswith(prefix):
+            return str(qclass)
+    return default_class
+
+
+def _sophia_routing_policy() -> Dict[str, Any]:
+    # Optional override via JSON env var:
+    # ASSISTX_SOPHIA_ROUTING_POLICY='{"default_queue_class":"interactive","by_auth_state":{"unknown_unverified":"critical"},"by_event_type_prefix":{"meeting":"batch"}}'
+    raw = os.getenv("ASSISTX_SOPHIA_ROUTING_POLICY", "").strip()
+    default = {
+        "default_queue_class": "interactive",
+        "by_auth_state": {
+            "not_scott_known": "critical",
+            "unknown_unverified": "critical",
+        },
+        "by_event_type_prefix": {
+            "meeting": "batch",
+            "batch": "batch",
+        },
+    }
+    if not raw:
+        return default
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            return default
+        out = dict(default)
+        if isinstance(parsed.get("default_queue_class"), str):
+            out["default_queue_class"] = parsed["default_queue_class"]
+        if isinstance(parsed.get("by_auth_state"), dict):
+            out["by_auth_state"] = {str(k): str(v) for k, v in parsed["by_auth_state"].items()}
+        if isinstance(parsed.get("by_event_type_prefix"), dict):
+            out["by_event_type_prefix"] = {str(k): str(v) for k, v in parsed["by_event_type_prefix"].items()}
+        return out
+    except Exception:
+        return default
+
+
+def _sophia_routing_policy_fingerprint(policy: Optional[Dict[str, Any]] = None) -> str:
+    obj = policy or _sophia_routing_policy()
+    raw = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha1(raw).hexdigest()[:12]
+
+
+def _record_sophia_policy_change_if_needed(
+    neo: Neo4jClient,
+    user: str,
+    policy: Dict[str, Any],
+    source: str,
+) -> Optional[str]:
+    fingerprint = _sophia_routing_policy_fingerprint(policy)
+    prev = _sophia_policy_state.get("last_fingerprint")
+    _sophia_policy_state["last_seen_ts"] = int(_time.time() * 1000)
+    if prev == fingerprint:
+        return None
+    incident_id = neo.create_workflow_incident(
+        workflow_id="sophia-policy",
+        incident_type="routing_policy_changed",
+        severity="info",
+        detail=f"Sophia routing policy fingerprint changed: {prev or 'none'} -> {fingerprint}",
+        metadata={
+            "source": source,
+            "updated_by": user,
+            "previous_fingerprint": prev,
+            "new_fingerprint": fingerprint,
+            "policy": policy,
+        },
+    )
+    _sophia_policy_state["last_fingerprint"] = fingerprint
+    return incident_id
 
 
 # -----------------------
@@ -1009,6 +1159,19 @@ async def api_create_capture(
         }
     )
     kind = _media_kind(content_type, filename)
+
+    whisper_model_used: Optional[str] = None
+    if not transcript.strip() and kind in ("audio", "video") and media_path:
+        try:
+            model_name = os.getenv("WHISPER_FALLBACK_MODEL", "tiny")
+            wm = get_whisper_model(model_name)
+            segments, info = wm.transcribe(media_path, beam_size=1)
+            seg_texts = [(seg.text or "").strip() for seg in segments]
+            transcript = "\n".join(t for t in seg_texts if t)
+            whisper_model_used = model_name
+        except Exception as e:
+            _api_logger.warning("Whisper fallback transcription failed for %s: %s", capture_id, e)
+
     classification = classify_text(transcript) if transcript.strip() else None
     neo = _neo()
     try:
@@ -1027,7 +1190,10 @@ async def api_create_capture(
             device_fingerprint=str(context.get("device_fingerprint") or ""),
             activity_context=str(context.get("activity_context") or ""),
             client_context=context,
-            metadata={"authenticated_user": user},
+            metadata={
+                "authenticated_user": user,
+                "whisper_fallback": whisper_model_used is not None,
+            },
             intent_classification=classification,
         )
     finally:
@@ -1044,6 +1210,7 @@ async def api_create_capture(
         "media_kind": kind,
         "duration_ms": duration_ms,
         "transcript_saved": bool(transcript.strip()),
+        "whisper_fallback_model": whisper_model_used,
         **graph,
     }
 
@@ -1418,8 +1585,18 @@ def api_complete_task(task_id: str, body: TaskCompleteIn, user: str = Depends(au
         )
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
+        dead_letter_incident_id = _maybe_dead_letter_exhausted_task(
+            neo=neo,
+            task_id=task_id,
+            completed_status=body.status,
+            actor=user,
+        )
+        if dead_letter_incident_id:
+            refreshed = neo.get_task(task_id)
+            if refreshed:
+                task = refreshed
         TASK_COMPLETIONS.labels(status=body.status).inc()
-        return {"task": task}
+        return {"task": task, "dead_letter_incident_id": dead_letter_incident_id}
     finally:
         neo.close()
 
@@ -1716,6 +1893,8 @@ def api_sophia_event(body: SophiaVoiceEventIn, user: str = Depends(auth)):
     if body.auth_state not in allowed_auth:
         raise HTTPException(status_code=400, detail="Unsupported auth_state")
 
+    routing_policy = _sophia_routing_policy()
+    routing_policy_fingerprint = _sophia_routing_policy_fingerprint(routing_policy)
     qclass = _sophia_queue_class(body.event_type, body.auth_state)
     payload = {
         "source": "sophia_voice",
@@ -1727,11 +1906,19 @@ def api_sophia_event(body: SophiaVoiceEventIn, user: str = Depends(auth)):
         "policy_version": body.policy_version,
         "transcript_text": body.transcript_text,
         "queue_class": qclass,
+        "routing_policy": routing_policy,
+        "routing_policy_fingerprint": routing_policy_fingerprint,
         "payload": body.payload,
         "metadata": body.metadata or {},
     }
     neo = _neo()
     try:
+        policy_change_incident_id = _record_sophia_policy_change_if_needed(
+            neo=neo,
+            user=user,
+            policy=routing_policy,
+            source="api_sophia_event",
+        )
         signal_id = neo.create_signal_event(
             event_id=body.event_id,
             event_type=f"sophia_{body.event_type}",
@@ -1759,6 +1946,7 @@ def api_sophia_event(body: SophiaVoiceEventIn, user: str = Depends(auth)):
                     "policy_version": body.policy_version,
                     "policy_action": policy_action,
                     "queue_class": qclass,
+                    "routing_policy_fingerprint": routing_policy_fingerprint,
                     **(body.metadata or {}),
                 },
                 classification=classification,
@@ -1802,6 +1990,7 @@ def api_sophia_event(body: SophiaVoiceEventIn, user: str = Depends(auth)):
                     "speaker_identity": body.speaker_identity,
                     "speaker_confidence": body.speaker_confidence,
                     "queue_class": qclass,
+                    "routing_policy_fingerprint": routing_policy_fingerprint,
                 },
             )
 
@@ -1810,7 +1999,9 @@ def api_sophia_event(body: SophiaVoiceEventIn, user: str = Depends(auth)):
             "intent_id": created_intent_id,
             "task_id": created_task_id,
             "queue_class": qclass,
+            "routing_policy_fingerprint": routing_policy_fingerprint,
             "incident_id": incident_id,
+            "policy_change_incident_id": policy_change_incident_id,
         }
     finally:
         neo.close()
@@ -1823,6 +2014,12 @@ def api_sophia_summary(
 ):
     neo = _neo()
     try:
+        _record_sophia_policy_change_if_needed(
+            neo=neo,
+            user=user,
+            policy=_sophia_routing_policy(),
+            source="api_sophia_summary",
+        )
         auth_states: Dict[str, int] = {
             "authenticated_scott": 0,
             "not_scott_known": 0,
@@ -1871,10 +2068,32 @@ def api_sophia_summary(
 
         return {
             "sample_size": len(items),
+            "routing_policy": _sophia_routing_policy(),
+            "routing_policy_fingerprint": _sophia_routing_policy_fingerprint(),
             "auth_states": auth_states,
             "by_event_type": by_event_type,
             "by_queue_class": by_queue_class,
             "auth_anomaly_incidents": auth_anomaly_incidents,
+        }
+    finally:
+        neo.close()
+
+
+@app.get("/api/sophia/policy")
+def api_sophia_policy(user: str = Depends(auth)):
+    policy = _sophia_routing_policy()
+    neo = _neo()
+    try:
+        policy_change_incident_id = _record_sophia_policy_change_if_needed(
+            neo=neo,
+            user=user,
+            policy=policy,
+            source="api_sophia_policy",
+        )
+        return {
+            "routing_policy": policy,
+            "routing_policy_fingerprint": _sophia_routing_policy_fingerprint(policy),
+            "policy_change_incident_id": policy_change_incident_id,
         }
     finally:
         neo.close()
@@ -3011,7 +3230,7 @@ async def api_answer_events(answer_id: str, user: str = Depends(auth)):
                 await asyncio.sleep(0.2)
         finally:
             try: await pubsub.unsubscribe(chan)
-            except: pass
+            except Exception: pass
             await pubsub.close()
             await r.aclose()
 
@@ -3020,18 +3239,22 @@ async def api_answer_events(answer_id: str, user: str = Depends(auth)):
 @app.post("/api/llm/stream")
 def llm_stream(body: LLMStreamIn, user: str = Depends(auth)):
     """
-    Proxies Ollama /api/chat with stream=true and re-emits as SSE:
-      - 'model'  : the model name (defaults to OLLAMA_MODEL)
+    Proxies LLM chat with stream=true and re-emits as SSE:
+      - 'model'  : the model name
       - 'delta'  : token/partial text chunks (safe: not persisted)
       - 'done'   : final stats (no output text)
       - 'error'  : error info if upstream fails
+
+    Supports both Ollama and OpenAI-compatible (LM Studio) backends
+    based on the LLM_BACKEND env var.
     """
-    model = body.model or os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+    from .llm_client import stream_chat, LLM_MODEL as _default_model
+
+    model = body.model or _default_model
     if not model:
         return StreamingResponse(iter([_sse("error", {"error": "No model configured"})]),
                                  media_type="text/event-stream")
 
-    # Build Ollama payload
     msgs: List[Dict[str, str]] = []
     if body.system:
         msgs.append({"role": "system", "content": body.system})
@@ -3043,54 +3266,11 @@ def llm_stream(body: LLMStreamIn, user: str = Depends(auth)):
         return StreamingResponse(iter([_sse("error", {"error": "Provide 'prompt' or 'messages'"})]),
                                  media_type="text/event-stream")
 
-    payload = {
-        "model": model,
-        "messages": msgs,
-        "stream": True,
-    }
-    if body.options:
-        payload["options"] = body.options
-
-    # Stream from Ollama using requests (no new deps)
     def gen():
-        url = f"{OLLAMA_HOST}/api/chat"
-        try:
-            with requests.post(url, json=payload, stream=True, timeout=(5, 600)) as r:
-                r.raise_for_status()
-                yield _sse("model", {"model": model})
+        yield _sse("model", {"model": model})
+        for ev in stream_chat(msgs, model=model, options=body.options):
+            ev_type = ev.get("event", "")
+            ev_data = ev.get("data", "")
+            yield _sse(ev_type, ev_data)
 
-                buf_total = 0
-                for raw in r.iter_lines(decode_unicode=True):
-                    if not raw:
-                        continue
-                    try:
-                        data = json.loads(raw)
-                    except Exception:
-                        # Defensive: forward unparsed line
-                        yield _sse("delta", raw)
-                        continue
-
-                    # Standard Ollama chat stream fields:
-                    # { "message": {"role":"assistant","content":"...partial..."}, "done": false, ... }
-                    if data.get("message") and isinstance(data["message"], dict):
-                        piece = data["message"].get("content") or ""
-                        if piece:
-                            buf_total += len(piece)
-                            # stream just the token/partial to the UI
-                            yield _sse("delta", piece)
-
-                    if data.get("done"):
-                        stats = {
-                            "total_ms": data.get("total_duration"),
-                            "eval_count": data.get("eval_count"),
-                            "prompt_eval_count": data.get("prompt_eval_count"),
-                        }
-                        yield _sse("done", {k: v for k, v in stats.items() if v is not None})
-                        break
-        except requests.HTTPError as e:
-            yield _sse("error", {"error": f"HTTP {e.response.status_code}", "detail": e.response.text[:500]})
-        except requests.RequestException as e:
-            yield _sse("error", {"error": "Upstream unreachable", "detail": str(e)})
-
-    # Important: we do NOT persist streamed tokens; this is transient UI-only.
     return StreamingResponse(gen(), media_type="text/event-stream")

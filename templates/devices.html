@@ -4,8 +4,8 @@
 {% block content %}
 <section class="card">
   <h2>Devices</h2>
-  <p class="muted">Registered agent devices, capabilities, and last seen times.</p>
-  <div id="device-list" class="feed" style="max-height:600px;margin-top:1rem;">
+  <p class="kicker">Registered agent devices, capabilities, and last seen times.</p>
+  <div id="device-list" class="feed feed-lg mt-5">
     <div class="row muted">Loading devices…</div>
   </div>
 </section>
@@ -14,6 +14,8 @@
 {% block scripts %}
 <script>
 (async () => {
+  const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString());
+
   const r = await fetch('/api/devices?limit=100');
   const data = await r.json();
   const list = document.getElementById('device-list');
@@ -27,14 +29,14 @@
     row.className = 'row';
     const caps = d.capabilities ? (Array.isArray(d.capabilities) ? d.capabilities.join(', ') : d.capabilities) : '';
     row.innerHTML = `
-      <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
-        <code>${d.hostname || d.id}</code>
-        <span class="badge">${d.platform || 'unknown'}</span>
-        ${d.last_seen_at_ts ? `<span class="muted" style="font-size:.8rem;">last seen: ${new Date(d.last_seen_at_ts).toLocaleString()}</span>` : ''}
+      <div class="summary-line">
+        <code>${esc(d.hostname || d.id)}</code>
+        <span class="badge">${esc(d.platform || 'unknown')}</span>
+        ${d.last_seen_at_ts ? `<span class="muted">last seen: ${esc(new Date(d.last_seen_at_ts).toLocaleString())}</span>` : ''}
       </div>
-      ${caps ? `<div style="margin-top:.3rem;font-size:.8rem;color:var(--muted);">capabilities: ${caps}</div>` : ''}
-      <div style="margin-top:.2rem;font-size:.75rem;color:var(--muted);">
-        id: <code>${d.id}</code>
+      ${caps ? `<div class="muted mt-2">capabilities: ${esc(caps)}</div>` : ''}
+      <div class="muted mt-2">
+        id: <code>${esc(d.id)}</code>
       </div>
     `;
     list.appendChild(row);

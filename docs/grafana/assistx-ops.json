@@ -1,0 +1,49 @@
+{
+  "title": "AssistX Operations",
+  "uid": "assistx-ops",
+  "version": 1,
+  "panels": [
+    {
+      "title": "QA Request Rate",
+      "type": "timeseries",
+      "datasource": "prometheus",
+      "targets": [{"expr": "rate(qa_requests_total[5m])", "legendFormat": "{{mode}}"}]
+    },
+    {
+      "title": "QA Duration (p50/p95/p99)",
+      "type": "timeseries",
+      "datasource": "prometheus",
+      "targets": [{"expr": "histogram_quantile(0.50, rate(qa_duration_seconds_bucket[5m]))", "legendFormat": "p50"},{"expr": "histogram_quantile(0.95, rate(qa_duration_seconds_bucket[5m]))", "legendFormat": "p95"},{"expr": "histogram_quantile(0.99, rate(qa_duration_seconds_bucket[5m]))", "legendFormat": "p99"}]
+    },
+    {
+      "title": "Cypher Attempts per QA",
+      "type": "stat",
+      "datasource": "prometheus",
+      "targets": [{"expr": "rate(qa_cypher_attempts_total[5m])"}]
+    },
+    {
+      "title": "RQ Queue Depth",
+      "type": "timeseries",
+      "datasource": "prometheus",
+      "targets": [{"expr": "rq_jobs_in_queue", "legendFormat": "queued"},{"expr": "rq_jobs_running", "legendFormat": "running"},{"expr": "rq_jobs_failed", "legendFormat": "failed"}]
+    },
+    {
+      "title": "HTTP Requests",
+      "type": "timeseries",
+      "datasource": "prometheus",
+      "targets": [{"expr": "rate(assistx_http_requests_total[5m])", "legendFormat": "{{method}} {{path}}"}]
+    },
+    {
+      "title": "Task Claims / Completions",
+      "type": "timeseries",
+      "datasource": "prometheus",
+      "targets": [{"expr": "rate(assistx_task_claims_total[5m])", "legendFormat": "claim {{result}}"},{"expr": "rate(assistx_task_completions_total[5m])", "legendFormat": "complete {{status}}"}]
+    },
+    {
+      "title": "LLM Token Usage",
+      "type": "timeseries",
+      "datasource": "prometheus",
+      "targets": [{"expr": "rate(assistx_llm_tokens_total[5m])", "legendFormat": "{{model}} {{mode}}"}]
+    }
+  ]
+}

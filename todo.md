@@ -236,7 +236,7 @@ Tests: at least 80% coverage of pipeline logic (excluding LLM network).
 
 Required configuration (env)
 
-Core: NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, REDIS_URL
+Core: NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, NEO4J_DATABASE=assistx, REDIS_URL
 
 LLM: OLLAMA_HOST, OLLAMA_MODEL, LLM_TIMEOUT_S
 

@@ -12,14 +12,13 @@ from ..neo_schema import fetch_schema
 from ..agents.executor import execute_with_repairs
 from ..agents.analyst import generate_analysis_code, run_user_code
 from ..agents.llm import chat
+from ..llm_client import embed as _llm_embed
 from ..metrics import QA_DURATION, QA_CYPHER_ATTEMPTS
 
 # ---- cache config ----
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 QA_CACHE_TTL_S = int(os.getenv("QA_CACHE_TTL_S", "3600"))  # 1h default
 CACHE_VERSION = "v1"
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-QA_EMBED_MODEL = os.getenv("QA_EMBED_MODEL", "nomic-embed-text")
 QA_SIMILARITY_THRESHOLD = float(os.getenv("QA_SIMILARITY_THRESHOLD", "0.92"))
 QA_SIMILAR_MAX_SCAN = int(os.getenv("QA_SIMILAR_MAX_SCAN", "200"))
 SIM_INDEX_KEY = "assistx:qa:sim:index"
@@ -49,27 +48,7 @@ def _sim_entry_key(entry_id: str) -> bytes:
 
 
 def _embed_text(text: str) -> Optional[list[float]]:
-    payload = {"model": QA_EMBED_MODEL, "prompt": text}
-    try:
-        r = requests.post(f"{OLLAMA_HOST}/api/embeddings", json=payload, timeout=20)
-        r.raise_for_status()
-        j = r.json()
-        vec = j.get("embedding")
-        if isinstance(vec, list) and vec:
-            return [float(x) for x in vec]
-    except Exception:
-        pass
-    # fallback for newer Ollama endpoint
-    try:
-        r = requests.post(f"{OLLAMA_HOST}/api/embed", json={"model": QA_EMBED_MODEL, "input": text}, timeout=20)
-        r.raise_for_status()
-        j = r.json()
-        emb = j.get("embeddings")
-        if isinstance(emb, list) and emb and isinstance(emb[0], list):
-            return [float(x) for x in emb[0]]
-    except Exception:
-        return None
-    return None
+    return _llm_embed(text)
 
 
 def _cosine(a: list[float], b: list[float]) -> float:

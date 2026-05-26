@@ -220,37 +220,51 @@ pip install -r requirements-dev.txt
 
 # Create .env file
 cat > .env << EOF
-# Neo4j
-NEO4J_URI=bolt://neo4j:7687
+# Neo4j (uses existing host enterprise container, not an infra service)
+NEO4J_URI=bolt://host.docker.internal:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=livelongandprosper
+NEO4J_PASSWORD=knowledge_graph_2026
+NEO4J_DATABASE=assistx
+
+# LLM Backend — "openai" (LM Studio) or "ollama"
+LLM_BACKEND=openai
+OPENAI_BASE_URL=http://host.docker.internal:1234/v1
+OPENAI_API_KEY=not-needed
+LLM_MODEL=llama3.1:8b
+EMBED_MODEL=nomic-embed-text
 
 # AssistX API
-BASIC_AUTH_USER=neo4j
-BASIC_AUTH_PASS=livelongandprosper
+BASIC_AUTH_USER=admin
+BASIC_AUTH_PASS=change-me
 
 # Redis (for RQ queues)
 REDIS_URL=redis://redis:6379/0
 
-# Paperclip (Phase 3 — live, local dev)
+# Paperclip (dispatch integration)
 PAPERCLIP_API_URL=http://host.docker.internal:3100/api
 PAPERCLIP_API_TOKEN=<agent-api-key>
 PAPERCLIP_WORKSPACE_ID=<company-uuid>
 PAPERCLIP_WEBHOOK_SECRET=paperclip-dev-secret
 
-# Hermes (when ready for Phase 2)
-# HERMES_MEMORY_PROVIDER_ENABLED=true
+# Whisper (server-side fallback)
+WHISPER_DEVICE=auto
+WHISPER_COMPUTE_TYPE=int8
 EOF
 ```
 
 ### 2. Docker Compose
 
 ```bash
-# Start services
-docker-compose up -d neo4j redis
+# Start the full stack (redis, ollama, api, worker)
+docker compose -f docker-compose.yml -f compose.infra.yml -f compose.prod.yml up -d
 
-# Wait for Neo4j to be ready
-docker-compose logs neo4j | grep "Started"
+# Wait for healthchecks: verify all services show "healthy"
+docker compose -f docker-compose.yml -f compose.infra.yml -f compose.prod.yml ps
+```
+
+Neo4j is **not** managed by Compose — it runs as a standalone enterprise container on the host. Connect via:
+```bash
+docker exec -t neo4j cypher-shell -u neo4j -p $NEO4J_PASSWORD -d assistx "SHOW CONSTRAINTS"
 ```
 
 ### 3. Run Tests

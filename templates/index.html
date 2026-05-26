@@ -6,40 +6,40 @@
   <!-- Ask anything (auto mode: async with short inline wait) -->
   <section class="card half">
     <h2>Ask</h2>
-    <p class="muted">Type a question. We’ll derive Cypher from your Neo4j schema, fetch data, analyze in a sandbox, and compose the answer. Uses <code>/api/ask</code> (mode=<b>auto</b>).</p>
+    <p class="kicker">Type a question. We derive Cypher from your Neo4j schema, fetch data, analyze it in a sandbox, and compose the answer using <code>/api/ask</code> (<code>mode=auto</code>).</p>
     <textarea id="ask-q" rows="5" placeholder="e.g., How many READY tasks by kind in the last 24h?"></textarea>
-    <div style="margin-top:.6rem; display:flex; gap:.5rem; align-items:center;">
+    <div class="actions mt-3">
       <button class="btn" id="ask-btn">Ask</button>
       <button class="btn secondary" id="ask-clear">Clear</button>
       <span id="ask-status" class="muted"></span>
     </div>
-    <div id="ask-output" style="margin-top:1rem;">
+    <div id="ask-output" class="mt-5">
       <!-- dynamically filled -->
     </div>
   </section>
   <section class="card half">
     <h2>Model stream (live thoughts)</h2>
-    <p class="muted">Streams tokens from your Ollama model. Nothing here is stored.</p>
-    <div style="display:grid; gap:.5rem;">
+    <p class="kicker">Streams tokens from your Ollama model. Nothing here is stored.</p>
+    <div class="grid-flow">
       <input id="llm-model" type="text" placeholder="model (defaults to OLLAMA_MODEL)" />
       <textarea id="llm-system" rows="2" placeholder="optional system prompt"></textarea>
       <textarea id="llm-prompt" rows="4" placeholder="prompt (or use messages with JSON below)"></textarea>
       <textarea id="llm-messages" rows="4" placeholder='optional messages JSON, e.g. [{"role":"user","content":"hi"}]'></textarea>
-      <div style="display:flex; gap:.5rem;">
+      <div class="actions">
         <button class="btn" id="llm-start">Start</button>
         <button class="btn secondary" id="llm-stop">Stop</button>
         <span id="llm-status" class="muted"></span>
       </div>
-      <pre id="llm-out" class="feed" style="max-height:260px; white-space:pre-wrap; padding:8px;"></pre>
+      <pre id="llm-out" class="feed feed-sm prewrap pad-2"></pre>
     </div>
   </section>
   
   <!-- Live Answers feed (WebSocket with SSE fallback) -->
   <section class="card half">
     <h2>Live answers</h2>
-    <p class="muted">New/updated answers as they happen (global stream).</p>
+    <p class="kicker">New and updated answers as they happen (global stream).</p>
     <div class="feed" id="live-feed"></div>
-    <div style="margin-top:.6rem;">
+    <div class="actions mt-3">
       <a class="btn secondary" href="/answers" target="_blank">Open dashboard</a>
     </div>
   </section>
@@ -47,9 +47,11 @@
   <!-- Quick shortcuts -->
   <section class="card third">
     <h3>Shortcuts</h3>
-    <p><a class="btn" href="/ingest">Record / Upload audio</a></p>
-    <p><a class="btn" href="/tasks/ready">Review READY tasks</a></p>
-    <p><a class="btn" href="/runs">Inspect recent runs</a></p>
+    <div class="stack-sm">
+      <a class="btn" href="/ingest">Record / Upload audio</a>
+      <a class="btn" href="/tasks/ready">Review READY tasks</a>
+      <a class="btn" href="/runs">Inspect recent runs</a>
+    </div>
   </section>
 
   <!-- System status tips -->
@@ -60,7 +62,7 @@
       <li>Neo4j required for data-backed answers</li>
       <li>Ollama for LLMs (set <code>OLLAMA_HOST</code>)</li>
     </ul>
-    <p class="muted">If Neo4j is down, the app still starts; live data pages will 500 until it’s up.</p>
+    <p class="kicker">If Neo4j is down, the app still starts; live data pages fail until it recovers.</p>
   </section>
 
   <!-- Docs -->
@@ -82,4 +84,3 @@
 <script src="{{ url_for('static', path='js/home.js') }}"></script>
 <script src="{{ url_for('static', path='js/llm_stream.js') }}"></script>
 {% endblock %}
-

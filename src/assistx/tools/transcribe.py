@@ -1,7 +1,9 @@
 
-import argparse, os, json, uuid, time, pathlib
+import argparse, logging, os, json, uuid, time, pathlib
 from typing import List, Dict, Any
 from faster_whisper import WhisperModel
+
+logger = logging.getLogger(__name__)
 
 AUDIO_EXTS = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.opus'}
 
@@ -42,8 +44,8 @@ def main():
     model = WhisperModel(args.model, device="auto", compute_type="int8")
     files = find_audio(args.audio_root)
     if not files:
-        print("No audio found."); return
-    print(f"Found {len(files)} audio files")
+        logger.warning("No audio found."); return
+    logger.info("Found %d audio files", len(files))
 
     for f in files:
         t0 = time.time()
@@ -52,7 +54,7 @@ def main():
         # write json + txt
         (pathlib.Path(args.out_root) / f"{f.stem}_transcription.json").write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
         (pathlib.Path(args.out_root) / f"{f.stem}_transcription.txt").write_text(obj["text"], encoding="utf-8")
-        print(f"{f.name}: {len(obj['segments'])} segments in {time.time()-t0:.1f}s")
+        logger.info("%s: %d segments in %.1fs", f.name, len(obj['segments']), time.time() - t0)
 
 if __name__ == "__main__":
     main()

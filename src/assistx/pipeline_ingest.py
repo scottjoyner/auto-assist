@@ -1,9 +1,11 @@
 
 from __future__ import annotations
-import json, uuid
+import json, logging, uuid
 from pathlib import Path
 from typing import Dict, Any
 from .neo4j_client import Neo4jClient
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED = {".txt", ".jsonl"}
 
@@ -28,4 +30,4 @@ def ingest_dir(src: str, neo: Neo4jClient):
         tr = load_transcript(f)
         cid = neo.upsert_conversation(tr["title"], tr["source"])
         neo.add_utterances(cid, tr["utterances"])
-        print(f"Ingested {f} as Conversation {cid} with {len(tr['utterances'])} utterances")
+        logger.info("Ingested %s as Conversation %s with %d utterances", f, cid, len(tr['utterances']))

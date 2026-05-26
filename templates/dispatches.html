@@ -4,9 +4,9 @@
 {% block content %}
 <section class="card">
   <h2>Dispatches</h2>
-  <p class="muted">AssistX dispatch records linking tasks to Paperclip/Hermes execution.</p>
+  <p class="kicker">AssistX dispatch records linking tasks to Paperclip/Hermes execution.</p>
 
-  <div style="display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap;">
+  <div class="actions mb-4">
     <a class="btn secondary" href="/dispatches">All</a>
     <a class="btn secondary" href="/dispatches?status=OPEN">Open</a>
     <a class="btn secondary" href="/dispatches?status=ASSIGNED">Assigned</a>
@@ -16,7 +16,7 @@
     <a class="btn secondary" href="/dispatches?status=CANCELLED">Cancelled</a>
   </div>
 
-  <div id="dispatch-list" class="feed" style="max-height:600px;">
+  <div id="dispatch-list" class="feed feed-lg">
     <div class="row muted">Loading dispatches…</div>
   </div>
 </section>
@@ -25,6 +25,10 @@
 {% block scripts %}
 <script>
 (async () => {
+  const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString());
+  const shortId = window.UIUtils?.shortId || ((v, n = 8) => (v || '').toString().slice(0, n));
+  const badgeLine = window.UIUtils?.renderBadgeLine || ((parts) => `<div class="summary-line">${(parts || []).filter(Boolean).join(" ")}</div>`);
+
   const params = new URLSearchParams(window.location.search);
   const status = params.get('status') || '';
   const url = status ? `/api/dispatches?status=${status}&limit=100` : '/api/dispatches?limit=100';
@@ -39,17 +43,20 @@
   data.items.forEach(d => {
     const row = document.createElement('div');
     row.className = 'row';
+    const dispatchShort = shortId(d.id, 8);
+    const taskShort = shortId(d.task_id, 12);
+    const line = badgeLine([
+      `<code>${esc(dispatchShort)}</code>`,
+      `<span class="badge">${esc(d.status || '?')}</span>`,
+      `<span class="muted">priority: ${esc(d.priority || '—')}</span>`,
+      d.paperclip_issue_id ? `<span class="badge">issue: ${esc(d.paperclip_issue_id)}</span>` : '',
+      d.paperclip_agent_id ? `<span class="muted">agent: ${esc(d.paperclip_agent_id)}</span>` : '',
+    ]);
     row.innerHTML = `
-      <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
-        <code style="font-size:.75rem;">${(d.id || '').substring(0, 8)}…</code>
-        <span class="badge">${d.status || '?'}</span>
-        <span class="muted" style="font-size:.8rem;">priority: ${d.priority || '—'}</span>
-        ${d.paperclip_issue_id ? `<span class="badge">issue: ${d.paperclip_issue_id}</span>` : ''}
-        ${d.paperclip_agent_id ? `<span class="muted" style="font-size:.8rem;">agent: ${d.paperclip_agent_id}</span>` : ''}
-      </div>
-      <div style="margin-top:.3rem;font-size:.85rem;">
-        task: <code>${(d.task_id || '').substring(0, 12)}…</code>
-        ${d.created_at_ts ? `· ${new Date(d.created_at_ts).toLocaleString()}` : ''}
+      ${line}
+      <div class="mt-2">
+        task: <code>${esc(taskShort)}</code>
+        ${d.created_at_ts ? `· ${esc(new Date(d.created_at_ts).toLocaleString())}` : ''}
       </div>
     `;
     list.appendChild(row);

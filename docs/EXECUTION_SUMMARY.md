@@ -238,15 +238,11 @@ AgentDevice -[:HAS_SESSION]-> AgentSession (future)
 ### Environment Variables
 
 ```bash
-# AssistX API
-BASIC_AUTH_USER=neo4j
-BASIC_AUTH_PASS=livelongandprosper
-
-# Neo4j (auto-configured on startup)
-NEO4J_URI=bolt://neo4j:7687
+# Neo4j (uses existing host enterprise container)
+NEO4J_URI=bolt://host.docker.internal:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=livelongandprosper
-NEO4J_DATABASE=neo4j  # optional
+NEO4J_PASSWORD=knowledge_graph_2026
+NEO4J_DATABASE=assistx
 
 # Redis
 REDIS_URL=redis://redis:6379/0
@@ -399,37 +395,36 @@ python -m pytest tests/test_migration_api.py tests/test_hermes_memory_provider.p
 ### 1. Start Services
 
 ```bash
-docker-compose up -d neo4j redis
-# Wait for Neo4j to be ready
-sleep 10
+# Start the full Docker Compose stack (redis, ollama, api, worker)
+docker compose -f docker-compose.yml -f compose.infra.yml -f compose.prod.yml up -d
+
+# Verify all services are healthy
+docker compose -f docker-compose.yml -f compose.infra.yml -f compose.prod.yml ps
 ```
 
-### 2. Deploy Code
+Neo4j is **not** managed by Compose — it runs as a standalone enterprise container on the host.
+
+### 2. (Optional) Start Hermes Adapter
 
 ```bash
-# Ensure all Python files are in place
-# src/assistx/neo4j_client.py (enhanced)
-# src/assistx/api.py (enhanced)
-# src/assistx/paperclip_client.py (new)
-# src/assistx/agents/hermes_memory_provider.py (existing)
+# Via Compose (hermes profile)
+docker compose -f docker-compose.yml -f compose.infra.yml -f compose.prod.yml --profile hermes up -d
+
+# Or via systemd (for persistent boot-startup)
+systemctl --user enable docs/hermes-agent-adapter.service
+systemctl --user start hermes-agent-adapter.service
 ```
 
-### 3. Start API
-
-```bash
-uvicorn src.assistx.api:app --reload --host 0.0.0.0 --port 8000
-```
-
-### 4. Smoke Test
+### 3. Smoke Test
 
 ```bash
 # Test health
 curl http://localhost:8000/health
 
 # Test basic APIs
-curl -u neo4j:livelongandprosper http://localhost:8000/api/intents
-curl -u neo4j:livelongandprosper http://localhost:8000/api/memory
-curl -u neo4j:livelongandprosper http://localhost:8000/api/devices
+curl -u admin:change-me http://localhost:8000/api/intents
+curl -u admin:change-me http://localhost:8000/api/memory
+curl -u admin:change-me http://localhost:8000/api/devices
 ```
 
 ---

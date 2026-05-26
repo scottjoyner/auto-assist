@@ -29,9 +29,15 @@ services:
       - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-livelongandprosper}
+      - NEO4J_DATABASE=${NEO4J_DATABASE:-assistx}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
 
-      # --- Ollama (optional) ---
+      # --- LLM Backend (LM Studio / Ollama) ---
+      - LLM_BACKEND=${LLM_BACKEND:-openai}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://host.docker.internal:1234/v1}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-not-needed}
+      - LLM_MODEL=${LLM_MODEL:-llama3.1:8b}
+      - EMBED_MODEL=${EMBED_MODEL:-nomic-embed-text}
       - OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
 
@@ -86,6 +92,12 @@ services:
       - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-livelongandprosper}
+      - NEO4J_DATABASE=${NEO4J_DATABASE:-assistx}
+      - LLM_BACKEND=${LLM_BACKEND:-openai}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://host.docker.internal:1234/v1}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-not-needed}
+      - LLM_MODEL=${LLM_MODEL:-llama3.1:8b}
+      - EMBED_MODEL=${EMBED_MODEL:-nomic-embed-text}
       - OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma:2b}
       - CACHE_PATH=/app/.assistx_cache.sqlite
@@ -123,6 +135,40 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+
+  hermes-adapter:
+    build:
+      context: .
+    container_name: assistx-hermes-adapter
+    command: python -m assistx.agents.hermes_agent_adapter
+    environment:
+      - ASSISTX_URL=${ASSISTX_URL:-http://api:8000}
+      - ASSISTX_USER=${ASSISTX_USER:-admin}
+      - ASSISTX_PASS=${ASSISTX_PASS:-change-me}
+      - HERMES_AGENT_ID=${HERMES_AGENT_ID:-hermes-local}
+      - HERMES_AGENT_CAPABILITIES=${HERMES_AGENT_CAPABILITIES:-terminal,file,code_execution,web}
+      - HERMES_POLL_INTERVAL=${HERMES_POLL_INTERVAL:-15}
+      - HERMES_TASK_TIMEOUT=${HERMES_TASK_TIMEOUT:-300}
+      - HERMES_MAX_TASKS_PER_LOOP=${HERMES_MAX_TASKS_PER_LOOP:-3}
+      - HERMES_BIN=${HERMES_BIN:-hermes}
+      - HERMES_LOG_LEVEL=${HERMES_LOG_LEVEL:-INFO}
+      - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
+      - NEO4J_USER=${NEO4J_USER:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-livelongandprosper}
+      - NEO4J_DATABASE=${NEO4J_DATABASE:-assistx}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./src:/app/src
+    profiles:
+      - hermes
+    restart: unless-stopped
 
 volumes:
   assistx_cache: {}

@@ -6,6 +6,8 @@
     const askQ = document.getElementById("ask-q");
     const askStatus = document.getElementById("ask-status");
     const askOutput = document.getElementById("ask-output");
+    const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString());
+    const shortId = window.UIUtils?.shortId || ((v, n = 8) => (v || "").toString().slice(0, n));
   
     function el(tag, cls, txt){
       const e=document.createElement(tag); if(cls) e.className=cls; if(txt) e.textContent=txt; return e;
@@ -15,9 +17,9 @@
       if (!obj || !obj.id) return;
       const row = el("div", "row");
       const meta = el("div", "muted");
-      meta.innerHTML = `<code>${obj.id}</code> · ${new Date(obj.updated_at||obj.created_at||Date.now()).toLocaleString()}`;
+      meta.innerHTML = `<code>${esc(shortId(obj.id, 12))}</code> · ${esc(new Date(obj.updated_at||obj.created_at||Date.now()).toLocaleString())}`;
       const q = el("div");
-      q.innerHTML = `<b>Q:</b> ${(obj.question||"").replace(/</g,"&lt;")} <span class="status">${obj.status||""}</span>`;
+      q.innerHTML = `<b>Q:</b> ${esc(obj.question||"")} <span class="status">${esc(obj.status||"")}</span>`;
       row.appendChild(meta);
       row.appendChild(q);
       feed.insertBefore(row, feed.firstChild);
@@ -113,7 +115,7 @@
       // payload is the pipeline output {answer, data_preview, cypher, analysis_code, ...}
       const wrap = el("div");
       const ans = el("div");
-      ans.innerHTML = `<h3>Answer</h3><div style="white-space:pre-wrap">${(payload.answer||"").replace(/</g,"&lt;")}</div>`;
+      ans.innerHTML = `<h3>Answer</h3><div class="prewrap">${esc(payload.answer||"")}</div>`;
       wrap.appendChild(ans);
   
       if (payload.data_preview) {

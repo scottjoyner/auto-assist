@@ -217,5 +217,13 @@ Remaining high-priority Phase 8 work:
 
 1. Scheduler loop enforcement for admission decisions beyond claim-time gating.
 2. Weighted fairness and queue aging.
-3. Automated dead-letter routing for exhausted retry budgets.
-4. Burn-rate style workflow alerts and incident grouping.
+3. Burn-rate style workflow alerts and incident grouping.
+
+Additional completed implementation (May 24, 2026):
+
+- Retry-budget dead-letter automation is now active:
+  - task completion increments `failure_count` on `FAILED`/`CANCELLED`;
+  - when `failure_count > retry_budget`, task is automatically moved to
+    `REVIEW` with dead-letter metadata (`dead_lettered`, reason, actor, ts);
+  - a `WorkflowIncident(incident_type=retry_budget_exhausted)` is recorded for
+    workflow-level visibility and triage.
