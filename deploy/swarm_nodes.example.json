@@ -1,0 +1,56 @@
+{
+  "nodes": [
+    {
+      "node_id": "x1-370",
+      "hostname": "x1-370",
+      "status": "online",
+      "roles": ["primary_knowledge_host", "control_plane_candidate", "model_endpoint", "high_memory_worker"],
+      "power_profile": "high",
+      "capabilities": [
+        {"capability_id": "x1-370.assistx.control", "kind": "orchestration", "name": "AssistX control plane candidate"},
+        {"capability_id": "x1-370.llm.local", "kind": "llm", "name": "Local model endpoint"}
+      ]
+    },
+    {
+      "node_id": "deathstar-XPS-8920",
+      "hostname": "deathstar-XPS-8920",
+      "status": "online",
+      "roles": ["legacy_auto_ingest", "hermes_agent", "model_endpoint"],
+      "power_profile": "medium",
+      "capabilities": [
+        {"capability_id": "deathstar.auto_ingest.legacy", "kind": "ingest", "name": "Legacy auto-ingest jobs"},
+        {"capability_id": "deathstar.hermes.local", "kind": "llm", "name": "Hermes local model work"}
+      ]
+    },
+    {
+      "node_id": "mini-pc-22",
+      "hostname": "mini-pc-22",
+      "status": "maintenance",
+      "roles": ["future_always_on_service_host", "utility_node"],
+      "power_profile": "medium",
+      "capabilities": [
+        {"capability_id": "mini-pc-22.utility.light", "kind": "utility", "name": "Lightweight utility work"}
+      ]
+    },
+    {
+      "node_id": "demo",
+      "hostname": "demo",
+      "status": "online",
+      "roles": ["fast_delegation_agent", "gpu_burst_worker", "model_endpoint"],
+      "power_profile": "burst",
+      "capabilities": [
+        {"capability_id": "demo.llm.fast", "kind": "llm", "name": "Fast local generation"}
+      ]
+    },
+    {
+      "node_id": "demo-1",
+      "hostname": "demo-1",
+      "status": "online",
+      "roles": ["fast_delegation_agent", "gpu_burst_worker", "model_endpoint"],
+      "power_profile": "burst",
+      "capabilities": [
+        {"capability_id": "demo-1.llm.fast", "kind": "llm", "name": "Fast local generation"}
+      ]
+    }
+  ]
+}
