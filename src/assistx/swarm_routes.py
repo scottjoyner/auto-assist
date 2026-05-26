@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .neo4j_client import Neo4jClient
@@ -85,8 +85,27 @@ def _neo() -> Neo4jClient:
     return Neo4jClient()
 
 
+# Auth function to be injected from api.py
+_injected_auth_dependency = None
+
+
+def set_auth_dependency(auth_func: Any) -> None:
+    """Called from api.py to inject the real auth dependency."""
+    global _injected_auth_dependency
+    _injected_auth_dependency = auth_func
+
+
+def _swarm_auth_wrapper(request: Request, credentials: Optional[Any] = None) -> str:
+    """Wrapper that delegates to the injected auth function."""
+    if _injected_auth_dependency is None:
+        # Fallback: return a system user for trusted-network operation
+        return "system"
+    # Call the injected auth function
+    return _injected_auth_dependency(request, credentials)
+
+
 @router.post("/api/events")
-def api_events(body: EventEnvelopeIn):
+def api_events(body: EventEnvelopeIn, user: str = Depends(_default_auth)):
     neo = _neo()
     try:
         return record_event(neo, body.model_dump())
@@ -99,17 +118,16 @@ def api_events(body: EventEnvelopeIn):
 
 
 @router.post("/api/swarm/nodes/register")
-def api_register_node(body: SwarmNodeRegisterIn):
+def api_register_node(body: SwarmNodeRegisterIn, user: str = Depends(_default_auth)):
     neo = _neo()
     try:
-        ensure_swarm_schema(neo)
         return {"node": upsert_swarm_node(neo, body.model_dump(exclude_none=True))}
     finally:
         neo.close()
 
 
 @router.post("/api/swarm/nodes/{node_id}/heartbeat")
-def api_node_heartbeat(node_id: str, body: SwarmHeartbeatIn):
+def api_node_heartbeat(node_id: str, body: SwarmHeartbeatIn, user: str = Depends(_default_auth)):
     neo = _neo()
     try:
         payload = body.model_dump(exclude_none=True)
@@ -120,7 +138,7 @@ def api_node_heartbeat(node_id: str, body: SwarmHeartbeatIn):
 
 
 @router.get("/api/swarm/nodes")
-def api_list_nodes(limit: int = 100):
+def api_list_nodes(limit: int = 100, user: str = Depends(_default_auth)):
     neo = _neo()
     try:
         return {"items": list_swarm_nodes(neo, limit=limit)}
@@ -129,7 +147,7 @@ def api_list_nodes(limit: int = 100):
 
 
 @router.get("/api/swarm/capabilities")
-def api_list_caps(limit: int = 200):
+def api_list_caps(limit: int = 200, user: str = Depends(_default_auth)):
     neo = _neo()
     try:
         return {"items": list_capabilities(neo, limit=limit)}
@@ -138,7 +156,7 @@ def api_list_caps(limit: int = 200):
 
 
 @router.post("/api/tasks/{task_id}/fail")
-def api_fail_task(task_id: str, body: TaskFailIn):
+def api_fail_task(task_id: str, body: TaskFailIn, user: str = Depends(_default_auth)):
     neo = _neo()
     try:
         task = fail_task(neo, task_id, body.agent_id, body.error_summary, body.retryable, body.session_id)
@@ -150,7 +168,7 @@ def api_fail_task(task_id: str, body: TaskFailIn):
 
 
 @router.post("/api/tasks/leases/release-expired")
-def api_release_expired_leases(body: LeaseSweepIn):
+def api_release_expired_leases(body: LeaseSweepIn, user: str = Depends(_default_auth)):
     neo = _neo()
     try:
         return {"released": release_expired_task_leases(neo, now_ms=body.now_ms)}
@@ -159,7 +177,7 @@ def api_release_expired_leases(body: LeaseSweepIn):
 
 
 @router.get("/api/policy/voice-action")
-def api_voice_policy(auth_state: str, action: str = "create_draft_task", risk_level: str = "low"):
+def api_voice_policy(auth_state: str, action: str = "create_draft_task", risk_level: str = "low", user: str = Depends(_default_auth)):
     return {
         "auth_state": auth_state,
         "action": action,
@@ -168,58 +186,18 @@ def api_voice_policy(auth_state: str, action: str = "create_draft_task", risk_le
     }
 
 
-_INSTALLED = False
-_ORIGINAL_FASTAPI_INIT = None
-_ORIGINAL_ENSURE_SCHEMA = None
-_ORIGINAL_CLAIM_TASK = None
-_ORIGINAL_HEARTBEAT_TASK = None
+# Auth function to be injected from api.py - provides access to the same auth as legacy endpoints
+_injected_auth_func = None
 
 
-def install_swarm_routes_patch() -> None:
-    global _INSTALLED, _ORIGINAL_FASTAPI_INIT, _ORIGINAL_ENSURE_SCHEMA, _ORIGINAL_CLAIM_TASK, _ORIGINAL_HEARTBEAT_TASK
-    if _INSTALLED:
-        return
-    _INSTALLED = True
+def set_auth_dependency(auth_func: Any) -> None:
+    """Called from api.py to inject the real auth dependency."""
+    global _injected_auth_func
+    _injected_auth_func = auth_func
 
-    _ORIGINAL_FASTAPI_INIT = FastAPI.__init__
 
-    def _swarm_fastapi_init(self, *args, **kwargs):
-        _ORIGINAL_FASTAPI_INIT(self, *args, **kwargs)
-        self.include_router(router)
-
-    FastAPI.__init__ = _swarm_fastapi_init
-
-    _ORIGINAL_ENSURE_SCHEMA = Neo4jClient.ensure_schema
-
-    def _ensure_schema_with_swarm(self: Neo4jClient):
-        _ORIGINAL_ENSURE_SCHEMA(self)
-        ensure_swarm_schema(self)
-
-    Neo4jClient.ensure_schema = _ensure_schema_with_swarm
-
-    _ORIGINAL_CLAIM_TASK = Neo4jClient.claim_task
-
-    def _claim_task_with_lease(self: Neo4jClient, *args, **kwargs):
-        result = _ORIGINAL_CLAIM_TASK(self, *args, **kwargs)
-        if isinstance(result, dict) and result.get("claimed") and result.get("task"):
-            task_id = result["task"].get("id")
-            if task_id:
-                set_task_lease(self, task_id, lease_seconds=int(kwargs.get("lease_seconds") or 900))
-                refreshed = self.get_task(task_id)
-                if refreshed:
-                    result["task"] = refreshed
-        return result
-
-    Neo4jClient.claim_task = _claim_task_with_lease
-
-    _ORIGINAL_HEARTBEAT_TASK = Neo4jClient.heartbeat_task
-
-    def _heartbeat_task_extends_lease(self: Neo4jClient, task_id: str, *args, **kwargs):
-        result = _ORIGINAL_HEARTBEAT_TASK(self, task_id, *args, **kwargs)
-        if result:
-            set_task_lease(self, task_id, lease_seconds=900)
-            refreshed = self.get_task(task_id)
-            return refreshed or result
-        return result
-
-    Neo4jClient.heartbeat_task = _heartbeat_task_extends_lease
+def _get_auth_dependency() -> Any:
+    """Returns the injected auth function or raises an error."""
+    if _injected_auth_func is None:
+        raise RuntimeError("Swarm auth dependency not injected. Call set_auth_dependency from api.py.")
+    return _injected_auth_func

@@ -327,6 +327,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include the Phase 2 swarm router with auth dependency
+from .swarm_routes import router as swarm_router, set_auth_dependency
+app.include_router(swarm_router)
+
 # Mount static & templates like v1
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 templates = Jinja2Templates(directory=str(ROOT / "templates"))
@@ -412,6 +416,10 @@ def auth(
     if user is None:
         raise HTTPException(status_code=401, detail="Unauthorized", headers={"WWW-Authenticate": "Basic"})
     return user
+
+
+# Inject the auth dependency into swarm routes
+set_auth_dependency(auth)
 
 
 def _neo() -> Neo4jClient:

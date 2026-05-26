@@ -8,16 +8,6 @@ from typing import Optional
 
 import redis as redis_module
 
-# Phase 2 swarm bootstrap: api.py imports this module before constructing the
-# FastAPI app, so this is the least invasive place to attach the swarm router
-# and extend Neo4jClient.ensure_schema without replacing the large legacy API.
-try:  # pragma: no cover - import guard keeps legacy runtime resilient
-    from .swarm_routes import install_swarm_routes_patch
-
-    install_swarm_routes_patch()
-except Exception as exc:  # pragma: no cover
-    logging.getLogger(__name__).warning("Swarm route bootstrap skipped: %s", exc)
-
 logger = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
