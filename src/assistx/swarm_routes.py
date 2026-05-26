@@ -16,6 +16,7 @@ from .swarm_core import (
     list_swarm_nodes,
     record_event,
     release_expired_task_leases,
+    set_task_lease,
     upsert_swarm_node,
 )
 
@@ -170,10 +171,12 @@ def api_voice_policy(auth_state: str, action: str = "create_draft_task", risk_le
 _INSTALLED = False
 _ORIGINAL_FASTAPI_INIT = None
 _ORIGINAL_ENSURE_SCHEMA = None
+_ORIGINAL_CLAIM_TASK = None
+_ORIGINAL_HEARTBEAT_TASK = None
 
 
 def install_swarm_routes_patch() -> None:
-    global _INSTALLED, _ORIGINAL_FASTAPI_INIT, _ORIGINAL_ENSURE_SCHEMA
+    global _INSTALLED, _ORIGINAL_FASTAPI_INIT, _ORIGINAL_ENSURE_SCHEMA, _ORIGINAL_CLAIM_TASK, _ORIGINAL_HEARTBEAT_TASK
     if _INSTALLED:
         return
     _INSTALLED = True
@@ -193,3 +196,30 @@ def install_swarm_routes_patch() -> None:
         ensure_swarm_schema(self)
 
     Neo4jClient.ensure_schema = _ensure_schema_with_swarm
+
+    _ORIGINAL_CLAIM_TASK = Neo4jClient.claim_task
+
+    def _claim_task_with_lease(self: Neo4jClient, *args, **kwargs):
+        result = _ORIGINAL_CLAIM_TASK(self, *args, **kwargs)
+        if isinstance(result, dict) and result.get("claimed") and result.get("task"):
+            task_id = result["task"].get("id")
+            if task_id:
+                set_task_lease(self, task_id, lease_seconds=int(kwargs.get("lease_seconds") or 900))
+                refreshed = self.get_task(task_id)
+                if refreshed:
+                    result["task"] = refreshed
+        return result
+
+    Neo4jClient.claim_task = _claim_task_with_lease
+
+    _ORIGINAL_HEARTBEAT_TASK = Neo4jClient.heartbeat_task
+
+    def _heartbeat_task_extends_lease(self: Neo4jClient, task_id: str, *args, **kwargs):
+        result = _ORIGINAL_HEARTBEAT_TASK(self, task_id, *args, **kwargs)
+        if result:
+            set_task_lease(self, task_id, lease_seconds=900)
+            refreshed = self.get_task(task_id)
+            return refreshed or result
+        return result
+
+    Neo4jClient.heartbeat_task = _heartbeat_task_extends_lease
