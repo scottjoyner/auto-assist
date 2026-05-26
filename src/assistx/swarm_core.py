@@ -1,0 +1,568 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+import uuid
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional
+
+from .neo4j_client import Neo4jClient
+
+SCHEMA_VERSION = "1.0"
+LOW_RISK_ACTIONS = {
+    "create_note",
+    "draft_text",
+    "search_memory",
+    "summarize_context",
+    "list_tasks",
+    "create_draft_task",
+    "classify_file",
+    "enqueue_ingest_review",
+    "local_model_analysis",
+}
+SCOTT_AUTO_APPROVE_STATES = {"authenticated_scott", "admin_override"}
+APPROVAL_REQUIRED_STATES = {
+    "unknown_speaker",
+    "registered_user_authenticated",
+    "registered_user_unverified",
+    "scott_voice_unverified",
+}
+
+
+class EventValidationError(ValueError):
+    pass
+
+
+class EventConflictError(ValueError):
+    pass
+
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(value if value is not None else {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def payload_hash(event: Dict[str, Any]) -> str:
+    comparable = dict(event)
+    return hashlib.sha256(_json_dumps(comparable).encode("utf-8")).hexdigest()
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def validate_event_envelope(event: Dict[str, Any]) -> Dict[str, Any]:
+    required = [
+        "event_id",
+        "event_type",
+        "source_repo",
+        "source_service",
+        "node_id",
+        "occurred_at",
+        "idempotency_key",
+        "schema_version",
+        "subject",
+        "payload",
+        "artifact_refs",
+        "privacy",
+    ]
+    missing = [field for field in required if field not in event or event[field] in (None, "")]
+    if missing:
+        raise EventValidationError(f"Missing required event fields: {', '.join(missing)}")
+    if str(event.get("schema_version")) != SCHEMA_VERSION:
+        raise EventValidationError(f"Unsupported schema_version: {event.get('schema_version')}")
+    if not isinstance(event.get("subject"), dict) or not event["subject"].get("kind") or not event["subject"].get("id"):
+        raise EventValidationError("subject.kind and subject.id are required")
+    if not isinstance(event.get("payload"), dict):
+        raise EventValidationError("payload must be an object")
+    if not isinstance(event.get("artifact_refs"), list):
+        raise EventValidationError("artifact_refs must be a list")
+    privacy = event.get("privacy")
+    if not isinstance(privacy, dict):
+        raise EventValidationError("privacy must be an object")
+    for field in ("pii", "privacy_class", "retention_class"):
+        if field not in privacy:
+            raise EventValidationError(f"privacy.{field} is required")
+    return event
+
+
+def action_requires_approval(auth_state: Optional[str], action: Optional[str], risk_level: str = "low") -> bool:
+    state = (auth_state or "unknown_speaker").strip().lower()
+    action_name = (action or "").strip().lower()
+    risk = (risk_level or "low").strip().lower()
+    if risk == "high":
+        return True
+    if state in SCOTT_AUTO_APPROVE_STATES and (not action_name or action_name in LOW_RISK_ACTIONS):
+        return False
+    return True
+
+
+def ensure_swarm_schema(neo: Neo4jClient) -> None:
+    cypher = [
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SwarmNode) REQUIRE n.node_id IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (e:ServiceEndpoint) REQUIRE e.endpoint_id IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (c:Capability) REQUIRE c.capability_id IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (m:ModelEndpoint) REQUIRE m.model_endpoint_id IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (m:Model) REQUIRE m.model_id IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (h:HealthCheck) REQUIRE h.check_id IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (a:ArtifactRef) REQUIRE a.artifact_id IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (e:EventEnvelope) REQUIRE e.event_id IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (v:VoiceAuthDecision) REQUIRE v.decision_id IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (b:IngestBatch) REQUIRE b.batch_id IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (m:MemoryCandidate) REQUIRE m.candidate_id IS UNIQUE",
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (p:PolicyDecision) REQUIRE p.decision_id IS UNIQUE",
+        "CREATE INDEX IF NOT EXISTS FOR (n:SwarmNode) ON (n.status)",
+        "CREATE INDEX IF NOT EXISTS FOR (n:SwarmNode) ON (n.last_seen_at_ts)",
+        "CREATE INDEX IF NOT EXISTS FOR (e:ServiceEndpoint) ON (e.status)",
+        "CREATE INDEX IF NOT EXISTS FOR (c:Capability) ON (c.kind)",
+        "CREATE INDEX IF NOT EXISTS FOR (c:Capability) ON (c.status)",
+        "CREATE INDEX IF NOT EXISTS FOR (m:ModelEndpoint) ON (m.status)",
+        "CREATE INDEX IF NOT EXISTS FOR (e:EventEnvelope) ON (e.idempotency_key)",
+        "CREATE INDEX IF NOT EXISTS FOR (e:EventEnvelope) ON (e.event_type)",
+        "CREATE INDEX IF NOT EXISTS FOR (e:EventEnvelope) ON (e.created_at_ts)",
+        "CREATE INDEX IF NOT EXISTS FOR (v:VoiceAuthDecision) ON (v.auth_state)",
+        "CREATE INDEX IF NOT EXISTS FOR (b:IngestBatch) ON (b.status)",
+        "CREATE INDEX IF NOT EXISTS FOR (m:MemoryCandidate) ON (m.review_status)",
+        "CREATE INDEX IF NOT EXISTS FOR (t:Task) ON (t.lease_expires_at_ts)",
+    ]
+    with neo._session() as s:
+        for q in cypher:
+            s.run(q).consume()
+
+
+def upsert_artifact_refs(neo: Neo4jClient, artifact_refs: List[Dict[str, Any]]) -> List[str]:
+    ids: List[str] = []
+    if not artifact_refs:
+        return ids
+    with neo._session() as s:
+        for ref in artifact_refs:
+            artifact_id = ref.get("artifact_id") or uuid.uuid4().hex
+            props = dict(ref)
+            props["artifact_id"] = artifact_id
+            ids.append(artifact_id)
+            s.run(
+                """
+                MERGE (a:ArtifactRef {artifact_id:$artifact_id})
+                ON CREATE SET a.created_at=datetime(), a.created_at_ts=timestamp()
+                SET a += $props,
+                    a.updated_at=datetime(),
+                    a.updated_at_ts=timestamp()
+                """,
+                {"artifact_id": artifact_id, "props": props},
+            ).consume()
+    return ids
+
+
+def record_event(neo: Neo4jClient, event: Dict[str, Any]) -> Dict[str, Any]:
+    validate_event_envelope(event)
+    ensure_swarm_schema(neo)
+    phash = payload_hash(event)
+    event_id = str(event["event_id"])
+    idempotency_key = str(event["idempotency_key"])
+    payload_json = _json_dumps(event.get("payload") or {})
+    subject_json = _json_dumps(event.get("subject") or {})
+    artifact_json = _json_dumps(event.get("artifact_refs") or [])
+    privacy_json = _json_dumps(event.get("privacy") or {})
+    with neo._session() as s:
+        existing = s.run(
+            """
+            MATCH (e:EventEnvelope)
+            WHERE e.event_id=$event_id OR e.idempotency_key=$idempotency_key
+            RETURN e.event_id AS event_id, e.idempotency_key AS idempotency_key, e.payload_hash AS payload_hash
+            LIMIT 1
+            """,
+            {"event_id": event_id, "idempotency_key": idempotency_key},
+        ).single()
+        if existing:
+            if existing["payload_hash"] == phash:
+                return {"accepted": True, "event_id": existing["event_id"], "deduped": True, "graph_reconciled": False}
+            conflict_id = uuid.uuid4().hex
+            s.run(
+                """
+                CREATE (c:EventConflict {id:$conflict_id, event_id:$event_id, idempotency_key:$idempotency_key,
+                    existing_event_id:$existing_event_id, existing_payload_hash:$existing_payload_hash,
+                    incoming_payload_hash:$incoming_payload_hash, created_at:datetime(), created_at_ts:timestamp()})
+                """,
+                {
+                    "conflict_id": conflict_id,
+                    "event_id": event_id,
+                    "idempotency_key": idempotency_key,
+                    "existing_event_id": existing["event_id"],
+                    "existing_payload_hash": existing["payload_hash"],
+                    "incoming_payload_hash": phash,
+                },
+            ).consume()
+            raise EventConflictError(f"Event idempotency conflict for {idempotency_key}")
+        s.run(
+            """
+            CREATE (e:SignalEvent:EventEnvelope {id:$event_id, event_id:$event_id})
+            SET e.event_type=$event_type,
+                e.source_repo=$source_repo,
+                e.source_service=$source_service,
+                e.node_id=$node_id,
+                e.occurred_at=$occurred_at,
+                e.idempotency_key=$idempotency_key,
+                e.schema_version=$schema_version,
+                e.subject_json=$subject_json,
+                e.payload_json=$payload_json,
+                e.artifact_refs_json=$artifact_json,
+                e.privacy_json=$privacy_json,
+                e.payload_hash=$payload_hash,
+                e.created_at=datetime(),
+                e.created_at_ts=timestamp(),
+                e.updated_at=datetime(),
+                e.updated_at_ts=timestamp()
+            """,
+            {
+                "event_id": event_id,
+                "event_type": event["event_type"],
+                "source_repo": event["source_repo"],
+                "source_service": event["source_service"],
+                "node_id": event["node_id"],
+                "occurred_at": event["occurred_at"],
+                "idempotency_key": idempotency_key,
+                "schema_version": event["schema_version"],
+                "subject_json": subject_json,
+                "payload_json": payload_json,
+                "artifact_json": artifact_json,
+                "privacy_json": privacy_json,
+                "payload_hash": phash,
+            },
+        ).consume()
+    artifact_ids = upsert_artifact_refs(neo, event.get("artifact_refs") or [])
+    if artifact_ids:
+        with neo._session() as s:
+            s.run(
+                """
+                MATCH (e:EventEnvelope {event_id:$event_id})
+                MATCH (a:ArtifactRef)
+                WHERE a.artifact_id IN $artifact_ids
+                MERGE (e)-[:REFERENCES]->(a)
+                """,
+                {"event_id": event_id, "artifact_ids": artifact_ids},
+            ).consume()
+    reconcile_event(neo, event)
+    return {"accepted": True, "event_id": event_id, "deduped": False, "graph_reconciled": True}
+
+
+def reconcile_event(neo: Neo4jClient, event: Dict[str, Any]) -> None:
+    event_type = str(event.get("event_type") or "")
+    payload = event.get("payload") or {}
+    if event_type in {"swarm.node.registered", "swarm.node.heartbeat"}:
+        upsert_swarm_node(neo, payload if payload else event)
+    elif event_type == "model.endpoint.discovered":
+        upsert_model_endpoint(neo, payload, event.get("node_id"))
+    elif event_type == "voice.auth.decision":
+        record_voice_auth_decision(neo, event)
+    elif event_type == "voice.quick_input.created":
+        record_voice_quick_input(neo, event)
+    elif event_type == "ingest.batch.started":
+        upsert_ingest_batch(neo, payload, event, status="scanning")
+    elif event_type == "ingest.memory_candidate.created":
+        upsert_memory_candidate(neo, payload, event)
+    elif event_type == "ingest.batch.review_ready":
+        upsert_ingest_batch(neo, payload, event, status="reviewing")
+
+
+def upsert_swarm_node(neo: Neo4jClient, payload: Dict[str, Any]) -> Dict[str, Any]:
+    node_id = str(payload.get("node_id") or payload.get("hostname") or "unknown")
+    props = dict(payload)
+    props["node_id"] = node_id
+    props.setdefault("status", "online")
+    with neo._session() as s:
+        rec = s.run(
+            """
+            MERGE (n:SwarmNode {node_id:$node_id})
+            ON CREATE SET n.created_at=datetime(), n.created_at_ts=timestamp()
+            SET n += $props,
+                n.last_seen_at=datetime(),
+                n.last_seen_at_ts=timestamp(),
+                n.updated_at=datetime(),
+                n.updated_at_ts=timestamp()
+            WITH n
+            UNWIND $capabilities AS cap
+            MERGE (c:Capability {capability_id:coalesce(cap.capability_id, $node_id + '.' + coalesce(cap.kind,'capability') + '.' + coalesce(cap.name,'default'))})
+            ON CREATE SET c.created_at=datetime(), c.created_at_ts=timestamp()
+            SET c += cap, c.node_id=$node_id, c.status=coalesce(cap.status,'available'), c.updated_at=datetime(), c.updated_at_ts=timestamp()
+            MERGE (n)-[:CAN_RUN]->(c)
+            RETURN n
+            """,
+            {"node_id": node_id, "props": props, "capabilities": payload.get("capabilities") or []},
+        ).single()
+        if not rec:
+            rec = s.run("MATCH (n:SwarmNode {node_id:$node_id}) RETURN n", {"node_id": node_id}).single()
+        return dict(rec["n"]) if rec else props
+
+
+def list_swarm_nodes(neo: Neo4jClient, limit: int = 100) -> List[Dict[str, Any]]:
+    with neo._session() as s:
+        res = s.run(
+            """
+            MATCH (n:SwarmNode)
+            OPTIONAL MATCH (n)-[:CAN_RUN]->(c:Capability)
+            OPTIONAL MATCH (n)-[:EXPOSES]->(e:ServiceEndpoint)
+            RETURN n, collect(DISTINCT c) AS caps, collect(DISTINCT e) AS endpoints
+            ORDER BY coalesce(n.last_seen_at_ts, 0) DESC
+            LIMIT $limit
+            """,
+            {"limit": limit},
+        )
+        out = []
+        for row in res:
+            node = dict(row["n"])
+            node["capabilities"] = [dict(c) for c in row["caps"] if c]
+            node["endpoints"] = [dict(e) for e in row["endpoints"] if e]
+            out.append(node)
+        return out
+
+
+def list_capabilities(neo: Neo4jClient, limit: int = 200) -> List[Dict[str, Any]]:
+    with neo._session() as s:
+        res = s.run(
+            "MATCH (c:Capability) RETURN c ORDER BY coalesce(c.kind,''), c.capability_id LIMIT $limit",
+            {"limit": limit},
+        )
+        return [dict(r["c"]) for r in res]
+
+
+def upsert_model_endpoint(neo: Neo4jClient, payload: Dict[str, Any], event_node_id: Optional[str] = None) -> Dict[str, Any]:
+    node_id = str(payload.get("node_id") or event_node_id or "unknown")
+    endpoint_id = str(payload.get("model_endpoint_id") or payload.get("endpoint_id") or f"{node_id}:model:{payload.get('base_url','unknown')}")
+    props = dict(payload)
+    props["model_endpoint_id"] = endpoint_id
+    props["node_id"] = node_id
+    props.setdefault("status", "online")
+    with neo._session() as s:
+        rec = s.run(
+            """
+            MERGE (n:SwarmNode {node_id:$node_id})
+            ON CREATE SET n.created_at=datetime(), n.created_at_ts=timestamp(), n.status='online'
+            SET n.updated_at=datetime(), n.updated_at_ts=timestamp()
+            MERGE (e:ModelEndpoint:ServiceEndpoint {model_endpoint_id:$endpoint_id})
+            ON CREATE SET e.created_at=datetime(), e.created_at_ts=timestamp()
+            SET e += $props,
+                e.endpoint_id=coalesce(e.endpoint_id, $endpoint_id),
+                e.service_type='model_endpoint',
+                e.updated_at=datetime(),
+                e.updated_at_ts=timestamp()
+            MERGE (n)-[:EXPOSES]->(e)
+            WITH e
+            UNWIND $models AS model
+            MERGE (m:Model {model_id:coalesce(model.model_id, $endpoint_id + ':' + coalesce(model.served_name, model.id, model.name, 'unknown'))})
+            ON CREATE SET m.created_at=datetime(), m.created_at_ts=timestamp()
+            SET m += model, m.updated_at=datetime(), m.updated_at_ts=timestamp()
+            MERGE (e)-[:SERVES]->(m)
+            RETURN e
+            """,
+            {"node_id": node_id, "endpoint_id": endpoint_id, "props": props, "models": payload.get("models") or []},
+        ).single()
+        return dict(rec["e"]) if rec else props
+
+
+def record_voice_auth_decision(neo: Neo4jClient, event: Dict[str, Any]) -> str:
+    payload = event.get("payload") or {}
+    decision_id = str(payload.get("decision_id") or event["event_id"])
+    with neo._session() as s:
+        s.run(
+            """
+            MERGE (v:VoiceAuthDecision {decision_id:$decision_id})
+            ON CREATE SET v.created_at=datetime(), v.created_at_ts=timestamp()
+            SET v.event_id=$event_id,
+                v.session_id=$session_id,
+                v.capture_id=$capture_id,
+                v.utterance_id=$utterance_id,
+                v.auth_state=$auth_state,
+                v.auth_method=$auth_method,
+                v.speaker_identity=$speaker_identity,
+                v.speaker_confidence=$speaker_confidence,
+                v.threshold_used=$threshold_used,
+                v.auth_reason=$auth_reason,
+                v.updated_at=datetime(),
+                v.updated_at_ts=timestamp()
+            WITH v
+            MATCH (e:EventEnvelope {event_id:$event_id})
+            MERGE (e)-[:RECORDED_DECISION]->(v)
+            """,
+            {
+                "decision_id": decision_id,
+                "event_id": event["event_id"],
+                "session_id": payload.get("session_id"),
+                "capture_id": payload.get("capture_id"),
+                "utterance_id": payload.get("utterance_id"),
+                "auth_state": payload.get("auth_state"),
+                "auth_method": payload.get("auth_method"),
+                "speaker_identity": payload.get("speaker_identity"),
+                "speaker_confidence": payload.get("speaker_confidence"),
+                "threshold_used": payload.get("threshold_used"),
+                "auth_reason": payload.get("auth_reason"),
+            },
+        ).consume()
+    return decision_id
+
+
+def record_voice_quick_input(neo: Neo4jClient, event: Dict[str, Any]) -> Dict[str, Any]:
+    payload = event.get("payload") or {}
+    text = str(payload.get("text") or "").strip()
+    auth_state = str(payload.get("auth_state") or "unknown_speaker")
+    action = str(payload.get("action") or "create_draft_task")
+    risk_level = str(payload.get("risk_level") or "low")
+    approval_required = action_requires_approval(auth_state, action, risk_level)
+    intent_id = str(payload.get("intent_id") or f"intent:{event['event_id']}")
+    task_id = str(payload.get("task_id") or f"task:{event['event_id']}")
+    policy_id = str(payload.get("policy_decision_id") or f"policy:{event['event_id']}")
+    task_status = "REVIEW" if approval_required else "READY"
+    with neo._session() as s:
+        s.run(
+            """
+            MERGE (i:UserIntent:Intent {id:$intent_id})
+            ON CREATE SET i.created_at=datetime(), i.created_at_ts=timestamp()
+            SET i.source='voice.quick_input', i.text=$text, i.auth_state=$auth_state,
+                i.updated_at=datetime(), i.updated_at_ts=timestamp()
+            MERGE (t:Task {id:$task_id})
+            ON CREATE SET t.created_at=datetime(), t.created_at_ts=timestamp()
+            SET t.title=coalesce($text, 'Voice quick input'),
+                t.kind='voice_quick_input',
+                t.ticket_type='task',
+                t.status=$task_status,
+                t.risk_level=$risk_level,
+                t.approval_required=$approval_required,
+                t.required_capabilities=coalesce($required_capabilities, []),
+                t.payload_json=$payload_json,
+                t.updated_at=datetime(), t.updated_at_ts=timestamp()
+            MERGE (i)-[:TRIGGERED_TASK]->(t)
+            MERGE (p:PolicyDecision {decision_id:$policy_id})
+            ON CREATE SET p.created_at=datetime(), p.created_at_ts=timestamp()
+            SET p.auth_state=$auth_state,
+                p.action=$action,
+                p.risk_level=$risk_level,
+                p.approval_required=$approval_required,
+                p.policy='voice_auth_policy_mvp',
+                p.updated_at=datetime(), p.updated_at_ts=timestamp()
+            MERGE (i)-[:AUTHORIZED_BY]->(p)
+            WITH i, t, p
+            MATCH (e:EventEnvelope {event_id:$event_id})
+            MERGE (e)-[:CREATED_INTENT]->(i)
+            MERGE (e)-[:CREATED_TASK]->(t)
+            """,
+            {
+                "intent_id": intent_id,
+                "task_id": task_id,
+                "policy_id": policy_id,
+                "event_id": event["event_id"],
+                "text": text,
+                "auth_state": auth_state,
+                "action": action,
+                "risk_level": risk_level,
+                "approval_required": approval_required,
+                "task_status": task_status,
+                "required_capabilities": payload.get("required_capabilities") or [],
+                "payload_json": _json_dumps(payload),
+            },
+        ).consume()
+    return {"intent_id": intent_id, "task_id": task_id, "approval_required": approval_required}
+
+
+def upsert_ingest_batch(neo: Neo4jClient, payload: Dict[str, Any], event: Dict[str, Any], status: str) -> str:
+    batch_id = str(payload.get("batch_id") or event.get("subject", {}).get("id") or event["event_id"])
+    props = dict(payload)
+    props.setdefault("status", status)
+    props["batch_id"] = batch_id
+    with neo._session() as s:
+        s.run(
+            """
+            MERGE (b:IngestBatch {batch_id:$batch_id})
+            ON CREATE SET b.created_at=datetime(), b.created_at_ts=timestamp(), b.started_at=coalesce($started_at, datetime())
+            SET b += $props,
+                b.status=$status,
+                b.updated_at=datetime(), b.updated_at_ts=timestamp()
+            WITH b
+            MATCH (e:EventEnvelope {event_id:$event_id})
+            MERGE (e)-[:ABOUT_BATCH]->(b)
+            """,
+            {"batch_id": batch_id, "props": props, "status": status, "started_at": payload.get("started_at"), "event_id": event["event_id"]},
+        ).consume()
+    return batch_id
+
+
+def upsert_memory_candidate(neo: Neo4jClient, payload: Dict[str, Any], event: Dict[str, Any]) -> str:
+    candidate_id = str(payload.get("candidate_id") or event["event_id"])
+    batch_id = str(payload.get("batch_id") or event.get("subject", {}).get("id") or "unknown")
+    props = dict(payload)
+    props["candidate_id"] = candidate_id
+    props["batch_id"] = batch_id
+    props.setdefault("review_status", "pending")
+    with neo._session() as s:
+        s.run(
+            """
+            MERGE (b:IngestBatch {batch_id:$batch_id})
+            ON CREATE SET b.created_at=datetime(), b.created_at_ts=timestamp(), b.status='reviewing'
+            MERGE (m:MemoryCandidate {candidate_id:$candidate_id})
+            ON CREATE SET m.created_at=datetime(), m.created_at_ts=timestamp()
+            SET m += $props, m.updated_at=datetime(), m.updated_at_ts=timestamp()
+            MERGE (b)-[:PRODUCED]->(m)
+            WITH m
+            MATCH (e:EventEnvelope {event_id:$event_id})
+            MERGE (e)-[:CREATED_CANDIDATE]->(m)
+            """,
+            {"batch_id": batch_id, "candidate_id": candidate_id, "props": props, "event_id": event["event_id"]},
+        ).consume()
+    return candidate_id
+
+
+def fail_task(neo: Neo4jClient, task_id: str, agent_id: str, error_summary: str, retryable: bool = True, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    status = "READY" if retryable else "FAILED"
+    with neo._session() as s:
+        rec = s.run(
+            """
+            MATCH (t:Task {id:$task_id})
+            SET t.status=$status,
+                t.failed_by=$agent_id,
+                t.agent_session_id=coalesce($session_id, t.agent_session_id),
+                t.error_summary=$error_summary,
+                t.failure_count=coalesce(t.failure_count, 0) + 1,
+                t.last_failed_at=datetime(),
+                t.last_failed_at_ts=timestamp(),
+                t.updated_at=datetime(),
+                t.updated_at_ts=timestamp()
+            RETURN t
+            """,
+            {"task_id": task_id, "status": status, "agent_id": agent_id, "session_id": session_id, "error_summary": error_summary},
+        ).single()
+        return dict(rec["t"]) if rec else None
+
+
+def set_task_lease(neo: Neo4jClient, task_id: str, lease_seconds: int = 900) -> None:
+    lease_ms = max(1, int(lease_seconds)) * 1000
+    expires = _now_ms() + lease_ms
+    with neo._session() as s:
+        s.run(
+            """
+            MATCH (t:Task {id:$task_id})
+            SET t.lease_expires_at_ts=$expires,
+                t.lease_seconds=$lease_seconds,
+                t.updated_at=datetime(),
+                t.updated_at_ts=timestamp()
+            """,
+            {"task_id": task_id, "expires": expires, "lease_seconds": int(lease_seconds)},
+        ).consume()
+
+
+def release_expired_task_leases(neo: Neo4jClient, now_ms: Optional[int] = None) -> int:
+    now = int(now_ms or _now_ms())
+    with neo._session() as s:
+        rec = s.run(
+            """
+            MATCH (t:Task)
+            WHERE t.status IN ['CLAIMED','RUNNING'] AND coalesce(t.lease_expires_at_ts, 0) < $now
+            SET t.status='READY',
+                t.claimed_by=null,
+                t.agent_session_id=null,
+                t.claim_id=null,
+                t.lease_released_reason='expired',
+                t.updated_at=datetime(),
+                t.updated_at_ts=timestamp()
+            RETURN count(t) AS released
+            """,
+            {"now": now},
+        ).single()
+        return int(rec["released"] if rec else 0)
