@@ -137,6 +137,24 @@ def test_task_claim_heartbeat_complete_fail_and_lease_release(seeded_neo4j):
     assert released == 1
     assert seeded_neo4j.get_task(task["id"])["status"] == "READY"
 
+    complete_id = seeded_neo4j.upsert_ticket(
+        title="Complete a swarm task",
+        ticket_type="task",
+        status="READY",
+        kind="phase2_test_complete",
+    )
+    claimed_complete = seeded_neo4j.claim_task(complete_id, agent_id="agent-1", capabilities=[])
+    assert claimed_complete["claimed"] is True
+    completed = seeded_neo4j.complete_task(
+        complete_id,
+        agent_id="agent-1",
+        status="DONE",
+        summary="completed by phase2 test",
+        result={"ok": True},
+    )
+    assert completed["status"] == "DONE"
+    assert completed["run_id"]
+
     failed = fail_task(seeded_neo4j, task["id"], agent_id="agent-1", error_summary="temporary model outage", retryable=True)
     assert failed["status"] == "READY"
     assert failed["failure_count"] >= 1
