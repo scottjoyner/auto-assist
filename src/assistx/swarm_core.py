@@ -4,8 +4,7 @@ import hashlib
 import json
 import time
 import uuid
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .neo4j_client import Neo4jClient
 
@@ -22,12 +21,6 @@ LOW_RISK_ACTIONS = {
     "local_model_analysis",
 }
 SCOTT_AUTO_APPROVE_STATES = {"authenticated_scott", "admin_override"}
-APPROVAL_REQUIRED_STATES = {
-    "unknown_speaker",
-    "registered_user_authenticated",
-    "registered_user_unverified",
-    "scott_voice_unverified",
-}
 
 
 class EventValidationError(ValueError):
@@ -42,9 +35,28 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value if value is not None else {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def _neo4j_props(value: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert nested dict/list payloads into JSON sidecar properties.
+
+    Neo4j properties can store primitives and homogeneous primitive lists, but not
+    maps or lists of maps. Event and registry payloads commonly contain nested
+    objects, so this helper preserves them as `<key>_json` strings.
+    """
+    out: Dict[str, Any] = {}
+    for key, val in (value or {}).items():
+        if val is None:
+            out[key] = None
+        elif isinstance(val, (str, int, float, bool)):
+            out[key] = val
+        elif isinstance(val, list) and all(isinstance(x, (str, int, float, bool)) or x is None for x in val):
+            out[key] = val
+        else:
+            out[f"{key}_json"] = _json_dumps(val)
+    return out
+
+
 def payload_hash(event: Dict[str, Any]) -> str:
-    comparable = dict(event)
-    return hashlib.sha256(_json_dumps(comparable).encode("utf-8")).hexdigest()
+    return hashlib.sha256(_json_dumps(dict(event)).encode("utf-8")).hexdigest()
 
 
 def _now_ms() -> int:
@@ -137,8 +149,7 @@ def upsert_artifact_refs(neo: Neo4jClient, artifact_refs: List[Dict[str, Any]]) 
     with neo._session() as s:
         for ref in artifact_refs:
             artifact_id = ref.get("artifact_id") or uuid.uuid4().hex
-            props = dict(ref)
-            props["artifact_id"] = artifact_id
+            props = _neo4j_props({**ref, "artifact_id": artifact_id})
             ids.append(artifact_id)
             s.run(
                 """
@@ -266,11 +277,10 @@ def reconcile_event(neo: Neo4jClient, event: Dict[str, Any]) -> None:
 
 def upsert_swarm_node(neo: Neo4jClient, payload: Dict[str, Any]) -> Dict[str, Any]:
     node_id = str(payload.get("node_id") or payload.get("hostname") or "unknown")
-    props = dict(payload)
-    props["node_id"] = node_id
-    props.setdefault("status", "online")
+    props = _neo4j_props({**payload, "node_id": node_id, "status": payload.get("status") or "online"})
+    capabilities = payload.get("capabilities") or []
     with neo._session() as s:
-        rec = s.run(
+        s.run(
             """
             MERGE (n:SwarmNode {node_id:$node_id})
             ON CREATE SET n.created_at=datetime(), n.created_at_ts=timestamp()
@@ -279,18 +289,23 @@ def upsert_swarm_node(neo: Neo4jClient, payload: Dict[str, Any]) -> Dict[str, An
                 n.last_seen_at_ts=timestamp(),
                 n.updated_at=datetime(),
                 n.updated_at_ts=timestamp()
-            WITH n
-            UNWIND $capabilities AS cap
-            MERGE (c:Capability {capability_id:coalesce(cap.capability_id, $node_id + '.' + coalesce(cap.kind,'capability') + '.' + coalesce(cap.name,'default'))})
-            ON CREATE SET c.created_at=datetime(), c.created_at_ts=timestamp()
-            SET c += cap, c.node_id=$node_id, c.status=coalesce(cap.status,'available'), c.updated_at=datetime(), c.updated_at_ts=timestamp()
-            MERGE (n)-[:CAN_RUN]->(c)
-            RETURN n
             """,
-            {"node_id": node_id, "props": props, "capabilities": payload.get("capabilities") or []},
-        ).single()
-        if not rec:
-            rec = s.run("MATCH (n:SwarmNode {node_id:$node_id}) RETURN n", {"node_id": node_id}).single()
+            {"node_id": node_id, "props": props},
+        ).consume()
+        for cap in capabilities:
+            cap_id = cap.get("capability_id") or f"{node_id}.{cap.get('kind','capability')}.{cap.get('name','default')}"
+            cap_props = _neo4j_props({**cap, "capability_id": cap_id, "node_id": node_id, "status": cap.get("status") or "available"})
+            s.run(
+                """
+                MATCH (n:SwarmNode {node_id:$node_id})
+                MERGE (c:Capability {capability_id:$capability_id})
+                ON CREATE SET c.created_at=datetime(), c.created_at_ts=timestamp()
+                SET c += $props, c.updated_at=datetime(), c.updated_at_ts=timestamp()
+                MERGE (n)-[:CAN_RUN]->(c)
+                """,
+                {"node_id": node_id, "capability_id": cap_id, "props": cap_props},
+            ).consume()
+        rec = s.run("MATCH (n:SwarmNode {node_id:$node_id}) RETURN n", {"node_id": node_id}).single()
         return dict(rec["n"]) if rec else props
 
 
@@ -328,10 +343,7 @@ def list_capabilities(neo: Neo4jClient, limit: int = 200) -> List[Dict[str, Any]
 def upsert_model_endpoint(neo: Neo4jClient, payload: Dict[str, Any], event_node_id: Optional[str] = None) -> Dict[str, Any]:
     node_id = str(payload.get("node_id") or event_node_id or "unknown")
     endpoint_id = str(payload.get("model_endpoint_id") or payload.get("endpoint_id") or f"{node_id}:model:{payload.get('base_url','unknown')}")
-    props = dict(payload)
-    props["model_endpoint_id"] = endpoint_id
-    props["node_id"] = node_id
-    props.setdefault("status", "online")
+    props = _neo4j_props({**payload, "model_endpoint_id": endpoint_id, "node_id": node_id, "status": payload.get("status") or "online"})
     with neo._session() as s:
         rec = s.run(
             """
@@ -346,16 +358,22 @@ def upsert_model_endpoint(neo: Neo4jClient, payload: Dict[str, Any], event_node_
                 e.updated_at=datetime(),
                 e.updated_at_ts=timestamp()
             MERGE (n)-[:EXPOSES]->(e)
-            WITH e
-            UNWIND $models AS model
-            MERGE (m:Model {model_id:coalesce(model.model_id, $endpoint_id + ':' + coalesce(model.served_name, model.id, model.name, 'unknown'))})
-            ON CREATE SET m.created_at=datetime(), m.created_at_ts=timestamp()
-            SET m += model, m.updated_at=datetime(), m.updated_at_ts=timestamp()
-            MERGE (e)-[:SERVES]->(m)
             RETURN e
             """,
-            {"node_id": node_id, "endpoint_id": endpoint_id, "props": props, "models": payload.get("models") or []},
+            {"node_id": node_id, "endpoint_id": endpoint_id, "props": props},
         ).single()
+        for model in payload.get("models") or []:
+            model_id = model.get("model_id") or f"{endpoint_id}:{model.get('served_name') or model.get('id') or model.get('name') or 'unknown'}"
+            s.run(
+                """
+                MATCH (e:ModelEndpoint {model_endpoint_id:$endpoint_id})
+                MERGE (m:Model {model_id:$model_id})
+                ON CREATE SET m.created_at=datetime(), m.created_at_ts=timestamp()
+                SET m += $props, m.updated_at=datetime(), m.updated_at_ts=timestamp()
+                MERGE (e)-[:SERVES]->(m)
+                """,
+                {"endpoint_id": endpoint_id, "model_id": model_id, "props": _neo4j_props({**model, "model_id": model_id})},
+            ).consume()
         return dict(rec["e"]) if rec else props
 
 
@@ -367,35 +385,12 @@ def record_voice_auth_decision(neo: Neo4jClient, event: Dict[str, Any]) -> str:
             """
             MERGE (v:VoiceAuthDecision {decision_id:$decision_id})
             ON CREATE SET v.created_at=datetime(), v.created_at_ts=timestamp()
-            SET v.event_id=$event_id,
-                v.session_id=$session_id,
-                v.capture_id=$capture_id,
-                v.utterance_id=$utterance_id,
-                v.auth_state=$auth_state,
-                v.auth_method=$auth_method,
-                v.speaker_identity=$speaker_identity,
-                v.speaker_confidence=$speaker_confidence,
-                v.threshold_used=$threshold_used,
-                v.auth_reason=$auth_reason,
-                v.updated_at=datetime(),
-                v.updated_at_ts=timestamp()
+            SET v += $props, v.updated_at=datetime(), v.updated_at_ts=timestamp()
             WITH v
             MATCH (e:EventEnvelope {event_id:$event_id})
             MERGE (e)-[:RECORDED_DECISION]->(v)
             """,
-            {
-                "decision_id": decision_id,
-                "event_id": event["event_id"],
-                "session_id": payload.get("session_id"),
-                "capture_id": payload.get("capture_id"),
-                "utterance_id": payload.get("utterance_id"),
-                "auth_state": payload.get("auth_state"),
-                "auth_method": payload.get("auth_method"),
-                "speaker_identity": payload.get("speaker_identity"),
-                "speaker_confidence": payload.get("speaker_confidence"),
-                "threshold_used": payload.get("threshold_used"),
-                "auth_reason": payload.get("auth_reason"),
-            },
+            {"decision_id": decision_id, "event_id": event["event_id"], "props": _neo4j_props({**payload, "decision_id": decision_id, "event_id": event["event_id"]})},
         ).consume()
     return decision_id
 
@@ -464,14 +459,12 @@ def record_voice_quick_input(neo: Neo4jClient, event: Dict[str, Any]) -> Dict[st
 
 def upsert_ingest_batch(neo: Neo4jClient, payload: Dict[str, Any], event: Dict[str, Any], status: str) -> str:
     batch_id = str(payload.get("batch_id") or event.get("subject", {}).get("id") or event["event_id"])
-    props = dict(payload)
-    props.setdefault("status", status)
-    props["batch_id"] = batch_id
+    props = _neo4j_props({**payload, "status": status, "batch_id": batch_id})
     with neo._session() as s:
         s.run(
             """
             MERGE (b:IngestBatch {batch_id:$batch_id})
-            ON CREATE SET b.created_at=datetime(), b.created_at_ts=timestamp(), b.started_at=coalesce($started_at, datetime())
+            ON CREATE SET b.created_at=datetime(), b.created_at_ts=timestamp()
             SET b += $props,
                 b.status=$status,
                 b.updated_at=datetime(), b.updated_at_ts=timestamp()
@@ -479,7 +472,7 @@ def upsert_ingest_batch(neo: Neo4jClient, payload: Dict[str, Any], event: Dict[s
             MATCH (e:EventEnvelope {event_id:$event_id})
             MERGE (e)-[:ABOUT_BATCH]->(b)
             """,
-            {"batch_id": batch_id, "props": props, "status": status, "started_at": payload.get("started_at"), "event_id": event["event_id"]},
+            {"batch_id": batch_id, "props": props, "status": status, "event_id": event["event_id"]},
         ).consume()
     return batch_id
 
@@ -487,10 +480,7 @@ def upsert_ingest_batch(neo: Neo4jClient, payload: Dict[str, Any], event: Dict[s
 def upsert_memory_candidate(neo: Neo4jClient, payload: Dict[str, Any], event: Dict[str, Any]) -> str:
     candidate_id = str(payload.get("candidate_id") or event["event_id"])
     batch_id = str(payload.get("batch_id") or event.get("subject", {}).get("id") or "unknown")
-    props = dict(payload)
-    props["candidate_id"] = candidate_id
-    props["batch_id"] = batch_id
-    props.setdefault("review_status", "pending")
+    props = _neo4j_props({**payload, "candidate_id": candidate_id, "batch_id": batch_id, "review_status": payload.get("review_status") or "pending"})
     with neo._session() as s:
         s.run(
             """
