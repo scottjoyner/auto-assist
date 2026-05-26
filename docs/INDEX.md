@@ -1,239 +1,294 @@
 # AssistX - Complete Implementation Package
 
-## 📋 Overview
+## Overview
 
-This directory contains the complete implementation of Phases 0-6 of the AssistX stack: Hermes + Neo4j (Enterprise) + Paperclip + Voice/Media + Production Hardening.
+This directory contains the implementation package for the AssistX stack: Hermes + Neo4j + Paperclip + Voice/Media + Production Hardening + the emerging Offline Swarm Compute control plane.
 
-**All code is production-ready and tested — stack starts on boot via systemd, Paperclip live dispatch verified, Whisper fallback active.** ✅
+AssistX is now being aligned with `Sophia` and `auto-ingest` through the shared unification plan in `../UNIFICATION.md`.
 
----
+Current high-level role split:
 
-## 🚀 Quick Start
-
-### For Operators
-
-1. **Read First**: [docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md)
-   - Overview of all phases
-   - Installation and setup
-   - API reference
-   - Testing procedures
-
-2. **Configuration**: [docs/PHASE_0_INVENTORY.md](docs/PHASE_0_INVENTORY.md)
-   - Service inventory
-   - Environment variables
-   - Sample payloads
-
-3. **Deploy**: Follow deployment checklist in IMPLEMENTATION_GUIDE.md
-
-### For Developers
-
-1. **Architecture**: See system diagram in [IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md)
-
-2. **Key Files**:
-   - Phase 1: `src/assistx/neo4j_client.py` - Context retrieval
-   - Phase 2: `src/assistx/agents/hermes_memory_provider.py` - Memory provider
-   - Phase 3: `src/assistx/paperclip_client.py` - Dispatch integration
-   - Phase 4: `src/assistx/api.py` - Command center APIs
-
-3. **Documentation**:
-   - Phase 0: [docs/PHASE_0_INVENTORY.md](docs/PHASE_0_INVENTORY.md)
-   - Phase 2: [docs/PHASE_2_HERMES_MEMORY_INTEGRATION.md](docs/PHASE_2_HERMES_MEMORY_INTEGRATION.md)
-   - Phase 3: [docs/PHASE_3_PAPERCLIP_INTEGRATION.md](docs/PHASE_3_PAPERCLIP_INTEGRATION.md)
+```text
+AssistX = task authority, orchestration state, approvals, dispatch, swarm event intake
+Sophia = voice/auth edge and spoken response layer
+auto-ingest = periodic historical memory enrichment
+Neo4j = graph state, memory, provenance, task and event records
+Paperclip = optional delegation/human coordination mirror
+```
 
 ---
 
-## 📦 What's Included
+## Read First
 
-### Phase 0: Inventory & Contract ✅
+For a new engineer or agent, read these first:
 
-**Document**: [docs/PHASE_0_INVENTORY.md](docs/PHASE_0_INVENTORY.md)
+1. [`../UNIFICATION.md`](../UNIFICATION.md) — shared cross-repo unification plan
+2. [`HANDOFF_PHASE_2_SWARM_MVP.md`](HANDOFF_PHASE_2_SWARM_MVP.md) — current swarm MVP state and next-agent prompt
+3. [`swarm_contracts/`](swarm_contracts/) — concrete contracts for the swarm architecture
+4. [`IMPLEMENTATION_GUIDE.md`](IMPLEMENTATION_GUIDE.md) — legacy AssistX/Hermes/Paperclip implementation guide
+5. [`EXECUTION_SUMMARY.md`](EXECUTION_SUMMARY.md) — historical build summary
+
+---
+
+## Offline Swarm Phase 2 MVP
+
+Status: implemented as an MVP, with hardening follow-up required.
+
+Primary files:
+
+```text
+src/assistx/swarm_core.py
+src/assistx/swarm_routes.py
+src/assistx/rate_limiter.py
+tests/test_swarm_phase2.py
+deploy/swarm_nodes.example.json
+```
+
+Primary handoff:
+
+- [`HANDOFF_PHASE_2_SWARM_MVP.md`](HANDOFF_PHASE_2_SWARM_MVP.md)
+
+Contract docs:
+
+- [`swarm_contracts/database_unification.md`](swarm_contracts/database_unification.md)
+- [`swarm_contracts/task_authority.md`](swarm_contracts/task_authority.md)
+- [`swarm_contracts/event_envelope.md`](swarm_contracts/event_envelope.md)
+- [`swarm_contracts/node_registry.md`](swarm_contracts/node_registry.md)
+- [`swarm_contracts/model_endpoint_registry.md`](swarm_contracts/model_endpoint_registry.md)
+- [`swarm_contracts/voice_auth_policy.md`](swarm_contracts/voice_auth_policy.md)
+- [`swarm_contracts/artifact_paths.md`](swarm_contracts/artifact_paths.md)
+- [`swarm_contracts/auto_ingest_memory_enrichment.md`](swarm_contracts/auto_ingest_memory_enrichment.md)
+
+Implemented endpoints:
+
+```text
+POST /api/events
+POST /api/swarm/nodes/register
+POST /api/swarm/nodes/{node_id}/heartbeat
+GET  /api/swarm/nodes
+GET  /api/swarm/capabilities
+POST /api/tasks/{task_id}/fail
+POST /api/tasks/leases/release-expired
+GET  /api/policy/voice-action
+```
+
+Implemented behavior:
+
+- event envelope validation
+- idempotent replay and conflict detection
+- graph reconciliation for MVP event types
+- swarm node/capability registration
+- model endpoint graph records from events
+- task failure endpoint
+- task lease timestamps on claim/heartbeat
+- expired lease release back to `READY`
+- voice policy stub for Scott low-risk auto-approval and unknown-speaker approval gating
+
+Known hardening requirement:
+
+- new swarm routes should be moved from bootstrap shim to normal `app.include_router()` in `api.py`
+- swarm routes should use the same auth dependency as legacy API routes
+- swarm schema patch should be moved directly into `Neo4jClient.ensure_schema()`
+
+---
+
+## Existing AssistX Implementation Phases
+
+### Phase 0: Inventory & Contract
+
+Document: [`PHASE_0_INVENTORY.md`](PHASE_0_INVENTORY.md)
 
 Contains:
-- Service inventory (Neo4j, Redis, Paperclip, Hermes)
+
+- Service inventory: Neo4j, Redis, Paperclip, Hermes
 - Port mapping and connectivity
 - Credentials and environment variables
 - Neo4j schema documentation
 - Sample API payloads
 - Implementation epics and timeline
 
-### Phase 1: Brain Schema & Retrieval ✅
+### Phase 1: Brain Schema & Retrieval
 
-**File**: `src/assistx/neo4j_client.py`
+Primary file: `src/assistx/neo4j_client.py`
 
 Implemented:
-- Intent creation with idempotency (`upsert_intent`)
-- Context packet creation (`create_context_packet`)
-- Context retrieval with source citation (`get_context_packet`)
+
+- Intent creation with idempotency
+- Context packet creation
+- Context retrieval with source references
 - Bounded result size limiting
+- Graph-first task trigger lifecycle
+- Ticket hierarchy on `Task` nodes
 
-**API Endpoints**:
+Endpoints:
+
+```text
+POST /api/intents
+GET  /api/intents
+GET  /api/intents/{intent_id}
+POST /api/brain/context
+GET  /api/context-packets/{packet_id}
+POST /api/ask
+POST /api/ask_async
+GET  /api/agent/tasks
+POST /api/tasks/{task_id}/claim
+POST /api/tasks/{task_id}/heartbeat
+POST /api/tasks/{task_id}/complete
+POST /api/tickets
+GET  /api/tickets/{ticket_id}/tree
 ```
-POST /api/intents                          Create intent
-GET  /api/intents                          List intents
-GET  /api/intents/{intent_id}              Get intent
 
-POST /api/brain/context                    Create context packet
-GET  /api/context-packets/{packet_id}      Get context packet
-```
+### Phase 2: Hermes Memory Integration
 
-### Phase 2: Hermes Memory Integration ✅
+Document: [`PHASE_2_HERMES_MEMORY_INTEGRATION.md`](PHASE_2_HERMES_MEMORY_INTEGRATION.md)
 
-**File**: `src/assistx/agents/hermes_memory_provider.py`
-
-**Document**: [docs/PHASE_2_HERMES_MEMORY_INTEGRATION.md](docs/PHASE_2_HERMES_MEMORY_INTEGRATION.md)
+Primary file: `src/assistx/agents/hermes_memory_provider.py`
 
 Implemented:
-- `HermesMemoryProvider` class with full lifecycle support
-- Methods: prefetch, write_memory, signal_event, update_session
-- Integration guide with Hermes lifecycle hooks
-- Tool definitions for agents (graph_context_search, graph_memory_write)
-- Graph-first task trigger lifecycle for agents that poll Neo4j-backed work
-- Ask deliverables that break into Epic → Story → Task ticket hierarchies
 
-**API Endpoints**:
-```
-POST /api/ask                              Create answer + deliverable graph
-POST /api/ask_async                        Create async answer + deliverable graph
-GET  /api/agent/tasks                      Poll READY task triggers by capability
-POST /api/tasks/{task_id}/claim            Claim task trigger
-POST /api/tasks/{task_id}/heartbeat        Update active task heartbeat
-POST /api/tasks/{task_id}/complete         Complete task with AgentRun/outcome
-POST /api/tickets                          Create deliverable/epic/story/task ticket
-GET  /api/tickets/{ticket_id}/tree         Inspect ticket hierarchy
+- `HermesMemoryProvider`
+- `prefetch()`
+- `write_memory()`
+- `signal_event()`
+- `update_session()`
+- Tool definitions for graph context search and graph memory write
 
-GET  /ingest                               Mobile audio/video capture UI
-POST /api/captures                         Save media capture + graph intake records
+Endpoints:
 
-POST /api/memory/items                     Write memory item
-GET  /api/memory                           List memory items
-GET  /api/memory/{memory_id}               Get memory details
-
-POST /api/brain/signals                    Create signal event
-
-POST /api/sessions/{session_id}            Update agent session
-GET  /api/sessions                         List sessions
+```text
+POST /api/memory/items
+GET  /api/memory
+GET  /api/memory/{memory_id}
+POST /api/brain/signals
+POST /api/sessions/{session_id}
+GET  /api/sessions
 ```
 
-### Phase 3: Paperclip Dispatch Integration ✅
+### Phase 3: Paperclip Dispatch Integration
 
-**File**: `src/assistx/paperclip_client.py`
+Document: [`PHASE_3_PAPERCLIP_INTEGRATION.md`](PHASE_3_PAPERCLIP_INTEGRATION.md)
 
-**Document**: [docs/PHASE_3_PAPERCLIP_INTEGRATION.md](docs/PHASE_3_PAPERCLIP_INTEGRATION.md)
+Primary file: `src/assistx/paperclip_client.py`
 
 Implemented:
-- `PaperclipClient` class with routes matching real Paperclip API
-- Methods: create_issue, get_issue, assign, list_agents, poll_events, health_check
-- Event handler at `POST /api/paperclip/events`
-- Dispatch creation with optional Paperclip issue linkage
-- Paperclip server running as systemd service at `http://127.0.0.1:3100`
 
-Live Tested (May 23, 2026):
-- Company/agent/API key created in Paperclip
-- `POST /api/tickets` → `POST /api/dispatch` → Paperclip issue created
-- `GET /api/issues/:id` confirms issue with correct `createdByAgentId`
-- Docker networking via `host.docker.internal:host-gateway`
+- `PaperclipClient`
+- optional Paperclip issue creation from `/api/dispatch`
+- local Neo4j dispatch records
+- event ingestion endpoint
+- fallback when Paperclip is unavailable
 
-Known limitation: Paperclip has no outbound webhook API. Event polling is the
-fallback (via `GET /companies/:companyId/issues`).
+Clarification:
 
-**API Endpoints**:
-```
-POST /api/dispatch                         Create dispatch and optional Paperclip issue
-GET  /api/dispatches                       List dispatches
-
-POST /api/paperclip/events                 Webhook: Paperclip events → AssistX
-
-POST /api/devices/{device_id}              Update device
-GET  /api/devices                          List devices
-GET  /api/devices/{device_id}              Get device details
+```text
+AssistX Task = source of truth
+Paperclip Issue = optional mirror / delegation wrapper
 ```
 
-### Phase 4: Command Center UI ✅
+Endpoints:
 
-**File**: `src/assistx/api.py`
-
-New endpoints for command center dashboard:
-- Intent viewing and filtering
-- Device status and session tracking
-- Memory item browsing and search
-- Task control (cancel, pause, resume)
-- Dispatch reassignment
-
-**API Endpoints**:
-```
-GET  /api/intents                          List intents (filter by source)
-GET  /api/intents/{intent_id}              Intent details + tasks
-
-GET  /api/devices                          List agent devices
-GET  /api/devices/{device_id}              Device details + sessions
-
-GET  /api/memory                           List memory (filter by kind/source)
-GET  /api/memory/{memory_id}               Memory details + relationships
-
-POST /api/tasks/{task_id}/cancel           Cancel task
-POST /api/tasks/{task_id}/pause            Pause task
-POST /api/tasks/{task_id}/resume           Resume task
-
-POST /api/dispatches/{dispatch_id}/reassign  Reassign dispatch
+```text
+POST /api/dispatch
+GET  /api/dispatches
+POST /api/paperclip/events
+POST /api/devices/{device_id}
+GET  /api/devices
+GET  /api/devices/{device_id}
 ```
 
-### Phase 5: Voice/Video Intake 🔧
+### Phase 4: Command Center UI
+
+Primary file: `src/assistx/api.py`
 
 Implemented:
-- Sophia-inspired `/ingest` page with audio/video browser recording.
-- Mobile upload/camera fallback using `accept="audio/*,video/*"` and `capture`.
-- Client context collection: device id, fingerprint, user agent, timezone,
-  screen, activity context, and optional location.
-- `POST /api/captures` stores media files in `artifacts/captures` and writes
-  `MediaCapture`, `MediaAsset`, `Transcription`, `MemoryItem`, `Intent`, and
-  `SignalEvent` nodes to Neo4j.
+
+- intent views
+- device views
+- session views
+- memory browsing
+- task control routes
+- dispatch controls
+- review queue routes
+
+### Phase 5: Voice/Video Intake
+
+Partially implemented:
+
+- `/ingest` page with browser audio/video recording
+- `POST /api/captures`
+- media and transcript graph intake records
 
 Pending:
-- Classify capture intents into memory-only, fact/preference, executable task,
-  cancellation/barge-in, or status query.
-- For executable captures, create `Task(status=READY)` with required
-  capabilities.
-- Optional server-side transcription for video/audio captures when no browser
-  transcript is supplied.
+
+- Sophia runtime voice integration
+- voiceprint auth
+- unknown speaker registration runtime
+- TTS response integration
+- barge-in/cancellation runtime integration
+
+### Phase 6: Hardening and Rollout
+
+Documents:
+
+- [`PHASE_6_HARDENING_ROLLOUT.md`](PHASE_6_HARDENING_ROLLOUT.md)
+- [`CANARY_ACCEPTANCE_2026-05-24.md`](CANARY_ACCEPTANCE_2026-05-24.md)
+
+Existing scope:
+
+- secrets
+- monitoring
+- canary strategy
+- rollback procedures
+
+Swarm-specific hardening is now tracked in [`HANDOFF_PHASE_2_SWARM_MVP.md`](HANDOFF_PHASE_2_SWARM_MVP.md).
 
 ---
 
-## 📊 File Structure
+## File Structure
 
-```
+```text
 auto-assist/
+├── UNIFICATION.md
 ├── src/assistx/
-│   ├── neo4j_client.py                    (ENHANCED Phase 1-3)
-│   ├── api.py                             (ENHANCED Phase 2-4)
-│   ├── paperclip_client.py                (NEW Phase 3)
+│   ├── api.py
+│   ├── neo4j_client.py
+│   ├── swarm_core.py
+│   ├── swarm_routes.py
+│   ├── rate_limiter.py
+│   ├── paperclip_client.py
 │   └── agents/
-│       └── hermes_memory_provider.py      (EXISTING, documented)
+│       └── hermes_memory_provider.py
 ├── tests/
-│   ├── test_migration_api.py              (Existing tests)
-│   └── test_hermes_memory_provider.py     (Reference)
+│   ├── test_migration_api.py
+│   ├── test_swarm_phase2.py
+│   └── test_hermes_memory_provider.py
+├── deploy/
+│   └── swarm_nodes.example.json
 └── docs/
-    ├── PHASE_0_INVENTORY.md               (NEW - 500+ lines)
-    ├── PHASE_2_HERMES_MEMORY_INTEGRATION.md (NEW - 400+ lines)
-    ├── PHASE_3_PAPERCLIP_INTEGRATION.md   (NEW - 400+ lines)
-    ├── IMPLEMENTATION_GUIDE.md            (NEW - 600+ lines)
-    ├── EXECUTION_SUMMARY.md               (NEW - 400+ lines)
-    └── INDEX.md                           (THIS FILE)
+    ├── HANDOFF_PHASE_2_SWARM_MVP.md
+    ├── swarm_contracts/
+    ├── PHASE_0_INVENTORY.md
+    ├── PHASE_2_HERMES_MEMORY_INTEGRATION.md
+    ├── PHASE_3_PAPERCLIP_INTEGRATION.md
+    ├── IMPLEMENTATION_GUIDE.md
+    ├── EXECUTION_SUMMARY.md
+    └── INDEX.md
 ```
 
 ---
 
-## 🔧 Configuration
+## Configuration Reference
 
-### Environment Variables (Sample)
+Sample environment variables:
 
 ```bash
-# Neo4j (uses existing host enterprise container, not an infra service)
+# Neo4j
 NEO4J_URI=bolt://host.docker.internal:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=knowledge_graph_2026
+NEO4J_PASSWORD=<set locally>
 NEO4J_DATABASE=assistx
 
-# LLM Backend — "openai" (LM Studio) or "ollama"
+# LLM Backend
 LLM_BACKEND=openai
 OPENAI_BASE_URL=http://host.docker.internal:1234/v1
 OPENAI_API_KEY=not-needed
@@ -244,204 +299,47 @@ EMBED_MODEL=nomic-embed-text
 BASIC_AUTH_USER=admin
 BASIC_AUTH_PASS=change-me
 
-# Redis (background jobs)
+# Redis
 REDIS_URL=redis://redis:6379/0
 
-# Paperclip (dispatch integration)
+# Paperclip
 PAPERCLIP_API_URL=http://host.docker.internal:3100/api
 PAPERCLIP_API_TOKEN=<token-from-paperclip-agent-keys>
 PAPERCLIP_WORKSPACE_ID=<paperclip-company-uuid>
-PAPERCLIP_WEBHOOK_SECRET=paperclip-dev-secret
+PAPERCLIP_WEBHOOK_SECRET=<set-locally>
+
+# Voice webhook
+VOICE_WEBHOOK_SECRET=<set-locally>
+WS_AUTH_TOKEN=<set-locally>
 ```
 
-See [docs/PHASE_0_INVENTORY.md](docs/PHASE_0_INVENTORY.md) for complete reference.
+Do not commit real secrets.
 
 ---
 
-## 🧪 Testing
-
-### Run Existing Tests
+## Test Commands
 
 ```bash
-# All migration tests (10 total)
+python -m pytest tests/test_swarm_phase2.py -v
 python -m pytest tests/test_migration_api.py -v
-
-# Hermes memory provider tests (5 total)
 python -m pytest tests/test_hermes_memory_provider.py -v
-
-# Single test
-python -m pytest tests/test_migration_api.py::test_api_intent_and_context_packet -v
 ```
 
-### Test Results (May 23, 2026)
-
-**20/20 tests passing** — runs against an ephemeral Neo4j 5.23 Docker container.
-
-| Test File | Tests | Status |
-|-----------|-------|--------|
-| `test_migration_api.py` | 10 | ✅ All pass |
-| `test_hermes_memory_provider.py` | 9 | ✅ All pass |
-| `test_schema_contract.py` | 1 | ✅ All pass |
-
-Coverage includes: intent creation & dedup, context packet retrieval, dispatch creation, session updates, memory writes, signal events, task lifecycle (claim/heartbeat/complete), ticket hierarchy, command center (intents/memory/devices/task controls/reassign), Hermes provider (prefetch/write/signal/update/token/system_prompt_block/sync_turn/on_delegation/on_session_switch), schema contract validation.
-
-### Integration Tests (manual / live)
-
-Phase 3 Paperclip:
-- [x] Paperclip server running at `http://127.0.0.1:3100`
-- [x] `PaperclipClient` connectivity verified from API container
-- [x] `create_issue()` returns a Paperclip issue ID (tested: `2365b591-...`)
-- [x] Dispatch → Paperclip issue flow tested end-to-end
-- [ ] Periodic poller to sync Paperclip issue status to Neo4j dispatches
-
-Phase 2 Hermes:
-- [ ] Wire `HermesMemoryProvider` into a live Hermes agent config
-- [ ] Verify `prefetch()` returns context from Neo4j
-- [ ] Verify `write_memory()` persists to Neo4j
+The integration tests use the existing Dockerized Neo4j fixture.
 
 ---
 
-## 📖 Documentation Guide
+## Next Handoff Prompt
 
-| Document | Purpose | Audience | Size |
-|----------|---------|----------|------|
-| [IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md) | Complete setup and API reference | Everyone | 600+ lines |
-| [EXECUTION_SUMMARY.md](docs/EXECUTION_SUMMARY.md) | What was built and status | Team leads | 400+ lines |
-| [PHASE_0_INVENTORY.md](docs/PHASE_0_INVENTORY.md) | Services, credentials, payloads | Ops/DevOps | 500+ lines |
-| [PHASE_2_HERMES_MEMORY_INTEGRATION.md](docs/PHASE_2_HERMES_MEMORY_INTEGRATION.md) | Hermes provider architecture | Developers | 400+ lines |
-| [PHASE_3_PAPERCLIP_INTEGRATION.md](docs/PHASE_3_PAPERCLIP_INTEGRATION.md) | Paperclip client and webhooks | Developers | 400+ lines |
-| [PHASE_6_HARDENING_ROLLOUT.md](docs/PHASE_6_HARDENING_ROLLOUT.md) | Canary, hardening, rollback runbook | Ops/DevOps | 100+ lines |
-| [MIGRATION.md](MIGRATION.md) | Original detailed plan (reference) | Reference | 700+ lines |
+See the full prompt in [`HANDOFF_PHASE_2_SWARM_MVP.md`](HANDOFF_PHASE_2_SWARM_MVP.md). The short version:
 
-**Total Documentation**: ~2800 lines
-
----
-
-## ✅ What Works Now
-
-✅ **Intent Creation**: from voice, UI, webhooks, schedules  
-✅ **Context Retrieval**: bounded, cited, multi-source  
-✅ **Hermes Memory Provider**: prefetch, write, signal, session management  
-✅ **Paperclip Client**: full API + webhook handler  
-✅ **Command Center**: intent, device, memory, task control endpoints  
-✅ **Neo4j Schema**: constraints and indexes auto-created (dedicated `assistx` db)  
-✅ **Error Handling**: graceful fallbacks if Paperclip unavailable  
-✅ **Idempotency**: deduplication on intents and dispatches  
-✅ **Boot Startup**: Docker Compose stack starts via systemd user service  
-✅ **Whisper Fallback**: server-side transcription for media captures  
-✅ **Hermes Adapter**: deployable via Compose or standalone systemd unit  
-✅ **Graph Timestamps**: `created_at_ts`/`updated_at_ts` hardened on 12 node types
-✅ **LLM Abstraction**: OpenAI-compatible (LM Studio) + Ollama backends, switch via `LLM_BACKEND` env var  
-
----
-
-## ⚡ What's Next (Prioritized)
-
-### P0 — Q&A Pipeline (In Progress)
-1. `/api/ask` modes (sync/async/auto) with SSE streaming
-2. Answers store with WebSocket live updates
-3. Python analysis sandbox (subprocess, timeout, restricted stdlib)
-4. Redis-backed cache with idempotency keys
-
-### P1 — Observability
-1. Prometheus metrics (QA requests, Cypher attempts, RQ queue depth)
-2. Structured JSON logging with answer_id/run_id correlation
-3. Grafana dashboard for latency, success rate, queue depth
-
-### P2 — Cypher Quality & Model Governance
-1. Schema introspection with sample values for better LLM-guided Cypher
-2. Static data-model prompt doc checked into repo
-3. Per-request model selection with fallback chain (circuit breaker)
-4. Similar-question fast-path via embeddings (nomic-embed-text + vector index)
-
-### P3 — End-to-End Tests
-1. Ephemeral Neo4j test fixture (already done) + QA pipeline seed data
-2. Mock LLM responses for deterministic Cypher/analysis tests
-3. CI integration (pytest --github-actions)
-
-### P4 — Hardening & Production
-1. API rate limiting (per-IP/user)
-2. OIDC auth or reverse-proxy auth upgrade
-3. PII redaction toggle for analysis outputs
-4. Data retention policies (TTLs on cache, cleanup cron for Neo4j)
-5. CI/CD pipeline: build, scan, push images, deploy
-
----
-
-## 🔒 Security Notes
-
-### Current
-- ✅ Basic auth on all endpoints
-- ✅ Idempotency keys prevent duplicate actions
-- ✅ No unbounded queries (max_items limit)
-
-### Recommended (Phase 6)
-- [ ] JWT tokens for API access
-- [ ] HMAC-SHA256 webhook signatures
-- [ ] Rate limiting
-- [ ] Audit logging
-- [ ] Encryption of sensitive data
-
----
-
-## 📞 Support
-
-### Common Issues
-
-**Neo4j connection fails**
-- Check NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, NEO4J_DATABASE
-- Verify host Neo4j enterprise container is running: `docker ps | grep neo4j`
-- Confirm `assistx` database exists: `docker exec -t neo4j cypher-shell -u neo4j -p $NEO4J_PASSWORD "SHOW DATABASES"`
-
-**Context retrieval returns empty**
-- Verify tasks/memory items exist: curl `/api/tasks`, `/api/memory`
-- Check `include_sources` parameter in request
-
-**Paperclip client fails**
-- Verify `PAPERCLIP_API_URL` is correct
-- Test connectivity: `curl $PAPERCLIP_API_URL/health`
-
-See [docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md) "Troubleshooting" section.
-
----
-
-## 📈 Metrics to Track
-
-- Intent creation rate (per source)
-- Context packet retrieval latency
-- Memory item write rate
-- Task completion rate
-- Dispatch success rate
-- Neo4j query performance
-
----
-
-## License & Contributing
-
-When contributing:
-1. Follow existing code style
-2. Add/update relevant documentation
-3. Update EXECUTION_SUMMARY.md with changes
-4. Tag commits with phase number (e.g., "Phase 3: Add agent capability matching")
-
----
-
-## Final Status
-
-| Phase | Status | Notes |
-|-------|--------|-------|
-| 0 | ✅ Complete | Service inventory, credentials, schema |
-| 1 | ✅ Complete | Brain schema + constraints, indexes auto-created |
-| 2 | ✅ Complete | Hermes memory provider (prefetch/write/signal) |
-| 3 | ✅ Complete (Live) | Paperclip dispatch + webhook handler, live-tested |
-| 4 | ✅ Complete | Command center APIs (intent, device, memory, task) |
-| 5 | ✅ Partial | Voice/media intake, SSE streaming, Whisper fallback |
-| 6 | ✅ Partial | Compose healthchecks, restart policies, systemd boot, timestamp hardening |
-
-**Live Integration**: Paperclip issue created from AssistX dispatch (verified)  
-**Boot Startup**: Stack starts via systemd user service  
-**Whisper Fallback**: Server-side transcription active for media captures
-
----
-
-## 🎯 Next: Read [docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md)
+```text
+Harden the Phase 2 Offline Swarm MVP:
+- replace bootstrap router patch with direct app.include_router()
+- move schema extension directly into Neo4jClient.ensure_schema()
+- put swarm routes behind existing auth behavior
+- add lease_seconds support to task claim
+- add model endpoint probe service
+- add local outbox client for Sophia and auto-ingest producers
+- expand tests for auth, lease duration, and model discovery
+```
