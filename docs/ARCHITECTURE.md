@@ -1,10 +1,15 @@
-# AssistX Architecture
+# AssistX Release Architecture
 
 ## Overview
 
-AssistX is the **task-state authority** for an offline swarm of AI agents. It receives events from voice/auth edge (Sophia) and ingestion tools (auto-ingest), owns the authoritative task lifecycle in Neo4j, and makes work available for workers (Hermes, opencode, model endpoints) to claim and execute directly.
+AssistX is the authoritative owner of task state and the ingestion bridge from
+Sophia into non-realtime execution. For the current cutover release, AssistX
+dispatches executable work to the deployed Paperclip service, which invokes
+the registered `hermes_local` adapter.
 
-No external orchestrator sits between AssistX and workers. Workers connect to Neo4j, claim tasks by calling AssistX REST endpoints, update their own status, and report results through AssistX's event API.
+Direct worker claiming and fleet/model-endpoint routing are retained as
+follow-up development surfaces. They are not enabled as a substitute for the
+Paperclip cutover path.
 
 ---
 
@@ -12,27 +17,19 @@ No external orchestrator sits between AssistX and workers. Workers connect to Ne
 
 ```
 Sophia (voice/auth edge)
-    |
-    | POST /api/events (voice.quick_input.created, voice.auth.decision)
+    | signed POST /api/voice/events
     v
-AssistX (FastAPI + Neo4j driver)
-    |
-    | Creates Task node in assistx DB (status=READY)
-    | Records EventEnvelope, Intent, PolicyDecision
+AssistX (FastAPI + Neo4j, database=assistx)
+    | canonical capture / intent / task / dispatch state
+    | creates assigned issue and polls result
     v
-Neo4j (assistx database)
-    ^
-    | Worker finds READY tasks via API or Neo4j query
-    | POST /api/tasks/{id}/claim  -> status=CLAIMED, lease set
-    | POST /api/tasks/{id}/heartbeat -> lease extended
-    | POST /api/tasks/{id}/complete -> status=DONE
-    | POST /api/events (agent.run.completed)
+Paperclip (local user service)
+    | adapterType=hermes_local
     v
-Worker (Hermes / opencode / model endpoint)
-    |
-    | Records AgentRun / ToolCall / Artifact in Neo4j
+Hermes execution
+    | issue/run/status/output synchronization
     v
-Neo4j (complete task trace with provenance)
+AssistX task and artifact outcome
 ```
 
 ---
@@ -41,11 +38,12 @@ Neo4j (complete task trace with provenance)
 
 | Database | Purpose | Contents |
 |----------|---------|---------|
-| `assistx` | Orchestration / control-plane | Tasks, events, swarm nodes, capabilities, agent runs, tool calls, artifacts, policy decisions, leases |
+| `assistx` | Release integration/control-plane | Sophia captures, tasks, dispatches, events, agent runs, artifacts, policy decisions |
 | `neo4j` (legacy/main) | Unified Scott historical memory | Transcripts, summaries, entities, embeddings, long-term facts, preferences, speaker history |
-| `memory` (Sophia) | Transitional voice staging | Voice captures, auth decisions (to be migrated into `neo4j`) |
+| `memory` | Historical staging only | Not a target for new Sophia cutover data |
 
-Workers interact with the `assistx` database for task lifecycle and the `neo4j` database for memory context.
+Sophia and AssistX must write cutover records to `assistx`; historical memory
+lookups may continue to use the legacy memory graph where explicitly required.
 
 ---
 
@@ -105,9 +103,9 @@ Low-risk actions: create_note, draft_text, search_memory, summarize_context, lis
 ### Events & Intake
 ```
 POST /api/events                — Receive unified event envelope
-POST /api/sophia/events         — Sophia-specific events (legacy)
-POST /api/voice/events          — Voice events (legacy)
-POST /api/paperclip/events      — Paperclip webhook events (legacy)
+POST /api/voice/events          — Canonical signed Sophia ingestion endpoint
+POST /api/sophia/events         — Compatibility route pending convergence
+POST /api/paperclip/events      — Signed Paperclip event callback
 ```
 
 ### Tasks
@@ -154,18 +152,18 @@ WS   /api/answers/{id}/events  — WebSocket answer stream
 
 ---
 
-## Worker Integration
+## Paperclip Execution
 
-Workers (Hermes, opencode, model endpoints) integrate directly with AssistX:
+For an automatically dispatchable Sophia task:
 
-1. **Find work**: `GET /api/tasks?status=READY` or query Neo4j directly
-2. **Claim**: `POST /api/tasks/{id}/claim` with optional `lease_seconds` (default 900)
-3. **Work**: Execute the task using local tools/models
-4. **Heartbeat**: `POST /api/tasks/{id}/heartbeat` periodically to extend lease
-5. **Complete**: `POST /api/tasks/{id}/complete` with result payload
-6. **Report**: `POST /api/events` with `agent.run.completed` event type
+1. AssistX creates the graph task and dispatch record.
+2. AssistX creates an assigned Paperclip issue through its initialized Paperclip client.
+3. Paperclip starts the registered `hermes_local` adapter.
+4. AssistX polls/captures issue status, active run ID, completion output, and artifacts.
+5. A completed run updates the corresponding AssistX task outcome.
 
-Tasks with expired leases are returned to READY via `POST /api/tasks/leases/release-expired` (called by a cron or on-demand).
+The direct task claim endpoints exist for future swarm work; they are not the
+supported execution path for this release.
 
 ---
 

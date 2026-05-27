@@ -1,11 +1,14 @@
-# AssistX — Offline Swarm Task Authority
+# AssistX - Paperclip Cutover Control Plane
 
-AssistX is the **task-state authority** for an offline swarm of AI agents. It receives events from voice/auth edge (Sophia) and ingestion tools (auto-ingest), owns the authoritative task lifecycle in Neo4j, and makes work available for workers to claim and execute directly.
+AssistX owns task state and Sophia ingestion in Neo4j. For the current release,
+non-realtime task execution is being stabilized through the existing Paperclip
+service and its registered `hermes_local` adapter. Direct worker-claim/swarm
+routing is development work and is not the cutover execution path.
 
 ```
-Sophia (voice) → POST /api/events → AssistX → Neo4j (tasks)
-                                              ↑
-Worker (Hermes/opencode) → claim → work → complete → publish events
+Sophia (voice) -> POST /api/voice/events -> AssistX -> Paperclip issue
+                                                    -> hermes_local run
+                                                    -> synchronized outcome
 ```
 
 ## Quick Start
@@ -18,13 +21,17 @@ docker exec -it assistx-api bash -lc "python -m assistx.cli init"
 
 ## Key Docs
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — Current architecture, data flow, API, schema
-- [`docs/STATUS.md`](docs/STATUS.md) — Implementation status and next steps
-- [`docs/swarm_contracts/`](docs/swarm_contracts/) — Event envelope, task authority, node registry contracts
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - Release architecture, data flow, API, schema
+- [`docs/STATUS.md`](docs/STATUS.md) - Verified status, blocker, and remediation order
+- [`docs/swarm_contracts/`](docs/swarm_contracts/) - Future swarm/event contracts, gated from cutover
 
 ## Core Concept
 
-All external input arrives via a unified event envelope (`POST /api/events`). Workers claim tasks directly from AssistX via REST (not through a separate orchestrator). Task state lives in the `assistx` Neo4j database. Workers report results back through the event API.
+Task state and Sophia-linked graph records live in the `assistx` Neo4j
+database. During Paperclip cutover, actionable Sophia input enters through
+`POST /api/voice/events`, creates/link tasks in AssistX, and dispatches through
+Paperclip. The direct worker claim endpoints are retained for development and
+must not replace Paperclip until a separately approved release.
 
 ## Run Tests
 

@@ -88,3 +88,18 @@ def test_list_agents_accepts_list_shape(monkeypatch):
     agents = client.list_agents()
     assert len(agents) == 2
     assert agents[0]["id"] == "a1"
+
+
+def test_get_run_output_accepts_paperclip_content_shape(monkeypatch):
+    client = PaperclipClient(
+        api_url="http://paperclip.local/api",
+        api_token="test-token",
+        workspace_id="company-1",
+    )
+    monkeypatch.setattr(
+        client,
+        "_request",
+        lambda method, path, **kwargs: {"content": "run log content"},
+    )
+
+    assert client.get_run_output("run-1") == "run log content"

@@ -24,6 +24,14 @@ metadata:
 
 # AssistX Skill
 
+## Release Boundary
+
+This direct-worker skill is deferred follow-up work. During the current
+Paperclip cutover release, non-realtime production tasks execute through the
+registered `hermes_local` Paperclip adapter; do not deploy this skill as a
+replacement for that route until cutover is validated and a subsequent
+architecture change is approved.
+
 This skill teaches you how to communicate with **AssistX**, the task-state authority for the offline swarm. AssistX owns the authoritative task lifecycle in Neo4j, receives events from Sophia/auto-ingest, and makes work available for workers to claim and execute.
 
 ## Architecture

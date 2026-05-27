@@ -1,5 +1,6 @@
 import os
 import time
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -164,6 +165,60 @@ def test_task_claim_heartbeat_complete_fail_and_lease_release(seeded_neo4j):
     assert terminal["status"] == "FAILED"
 
 
+def test_direct_worker_cannot_claim_paperclip_dispatched_task(seeded_neo4j):
+    task_id = seeded_neo4j.upsert_ticket(
+        title="Paperclip owns this execution",
+        ticket_type="task",
+        status="READY",
+        kind="paperclip_reserved_test",
+    )
+    seeded_neo4j.create_dispatch(
+        task_id=task_id,
+        target={"paperclip_issue_id": "paperclip-issue-1"},
+    )
+
+    ready_ids = {task["id"] for task in seeded_neo4j.list_agent_tasks(status="READY")}
+    assert task_id not in ready_ids
+
+    claimed = seeded_neo4j.claim_task(task_id, agent_id="legacy-worker", capabilities=[])
+    assert claimed == {"claimed": False, "reason": "paperclip_dispatched"}
+
+
+def test_dispatch_creation_reuses_dispatch_created_by_early_paperclip_event(seeded_neo4j):
+    issue_id = f"paperclip-race-issue-{uuid.uuid4().hex}"
+    seeded_neo4j.ingest_paperclip_event(
+        event_type="run_started",
+        paperclip_issue_id=issue_id,
+        paperclip_agent_id="paperclip-agent-1",
+        paperclip_run_id="paperclip-run-1",
+        event_id="paperclip-race-event-1",
+        payload={},
+    )
+    task_id = seeded_neo4j.upsert_ticket(
+        title="Paperclip starts before local dispatch link",
+        ticket_type="task",
+        status="READY",
+        kind="paperclip_race_test",
+    )
+    dispatch_id = seeded_neo4j.create_dispatch(
+        task_id=task_id,
+        target={"paperclip_issue_id": issue_id, "paperclip_agent_id": "paperclip-agent-1"},
+    )
+
+    with seeded_neo4j._session() as s:
+        result = s.run(
+            "MATCH (d:Dispatch {paperclip_issue_id:$issue_id}) "
+            "OPTIONAL MATCH (t:Task {id:$task_id})-[:DISPATCHED_AS]->(d) "
+            "RETURN count(d) AS dispatch_count, count(t) AS linked_task_count, "
+            "collect(d.id) AS dispatch_ids, collect(d.status) AS statuses",
+            {"issue_id": issue_id, "task_id": task_id},
+        ).single()
+    assert result["dispatch_count"] == 1
+    assert result["linked_task_count"] == 1
+    assert result["dispatch_ids"] == [dispatch_id]
+    assert result["statuses"] == ["RUNNING"]
+
+
 def test_swarm_routes_registered(monkeypatch, seeded_neo4j):
     monkeypatch.setattr("assistx.swarm_routes._neo", lambda: seeded_neo4j)
     monkeypatch.setattr(seeded_neo4j, "close", lambda: None)
@@ -200,6 +255,29 @@ def test_swarm_auth_401(monkeypatch, seeded_neo4j):
     assert resp2.status_code == 401, resp2.text
     resp3 = client.get("/api/swarm/nodes")
     assert resp3.status_code == 401, resp3.text
+
+
+def test_event_internal_failure_is_not_queued_or_accepted(monkeypatch, seeded_neo4j):
+    monkeypatch.setattr("assistx.swarm_routes._neo", lambda: seeded_neo4j)
+    monkeypatch.setattr(seeded_neo4j, "close", lambda: None)
+    monkeypatch.setattr(
+        "assistx.swarm_routes.record_event",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("database unavailable")),
+    )
+
+    class RejectOutbox:
+        def enqueue(self, event):
+            raise AssertionError("server ingestion errors must not be forwarded")
+
+    monkeypatch.setattr("assistx.swarm_routes._outbox", lambda: RejectOutbox())
+    client = TestClient(app)
+    response = client.post(
+        "/api/events",
+        json=_base_event(event_id="failed-event", idempotency_key="failed-key"),
+        auth=_auth(),
+    )
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"].startswith("Event processing failed:")
 
 
 def test_custom_lease_seconds_on_claim(seeded_neo4j):

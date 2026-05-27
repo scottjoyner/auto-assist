@@ -125,18 +125,37 @@ def _sync_issue(
 
     event_type = STATUS_EVENT_MAP.get(issue_status.lower(), "status_changed")
     agent_id = issue.get("assigneeAgentId") or issue.get("agentId")
-    run_id = issue.get("currentRunId")
+    run_id = (
+        issue.get("executionRunId")
+        or issue.get("currentRunId")
+        or issue.get("checkoutRunId")
+    )
+    historical_run: Dict[str, Any] = {}
+    if not run_id:
+        historical_run = _select_historical_run(pc, issue_id)
+        run_id = historical_run.get("runId") or historical_run.get("id")
+        if run_id and historical_run.get("agentId"):
+            agent_id = historical_run["agentId"]
 
-    event_id = f"{issue_id}-{issue_updated or issue_status}"
+    event_id = f"{issue_id}-{run_id or 'no-run'}-{issue_updated or issue_status}"
 
-    run_detail: Dict[str, Any] = {}
+    run_detail: Dict[str, Any] = historical_run
     if run_id:
-        try:
-            run_detail = pc.get_run(run_id)
-            if not agent_id:
-                agent_id = run_detail.get("agentId")
-        except Exception as e:
-            logger.warning("Failed to fetch run %s: %s", run_id, e)
+        if not run_detail:
+            try:
+                run_detail = pc.get_run(run_id)
+            except Exception as e:
+                logger.warning("Failed to fetch run %s: %s", run_id, e)
+        if not agent_id:
+            agent_id = run_detail.get("agentId")
+        if _is_unscoped_timer_run(run_detail, issue_id):
+            historical_run = _select_historical_run(pc, issue_id)
+            historical_run_id = historical_run.get("runId") or historical_run.get("id")
+            if historical_run_id and historical_run_id != run_id:
+                run_id = historical_run_id
+                run_detail = historical_run
+                agent_id = historical_run.get("agentId") or agent_id
+                event_id = f"{issue_id}-{run_id}-{issue_updated or issue_status}"
 
     payload = {"issue": issue, "run": run_detail}
 
@@ -153,6 +172,39 @@ def _sync_issue(
         _sync_run_output(neo, pc, run_id, issue_id)
 
     return True
+
+
+def _select_historical_run(pc: PaperclipClient, issue_id: str) -> Dict[str, Any]:
+    """Retain terminal run evidence after Paperclip clears live issue pointers."""
+    try:
+        runs = pc.list_runs(issue_id=issue_id, limit=20)
+    except Exception as e:
+        logger.debug("Could not fetch run history for issue %s: %s", issue_id, e)
+        return {}
+    if not runs:
+        return {}
+
+    issue_scoped = [run for run in runs if _is_issue_scoped_run(run, issue_id)]
+    if issue_scoped:
+        runs = issue_scoped
+
+    # Paperclip can follow a successful worker run with a failed recovery or
+    # disposition handoff. Preserve the successful work output; issue status
+    # still records that the overall workflow remains blocked.
+    for run in runs:
+        if str(run.get("status", "")).lower() == "succeeded":
+            return run
+    return runs[0]
+
+
+def _is_issue_scoped_run(run: Dict[str, Any], issue_id: str) -> bool:
+    context = run.get("contextSnapshot") or {}
+    return context.get("issueId") == issue_id or context.get("taskId") == issue_id
+
+
+def _is_unscoped_timer_run(run: Dict[str, Any], issue_id: str) -> bool:
+    context = run.get("contextSnapshot") or {}
+    return context.get("wakeReason") == "heartbeat_timer" and not _is_issue_scoped_run(run, issue_id)
 
 
 def _sync_run_output(neo: Neo4jClient, pc: PaperclipClient, run_id: str, issue_id: str) -> None:

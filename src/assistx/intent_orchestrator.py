@@ -12,6 +12,7 @@ import redis as redis_module
 from rq import get_current_job
 
 from .neo4j_client import Neo4jClient
+from .paperclip_client import PaperclipClient
 from .queue import get_q
 from .intent_classifier import (
     CLASSIFICATION_TASK,
@@ -26,6 +27,14 @@ logger = logging.getLogger(__name__)
 
 ORCHESTRATOR_INTERVAL_SECONDS = int(os.getenv("ORCHESTRATOR_INTERVAL", "15"))
 INTENTS_PER_CYCLE = int(os.getenv("ORCHESTRATOR_INTENTS_PER_CYCLE", "3"))
+PAPERCLIP_AGENT_ID = os.getenv("PAPERCLIP_AGENT_ID", "Hermes Agent")
+
+
+def _get_paperclip_client() -> Optional[PaperclipClient]:
+    try:
+        return PaperclipClient()
+    except ValueError:
+        return None
 
 COMPLEXITY_GATE_PROMPT = """You are a task complexity analyzer. Given a user's intent, determine if it's SIMPLE or COMPLEX.
 
@@ -294,6 +303,8 @@ def _create_simple_task(neo: Neo4jClient, intent: Dict[str, Any]) -> None:
         context_query=text,
         context_sources=["memory", "knowledge"],
         auto_dispatch=True,
+        paperclip_client=_get_paperclip_client(),
+        paperclip_agent_id=PAPERCLIP_AGENT_ID,
     )
 
     with neo._session() as s:
@@ -404,6 +415,8 @@ def _create_complex_deliverable(neo: Neo4jClient, intent: Dict[str, Any]) -> Non
                     context_query=context_text,
                     context_sources=["memory", "knowledge", "orchestration"],
                     auto_dispatch=True,
+                    paperclip_client=_get_paperclip_client(),
+                    paperclip_agent_id=PAPERCLIP_AGENT_ID,
                 )
 
                 logger.debug(

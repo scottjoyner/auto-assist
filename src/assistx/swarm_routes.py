@@ -22,6 +22,7 @@ from .swarm_core import (
 )
 
 router = APIRouter(tags=["swarm"])
+_outbox_client: Optional[OutboxClient] = None
 
 
 class EventEnvelopeIn(BaseModel):
@@ -87,7 +88,10 @@ def _neo() -> Neo4jClient:
 
 
 def _outbox() -> OutboxClient:
-    return OutboxClient(auto_flush=True, flush_interval_s=30)
+    global _outbox_client
+    if _outbox_client is None:
+        _outbox_client = OutboxClient(auto_flush=True, flush_interval_s=30)
+    return _outbox_client
 
 
 # --- Auth ---
@@ -122,8 +126,7 @@ def api_events(body: EventEnvelopeIn, user: str = Depends(_default_auth)):
     except EventConflictError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
-        _outbox().enqueue(body.model_dump())
-        return {"accepted": True, "event_id": body.event_id, "queued": True, "reason": str(e)[:200]}
+        raise HTTPException(status_code=503, detail=f"Event processing failed: {str(e)[:200]}")
     finally:
         neo.close()
 
@@ -206,5 +209,4 @@ def api_voice_policy(auth_state: str, action: str = "create_draft_task", risk_le
         "risk_level": risk_level,
         "approval_required": action_requires_approval(auth_state, action, risk_level),
     }
-
 

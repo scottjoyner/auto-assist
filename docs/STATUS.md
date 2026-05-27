@@ -1,53 +1,58 @@
-# AssistX Status — May 26, 2026
+# AssistX Status - May 26, 2026
 
 ## Current State
 
-AssistX is the **task-state authority** for an offline swarm of AI agents. The Phase 2 Offline Swarm MVP is complete and the hardening pass is in progress.
+AssistX is the task-state authority and Sophia ingestion target. The approved
+release path is **Plan B: stabilize and cut over through Paperclip**. Paperclip
+runs locally and the `hermes_local` adapter is registered, but cutover has not
+passed its completion canary. The direct `hermes-agent-adapter.service` poller
+must remain enabled until it does.
 
-### What Works
+### Verified
 
-- Event envelope intake with idempotency and conflict detection (`POST /api/events`)
-- Swarm node registration and heartbeat (`/api/swarm/nodes/*`)
-- Task lifecycle: claim, heartbeat, complete, fail, lease release
-- Voice policy stub (Scott auto-approve low-risk, all others require approval)
-- 8 MVP event types reconciled into Neo4j
-- All swarm endpoints wired to the same Basic Auth as legacy API
-- Q&A pipeline with sync/async/auto modes and SSE streaming
-- Worker queue (RQ) with Redis backend
-- Legacy dispatch via Paperclip client
+- Sophia secured enrollment supports one-time verification proofs and an operator override.
+- Sophia container configuration targets the shared `assistx` Neo4j database.
+- Paperclip is running as a user service and has a registered `hermes_local` adapter.
+- A signed Sophia-originated canary created canonical graph/task/dispatch records and Paperclip issue `ASS-14`.
+- After the Paperclip wrapper repair, `ASS-14` reached `done` and recorded a completion comment through `hermes_local`.
+- AssistX automatic Sophia dispatch now creates Paperclip issues through an initialized client and retains successful run output even after Paperclip clears live run pointers during escalation.
+- Paperclip-dispatched tasks are reserved from the legacy direct worker claim path while rollback remains enabled.
 
-### Database Architecture
+### Active Blocker
 
-| Database | Purpose |
-|----------|---------|
-| `assistx` | Orchestration state (tasks, events, nodes, runs, artifacts) |
-| `neo4j` | Unified Scott historical memory (transcripts, entities, embeddings) |
-| `memory` | Sophia transitional staging (to be migrated) |
+On May 26, 2026, the repaired signed canary `ASS-14` reached `done`, but its
+`hermes_local` run then timed out after 300 seconds rather than exiting
+normally. Earlier canaries also demonstrate that missing issue dispositions
+fall through to a broken legacy process-backed `hermes-local` recovery agent.
+Cutover remains blocked until a canary completes with a successful terminal
+run, not merely a `done` issue status.
 
-### What's Next
+### Release Architecture
 
-- Deathstar Hermes skill deploy — blocked on SSH key access
-- External producer adoption of outbox client (Sophia, auto-ingest repos)
+| Component | Release role |
+|----------|--------------|
+| Sophia | Realtime voice/auth edge; sends signed non-realtime work to AssistX |
+| AssistX | Canonical ingestion, graph/task authority, Paperclip dispatch/synchronization |
+| Paperclip | Non-realtime execution route for this release |
+| `hermes_local` | Supported Paperclip adapter |
+| Direct poller | Rollback path; remains enabled until canaries pass |
+| Swarm/direct worker claiming | Deferred follow-up; not part of cutover |
 
-### Completed (Hardening Pass)
+### Next Steps
 
-- Swarm schema consolidated into `Neo4jClient.ensure_schema()` — removed duplicate `ensure_swarm_schema()` that ran on every event
-- `lease_seconds` parameter on task claim and heartbeat — agents can specify custom lease durations
-- Model endpoint probing service — probes `/v1/models` on all registered model endpoints every 5 min via RQ scheduler, emits `model.endpoint.discovered` events
-- Local outbox client (`src/assistx/outbox_client.py`) — SQLite-backed queue with HTTP delivery and retry; wired into `/api/events` as fallback; HermesMemoryProvider uses it for resilience; status/flush endpoints at `/api/swarm/outbox/*`
-- Test coverage for auth and leases — 3 new tests prove 401 on unauthenticated and custom lease durations work
-- Paperclip integration simplified — docstring corrected, unnecessary `paperclip_agent_id` injection removed from task claim path
-- Swarm routes fixed — `NameError` on `_default_auth`, duplicate dead code removed, normal `app.include_router()` used
+1. Repair Hermes/Paperclip run termination after it writes a valid issue disposition; the wrapper now tells it to end immediately after `done`, pending validation.
+2. Repeat the signed-ingest canary and run a non-destructive secured-enrollment authorization/audit canary.
+3. Rotate previously committed/local development secrets and keep only environment templates in source control.
+4. Only after completion synchronizes successfully, disable `hermes-agent-adapter.service`.
 
-### Running Tests
+### Deferred Work
+
+- Direct worker claiming and distributed/fleet routing.
+- Model endpoint probing as an execution selection mechanism.
+- Paperclip deprecation or demotion to an optional mirror.
+
+### Verification
 
 ```bash
-PYTHONPATH=src .venv/bin/pytest tests/test_swarm_phase2.py tests/test_migration_api.py -v
+PYTHONPATH=src .venv/bin/pytest -q tests/test_paperclip_poller.py tests/test_outbox_client.py tests/test_swarm_phase2.py tests/test_migration_api.py tests/test_paperclip_client.py
 ```
-
-### Out of Scope
-
-- Sophia runtime audio/STT/TTS changes (Sophia repo)
-- Hermes agent code changes (hermes-agent repo)
-- UI dashboard redesign (templates already exist)
-- Paperclip deprecation (optional mirror remains)

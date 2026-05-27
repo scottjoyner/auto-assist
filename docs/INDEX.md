@@ -4,9 +4,9 @@
 
 | Doc | What it covers |
 |-----|---------------|
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Current architecture, data flow, API reference, Neo4j schema |
-| [`STATUS.md`](STATUS.md) | What's implemented, what's next |
-| [`swarm_contracts/`](swarm_contracts/) | Unified event envelope, task authority, node registry, and integration contracts |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Paperclip cutover architecture, data flow, API reference, Neo4j schema |
+| [`STATUS.md`](STATUS.md) | Verified cutover state, blocker, and remediation order |
+| [`swarm_contracts/`](swarm_contracts/) | Deferred direct-worker contracts and event schema |
 
 ## Archived Docs
 
@@ -23,7 +23,7 @@ Superseded or historical documents moved to [`archive/`](archive/):
 | `EXECUTION_SUMMARY.md` | Historical build summary |
 | `PHASE_*.md` (0, 2, 3, 6-10) | Phase-specific plans, superseded |
 | `OFFLINE_SWARM_INTEGRATION_PLAN.md` | Superseded by simpler Neo4j-centric vision |
-| `SOPHIA_TO_ASSISTX_INTEGRATION_PLAN.md` | Superseded by swarm event model |
+| `SOPHIA_TO_ASSISTX_INTEGRATION_PLAN.md` | Historical draft; current release path is in ARCHITECTURE.md and STATUS.md |
 | `CANARY_ACCEPTANCE_2026-05-24.md` | Historical acceptance record |
 | `SPRINT_PLAN.md` | Archived, superseded |
 | `WORK_ASSESSMENT.md` | Session assessment, done |
@@ -37,7 +37,7 @@ Superseded or historical documents moved to [`archive/`](archive/):
 | `src/assistx/swarm_core.py` | Event envelope, task authority, policy helpers |
 | `src/assistx/swarm_routes.py` | Swarm API endpoints |
 | `src/assistx/neo4j_client.py` | Unified Neo4j driver |
-| `src/assistx/paperclip_client.py` | Optional Paperclip API client |
+| `src/assistx/paperclip_client.py` | Cutover execution client for Paperclip |
 | `tests/test_swarm_phase2.py` | Swarm tests |
 | `tests/test_migration_api.py` | Legacy migration tests |
 | `deploy/swarm_nodes.example.json` | Seed node config |

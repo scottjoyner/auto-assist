@@ -22,7 +22,7 @@ The intent is to avoid schema drift and conflicting ownership between:
 |---|---|---|
 | `neo4j` | Unified Scott historical memory graph | authoritative for long-term memory |
 | `assistx` | Control-plane/orchestration graph | authoritative for task state |
-| `memory` | Transitional Sophia voice/auth staging graph | temporary / migratory |
+| `memory` | Historical Sophia staging graph | no new cutover writes; migrate/retain only as needed |
 | SQLite local DBs | outbox/cache/claim bookkeeping | operational only |
 | Redis/FalkorDB | future cache/working-set graph | non-authoritative |
 

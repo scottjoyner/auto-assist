@@ -407,7 +407,30 @@ class Neo4jClient:
         }
         dispatch_id = uuid.uuid4().hex
         with self._session() as s:
-            if idempotency_key:
+            if props["paperclip_issue_id"]:
+                rec = s.run(
+                    "MERGE (d:Dispatch {paperclip_issue_id:$paperclip_issue_id}) "
+                    "ON CREATE SET d.id=$did, d.created_at=datetime(), d.created_at_ts=timestamp(), d.status='OPEN' "
+                    "SET d.id=coalesce(d.id, $did), "
+                    "    d.idempotency_key=coalesce(d.idempotency_key, $idempotency_key), "
+                    "    d.priority=coalesce(d.priority, $priority), "
+                    "    d.paperclip_agent_id=coalesce(d.paperclip_agent_id, $paperclip_agent_id), "
+                    "    d.target_device_id=coalesce(d.target_device_id, $target_device_id), "
+                    "    d.capabilities=coalesce(d.capabilities, $capabilities), "
+                    "    d.updated_at=datetime(), d.updated_at_ts=timestamp() "
+                    "RETURN d.id AS id",
+                    {
+                        "did": dispatch_id,
+                        "idempotency_key": idempotency_key,
+                        "priority": priority,
+                        "paperclip_issue_id": props["paperclip_issue_id"],
+                        "paperclip_agent_id": props["paperclip_agent_id"],
+                        "target_device_id": props["target_device_id"],
+                        "capabilities": props["capabilities"],
+                    },
+                ).single()
+                dispatch_id = rec["id"]
+            elif idempotency_key:
                 rec = s.run(
                     "MERGE (d:Dispatch {idempotency_key:$idempotency_key}) "
                     "ON CREATE SET d.id=$did, d.created_at=datetime(), d.created_at_ts=timestamp(), d.status='OPEN' "
@@ -650,6 +673,10 @@ class Neo4jClient:
         caps = capabilities or []
         q = (
             "MATCH (t:Task {status:$status}) "
+            "WHERE NOT EXISTS { "
+            "  MATCH (t)-[:DISPATCHED_AS]->(pc:Dispatch) "
+            "  WHERE pc.paperclip_issue_id IS NOT NULL "
+            "} "
             "WITH t, coalesce(t.required_capabilities, t.capabilities, []) AS required "
             "WHERE (size(required)=0 OR size($caps)=0 OR all(cap IN required WHERE cap IN $caps)) "
             "  AND ($agent_id IS NULL OR t.target_agent_id IS NULL OR t.target_agent_id=$agent_id) "
@@ -700,6 +727,10 @@ class Neo4jClient:
                 """
                 MATCH (t:Task {id:$task_id})
                 WHERE t.status='READY'
+                  AND NOT EXISTS {
+                    MATCH (t)-[:DISPATCHED_AS]->(pc:Dispatch)
+                    WHERE pc.paperclip_issue_id IS NOT NULL
+                  }
                 SET t.status='CLAIMED',
                     t.claimed_by=$agent_id,
                     t.agent_session_id=$session_id,
@@ -735,15 +766,20 @@ class Neo4jClient:
 
             existing = s.run(
                 "MATCH (t:Task {id:$task_id}) "
+                "OPTIONAL MATCH (t)-[:DISPATCHED_AS]->(pc:Dispatch) "
                 "RETURN t.status AS status, t.target_agent_id AS target_agent_id, "
                 "t.required_capabilities AS required_capabilities, "
-                "t.capabilities AS capabilities",
+                "t.capabilities AS capabilities, "
+                "count(CASE WHEN pc.paperclip_issue_id IS NOT NULL THEN 1 END) > 0 "
+                "AS paperclip_dispatched",
                 {"task_id": task_id},
             ).single()
             if not existing:
                 return {"claimed": False, "reason": "not_found"}
             if existing["status"] != "READY":
                 return {"claimed": False, "reason": "not_ready", "status": existing["status"]}
+            if existing["paperclip_dispatched"]:
+                return {"claimed": False, "reason": "paperclip_dispatched"}
             required = existing.get("required_capabilities") or existing.get("capabilities") or []
             if caps and required and not all(cap in caps for cap in required):
                 return {"claimed": False, "reason": "capability_mismatch", "required_capabilities": required}
@@ -911,10 +947,11 @@ class Neo4jClient:
             )
             if paperclip_agent_id:
                 s.run(
+                    "MATCH (d:Dispatch {paperclip_issue_id:$issue}) "
                     "MERGE (a:AgentSession {paperclip_agent_id:$aid}) "
                     "ON CREATE SET a.id=$sid, a.created_at=datetime(), a.created_at_ts=timestamp() "
                     "SET a.paperclip_agent_id=$aid, a.updated_at=datetime(), a.updated_at_ts=timestamp() "
-                    "MERGE (d:Dispatch {paperclip_issue_id:$issue})-[:ASSIGNED_TO]->(a)",
+                    "MERGE (d)-[:ASSIGNED_TO]->(a)",
                     {"aid": paperclip_agent_id, "sid": uuid.uuid4().hex, "issue": paperclip_issue_id},
                 )
             s.run(
@@ -1299,6 +1336,50 @@ class Neo4jClient:
                     {"issue": paperclip_issue_id, "eid": event_id},
                 )
         return event_id
+
+    def link_sophia_voice_records(
+        self,
+        capture_id: Optional[str] = None,
+        intent_id: Optional[str] = None,
+        memory_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        meeting_id: Optional[str] = None,
+    ) -> None:
+        """Attach Sophia events to canonical AssistX capture and task records."""
+        with self._session() as s:
+            if capture_id:
+                s.run(
+                    """
+                    MERGE (c:MediaCapture {id:$capture_id})
+                    ON CREATE SET c.created_at=datetime(), c.created_at_ts=timestamp()
+                    SET c.origin='sophia_voice',
+                        c.updated_at=datetime(),
+                        c.updated_at_ts=timestamp()
+                    WITH c
+                    OPTIONAL MATCH (sc:SophiaCapture {capture_id:$capture_id})
+                    FOREACH (_ IN CASE WHEN sc IS NULL THEN [] ELSE [1] END |
+                        MERGE (sc)-[:CANONICAL_CAPTURE]->(c))
+                    """,
+                    {"capture_id": capture_id},
+                ).consume()
+                for node_label, node_id, relationship in (
+                    ("Intent", intent_id, "CREATED_FROM"),
+                    ("MemoryItem", memory_id, "RELATED_MEMORY"),
+                    ("Task", task_id, "CREATED_FROM"),
+                ):
+                    if node_id:
+                        s.run(
+                            f"MATCH (n:{node_label} {{id:$node_id}}), "
+                            "      (c:MediaCapture {id:$capture_id}) "
+                            f"MERGE (n)-[:{relationship}]->(c)",
+                            {"node_id": node_id, "capture_id": capture_id},
+                        ).consume()
+            if meeting_id and task_id:
+                s.run(
+                    "MATCH (m:Meeting {id:$meeting_id}), (t:Task {id:$task_id}) "
+                    "MERGE (m)-[:CREATED_TASK]->(t)",
+                    {"meeting_id": meeting_id, "task_id": task_id},
+                ).consume()
 
     def upsert_agent_session(
         self,
@@ -2016,6 +2097,8 @@ class Neo4jClient:
         context_query: Optional[str] = None,
         context_sources: Optional[List[str]] = None,
         auto_dispatch: bool = False,
+        paperclip_client: Optional[Any] = None,
+        paperclip_agent_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         task_id = self.upsert_ticket(
             title=title,
@@ -2043,11 +2126,17 @@ class Neo4jClient:
         if auto_dispatch:
             dispatch = self.create_dispatch_with_paperclip(
                 task_id=task_id,
-                target={"capabilities": required_capabilities or ["terminal"]},
+                target={
+                    "capabilities": required_capabilities or ["terminal"],
+                    "paperclip_agent_id": paperclip_agent_id,
+                },
                 priority=priority or "MEDIUM",
+                paperclip_client=paperclip_client,
             )
             result["dispatch_id"] = dispatch.get("dispatch_id")
             result["target_device_id"] = dispatch.get("target_device_id")
+            result["paperclip_issue_id"] = dispatch.get("paperclip_issue_id")
+            result["paperclip_error"] = dispatch.get("paperclip_error")
 
         return result
 

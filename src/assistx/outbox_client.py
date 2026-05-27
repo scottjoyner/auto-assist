@@ -5,9 +5,9 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 DEFAULT_DB_PATH = os.path.expanduser("~/.assistx_outbox.db")
-DEFAULT_API_URL = os.environ.get("ASSISTX_API_URL", "http://100.64.43.123:8000")
-DEFAULT_API_USER = os.environ.get("ASSISTX_AUTH_USER", "admin")
-DEFAULT_API_PASS = os.environ.get("ASSISTX_AUTH_PASS", "change-me")
+DEFAULT_API_URL = os.environ.get("ASSISTX_API_URL", "").strip()
+DEFAULT_API_USER = os.environ.get("ASSISTX_AUTH_USER", "")
+DEFAULT_API_PASS = os.environ.get("ASSISTX_AUTH_PASS", "")
 MAX_RETRIES = int(os.environ.get("ASSISTX_OUTBOX_MAX_RETRIES", "10"))
 RETRY_BASE_S = int(os.environ.get("ASSISTX_OUTBOX_RETRY_BASE_S", "5"))
 RETRY_MAX_S = int(os.environ.get("ASSISTX_OUTBOX_RETRY_MAX_S", "300"))
@@ -74,7 +74,7 @@ class OutboxClient:
         self.max_retries = max_retries
         self.retry_base_s = retry_base_s
         self.retry_max_s = retry_max_s
-        self._auth_header = _basic_auth_header(api_user, api_pass)
+        self._auth_header = _basic_auth_header(api_user, api_pass) if api_user or api_pass else None
         self._lock = threading.Lock()
         self._init_db()
         if auto_flush:
@@ -106,18 +106,28 @@ class OutboxClient:
                 conn.close()
 
     def enqueue(self, event: Dict[str, Any]) -> OutboxEntry:
+        event_id = str(event.get("event_id", ""))
         outbox_id = str(uuid.uuid4())
         entry = OutboxEntry(
             outbox_id=outbox_id,
-            event_id=event.get("event_id", ""),
+            event_id=event_id,
             payload_json=json.dumps(event),
             status="pending",
         )
         with self._lock:
             conn = sqlite3.connect(self.db_path)
             try:
+                if event_id:
+                    row = conn.execute(
+                        "SELECT outbox_id, event_id, payload_json, attempt_count, last_attempt_at, status, created_at "
+                        "FROM outbox WHERE event_id=? AND status IN ('pending', 'failed', 'delivered') "
+                        "ORDER BY created_at ASC LIMIT 1",
+                        (event_id,),
+                    ).fetchone()
+                    if row:
+                        return OutboxEntry(*row)
                 conn.execute(
-                    "INSERT OR IGNORE INTO outbox (outbox_id, event_id, payload_json, attempt_count, last_attempt_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO outbox (outbox_id, event_id, payload_json, attempt_count, last_attempt_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (entry.outbox_id, entry.event_id, entry.payload_json, entry.attempt_count, entry.last_attempt_at, entry.status, entry.created_at),
                 )
                 conn.commit()
@@ -126,11 +136,14 @@ class OutboxClient:
         return entry
 
     def _deliver(self, entry: OutboxEntry) -> bool:
+        if not self.api_url:
+            return False
         url = f"{self.api_url}/api/events"
         data = entry.payload_json.encode("utf-8")
         req = Request(url, data=data, method="POST")
         req.add_header("Content-Type", "application/json")
-        req.add_header("Authorization", self._auth_header)
+        if self._auth_header:
+            req.add_header("Authorization", self._auth_header)
         try:
             with urlopen(req, timeout=15) as resp:
                 body = resp.read().decode()

@@ -20,7 +20,8 @@ class PaperclipClient:
     """
     Client for interacting with the Paperclip API.
 
-    Paperclip is an optional SSH-based dispatch mirror between Tailscale nodes, not the task authority.
+    AssistX remains task authority; Paperclip is the supported non-realtime
+    execution route for the current cutover release.
     """
 
     def __init__(
@@ -246,7 +247,7 @@ class PaperclipClient:
     def get_run_output(self, run_id: str) -> str:
         """Get run output/logs."""
         result = self._request("GET", f"/heartbeat-runs/{run_id}/log")
-        return result.get("output", result.get("log", ""))
+        return result.get("output", result.get("log", result.get("content", "")))
 
     def poll_events(
         self,

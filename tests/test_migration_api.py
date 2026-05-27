@@ -161,6 +161,18 @@ def test_voice_event_ingestion(seeded_neo4j, monkeypatch):
     neo = seeded_neo4j
     monkeypatch.setattr("assistx.api._neo", lambda: neo)
     monkeypatch.setattr(neo, "close", lambda: None)
+    created_issues = []
+
+    class FakePaperclip:
+        def create_issue(self, **kwargs):
+            created_issues.append(kwargs)
+            return "voice-paperclip-issue-1"
+
+    monkeypatch.setattr("assistx.api.get_paperclip_client", lambda: FakePaperclip())
+    monkeypatch.setattr("assistx.api.PAPERCLIP_AGENT_ID", "Hermes Agent")
+
+    with neo.driver.session() as s:
+        s.run("CREATE (:SophiaCapture {capture_id:'sophia-capture-1'})").consume()
 
     client = TestClient(app)
     auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
@@ -171,13 +183,46 @@ def test_voice_event_ingestion(seeded_neo4j, monkeypatch):
         "source": "voice",
         "session_id": "voice-session-1",
         "client_ts": "2026-05-23T12:00:00Z",
-        "metadata": {"origin": "tts"},
+        "metadata": {"origin": "tts", "capture_id": "sophia-capture-1"},
     }
     r = client.post("/api/voice/events", json=payload, auth=auth)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["signal_event_id"] == "voice-evt-1"
     assert body["intent_id"]
+    assert body["task_id"]
+    assert created_issues[0]["assignee_id"] == "Hermes Agent"
+    with neo.driver.session() as s:
+        linked = s.run(
+            "MATCH (:SophiaCapture {capture_id:'sophia-capture-1'})-[:CANONICAL_CAPTURE]->"
+            "(c:MediaCapture {id:'sophia-capture-1', origin:'sophia_voice'}) "
+            "MATCH (:Task {id:$task_id})-[:CREATED_FROM]->(c) RETURN count(*) AS count",
+            {"task_id": body["task_id"]},
+        ).single()
+    assert linked["count"] == 1
+
+    with neo.driver.session() as s:
+        s.run("CREATE (:Meeting {id:'meeting-voice-1'})").consume()
+    meeting = client.post(
+        "/api/voice/events",
+        json={
+            "event_id": "voice-evt-meeting-1",
+            "event_type": "meeting_transcript",
+            "text": "Create a task to follow up on the meeting action items",
+            "source": "sophia_voice",
+            "metadata": {"meeting_id": "meeting-voice-1"},
+        },
+        auth=auth,
+    )
+    assert meeting.status_code == 200, meeting.text
+    assert meeting.json()["task_id"]
+    with neo.driver.session() as s:
+        meeting_link = s.run(
+            "MATCH (:Meeting {id:'meeting-voice-1'})-[:CREATED_TASK]->(:Task {id:$task_id}) "
+            "RETURN count(*) AS count",
+            {"task_id": meeting.json()["task_id"]},
+        ).single()
+    assert meeting_link["count"] == 1
 
 
 def test_voice_event_signature_auth(monkeypatch):
@@ -190,6 +235,9 @@ def test_voice_event_signature_auth(monkeypatch):
 
         def upsert_memory_item(self, **kwargs):
             return "memory-voice-signed"
+
+        def link_sophia_voice_records(self, **kwargs):
+            return None
 
         def _session(self):
             class _SessCtx:
@@ -750,6 +798,15 @@ def test_sophia_event_ingestion(seeded_neo4j, monkeypatch):
     neo = seeded_neo4j
     monkeypatch.setattr("assistx.api._neo", lambda: neo)
     monkeypatch.setattr(neo, "close", lambda: None)
+    created_issues = []
+
+    class FakePaperclip:
+        def create_issue(self, **kwargs):
+            created_issues.append(kwargs)
+            return "sophia-paperclip-issue-1"
+
+    monkeypatch.setattr("assistx.api.get_paperclip_client", lambda: FakePaperclip())
+    monkeypatch.setattr("assistx.api.PAPERCLIP_AGENT_ID", "Hermes Agent")
     client = TestClient(app)
     auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
 
@@ -771,6 +828,12 @@ def test_sophia_event_ingestion(seeded_neo4j, monkeypatch):
     assert body["intent_id"]
     assert body["queue_class"] == "interactive"
     assert body["routing_policy_fingerprint"]
+    assert created_issues
+    assert created_issues[0]["assignee_id"] == "Hermes Agent"
+    assert any(
+        d.get("paperclip_issue_id") == "sophia-paperclip-issue-1"
+        for d in neo.list_dispatches(status="OPEN", limit=50)
+    )
 
     anomaly = {
         "event_id": "sophia-evt-2",

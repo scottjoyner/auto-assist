@@ -8,6 +8,11 @@ AssistX is the authoritative owner of task state across the offline swarm.
 
 Other systems may execute work, cache state, or keep local outboxes, but final task truth lives in the AssistX control plane.
 
+For the current Paperclip cutover release, this contract is descriptive of
+future direct-worker operation only. Non-realtime production execution is
+routed through Paperclip and its registered `hermes_local` adapter until a
+separate swarm cutover is approved.
+
 ---
 
 ## Required task lifecycle
@@ -176,15 +181,18 @@ High-risk actions require explicit approval even for Scott unless a future polic
 
 ---
 
-## Paperclip mapping (optional)
+## Paperclip mapping (current release)
 
-Paperclip issues can mirror AssistX tasks when the Paperclip server is available.
+Paperclip issues execute automatically dispatchable AssistX tasks during the
+current cutover release.
 
 ```text
-AssistX Task -> Paperclip Issue (optional mirror)
+AssistX Task -> Paperclip Issue -> hermes_local Run -> AssistX synchronized result
 ```
 
-Paperclip is SSH-based between Tailscale nodes. It is **not** the swarm orchestrator or task authority. Workers interact directly with AssistX REST endpoints and Neo4j, not through Paperclip.
+AssistX remains task-state authority, while Paperclip is the supported
+non-realtime execution route. Direct worker claiming is deferred and must not
+be enabled in place of Paperclip during this release.
 
 ---
 

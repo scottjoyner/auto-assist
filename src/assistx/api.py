@@ -269,6 +269,7 @@ TRUSTED_AUTH_HEADER = os.getenv("TRUSTED_AUTH_HEADER", "").strip()
 API_TOKEN: Optional[str] = os.getenv("API_TOKEN")  # If set, required for /upload-audio
 PAPERCLIP_WEBHOOK_SECRET: Optional[str] = os.getenv("PAPERCLIP_WEBHOOK_SECRET")
 VOICE_WEBHOOK_SECRET: Optional[str] = os.getenv("VOICE_WEBHOOK_SECRET")
+PAPERCLIP_AGENT_ID = os.getenv("PAPERCLIP_AGENT_ID", "Hermes Agent")
 WS_AUTH_REQUIRED = os.getenv("WS_AUTH_REQUIRED", "1").strip().lower() not in {"0", "false", "no", "off"}
 WS_AUTH_TOKEN = os.getenv("WS_AUTH_TOKEN", API_TOKEN or "")
 INTENT_AUTO_DISPATCH_CONFIDENCE = float(os.getenv("INTENT_AUTO_DISPATCH_CONFIDENCE", "0.72"))
@@ -1824,6 +1825,7 @@ def api_voice_event(
 
         created_intent_id: Optional[str] = None
         created_memory_id: Optional[str] = None
+        created_task_id: Optional[str] = None
         cancelled_tasks = 0
         text = (body.text or "").strip()
         if text:
@@ -1866,6 +1868,30 @@ def api_voice_event(
                     created_intent_id,
                     f"Cancelled by voice event {body.event_type}",
                 )
+            if classification == CLASSIFICATION_TASK and body.event_type in {"task_created", "meeting_transcript"}:
+                task_res = neo.create_task_with_context(
+                    title=(text[:120] + "...") if len(text) > 120 else text,
+                    task_type="task",
+                    kind="sophia_voice",
+                    required_capabilities=["terminal"],
+                    payload={
+                        "source_event_id": body.event_id,
+                        "source_intent": created_intent_id,
+                        "voice_event_type": body.event_type,
+                    },
+                    context_query=text,
+                    context_sources=["memory", "knowledge", "orchestration"],
+                    auto_dispatch=body.auto_dispatch,
+                    paperclip_client=get_paperclip_client() if body.auto_dispatch else None,
+                    paperclip_agent_id=PAPERCLIP_AGENT_ID,
+                )
+                created_task_id = task_res["task_id"]
+                with neo._session() as s:
+                    s.run(
+                        "MATCH (i:Intent {id:$iid}), (t:Task {id:$tid}) "
+                        "MERGE (i)-[:CREATED_TASK]->(t)",
+                        {"iid": created_intent_id, "tid": created_task_id},
+                    ).consume()
 
         if body.event_type in {"cancel_active", "task_cancelled", "barge_in"} and not created_intent_id:
             intent_outcome, intent_confidence = _intent_outcome_and_confidence(
@@ -1894,10 +1920,20 @@ def api_voice_event(
             )
             created_intent_id = cancel_intent_id
 
+        metadata = body.metadata or {}
+        neo.link_sophia_voice_records(
+            capture_id=str(metadata.get("capture_id") or "").strip() or None,
+            intent_id=created_intent_id,
+            memory_id=created_memory_id,
+            task_id=created_task_id,
+            meeting_id=str(metadata.get("meeting_id") or "").strip() or None,
+        )
+
         return {
             "signal_event_id": signal_id,
             "intent_id": created_intent_id,
             "memory_item_id": created_memory_id,
+            "task_id": created_task_id,
             "cancelled_tasks": cancelled_tasks,
         }
     finally:
@@ -1987,6 +2023,8 @@ def api_sophia_event(body: SophiaVoiceEventIn, user: str = Depends(auth)):
                     context_query=text,
                     context_sources=["memory", "knowledge", "orchestration"],
                     auto_dispatch=(qclass != "critical"),
+                    paperclip_client=get_paperclip_client(),
+                    paperclip_agent_id=PAPERCLIP_AGENT_ID,
                 )
                 created_task_id = task_res["task_id"]
                 with neo.driver.session() as s:
@@ -2671,6 +2709,12 @@ def api_approve_review_task(task_id: str, body: ReviewDecisionIn, user: str = De
             context_query=source_text,
             context_sources=["memory", "knowledge", "orchestration"],
             auto_dispatch=body.auto_dispatch,
+            paperclip_client=get_paperclip_client() if body.auto_dispatch else None,
+            paperclip_agent_id=(
+                body.target.paperclip_agent_id
+                if body.target and body.target.paperclip_agent_id
+                else PAPERCLIP_AGENT_ID
+            ),
         )
 
         created_task_id = result["task_id"]
