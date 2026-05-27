@@ -165,6 +165,19 @@ def test_voice_event_ingestion(seeded_neo4j, monkeypatch):
 
     class FakePaperclip:
         def create_issue(self, **kwargs):
+            with neo.driver.session() as s:
+                linked_before_dispatch = s.run(
+                    "MATCH (:Intent)-[:CREATED_TASK]->(:Task {id:$task_id}) "
+                    "RETURN count(*) AS count",
+                    {"task_id": kwargs["task_id"]},
+                ).single()
+                orchestrated_before_dispatch = s.run(
+                    "MATCH (i:Intent)-[:CREATED_TASK]->(:Task {id:$task_id}) "
+                    "WHERE i.orchestrated_at IS NOT NULL RETURN count(*) AS count",
+                    {"task_id": kwargs["task_id"]},
+                ).single()
+            assert linked_before_dispatch["count"] == 1
+            assert orchestrated_before_dispatch["count"] == 1
             created_issues.append(kwargs)
             return "voice-paperclip-issue-1"
 
@@ -193,13 +206,37 @@ def test_voice_event_ingestion(seeded_neo4j, monkeypatch):
     assert body["task_id"]
     assert created_issues[0]["assignee_id"] == "Hermes Agent"
     with neo.driver.session() as s:
+        s.run(
+            "MATCH (:Task {id:$task_id})-[:DISPATCHED_AS]->(d:Dispatch) "
+            "REMOVE d.idempotency_key",
+            {"task_id": body["task_id"]},
+        ).consume()
+    retry = client.post("/api/voice/events", json=payload, auth=auth)
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["task_id"] == body["task_id"]
+    assert len(created_issues) == 1
+    neo.ingest_paperclip_event(
+        event_type="run_completed",
+        paperclip_issue_id="voice-paperclip-issue-1",
+        paperclip_agent_id="Hermes Agent",
+        paperclip_run_id="voice-run-1",
+        event_id="voice-paperclip-complete-1",
+        payload={"issue": {"status": "done"}},
+    )
+    with neo.driver.session() as s:
         linked = s.run(
             "MATCH (:SophiaCapture {capture_id:'sophia-capture-1'})-[:CANONICAL_CAPTURE]->"
             "(c:MediaCapture {id:'sophia-capture-1', origin:'sophia_voice'}) "
-            "MATCH (:Task {id:$task_id})-[:CREATED_FROM]->(c) RETURN count(*) AS count",
+            "MATCH (t:Task {id:$task_id})-[:CREATED_FROM]->(c) "
+            "RETURN count(*) AS count, t.status AS task_status",
             {"task_id": body["task_id"]},
         ).single()
     assert linked["count"] == 1
+    assert linked["task_status"] == "DONE"
+    completed_retry = client.post("/api/voice/events", json=payload, auth=auth)
+    assert completed_retry.status_code == 200, completed_retry.text
+    assert len(created_issues) == 1
+    assert neo.get_task(body["task_id"])["status"] == "DONE"
 
     with neo.driver.session() as s:
         s.run("CREATE (:Meeting {id:'meeting-voice-1'})").consume()

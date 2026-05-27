@@ -200,6 +200,7 @@ class Neo4jClient:
         classification: Optional[str] = None,
         intent_outcome: Optional[str] = None,
         intent_confidence: Optional[float] = None,
+        mark_orchestrated: bool = False,
     ) -> str:
         props = {
             "source": source,
@@ -216,20 +217,33 @@ class Neo4jClient:
                 "MERGE (i:Intent {idempotency_key:$idempotency_key}) "
                 "ON CREATE SET i.id=$id, i.created_at=datetime(), i.created_at_ts=timestamp() "
                 "SET i += $props, i.updated_at=datetime(), i.updated_at_ts=timestamp() "
+                "FOREACH (_ IN CASE WHEN $mark_orchestrated THEN [1] ELSE [] END | "
+                "  SET i.orchestrated_at=coalesce(i.orchestrated_at, datetime()), "
+                "      i.orchestrated_at_ts=coalesce(i.orchestrated_at_ts, timestamp())) "
                 "RETURN i.id AS id"
             )
             with self._session() as s:
-                rec = s.run(q, {"idempotency_key": idempotency_key, "id": intent_id, "props": props}).single()
+                rec = s.run(
+                    q,
+                    {
+                        "idempotency_key": idempotency_key,
+                        "id": intent_id,
+                        "props": props,
+                        "mark_orchestrated": mark_orchestrated,
+                    },
+                ).single()
                 return rec["id"]
 
         q = (
             "CREATE (i:Intent {id:$id}) "
             "SET i += $props, i.created_at=datetime(), i.created_at_ts=timestamp(), "
             "    i.updated_at=datetime(), i.updated_at_ts=timestamp() "
+            "FOREACH (_ IN CASE WHEN $mark_orchestrated THEN [1] ELSE [] END | "
+            "  SET i.orchestrated_at=datetime(), i.orchestrated_at_ts=timestamp()) "
             "RETURN i.id AS id"
         )
         with self._session() as s:
-            rec = s.run(q, {"id": intent_id, "props": props}).single()
+            rec = s.run(q, {"id": intent_id, "props": props, "mark_orchestrated": mark_orchestrated}).single()
             return rec["id"]
 
     def create_context_packet(
@@ -331,6 +345,25 @@ class Neo4jClient:
         task = self.get_task(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
+
+        if idempotency_key:
+            with self._session() as s:
+                existing = s.run(
+                    "MATCH (:Task {id:$task_id})-[:DISPATCHED_AS]->(d:Dispatch) "
+                    "WHERE d.paperclip_issue_id IS NOT NULL "
+                    "RETURN d ORDER BY CASE d.status WHEN 'COMPLETED' THEN 0 ELSE 1 END, "
+                    "coalesce(d.created_at_ts, 0) ASC LIMIT 1",
+                    {"task_id": task_id},
+                ).single()
+            if existing:
+                dispatch = dict(existing["d"])
+                return {
+                    "dispatch_id": dispatch.get("id"),
+                    "paperclip_issue_id": dispatch.get("paperclip_issue_id"),
+                    "context_packet_id": None,
+                    "target_device_id": dispatch.get("target_device_id"),
+                    "paperclip_error": None,
+                }
 
         paperclip_issue_id = target.get("paperclip_issue_id")
         context_packet_id = None
@@ -490,12 +523,21 @@ class Neo4jClient:
         task_id = uuid.uuid4().hex
         with self._session() as s:
             if idempotency_key:
+                update_props = {key: value for key, value in props.items() if key != "status"}
                 rec = s.run(
                     "MERGE (t:Task {idempotency_key:$idempotency_key}) "
-                    "ON CREATE SET t.id=$id, t.created_at=datetime(), t.created_at_ts=timestamp() "
-                    "SET t += $props, t.updated_at=datetime(), t.updated_at_ts=timestamp() "
+                    "ON CREATE SET t.id=$id, t.status=$status, t.created_at=datetime(), t.created_at_ts=timestamp() "
+                    "SET t += $props, "
+                    "    t.status=CASE WHEN t.status IN ['DONE','CANCELLED','FAILED'] AND $status='READY' "
+                    "                  THEN t.status ELSE $status END, "
+                    "    t.updated_at=datetime(), t.updated_at_ts=timestamp() "
                     "RETURN t.id AS id",
-                    {"idempotency_key": idempotency_key, "id": task_id, "props": props},
+                    {
+                        "idempotency_key": idempotency_key,
+                        "id": task_id,
+                        "status": status,
+                        "props": update_props,
+                    },
                 ).single()
             else:
                 rec = s.run(
@@ -931,6 +973,14 @@ class Neo4jClient:
             "run_completed": "COMPLETED",
         }
         status = status_map.get(event_type, payload.get("status", "OPEN"))
+        issue_status = str((payload.get("issue") or {}).get("status", "")).lower()
+        task_status: Optional[str] = None
+        if event_type == "run_completed":
+            if issue_status == "cancelled":
+                status = "CANCELLED"
+                task_status = "CANCELLED"
+            else:
+                task_status = "DONE"
         with self._session() as s:
             s.run(
                 "MERGE (d:Dispatch {paperclip_issue_id:$issue}) "
@@ -945,6 +995,12 @@ class Neo4jClient:
                     "run_id": paperclip_run_id,
                 },
             )
+            if task_status:
+                s.run(
+                    "MATCH (t:Task)-[:DISPATCHED_AS]->(d:Dispatch {paperclip_issue_id:$issue}) "
+                    "SET t.status=$task_status, t.updated_at=datetime(), t.updated_at_ts=timestamp()",
+                    {"issue": paperclip_issue_id, "task_status": task_status},
+                ).consume()
             if paperclip_agent_id:
                 s.run(
                     "MATCH (d:Dispatch {paperclip_issue_id:$issue}) "

@@ -438,6 +438,7 @@ def upsert_model_endpoint(neo: Neo4jClient, payload: Dict[str, Any], event_node_
     node_id = str(payload.get("node_id") or event_node_id or "unknown")
     endpoint_id = str(payload.get("model_endpoint_id") or payload.get("endpoint_id") or f"{node_id}:model:{payload.get('base_url','unknown')}")
     props = _neo4j_props({**payload, "model_endpoint_id": endpoint_id, "node_id": node_id, "status": payload.get("status") or "online"})
+    model_ids: List[str] = []
     with neo._session() as s:
         rec = s.run(
             """
@@ -458,6 +459,7 @@ def upsert_model_endpoint(neo: Neo4jClient, payload: Dict[str, Any], event_node_
         ).single()
         for model in payload.get("models") or []:
             model_id = model.get("model_id") or f"{endpoint_id}:{model.get('served_name') or model.get('id') or model.get('name') or 'unknown'}"
+            model_ids.append(model_id)
             s.run(
                 """
                 MATCH (e:ModelEndpoint {model_endpoint_id:$endpoint_id})
@@ -467,6 +469,15 @@ def upsert_model_endpoint(neo: Neo4jClient, payload: Dict[str, Any], event_node_
                 MERGE (e)-[:SERVES]->(m)
                 """,
                 {"endpoint_id": endpoint_id, "model_id": model_id, "props": _neo4j_props({**model, "model_id": model_id})},
+            ).consume()
+        if "models" in payload:
+            s.run(
+                """
+                MATCH (e:ModelEndpoint {model_endpoint_id:$endpoint_id})-[r:SERVES]->(m:Model)
+                WHERE NOT m.model_id IN $model_ids
+                DELETE r
+                """,
+                {"endpoint_id": endpoint_id, "model_ids": model_ids},
             ).consume()
         return dict(rec["e"]) if rec else props
 

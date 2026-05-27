@@ -1,10 +1,38 @@
 # Model Endpoint Registry Contract
 
-_Last updated: 2026-05-26_
+_Last updated: 2026-05-27_
 
 ## Purpose
 
 The model endpoint registry lets AssistX discover, benchmark, and route work to local OpenAI-compatible endpoints, LM Studio hosts, Hermes model workers, and future model servers.
+
+For the current Paperclip cutover release, model endpoints are inventory and
+advisory-drafting resources only. They do not select a Hermes worker, claim an
+AssistX task, or replace Paperclip as the non-realtime execution route.
+
+## Current draft lane decision
+
+The MacBook Air LM Studio endpoint is the first optional draft lane:
+
+```yaml
+model_endpoint_id: scotts-macbook-air.lmstudio
+node_id: scotts-macbook-air
+base_url: http://100.85.64.117:1234
+provider: lm_studio
+network_preference: tailscale
+purpose: operator-invoked low-risk drafting
+preferred_model: qwen3.5-0.8b
+```
+
+Use it for small non-sensitive drafts and endpoint validation. Do not send
+voice biometric data, credentials, privileged graph context, or executable
+task authority through this endpoint.
+
+On May 27, 2026, `qwen3.5-0.8b` was used temporarily in bounded synthetic
+Paperclip/Hermes diagnostics to isolate integration behavior from x1 model
+latency. Signed canary `ASS-28` proves that integration path and retry behavior
+under a responsive model; the endpoint was restored to advisory-only status
+afterward and was not promoted to automatic task execution.
 
 ---
 
@@ -95,6 +123,19 @@ GET /api/v0/models
 
 Store probe failures as health records, not fatal errors.
 
+AssistX operator APIs for this phase:
+
+```http
+GET  /api/swarm/model-endpoints
+POST /api/swarm/model-endpoints/register
+POST /api/swarm/model-endpoints/{model_endpoint_id}/probe
+POST /api/drafts/generate
+```
+
+All four endpoints require AssistX operator authentication. Draft generation
+uses `DRAFT_MODEL_BASE_URL` and `DRAFT_MODEL_NAME`; it does not change the
+global inference backend used by existing workflows.
+
 ---
 
 ## Neo4j model
@@ -130,8 +171,9 @@ Relationships:
 
 ## Implementation checklist
 
-- [ ] Add model endpoint probe service.
-- [ ] Store `/v1/models` results.
+- [x] Add model endpoint probe service.
+- [x] Store `/v1/models` results.
+- [x] Add authenticated registration/probe and optional draft-generation APIs.
 - [ ] Add benchmark runner CLI.
 - [ ] Add task-profile benchmark prompts.
 - [ ] Add routing score function.

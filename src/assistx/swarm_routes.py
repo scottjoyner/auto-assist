@@ -4,8 +4,9 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
+from .draft_model import DraftModelUnavailable, generate_draft
 from .neo4j_client import Neo4jClient
 from .outbox_client import OutboxClient
 from .swarm_core import (
@@ -14,10 +15,13 @@ from .swarm_core import (
     action_requires_approval,
     fail_task,
     list_capabilities,
+    list_model_endpoints,
     list_swarm_nodes,
+    probe_model_endpoint,
     record_event,
     release_expired_task_leases,
     set_task_lease,
+    upsert_model_endpoint,
     upsert_swarm_node,
 )
 
@@ -81,6 +85,24 @@ class TaskFailIn(BaseModel):
 
 class LeaseSweepIn(BaseModel):
     now_ms: Optional[int] = None
+
+
+class ModelEndpointRegisterIn(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_endpoint_id: str
+    node_id: str
+    base_url: str
+    provider: str = "lm_studio"
+    status: str = "unknown"
+    auth_type: str = "none"
+    network_preference: Optional[str] = None
+    purpose: Optional[str] = None
+
+
+class DraftGenerateIn(BaseModel):
+    prompt: str = Field(min_length=1, max_length=8000)
+    max_tokens: int = Field(default=256, ge=1, le=1024)
 
 
 def _neo() -> Neo4jClient:
@@ -169,6 +191,47 @@ def api_list_caps(limit: int = 200, user: str = Depends(_default_auth)):
         neo.close()
 
 
+@router.get("/api/swarm/model-endpoints")
+def api_list_model_endpoints(user: str = Depends(_default_auth)):
+    neo = _neo()
+    try:
+        return {"items": list_model_endpoints(neo)}
+    finally:
+        neo.close()
+
+
+@router.post("/api/swarm/model-endpoints/register")
+def api_register_model_endpoint(body: ModelEndpointRegisterIn, user: str = Depends(_default_auth)):
+    neo = _neo()
+    try:
+        return {"endpoint": upsert_model_endpoint(neo, body.model_dump(exclude_none=True))}
+    finally:
+        neo.close()
+
+
+@router.post("/api/swarm/model-endpoints/{model_endpoint_id}/probe")
+def api_probe_model_endpoint(model_endpoint_id: str, user: str = Depends(_default_auth)):
+    neo = _neo()
+    try:
+        endpoint = next(
+            (item for item in list_model_endpoints(neo) if item.get("model_endpoint_id") == model_endpoint_id),
+            None,
+        )
+        if endpoint is None:
+            raise HTTPException(status_code=404, detail="Model endpoint not found")
+        return probe_model_endpoint(neo, endpoint)
+    finally:
+        neo.close()
+
+
+@router.post("/api/drafts/generate")
+def api_generate_draft(body: DraftGenerateIn, user: str = Depends(_default_auth)):
+    try:
+        return generate_draft(body.prompt, body.max_tokens)
+    except DraftModelUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
 @router.post("/api/tasks/{task_id}/fail")
 def api_fail_task(task_id: str, body: TaskFailIn, user: str = Depends(_default_auth)):
     neo = _neo()
@@ -209,4 +272,3 @@ def api_voice_policy(auth_state: str, action: str = "create_draft_task", risk_le
         "risk_level": risk_level,
         "approval_required": action_requires_approval(auth_state, action, risk_level),
     }
-

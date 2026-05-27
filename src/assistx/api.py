@@ -1832,6 +1832,10 @@ def api_voice_event(
             classification = classify_text(text)
             intent_outcome, intent_confidence = _intent_outcome_and_confidence(text, classification)
             policy_action = _intent_policy_action(intent_outcome, intent_confidence)
+            handles_inline_task = (
+                classification == CLASSIFICATION_TASK
+                and body.event_type in {"task_created", "meeting_transcript"}
+            )
             intent_key = f"voice:{body.event_id}"
             created_intent_id = neo.upsert_intent(
                 source=body.source,
@@ -1847,6 +1851,7 @@ def api_voice_event(
                 classification=classification,
                 intent_outcome=intent_outcome,
                 intent_confidence=intent_confidence,
+                mark_orchestrated=handles_inline_task,
             )
 
             if classification in (CLASSIFICATION_MEMORY, CLASSIFICATION_QUERY):
@@ -1868,7 +1873,7 @@ def api_voice_event(
                     created_intent_id,
                     f"Cancelled by voice event {body.event_type}",
                 )
-            if classification == CLASSIFICATION_TASK and body.event_type in {"task_created", "meeting_transcript"}:
+            if handles_inline_task:
                 task_res = neo.create_task_with_context(
                     title=(text[:120] + "...") if len(text) > 120 else text,
                     task_type="task",
@@ -1881,9 +1886,8 @@ def api_voice_event(
                     },
                     context_query=text,
                     context_sources=["memory", "knowledge", "orchestration"],
-                    auto_dispatch=body.auto_dispatch,
-                    paperclip_client=get_paperclip_client() if body.auto_dispatch else None,
-                    paperclip_agent_id=PAPERCLIP_AGENT_ID,
+                    idempotency_key=f"voice-task:{body.event_id}",
+                    auto_dispatch=False,
                 )
                 created_task_id = task_res["task_id"]
                 with neo._session() as s:
@@ -1892,6 +1896,16 @@ def api_voice_event(
                         "MERGE (i)-[:CREATED_TASK]->(t)",
                         {"iid": created_intent_id, "tid": created_task_id},
                     ).consume()
+                if body.auto_dispatch:
+                    neo.create_dispatch_with_paperclip(
+                        task_id=created_task_id,
+                        target={
+                            "capabilities": ["terminal"],
+                            "paperclip_agent_id": PAPERCLIP_AGENT_ID,
+                        },
+                        idempotency_key=f"voice-dispatch:{body.event_id}",
+                        paperclip_client=get_paperclip_client(),
+                    )
 
         if body.event_type in {"cancel_active", "task_cancelled", "barge_in"} and not created_intent_id:
             intent_outcome, intent_confidence = _intent_outcome_and_confidence(
@@ -1988,6 +2002,10 @@ def api_sophia_event(body: SophiaVoiceEventIn, user: str = Depends(auth)):
             classification = classify_text(text)
             intent_outcome, intent_confidence = _intent_outcome_and_confidence(text, classification)
             policy_action = _intent_policy_action(intent_outcome, intent_confidence)
+            handles_inline_task = (
+                classification == CLASSIFICATION_TASK
+                and body.event_type in {"intent", "voice_chat", "meeting_action_items"}
+            )
             created_intent_id = neo.upsert_intent(
                 source="sophia_voice",
                 text=text,
@@ -2005,9 +2023,10 @@ def api_sophia_event(body: SophiaVoiceEventIn, user: str = Depends(auth)):
                 classification=classification,
                 intent_outcome=intent_outcome,
                 intent_confidence=intent_confidence,
+                mark_orchestrated=handles_inline_task,
             )
 
-            if classification == CLASSIFICATION_TASK and body.event_type in {"intent", "voice_chat", "meeting_action_items"}:
+            if handles_inline_task:
                 task_res = neo.create_task_with_context(
                     title=(text[:120] + "...") if len(text) > 120 else text,
                     task_type="task",
@@ -2022,9 +2041,8 @@ def api_sophia_event(body: SophiaVoiceEventIn, user: str = Depends(auth)):
                     },
                     context_query=text,
                     context_sources=["memory", "knowledge", "orchestration"],
-                    auto_dispatch=(qclass != "critical"),
-                    paperclip_client=get_paperclip_client(),
-                    paperclip_agent_id=PAPERCLIP_AGENT_ID,
+                    idempotency_key=f"sophia-task:{body.event_id}",
+                    auto_dispatch=False,
                 )
                 created_task_id = task_res["task_id"]
                 with neo.driver.session() as s:
@@ -2033,6 +2051,16 @@ def api_sophia_event(body: SophiaVoiceEventIn, user: str = Depends(auth)):
                         "MERGE (i)-[:CREATED_TASK]->(t)",
                         {"iid": created_intent_id, "tid": created_task_id},
                     ).consume()
+                if qclass != "critical":
+                    neo.create_dispatch_with_paperclip(
+                        task_id=created_task_id,
+                        target={
+                            "capabilities": ["terminal"],
+                            "paperclip_agent_id": PAPERCLIP_AGENT_ID,
+                        },
+                        idempotency_key=f"sophia-dispatch:{body.event_id}",
+                        paperclip_client=get_paperclip_client(),
+                    )
 
         if body.auth_state in {"not_scott_known", "unknown_unverified"}:
             incident_id = neo.create_workflow_incident(

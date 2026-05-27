@@ -11,10 +11,12 @@ from assistx.swarm_core import (
     action_requires_approval,
     fail_task,
     list_capabilities,
+    list_model_endpoints,
     list_swarm_nodes,
     record_event,
     release_expired_task_leases,
     set_task_lease,
+    upsert_model_endpoint,
     upsert_swarm_node,
 )
 
@@ -118,6 +120,34 @@ def test_swarm_node_registry_and_capability_listing(seeded_neo4j):
     assert any(n["node_id"] == "demo-1" for n in nodes)
     caps = list_capabilities(seeded_neo4j)
     assert any(c["capability_id"] == "demo-1.llm.fast" for c in caps)
+
+
+def test_model_endpoint_refresh_removes_stale_served_relationships(seeded_neo4j):
+    endpoint = {
+        "model_endpoint_id": "test-mac.lmstudio",
+        "node_id": "test-mac",
+        "base_url": "http://test-mac:1234/v1",
+        "models": [
+            {"model_id": "test-mac.old", "served_name": "old"},
+            {"model_id": "test-mac.keep", "served_name": "keep"},
+        ],
+    }
+    upsert_model_endpoint(seeded_neo4j, endpoint)
+    upsert_model_endpoint(
+        seeded_neo4j,
+        {
+            **endpoint,
+            "models": [
+                {"model_id": "test-mac.keep", "served_name": "keep"},
+                {"model_id": "test-mac.new", "served_name": "new"},
+            ],
+        },
+    )
+    current = next(
+        item for item in list_model_endpoints(seeded_neo4j)
+        if item["model_endpoint_id"] == "test-mac.lmstudio"
+    )
+    assert {model["model_id"] for model in current["models"]} == {"test-mac.keep", "test-mac.new"}
 
 
 def test_task_claim_heartbeat_complete_fail_and_lease_release(seeded_neo4j):
@@ -245,6 +275,55 @@ def test_swarm_routes_registered(monkeypatch, seeded_neo4j):
     assert any(item["node_id"] == "x1-370" for item in listed.json()["items"])
 
 
+def test_model_endpoint_routes_and_draft_generation(monkeypatch, seeded_neo4j):
+    monkeypatch.setattr("assistx.swarm_routes._neo", lambda: seeded_neo4j)
+    monkeypatch.setattr(seeded_neo4j, "close", lambda: None)
+    monkeypatch.setattr(
+        "assistx.swarm_routes.probe_model_endpoint",
+        lambda neo, endpoint: {
+            "model_endpoint_id": endpoint["model_endpoint_id"],
+            "status": "online",
+            "models_count": 1,
+        },
+    )
+    monkeypatch.setattr(
+        "assistx.swarm_routes.generate_draft",
+        lambda prompt, max_tokens: {
+            "text": f"Draft: {prompt}",
+            "model": "qwen3.5-0.8b",
+            "source": "configured_draft_endpoint",
+        },
+    )
+    client = TestClient(app)
+    registered = client.post(
+        "/api/swarm/model-endpoints/register",
+        json={
+            "model_endpoint_id": "scotts-macbook-air.lmstudio",
+            "node_id": "scotts-macbook-air",
+            "base_url": "http://100.85.64.117:1234/v1",
+            "network_preference": "tailscale",
+            "purpose": "low-risk drafting",
+        },
+        auth=_auth(),
+    )
+    assert registered.status_code == 200, registered.text
+
+    listed = client.get("/api/swarm/model-endpoints", auth=_auth())
+    assert listed.status_code == 200, listed.text
+    assert any(
+        item["model_endpoint_id"] == "scotts-macbook-air.lmstudio"
+        for item in listed.json()["items"]
+    )
+
+    probed = client.post("/api/swarm/model-endpoints/scotts-macbook-air.lmstudio/probe", auth=_auth())
+    assert probed.status_code == 200, probed.text
+    assert probed.json()["status"] == "online"
+
+    draft = client.post("/api/drafts/generate", json={"prompt": "Brief status update."}, auth=_auth())
+    assert draft.status_code == 200, draft.text
+    assert draft.json()["model"] == "qwen3.5-0.8b"
+
+
 def test_swarm_auth_401(monkeypatch, seeded_neo4j):
     monkeypatch.setattr("assistx.swarm_routes._neo", lambda: seeded_neo4j)
     monkeypatch.setattr(seeded_neo4j, "close", lambda: None)
@@ -255,6 +334,10 @@ def test_swarm_auth_401(monkeypatch, seeded_neo4j):
     assert resp2.status_code == 401, resp2.text
     resp3 = client.get("/api/swarm/nodes")
     assert resp3.status_code == 401, resp3.text
+    resp4 = client.get("/api/swarm/model-endpoints")
+    assert resp4.status_code == 401, resp4.text
+    resp5 = client.post("/api/drafts/generate", json={"prompt": "unauthorized"})
+    assert resp5.status_code == 401, resp5.text
 
 
 def test_event_internal_failure_is_not_queued_or_accepted(monkeypatch, seeded_neo4j):

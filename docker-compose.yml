@@ -41,6 +41,12 @@ services:
       - OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
 
+      # --- Optional advisory draft endpoint ---
+      - DRAFT_MODEL_BASE_URL=${DRAFT_MODEL_BASE_URL:-}
+      - DRAFT_MODEL_NAME=${DRAFT_MODEL_NAME:-}
+      - DRAFT_MODEL_API_KEY=${DRAFT_MODEL_API_KEY:-not-needed}
+      - DRAFT_MODEL_TIMEOUT_S=${DRAFT_MODEL_TIMEOUT_S:-20}
+
       # --- Whisper runtime knobs ---
       - WHISPER_DEVICE=${WHISPER_DEVICE:-auto}      # auto|cpu|cuda
       - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
