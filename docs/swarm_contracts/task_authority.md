@@ -176,24 +176,24 @@ High-risk actions require explicit approval even for Scott unless a future polic
 
 ---
 
-## Paperclip mapping
+## Paperclip mapping (optional)
 
-Paperclip issues are optional mirrors.
+Paperclip issues can mirror AssistX tasks when the Paperclip server is available.
 
 ```text
-AssistX Task -> Paperclip Issue
+AssistX Task -> Paperclip Issue (optional mirror)
 ```
 
-AssistX task state wins if Paperclip state diverges.
+Paperclip is SSH-based between Tailscale nodes. It is **not** the swarm orchestrator or task authority. Workers interact directly with AssistX REST endpoints and Neo4j, not through Paperclip.
 
 ---
 
 ## Implementation checklist
 
-- [ ] Add task schema validation.
-- [ ] Add fail endpoint if missing.
-- [ ] Add lease expiry scanner.
-- [ ] Add node/capability-aware task polling.
-- [ ] Add approval policy engine.
-- [ ] Add Paperclip mirror reconciliation.
-- [ ] Add tests for replay-safe task completion.
+- [x] Task schema with status, lease, approval fields in Neo4j
+- [x] Fail endpoint with retry support (`POST /api/tasks/{id}/fail`)
+- [x] Lease expiry scanner (`POST /api/tasks/leases/release-expired`)
+- [ ] Add `lease_seconds` parameter to claim endpoint
+- [ ] Add model endpoint probe service
+- [ ] Add local outbox client for producers
+- [ ] Auth hardening for all swarm endpoints

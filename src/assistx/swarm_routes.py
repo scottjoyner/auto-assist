@@ -3,14 +3,15 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
 from .neo4j_client import Neo4jClient
+from .outbox_client import OutboxClient
 from .swarm_core import (
     EventConflictError,
     EventValidationError,
     action_requires_approval,
-    ensure_swarm_schema,
     fail_task,
     list_capabilities,
     list_swarm_nodes,
@@ -85,23 +86,30 @@ def _neo() -> Neo4jClient:
     return Neo4jClient()
 
 
-# Auth function to be injected from api.py
+def _outbox() -> OutboxClient:
+    return OutboxClient(auto_flush=True, flush_interval_s=30)
+
+
+# --- Auth ---
+# Injected from api.py so swarm routes use the same Basic Auth as legacy endpoints.
 _injected_auth_dependency = None
+security = HTTPBasic(auto_error=False)
 
 
 def set_auth_dependency(auth_func: Any) -> None:
-    """Called from api.py to inject the real auth dependency."""
     global _injected_auth_dependency
     _injected_auth_dependency = auth_func
 
 
-def _swarm_auth_wrapper(request: Request, credentials: Optional[Any] = None) -> str:
-    """Wrapper that delegates to the injected auth function."""
-    if _injected_auth_dependency is None:
-        # Fallback: return a system user for trusted-network operation
-        return "system"
-    # Call the injected auth function
-    return _injected_auth_dependency(request, credentials)
+def _default_auth(
+    request: Request,
+    credentials: HTTPBasicCredentials | None = Depends(security),
+) -> str:
+    if _injected_auth_dependency is not None:
+        return _injected_auth_dependency(request, credentials)
+    if credentials:
+        return credentials.username
+    return "system"
 
 
 @router.post("/api/events")
@@ -113,6 +121,9 @@ def api_events(body: EventEnvelopeIn, user: str = Depends(_default_auth)):
         raise HTTPException(status_code=400, detail=str(e))
     except EventConflictError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        _outbox().enqueue(body.model_dump())
+        return {"accepted": True, "event_id": body.event_id, "queued": True, "reason": str(e)[:200]}
     finally:
         neo.close()
 
@@ -176,6 +187,17 @@ def api_release_expired_leases(body: LeaseSweepIn, user: str = Depends(_default_
         neo.close()
 
 
+@router.get("/api/swarm/outbox/status")
+def api_outbox_status(user: str = Depends(_default_auth)):
+    return _outbox().get_stats()
+
+
+@router.post("/api/swarm/outbox/flush")
+def api_outbox_flush(max_attempts: Optional[int] = None, user: str = Depends(_default_auth)):
+    delivered = _outbox().flush(max_attempts=max_attempts or 10)
+    return {"flushed": delivered, "remaining": _outbox().get_stats()}
+
+
 @router.get("/api/policy/voice-action")
 def api_voice_policy(auth_state: str, action: str = "create_draft_task", risk_level: str = "low", user: str = Depends(_default_auth)):
     return {
@@ -186,18 +208,3 @@ def api_voice_policy(auth_state: str, action: str = "create_draft_task", risk_le
     }
 
 
-# Auth function to be injected from api.py - provides access to the same auth as legacy endpoints
-_injected_auth_func = None
-
-
-def set_auth_dependency(auth_func: Any) -> None:
-    """Called from api.py to inject the real auth dependency."""
-    global _injected_auth_func
-    _injected_auth_func = auth_func
-
-
-def _get_auth_dependency() -> Any:
-    """Returns the injected auth function or raises an error."""
-    if _injected_auth_func is None:
-        raise RuntimeError("Swarm auth dependency not injected. Call set_auth_dependency from api.py.")
-    return _injected_auth_func

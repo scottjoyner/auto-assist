@@ -20,7 +20,7 @@ class PaperclipClient:
     """
     Client for interacting with the Paperclip API.
 
-    Paperclip is the canonical assignment hub for cross-device agent work.
+    Paperclip is an optional SSH-based dispatch mirror between Tailscale nodes, not the task authority.
     """
 
     def __init__(

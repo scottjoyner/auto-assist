@@ -118,12 +118,14 @@ class TaskClaimIn(BaseModel):
     capabilities: Optional[List[str]] = None
     session_id: Optional[str] = None
     idempotency_key: Optional[str] = None
+    lease_seconds: Optional[int] = None
 
 class TaskHeartbeatIn(BaseModel):
     agent_id: str
     status: Optional[str] = None
     session_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+    lease_seconds: Optional[int] = None
 
 class TaskCompleteIn(BaseModel):
     agent_id: str
@@ -315,6 +317,11 @@ async def lifespan(app: FastAPI):
         schedule_maintenance_job()
     except Exception as e:
         _lifespan_logger.warning(f"Maintenance job not scheduled: {e}")
+    try:
+        from .model_prober import schedule_prober
+        schedule_prober()
+    except Exception as e:
+        _lifespan_logger.warning(f"Model prober not scheduled: {e}")
     yield
 
 app = FastAPI(title="AssistX API & UI", lifespan=lifespan)
@@ -1547,6 +1554,7 @@ def api_claim_task(task_id: str, body: TaskClaimIn, user: str = Depends(auth)):
             capabilities=body.capabilities,
             session_id=body.session_id,
             idempotency_key=body.idempotency_key,
+            lease_seconds=body.lease_seconds,
         )
         if result.get("claimed"):
             TASK_CLAIMS.labels(result="claimed").inc()
@@ -1568,6 +1576,7 @@ def api_heartbeat_task(task_id: str, body: TaskHeartbeatIn, user: str = Depends(
             status=body.status,
             session_id=body.session_id,
             metadata=body.metadata,
+            lease_seconds=body.lease_seconds,
         )
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")

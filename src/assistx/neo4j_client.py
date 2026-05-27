@@ -681,10 +681,12 @@ class Neo4jClient:
         capabilities: Optional[List[str]] = None,
         session_id: Optional[str] = None,
         idempotency_key: Optional[str] = None,
+        lease_seconds: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Atomically claim a READY task for an agent if capabilities match."""
         caps = capabilities or []
         claim_id = idempotency_key or uuid.uuid4().hex
+        effective_lease = lease_seconds if lease_seconds is not None else 900
         with self._session() as s:
             if idempotency_key:
                 prior = s.run(
@@ -692,7 +694,7 @@ class Neo4jClient:
                     {"task_id": task_id, "claim_id": idempotency_key},
                 ).single()
                 if prior:
-                    return {"claimed": True, "idempotent": True, "task": dict(prior["t"])}
+                    return {"claimed": True, "claim_id": claim_id, "idempotent": True, "task": dict(prior["t"])}
 
             rec = s.run(
                 """
@@ -704,6 +706,8 @@ class Neo4jClient:
                     t.claim_id=$claim_id,
                     t.claimed_at=datetime(),
                     t.claimed_at_ts=timestamp(),
+                    t.lease_seconds=$lease_seconds,
+                    t.lease_expires_at_ts=timestamp() + $lease_seconds * 1000,
                     t.updated_at=datetime(),
                     t.updated_at_ts=timestamp()
                 RETURN t
@@ -713,6 +717,7 @@ class Neo4jClient:
                     "agent_id": agent_id,
                     "session_id": session_id,
                     "claim_id": claim_id,
+                    "lease_seconds": effective_lease,
                 },
             ).single()
 
@@ -722,8 +727,7 @@ class Neo4jClient:
                     s.run(
                         "MERGE (a:AgentSession {id:$sid}) "
                         "ON CREATE SET a.created_at=datetime(), a.created_at_ts=timestamp() "
-                        "SET a.paperclip_agent_id=coalesce(a.paperclip_agent_id, $agent_id), "
-                        "    a.updated_at=datetime(), a.updated_at_ts=timestamp() "
+                        "SET a.updated_at=datetime(), a.updated_at_ts=timestamp() "
                         "WITH a MATCH (t:Task {id:$task_id}) MERGE (a)-[:CLAIMED]->(t)",
                         {"sid": session_id, "agent_id": agent_id, "task_id": task_id},
                     )
@@ -754,6 +758,7 @@ class Neo4jClient:
         status: Optional[str] = None,
         session_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        lease_seconds: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         if status and status not in EXECUTABLE_TASK_STATUSES:
             raise ValueError(f"Unsupported task status: {status}")
@@ -762,19 +767,22 @@ class Neo4jClient:
             "agent_session_id": session_id,
             "heartbeat_metadata_json": json.dumps(metadata or {}),
         }
+        effective_lease = lease_seconds if lease_seconds is not None else 900
         with self._session() as s:
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
                 SET t += $props,
                     t.status = coalesce($status, t.status),
+                    t.lease_seconds = coalesce($lease_seconds, coalesce(t.lease_seconds, 900)),
                     t.last_heartbeat_at=datetime(),
                     t.last_heartbeat_at_ts=timestamp(),
+                    t.lease_expires_at_ts=timestamp() + coalesce($lease_seconds, coalesce(t.lease_seconds, 900)) * 1000,
                     t.updated_at=datetime(),
                     t.updated_at_ts=timestamp()
                 RETURN t
                 """,
-                {"task_id": task_id, "props": props, "status": status},
+                {"task_id": task_id, "props": props, "status": status, "lease_seconds": lease_seconds},
             ).single()
             return dict(rec["t"]) if rec else None
 

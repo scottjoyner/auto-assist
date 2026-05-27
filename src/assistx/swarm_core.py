@@ -4,6 +4,7 @@ import hashlib
 import json
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .neo4j_client import Neo4jClient
@@ -109,39 +110,6 @@ def action_requires_approval(auth_state: Optional[str], action: Optional[str], r
     return True
 
 
-def ensure_swarm_schema(neo: Neo4jClient) -> None:
-    cypher = [
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SwarmNode) REQUIRE n.node_id IS UNIQUE",
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (e:ServiceEndpoint) REQUIRE e.endpoint_id IS UNIQUE",
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (c:Capability) REQUIRE c.capability_id IS UNIQUE",
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (m:ModelEndpoint) REQUIRE m.model_endpoint_id IS UNIQUE",
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (m:Model) REQUIRE m.model_id IS UNIQUE",
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (h:HealthCheck) REQUIRE h.check_id IS UNIQUE",
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (a:ArtifactRef) REQUIRE a.artifact_id IS UNIQUE",
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (e:EventEnvelope) REQUIRE e.event_id IS UNIQUE",
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (v:VoiceAuthDecision) REQUIRE v.decision_id IS UNIQUE",
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (b:IngestBatch) REQUIRE b.batch_id IS UNIQUE",
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (m:MemoryCandidate) REQUIRE m.candidate_id IS UNIQUE",
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (p:PolicyDecision) REQUIRE p.decision_id IS UNIQUE",
-        "CREATE INDEX IF NOT EXISTS FOR (n:SwarmNode) ON (n.status)",
-        "CREATE INDEX IF NOT EXISTS FOR (n:SwarmNode) ON (n.last_seen_at_ts)",
-        "CREATE INDEX IF NOT EXISTS FOR (e:ServiceEndpoint) ON (e.status)",
-        "CREATE INDEX IF NOT EXISTS FOR (c:Capability) ON (c.kind)",
-        "CREATE INDEX IF NOT EXISTS FOR (c:Capability) ON (c.status)",
-        "CREATE INDEX IF NOT EXISTS FOR (m:ModelEndpoint) ON (m.status)",
-        "CREATE INDEX IF NOT EXISTS FOR (e:EventEnvelope) ON (e.idempotency_key)",
-        "CREATE INDEX IF NOT EXISTS FOR (e:EventEnvelope) ON (e.event_type)",
-        "CREATE INDEX IF NOT EXISTS FOR (e:EventEnvelope) ON (e.created_at_ts)",
-        "CREATE INDEX IF NOT EXISTS FOR (v:VoiceAuthDecision) ON (v.auth_state)",
-        "CREATE INDEX IF NOT EXISTS FOR (b:IngestBatch) ON (b.status)",
-        "CREATE INDEX IF NOT EXISTS FOR (m:MemoryCandidate) ON (m.review_status)",
-        "CREATE INDEX IF NOT EXISTS FOR (t:Task) ON (t.lease_expires_at_ts)",
-    ]
-    with neo._session() as s:
-        for q in cypher:
-            s.run(q).consume()
-
-
 def upsert_artifact_refs(neo: Neo4jClient, artifact_refs: List[Dict[str, Any]]) -> List[str]:
     ids: List[str] = []
     if not artifact_refs:
@@ -166,7 +134,6 @@ def upsert_artifact_refs(neo: Neo4jClient, artifact_refs: List[Dict[str, Any]]) 
 
 def record_event(neo: Neo4jClient, event: Dict[str, Any]) -> Dict[str, Any]:
     validate_event_envelope(event)
-    ensure_swarm_schema(neo)
     phash = payload_hash(event)
     event_id = str(event["event_id"])
     idempotency_key = str(event["idempotency_key"])
@@ -279,6 +246,7 @@ def upsert_swarm_node(neo: Neo4jClient, payload: Dict[str, Any]) -> Dict[str, An
     node_id = str(payload.get("node_id") or payload.get("hostname") or "unknown")
     props = _neo4j_props({**payload, "node_id": node_id, "status": payload.get("status") or "online"})
     capabilities = payload.get("capabilities") or []
+    services = payload.get("services") or []
     with neo._session() as s:
         s.run(
             """
@@ -304,6 +272,19 @@ def upsert_swarm_node(neo: Neo4jClient, payload: Dict[str, Any]) -> Dict[str, An
                 MERGE (n)-[:CAN_RUN]->(c)
                 """,
                 {"node_id": node_id, "capability_id": cap_id, "props": cap_props},
+            ).consume()
+        for svc in services:
+            svc_id = svc.get("endpoint_id") or f"{node_id}:{svc.get('service_type','service')}"
+            svc_props = _neo4j_props({**svc, "service_type": svc.get("service_type") or "generic", "status": svc.get("status") or "online"})
+            s.run(
+                """
+                MATCH (n:SwarmNode {node_id:$node_id})
+                MERGE (e:ServiceEndpoint {endpoint_id:$endpoint_id})
+                ON CREATE SET e.created_at=datetime(), e.created_at_ts=timestamp()
+                SET e += $props, e.updated_at=datetime(), e.updated_at_ts=timestamp()
+                MERGE (n)-[:EXPOSES]->(e)
+                """,
+                {"node_id": node_id, "endpoint_id": svc_id, "props": svc_props},
             ).consume()
         rec = s.run("MATCH (n:SwarmNode {node_id:$node_id}) RETURN n", {"node_id": node_id}).single()
         return dict(rec["n"]) if rec else props
@@ -338,6 +319,119 @@ def list_capabilities(neo: Neo4jClient, limit: int = 200) -> List[Dict[str, Any]
             {"limit": limit},
         )
         return [dict(r["c"]) for r in res]
+
+
+def list_model_endpoints(neo: Neo4jClient) -> List[Dict[str, Any]]:
+    with neo._session() as s:
+        res = s.run(
+            """
+            MATCH (e:ModelEndpoint)
+            OPTIONAL MATCH (e)-[:SERVES]->(m:Model)
+            RETURN e, collect(DISTINCT m) AS models
+            ORDER BY e.model_endpoint_id
+            """
+        )
+        out = []
+        for row in res:
+            ep = dict(row["e"])
+            ep["models"] = [dict(m) for m in row["models"] if m]
+            out.append(ep)
+        return out
+
+
+def probe_model_endpoint(neo: Neo4jClient, endpoint: Dict[str, Any]) -> Dict[str, Any]:
+    import urllib.request, urllib.error
+    base_url = endpoint.get("base_url", "").rstrip("/")
+    ep_id = endpoint.get("model_endpoint_id", endpoint.get("endpoint_id", "unknown"))
+    node_id = endpoint.get("node_id", "unknown")
+    if base_url.endswith("/v1"):
+        base_url = base_url[:-3]
+    models_url = f"{base_url}/v1/models"
+    try:
+        req = urllib.request.Request(models_url, method="GET")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read().decode())
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError) as e:
+        with neo._session() as s:
+            s.run(
+                "MATCH (e:ModelEndpoint {model_endpoint_id:$ep_id}) SET e.status='offline', e.probe_error=$err, e.last_probed_at=datetime(), e.last_probed_at_ts=timestamp()",
+                {"ep_id": ep_id, "err": str(e)[:200]},
+            ).consume()
+        return {"model_endpoint_id": ep_id, "status": "offline", "error": str(e)}
+
+    data = body.get("data") or body.get("models") or []
+    if isinstance(data, dict):
+        data = [data]
+    models = []
+    for m in data:
+        model_id = m.get("id") or m.get("model") or m.get("name", "unknown")
+        models.append({
+            "model_id": f"{node_id}.{model_id}",
+            "served_name": model_id,
+            "family": _infer_model_family(model_id),
+            "context_length": _infer_context_length(model_id),
+        })
+
+    probe_id = f"probe-{ep_id}-{int(time.time())}"
+    event = {
+        "event_id": probe_id,
+        "event_type": "model.endpoint.discovered",
+        "source_repo": "auto-assist",
+        "source_service": "model-endpoint-prober",
+        "node_id": node_id,
+        "occurred_at": datetime.now(timezone.utc).isoformat(),
+        "idempotency_key": probe_id,
+        "schema_version": "1.0",
+        "subject": {"kind": "model", "id": ep_id},
+        "payload": {
+            "model_endpoint_id": ep_id,
+            "node_id": node_id,
+            "base_url": base_url,
+            "provider": _infer_provider(endpoint.get("base_url", "")),
+            "status": "online",
+            "models": models,
+        },
+        "artifact_refs": [],
+        "privacy": {"pii": False, "privacy_class": "public", "retention_class": "keep"},
+    }
+    record_event(neo, event)
+    with neo._session() as s:
+        s.run(
+            "MATCH (e:ModelEndpoint {model_endpoint_id:$ep_id}) SET e.status='online', e.last_probed_at=datetime(), e.last_probed_at_ts=timestamp(), e.probe_error=null",
+            {"ep_id": ep_id},
+        ).consume()
+    return {"model_endpoint_id": ep_id, "status": "online", "models_count": len(models)}
+
+
+def _infer_provider(base_url: str) -> str:
+    url = base_url.lower()
+    if "11434" in url or "ollama" in url:
+        return "ollama"
+    return "lm_studio"
+
+
+def _infer_model_family(model_id: str) -> str:
+    mid = model_id.lower()
+    if "qwen" in mid:
+        return "qwen"
+    if "gemma" in mid:
+        return "gemma"
+    if "llama" in mid or "lfm" in mid:
+        return "lfm"
+    if "granite" in mid:
+        return "granite"
+    if "glm" in mid:
+        return "glm"
+    if "nomic" in mid or "embed" in mid:
+        return "embedding"
+    return "unknown"
+
+
+def _infer_context_length(model_id: str) -> int:
+    mid = model_id.lower()
+    if "embed" in mid:
+        return 8192
+    return 32768
 
 
 def upsert_model_endpoint(neo: Neo4jClient, payload: Dict[str, Any], event_node_id: Optional[str] = None) -> Dict[str, Any]:

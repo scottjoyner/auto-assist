@@ -1,4 +1,5 @@
 import os
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -187,3 +188,56 @@ def test_swarm_routes_registered(monkeypatch, seeded_neo4j):
     listed = client.get("/api/swarm/nodes", auth=_auth())
     assert listed.status_code == 200, listed.text
     assert any(item["node_id"] == "x1-370" for item in listed.json()["items"])
+
+
+def test_swarm_auth_401(monkeypatch, seeded_neo4j):
+    monkeypatch.setattr("assistx.swarm_routes._neo", lambda: seeded_neo4j)
+    monkeypatch.setattr(seeded_neo4j, "close", lambda: None)
+    client = TestClient(app)
+    resp = client.post("/api/events", json=_base_event(event_id="auth-event", idempotency_key="auth-key"))
+    assert resp.status_code == 401, resp.text
+    resp2 = client.post("/api/swarm/nodes/register", json={"node_id": "unauth-node"})
+    assert resp2.status_code == 401, resp2.text
+    resp3 = client.get("/api/swarm/nodes")
+    assert resp3.status_code == 401, resp3.text
+
+
+def test_custom_lease_seconds_on_claim(seeded_neo4j):
+    task = seeded_neo4j.get_ready_tasks()[0]
+    default = seeded_neo4j.claim_task(task["id"], agent_id="agent-leasetest", capabilities=[])
+    assert default["claimed"] is True
+    stored = seeded_neo4j.get_task(task["id"])
+    assert stored.get("lease_seconds") == 900
+    assert stored["status"] == "CLAIMED"
+
+    task2_id = seeded_neo4j.upsert_ticket(
+        title="Custom lease test",
+        ticket_type="task",
+        status="READY",
+        kind="phase2_test_lease",
+    )
+    custom = seeded_neo4j.claim_task(task2_id, agent_id="agent-leasetest", capabilities=[], lease_seconds=60)
+    assert custom["claimed"] is True
+    stored2 = seeded_neo4j.get_task(task2_id)
+    assert stored2.get("lease_seconds") == 60
+    now_ms = int(time.time() * 1000)
+    assert stored2.get("lease_expires_at_ts", 0) > now_ms
+    assert stored2.get("lease_expires_at_ts", 0) < now_ms + 120_000
+
+
+def test_custom_lease_seconds_on_heartbeat(seeded_neo4j):
+    task = seeded_neo4j.get_ready_tasks()[-1]
+    claimed = seeded_neo4j.claim_task(task["id"], agent_id="agent-heartbeatlease", capabilities=[])
+    assert claimed["claimed"] is True
+
+    hb = seeded_neo4j.heartbeat_task(task["id"], agent_id="agent-heartbeatlease", status="RUNNING", lease_seconds=30)
+    assert hb["status"] == "RUNNING"
+    assert hb.get("lease_seconds") == 30
+    now_ms = int(time.time() * 1000)
+    expires = hb.get("lease_expires_at_ts", 0)
+    assert expires > now_ms
+    assert expires < now_ms + 60_000
+
+    hb_default = seeded_neo4j.heartbeat_task(task["id"], agent_id="agent-heartbeatlease", status="RUNNING")
+    assert hb_default.get("lease_seconds") == 30
+    assert hb_default.get("lease_expires_at_ts", 0) > now_ms

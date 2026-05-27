@@ -13,6 +13,7 @@ class HermesMemoryProvider:
         base_url: Optional[str] = None,
         auth: Optional[tuple[str, str]] = None,
         api_token: Optional[str] = None,
+        outbox: Any = None,
     ):
         self.base_url = base_url or os.getenv("ASSISTX_API_URL", "http://localhost:8000")
         self.auth = auth
@@ -20,12 +21,33 @@ class HermesMemoryProvider:
         token = api_token or os.getenv("API_TOKEN")
         if token:
             self.headers["x-api-token"] = token
+        self._outbox = outbox
 
     def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self.base_url}{path}"
         resp = requests.post(url, json=payload, headers=self.headers, auth=self.auth, timeout=30)
         resp.raise_for_status()
         return resp.json()
+
+    def _fallback_to_outbox(self, path: str, payload: Dict[str, Any]) -> None:
+        if self._outbox is None:
+            return
+        from ..outbox_client import OutboxClient
+        outbox = self._outbox if isinstance(self._outbox, OutboxClient) else OutboxClient()
+        outbox.enqueue({
+            "event_id": str(uuid.uuid4()),
+            "event_type": "hermes.signal",
+            "source_repo": "hermes-agent",
+            "source_service": "memory-provider",
+            "node_id": os.uname().nodename,
+            "occurred_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+            "idempotency_key": f"hermes-{payload.get('event_id', payload.get('session_id', str(uuid.uuid4())))}",
+            "schema_version": "1.0",
+            "subject": {"kind": "signal", "id": payload.get("event_id", "unknown")},
+            "payload": {"path": path, "body": payload},
+            "artifact_refs": [],
+            "privacy": {"pii": False, "privacy_class": "private", "retention_class": "keep"},
+        })
 
     def prefetch(
         self,
@@ -145,7 +167,7 @@ class HermesMemoryProvider:
         session_id: Optional[str] = None,
         paperclip_issue_id: Optional[str] = None,
         paperclip_run_id: Optional[str] = None,
-    ) -> str:
+    ) -> Optional[str]:
         body = {
             "event_id": event_id,
             "event_type": event_type,
@@ -154,8 +176,12 @@ class HermesMemoryProvider:
             "paperclip_issue_id": paperclip_issue_id,
             "paperclip_run_id": paperclip_run_id,
         }
-        data = self._post("/api/brain/signals", body)
-        return data["signal_event_id"]
+        try:
+            data = self._post("/api/brain/signals", body)
+            return data["signal_event_id"]
+        except requests.RequestException:
+            self._fallback_to_outbox("/api/brain/signals", body)
+            return None
 
     def update_session(
         self,
