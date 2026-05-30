@@ -27,4 +27,4 @@ COPY static /app/static
 RUN mkdir -p /app/.cache /app/transcriptions /app/artifacts
 
 EXPOSE 8000
-CMD ["uvicorn", "assistx.api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "assistx.api_router:app", "--host", "0.0.0.0", "--port", "8000"]
