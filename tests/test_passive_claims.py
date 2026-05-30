@@ -1,7 +1,9 @@
 from assistx.passive_claims import (
     PassiveClaimIn,
     _blocked,
+    _claim_from_task,
     _next_status_for_release,
+    passive_claim_summary,
 )
 
 
@@ -25,6 +27,7 @@ def test_next_status_for_release() -> None:
     assert _next_status_for_release("interrupted") == "READY"
     assert _next_status_for_release("abandoned") == "READY"
     assert _next_status_for_release("released") == "READY"
+    assert _next_status_for_release("expired") == "READY"
     assert _next_status_for_release("unknown") == "READY"
 
 
@@ -34,3 +37,50 @@ def test_passive_claim_defaults_are_review_only_safe() -> None:
     assert body.mode == "review_only"
     assert body.operator_approved is False
     assert body.ttl_seconds == 1800
+
+
+def test_claim_from_task_marks_active_and_remaining_seconds() -> None:
+    claim = _claim_from_task(
+        {
+            "id": "task-1",
+            "title": "Review docs",
+            "status": "CLAIMED_PASSIVE",
+            "passive_claim_id": "claim-1",
+            "passive_claim_agent_id": "agent-1",
+            "passive_claim_lease_id": "lease-1",
+            "passive_claim_mode": "review_only",
+            "passive_claimed_at_ts": 1000,
+            "passive_claim_expires_at_ts": 61000,
+        },
+        now_ms=1000,
+    )
+
+    assert claim["task_id"] == "task-1"
+    assert claim["expired"] is False
+    assert claim["seconds_remaining"] == 60
+
+
+def test_claim_from_task_marks_expired() -> None:
+    claim = _claim_from_task(
+        {
+            "id": "task-1",
+            "status": "CLAIMED_PASSIVE",
+            "passive_claim_expires_at_ts": 1000,
+        },
+        now_ms=2000,
+    )
+
+    assert claim["expired"] is True
+    assert claim["seconds_remaining"] == 0
+
+
+def test_passive_claim_summary_counts_states() -> None:
+    summary = passive_claim_summary(
+        [
+            {"expired": False, "mode": "review_only"},
+            {"expired": True, "mode": "passive"},
+            {"expired": False, "mode": "claim_ready"},
+        ]
+    )
+
+    assert summary == {"total": 3, "active": 2, "expired": 1, "review_only": 2, "claim_ready": 1}
