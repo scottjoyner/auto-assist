@@ -93,6 +93,8 @@ worker model and completing the authorized enrollment canary.
 4. Benchmark the registered Mac small models only for non-sensitive draft quality and latency while it remains an advisory lane.
 5. Rotate previously committed/local development secrets and keep only environment templates in source control.
 6. Only after a production-worker completion and enrollment verification, disable `hermes-agent-adapter.service`.
+7. Publish the Neo4j context alignment contract so AssistX and auto-router share the same node, model, capability, and lane vocabulary.
+8. Use `auto-router/docs/DEPLOYMENT.md` as the first deployment runbook for the aligned AssistX + router stack.
 
 ### Deferred Work
 

@@ -3,7 +3,9 @@ from typing import Any, Dict, Iterable, List, Optional
 import hashlib
 import json
 import os
+import time
 import uuid
+from urllib.parse import urlparse
 from neo4j import GraphDatabase, Driver, Session
 
 _UNSET = object()
@@ -1787,6 +1789,146 @@ class Neo4jClient:
         with self._session() as s:
             rec = s.run("MATCH (d:AgentDevice {id:$id}) RETURN d", {"id": device_id}).single()
             return dict(rec["d"]) if rec else None
+
+    def export_context_projection(self) -> Dict[str, Any]:
+        """Export the graph-backed context snapshot consumed by auto-router."""
+
+        generated_at = int(time.time())
+        nodes_by_id: Dict[str, Dict[str, Any]] = {}
+        providers_by_id: Dict[str, Dict[str, Any]] = {}
+        metadata: Dict[str, Any] = {
+            "schema_version": "1.0",
+            "generated_by": "assistx.neo4j",
+        }
+
+        def merge_caps(existing: List[str], extra: List[Any]) -> List[str]:
+            merged = {str(item) for item in existing if item}
+            for item in extra:
+                if isinstance(item, dict):
+                    for value in item.values():
+                        if isinstance(value, str) and value:
+                            merged.add(value)
+                elif item:
+                    merged.add(str(item))
+            return sorted(merged)
+
+        def lane_for_node(node: Dict[str, Any]) -> str:
+            status = str(node.get("status") or node.get("state") or "").lower()
+            if node.get("paperclip_agent_id") or node.get("paperclip_issue_id"):
+                return "paperclip"
+            if status in {"blocked", "offline", "down", "disabled"}:
+                return "blocked"
+            return "local"
+
+        def lane_for_endpoint(endpoint: Dict[str, Any], base_url: str) -> tuple[str, bool, bool]:
+            status = str(endpoint.get("status") or "online").lower()
+            if status in {"blocked", "offline", "down", "disabled"}:
+                return "blocked", False, True
+            normalized = base_url.lower()
+            is_local = any(token in normalized for token in ("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal", ".local")) or endpoint.get("provider") in {"lm_studio", "ollama", "lmstudio"}
+            credits = endpoint.get("free_api_credits")
+            if credits is None:
+                credits = endpoint.get("credits_remaining")
+            if credits is None:
+                credits = endpoint.get("quota_remaining")
+            if is_local:
+                return "local", True, False
+            if isinstance(credits, (int, float)) and credits > 0:
+                return "free_api", False, False
+            return "blocked", False, True
+
+        with self._session() as s:
+            for rec in s.run(
+                "MATCH (n:SwarmNode) OPTIONAL MATCH (n)-[:EXPOSES]->(e:ModelEndpoint) RETURN n AS node, collect(DISTINCT e) AS endpoints ORDER BY coalesce(n.last_seen_at_ts, n.updated_at_ts, n.created_at_ts, 0) DESC"
+            ):
+                node = dict(rec["node"])
+                endpoints = [dict(ep) for ep in rec["endpoints"] if ep]
+                node_id = str(node.get("node_id") or node.get("id") or "unknown")
+                capabilities = merge_caps(node.get("capabilities") or [], node.get("services") or [])
+                for endpoint in endpoints:
+                    capabilities = merge_caps(capabilities, endpoint.get("models") or [])
+                nodes_by_id[node_id] = {
+                    "node_id": node_id,
+                    "display_name": node.get("display_name") or node.get("hostname") or node_id,
+                    "lane": lane_for_node(node),
+                    "local": True,
+                    "can_use_free_api": False,
+                    "running": str(node.get("status") or "online").lower() not in {"blocked", "offline", "down", "disabled"},
+                    "capabilities": capabilities,
+                    "detail": node.get("status") or node.get("platform") or "swarm_node",
+                }
+
+            for rec in s.run(
+                "MATCH (d:AgentDevice) RETURN d ORDER BY d.last_seen_at_ts DESC"
+            ):
+                device = dict(rec["d"])
+                node_id = str(device.get("id") or device.get("device_id") or "unknown")
+                capabilities = merge_caps(device.get("capabilities") or [], device.get("available_agents") or [])
+                nodes_by_id.setdefault(
+                    node_id,
+                    {
+                        "node_id": node_id,
+                        "display_name": device.get("hostname") or node_id,
+                        "lane": "local",
+                        "local": True,
+                        "can_use_free_api": False,
+                        "running": True,
+                        "capabilities": capabilities,
+                        "detail": device.get("platform") or "agent_device",
+                    },
+                )
+                if node_id in nodes_by_id:
+                    nodes_by_id[node_id]["capabilities"] = merge_caps(nodes_by_id[node_id].get("capabilities") or [], capabilities)
+                    nodes_by_id[node_id]["display_name"] = nodes_by_id[node_id].get("display_name") or device.get("hostname") or node_id
+
+            for rec in s.run(
+                "MATCH (e:ModelEndpoint) OPTIONAL MATCH (n:SwarmNode)-[:EXPOSES]->(e) OPTIONAL MATCH (e)-[:SERVES]->(m:Model) RETURN e AS endpoint, coalesce(n.node_id, e.node_id) AS node_id, collect(DISTINCT m) AS models ORDER BY coalesce(e.last_probed_at_ts, e.updated_at_ts, e.created_at_ts, 0) DESC"
+            ):
+                endpoint = dict(rec["endpoint"])
+                node_id = rec.get("node_id")
+                models = [dict(model) for model in rec["models"] if model]
+                base_url = str(endpoint.get("base_url") or "")
+                provider_name = str(endpoint.get("provider") or endpoint.get("service_type") or endpoint.get("endpoint_id") or endpoint.get("model_endpoint_id") or "unknown")
+                lane, local, blocked = lane_for_endpoint(endpoint, base_url)
+                free_api_credits = endpoint.get("free_api_credits")
+                if free_api_credits is None:
+                    free_api_credits = endpoint.get("credits_remaining")
+                if free_api_credits is None:
+                    free_api_credits = endpoint.get("quota_remaining")
+                aliases = [provider_name, str(endpoint.get("endpoint_id") or ""), str(endpoint.get("model_endpoint_id") or ""), str(node_id or "")]
+                parsed = urlparse(base_url) if base_url else None
+                if parsed and parsed.hostname:
+                    aliases.append(parsed.hostname)
+                providers_by_id[str(endpoint.get("model_endpoint_id") or provider_name)] = {
+                    "provider": provider_name,
+                    "lane": lane,
+                    "local": local,
+                    "can_use_free_api": lane == "free_api",
+                    "free_api_credits": free_api_credits,
+                    "blocked": blocked,
+                    "node_id": node_id,
+                    "aliases": sorted({alias for alias in aliases if alias}),
+                    "capabilities": merge_caps(endpoint.get("capabilities") or [], [cap for model in models for cap in (model.get("capabilities") or [])]),
+                    "detail": base_url or endpoint.get("status") or provider_name,
+                }
+
+        metadata.update(
+            {
+                "node_count": len(nodes_by_id),
+                "provider_count": len(providers_by_id),
+                "running_local_nodes": [node_id for node_id, node in nodes_by_id.items() if node.get("local") and node.get("running")],
+                "free_api_providers": [provider for provider, details in ((entry["provider"], entry) for entry in providers_by_id.values()) if details.get("can_use_free_api")],
+            }
+        )
+
+        return {
+            "revision": f"assistx-{generated_at}",
+            "source": "assistx.neo4j",
+            "generated_at": generated_at,
+            "nodes": sorted(nodes_by_id.values(), key=lambda item: item.get("node_id") or ""),
+            "providers": sorted(providers_by_id.values(), key=lambda item: item.get("provider") or ""),
+            "metadata": metadata,
+        }
 
     def get_tasks_by_status(self, status: str, limit: int = 50) -> List[Dict[str, Any]]:
         with self._session() as s:

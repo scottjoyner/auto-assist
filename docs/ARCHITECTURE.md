@@ -11,6 +11,28 @@ Direct worker claiming and fleet/model-endpoint routing are retained as
 follow-up development surfaces. They are not enabled as a substitute for the
 Paperclip cutover path.
 
+## Neo4j Context Fabric
+
+Neo4j is the canonical context store for the agents and the release control plane. It should hold the facts that make routing and execution decisions predictable:
+
+- task lifecycle and dispatch state;
+- agent identities and node capabilities;
+- model endpoint inventory and availability;
+- policy decisions and approval state;
+- artifact references and execution provenance;
+- memory/context records used by agent planning.
+
+This does not replace the Paperclip cutover path. It makes that path and any future direct-worker path read from the same graph-backed context so local execution and free-API execution are chosen from one shared source of truth.
+
+Execution lanes should be explicit graph facts:
+
+- `local` for local-only or privacy-restricted work;
+- `free_api` for legitimate free cloud credits or brokered free lanes;
+- `paperclip` for the current cutover execution path;
+- `blocked` when a task cannot be routed yet.
+
+Agents should be able to ask the graph who is running locally, what can use free API credits, and which lane a task is allowed to use.
+
 ---
 
 ## Data Flow

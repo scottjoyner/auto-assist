@@ -24,6 +24,7 @@ docker exec -it assistx-api bash -lc "python -m assistx.cli init"
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - Release architecture, data flow, API, schema
 - [`docs/STATUS.md`](docs/STATUS.md) - Verified status, blocker, and remediation order
 - [`docs/swarm_contracts/`](docs/swarm_contracts/) - Future swarm/event contracts, gated from cutover
+- `auto-router/docs/DEPLOYMENT.md` - Aligned deployment runbook for AssistX plus auto-router
 
 ## Core Concept
 

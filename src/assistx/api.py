@@ -974,6 +974,14 @@ def ingest_ui(request: Request, user: str = Depends(auth)):
 def health():
     return {"ok": True}
 
+@app.get("/api/context/projection")
+def api_context_projection():
+    neo = _neo()
+    try:
+        return neo.export_context_projection()
+    finally:
+        neo.close()
+
 @app.get("/api/ops/status")
 def api_ops_status(
     stale_minutes: int = Query(30, ge=1, le=24 * 60),
