@@ -5,7 +5,7 @@ import time
 import uuid
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from assistx.passive_agents import _capabilities_match, _is_passive_safe, _normalize_idle_candidate
@@ -26,7 +26,7 @@ class PassiveClaimReleaseIn(BaseModel):
     agent_id: str
     claim_id: str
     task_id: str
-    result: str = Field(default="released", description="released|completed_review|abandoned|interrupted")
+    result: str = Field(default="released", description="released|completed_review|abandoned|interrupted|expired")
     summary: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -55,6 +55,20 @@ def build_passive_claim_router(neo_factory: Callable[[], Any], auth_dependency: 
         result = release_passive_claim(neo_factory, body)
         if not result.get("ok"):
             raise HTTPException(status_code=409, detail=result)
+        return result
+
+    @router.get("/passive-claims")
+    def passive_claims(
+        agent_id: Optional[str] = None,
+        include_expired: bool = False,
+        limit: int = Query(50, ge=1, le=250),
+    ) -> dict[str, Any]:
+        claims = list_passive_claims(neo_factory, agent_id=agent_id, include_expired=include_expired, limit=limit)
+        return {"items": claims, "count": len(claims), "summary": passive_claim_summary(claims), "read_only": True}
+
+    @router.post("/passive-claims/expire")
+    def passive_claims_expire(limit: int = Query(50, ge=1, le=250)) -> dict[str, Any]:
+        result = expire_passive_claims(neo_factory, limit=limit)
         return result
 
     return router
@@ -145,6 +159,75 @@ def release_passive_claim(neo_factory: Callable[[], Any], body: PassiveClaimRele
         "released_at_ts": now_ms,
         "next_status": row.get("next_status"),
         "summary": body.summary,
+    }
+
+
+def list_passive_claims(
+    neo_factory: Callable[[], Any],
+    agent_id: Optional[str] = None,
+    include_expired: bool = False,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    now_ms = int(time.time() * 1000)
+    neo = None
+    try:
+        neo = neo_factory()
+        with neo.driver.session() as s:
+            rows = s.run(
+                """
+                MATCH (t:Task)
+                WHERE t.status = 'CLAIMED_PASSIVE'
+                  AND ($agent_id IS NULL OR t.passive_claim_agent_id = $agent_id)
+                  AND ($include_expired = true OR coalesce(t.passive_claim_expires_at_ts, 0) >= $now_ms)
+                RETURN t
+                ORDER BY coalesce(t.passive_claim_expires_at_ts, 0) ASC
+                LIMIT $limit
+                """,
+                {"agent_id": agent_id, "include_expired": bool(include_expired), "now_ms": now_ms, "limit": int(limit)},
+            )
+            return [_claim_from_task(dict(row["t"]), now_ms) for row in rows]
+    except Exception:
+        return []
+    finally:
+        try:
+            if neo is not None:
+                neo.close()
+        except Exception:
+            pass
+
+
+def expire_passive_claims(neo_factory: Callable[[], Any], limit: int = 50) -> dict[str, Any]:
+    now_ms = int(time.time() * 1000)
+    neo = None
+    try:
+        neo = neo_factory()
+        with neo.driver.session() as s:
+            rows = s.execute_write(_tx_expire_passive_claims, now_ms, int(limit))
+    except Exception as exc:
+        return _blocked("neo4j_error", str(exc)[:500])
+    finally:
+        try:
+            if neo is not None:
+                neo.close()
+        except Exception:
+            pass
+    expired = [dict(row) for row in rows]
+    return {
+        "ok": True,
+        "expired": expired,
+        "count": len(expired),
+        "now_ms": now_ms,
+        "next_action": "agents should heartbeat again and request fresh passive work",
+    }
+
+
+def passive_claim_summary(claims: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "total": len(claims),
+        "active": sum(1 for claim in claims if not claim.get("expired")),
+        "expired": sum(1 for claim in claims if claim.get("expired")),
+        "review_only": sum(1 for claim in claims if claim.get("mode") in {"review_only", "passive"}),
+        "claim_ready": sum(1 for claim in claims if claim.get("mode") == "claim_ready"),
     }
 
 
@@ -240,6 +323,48 @@ def _tx_release_passive_claim(tx: Any, body: PassiveClaimReleaseIn, now_ms: int)
     return dict(row) if row else None
 
 
+def _tx_expire_passive_claims(tx: Any, now_ms: int, limit: int) -> list[dict[str, Any]]:
+    result = tx.run(
+        """
+        MATCH (t:Task)
+        WHERE t.status = 'CLAIMED_PASSIVE'
+          AND coalesce(t.passive_claim_expires_at_ts, 0) < $now_ms
+        WITH t
+        ORDER BY coalesce(t.passive_claim_expires_at_ts, 0) ASC
+        LIMIT $limit
+        WITH t,
+             t.passive_claim_id AS claim_id,
+             t.passive_claim_agent_id AS agent_id,
+             coalesce(t.id, t.task_id) AS task_id,
+             coalesce(t.previous_status, 'READY') AS next_status
+        SET t.status = next_status,
+            t.last_passive_claim_id = claim_id,
+            t.last_passive_claim_agent_id = agent_id,
+            t.last_passive_claim_result = 'expired',
+            t.last_passive_claim_summary = 'Passive claim expired and was returned to READY/REVIEW.',
+            t.last_passive_claim_released_at = datetime(),
+            t.last_passive_claim_released_at_ts = $now_ms
+        REMOVE t.passive_claim_id,
+               t.passive_claim_agent_id,
+               t.passive_claim_lease_id,
+               t.passive_claim_mode,
+               t.passive_claimed_at,
+               t.passive_claimed_at_ts,
+               t.passive_claim_expires_at_ts,
+               t.passive_claim_metadata_json
+        MERGE (a:AgentHeartbeat {agent_id:agent_id})
+        SET a.status = 'idle',
+            a.current_task_id = null,
+            a.action = 'passive_claim_expired',
+            a.last_seen_at_ts = $now_ms,
+            a.recommended_task_id = null
+        RETURN task_id, claim_id, agent_id, next_status
+        """,
+        {"now_ms": int(now_ms), "limit": int(limit)},
+    )
+    return [dict(row) for row in result]
+
+
 def _rollback_claim(neo_factory: Callable[[], Any], task_id: str, claim_id: str, reason: str) -> None:
     neo = None
     try:
@@ -274,14 +399,40 @@ def _rollback_claim(neo_factory: Callable[[], Any], task_id: str, claim_id: str,
             pass
 
 
+def _claim_from_task(task: dict[str, Any], now_ms: int) -> dict[str, Any]:
+    expires_at = _int_or_none(task.get("passive_claim_expires_at_ts")) or 0
+    return {
+        "task_id": str(task.get("id") or task.get("task_id") or ""),
+        "title": task.get("title"),
+        "claim_id": task.get("passive_claim_id"),
+        "agent_id": task.get("passive_claim_agent_id"),
+        "lease_id": task.get("passive_claim_lease_id"),
+        "mode": task.get("passive_claim_mode"),
+        "claimed_at_ts": _int_or_none(task.get("passive_claimed_at_ts")),
+        "expires_at_ts": expires_at,
+        "expired": expires_at < now_ms,
+        "seconds_remaining": max(0, int((expires_at - now_ms) / 1000)) if expires_at else 0,
+        "status": task.get("status"),
+    }
+
+
 def _next_status_for_release(result: str) -> str:
     normalized = (result or "released").lower()
     if normalized == "completed_review":
         return "REVIEW"
-    if normalized in {"interrupted", "abandoned", "released"}:
+    if normalized in {"interrupted", "abandoned", "released", "expired"}:
         return "READY"
     return "READY"
 
 
 def _blocked(reason: str, message: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"ok": False, "reason": reason, "message": message, **(extra or {})}
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
