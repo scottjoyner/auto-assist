@@ -12,6 +12,7 @@ This gives the system a clean progression:
 heartbeat recommendation
   -> advisory lease
   -> passive review-only claim
+  -> passive claim maintenance/expiry
   -> future approved execution claim
 ```
 
@@ -92,6 +93,51 @@ Results:
 | `interrupted` | `READY` |
 | `abandoned` | `READY` |
 | `released` | `READY` |
+| `expired` | `READY` |
+
+### List passive claims
+
+```text
+GET /api/agents/passive-claims?limit=50
+GET /api/agents/passive-claims?agent_id=gemini-cli-x1-370&include_expired=true
+```
+
+Returns active passive claims and summary counts:
+
+```json
+{
+  "items": [
+    {
+      "task_id": "task-123",
+      "title": "Review docs",
+      "claim_id": "uuid",
+      "agent_id": "gemini-cli-x1-370",
+      "mode": "review_only",
+      "expired": false,
+      "seconds_remaining": 1200
+    }
+  ],
+  "count": 1,
+  "summary": {
+    "total": 1,
+    "active": 1,
+    "expired": 0,
+    "review_only": 1,
+    "claim_ready": 0
+  },
+  "read_only": true
+}
+```
+
+### Expire stale passive claims
+
+```text
+POST /api/agents/passive-claims/expire?limit=50
+```
+
+This releases expired `CLAIMED_PASSIVE` tasks back to `READY` or their previous status. It also marks the owning `AgentHeartbeat` as idle/stale for the expired task.
+
+This endpoint does not execute anything. It is safe maintenance for stale coordination state.
 
 ## 3. Safety rules
 
@@ -128,6 +174,8 @@ Releasing a passive claim clears active passive-claim fields and writes last pas
 (AgentHeartbeat).status = idle
 ```
 
+Expiring stale passive claims performs the same cleanup with result `expired`.
+
 ## 5. Boundary with execution
 
 Passive claims do not:
@@ -153,4 +201,20 @@ POST /api/agents/passive-claim task_id=<recommended_task_id> lease_id=<lease_id>
 agent performs review-only planning work
 POST /api/agents/passive-claim/release result=completed_review summary=<short result>
 POST /api/agents/heartbeat-plan status=idle
+```
+
+## 7. Recommended maintenance loop
+
+Run periodically from an operator, cron, or future scheduler:
+
+```bash
+curl -X POST 'http://localhost:8000/api/agents/passive-claims/expire?limit=50' \
+  -u admin:change-me | jq
+```
+
+Agents can also inspect active passive claims before attempting new work:
+
+```bash
+curl 'http://localhost:8000/api/agents/passive-claims?agent_id=gemini-cli-x1-370' \
+  -u admin:change-me | jq
 ```
