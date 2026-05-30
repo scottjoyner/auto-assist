@@ -12,7 +12,8 @@ This gives the system a clean progression:
 heartbeat recommendation
   -> advisory lease
   -> passive review-only claim
-  -> passive claim maintenance/expiry
+  -> passive claim renewal while active
+  -> passive claim release or expiry
   -> future approved execution claim
 ```
 
@@ -64,6 +65,37 @@ Response:
 }
 ```
 
+### Renew passive claim
+
+```text
+POST /api/agents/passive-claim/renew
+```
+
+Request:
+
+```json
+{
+  "agent_id": "gemini-cli-x1-370",
+  "claim_id": "claim-uuid",
+  "task_id": "task-123",
+  "ttl_seconds": 1800,
+  "progress_note": "Still reviewing the routing docs; no files changed.",
+  "metadata": {
+    "source": "agent-loop"
+  }
+}
+```
+
+Renewal rules:
+
+- task must still be `CLAIMED_PASSIVE`;
+- claim ID must match;
+- agent ID must match;
+- current claim must not already be expired;
+- renewal still does not execute or grant write access.
+
+Response includes a new `expires_at_ts`, `seconds_remaining`, and `next_heartbeat_seconds`.
+
 ### Release passive claim
 
 ```text
@@ -113,6 +145,8 @@ Returns active passive claims and summary counts:
       "claim_id": "uuid",
       "agent_id": "gemini-cli-x1-370",
       "mode": "review_only",
+      "renewed_at_ts": 1760000010000,
+      "progress_note": "Still reviewing docs",
       "expired": false,
       "seconds_remaining": 1200
     }
@@ -165,6 +199,15 @@ Creating a passive claim updates only the selected task and heartbeat state:
 (AgentHeartbeat)-[:PASSIVELY_CLAIMED]->(Task)
 ```
 
+Renewing a passive claim updates only passive claim expiration/progress metadata:
+
+```text
+(Task).passive_claim_expires_at_ts = <new timestamp>
+(Task).passive_claim_renewed_at_ts = <timestamp>
+(Task).passive_claim_progress_note = <short progress note>
+(AgentHeartbeat).action = passive_claim_renewed
+```
+
 Releasing a passive claim clears active passive-claim fields and writes last passive-claim metadata:
 
 ```text
@@ -199,9 +242,12 @@ POST /api/agents/heartbeat-plan status=idle
 POST /api/agents/passive-claim task_id=<recommended_task_id> lease_id=<lease_id>
   -> ok true
 agent performs review-only planning work
+periodically POST /api/agents/passive-claim/renew progress_note=<short note>
 POST /api/agents/passive-claim/release result=completed_review summary=<short result>
 POST /api/agents/heartbeat-plan status=idle
 ```
+
+Renew when the agent is still actively reviewing and needs more time. Release when the review is complete, interrupted, abandoned, or the agent needs to yield to user work for longer than the current TTL.
 
 ## 7. Recommended maintenance loop
 
