@@ -1,5 +1,6 @@
 from assistx.passive_claims import (
     PassiveClaimIn,
+    PassiveClaimRenewIn,
     _blocked,
     _claim_from_task,
     _next_status_for_release,
@@ -39,6 +40,14 @@ def test_passive_claim_defaults_are_review_only_safe() -> None:
     assert body.ttl_seconds == 1800
 
 
+def test_passive_claim_renew_defaults_are_safe() -> None:
+    body = PassiveClaimRenewIn(agent_id="agent", task_id="task", claim_id="claim")
+
+    assert body.ttl_seconds == 1800
+    assert body.progress_note is None
+    assert body.metadata == {}
+
+
 def test_claim_from_task_marks_active_and_remaining_seconds() -> None:
     claim = _claim_from_task(
         {
@@ -51,6 +60,8 @@ def test_claim_from_task_marks_active_and_remaining_seconds() -> None:
             "passive_claim_mode": "review_only",
             "passive_claimed_at_ts": 1000,
             "passive_claim_expires_at_ts": 61000,
+            "passive_claim_renewed_at_ts": 3000,
+            "passive_claim_progress_note": "still reviewing",
         },
         now_ms=1000,
     )
@@ -58,6 +69,8 @@ def test_claim_from_task_marks_active_and_remaining_seconds() -> None:
     assert claim["task_id"] == "task-1"
     assert claim["expired"] is False
     assert claim["seconds_remaining"] == 60
+    assert claim["renewed_at_ts"] == 3000
+    assert claim["progress_note"] == "still reviewing"
 
 
 def test_claim_from_task_marks_expired() -> None:
