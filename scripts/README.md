@@ -51,7 +51,15 @@ export ASSISTX_PASS=change-me
 
 ## Model Endpoints
 
-Each agent with LM Studio has a model endpoint registered. Probe URLs:
+Each agent with LM Studio has a model endpoint registered. Register one:
+```bash
+curl -s -u admin:change-me -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"model_endpoint_id":"falcon.lmstudio","node_id":"falcon","base_url":"http://100.96.18.65:1234/v1","provider":"lm_studio","status":"online","auth_type":"none","network_preference":"tailscale","purpose":"llm.chat"}' \
+  http://172.20.0.5:8000/api/swarm/model-endpoints/register
+```
+
+List all endpoints:
 ```bash
 curl -s -u admin:change-me http://172.20.0.5:8000/api/swarm/model-endpoints
 ```
