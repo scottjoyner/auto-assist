@@ -31,6 +31,15 @@ class PassiveClaimReleaseIn(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class PassiveClaimRenewIn(BaseModel):
+    agent_id: str
+    claim_id: str
+    task_id: str
+    ttl_seconds: int = Field(default=1800, ge=60, le=7200)
+    progress_note: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 def build_passive_claim_router(neo_factory: Callable[[], Any], auth_dependency: Any | None = None) -> APIRouter:
     """Review-only passive work claim endpoints.
 
@@ -46,6 +55,13 @@ def build_passive_claim_router(neo_factory: Callable[[], Any], auth_dependency: 
     @router.post("/passive-claim")
     def passive_claim(body: PassiveClaimIn) -> dict[str, Any]:
         result = claim_passive_task(neo_factory, body)
+        if not result.get("ok"):
+            raise HTTPException(status_code=409, detail=result)
+        return result
+
+    @router.post("/passive-claim/renew")
+    def passive_claim_renew(body: PassiveClaimRenewIn) -> dict[str, Any]:
+        result = renew_passive_claim(neo_factory, body)
         if not result.get("ok"):
             raise HTTPException(status_code=409, detail=result)
         return result
@@ -130,6 +146,40 @@ def claim_passive_task(neo_factory: Callable[[], Any], body: PassiveClaimIn) -> 
             "repo_write": "not_allowed",
             "operator_approval_required_for_execution": True,
         },
+    }
+
+
+def renew_passive_claim(neo_factory: Callable[[], Any], body: PassiveClaimRenewIn) -> dict[str, Any]:
+    now_ms = int(time.time() * 1000)
+    expires_at_ts = now_ms + (int(body.ttl_seconds) * 1000)
+    neo = None
+    try:
+        neo = neo_factory()
+        with neo.driver.session() as s:
+            row = s.execute_write(_tx_renew_passive_claim, body, now_ms, expires_at_ts)
+    except Exception as exc:
+        return _blocked("neo4j_error", str(exc)[:500])
+    finally:
+        try:
+            if neo is not None:
+                neo.close()
+        except Exception:
+            pass
+    if not row:
+        return _blocked("not_renewed", "passive claim was not found, expired, or is owned by another agent")
+    return {
+        "ok": True,
+        "claim_id": body.claim_id,
+        "task_id": body.task_id,
+        "agent_id": body.agent_id,
+        "renewed_at_ts": now_ms,
+        "expires_at_ts": expires_at_ts,
+        "ttl_seconds": int(body.ttl_seconds),
+        "seconds_remaining": int((expires_at_ts - now_ms) / 1000),
+        "review_only": True,
+        "execution_allowed": False,
+        "write_allowed": False,
+        "next_heartbeat_seconds": min(max(int(body.ttl_seconds / 3), 30), 300),
     }
 
 
@@ -273,6 +323,44 @@ def _tx_claim_passive_task(tx: Any, body: PassiveClaimIn, claim_id: str, now_ms:
     return dict(row) if row else None
 
 
+def _tx_renew_passive_claim(tx: Any, body: PassiveClaimRenewIn, now_ms: int, expires_at_ts: int) -> dict[str, Any] | None:
+    result = tx.run(
+        """
+        MATCH (t:Task)
+        WHERE coalesce(t.id, t.task_id) = $task_id
+          AND t.status = 'CLAIMED_PASSIVE'
+          AND t.passive_claim_id = $claim_id
+          AND t.passive_claim_agent_id = $agent_id
+          AND coalesce(t.passive_claim_expires_at_ts, 0) >= $now_ms
+        SET t.passive_claim_expires_at_ts = $expires_at_ts,
+            t.passive_claim_renewed_at = datetime(),
+            t.passive_claim_renewed_at_ts = $now_ms,
+            t.passive_claim_progress_note = $progress_note,
+            t.passive_claim_renew_metadata_json = $metadata_json
+        MERGE (a:AgentHeartbeat {agent_id:$agent_id})
+        SET a.status = 'busy',
+            a.current_task_id = coalesce(t.id, t.task_id),
+            a.last_seen_at = datetime(),
+            a.last_seen_at_ts = $now_ms,
+            a.action = 'passive_claim_renewed',
+            a.recommended_task_id = coalesce(t.id, t.task_id),
+            a.last_result_summary = $progress_note
+        RETURN t AS task
+        """,
+        {
+            "task_id": body.task_id,
+            "claim_id": body.claim_id,
+            "agent_id": body.agent_id,
+            "now_ms": int(now_ms),
+            "expires_at_ts": int(expires_at_ts),
+            "progress_note": (body.progress_note or "")[:1000] if body.progress_note else None,
+            "metadata_json": json.dumps(body.metadata or {}, sort_keys=True),
+        },
+    )
+    row = result.single()
+    return dict(row) if row else None
+
+
 def _tx_release_passive_claim(tx: Any, body: PassiveClaimReleaseIn, now_ms: int) -> dict[str, Any] | None:
     next_status = _next_status_for_release(body.result)
     result = tx.run(
@@ -296,7 +384,11 @@ def _tx_release_passive_claim(tx: Any, body: PassiveClaimReleaseIn, now_ms: int)
                t.passive_claimed_at,
                t.passive_claimed_at_ts,
                t.passive_claim_expires_at_ts,
-               t.passive_claim_metadata_json
+               t.passive_claim_metadata_json,
+               t.passive_claim_renewed_at,
+               t.passive_claim_renewed_at_ts,
+               t.passive_claim_progress_note,
+               t.passive_claim_renew_metadata_json
         MERGE (a:AgentHeartbeat {agent_id:$agent_id})
         SET a.status = 'idle',
             a.current_task_id = null,
@@ -351,7 +443,11 @@ def _tx_expire_passive_claims(tx: Any, now_ms: int, limit: int) -> list[dict[str
                t.passive_claimed_at,
                t.passive_claimed_at_ts,
                t.passive_claim_expires_at_ts,
-               t.passive_claim_metadata_json
+               t.passive_claim_metadata_json,
+               t.passive_claim_renewed_at,
+               t.passive_claim_renewed_at_ts,
+               t.passive_claim_progress_note,
+               t.passive_claim_renew_metadata_json
         MERGE (a:AgentHeartbeat {agent_id:agent_id})
         SET a.status = 'idle',
             a.current_task_id = null,
@@ -385,7 +481,11 @@ def _rollback_claim(neo_factory: Callable[[], Any], task_id: str, claim_id: str,
                        t.passive_claimed_at,
                        t.passive_claimed_at_ts,
                        t.passive_claim_expires_at_ts,
-                       t.passive_claim_metadata_json
+                       t.passive_claim_metadata_json,
+                       t.passive_claim_renewed_at,
+                       t.passive_claim_renewed_at_ts,
+                       t.passive_claim_progress_note,
+                       t.passive_claim_renew_metadata_json
                 """,
                 {"task_id": task_id, "claim_id": claim_id, "reason": reason},
             ).consume()
@@ -409,6 +509,8 @@ def _claim_from_task(task: dict[str, Any], now_ms: int) -> dict[str, Any]:
         "lease_id": task.get("passive_claim_lease_id"),
         "mode": task.get("passive_claim_mode"),
         "claimed_at_ts": _int_or_none(task.get("passive_claimed_at_ts")),
+        "renewed_at_ts": _int_or_none(task.get("passive_claim_renewed_at_ts")),
+        "progress_note": task.get("passive_claim_progress_note"),
         "expires_at_ts": expires_at,
         "expired": expires_at < now_ms,
         "seconds_remaining": max(0, int((expires_at - now_ms) / 1000)) if expires_at else 0,
