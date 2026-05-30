@@ -13,6 +13,7 @@ from .swarm_core import (
     EventConflictError,
     EventValidationError,
     action_requires_approval,
+    delete_model_endpoint,
     fail_task,
     list_capabilities,
     list_model_endpoints,
@@ -205,6 +206,18 @@ def api_register_model_endpoint(body: ModelEndpointRegisterIn, user: str = Depen
     neo = _neo()
     try:
         return {"endpoint": upsert_model_endpoint(neo, body.model_dump(exclude_none=True))}
+    finally:
+        neo.close()
+
+
+@router.delete("/api/swarm/model-endpoints/{model_endpoint_id}")
+def api_delete_model_endpoint(model_endpoint_id: str, user: str = Depends(_default_auth)):
+    neo = _neo()
+    try:
+        result = delete_model_endpoint(neo, model_endpoint_id)
+        if not result.get("deleted"):
+            raise HTTPException(status_code=404, detail=result.get("error", "Model endpoint not found"))
+        return result
     finally:
         neo.close()
 

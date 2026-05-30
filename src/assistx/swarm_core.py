@@ -482,6 +482,47 @@ def upsert_model_endpoint(neo: Neo4jClient, payload: Dict[str, Any], event_node_
         return dict(rec["e"]) if rec else props
 
 
+def delete_model_endpoint(neo: Neo4jClient, model_endpoint_id: str) -> Dict[str, Any]:
+    """Delete a model endpoint and its associated Model nodes and relationships."""
+    with neo._session() as s:
+        # Check existence first
+        exists = s.run(
+            "MATCH (e:ModelEndpoint {model_endpoint_id:$ep_id}) RETURN count(e) AS cnt",
+            {"ep_id": model_endpoint_id},
+        ).single()
+        if exists["cnt"] == 0:
+            return {"deleted": False, "error": f"Model endpoint '{model_endpoint_id}' not found"}
+
+        # Delete the endpoint and all related Model nodes/relationships
+        s.run(
+            """
+            MATCH (e:ModelEndpoint {model_endpoint_id:$ep_id})
+            MATCH (e)-[:SERVES]->(m:Model)
+            DELETE e, m
+            """,
+            {"ep_id": model_endpoint_id},
+        ).consume()
+
+        # Record deletion event
+        event = {
+            "event_id": f"delete-{model_endpoint_id}-{int(time.time())}",
+            "event_type": "model.endpoint.deleted",
+            "source_repo": "auto-assist",
+            "source_service": "api",
+            "node_id": "system",
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "idempotency_key": f"delete-{model_endpoint_id}-{int(time.time())}",
+            "schema_version": "1.0",
+            "subject": {"kind": "model_endpoint", "id": model_endpoint_id},
+            "payload": {"model_endpoint_id": model_endpoint_id},
+            "artifact_refs": [],
+            "privacy": {"pii": False, "privacy_class": "public", "retention_class": "keep"},
+        }
+        record_event(neo, event)
+
+    return {"deleted": True, "model_endpoint_id": model_endpoint_id}
+
+
 def record_voice_auth_decision(neo: Neo4jClient, event: Dict[str, Any]) -> str:
     payload = event.get("payload") or {}
     decision_id = str(payload.get("decision_id") or event["event_id"])
