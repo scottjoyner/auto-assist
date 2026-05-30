@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from assistx.passive_agents import _capabilities_match, _is_passive_safe, _normalize_idle_candidate
+from assistx.passive_events import record_passive_event
 
 
 class PassiveClaimIn(BaseModel):
@@ -41,14 +42,6 @@ class PassiveClaimRenewIn(BaseModel):
 
 
 def build_passive_claim_router(neo_factory: Callable[[], Any], auth_dependency: Any | None = None) -> APIRouter:
-    """Review-only passive work claim endpoints.
-
-    A passive claim reserves a safe task so an idle agent can review/plan it
-    without executing code or mutating external systems. It is a lightweight
-    coordination primitive between heartbeat recommendations and future real
-    execution claims.
-    """
-
     dependencies = [Depends(auth_dependency)] if auth_dependency is not None else []
     router = APIRouter(prefix="/api/agents", tags=["passive-claims"], dependencies=dependencies)
 
@@ -124,9 +117,21 @@ def claim_passive_task(neo_factory: Callable[[], Any], body: PassiveClaimIn) -> 
         _rollback_claim(neo_factory, body.task_id, claim_id, reason="capability_mismatch")
         return _blocked("capability_mismatch", "agent capabilities do not satisfy task requirements", {"candidate": candidate})
 
+    event_id = record_passive_event(
+        neo_factory,
+        "passive_claim.created",
+        agent_id=body.agent_id,
+        task_id=body.task_id,
+        claim_id=claim_id,
+        lease_id=body.lease_id,
+        status="CLAIMED_PASSIVE",
+        action="passive_claimed",
+        metadata={"mode": body.mode, "ttl_seconds": body.ttl_seconds, **(body.metadata or {})},
+    )
     return {
         "ok": True,
         "claim_id": claim_id,
+        "event_id": event_id,
         "task_id": body.task_id,
         "agent_id": body.agent_id,
         "mode": body.mode,
@@ -167,9 +172,20 @@ def renew_passive_claim(neo_factory: Callable[[], Any], body: PassiveClaimRenewI
             pass
     if not row:
         return _blocked("not_renewed", "passive claim was not found, expired, or is owned by another agent")
+    event_id = record_passive_event(
+        neo_factory,
+        "passive_claim.renewed",
+        agent_id=body.agent_id,
+        task_id=body.task_id,
+        claim_id=body.claim_id,
+        action="passive_claim_renewed",
+        summary=body.progress_note,
+        metadata={"ttl_seconds": body.ttl_seconds, **(body.metadata or {})},
+    )
     return {
         "ok": True,
         "claim_id": body.claim_id,
+        "event_id": event_id,
         "task_id": body.task_id,
         "agent_id": body.agent_id,
         "renewed_at_ts": now_ms,
@@ -200,9 +216,21 @@ def release_passive_claim(neo_factory: Callable[[], Any], body: PassiveClaimRele
             pass
     if not row:
         return _blocked("not_released", "passive claim was not found or is owned by another agent")
+    event_id = record_passive_event(
+        neo_factory,
+        "passive_claim.released",
+        agent_id=body.agent_id,
+        task_id=body.task_id,
+        claim_id=body.claim_id,
+        action="passive_claim_released",
+        result=body.result,
+        summary=body.summary,
+        metadata=body.metadata,
+    )
     return {
         "ok": True,
         "claim_id": body.claim_id,
+        "event_id": event_id,
         "task_id": body.task_id,
         "agent_id": body.agent_id,
         "result": body.result,
@@ -262,6 +290,17 @@ def expire_passive_claims(neo_factory: Callable[[], Any], limit: int = 50) -> di
         except Exception:
             pass
     expired = [dict(row) for row in rows]
+    for item in expired:
+        record_passive_event(
+            neo_factory,
+            "passive_claim.expired",
+            agent_id=item.get("agent_id"),
+            task_id=item.get("task_id"),
+            claim_id=item.get("claim_id"),
+            action="passive_claim_expired",
+            result="expired",
+            summary="Passive claim expired and was returned to READY/REVIEW.",
+        )
     return {
         "ok": True,
         "expired": expired,
@@ -489,6 +528,14 @@ def _rollback_claim(neo_factory: Callable[[], Any], task_id: str, claim_id: str,
                 """,
                 {"task_id": task_id, "claim_id": claim_id, "reason": reason},
             ).consume()
+        record_passive_event(
+            neo_factory,
+            "passive_claim.rollback",
+            task_id=task_id,
+            claim_id=claim_id,
+            result=reason,
+            action="passive_claim_rollback",
+        )
     except Exception:
         return
     finally:
