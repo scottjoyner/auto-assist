@@ -6,6 +6,8 @@ from typing import Any, Callable, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from assistx.passive_events import record_passive_event
+
 
 VALID_MODES = {"enabled", "paused", "draining", "maintenance"}
 
@@ -51,27 +53,16 @@ def get_passive_control_state(neo_factory: Callable[[], Any]) -> dict[str, Any]:
         if not row:
             return default_passive_control_state()
         control = dict(row["c"])
-        mode = _normalize_mode(control.get("mode"))
-        return {
-            "ok": True,
-            "mode": mode,
-            "passive_allowed": mode == "enabled",
-            "new_claims_allowed": mode == "enabled",
-            "renewals_allowed": mode in {"enabled", "draining"},
-            "recommended_agent_status": recommended_agent_status_for_mode(mode),
-            "reason": control.get("reason"),
-            "updated_by": control.get("updated_by"),
-            "updated_at_ts": control.get("updated_at_ts"),
-            "metadata": control.get("metadata") or {},
-        }
+        return build_control_state(
+            mode=control.get("mode"),
+            reason=control.get("reason"),
+            updated_by=control.get("updated_by"),
+            updated_at_ts=control.get("updated_at_ts"),
+            metadata=control.get("metadata") or {},
+        )
     except Exception as exc:
-        state = default_passive_control_state()
+        state = build_control_state(mode="maintenance", reason="passive control read failed", metadata={})
         state["ok"] = False
-        state["mode"] = "maintenance"
-        state["passive_allowed"] = False
-        state["new_claims_allowed"] = False
-        state["renewals_allowed"] = False
-        state["recommended_agent_status"] = "paused"
         state["error"] = str(exc)[:500]
         return state
     finally:
@@ -117,33 +108,55 @@ def set_passive_control_state(neo_factory: Callable[[], Any], body: PassiveContr
                 neo.close()
         except Exception:
             pass
+    state = build_control_state(
+        mode=mode,
+        reason=body.reason,
+        updated_by=body.updated_by,
+        updated_at_ts=now_ms,
+        metadata=body.metadata or {},
+    )
+    event_id = record_passive_event(
+        neo_factory,
+        "passive_control.changed",
+        agent_id=body.updated_by,
+        action="passive_control_changed",
+        status=mode,
+        result=mode,
+        summary=body.reason,
+        metadata={"control": state, **(body.metadata or {})},
+    )
+    state["event_id"] = event_id
+    return state
+
+
+def build_control_state(
+    mode: Any,
+    reason: Optional[str] = None,
+    updated_by: Optional[str] = None,
+    updated_at_ts: Optional[int] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    normalized = _normalize_mode(mode)
     return {
         "ok": True,
-        "mode": mode,
-        "passive_allowed": mode == "enabled",
-        "new_claims_allowed": mode == "enabled",
-        "renewals_allowed": mode in {"enabled", "draining"},
-        "recommended_agent_status": recommended_agent_status_for_mode(mode),
-        "reason": body.reason,
-        "updated_by": body.updated_by,
-        "updated_at_ts": now_ms,
-        "metadata": body.metadata or {},
+        "mode": normalized,
+        "passive_allowed": normalized == "enabled",
+        "new_claims_allowed": normalized == "enabled",
+        "renewals_allowed": normalized in {"enabled", "draining"},
+        "recommended_agent_status": recommended_agent_status_for_mode(normalized),
+        "reason": reason,
+        "updated_by": updated_by,
+        "updated_at_ts": updated_at_ts,
+        "metadata": metadata or {},
     }
 
 
 def default_passive_control_state() -> dict[str, Any]:
-    return {
-        "ok": True,
-        "mode": "enabled",
-        "passive_allowed": True,
-        "new_claims_allowed": True,
-        "renewals_allowed": True,
-        "recommended_agent_status": "idle",
-        "reason": "default enabled; no PassiveAgentControl node exists yet",
-        "updated_by": None,
-        "updated_at_ts": None,
-        "metadata": {},
-    }
+    return build_control_state(
+        mode="enabled",
+        reason="default enabled; no PassiveAgentControl node exists yet",
+        metadata={},
+    )
 
 
 def recommended_agent_status_for_mode(mode: str) -> str:
