@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query
 
 from assistx.passive_agents import _heartbeat_counts, _read_agent_heartbeats, _suggest_idle_work
 from assistx.passive_claims import expire_passive_claims, list_passive_claims, passive_claim_summary
+from assistx.passive_control import get_passive_control_state
 
 
 def build_passive_status_router(neo_factory: Callable[[], Any], auth_dependency: Any | None = None) -> APIRouter:
@@ -47,17 +48,20 @@ def build_passive_status(
     include_idle_work: bool = True,
     limit: int = 25,
 ) -> dict[str, Any]:
+    control = get_passive_control_state(neo_factory)
     heartbeats = _read_agent_heartbeats(neo_factory, limit=limit)
     claims = list_passive_claims(neo_factory, agent_id=agent_id, include_expired=True, limit=limit)
-    idle_work = _suggest_idle_work(neo_factory, capabilities=[], limit=min(limit, 10)) if include_idle_work else []
+    allow_idle_work = include_idle_work and control.get("passive_allowed") and control.get("new_claims_allowed")
+    idle_work = _suggest_idle_work(neo_factory, capabilities=[], limit=min(limit, 10)) if allow_idle_work else []
     if agent_id:
         heartbeats = [item for item in heartbeats if item.get("agent_id") == agent_id]
     heartbeat_summary = _heartbeat_counts(heartbeats)
     claim_summary = passive_claim_summary(claims)
-    recommendations = passive_system_recommendations(heartbeat_summary, claim_summary, idle_work)
+    recommendations = passive_system_recommendations(heartbeat_summary, claim_summary, idle_work, control=control)
     return {
         "ok": True,
         "agent_id": agent_id,
+        "control": control,
         "heartbeats": heartbeats,
         "heartbeat_summary": heartbeat_summary,
         "claims": claims,
@@ -73,8 +77,27 @@ def passive_system_recommendations(
     heartbeat_summary: dict[str, int],
     claim_summary: dict[str, int],
     idle_work: list[dict[str, Any]],
+    control: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     recs: list[dict[str, Any]] = []
+    control = control or {"mode": "enabled", "new_claims_allowed": True, "renewals_allowed": True}
+    mode = control.get("mode") or "enabled"
+    if mode in {"paused", "maintenance"}:
+        recs.append(
+            {
+                "level": "warning",
+                "action": "keep_agents_paused",
+                "reason": f"global passive control is {mode}; agents should not start or renew passive work",
+            }
+        )
+    elif mode == "draining":
+        recs.append(
+            {
+                "level": "warning",
+                "action": "drain_current_work",
+                "reason": "global passive control is draining; finish safe checkpoints and do not start new claims",
+            }
+        )
     if claim_summary.get("expired", 0) > 0:
         recs.append(
             {
@@ -83,7 +106,7 @@ def passive_system_recommendations(
                 "reason": "expired passive claims are present and may block idle work",
             }
         )
-    if heartbeat_summary.get("idle", 0) > 0 and idle_work:
+    if control.get("new_claims_allowed") and heartbeat_summary.get("idle", 0) > 0 and idle_work:
         recs.append(
             {
                 "level": "info",
@@ -91,7 +114,7 @@ def passive_system_recommendations(
                 "reason": "idle agents and passive-safe work are available",
             }
         )
-    if heartbeat_summary.get("busy", 0) > 0:
+    if control.get("renewals_allowed") and heartbeat_summary.get("busy", 0) > 0:
         recs.append(
             {
                 "level": "info",
@@ -99,7 +122,7 @@ def passive_system_recommendations(
                 "reason": "busy agents should renew or release passive claims before TTL expiry",
             }
         )
-    if not idle_work and claim_summary.get("active", 0) == 0:
+    if not idle_work and claim_summary.get("active", 0) == 0 and mode == "enabled":
         recs.append(
             {
                 "level": "info",
