@@ -4,8 +4,10 @@ import os, json, hashlib
 import time
 import math
 from typing import Dict, Any, Optional
-import redis
+from ..deps import load_redis_module
 import requests
+
+redis = load_redis_module()
 
 from ..neo4j_client import Neo4jClient
 from ..neo_schema import fetch_schema

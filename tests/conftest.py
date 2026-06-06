@@ -1,4 +1,8 @@
 import os
+
+os.environ["ASSISTX_RUNTIME_PROFILE"] = "test"
+os.environ["ASSISTX_DEPENDENCY_MODE"] = "compat"
+
 import socket
 import shutil
 import subprocess

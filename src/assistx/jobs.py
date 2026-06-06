@@ -5,7 +5,9 @@ from .agents.orchestrator import run_task
 from .acceptance import evaluate_acceptance
 import os, traceback
 from typing import Optional
-from rq import get_current_job
+from .deps import load_get_current_job
+
+get_current_job = load_get_current_job()
 from .neo4j_client import Neo4jClient
 from .pipeline.qa_pipeline import answer_question
 from .answers_store import set_status, set_result, set_error

@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import uuid
@@ -65,6 +66,24 @@ def test_event_replay_idempotency_and_conflict(seeded_neo4j):
     changed = _base_event(payload={**event["payload"], "text": "Conflicting text"})
     with pytest.raises(EventConflictError):
         record_event(seeded_neo4j, changed)
+
+
+def test_event_metadata_is_persisted_for_router_and_assign_consumers(seeded_neo4j):
+    event = _base_event(event_id="event-metadata", idempotency_key="metadata-key")
+    record_event(seeded_neo4j, event)
+
+    with seeded_neo4j._session() as s:
+        rec = s.run(
+            "MATCH (e:EventEnvelope {event_id:$event_id}) RETURN e.metadata_json AS metadata_json, e.payload_json AS payload_json",
+            {"event_id": event["event_id"]},
+        ).single()
+
+    metadata = json.loads(rec["metadata_json"])
+    assert metadata["request"]["request_id"] == event["event_id"]
+    assert metadata["request"]["event_type"] == event["event_type"]
+    assert metadata["request"]["subject_id"] == event["subject"]["id"]
+    assert metadata["context"]["contract"] == "assistx.event_metadata.v1"
+    assert "text" not in metadata["request"]
 
 
 def test_unknown_speaker_requires_approval_and_scott_low_risk_auto_approval(seeded_neo4j):
@@ -253,7 +272,7 @@ def test_swarm_routes_registered(monkeypatch, seeded_neo4j):
     monkeypatch.setattr("assistx.swarm_routes._neo", lambda: seeded_neo4j)
     monkeypatch.setattr(seeded_neo4j, "close", lambda: None)
     client = TestClient(app)
-    response = client.post("/api/events", json=_base_event(event_id="route-event", idempotency_key="route-key"), auth=_auth())
+    response = client.post("/api/events", json={**_base_event(event_id="route-event", idempotency_key="route-key"), "unexpected": "ignored"}, auth=_auth())
     assert response.status_code == 200, response.text
     assert response.json()["accepted"] is True
 
@@ -265,6 +284,7 @@ def test_swarm_routes_registered(monkeypatch, seeded_neo4j):
             "status": "online",
             "roles": ["primary_knowledge_host"],
             "capabilities": [{"capability_id": "x1-370.assistx.control", "kind": "orchestration"}],
+            "unexpected": "ignored",
         },
         auth=_auth(),
     )

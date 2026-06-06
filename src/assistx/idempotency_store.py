@@ -1,5 +1,9 @@
-import os, json, time, redis
+import os, json, time
 from typing import Optional, Dict, Any
+
+from .deps import load_redis_module
+
+redis = load_redis_module()
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 IDEMP_TTL_S = int(os.getenv("IDEMP_TTL_S", "3600"))

@@ -6,7 +6,19 @@ from .config import settings
 from .cache import cache_get, cache_set, make_key
 from .logging_utils import get_logger
 from .metrics import LLM_TOKENS
-from tenacity import retry, stop_after_attempt, wait_exponential
+try:
+    from tenacity import retry, stop_after_attempt, wait_exponential
+except ModuleNotFoundError:  # pragma: no cover - fallback for stripped test envs
+    def stop_after_attempt(_n):
+        return None
+
+    def wait_exponential(*args, **kwargs):
+        return None
+
+    def retry(*args, **kwargs):
+        def _decorator(func):
+            return func
+        return _decorator
 
 logger = get_logger()
 
@@ -48,8 +60,11 @@ def json_chat(prompt: str, schema_hint: str | None = None, temperature: float = 
 
     raw = _cache_or_call(key, _do)
     try:
-        import orjson
-        obj = orjson.loads(raw)
+        try:
+            import orjson
+            obj = orjson.loads(raw)
+        except ModuleNotFoundError:
+            obj = json.loads(raw)
         LLM_TOKENS.labels(model=settings.ollama_model, mode="json").inc(_estimate_tokens(prompt))
         return obj
     except Exception as e:

@@ -1,6 +1,10 @@
 # src/assistx/answers_store.py
-import os, json, time, uuid, redis
+import os, json, time, uuid
 from typing import Optional, Dict, Any, List, Tuple
+
+from .deps import load_redis_module
+
+redis = load_redis_module()
 
 def _now_ms() -> int:
     """UTC wall-clock in milliseconds, for created_at/updated_at fields."""

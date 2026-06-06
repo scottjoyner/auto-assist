@@ -8,8 +8,10 @@ import uuid
 from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
-import redis as redis_module
-from rq import get_current_job
+from .deps import load_get_current_job, load_redis_module
+
+redis_module = load_redis_module()
+get_current_job = load_get_current_job()
 
 from .neo4j_client import Neo4jClient
 from .paperclip_client import PaperclipClient

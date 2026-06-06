@@ -1,0 +1,17 @@
+services:
+  api:
+    command: uvicorn assistx.api_router:app --host 0.0.0.0 --port 8000
+    environment:
+      - ASSISTX_OVERLAY_MODE=${ASSISTX_OVERLAY_MODE:-router_plus_assign}
+      - AUTO_ROUTER_BASE_URL=${AUTO_ROUTER_BASE_URL:-http://host.docker.internal:8088}
+      - AUTO_ASSIGN_BASE_URL=${AUTO_ASSIGN_BASE_URL:-http://host.docker.internal:8090}
+      - AUTO_ROUTER_HEALTH_PATH=${AUTO_ROUTER_HEALTH_PATH:-/health}
+      - AUTO_ASSIGN_HEALTH_PATH=${AUTO_ASSIGN_HEALTH_PATH:-/health}
+
+  worker:
+    environment:
+      - ASSISTX_OVERLAY_MODE=${ASSISTX_OVERLAY_MODE:-router_plus_assign}
+      - AUTO_ROUTER_BASE_URL=${AUTO_ROUTER_BASE_URL:-http://host.docker.internal:8088}
+      - AUTO_ASSIGN_BASE_URL=${AUTO_ASSIGN_BASE_URL:-http://host.docker.internal:8090}
+      - AUTO_ROUTER_HEALTH_PATH=${AUTO_ROUTER_HEALTH_PATH:-/health}
+      - AUTO_ASSIGN_HEALTH_PATH=${AUTO_ASSIGN_HEALTH_PATH:-/health}

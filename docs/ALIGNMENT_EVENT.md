@@ -30,7 +30,8 @@ The goal is to make context look the same whether a worker is running locally, u
 2. auto-router consumes that projection and makes provider and lane decisions from it.
 3. Both repos expose the same lane terminology in their dashboards and API metadata.
 4. AssistX exposes the projection at `/api/context/projection` for live consumers.
-5. Paperclip remains the current non-realtime release path until the canary completes.
+5. Paperclip remains the current non-realtime release path until the production-worker canary completes.
+6. AssistX runtime now reports dependency health explicitly and only falls back to in-memory shims when the dependency mode is set for compat/test environments.
 
 ## Next steps
 

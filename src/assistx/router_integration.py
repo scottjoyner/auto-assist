@@ -7,6 +7,8 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Query, Request
 
+from .coordination_metadata import build_task_candidate_metadata
+
 
 def build_router_integration_router(neo_factory: Callable[[], Any]) -> APIRouter:
     """Read-only AssistX endpoints consumed by auto-router.
@@ -288,7 +290,7 @@ def _normalize_task_candidate(task: dict[str, Any]) -> dict[str, Any]:
     allow_cloud = False if local_only else bool(payload.get("allow_cloud", metadata.get("allow_cloud", True)))
     title = str(task.get("title") or payload.get("title") or task.get("id") or "AssistX task")
     prompt = str(payload.get("prompt") or payload.get("description") or task.get("description") or title)
-    return {
+    candidate = {
         "task_id": str(task.get("id") or task.get("task_id") or title),
         "title": title,
         "prompt": prompt,
@@ -309,6 +311,8 @@ def _normalize_task_candidate(task: dict[str, Any]) -> dict[str, Any]:
             "source_task_id": task.get("id") or task.get("task_id"),
         },
     }
+    candidate["metadata"] = build_task_candidate_metadata(candidate, candidate["metadata"])
+    return candidate
 
 
 def _queue_matches(task: dict[str, Any], queue: str) -> bool:

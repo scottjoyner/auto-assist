@@ -1,8 +1,19 @@
 # src/assistx/worker.py
 import multiprocessing as mp
 import os
-import redis
-from rq import Worker, Queue, Connection
+
+from .deps import load_redis_module, use_compat_shims
+from .runtime import validate_runtime_configuration
+
+redis = load_redis_module()
+if use_compat_shims():
+    try:
+        from rq import Worker, Queue, Connection
+    except ModuleNotFoundError:
+        from .compat import InMemoryQueue as Queue
+        Worker = Connection = None
+else:
+    from rq import Worker, Queue, Connection
 
 def _run_one_worker(index: int, listen: list[str], redis_url: str) -> None:
     conn = redis.from_url(redis_url)
@@ -14,6 +25,7 @@ def _run_one_worker(index: int, listen: list[str], redis_url: str) -> None:
 
 
 def main():
+    validate_runtime_configuration(strict=True)
     listen = [os.getenv("RQ_QUEUE", "assistx")]
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
     concurrency = max(1, int(os.getenv("WORKER_CONCURRENCY", "1")))

@@ -13,15 +13,3 @@ services:
       # optional: allow fallback to CPU if HIP not detected
       - WHISPER_FALLBACK=cpu
 
-  ollama:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - capabilities: ["gpu"]
-    environment:
-      # Ollama doesn’t yet support ROCm natively — if you’re containerizing it, it will
-      # either run CPU mode or use DirectML on Windows. For now we keep GPU flag so
-      # compose knows it *wants* acceleration.
-      - OLLAMA_DEVICE=hip
-      - OLLAMA_COMPUTE_TYPE=float16

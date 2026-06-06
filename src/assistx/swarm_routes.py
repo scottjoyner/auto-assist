@@ -31,6 +31,8 @@ _outbox_client: Optional[OutboxClient] = None
 
 
 class EventEnvelopeIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     event_id: str
     event_type: str
     source_repo: str
@@ -42,10 +44,13 @@ class EventEnvelopeIn(BaseModel):
     subject: Dict[str, Any]
     payload: Dict[str, Any] = Field(default_factory=dict)
     artifact_refs: List[Dict[str, Any]] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     privacy: Dict[str, Any]
 
 
 class SwarmNodeRegisterIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     node_id: str
     hostname: Optional[str] = None
     display_name: Optional[str] = None
@@ -69,6 +74,8 @@ class SwarmNodeRegisterIn(BaseModel):
 
 
 class SwarmHeartbeatIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     status: str = "online"
     current_task_id: Optional[str] = None
     load: Dict[str, Any] = Field(default_factory=dict)
@@ -78,6 +85,8 @@ class SwarmHeartbeatIn(BaseModel):
 
 
 class TaskFailIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     agent_id: str
     error_summary: str
     retryable: bool = True
@@ -85,11 +94,13 @@ class TaskFailIn(BaseModel):
 
 
 class LeaseSweepIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     now_ms: Optional[int] = None
 
 
 class ModelEndpointRegisterIn(BaseModel):
-    model_config = ConfigDict(protected_namespaces=())
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
 
     model_endpoint_id: str
     node_id: str
@@ -102,6 +113,8 @@ class ModelEndpointRegisterIn(BaseModel):
 
 
 class DraftGenerateIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     prompt: str = Field(min_length=1, max_length=8000)
     max_tokens: int = Field(default=256, ge=1, le=1024)
 

@@ -9,6 +9,8 @@ services:
 
   api:
     restart: unless-stopped
+    environment:
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:?set OPENAI_BASE_URL to your LM Studio OpenAI-compatible endpoint}
     healthcheck:
       test:
         [
@@ -28,6 +30,7 @@ services:
   worker:
     restart: unless-stopped
     environment:
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:?set OPENAI_BASE_URL to your LM Studio OpenAI-compatible endpoint}
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-2}
     depends_on:
       redis:

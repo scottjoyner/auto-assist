@@ -31,6 +31,9 @@ must remain enabled until it does.
 - A replay of the pre-idempotency `ASS-26` source event identified a legacy-dispatch migration edge and was cancelled as `ASS-27`; retries now reuse pre-key dispatches and cannot reopen terminal tasks.
 - Final post-fix signed canary `ASS-28` created exactly one Paperclip issue, completed and synchronized `Task=DONE`, and a signed replay returned the same task without creating another issue or changing terminal state.
 - After the bounded diagnostics, the live Paperclip adapter was restored to `qwen/qwen3.6-35b-a3b`; the MacBook Air remains draft-only in the release architecture.
+- AssistX now exposes an explicit runtime profile (`ASSISTX_RUNTIME_PROFILE` / `ASSISTX_DEPENDENCY_MODE`) and structured health reporting for Redis, Neo4j, and LLM-backed paths.
+- The operator cutover canary is now encoded as `assistx.canary.run_cutover_canary()` and `src/scripts/phase6_cutover_canary.py`, which post a signed ingest sample, create the selected-worker dispatch, and wait for the expected terminal disposition.
+- AssistX can also expose an overlay status for `auto-router` and `auto-assign`; that overlay is explicit and optional in direct mode, but becomes part of the runtime contract when enabled.
 
 ### Active Blocker
 
@@ -87,14 +90,13 @@ worker model and completing the authorized enrollment canary.
 
 ### Next Steps
 
-1. Decide whether to tune or replace the slow x1 production inference model for the cutover worker; keep the MacBook Air outside automatic execution unless a separate operational decision explicitly promotes it.
-2. Repeat the signed-ingest canary using that selected production configuration; `ASS-28` already proves the integration chain and retry behavior with a bounded diagnostic worker.
-3. Perform authorized operator enrollment with a real enrollment sample so audit data is meaningful.
-4. Benchmark the registered Mac small models only for non-sensitive draft quality and latency while it remains an advisory lane.
-5. Rotate previously committed/local development secrets and keep only environment templates in source control.
-6. Only after a production-worker completion and enrollment verification, disable `hermes-agent-adapter.service`.
-7. Publish the Neo4j context alignment contract so AssistX and auto-router share the same node, model, capability, and lane vocabulary.
-8. Use `auto-router/docs/DEPLOYMENT.md` as the first deployment runbook for the aligned AssistX + router stack.
+1. Run the operator cutover canary against the selected production worker target using a signed enrollment sample and confirm the expected terminal disposition.
+2. Keep the MacBook Air outside automatic execution unless a separate operational decision explicitly promotes it.
+3. Benchmark the registered Mac small models only for non-sensitive draft quality and latency while it remains an advisory lane.
+4. Rotate previously committed/local development secrets and keep only environment templates in source control.
+5. Only after a production-worker completion and enrollment verification, disable `hermes-agent-adapter.service`.
+6. Publish the Neo4j context alignment contract so AssistX and auto-router share the same node, model, capability, and lane vocabulary.
+7. Use `auto-router/docs/DEPLOYMENT.md` as the first deployment runbook for the aligned AssistX + router stack.
 
 ### Deferred Work
 

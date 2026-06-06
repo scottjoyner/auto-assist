@@ -38,9 +38,16 @@ The event envelope supports:
     "pii": true,
     "privacy_class": "private | sensitive | public | unknown",
     "retention_class": "ephemeral | keep | protected | evidence"
+  },
+  "metadata": {
+    "request": {},
+    "task": {},
+    "context": {}
   }
 }
 ```
+
+Optional `metadata` is reserved for shared request/task context consumed by auto-router and auto-assign. AssistX may derive and persist the request block even when producers omit it; task candidates may also include a task block.
 
 ---
 

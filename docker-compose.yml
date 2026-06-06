@@ -32,14 +32,12 @@ services:
       - NEO4J_DATABASE=${NEO4J_DATABASE:-assistx}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
 
-      # --- LLM Backend (LM Studio / Ollama) ---
+      # --- LLM Backend (LM Studio / OpenAI-compatible) ---
       - LLM_BACKEND=${LLM_BACKEND:-openai}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://host.docker.internal:1234/v1}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-not-needed}
       - LLM_MODEL=${LLM_MODEL:-llama3.1:8b}
       - EMBED_MODEL=${EMBED_MODEL:-nomic-embed-text}
-      - OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
 
       # --- Optional advisory draft endpoint ---
       - DRAFT_MODEL_BASE_URL=${DRAFT_MODEL_BASE_URL:-}
@@ -105,8 +103,6 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-not-needed}
       - LLM_MODEL=${LLM_MODEL:-llama3.1:8b}
       - EMBED_MODEL=${EMBED_MODEL:-nomic-embed-text}
-      - OLLAMA_HOST=${OLLAMA_HOST:-http://ollama:11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma:2b}
       - CACHE_PATH=/app/.assistx_cache.sqlite
       - WHISPER_DEVICE=${WHISPER_DEVICE:-auto}
       - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}

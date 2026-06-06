@@ -6,7 +6,9 @@ import logging
 import uuid
 from typing import Optional
 
-import redis as redis_module
+from .deps import load_redis_module
+
+redis_module = load_redis_module()
 
 logger = logging.getLogger(__name__)
 

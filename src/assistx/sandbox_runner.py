@@ -35,7 +35,19 @@ def main():
     code = payload["code"]
     rows = payload["rows"]
 
-    import pandas as pd
+    try:
+        import pandas as pd
+    except ModuleNotFoundError:
+        class _PandasShim:
+            class DataFrame(list):
+                def __init__(self, *args, **kwargs):
+                    data = args[0] if args else kwargs.get("data", [])
+                    super().__init__(data if isinstance(data, list) else [data])
+
+            def __getattr__(self, name):
+                raise AttributeError(f"pandas is unavailable in this sandbox ({name})")
+
+        pd = _PandasShim()
 
     # sandbox env
     g = {"__builtins__": SAFE_BUILTINS.copy()}

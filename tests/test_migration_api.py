@@ -108,6 +108,7 @@ def test_dispatch_and_session_endpoints(seeded_neo4j, monkeypatch):
         },
         "priority": "HIGH",
         "idempotency_key": "dispatch-test-key",
+        "unexpected": "ignored",
     }
     r = client.post("/api/dispatch", json=dispatch_payload, auth=auth)
     assert r.status_code == 200, r.text
@@ -595,6 +596,204 @@ def test_ask_deliverable_breakdown(seeded_neo4j):
     assert any(child["ticket_type"] == "task" for child in tree["children"])
 
 
+
+
+def test_api_ask_auto_accepts_punctuation_and_whitespace(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+
+    monkeypatch.setattr(
+        "assistx.api.answer_question",
+        lambda *args, **kwargs: {
+            "answer": "ok",
+            "data_preview": [],
+            "cypher": "RETURN 1",
+            "analysis_code": "def main(rows): return {'ok': True}",
+            "computed": {"ok": True},
+            "stdout": "",
+            "cached": False,
+            "run_id": "run-1",
+        },
+    )
+
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    body = {
+        "question": "  How many READY tasks are in the graph?\nInclude counts by kind, please.  ",
+        "mode": "auto",
+        "timeout_s": 0,
+    }
+
+    r = client.post("/api/ask", json=body, auth=auth)
+    assert r.status_code in (200, 202), r.text
+    assert "expected pattern" not in r.text
+
+
+
+
+def test_api_validation_errors_are_structured():
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    r = client.post("/api/ask", json={"question": ""}, auth=auth)
+
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["detail"] == "Request validation failed"
+    assert body["error"]["code"] == "http_422"
+    assert body["error"]["status_code"] == 422
+    assert body["errors"][0]["field"] == "question"
+    assert "expected pattern" not in r.text
+
+
+
+
+
+
+def test_api_paperclip_event_validation_errors_are_structured():
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    r = client.post("/api/paperclip/events", json={"event_type": "task.created"}, auth=auth)
+
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["detail"] == "Request validation failed"
+    assert any(err["field"] == "paperclip_issue_id" for err in body["errors"])
+    assert "expected pattern" not in r.text
+
+
+def test_api_voice_event_validation_errors_are_structured():
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    r = client.post("/api/voice/events", json={"event_type": "task_created"}, auth=auth)
+
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["detail"] == "Request validation failed"
+    assert any(err["field"] == "event_id" for err in body["errors"])
+    assert "expected pattern" not in r.text
+
+
+def test_api_workflow_control_rejects_invalid_action(seeded_neo4j, monkeypatch):
+    monkeypatch.setattr("assistx.api._neo", lambda: seeded_neo4j)
+    monkeypatch.setattr(seeded_neo4j, "close", lambda: None)
+
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    r = client.post("/api/workflows/control", json={"action": "invalid"}, auth=auth)
+
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == "action must be drain, resume, or set_limits"
+
+
+def test_api_dispatch_validation_errors_are_structured():
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    r = client.post("/api/dispatch", json={"task_id": "task-1"}, auth=auth)
+
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["detail"] == "Request validation failed"
+    assert any(err["field"] == "target" for err in body["errors"])
+    assert "expected pattern" not in r.text
+
+
+def test_api_intent_validation_errors_are_structured():
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    r = client.post("/api/intents", json={"source": "voice"}, auth=auth)
+
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["detail"] == "Request validation failed"
+    assert any(err["field"] == "text" for err in body["errors"])
+    assert "expected pattern" not in r.text
+
+
+def test_api_ask_rejects_invalid_mode(seeded_neo4j, monkeypatch):
+    monkeypatch.setattr("assistx.api._neo", lambda: seeded_neo4j)
+    monkeypatch.setattr(seeded_neo4j, "close", lambda: None)
+
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    r = client.post(
+        "/api/ask",
+        json={"question": "How many tasks are ready?", "mode": "bogus"},
+        auth=auth,
+    )
+
+    assert r.status_code == 400, r.text
+    body = r.json()
+    assert body["detail"] == "mode must be one of: sync, async, auto"
+    assert body["error"]["code"] == "http_400"
+    assert body["error"]["status_code"] == 400
+
+
+def test_api_ask_async_enqueues_normalized_question(seeded_neo4j, monkeypatch):
+    seen = {}
+
+    class FakeNeo:
+        def create_deliverable_from_ask(self, **kwargs):
+            seen["question"] = kwargs["question"]
+            return {"deliverable_id": "deliverable-1", "intent_id": "intent-1"}
+
+        def close(self):
+            return None
+
+    class FakeJob:
+        def __init__(self, job_id="job-1"):
+            self._job_id = job_id
+
+        def get_id(self):
+            return self._job_id
+
+    class FakeQueue:
+        def enqueue(self, *args, **kwargs):
+            return FakeJob()
+
+    monkeypatch.setattr("assistx.api._neo", lambda: FakeNeo())
+    monkeypatch.setattr("assistx.api.get_q", lambda: FakeQueue())
+    monkeypatch.setattr("assistx.api.answers_store.new_answer_id", lambda: "answer-123")
+    monkeypatch.setattr("assistx.api.answers_store.init_answer", lambda *args, **kwargs: None)
+    monkeypatch.setattr("assistx.api.answers_store.set_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr("assistx.api.idemp_save", lambda *args, **kwargs: None)
+
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    r = client.post(
+        "/api/ask_async",
+        json={"question": "  How many READY tasks are in the graph?\nInclude counts by kind, please.  ", "extra_debug": True},
+        auth=auth,
+    )
+
+    assert r.status_code == 200, r.text
+    assert seen["question"] == "How many READY tasks are in the graph?\nInclude counts by kind, please."
+    body = r.json()
+    assert body["answer_id"] == "answer-123"
+    assert body["job_id"] == "job-1"
+    assert body["status_url"] == "/api/answers/answer-123"
+
+
+def test_api_get_answer_not_found(monkeypatch):
+    monkeypatch.setattr("assistx.api.answers_store.get_answer", lambda *_: None)
+
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    r = client.get("/api/answers/missing-answer", auth=auth)
+
+    assert r.status_code == 404, r.text
+    assert r.json()["detail"] == "Answer not found"
+
+
 def test_api_ask_sync_idempotency(seeded_neo4j, monkeypatch):
     neo = seeded_neo4j
     monkeypatch.setattr("assistx.api._neo", lambda: neo)
@@ -1021,7 +1220,10 @@ def test_phase8_workflow_ops_endpoints(seeded_neo4j, monkeypatch):
         auth=auth,
     )
     assert claim_block.status_code == 409, claim_block.text
-    assert claim_block.json()["detail"]["reason"] == "drain_mode_block"
+    claim_body = claim_block.json()
+    assert claim_body["detail"]["reason"] == "drain_mode_block"
+    assert claim_body["error"]["code"] == "http_409"
+    assert claim_body["error"]["status_code"] == 409
 
     # Critical claims are still allowed in drain mode
     critical_ready_id = neo.upsert_ticket(

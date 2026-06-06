@@ -17,6 +17,10 @@ def test_normalize_task_candidate_preserves_private_safety_flags() -> None:
     assert task["sensitive"] is True
     assert task["allow_cloud"] is False
     assert task["metadata"]["assistx_source"] is True
+    assert task["metadata"]["request"]["request_kind"] == "task_candidate"
+    assert task["metadata"]["request"]["task_id"] == "task-1"
+    assert task["metadata"]["task"]["task_id"] == "task-1"
+    assert "prompt" not in task["metadata"]["request"]
 
 
 def test_normalize_task_candidate_maps_background_defaults() -> None:

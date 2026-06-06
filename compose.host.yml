@@ -7,7 +7,6 @@ services:
       - NEO4J_DATABASE=assistx
       - LLM_BACKEND=openai
       - OPENAI_BASE_URL=http://host.docker.internal:1234/v1
-      - OLLAMA_HOST=http://ollama:11434
     volumes:
       - /mnt/8TB_2025:/data:ro
     # Helpful on Linux if host.docker.internal isn't resolvable:
@@ -22,7 +21,6 @@ services:
       - NEO4J_DATABASE=assistx
       - LLM_BACKEND=openai
       - OPENAI_BASE_URL=http://host.docker.internal:1234/v1
-      - OLLAMA_HOST=http://ollama:11434
     volumes:
       - /mnt/8TB_2025:/data:ro
     extra_hosts:

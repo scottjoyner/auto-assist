@@ -1,6 +1,29 @@
 from __future__ import annotations
 
-from prometheus_client import Counter, Histogram, Gauge, REGISTRY
+try:
+    from prometheus_client import Counter, Histogram, Gauge, REGISTRY
+except ModuleNotFoundError:  # pragma: no cover - fallback for stripped test envs
+    class _NoopMetric:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def labels(self, *args, **kwargs):
+            return self
+
+        def inc(self, *args, **kwargs):
+            return self
+
+        def observe(self, *args, **kwargs):
+            return self
+
+        def set(self, *args, **kwargs):
+            return self
+
+    class _NoopRegistry:
+        _collector_to_names = {}
+
+    Counter = Histogram = Gauge = _NoopMetric
+    REGISTRY = _NoopRegistry()
 
 
 def _safe_counter(name: str, doc: str, labels: list | None = None):

@@ -7,6 +7,8 @@ load_dotenv()
 
 @dataclass
 class Settings:
+    runtime_profile: str = os.getenv("ASSISTX_RUNTIME_PROFILE", os.getenv("ASSISTX_DEPENDENCY_MODE", "production"))
+    dependency_mode: str = os.getenv("ASSISTX_DEPENDENCY_MODE", os.getenv("ASSISTX_RUNTIME_PROFILE", "production"))
     neo4j_uri: str = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
     neo4j_user: str = os.getenv("NEO4J_USER", "neo4j")
     neo4j_password: str = os.getenv("NEO4J_PASSWORD", "knowledge_graph_2026")
@@ -20,6 +22,12 @@ class Settings:
 
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://ollama:11434")
     ollama_model: str = os.getenv("OLLAMA_MODEL", "gemma2:2b")
+
+    overlay_mode: str = os.getenv("ASSISTX_OVERLAY_MODE", "direct")
+    auto_router_base_url: str = os.getenv("AUTO_ROUTER_BASE_URL", "")
+    auto_assign_base_url: str = os.getenv("AUTO_ASSIGN_BASE_URL", "")
+    auto_router_health_path: str = os.getenv("AUTO_ROUTER_HEALTH_PATH", "/health")
+    auto_assign_health_path: str = os.getenv("AUTO_ASSIGN_HEALTH_PATH", "/health")
 
     tavily_api_key: str | None = os.getenv("TAVILY_API_KEY")
 

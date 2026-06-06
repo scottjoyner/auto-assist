@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from .coordination_metadata import build_event_metadata
 from .neo4j_client import Neo4jClient
 
 SCHEMA_VERSION = "1.0"
@@ -90,6 +91,8 @@ def validate_event_envelope(event: Dict[str, Any]) -> Dict[str, Any]:
         raise EventValidationError("payload must be an object")
     if not isinstance(event.get("artifact_refs"), list):
         raise EventValidationError("artifact_refs must be a list")
+    if "metadata" in event and not isinstance(event.get("metadata"), dict):
+        raise EventValidationError("metadata must be an object")
     privacy = event.get("privacy")
     if not isinstance(privacy, dict):
         raise EventValidationError("privacy must be an object")
@@ -141,6 +144,7 @@ def record_event(neo: Neo4jClient, event: Dict[str, Any]) -> Dict[str, Any]:
     subject_json = _json_dumps(event.get("subject") or {})
     artifact_json = _json_dumps(event.get("artifact_refs") or [])
     privacy_json = _json_dumps(event.get("privacy") or {})
+    metadata_json = _json_dumps(build_event_metadata(event, event.get("metadata")))
     with neo._session() as s:
         existing = s.run(
             """
@@ -185,6 +189,7 @@ def record_event(neo: Neo4jClient, event: Dict[str, Any]) -> Dict[str, Any]:
                 e.payload_json=$payload_json,
                 e.artifact_refs_json=$artifact_json,
                 e.privacy_json=$privacy_json,
+                e.metadata_json=$metadata_json,
                 e.payload_hash=$payload_hash,
                 e.created_at=datetime(),
                 e.created_at_ts=timestamp(),
@@ -204,6 +209,7 @@ def record_event(neo: Neo4jClient, event: Dict[str, Any]) -> Dict[str, Any]:
                 "payload_json": payload_json,
                 "artifact_json": artifact_json,
                 "privacy_json": privacy_json,
+                "metadata_json": metadata_json,
                 "payload_hash": phash,
             },
         ).consume()

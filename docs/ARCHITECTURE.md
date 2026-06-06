@@ -9,7 +9,9 @@ the registered `hermes_local` adapter.
 
 Direct worker claiming and fleet/model-endpoint routing are retained as
 follow-up development surfaces. They are not enabled as a substitute for the
-Paperclip cutover path.
+Paperclip cutover path. The production runtime now makes that boundary explicit
+through `ASSISTX_RUNTIME_PROFILE` / `ASSISTX_DEPENDENCY_MODE` and structured
+health reporting.
 
 ## Neo4j Context Fabric
 
@@ -92,6 +94,7 @@ event_id, event_type, source_repo, source_service, node_id,
 occurred_at, idempotency_key, schema_version, subject, payload,
 artifact_refs, privacy
 ```
+AssistX also derives optional `metadata.request` and `metadata.task` blocks for shared router/assign consumers. The blocks are persisted alongside the event so overlay services can consume the same request/task metadata shape without reading prompt or response bodies from provenance records.
 
 ### Supported Event Types
 ```
@@ -231,12 +234,28 @@ AgentRun -[:PRODUCED]-> Artifact
 docker compose -f docker-compose.yml -f compose.override.yml up -d
 ```
 
-See `compose.host.yml` for host-mode Neo4j/Ollama, `compose.override.gpu.yml` for GPU support.
+Overlay mode for `auto-router` and `auto-assign`:
+
+```bash
+docker compose -f docker-compose.yml -f compose.overlay.yml up -d
+```
+
+See `compose.host.yml` for host-mode Neo4j plus an OpenAI-compatible LM Studio endpoint, `compose.override.gpu.yml` for GPU support. The production compose overlay requires `OPENAI_BASE_URL` explicitly so the deploy fails fast if the LM Studio endpoint is not configured.
+
+AssistX also exposes an overlay health contract for `auto-router` and `auto-assign`. In overlay mode, the app reports those services separately from the core runtime so operators can see whether the routing layer is present, healthy, or degraded.
 
 ### Environment
-Key vars: `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `NEO4J_DATABASE=assistx`, `REDIS_URL`, `BASIC_AUTH_USER`, `BASIC_AUTH_PASS`
+Key vars: `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `NEO4J_DATABASE=assistx`, `REDIS_URL`, `BASIC_AUTH_USER`, `BASIC_AUTH_PASS`, `ASSISTX_RUNTIME_PROFILE`, `ASSISTX_DEPENDENCY_MODE`
 
 ### Init
 ```bash
 docker exec -it assistx-api bash -lc "python -m assistx.cli init"
 ```
+
+### Runtime Contract
+
+- `ASSISTX_RUNTIME_PROFILE=production` is the default cutover mode.
+- `ASSISTX_DEPENDENCY_MODE=compat` is reserved for stripped test/dev environments that need the in-memory shims.
+- `GET /health` now returns structured dependency status for Redis, Neo4j, and the configured LLM backend, and returns `503` when the core runtime dependencies are unavailable.
+- `GET /api/ops/status` includes the same runtime snapshot alongside queue, review, and dispatch counters.
+- `src/scripts/phase6_cutover_canary.py` runs the operator canary: signed ingest, dispatch creation on the selected worker target, and polling for the expected terminal disposition.

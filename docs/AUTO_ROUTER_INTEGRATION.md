@@ -8,6 +8,7 @@ The integration keeps ownership boundaries clear:
 
 - AssistX owns canonical task/context state in Neo4j.
 - auto-router owns routing, quota, provider selection, service scanning, and dry-run selection.
+- auto-assign consumes the same AssistX state for assignment/scheduler decisions without taking over canonical ownership.
 - Paperclip/Hermes remains the approved execution path during the current cutover.
 
 ## 2. Entrypoint
@@ -110,6 +111,8 @@ Each task is normalized to the shape expected by auto-router:
 - `status`
 - `queue`
 - `privacy`
+- `metadata.request` for shared request context
+- `metadata.task` for shared task context
 - `metadata`
 
 ## 4. Safety behavior

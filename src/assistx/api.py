@@ -13,11 +13,10 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-import redis
-import redis.asyncio as aioredis
 import requests
 from fastapi import (Body, Depends, FastAPI, File, Form, Header, HTTPException,
                      Query, Request, UploadFile, WebSocket, WebSocketDisconnect)
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
                                RedirectResponse, StreamingResponse)
@@ -25,9 +24,14 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from neo4j.exceptions import ServiceUnavailable
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-from pydantic import BaseModel, Field
-from rq import Queue
+from pydantic import BaseModel, ConfigDict, Field
+from .deps import load_aioredis_module, load_prometheus_client, load_queue_class, load_redis_module, multipart_available
+from .runtime import build_runtime_health, runtime_profile, validate_runtime_configuration
+
+CONTENT_TYPE_LATEST, generate_latest = load_prometheus_client()
+redis = load_redis_module()
+aioredis = load_aioredis_module()
+Queue = load_queue_class()
 from .metrics import QA_REQUESTS, JOBS_ENQUEUED, TASK_CLAIMS, TASK_COMPLETIONS, TASK_HEARTBEATS, CONTEXT_PACKETS
 from .metrics import RQ_JOBS_IN_QUEUE, RQ_JOBS_RUNNING, RQ_JOBS_FAILED
 from .metrics import REQUESTS
@@ -51,25 +55,22 @@ from .jobs import execute_task_job, ask_question_job
 from .metrics import EXECUTIONS
 from .answers_store import get_answer, _chan as _answer_channel
 from .answers_store import _global_chan
-# add this near your other imports
-try:
-    from . import answers_store
-    chan = answers_store._global_chan()
-except ImportError:
-    import assistx.answers_store as answers_store
-    chan = answers_store._global_chan()
-
-# from .answers_store import *
+from . import answers_store
+chan = answers_store._global_chan()
 
 class AskAsyncIn(BaseModel):
-    question: str
+    model_config = ConfigDict(extra="ignore")
+
+    question: str = Field(min_length=1, max_length=8000)
     model: str | None = None
     max_repairs: int = 3
     meta: dict | None = None
     idempotency_key: str | None = None   # <--- NEW
 
 class AskIn(BaseModel):
-    question: str
+    model_config = ConfigDict(extra="ignore")
+
+    question: str = Field(min_length=1, max_length=8000)
     model: str | None = None
     max_repairs: int = 3
     mode: str = "auto"
@@ -77,6 +78,8 @@ class AskIn(BaseModel):
     idempotency_key: str | None = None   # <--- NEW
 
 class IntentIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     source: str
     text: str
     idempotency_key: str | None = None
@@ -84,6 +87,8 @@ class IntentIn(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 class ContextPacketIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     query: str
     task_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -91,17 +96,23 @@ class ContextPacketIn(BaseModel):
     include_sources: Optional[List[str]] = None
 
 class DispatchTarget(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     paperclip_agent_id: Optional[str] = None
     paperclip_issue_id: Optional[str] = None
     capabilities: Optional[List[str]] = None
 
 class DispatchIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     task_id: str
     target: DispatchTarget
     priority: str = "MEDIUM"
     idempotency_key: Optional[str] = None
 
 class TicketIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     title: str
     ticket_type: str = "task"
     status: str = "READY"
@@ -114,6 +125,8 @@ class TicketIn(BaseModel):
     idempotency_key: Optional[str] = None
 
 class TaskClaimIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     agent_id: str
     capabilities: Optional[List[str]] = None
     session_id: Optional[str] = None
@@ -121,6 +134,8 @@ class TaskClaimIn(BaseModel):
     lease_seconds: Optional[int] = None
 
 class TaskHeartbeatIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     agent_id: str
     status: Optional[str] = None
     session_id: Optional[str] = None
@@ -128,6 +143,8 @@ class TaskHeartbeatIn(BaseModel):
     lease_seconds: Optional[int] = None
 
 class TaskCompleteIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     agent_id: str
     status: str = "DONE"
     summary: Optional[str] = None
@@ -136,6 +153,8 @@ class TaskCompleteIn(BaseModel):
     idempotency_key: Optional[str] = None
 
 class PaperclipEventIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     event_type: str
     paperclip_issue_id: str
     paperclip_agent_id: Optional[str] = None
@@ -144,6 +163,8 @@ class PaperclipEventIn(BaseModel):
     payload: Dict[str, Any] = Field(default_factory=dict)
 
 class MemoryWriteIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     kind: str
     text: str
     source: str
@@ -152,6 +173,8 @@ class MemoryWriteIn(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 class SignalEventIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     event_id: str
     event_type: str
     payload: Dict[str, Any] = Field(default_factory=dict)
@@ -160,6 +183,8 @@ class SignalEventIn(BaseModel):
     paperclip_run_id: Optional[str] = None
 
 class VoiceEventIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     event_id: str
     event_type: str
     text: Optional[str] = None
@@ -171,6 +196,8 @@ class VoiceEventIn(BaseModel):
 
 
 class SophiaVoiceEventIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     event_id: str
     event_type: str
     session_id: Optional[str] = None
@@ -183,6 +210,8 @@ class SophiaVoiceEventIn(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 class SessionUpdateIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     paperclip_agent_id: Optional[str] = None
     hermes_session_id: Optional[str] = None
     agent_identity: Optional[str] = None
@@ -191,6 +220,8 @@ class SessionUpdateIn(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 class DeviceRegisterIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     device_id: str
     hostname: str
     platform: Optional[str] = None
@@ -201,11 +232,15 @@ class DeviceRegisterIn(BaseModel):
     tags: Optional[List[str]] = None
 
 class DeviceHeartbeatIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     current_load: int = 0
     queue_depth: int = 0
 
 
 class ReviewDecisionIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     note: Optional[str] = None
     auto_dispatch: bool = True
     target: Optional[DispatchTarget] = None
@@ -213,6 +248,8 @@ class ReviewDecisionIn(BaseModel):
 
 
 class FeedConnectorUpsertIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     id: str
     name: str
     category: str = "general"
@@ -223,6 +260,8 @@ class FeedConnectorUpsertIn(BaseModel):
 
 
 class EvaluationRunIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     suite_name: str
     agent_class: str
     status: str = "completed"
@@ -231,6 +270,8 @@ class EvaluationRunIn(BaseModel):
 
 
 class EvaluationSuiteUpsertIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     name: str
     agent_class: str
     enabled: bool = True
@@ -241,18 +282,24 @@ class EvaluationSuiteUpsertIn(BaseModel):
 
 
 class WorkflowControlIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     action: str  # drain | resume | set_limits
     max_concurrent_workflows: Optional[int] = None
     max_batch_backlog: Optional[int] = None
 
 
 class WorkflowReplanIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     reason: str
     severity: str = "warning"
     metadata: Optional[Dict[str, Any]] = None
 
 
 class WorkflowBudgetUpdateIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     token_budget: Optional[int] = None
     time_budget_s: Optional[int] = None
     retry_budget: Optional[int] = None
@@ -285,6 +332,8 @@ WHISPER_COMPUTE = os.getenv("WHISPER_COMPUTE_TYPE", "int8") # e.g., "float16", "
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 _rconn = redis.from_url(REDIS_URL)
 _q = Queue(connection=_rconn)
+
+MULTIPART_AVAILABLE = multipart_available()
 # -----------------------
 # App + Static/Template
 # -----------------------
@@ -293,6 +342,7 @@ _api_logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    validate_runtime_configuration(strict=True)
     try:
         neo = Neo4jClient()
         neo.ensure_schema()
@@ -326,6 +376,63 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="AssistX API & UI", lifespan=lifespan)
+
+
+def _validation_error_response(exc: RequestValidationError) -> JSONResponse:
+    """Return a stable, UI-safe validation error envelope."""
+    errors = []
+    for item in exc.errors():
+        loc = [str(part) for part in item.get("loc", ())]
+        field = ".".join(loc[1:]) if len(loc) > 1 and loc[0] in {"body", "query", "path", "header", "cookie"} else ".".join(loc)
+        errors.append(
+            {
+                "field": field or None,
+                "code": item.get("type", "validation_error"),
+                "message": "Invalid value",
+            }
+        )
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": "Request validation failed",
+            "error": {
+                "code": "http_422",
+                "message": "Request validation failed",
+                "status_code": 422,
+            },
+            "errors": errors,
+        },
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def _request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    return _validation_error_response(exc)
+
+
+def _http_exception_response(exc: HTTPException) -> JSONResponse:
+    detail = exc.detail
+    if isinstance(detail, dict):
+        message = detail.get("message") or "Request failed"
+    else:
+        message = str(detail)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": detail,
+            "error": {
+                "code": f"http_{exc.status_code}",
+                "message": message,
+                "status_code": exc.status_code,
+            },
+        },
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(HTTPException)
+async def _http_exception_handler(request: Request, exc: HTTPException):
+    return _http_exception_response(exc)
 
 # CORS is useful for the ingestion endpoints (web UIs, local tools, etc.)
 app.add_middleware(
@@ -369,7 +476,15 @@ async def rate_limit_middleware(request: Request, call_next):
             if not allowed:
                 return JSONResponse(
                     status_code=429,
-                    content={"detail": "Rate limit exceeded", "retry_after_seconds": retry_after},
+                    content={
+                        "detail": "Rate limit exceeded",
+                        "error": {
+                            "code": "http_429",
+                            "message": "Rate limit exceeded",
+                            "status_code": 429,
+                        },
+                        "retry_after_seconds": retry_after,
+                    },
                     headers={"Retry-After": str(retry_after)},
                 )
             break
@@ -381,10 +496,30 @@ async def neo4j_guard(request, call_next):
     try:
         return await call_next(request)
     except ServiceUnavailable:
-        return PlainTextResponse("Neo4j unavailable. In host mode, set NEO4J_URI=bolt://host.docker.internal:7687 and add extra_hosts.", status_code=503)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Neo4j unavailable. In host mode, set NEO4J_URI=bolt://host.docker.internal:7687 and add extra_hosts.",
+                "error": {
+                    "code": "http_503",
+                    "message": "Neo4j unavailable",
+                    "status_code": 503,
+                },
+            },
+        )
     except ValueError as e:
         if "Cannot resolve address" in str(e):
-            return PlainTextResponse("Neo4j hostname not resolvable from container. Use host.docker.internal (with host-gateway) or run neo4j in Compose.", status_code=503)
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "Neo4j hostname not resolvable from container. Use host.docker.internal (with host-gateway) or run neo4j in Compose.",
+                    "error": {
+                        "code": "http_503",
+                        "message": "Neo4j hostname not resolvable",
+                        "status_code": 503,
+                    },
+                },
+            )
         raise
 
 @app.middleware("http")
@@ -398,6 +533,21 @@ async def request_metrics_middleware(request: Request, call_next):
         ).inc()
     except Exception:
         pass
+    return response
+
+@app.middleware("http")
+async def access_log_middleware(request: Request, call_next):
+    start = _time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = int((_time.perf_counter() - start) * 1000)
+    _api_logger.info(
+        "request_complete path=%s method=%s status=%s duration_ms=%s runtime_profile=%s",
+        request.url.path,
+        request.method,
+        response.status_code,
+        elapsed_ms,
+        runtime_profile(),
+    )
     return response
 
 def _auth_user_from_credentials(
@@ -549,6 +699,18 @@ def _json_dict(value: Any) -> Dict[str, Any]:
         except Exception:
             return {}
     return {}
+
+def _normalize_ask_question(question: str) -> str:
+    """
+    Normalize user questions before they are logged and sent into the QA pipeline.
+
+    This keeps accidental leading/trailing whitespace and control characters from
+    leaking into Neo4j titles, cache keys, and downstream prompts.
+    """
+    q = (question or "").replace("\x00", "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="question must not be empty")
+    return q
 
 
 def _is_claim_allowed_for_workflow_control(task: Dict[str, Any]) -> tuple[bool, str]:
@@ -791,6 +953,8 @@ def _sse(event: str, data: dict | str) -> str:
 
 
 class LLMStreamIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     prompt: Optional[str] = None                          # one-shot prompt
     messages: Optional[List[Dict[str, str]]] = None       # chat format: [{"role":"user","content":"..."}]
     model: Optional[str] = None                           # defaults to OLLAMA_MODEL env
@@ -972,7 +1136,9 @@ def ingest_ui(request: Request, user: str = Depends(auth)):
     )
 @app.get("/health")
 def health():
-    return {"ok": True}
+    payload = build_runtime_health()
+    status_code = 200 if payload.get("ok") else 503
+    return JSONResponse(status_code=status_code, content=payload)
 
 @app.get("/api/context/projection")
 def api_context_projection():
@@ -989,6 +1155,7 @@ def api_ops_status(
     review_backlog_threshold: int = Query(25, ge=1, le=2000),
     user: str = Depends(auth),
 ):
+    runtime = build_runtime_health()
     queue_depth = 0
     running_count = 0
     failed_count = 0
@@ -1113,6 +1280,7 @@ def api_ops_status(
         },
         "feeds": feeds,
         "evaluation_suites": evaluation_suites,
+        "runtime": runtime,
     }
 
 def _safe_upload_name(name: str, fallback: str = "capture") -> str:
@@ -1139,191 +1307,200 @@ def _json_object(value: str) -> Dict[str, Any]:
         return {"raw": value}
     return parsed if isinstance(parsed, dict) else {"value": parsed}
 
-@app.post("/api/captures")
-async def api_create_capture(
-    request: Request,
-    media: UploadFile | None = File(default=None),
-    file: UploadFile | None = File(default=None),
-    transcript: str = Form(default=""),
-    user_id: str = Form(default="default"),
-    session_id: str = Form(default="mobile"),
-    duration_ms: int = Form(default=0),
-    device_id: str = Form(default=""),
-    device_fingerprint: str = Form(default=""),
-    client_context: str = Form(default=""),
-    activity_context: str = Form(default=""),
-    user: str = Depends(auth),
-):
-    upload = media or file
-    capture_id = uuid.uuid4().hex
-    media_path = ""
-    filename = ""
-    byte_count = 0
-    content_type = upload.content_type if upload else "text/plain"
-    if upload is not None:
-        filename = _safe_upload_name(upload.filename or f"{capture_id}.bin")
-        suffix = pathlib.Path(filename).suffix or ".bin"
-        stored_name = f"{capture_id}{suffix.lower()}"
-        target = CAPTURES_ROOT / stored_name
-        with target.open("wb") as handle:
-            shutil.copyfileobj(upload.file, handle)
-        media_path = str(target)
-        byte_count = target.stat().st_size
-    context = _json_object(client_context)
-    headers = request.headers
-    context.update(
-        {
-            "device_id": device_id or context.get("device_id", ""),
-            "device_fingerprint": device_fingerprint or context.get("device_fingerprint", ""),
-            "client_ip": headers.get("x-forwarded-for", "").split(",")[0].strip()
-            or (request.client.host if request.client else ""),
-            "user_agent": headers.get("user-agent", context.get("user_agent", "")),
-            "language": headers.get("accept-language", context.get("language", "")),
-            "activity_context": activity_context or context.get("activity_context", ""),
-        }
-    )
-    kind = _media_kind(content_type, filename)
-
-    whisper_model_used: Optional[str] = None
-    if not transcript.strip() and kind in ("audio", "video") and media_path:
-        try:
-            model_name = os.getenv("WHISPER_FALLBACK_MODEL", "tiny")
-            wm = get_whisper_model(model_name)
-            segments, info = wm.transcribe(media_path, beam_size=1)
-            seg_texts = [(seg.text or "").strip() for seg in segments]
-            transcript = "\n".join(t for t in seg_texts if t)
-            whisper_model_used = model_name
-        except Exception as e:
-            _api_logger.warning("Whisper fallback transcription failed for %s: %s", capture_id, e)
-
-    classification = classify_text(transcript) if transcript.strip() else None
-    neo = _neo()
-    try:
-        graph = neo.ingest_media_capture(
-            capture_id=capture_id,
-            user_id=user_id or user,
-            session_id=session_id or "mobile",
-            transcript=transcript,
-            media_path=media_path,
-            filename=filename,
-            content_type=content_type,
-            media_kind=kind,
-            duration_ms=duration_ms,
-            byte_count=byte_count,
-            device_id=str(context.get("device_id") or ""),
-            device_fingerprint=str(context.get("device_fingerprint") or ""),
-            activity_context=str(context.get("activity_context") or ""),
-            client_context=context,
-            metadata={
-                "authenticated_user": user,
-                "whisper_fallback": whisper_model_used is not None,
-            },
-            intent_classification=classification,
-        )
-    finally:
-        neo.close()
-    return {
-        "ok": True,
-        "capture_id": capture_id,
-        "session_id": session_id or "mobile",
-        "user_id": user_id or user,
-        "media_path": media_path,
-        "filename": filename,
-        "bytes": byte_count,
-        "content_type": content_type,
-        "media_kind": kind,
-        "duration_ms": duration_ms,
-        "transcript_saved": bool(transcript.strip()),
-        "whisper_fallback_model": whisper_model_used,
-        **graph,
-    }
-
-@app.post("/upload-audio")
-async def upload_audio(
-    file: UploadFile,
-    model: str = Form("tiny"),
-    x_api_token: Optional[str] = Header(default=None, convert_underscores=False),
-):
-    """
-    Upload an audio file; transcribe with faster-whisper; persist JSON + TXT to disk;
-    upsert (Transcription -> Segment) into Neo4j.
-
-    Security:
-      - If API_TOKEN env var is set, a matching 'x-api-token' header is required.
-    """
-    if API_TOKEN:
-        if not x_api_token or x_api_token != API_TOKEN:
-            raise HTTPException(status_code=401, detail="Unauthorized (missing/invalid API token)")
-
-    # Save to temp, keeping original filename stem for output files
-    tmp_path = pathlib.Path("/tmp") / f"{uuid.uuid4().hex}_{file.filename}"
-    with open(tmp_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    # Transcribe (cached model)
-    wm = get_whisper_model(model)
-    segments, info = wm.transcribe(str(tmp_path), beam_size=1)
-
-    segs: List[Dict[str, Any]] = []
-    stem = pathlib.Path(file.filename).stem
-    for i, seg in enumerate(segments):
-        segs.append({
-            "id": f"{stem}_{i}",
-            "idx": i,
-            "start": round(seg.start or 0.0, 3),
-            "end": round(seg.end or 0.0, 3),
-            "text": (seg.text or "").strip(),
-            "tokens_count": None
-        })
-
-    full_text = "\n".join(s["text"] for s in segs if s.get("text"))
-
-    obj: Dict[str, Any] = {
-        "id": uuid.uuid4().hex,
-        "key": stem,
-        "text": full_text,
-        "source_json": str((TRANSCRIPTIONS_ROOT / f"{stem}_transcription.json").resolve()),
-        "source_rttm": None,
-        "segments": segs,
-        # you can include model/meta if useful downstream:
-        "model": model,
-        "language": getattr(info, "language", None),
-    }
-
-    # Persist JSON + TXT
-    json_path = TRANSCRIPTIONS_ROOT / f"{stem}_transcription.json"
-    txt_path = TRANSCRIPTIONS_ROOT / f"{stem}_transcription.txt"
-    json_path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
-    txt_path.write_text(full_text, encoding="utf-8")
-
-    # Upsert into Neo4j (Transcription + Segment graph)
-    neo = _neo()
-    try:
-        neo.ingest_transcription(
+if MULTIPART_AVAILABLE:
+    @app.post("/api/captures")
+    async def api_create_capture(
+        request: Request,
+        media: UploadFile | None = File(default=None),
+        file: UploadFile | None = File(default=None),
+        transcript: str = Form(default=""),
+        user_id: str = Form(default="default"),
+        session_id: str = Form(default="mobile"),
+        duration_ms: int = Form(default=0),
+        device_id: str = Form(default=""),
+        device_fingerprint: str = Form(default=""),
+        client_context: str = Form(default=""),
+        activity_context: str = Form(default=""),
+        user: str = Depends(auth),
+    ):
+        upload = media or file
+        capture_id = uuid.uuid4().hex
+        media_path = ""
+        filename = ""
+        byte_count = 0
+        content_type = upload.content_type if upload else "text/plain"
+        if upload is not None:
+            filename = _safe_upload_name(upload.filename or f"{capture_id}.bin")
+            suffix = pathlib.Path(filename).suffix or ".bin"
+            stored_name = f"{capture_id}{suffix.lower()}"
+            target = CAPTURES_ROOT / stored_name
+            with target.open("wb") as handle:
+                shutil.copyfileobj(upload.file, handle)
+            media_path = str(target)
+            byte_count = target.stat().st_size
+        context = _json_object(client_context)
+        headers = request.headers
+        context.update(
             {
-                "id": obj["id"],
-                "key": obj["key"],
-                "text": obj["text"],
-                "source_json": obj["source_json"],
-                "source_rttm": obj["source_rttm"],
-                "embedding": None,  # attach later if you run embeddings
-            },
-            obj["segments"],
+                "device_id": device_id or context.get("device_id", ""),
+                "device_fingerprint": device_fingerprint or context.get("device_fingerprint", ""),
+                "client_ip": headers.get("x-forwarded-for", "").split(",")[0].strip()
+                or (request.client.host if request.client else ""),
+                "user_agent": headers.get("user-agent", context.get("user_agent", "")),
+                "language": headers.get("accept-language", context.get("language", "")),
+                "activity_context": activity_context or context.get("activity_context", ""),
+            }
         )
-    finally:
-        neo.close()
+        kind = _media_kind(content_type, filename)
 
-    # Cleanup tmp
-    tmp_path.unlink(missing_ok=True)
+        whisper_model_used: Optional[str] = None
+        if not transcript.strip() and kind in ("audio", "video") and media_path:
+            try:
+                model_name = os.getenv("WHISPER_FALLBACK_MODEL", "tiny")
+                wm = get_whisper_model(model_name)
+                segments, info = wm.transcribe(media_path, beam_size=1)
+                seg_texts = [(seg.text or "").strip() for seg in segments]
+                transcript = "\n".join(t for t in seg_texts if t)
+                whisper_model_used = model_name
+            except Exception as e:
+                _api_logger.warning("Whisper fallback transcription failed for %s: %s", capture_id, e)
 
-    return JSONResponse({
-        "ok": True,
-        "transcription_id": obj["id"],
-        "segments": len(obj["segments"]),
-        "json_path": obj["source_json"],
-        "txt_path": str(txt_path),
-        "model_used": model,
-    })
+        classification = classify_text(transcript) if transcript.strip() else None
+        neo = _neo()
+        try:
+            graph = neo.ingest_media_capture(
+                capture_id=capture_id,
+                user_id=user_id or user,
+                session_id=session_id or "mobile",
+                transcript=transcript,
+                media_path=media_path,
+                filename=filename,
+                content_type=content_type,
+                media_kind=kind,
+                duration_ms=duration_ms,
+                byte_count=byte_count,
+                device_id=str(context.get("device_id") or ""),
+                device_fingerprint=str(context.get("device_fingerprint") or ""),
+                activity_context=str(context.get("activity_context") or ""),
+                client_context=context,
+                metadata={
+                    "authenticated_user": user,
+                    "whisper_fallback": whisper_model_used is not None,
+                },
+                intent_classification=classification,
+            )
+        finally:
+            neo.close()
+        return {
+            "ok": True,
+            "capture_id": capture_id,
+            "session_id": session_id or "mobile",
+            "user_id": user_id or user,
+            "media_path": media_path,
+            "filename": filename,
+            "bytes": byte_count,
+            "content_type": content_type,
+            "media_kind": kind,
+            "duration_ms": duration_ms,
+            "transcript_saved": bool(transcript.strip()),
+            "whisper_fallback_model": whisper_model_used,
+            **graph,
+        }
+
+    @app.post("/upload-audio")
+    async def upload_audio(
+        file: UploadFile,
+        model: str = Form("tiny"),
+        x_api_token: Optional[str] = Header(default=None, convert_underscores=False),
+    ):
+        """
+        Upload an audio file; transcribe with faster-whisper; persist JSON + TXT to disk;
+        upsert (Transcription -> Segment) into Neo4j.
+
+        Security:
+          - If API_TOKEN env var is set, a matching 'x-api-token' header is required.
+        """
+        if API_TOKEN:
+            if not x_api_token or x_api_token != API_TOKEN:
+                raise HTTPException(status_code=401, detail="Unauthorized (missing/invalid API token)")
+
+        # Save to temp, keeping original filename stem for output files
+        tmp_path = pathlib.Path("/tmp") / f"{uuid.uuid4().hex}_{file.filename}"
+        with open(tmp_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+
+        # Transcribe (cached model)
+        wm = get_whisper_model(model)
+        segments, info = wm.transcribe(str(tmp_path), beam_size=1)
+
+        segs: List[Dict[str, Any]] = []
+        stem = pathlib.Path(file.filename).stem
+        for i, seg in enumerate(segments):
+            segs.append({
+                "id": f"{stem}_{i}",
+                "idx": i,
+                "start": round(seg.start or 0.0, 3),
+                "end": round(seg.end or 0.0, 3),
+                "text": (seg.text or "").strip(),
+                "tokens_count": None
+            })
+
+        full_text = "\n".join(s["text"] for s in segs if s.get("text"))
+
+        obj: Dict[str, Any] = {
+            "id": uuid.uuid4().hex,
+            "key": stem,
+            "text": full_text,
+            "source_json": str((TRANSCRIPTIONS_ROOT / f"{stem}_transcription.json").resolve()),
+            "source_rttm": None,
+            "segments": segs,
+            # you can include model/meta if useful downstream:
+            "model": model,
+            "language": getattr(info, "language", None),
+        }
+
+        # Persist JSON + TXT
+        json_path = TRANSCRIPTIONS_ROOT / f"{stem}_transcription.json"
+        txt_path = TRANSCRIPTIONS_ROOT / f"{stem}_transcription.txt"
+        json_path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+        txt_path.write_text(full_text, encoding="utf-8")
+
+        # Upsert into Neo4j (Transcription + Segment graph)
+        neo = _neo()
+        try:
+            neo.ingest_transcription(
+                {
+                    "id": obj["id"],
+                    "key": obj["key"],
+                    "text": obj["text"],
+                    "source_json": obj["source_json"],
+                    "source_rttm": obj["source_rttm"],
+                    "embedding": None,  # attach later if you run embeddings
+                },
+                obj["segments"],
+            )
+        finally:
+            neo.close()
+
+        # Cleanup tmp
+        tmp_path.unlink(missing_ok=True)
+
+        return JSONResponse({
+            "ok": True,
+            "transcription_id": obj["id"],
+            "segments": len(obj["segments"]),
+            "json_path": obj["source_json"],
+            "txt_path": str(txt_path),
+            "model_used": model,
+        })
+else:
+    @app.post("/api/captures")
+    async def api_create_capture(user: str = Depends(auth)):
+        raise HTTPException(status_code=503, detail="python-multipart is required for /api/captures")
+
+    @app.post("/upload-audio")
+    async def upload_audio(user: str = Depends(auth)):
+        raise HTTPException(status_code=503, detail="python-multipart is required for /upload-audio")
 
 @app.get("/api/transcriptions")
 def api_list_transcriptions(
@@ -1384,6 +1561,8 @@ def api_get_transcription(tid: str, user: str = Depends(auth)):
 
 # ---------- Create Task from a transcription ----------
 class CreateTaskIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     title: str
     status: str = "REVIEW"           # READY/REVIEW/RUNNING/DONE/FAILED
     kind: Optional[str] = "transcription_summary"
@@ -3009,6 +3188,7 @@ def api_reassign_dispatch(dispatch_id: str, target: DispatchTarget, user: str = 
 
 @app.post("/api/ask_async")
 def api_ask_async(body: AskAsyncIn, user: str = Depends(auth)):
+    question = _normalize_ask_question(body.question)
     # Idempotency: if key maps to an existing answer, return it
     if body.idempotency_key:
         hit = idemp_load(body.idempotency_key)
@@ -3022,7 +3202,7 @@ def api_ask_async(body: AskAsyncIn, user: str = Depends(auth)):
     neo = _neo()
     try:
         deliverable = neo.create_deliverable_from_ask(
-            question=body.question,
+            question=question,
             answer_id=answer_id,
             mode="async",
             user=user,
@@ -3031,9 +3211,9 @@ def api_ask_async(body: AskAsyncIn, user: str = Depends(auth)):
     finally:
         neo.close()
     meta = {**(body.meta or {}), **deliverable}
-    answers_store.init_answer(answer_id, body.question, user_meta=meta)
+    answers_store.init_answer(answer_id, question, user_meta=meta)
     q = get_q()
-    job = q.enqueue(ask_question_job, answer_id, body.question, body.model, body.max_repairs, deliverable["deliverable_id"])
+    job = q.enqueue(ask_question_job, answer_id, question, body.model, body.max_repairs, deliverable["deliverable_id"])
     answers_store.set_status(answer_id, "QUEUED", job_id=job.get_id())
 
     if body.idempotency_key:
@@ -3044,6 +3224,7 @@ def api_ask_async(body: AskAsyncIn, user: str = Depends(auth)):
 
 @app.post("/api/ask")
 def api_ask(body: AskIn, user: str = Depends(auth)):
+    question = _normalize_ask_question(body.question)
     mode = (body.mode or "auto").lower()
     if mode not in ("sync", "async", "auto"):
         raise HTTPException(status_code=400, detail="mode must be one of: sync, async, auto")
@@ -3072,13 +3253,13 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
         deliverable = None
         try:
             deliverable = neo.create_deliverable_from_ask(
-                question=body.question,
+                question=question,
                 answer_id=None,
                 mode="sync",
                 user=user,
                 idempotency_key=body.idempotency_key,
             )
-            out = answer_question(neo, body.question, model=body.model, max_repairs=body.max_repairs, log_to_neo=True)
+            out = answer_question(neo, question, model=body.model, max_repairs=body.max_repairs, log_to_neo=True)
             completed = neo.complete_deliverable(
                 deliverable_id=deliverable["deliverable_id"],
                 status="DONE",
@@ -3112,7 +3293,7 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
     neo = _neo()
     try:
         deliverable = neo.create_deliverable_from_ask(
-            question=body.question,
+            question=question,
             answer_id=answer_id,
             mode=mode,
             user=user,
@@ -3120,9 +3301,9 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
         )
     finally:
         neo.close()
-    answers_store.init_answer(answer_id, body.question, user_meta={"mode": mode, **deliverable})
+    answers_store.init_answer(answer_id, question, user_meta={"mode": mode, **deliverable})
     q = get_q()
-    job = q.enqueue(ask_question_job, answer_id, body.question, body.model, body.max_repairs, deliverable["deliverable_id"])
+    job = q.enqueue(ask_question_job, answer_id, question, body.model, body.max_repairs, deliverable["deliverable_id"])
     answers_store.set_status(answer_id, "QUEUED", job_id=job.get_id())
     JOBS_ENQUEUED.inc()
     if body.idempotency_key:
