@@ -10,9 +10,30 @@ For the current Paperclip cutover release, model endpoints are inventory and
 advisory-drafting resources only. They do not select a Hermes worker, claim an
 AssistX task, or replace Paperclip as the non-realtime execution route.
 
-## Current draft lane decision
+## Current active local endpoints
 
-The MacBook Air LM Studio endpoint is the first optional draft lane:
+xwing is the first active agent-development LM Studio endpoint:
+
+```yaml
+model_endpoint_id: xwing.lmstudio
+node_id: xwing
+base_url: http://100.108.99.47:1234
+provider: lm_studio
+network_preference: tailscale
+purpose: default local Hermes worker endpoint for repo-local development and direct-worker bootstrap
+preferred_model: google/gemma-4-12b
+fallback_models:
+  - qwen/qwen3.6-35b-a3b
+  - qwen3.6-27b-claude-opus-sonnet-distilledv2-mtp
+  - qwen3.5-4b-uncensored-hauhaucs-aggressive
+  - liquid/lfm2.5-1.2b
+status: online
+last_verified_at: 2026-06-08T10:43:03-04:00
+```
+
+Use xwing for repo-local development, direct-worker adapter implementation, dry-run assignment tests, and local-only implementation tasks that do not require x1-370's heavier context or graph-local services. Keep mutation gated by the auto-assign lease/approval/sandbox policy.
+
+The MacBook Air LM Studio endpoint remains the quick-draft and Sophia-response-prep lane:
 
 ```yaml
 model_endpoint_id: scotts-macbook-air.lmstudio
@@ -99,7 +120,7 @@ Prefer low-power nodes when latency does not matter.
 
 ### Fast interactive answers
 
-Prefer demo/demo-1 if online and benchmarked faster.
+Prefer xwing first for agent-development tasks while it is online and clean. Prefer MacBook Air for short Sophia response-prep loops. Use demo/demo-1 only if online and benchmarked faster.
 
 ### High-context planning
 

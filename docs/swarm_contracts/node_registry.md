@@ -64,6 +64,38 @@ power_profile: medium
 notes: Former primary machine; continues selected legacy ingest jobs and can run Qwen-class local models.
 ```
 
+### `xwing`
+
+```yaml
+node_id: xwing
+hostname: xwing
+tailscale_ip: 100.108.99.47
+roles:
+  - hermes_agent
+  - model_endpoint
+  - direct_worker_candidate
+  - fast_iteration_node
+os: linux
+power_profile: medium
+storage_profile: local_ssd
+notes: Fresh Ubuntu replacement node for agent development. Verified 2026-06-08 with Hermes gateway/CLI running, clean Sophia/auto-assist/auto-router/auto-assign repos, and LM Studio listening on 0.0.0.0:1234.
+services:
+  - endpoint_id: xwing.lmstudio
+    service_type: lmstudio
+    base_url: http://100.108.99.47:1234
+    health_url: http://100.108.99.47:1234/v1/models
+    status: online
+capabilities:
+  - kind: llm
+    name: google/gemma-4-12b
+    status: available
+    risk_allowed: medium
+  - kind: code_edit
+    name: repo_local_hermes_worker
+    status: candidate
+    risk_allowed: medium
+```
+
 ### `mini-pc-22`
 
 ```yaml

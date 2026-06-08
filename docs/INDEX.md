@@ -7,6 +7,7 @@
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Paperclip cutover architecture, data flow, API reference, Neo4j schema |
 | [`STATUS.md`](STATUS.md) | Verified cutover state, blocker, and remediation order |
 | [`swarm_contracts/`](swarm_contracts/) | Deferred direct-worker contracts and event schema |
+| [`plans/2026-06-08-xwing-agent-development-handoff.md`](plans/2026-06-08-xwing-agent-development-handoff.md) | Verified xwing-first worker readiness, endpoint inventory, and agent kickoff sequence |
 
 ## Archived Docs
 
