@@ -285,6 +285,8 @@ def test_voice_event_signature_auth(monkeypatch):
                             class _R:
                                 def single(self):
                                     return {"cancelled": 0}
+                                def consume(self):
+                                    return None
                             return _R()
                     return _S()
 

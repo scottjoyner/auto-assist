@@ -57,6 +57,7 @@ from .answers_store import get_answer, _chan as _answer_channel
 from .answers_store import _global_chan
 from . import answers_store
 chan = answers_store._global_chan()
+from .swarm_core import record_trace_event
 
 class AskAsyncIn(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -2010,6 +2011,32 @@ def api_voice_event(
             session_id=body.session_id,
         )
 
+        # Generate or extract correlation_id for trace linkage
+        meta = body.metadata or {}
+        correlation_id = meta.get("correlation_id") or f"corr:{body.event_id}"
+        canonical_trace_type = _canonical_voice_trace_type(body.event_type, body.text)
+
+        # Record canonical trace event
+        record_trace_event(
+            neo,
+            correlation_id=correlation_id,
+            event_type=canonical_trace_type,
+            source="sophia_voice",
+            task_id=None,
+            dispatch_id=None,
+            payload={
+                "signal_event_id": signal_id,
+                "event_type": body.event_type,
+                "text": body.text or "",
+                "session_id": body.session_id,
+                "user_id": meta.get("user_id", "scott"),
+                "device_id": meta.get("device_id"),
+                "score": meta.get("score"),
+                "accepted": meta.get("accepted"),
+                "match_source": meta.get("match_source"),
+            },
+        )
+
         created_intent_id: Optional[str] = None
         created_memory_id: Optional[str] = None
         created_task_id: Optional[str] = None
@@ -2033,6 +2060,7 @@ def api_voice_event(
                     "voice_event_type": body.event_type,
                     "session_id": body.session_id,
                     "policy_action": policy_action,
+                    "correlation_id": correlation_id,
                     **(body.metadata or {}),
                 },
                 classification=classification,
@@ -2051,6 +2079,7 @@ def api_voice_event(
                         "voice_event_id": body.event_id,
                         "voice_event_type": body.event_type,
                         "classification": classification,
+                        "correlation_id": correlation_id,
                     },
                 )
 
@@ -2070,6 +2099,7 @@ def api_voice_event(
                         "source_event_id": body.event_id,
                         "source_intent": created_intent_id,
                         "voice_event_type": body.event_type,
+                        "correlation_id": correlation_id,
                     },
                     context_query=text,
                     context_sources=["memory", "knowledge", "orchestration"],
@@ -2083,7 +2113,17 @@ def api_voice_event(
                         "MERGE (i)-[:CREATED_TASK]->(t)",
                         {"iid": created_intent_id, "tid": created_task_id},
                     ).consume()
+
+                # Record dispatch.requested trace event if auto-dispatch
                 if body.auto_dispatch:
+                    record_trace_event(
+                        neo,
+                        correlation_id=correlation_id,
+                        event_type="dispatch.requested",
+                        source="sophia_voice",
+                        task_id=created_task_id,
+                        payload={"source_event_id": body.event_id},
+                    )
                     neo.create_dispatch_with_paperclip(
                         task_id=created_task_id,
                         target={
@@ -2092,6 +2132,14 @@ def api_voice_event(
                         },
                         idempotency_key=f"voice-dispatch:{body.event_id}",
                         paperclip_client=get_paperclip_client(),
+                    )
+                    record_trace_event(
+                        neo,
+                        correlation_id=correlation_id,
+                        event_type="dispatch.accepted",
+                        source="assistx",
+                        task_id=created_task_id,
+                        payload={"dispatch_method": "paperclip"},
                     )
 
         if body.event_type in {"cancel_active", "task_cancelled", "barge_in"} and not created_intent_id:
@@ -2108,6 +2156,7 @@ def api_voice_event(
                 metadata={
                     "voice_event_type": body.event_type,
                     "policy_action": policy_action,
+                    "correlation_id": correlation_id,
                     **(body.metadata or {}),
                 },
                 classification=CLASSIFICATION_CANCEL,
@@ -2136,9 +2185,28 @@ def api_voice_event(
             "memory_item_id": created_memory_id,
             "task_id": created_task_id,
             "cancelled_tasks": cancelled_tasks,
+            "correlation_id": correlation_id,
+            "trace_url": f"/api/traces/{correlation_id}",
         }
     finally:
         neo.close()
+
+
+def _canonical_voice_trace_type(event_type: str, text: Optional[str] = None) -> str:
+    """Map legacy voice event types to canonical trace event types."""
+    mapping = {
+        "voice_auth": "voice.auth.accepted",
+        "task_created": "dispatch.requested",
+        "meeting_transcript": "dispatch.requested",
+        "cancel_active": "dispatch.cancelled",
+        "task_cancelled": "dispatch.cancelled",
+        "barge_in": "dispatch.cancelled",
+        "ralph_iteration": "dispatch.requested",
+        "tts_chunk": "voice.auth.requested",
+        "voice_enrolled": "voice.auth.accepted",
+        "speaker_identified": "voice.auth.accepted",
+    }
+    return mapping.get(event_type, "voice.auth.requested")
 
 
 @app.post("/api/sophia/events")

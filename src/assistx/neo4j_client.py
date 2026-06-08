@@ -183,6 +183,15 @@ class Neo4jClient:
             "CREATE INDEX IF NOT EXISTS FOR (b:IngestBatch) ON (b.status)",
             "CREATE INDEX IF NOT EXISTS FOR (m:MemoryCandidate) ON (m.review_status)",
             "CREATE INDEX IF NOT EXISTS FOR (t:Task) ON (t.lease_expires_at_ts)",
+            # Orchestration plan trace schema
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (t:TraceEvent) REQUIRE t.event_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (g:TraceGroup) REQUIRE g.correlation_id IS UNIQUE",
+            "CREATE INDEX IF NOT EXISTS FOR (t:TraceEvent) ON (t.correlation_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (t:TraceEvent) ON (t.event_type)",
+            "CREATE INDEX IF NOT EXISTS FOR (t:TraceEvent) ON (t.task_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (t:TraceEvent) ON (t.assignment_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (t:TraceEvent) ON (t.ts_ms)",
+            "CREATE INDEX IF NOT EXISTS FOR (e:EventEnvelope) ON (e.correlation_id)",
         ]
         with self._session() as s:
             for q in cypher:

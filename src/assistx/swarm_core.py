@@ -10,7 +10,8 @@ from typing import Any, Dict, List, Optional
 from .coordination_metadata import build_event_metadata
 from .neo4j_client import Neo4jClient
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "2026-06-08.v1"
+SUPPORTED_SCHEMA_VERSIONS = {"1.0", "2026-06-08.v1"}
 LOW_RISK_ACTIONS = {
     "create_note",
     "draft_text",
@@ -83,7 +84,7 @@ def validate_event_envelope(event: Dict[str, Any]) -> Dict[str, Any]:
     missing = [field for field in required if field not in event or event[field] in (None, "")]
     if missing:
         raise EventValidationError(f"Missing required event fields: {', '.join(missing)}")
-    if str(event.get("schema_version")) != SCHEMA_VERSION:
+    if str(event.get("schema_version")) not in SUPPORTED_SCHEMA_VERSIONS:
         raise EventValidationError(f"Unsupported schema_version: {event.get('schema_version')}")
     if not isinstance(event.get("subject"), dict) or not event["subject"].get("kind") or not event["subject"].get("id"):
         raise EventValidationError("subject.kind and subject.id are required")
@@ -145,6 +146,9 @@ def record_event(neo: Neo4jClient, event: Dict[str, Any]) -> Dict[str, Any]:
     artifact_json = _json_dumps(event.get("artifact_refs") or [])
     privacy_json = _json_dumps(event.get("privacy") or {})
     metadata_json = _json_dumps(build_event_metadata(event, event.get("metadata")))
+    correlation_id = event.get("correlation_id")
+    actor_json = _json_dumps(event.get("actor") or {})
+    links_json = _json_dumps(event.get("links") or {})
     with neo._session() as s:
         existing = s.run(
             """
@@ -191,6 +195,9 @@ def record_event(neo: Neo4jClient, event: Dict[str, Any]) -> Dict[str, Any]:
                 e.privacy_json=$privacy_json,
                 e.metadata_json=$metadata_json,
                 e.payload_hash=$payload_hash,
+                e.correlation_id=$correlation_id,
+                e.actor_json=$actor_json,
+                e.links_json=$links_json,
                 e.created_at=datetime(),
                 e.created_at_ts=timestamp(),
                 e.updated_at=datetime(),
@@ -211,6 +218,9 @@ def record_event(neo: Neo4jClient, event: Dict[str, Any]) -> Dict[str, Any]:
                 "privacy_json": privacy_json,
                 "metadata_json": metadata_json,
                 "payload_hash": phash,
+                "correlation_id": correlation_id,
+                "actor_json": actor_json,
+                "links_json": links_json,
             },
         ).consume()
     artifact_ids = upsert_artifact_refs(neo, event.get("artifact_refs") or [])
@@ -708,3 +718,159 @@ def release_expired_task_leases(neo: Neo4jClient, now_ms: Optional[int] = None) 
             {"now": now},
         ).single()
         return int(rec["released"] if rec else 0)
+
+
+# ---------------------------------------------------------------------------
+# Trace Event persistence
+# ---------------------------------------------------------------------------
+
+TRACE_STATE_ORDER = [
+    "assignment.completed",
+    "assignment.failed",
+    "route.blocked",
+    "assignment.heartbeat",
+    "assignment.claimed",
+    "route.selected",
+    "assignment.requested",
+    "dispatch.accepted",
+    "dispatch.requested",
+    "voice.auth.accepted",
+    "voice.auth.rejected",
+    "voice.auth.error",
+    "voice.auth.requested",
+]
+
+
+def record_trace_event(
+    neo: Neo4jClient,
+    *,
+    correlation_id: str,
+    event_type: str,
+    source: str,
+    task_id: Optional[str] = None,
+    dispatch_id: Optional[str] = None,
+    route_id: Optional[str] = None,
+    assignment_id: Optional[str] = None,
+    payload: Optional[Dict[str, Any]] = None,
+) -> str:
+    event_id = f"trace:{correlation_id}:{event_type}:{uuid.uuid4().hex[:12]}"
+    payload_json = _json_dumps(payload or {})
+    with neo._session() as s:
+        s.run(
+            """
+            MERGE (t:TraceEvent {event_id:$event_id})
+            ON CREATE SET t.created_at=datetime(), t.created_at_ts=timestamp()
+            SET t.correlation_id=$correlation_id,
+                t.event_type=$event_type,
+                t.source=$source,
+                t.task_id=$task_id,
+                t.dispatch_id=$dispatch_id,
+                t.route_id=$route_id,
+                t.assignment_id=$assignment_id,
+                t.payload_json=$payload_json,
+                t.ts=datetime(),
+                t.ts_ms=timestamp()
+            """,
+            {
+                "event_id": event_id,
+                "correlation_id": correlation_id,
+                "event_type": event_type,
+                "source": source,
+                "task_id": task_id,
+                "dispatch_id": dispatch_id,
+                "route_id": route_id,
+                "assignment_id": assignment_id,
+                "payload_json": payload_json,
+            },
+        ).consume()
+        # Link to correlation group
+        s.run(
+            """
+            MERGE (g:TraceGroup {correlation_id:$correlation_id})
+            ON CREATE SET g.created_at=datetime(), g.created_at_ts=timestamp()
+            WITH g
+            MATCH (t:TraceEvent {event_id:$event_id})
+            MERGE (g)-[:HAS_EVENT]->(t)
+            """,
+            {"event_id": event_id, "correlation_id": correlation_id},
+        )
+    return event_id
+
+
+def get_trace(neo: Neo4jClient, correlation_id: str) -> Optional[Dict[str, Any]]:
+    with neo._session() as s:
+        rows = s.run(
+            """
+            MATCH (g:TraceGroup {correlation_id:$correlation_id})-[:HAS_EVENT]->(t:TraceEvent)
+            RETURN t
+            ORDER BY t.ts_ms ASC
+            """,
+            {"correlation_id": correlation_id},
+        )
+        events = []
+        for row in rows:
+            te = dict(row["t"])
+            te.pop("created_at", None)
+            te.pop("created_at_ts", None)
+            events.append(te)
+        if not events:
+            return None
+        current_state = _derive_trace_state(events)
+        summary = _build_trace_summary(events)
+        return {
+            "correlation_id": correlation_id,
+            "current_state": current_state,
+            "summary": summary,
+            "events": events,
+        }
+
+
+def _derive_trace_state(events: List[Dict[str, Any]]) -> str:
+    latest_type = events[-1].get("event_type", "") if events else ""
+    if latest_type == "assignment.completed":
+        return "completed"
+    if latest_type == "assignment.failed":
+        return "failed"
+    if latest_type == "route.blocked":
+        return "blocked"
+    if latest_type == "assignment.expired":
+        return "expired"
+    if latest_type in ("assignment.heartbeat", "assignment.claimed"):
+        return "running"
+    if latest_type == "route.selected":
+        return "pending_assignment"
+    if latest_type == "dispatch.accepted":
+        return "pending_route"
+    if latest_type in ("voice.auth.rejected", "dispatch.rejected"):
+        return "rejected"
+    if latest_type in ("assignment.requested",):
+        return "pending_assignment"
+    return "pending"
+
+
+def _build_trace_summary(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+    for ev in events:
+        et = ev.get("event_type", "")
+        payload = {}
+        try:
+            payload = json.loads(ev.get("payload_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            pass
+        if et.startswith("voice.auth."):
+            summary["voice_auth"] = et.split(".")[-1]
+        elif et.startswith("dispatch."):
+            summary["dispatch"] = et.split(".")[-1]
+        elif et.startswith("route."):
+            summary["route"] = et.split(".")[-1]
+            if "lane" in payload:
+                summary["lane"] = payload["lane"]
+            if "model" in payload:
+                summary["model"] = payload["model"]
+        elif et.startswith("assignment."):
+            summary["assignment"] = et.split(".")[-1]
+            if "worker_id" in payload:
+                summary["worker"] = payload["worker_id"]
+            if "node_id" in payload:
+                summary["node_id"] = payload["node_id"]
+    return summary

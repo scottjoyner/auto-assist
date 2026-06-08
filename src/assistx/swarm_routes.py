@@ -15,11 +15,13 @@ from .swarm_core import (
     action_requires_approval,
     delete_model_endpoint,
     fail_task,
+    get_trace,
     list_capabilities,
     list_model_endpoints,
     list_swarm_nodes,
     probe_model_endpoint,
     record_event,
+    record_trace_event,
     release_expired_task_leases,
     set_task_lease,
     upsert_model_endpoint,
@@ -46,6 +48,9 @@ class EventEnvelopeIn(BaseModel):
     artifact_refs: List[Dict[str, Any]] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
     privacy: Dict[str, Any]
+    correlation_id: Optional[str] = None
+    actor: Optional[Dict[str, Any]] = None
+    links: Optional[Dict[str, Any]] = None
 
 
 class SwarmNodeRegisterIn(BaseModel):
@@ -298,3 +303,35 @@ def api_voice_policy(auth_state: str, action: str = "create_draft_task", risk_le
         "risk_level": risk_level,
         "approval_required": action_requires_approval(auth_state, action, risk_level),
     }
+
+
+@router.get("/api/traces/{correlation_id}")
+def api_get_trace(correlation_id: str, user: str = Depends(_default_auth)):
+    neo = _neo()
+    try:
+        trace = get_trace(neo, correlation_id)
+        if trace is None:
+            raise HTTPException(status_code=404, detail=f"No trace found for correlation_id={correlation_id}")
+        return trace
+    finally:
+        neo.close()
+
+
+@router.post("/api/traces/{correlation_id}/events")
+def api_record_trace_event(correlation_id: str, body: Dict[str, Any], user: str = Depends(_default_auth)):
+    neo = _neo()
+    try:
+        event_id = record_trace_event(
+            neo,
+            correlation_id=correlation_id,
+            event_type=body.get("event_type", "unknown"),
+            source=body.get("source", "unknown"),
+            task_id=body.get("task_id"),
+            dispatch_id=body.get("dispatch_id"),
+            route_id=body.get("route_id"),
+            assignment_id=body.get("assignment_id"),
+            payload=body.get("payload"),
+        )
+        return {"accepted": True, "event_id": event_id}
+    finally:
+        neo.close()
