@@ -92,9 +92,28 @@ All external input arrives via the unified event envelope:
 ```
 event_id, event_type, source_repo, source_service, node_id,
 occurred_at, idempotency_key, schema_version, subject, payload,
-artifact_refs, privacy
+artifact_refs, privacy, correlation_id, actor, links
 ```
+Schema version `2026-06-08.v1` adds `correlation_id`, `actor`, and `links` fields.
+Schema version `1.0` remains supported for backward compatibility.
+
 AssistX also derives optional `metadata.request` and `metadata.task` blocks for shared router/assign consumers. The blocks are persisted alongside the event so overlay services can consume the same request/task metadata shape without reading prompt or response bodies from provenance records.
+
+### TraceEvent / TraceGroup (2026-06-08)
+Cross-repo trace events are persisted as `TraceEvent` nodes linked to `TraceGroup` nodes:
+```
+TraceGroup   - correlation_id UNIQUE
+TraceEvent   - event_id UNIQUE
+```
+TraceEvent fields: `correlation_id`, `event_type`, `source`, `ts`, `event_id`, `actor_json`, `links_json`, `payload_json`.
+TraceGroup fields: `correlation_id`, `current_state`, `created_at`, `updated_at`.
+
+Relationships:
+```
+TraceGroup -[:HAS_EVENT]-> TraceEvent
+TraceEvent -[:RELATED_TO_TASK]-> Task (optional)
+TraceEvent -[:RELATED_TO_ASSIGNMENT]-> Assignment (optional)
+```
 
 ### Supported Event Types
 ```
@@ -131,6 +150,12 @@ POST /api/events                — Receive unified event envelope
 POST /api/voice/events          — Canonical signed Sophia ingestion endpoint
 POST /api/sophia/events         — Compatibility route pending convergence
 POST /api/paperclip/events      — Signed Paperclip event callback
+```
+
+### Traces
+```
+GET  /api/traces/{correlation_id}              — Get full trace for a correlation_id
+POST /api/traces/{correlation_id}/events       — Append a trace event
 ```
 
 ### Tasks
@@ -208,6 +233,16 @@ Artifact        - id UNIQUE
 Intent          - id UNIQUE
 VoiceAuthDecision - decision_id UNIQUE
 PolicyDecision  - decision_id UNIQUE
+TraceGroup      - correlation_id UNIQUE
+TraceEvent      - event_id UNIQUE
+```
+
+Indexes:
+```
+TraceEvent      - correlation_id INDEX
+TraceEvent      - event_type INDEX
+TraceEvent      - task_id INDEX
+TraceEvent      - assignment_id INDEX
 ```
 
 Key relationships:

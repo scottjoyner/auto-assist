@@ -1,6 +1,6 @@
 # Unified Event Envelope Contract
 
-_Last updated: 2026-05-26_
+_Last updated: 2026-06-08_
 
 ## Purpose
 
@@ -13,10 +13,13 @@ The event envelope supports:
 - cross-repo provenance
 - auditability
 - graph reconciliation
+- cross-repo trace correlation via `correlation_id`
 
 ---
 
 ## Envelope schema
+
+Schema version `2026-06-08.v1` adds `correlation_id`, `actor`, and `links` fields for cross-repo tracing. Schema version `1.0` remains supported for backward compatibility.
 
 ```json
 {
@@ -27,7 +30,7 @@ The event envelope supports:
   "node_id": "string",
   "occurred_at": "ISO-8601",
   "idempotency_key": "string",
-  "schema_version": "1.0",
+  "schema_version": "2026-06-08.v1",
   "subject": {
     "kind": "task | file | capture | utterance | detection | artifact | model | node | batch",
     "id": "string"
@@ -38,6 +41,19 @@ The event envelope supports:
     "pii": true,
     "privacy_class": "private | sensitive | public | unknown",
     "retention_class": "ephemeral | keep | protected | evidence"
+  },
+  "correlation_id": "stable-id-linking-auth-dispatch-route-assignment",
+  "actor": {
+    "user_id": "scott",
+    "device_id": "browser-or-phone-device-id",
+    "auth_state": "accepted | rejected | not_required"
+  },
+  "links": {
+    "dispatch_id": "optional",
+    "intent_id": "optional",
+    "task_id": "optional",
+    "route_id": "optional",
+    "assignment_id": "optional"
   },
   "metadata": {
     "request": {},
@@ -62,11 +78,16 @@ Optional `metadata` is reserved for shared request/task context consumed by auto
 | `node_id` | yes | Swarm node ID |
 | `occurred_at` | yes | Source occurrence time |
 | `idempotency_key` | yes | Used for replay dedupe |
-| `schema_version` | yes | Start with `1.0` |
+| `schema_version` | yes | `1.0` (legacy) or `2026-06-08.v1` (with correlation_id) |
 | `subject` | yes | Main object the event concerns |
 | `payload` | yes | Event-specific body |
 | `artifact_refs` | yes | Empty list allowed |
 | `privacy` | yes | Required for retention/safety |
+| `correlation_id` | no* | Required for cross-repo tracing (`2026-06-08.v1`) |
+| `actor` | no* | User/device/auth context (`2026-06-08.v1`) |
+| `links` | no* | Downstream ID references (`2026-06-08.v1`) |
+
+_*Required when `schema_version` is `2026-06-08.v1`._
 
 ---
 
@@ -94,6 +115,54 @@ assistx.approval.requested
 assistx.approval.granted
 assistx.dispatch.created
 assistx.agent_run.completed
+```
+
+### Canonical cross-repo event types (2026-06-08.v1)
+
+These are the canonical event types used across Sophia, AssistX, auto-router, and auto-assign:
+
+**Voice/auth events:**
+```text
+voice.auth.requested
+voice.auth.accepted
+voice.auth.rejected
+voice.auth.error
+```
+
+**Dispatch/control events:**
+```text
+dispatch.requested
+dispatch.accepted
+dispatch.rejected
+dispatch.cancelled
+```
+
+**Routing events:**
+```text
+route.requested
+route.selected
+route.failed
+route.blocked
+```
+
+**Assignment events:**
+```text
+assignment.requested
+assignment.recommended
+assignment.claimed
+assignment.heartbeat
+assignment.released
+assignment.completed
+assignment.failed
+assignment.expired
+```
+
+**Ingest/context events:**
+```text
+ingest.context.available
+ingest.context.updated
+ingest.evidence.linked
+ingest.evidence.missing
 ```
 
 ### auto-ingest
@@ -250,10 +319,16 @@ status: pending | delivered | failed | conflict
 
 ## Implementation checklist
 
-- [ ] Add `/api/events` endpoint in AssistX.
-- [ ] Add event schema validation.
-- [ ] Add idempotency/dedupe table or Neo4j constraint.
+- [x] Add `/api/events` endpoint in AssistX.
+- [x] Add event schema validation (supports `1.0` and `2026-06-08.v1`).
+- [x] Add idempotency/dedupe table or Neo4j constraint.
 - [ ] Add event payload hash conflict detection.
 - [ ] Add graph reconciliation handlers by event namespace.
 - [ ] Add local outbox client library for Sophia and auto-ingest.
 - [ ] Add tests for replay, conflict, and malformed payloads.
+- [x] Add `correlation_id`, `actor`, `links` fields to EventEnvelopeIn (`2026-06-08.v1`).
+- [x] Add `TraceEvent`/`TraceGroup` persistence in Neo4j with indexes.
+- [x] Add `GET /api/traces/{correlation_id}` trace query endpoint.
+- [x] Add `POST /api/traces/{correlation_id}/events` trace event append endpoint.
+- [x] Normalize voice events to canonical trace types in `/api/voice/events`.
+- [x] Emit `voice.auth.*` and `dispatch.*` trace events from voice ingestion.

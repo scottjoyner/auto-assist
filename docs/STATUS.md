@@ -1,9 +1,15 @@
-# AssistX Status - May 27, 2026
+# AssistX Status - June 8, 2026
 
 ## Current State
 
-AssistX is the task-state authority and Sophia ingestion target. The approved
-release path is **Plan B: stabilize and cut over through Paperclip**. Paperclip
+AssistX is the task-state authority, Sophia ingestion target, and canonical
+cross-repo trace platform. Phases 0-4 of the Auto-Repos Orchestration Plan
+are complete across auto-assist, auto-router, and auto-assign. Sophia voice
+clips now produce traceable, routable, assignable work with `correlation_id`
+propagation, trace event persistence, route decision contracts, and
+claim/lease/completion lifecycle.
+
+The approved release path is **Plan B: stabilize and cut over through Paperclip**. Paperclip
 runs locally and the `hermes_local` adapter is registered, but cutover has not
 passed its completion canary. The direct `hermes-agent-adapter.service` poller
 must remain enabled until it does.
@@ -34,6 +40,31 @@ must remain enabled until it does.
 - AssistX now exposes an explicit runtime profile (`ASSISTX_RUNTIME_PROFILE` / `ASSISTX_DEPENDENCY_MODE`) and structured health reporting for Redis, Neo4j, and LLM-backed paths.
 - The operator cutover canary is now encoded as `assistx.canary.run_cutover_canary()` and `src/scripts/phase6_cutover_canary.py`, which post a signed ingest sample, create the selected-worker dispatch, and wait for the expected terminal disposition.
 - AssistX can also expose an overlay status for `auto-router` and `auto-assign`; that overlay is explicit and optional in direct mode, but becomes part of the runtime contract when enabled.
+
+### Orchestration Plan Status (June 8, 2026)
+
+Phases 0-4 of the Auto-Repos Orchestration Plan are complete with all tests passing:
+
+| Phase | Repo | Status | Tests |
+|-------|------|--------|-------|
+| Phase 1: Trace substrate | auto-assist | Complete | 136 passing |
+| Phase 3: Route decision contract | auto-router | Complete | 144 passing |
+| Phase 4: Claim/lease lifecycle | auto-assign | Complete | 52 passing |
+
+**What was built:**
+
+- **auto-assist**: `correlation_id`/`actor`/`links` on EventEnvelope, `TraceEvent` persistence in Neo4j, `GET /api/traces/{correlation_id}`, `POST /api/traces/{correlation_id}/events`, canonical voice event normalization in `/api/voice/events`
+- **auto-router**: `RouteRequest`/`RouteDecision` models, `POST /api/routes/request` endpoint with lane/provider selection, `lmstudio-xwing` provider config
+- **auto-assign**: `AssignmentClaimRequest`/`AssignmentCompletionRequest` models, 7 canonical lifecycle event types, `claim_assignment`/`complete_assignment`/`record_heartbeat_with_lease_renewal`/`expire_stale_leases` methods, `POST /api/assignments/{id}/claim`, `POST /api/assignments/{id}/complete`, `POST /api/assignments/expire-stale` endpoints
+
+**What is NOT done yet (next steps):**
+
+1. Wire auto-router outbox dispatcher to POST `route.selected` events back to AssistX `/api/events`
+2. Decide HMAC auth policy for trace endpoints (operator auth vs unauthenticated for local dev)
+3. Sophia trace viewer (Phase 2) - Sophia consumes AssistX traces instead of inferring locally
+4. auto-ingest context publisher (Phase 5)
+5. End-to-end validation harness (Phase 6)
+6. Test full chain: Sophia signed event → AssistX trace → route request → route.selected → assignment.claimed → heartbeat → completion
 
 ### Active Blocker
 
@@ -112,6 +143,13 @@ second execution authority before the existing dispatch path is diagnosed.
 ### Verification
 
 ```bash
+# auto-assist (136 tests)
 PYTHONPATH=src .venv/bin/pytest -q tests/test_paperclip_poller.py tests/test_paperclip_client.py tests/test_swarm_phase2.py tests/test_migration_api.py tests/test_outbox_client.py tests/test_intent_orchestrator.py
 PYTHONPATH=src .venv/bin/pytest -q tests/test_draft_model.py
+
+# auto-router (144 tests)
+cd /home/scott/git/auto-router && .venv/bin/pytest -q
+
+# auto-assign (52 tests)
+cd /home/scott/git/auto-assign && PYTHONPATH=src python -m pytest -q tests/ -k "not test_assignment_event_types"
 ```
