@@ -11,8 +11,13 @@ from .deps import load_get_current_job, load_redis_module
 redis_module = load_redis_module()
 get_current_job = load_get_current_job()
 
-from .neo4j_client import Neo4jClient
-from .paperclip_client import PaperclipClient
+_redis = None
+def _get_redis():
+    global _redis
+    if _redis is None:
+        _redis = redis_module.Redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+    return _redis
+
 from .queue import get_q
 
 logger = logging.getLogger(__name__)
@@ -30,6 +35,7 @@ STATUS_EVENT_MAP = {
 
 
 def paperclip_poll_job() -> Dict[str, Any]:
+    from .neo4j_client import Neo4jClient
     neo = Neo4jClient()
     pc = _get_paperclip()
     if not pc:
@@ -62,7 +68,8 @@ def paperclip_poll_job() -> Dict[str, Any]:
         _reschedule()
 
 
-def _get_paperclip() -> Optional[PaperclipClient]:
+def _get_paperclip() -> Optional["PaperclipClient"]:
+    from .paperclip_client import PaperclipClient
     try:
         return PaperclipClient()
     except ValueError:
@@ -244,7 +251,7 @@ def _reschedule() -> None:
 
 
 def schedule_paperclip_poller() -> None:
-    r = redis_module.Redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+    r = _get_redis()
     lock_key = "assistx:paperclip_poller:scheduled"
     if r.setnx(lock_key, "1"):
         r.expire(lock_key, 60)

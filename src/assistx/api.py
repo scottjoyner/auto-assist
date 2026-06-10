@@ -8,6 +8,7 @@ import logging
 import os
 import pathlib
 import shutil
+import threading
 import time as _time
 import uuid
 from contextlib import asynccontextmanager
@@ -26,6 +27,7 @@ from fastapi.templating import Jinja2Templates
 from neo4j.exceptions import ServiceUnavailable
 from pydantic import BaseModel, ConfigDict, Field
 from .deps import load_aioredis_module, load_prometheus_client, load_queue_class, load_redis_module, multipart_available
+from .logging_utils import install_logging_middleware, setup_logging
 from .runtime import build_runtime_health, runtime_profile, validate_runtime_configuration
 
 CONTENT_TYPE_LATEST, generate_latest = load_prometheus_client()
@@ -310,9 +312,12 @@ class WorkflowBudgetUpdateIn(BaseModel):
 # Config / Security
 # -----------------------
 security = HTTPBasic(auto_error=False)
-USER = os.getenv("BASIC_AUTH_USER", "neo4j")
-PASS = os.getenv("BASIC_AUTH_PASS", "livelongandprosper")
+USER = os.getenv("BASIC_AUTH_USER")
+PASS = os.getenv("BASIC_AUTH_PASS")
 TRUSTED_AUTH_HEADER = os.getenv("TRUSTED_AUTH_HEADER", "").strip()
+if not USER and not PASS and not TRUSTED_AUTH_HEADER:
+    print("WARNING: No auth configured. Set BASIC_AUTH_USER/BASIC_AUTH_PASS or TRUSTED_AUTH_HEADER.")
+    print("WARNING: All auth-required endpoints will return 401.")
 
 API_TOKEN: Optional[str] = os.getenv("API_TOKEN")  # If set, required for /upload-audio
 PAPERCLIP_WEBHOOK_SECRET: Optional[str] = os.getenv("PAPERCLIP_WEBHOOK_SECRET")
@@ -330,10 +335,6 @@ CAPTURES_ROOT.mkdir(parents=True, exist_ok=True)
 
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")        # e.g., "cuda", "cpu", "auto"
 WHISPER_COMPUTE = os.getenv("WHISPER_COMPUTE_TYPE", "int8") # e.g., "float16", "int8"
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-_rconn = redis.from_url(REDIS_URL)
-_q = Queue(connection=_rconn)
-
 MULTIPART_AVAILABLE = multipart_available()
 # -----------------------
 # App + Static/Template
@@ -377,6 +378,8 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="AssistX API & UI", lifespan=lifespan)
+setup_logging()
+install_logging_middleware(app)
 
 
 def _validation_error_response(exc: RequestValidationError) -> JSONResponse:
@@ -581,17 +584,33 @@ def auth(
 set_auth_dependency(auth)
 
 
+_neo_instance: Optional[Neo4jClient] = None
+
 def _neo() -> Neo4jClient:
-    neo = Neo4jClient()
-    return neo
+    global _neo_instance
+    if _neo_instance is None:
+        _neo_instance = Neo4jClient()
+    return _neo_instance
 
 _paperclip_client: Optional[PaperclipClient] = None
+_workflow_control_lock = threading.Lock()
 _workflow_control_state: Dict[str, Any] = {
     "mode": "resume",  # resume | drain
     "max_concurrent_workflows": 20,
     "max_batch_backlog": 200,
     "updated_at_ts": 0,
 }
+
+
+def _get_workflow_control() -> dict[str, Any]:
+    with _workflow_control_lock:
+        return _get_workflow_control()
+
+
+def _set_workflow_control(**kwargs: Any) -> None:
+    with _workflow_control_lock:
+        _workflow_control_state.update(kwargs)
+        _workflow_control_state["updated_at_ts"] = int(_time.time() * 1000)
 _sophia_policy_state: Dict[str, Any] = {
     "last_fingerprint": None,
     "last_seen_ts": 0,
@@ -715,7 +734,7 @@ def _normalize_ask_question(question: str) -> str:
 
 
 def _is_claim_allowed_for_workflow_control(task: Dict[str, Any]) -> tuple[bool, str]:
-    mode = str(_workflow_control_state.get("mode") or "resume")
+    mode = str(_get_workflow_control().get("mode") or "resume")
     if mode != "drain":
         return True, ""
     payload = _json_dict(task.get("payload_json"))
@@ -829,9 +848,10 @@ def _maybe_dead_letter_exhausted_task(
 
 
 def _apply_workflow_admission(tasks: List[Dict[str, Any]], runtime: Dict[str, int]) -> List[Dict[str, Any]]:
-    mode = str(_workflow_control_state.get("mode") or "resume")
-    max_running = int(_workflow_control_state.get("max_concurrent_workflows") or 20)
-    max_batch_backlog = int(_workflow_control_state.get("max_batch_backlog") or 200)
+    control = _get_workflow_control()
+    mode = str(control.get("mode") or "resume")
+    max_running = int(control.get("max_concurrent_workflows") or 20)
+    max_batch_backlog = int(control.get("max_batch_backlog") or 200)
     running = int(runtime.get("running") or 0)
     batch_ready = int(runtime.get("batch_ready_direct") or 0)
 
@@ -1277,7 +1297,7 @@ def api_ops_status(
             "backlog": workflow_backlog,
             "running": workflow_running,
             "escalation_backlog": escalation_backlog,
-            "control": dict(_workflow_control_state),
+            "control": _get_workflow_control(),
         },
         "feeds": feeds,
         "evaluation_suites": evaluation_suites,
@@ -1716,9 +1736,7 @@ def api_agent_tasks(
             "items": admitted,
             "count": len(admitted),
             "admission": {
-                "mode": _workflow_control_state.get("mode"),
-                "max_concurrent_workflows": _workflow_control_state.get("max_concurrent_workflows"),
-                "max_batch_backlog": _workflow_control_state.get("max_batch_backlog"),
+                **_get_workflow_control(),
                 "running": runtime.get("running"),
                 "batch_ready_direct": runtime.get("batch_ready_direct"),
             },
@@ -2680,7 +2698,7 @@ def api_workflows_queue(
                 task["queue_class"] = qclass
                 items.append(task)
         return {
-            "control": dict(_workflow_control_state),
+            "control": _get_workflow_control(),
             "by_queue_class": by_queue,
             "by_status": by_status,
             "items": items[:100],
@@ -2744,7 +2762,7 @@ def api_workflows_slo(
             "success_rate": round(success_rate, 4),
             "p95_start_latency_s": round(_p95(start_latencies), 2),
             "p95_completion_latency_s": round(_p95(completion_latencies), 2),
-            "control": dict(_workflow_control_state),
+            "control": _get_workflow_control(),
         }
     finally:
         neo.close()
@@ -2756,16 +2774,16 @@ def api_workflows_control(body: WorkflowControlIn, user: str = Depends(auth)):
     if action not in {"drain", "resume", "set_limits"}:
         raise HTTPException(status_code=400, detail="action must be drain, resume, or set_limits")
 
+    kwargs: dict[str, Any] = {"updated_by": user}
     if action in {"drain", "resume"}:
-        _workflow_control_state["mode"] = action
+        kwargs["mode"] = action
     if action == "set_limits":
         if body.max_concurrent_workflows is not None:
-            _workflow_control_state["max_concurrent_workflows"] = max(1, int(body.max_concurrent_workflows))
+            kwargs["max_concurrent_workflows"] = max(1, int(body.max_concurrent_workflows))
         if body.max_batch_backlog is not None:
-            _workflow_control_state["max_batch_backlog"] = max(1, int(body.max_batch_backlog))
-    _workflow_control_state["updated_at_ts"] = int(_time.time() * 1000)
-    _workflow_control_state["updated_by"] = user
-    return {"ok": True, "control": dict(_workflow_control_state)}
+            kwargs["max_batch_backlog"] = max(1, int(body.max_batch_backlog))
+    _set_workflow_control(**kwargs)
+    return {"ok": True, "control": _get_workflow_control()}
 
 
 @app.post("/api/workflows/{workflow_id}/replan")
@@ -3499,6 +3517,7 @@ async def ws_answers(websocket: WebSocket, token: Optional[str] = Query(None)):
 
 @app.get("/api/answers/events")
 async def api_answers_events(
+    request: Request,
     status: str | None = Query(None, description="Optional filter hint; client can also filter"),
     user: str = Depends(auth),
 ):
@@ -3513,6 +3532,8 @@ async def api_answers_events(
         last_ping = asyncio.get_event_loop().time()
         try:
             while True:
+                if await request.is_disconnected():
+                    break
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
                 now = asyncio.get_event_loop().time()
 
@@ -3526,9 +3547,9 @@ async def api_answers_events(
                     else:
                         yield _sse(data.get("type", "update"), data.get("data", {}))
 
-                    # keepalive
-                    if now - last_ping > 15:
-                        yield _sse("ping", {"ts": int(now)})
+                # keepalive (outside if msg so it fires even when idle)
+                if now - last_ping > 15:
+                    yield _sse("ping", {"ts": int(now)})
                     last_ping = now
 
                 await asyncio.sleep(0.2)
@@ -3544,7 +3565,7 @@ async def api_answers_events(
 
 
 @app.get("/api/answers/{answer_id}/events")
-async def api_answer_events(answer_id: str, user: str = Depends(auth)):
+async def api_answer_events(answer_id: str, request: Request, user: str = Depends(auth)):
     r = aioredis.from_url(REDIS_URL, decode_responses=True)
     pubsub = r.pubsub()
     chan = answers_store._chan(answer_id)
@@ -3559,6 +3580,8 @@ async def api_answer_events(answer_id: str, user: str = Depends(auth)):
         last_ping = asyncio.get_event_loop().time()
         try:
             while True:
+                if await request.is_disconnected():
+                    break
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
                 now = asyncio.get_event_loop().time()
 
@@ -3569,8 +3592,8 @@ async def api_answer_events(answer_id: str, user: str = Depends(auth)):
                         payload = {"type": "update", "data": msg["data"]}
                     yield _sse(payload.get("type", "update"), payload.get("data", {}))
 
-                    if now - last_ping > 15:
-                        yield _sse("ping", {"ts": int(now)})
+                if now - last_ping > 15:
+                    yield _sse("ping", {"ts": int(now)})
                     last_ping = now
 
                 await asyncio.sleep(0.2)

@@ -1,4 +1,24 @@
 services:
+  neo4j:
+    image: neo4j:5-community
+    container_name: assistx-neo4j
+    profiles:
+      - neo4j
+    environment:
+      - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-livelongandprosper}
+      - NEO4J_dbms_memory_pagecache_size=${NEO4J_CACHE_SIZE:-512M}
+      - NEO4J_dbms_memory_heap_max__size=${NEO4J_HEAP_SIZE:-1G}
+    ports:
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "${NEO4J_USER:-neo4j}", "-p", "${NEO4J_PASSWORD:-livelongandprosper}", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
   redis:
     image: redis:7-alpine
     container_name: assistx-redis
@@ -118,6 +138,7 @@ services:
       - MAINTENANCE_INTERVAL_SECONDS=${MAINTENANCE_INTERVAL_SECONDS:-1800}
       - TASK_RETENTION_DAYS=${TASK_RETENTION_DAYS:-30}
       - MEMORY_RETENTION_DAYS=${MEMORY_RETENTION_DAYS:-90}
+      - WORKER_HEALTH_PORT=${WORKER_HEALTH_PORT:-8100}
     depends_on:
       redis:
         condition: service_healthy
@@ -130,11 +151,7 @@ services:
       - transcriptions:/app/transcriptions
       - ./.assistx_cache.sqlite:/app/.assistx_cache.sqlite
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "python - <<'PY'\nimport os,sys,redis\ntry:\n  redis.from_url(os.environ.get('REDIS_URL','redis://redis:6379/0')).ping()\n  print('ok')\n  sys.exit(0)\nexcept Exception as e:\n  print(e); sys.exit(1)\nPY"
-        ]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health', timeout=2).read()"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -177,3 +194,4 @@ services:
 volumes:
   assistx_cache: {}
   transcriptions: {}
+  neo4j_data: {}

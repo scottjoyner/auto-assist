@@ -45,7 +45,16 @@ class Neo4jClient:
                 "Neo4jClient requires uri, user, and password (via args, config.settings, or env)."
             )
 
-        self.driver: Driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
+        pool_size = int(os.getenv("NEO4J_MAX_CONNECTION_POOL_SIZE", "50"))
+        acq_timeout = float(os.getenv("NEO4J_CONNECTION_ACQUISITION_TIMEOUT", "30"))
+        max_tx_retry = float(os.getenv("NEO4J_MAX_TRANSACTION_RETRY_TIME", "10"))
+        self.driver: Driver = GraphDatabase.driver(
+            self.uri,
+            auth=(self.user, self.password),
+            max_connection_pool_size=pool_size,
+            connection_acquisition_timeout=acq_timeout,
+            max_transaction_retry_time=max_tx_retry,
+        )
 
     # ---------- setup / teardown ----------
 
@@ -1571,9 +1580,9 @@ class Neo4jClient:
             rec = s.run(
                 "MATCH (t:Task{id:$tid}) "
                 "CREATE (r:AgentRun {id:$run_id, task_id:$tid, agent:$agent, model:$model, status:'RUNNING', "
-                " started_at:timestamp(), started_at_ts:timestamp(), manifest_json:$manifest, "
-                " created_at:timestamp(), created_at_ts:timestamp(), "
-                " updated_at:timestamp(), updated_at_ts:timestamp()}) "
+                " started_at:datetime(), started_at_ts:timestamp(), manifest_json:$manifest, "
+                " created_at:datetime(), created_at_ts:timestamp(), "
+                " updated_at:datetime(), updated_at_ts:timestamp()}) "
                 "MERGE (t)-[:EXECUTED_BY]->(r) RETURN r.id as id",
                 {"tid": task_id, "run_id": run_id, "agent": agent, "model": model, "manifest": json.dumps(manifest)},
             ).single()
@@ -1581,7 +1590,7 @@ class Neo4jClient:
 
     def complete_run(self, run_id: str, status: str):
         with self.driver.session() as s:
-            s.run("MATCH (r:AgentRun{id:$id}) SET r.status=$st, r.ended_at=timestamp(), r.ended_at_ts=timestamp()", {"id": run_id, "st": status})
+            s.run("MATCH (r:AgentRun{id:$id}) SET r.status=$st, r.ended_at=datetime(), r.ended_at_ts=timestamp()", {"id": run_id, "st": status})
 
     def log_tool_call(self, run_id: str, tool: str, input_json: Dict[str, Any], output_json: Dict[str, Any] | None, ok: bool):
         call_id = uuid.uuid4().hex
@@ -1589,9 +1598,9 @@ class Neo4jClient:
             s.run(
                 "MATCH (r:AgentRun{id:$rid}) "
                 "CREATE (k:ToolCall {id:$call_id, run_id:$rid, tool:$tool, input_json:$in, output_json:$out, ok:$ok, "
-                " started_at:timestamp(), started_at_ts:timestamp(), ended_at:timestamp(), ended_at_ts:timestamp(), "
-                " created_at:timestamp(), created_at_ts:timestamp(), "
-                " updated_at:timestamp(), updated_at_ts:timestamp()}) "
+                " started_at:datetime(), started_at_ts:timestamp(), ended_at:datetime(), ended_at_ts:timestamp(), "
+                " created_at:datetime(), created_at_ts:timestamp(), "
+                " updated_at:datetime(), updated_at_ts:timestamp()}) "
                 "MERGE (r)-[:USED_TOOL]->(k)",
                 {"rid": run_id, "call_id": call_id, "tool": tool, "in": json.dumps(input_json), "out": json.dumps(output_json) if output_json is not None else None, "ok": ok},
             )
@@ -1601,7 +1610,7 @@ class Neo4jClient:
         with self.driver.session() as s:
             s.run(
                 "MATCH (r:AgentRun{id:$rid}) "
-                "CREATE (a:Artifact {id:$artifact_id, run_id:$rid, kind:$k, path:$p, sha256:$h, created_at:timestamp(), created_at_ts:timestamp(), updated_at:timestamp(), updated_at_ts:timestamp()}) "
+                "CREATE (a:Artifact {id:$artifact_id, run_id:$rid, kind:$k, path:$p, sha256:$h, created_at:datetime(), created_at_ts:timestamp(), updated_at:datetime(), updated_at_ts:timestamp()}) "
                 "MERGE (r)-[:PRODUCED]->(a)",
                 {"rid": run_id, "artifact_id": artifact_id, "k": kind, "p": path, "h": sha256},
             )

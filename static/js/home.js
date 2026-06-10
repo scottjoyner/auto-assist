@@ -48,7 +48,7 @@
           } catch {}
         };
         ws.onclose = () => { if (connected) setBadge("reconnect"); setTimeout(()=>startSSE(), 800); };
-        ws.onerror = () => { try{ws.close();}catch{}; setTimeout(()=>startSSE(), 200); };
+        ws.onerror = () => { connected = false; try{ws.close();}catch{}; setTimeout(()=>startSSE(), 200); };
       }
       function startSSE(){
         try {

@@ -13,8 +13,13 @@ from .deps import load_get_current_job, load_redis_module
 redis_module = load_redis_module()
 get_current_job = load_get_current_job()
 
-from .neo4j_client import Neo4jClient
-from .paperclip_client import PaperclipClient
+_redis = None
+def _get_redis():
+    global _redis
+    if _redis is None:
+        _redis = redis_module.Redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+    return _redis
+
 from .queue import get_q
 from .intent_classifier import (
     CLASSIFICATION_TASK,
@@ -32,7 +37,8 @@ INTENTS_PER_CYCLE = int(os.getenv("ORCHESTRATOR_INTENTS_PER_CYCLE", "3"))
 PAPERCLIP_AGENT_ID = os.getenv("PAPERCLIP_AGENT_ID", "Hermes Agent")
 
 
-def _get_paperclip_client() -> Optional[PaperclipClient]:
+def _get_paperclip_client() -> Optional["PaperclipClient"]:
+    from .paperclip_client import PaperclipClient
     try:
         return PaperclipClient()
     except ValueError:
@@ -91,7 +97,7 @@ Intent: {text}"""
 
 
 def schedule_intent_orchestrator() -> None:
-    r = redis_module.Redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+    r = _get_redis()
     lock_key = "assistx:intent_orchestrator:scheduled"
     if r.setnx(lock_key, "1"):
         r.expire(lock_key, 60)
@@ -102,6 +108,7 @@ def schedule_intent_orchestrator() -> None:
 
 
 def process_intents_job() -> Dict[str, Any]:
+    from .neo4j_client import Neo4jClient
     neo = Neo4jClient()
     processed = 0
     errors = 0
@@ -244,9 +251,11 @@ def _handle_cancel(neo: Neo4jClient, intent: Dict[str, Any]) -> None:
 
 
 def _handle_query(neo: Neo4jClient, intent: Dict[str, Any]) -> None:
+    from .answers_store import init_answer
     from .jobs import ask_question_job
     text = intent.get("text", "")
     answer_id = uuid.uuid4().hex
+    init_answer(answer_id, text, user_meta={"intent_id": intent.get("id")})
     get_q().enqueue(ask_question_job, answer_id, text)
     logger.info("Enqueued query job %s for intent %s", answer_id, intent["id"])
 

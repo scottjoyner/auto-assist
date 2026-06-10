@@ -20,7 +20,13 @@ INDEX_ALL = f"{CHANNEL_PREFIX}:index:updated_at"                    # ZSET score
 INDEX_STATUS_PREFIX = f"{CHANNEL_PREFIX}:index:status:"             # ZSET per status
 ALL_STATUSES = ("QUEUED","RUNNING","DONE","FAILED")
 
-_r = redis.from_url(REDIS_URL, decode_responses=True)
+_r = None
+
+def _get_redis():
+    global _r
+    if _r is None:
+        _r = redis.from_url(REDIS_URL, decode_responses=True)
+    return _r
 
 # -------- Keys / indexes --------
 def _key(answer_id: str) -> str:
@@ -40,8 +46,8 @@ def _publish(answer: dict, ev_type: str = "update", **_ignore) -> None:
     import json
     payload = {"type": ev_type, "data": answer}
     try:
-        _r.publish(_chan(answer["id"]), json.dumps(payload))
-        _r.publish(GLOBAL_CHAN, json.dumps(payload))
+        _get_redis().publish(_chan(answer["id"]), json.dumps(payload))
+        _get_redis().publish(GLOBAL_CHAN, json.dumps(payload))
     except Exception:
         # don't let pubsub failures break the request path
         pass
@@ -60,7 +66,7 @@ def _index_upsert(answer: Dict[str, Any]) -> None:
     """Upsert this answer id into global and status zsets with updated_at score."""
     aid = answer["id"]
     score = float(answer.get("updated_at", int(time.time() * 1000)))
-    pipe = _r.pipeline(transaction=True)
+    pipe = _get_redis().pipeline(transaction=True)
     # global
     pipe.zadd(INDEX_ALL, {aid: score})
     # move between status indexes
@@ -72,7 +78,7 @@ def _index_upsert(answer: Dict[str, Any]) -> None:
     pipe.execute()
 
 def _index_remove(answer_id: str) -> None:
-    pipe = _r.pipeline(transaction=True)
+    pipe = _get_redis().pipeline(transaction=True)
     pipe.zrem(INDEX_ALL, answer_id)
     for st in ALL_STATUSES:
         pipe.zrem(f"{INDEX_STATUS_PREFIX}{st}", answer_id)
@@ -96,7 +102,7 @@ def init_answer(answer_id: str, question: str, user_meta: Optional[Dict[str, Any
         "error": None,
         "meta": user_meta or {},
     }
-    _r.setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
+    _get_redis().setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
     _index_upsert(obj)
     _publish(obj, ev_type="new")
 
@@ -110,7 +116,7 @@ def set_status(answer_id: str, status: str, *, job_id: str = None, run_id: str =
     if run_id is not None:
         obj["run_id"] = run_id
     obj["updated_at"] = _now_ms()
-    _r.setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
+    _get_redis().setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
     _index_upsert(obj)
     _publish(obj, ev_type="update")
 
@@ -122,7 +128,7 @@ def set_result(answer_id: str, data: Dict[str, Any]) -> None:
     obj["error"] = None
     obj["status"] = "DONE"
     obj["updated_at"] = _now_ms()
-    _r.setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
+    _get_redis().setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
     _index_upsert(obj)
     _publish(obj, ev_type="update")
 
@@ -133,12 +139,12 @@ def set_error(answer_id: str, err: str) -> None:
     obj["error"] = err
     obj["status"] = "FAILED"
     obj["updated_at"] = _now_ms()
-    _r.setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
+    _get_redis().setex(_key(answer_id), ANSWERS_TTL_S, json.dumps(obj))
     _index_upsert(obj)
     _publish(obj, ev_type="update")
 
 def get_answer(answer_id: str) -> Optional[Dict[str, Any]]:
-    val = _r.get(_key(answer_id))
+    val = _get_redis().get(_key(answer_id))
     if not val:
         return None
     try:
@@ -181,7 +187,7 @@ def list_answers_paginated(
     window = max(50, limit * 3)
     loops = 0
     while len(items) < limit and loops < 6:
-        batch = _r.zrevrangebyscore(zkey, maxb, "-inf", start=0, num=window, withscores=True)
+        batch = _get_redis().zrevrangebyscore(zkey, maxb, "-inf", start=0, num=window, withscores=True)
         if not batch:
             break
         # advance max bound to just below last score in batch
@@ -209,18 +215,18 @@ def list_answers_paginated(
 def rebuild_index() -> Dict[str, Any]:
     """One-shot backfill: scan all answer keys, rebuild ZSETs."""
     # wipe indexes
-    pipe = _r.pipeline(transaction=True)
+    pipe = _get_redis().pipeline(transaction=True)
     pipe.delete(INDEX_ALL)
     for st in ALL_STATUSES:
         pipe.delete(f"{INDEX_STATUS_PREFIX}{st}")
     pipe.execute()
 
     total = 0
-    for k in _r.scan_iter(match=f"{CHANNEL_PREFIX}:*", count=1000):
+    for k in _get_redis().scan_iter(match=f"{CHANNEL_PREFIX}:*", count=1000):
         if k.endswith(":events"):
             continue
         try:
-            obj = json.loads(_r.get(k) or "{}")
+            obj = json.loads(_get_redis().get(k) or "{}")
         except Exception:
             continue
         if not obj or "id" not in obj:

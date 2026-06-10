@@ -1,4 +1,8 @@
 # compose.override.yml
+# Used for local development where Redis/Neo4j/LLM run on the host.
+# Clears depends_on so services start immediately without waiting for
+# containerized infra (Redis, Neo4j). Override host endpoints and mount
+# host data volumes for local file access.
 services:
   api:
     depends_on: []

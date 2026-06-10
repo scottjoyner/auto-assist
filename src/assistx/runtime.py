@@ -8,6 +8,9 @@ from typing import Any, Dict, List
 import requests
 
 from .deps import dependency_mode
+from . import __version__
+
+_start_time = time.time()
 from .overlay import build_overlay_configuration, build_overlay_health, overlay_mode
 
 
@@ -125,6 +128,9 @@ def build_runtime_health() -> Dict[str, Any]:
     return {
         "ok": overall_ok,
         "status": overall_status,
+        "service": "auto-assist",
+        "version": __version__,
+        "uptime": time.time() - _start_time,
         "profile": profile,
         "dependency_mode": dependency_mode(),
         "timestamp": int(time.time() * 1000),

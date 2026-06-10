@@ -25,8 +25,14 @@ QA_SIMILARITY_THRESHOLD = float(os.getenv("QA_SIMILARITY_THRESHOLD", "0.92"))
 QA_SIMILAR_MAX_SCAN = int(os.getenv("QA_SIMILAR_MAX_SCAN", "200"))
 SIM_INDEX_KEY = "assistx:qa:sim:index"
 
-# create a single Redis client (binary-safe)
-_rds = redis.from_url(REDIS_URL, decode_responses=False)
+# lazy Redis client (binary-safe)
+_rds = None
+
+def _get_rds():
+    global _rds
+    if _rds is None:
+        _rds = redis.from_url(REDIS_URL, decode_responses=False)
+    return _rds
 
 
 def _schema_fp(schema: Dict[str, Any]) -> str:
@@ -73,7 +79,7 @@ def _find_similar_cached(question: str, schema_fp: str) -> Optional[Dict[str, An
     if not qvec:
         return None
     try:
-        ids = _rds.zrevrange(SIM_INDEX_KEY, 0, max(0, QA_SIMILAR_MAX_SCAN - 1))
+        ids = _get_rds().zrevrange(SIM_INDEX_KEY, 0, max(0, QA_SIMILAR_MAX_SCAN - 1))
     except Exception:
         return None
     best_obj = None
@@ -83,7 +89,7 @@ def _find_similar_cached(question: str, schema_fp: str) -> Optional[Dict[str, An
         if not entry_id.startswith(f"{schema_fp}:"):
             continue
         try:
-            blob = _rds.get(_sim_entry_key(entry_id))
+            blob = _get_rds().get(_sim_entry_key(entry_id))
         except Exception:
             blob = None
         if not blob:
@@ -122,11 +128,11 @@ def _store_similar_entry(question: str, schema_fp: str, answer_obj: Dict[str, An
     }
     now = int(time.time() * 1000)
     try:
-        _rds.setex(_sim_entry_key(entry_id), QA_CACHE_TTL_S, json.dumps(record).encode("utf-8"))
-        _rds.zadd(SIM_INDEX_KEY, {entry_id: now})
+        _get_rds().setex(_sim_entry_key(entry_id), QA_CACHE_TTL_S, json.dumps(record).encode("utf-8"))
+        _get_rds().zadd(SIM_INDEX_KEY, {entry_id: now})
         # light cleanup of old index members
         stale_cutoff = now - (QA_CACHE_TTL_S * 1000)
-        _rds.zremrangebyscore(SIM_INDEX_KEY, 0, stale_cutoff)
+        _get_rds().zremrangebyscore(SIM_INDEX_KEY, 0, stale_cutoff)
     except Exception:
         pass
 
@@ -166,7 +172,7 @@ def answer_question(
         ckey = _cache_key(question, fp)
 
         try:
-            cached = _rds.get(ckey)
+            cached = _get_rds().get(ckey)
         except Exception:
             cached = None  # tolerate Redis outages
 
@@ -230,7 +236,7 @@ def answer_question(
         }
 
         try:
-            _rds.setex(ckey, QA_CACHE_TTL_S, json.dumps(out).encode("utf-8"))
+            _get_rds().setex(ckey, QA_CACHE_TTL_S, json.dumps(out).encode("utf-8"))
         except Exception:
             pass  # tolerate Redis being down
         _store_similar_entry(question, fp, out)

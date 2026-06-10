@@ -10,7 +10,13 @@ from .deps import load_get_current_job, load_redis_module
 redis_module = load_redis_module()
 get_current_job = load_get_current_job()
 
-from .neo4j_client import Neo4jClient
+_redis = None
+def _get_redis():
+    global _redis
+    if _redis is None:
+        _redis = redis_module.Redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+    return _redis
+
 from .queue import get_q
 from . import answers_store
 
@@ -27,6 +33,7 @@ def maintenance_job() -> Dict[str, Any]:
         "memory_deleted": 0,
         "answers_reindexed": 0,
     }
+    from .neo4j_client import Neo4jClient
     neo = Neo4jClient()
     try:
         with neo._session() as s:
@@ -80,7 +87,7 @@ def _reschedule() -> None:
 
 
 def schedule_maintenance_job() -> None:
-    r = redis_module.Redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+    r = _get_redis()
     lock_key = "assistx:maintenance:scheduled"
     if r.setnx(lock_key, "1"):
         r.expire(lock_key, 120)

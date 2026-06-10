@@ -1,6 +1,10 @@
 # src/assistx/worker.py
+import json
 import multiprocessing as mp
 import os
+import socket
+import threading
+import time
 
 from .deps import load_redis_module, use_compat_shims
 from .runtime import validate_runtime_configuration
@@ -15,12 +19,41 @@ if use_compat_shims():
 else:
     from rq import Worker, Queue, Connection
 
+HEALTH_PORT = int(os.getenv("WORKER_HEALTH_PORT", "8100"))
+
+
+def _health_server() -> None:
+    """Minimal HTTP health endpoint so Docker can check worker liveness."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("0.0.0.0", HEALTH_PORT))
+    server.listen(1)
+    server.settimeout(1.0)
+    resp = (
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 41\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        '{"ok":true,"service":"auto-assist-worker"}\r\n'
+    )
+    while True:
+        try:
+            conn, _ = server.accept()
+            conn.recv(1024)
+            conn.sendall(resp.encode())
+            conn.close()
+        except socket.timeout:
+            continue
+        except Exception:
+            break
+
+
 def _run_one_worker(index: int, listen: list[str], redis_url: str) -> None:
     conn = redis.from_url(redis_url)
     worker_name = f"assistx-worker-{index}"
     with Connection(conn):
         w = Worker([Queue(name) for name in listen], name=worker_name)
-        # enable scheduler so delayed/retry jobs work if present
         w.work(with_scheduler=True)
 
 
@@ -29,6 +62,9 @@ def main():
     listen = [os.getenv("RQ_QUEUE", "assistx")]
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
     concurrency = max(1, int(os.getenv("WORKER_CONCURRENCY", "1")))
+
+    t = threading.Thread(target=_health_server, daemon=True)
+    t.start()
 
     if concurrency == 1:
         _run_one_worker(1, listen, redis_url)
