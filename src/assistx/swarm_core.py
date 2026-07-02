@@ -244,6 +244,12 @@ def reconcile_event(neo: Neo4jClient, event: Dict[str, Any]) -> None:
     payload = event.get("payload") or {}
     if event_type in {"swarm.node.registered", "swarm.node.heartbeat"}:
         upsert_swarm_node(neo, payload if payload else event)
+    elif event_type.startswith("router.execution_stage."):
+        upsert_route_runtime_sample(neo, payload, event_type)
+    elif event_type in {"router.route_decision", "route.selected"}:
+        record_route_decision_trace(neo, event, payload)
+    elif event_type.startswith("assignment."):
+        project_assignment_event(neo, event, payload)
     elif event_type == "model.endpoint.discovered":
         upsert_model_endpoint(neo, payload, event.get("node_id"))
     elif event_type == "voice.auth.decision":
@@ -256,6 +262,205 @@ def reconcile_event(neo: Neo4jClient, event: Dict[str, Any]) -> None:
         upsert_memory_candidate(neo, payload, event)
     elif event_type == "ingest.batch.review_ready":
         upsert_ingest_batch(neo, payload, event, status="reviewing")
+
+
+def _coerce_timestamp_ms(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        return int(numeric * 1000) if abs(numeric) < 10_000_000_000 else int(numeric)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            numeric = float(text)
+        except ValueError:
+            try:
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            return int(parsed.timestamp() * 1000)
+        return int(numeric * 1000) if abs(numeric) < 10_000_000_000 else int(numeric)
+    return None
+
+
+def project_assignment_event(neo: Neo4jClient, event: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    event_type = str(event.get("event_type") or "")
+    task_id = str(payload.get("task_id") or "").strip()
+    if not task_id:
+        return
+
+    assignment_id = payload.get("assignment_id")
+    worker_id = payload.get("worker_id")
+    node_id = payload.get("node_id")
+    claim_id = payload.get("claim_id") or assignment_id
+    lease_seconds = payload.get("lease_seconds")
+    lease_expires_at_ts = _coerce_timestamp_ms(payload.get("lease_expires_at"))
+    last_heartbeat_at_ts = _coerce_timestamp_ms(payload.get("last_heartbeat_at") or event.get("occurred_at"))
+    result_json = None
+    status = payload.get("status")
+    clear_claim_fields = False
+    release_reason = None
+
+    if event_type == "assignment.claimed":
+        status = status or "CLAIMED"
+    elif event_type == "assignment.heartbeat":
+        status = status or "RUNNING"
+    elif event_type == "assignment.completed":
+        status = status or "DONE"
+        result_json = _json_dumps(
+            {
+                "assignment_id": assignment_id,
+                "task_id": task_id,
+                "worker_id": worker_id,
+                "node_id": node_id,
+                "status": payload.get("status"),
+                "summary": payload.get("summary"),
+                "artifacts": payload.get("artifacts", []),
+            }
+        )
+    elif event_type == "assignment.failed":
+        status = status or "FAILED"
+        result_json = _json_dumps(
+            {
+                "assignment_id": assignment_id,
+                "task_id": task_id,
+                "worker_id": worker_id,
+                "node_id": node_id,
+                "status": payload.get("status"),
+                "summary": payload.get("summary"),
+                "artifacts": payload.get("artifacts", []),
+            }
+        )
+    elif event_type == "assignment.released":
+        status = "READY"
+        clear_claim_fields = True
+        release_reason = payload.get("reason") or "released"
+    elif event_type == "assignment.expired":
+        status = "READY"
+        clear_claim_fields = True
+        release_reason = payload.get("reason") or "expired"
+    else:
+        status = status or "CLAIMED"
+
+    with neo._session() as s:
+        s.run(
+            """
+            MATCH (e:SignalEvent:EventEnvelope {event_id:$event_id})
+            MERGE (t:Task {id:$task_id})
+            ON CREATE SET t.created_at=datetime(), t.created_at_ts=timestamp()
+            SET t.updated_at=datetime(),
+                t.updated_at_ts=timestamp(),
+                t.status=$status,
+                t.assignment_id=coalesce($assignment_id, t.assignment_id),
+                t.worker_id=coalesce($worker_id, t.worker_id),
+                t.node_id=coalesce($node_id, t.node_id),
+                t.claim_id=CASE WHEN $clear_claim_fields THEN null ELSE coalesce($claim_id, t.claim_id) END,
+                t.claimed_by=CASE WHEN $clear_claim_fields THEN null ELSE coalesce($worker_id, t.claimed_by) END,
+                t.agent_session_id=CASE WHEN $clear_claim_fields THEN null ELSE coalesce($agent_session_id, t.agent_session_id) END,
+                t.heartbeat_by=CASE WHEN $clear_claim_fields THEN null ELSE coalesce($worker_id, t.heartbeat_by) END,
+                t.completed_by=coalesce($worker_id, t.completed_by),
+                t.lease_seconds=CASE WHEN $clear_claim_fields THEN null ELSE coalesce($lease_seconds, t.lease_seconds) END,
+                t.lease_expires_at_ts=CASE WHEN $clear_claim_fields THEN null ELSE coalesce($lease_expires_at_ts, t.lease_expires_at_ts) END,
+                t.last_heartbeat_at_ts=coalesce($last_heartbeat_at_ts, t.last_heartbeat_at_ts),
+                t.result_summary=coalesce($result_summary, t.result_summary),
+                t.result_json=coalesce($result_json, t.result_json),
+                t.lease_released_reason=coalesce($lease_released_reason, t.lease_released_reason)
+            MERGE (e)-[:ABOUT_TASK]->(t)
+            """,
+            {
+                "event_id": event.get("event_id"),
+                "task_id": task_id,
+                "status": status,
+                "assignment_id": assignment_id,
+                "worker_id": worker_id,
+                "node_id": node_id,
+                "claim_id": claim_id,
+                "agent_session_id": payload.get("correlation_id") or event.get("correlation_id") or assignment_id,
+                "lease_seconds": lease_seconds,
+                "lease_expires_at_ts": lease_expires_at_ts,
+                "last_heartbeat_at_ts": last_heartbeat_at_ts if event_type == "assignment.heartbeat" else None,
+                "result_summary": payload.get("summary"),
+                "result_json": result_json,
+                "lease_released_reason": release_reason,
+                "clear_claim_fields": clear_claim_fields,
+            },
+        ).consume()
+
+
+def upsert_route_runtime_sample(neo: Neo4jClient, payload: Dict[str, Any], event_type: str) -> Dict[str, Any]:
+    node_id = str(payload.get("node_id") or payload.get("provider_id") or "unknown")
+    model_id = str(payload.get("provider_model_id") or payload.get("model_id") or payload.get("model") or "").strip()
+    execution_status = str(payload.get("status") or "unknown")
+    node_status = payload.get("node_status") or ("online" if execution_status == "completed" else "degraded")
+    props = _neo4j_props(
+        {
+            **payload,
+            "node_id": node_id,
+            "model_id": model_id or None,
+            "provider_model_id": payload.get("provider_model_id") or model_id or None,
+            "status": node_status,
+            "execution_status": execution_status,
+            "last_route_event_type": event_type,
+            "last_route_provider_id": payload.get("provider_id"),
+            "last_route_provider": payload.get("provider"),
+            "last_route_model_id": model_id or None,
+            "last_route_status": execution_status,
+            "last_route_request_id": payload.get("request_id"),
+            "last_route_task_id": payload.get("task_id"),
+            "last_route_agent_run_id": payload.get("agent_run_id"),
+        }
+    )
+    with neo._session() as s:
+        s.run(
+            """
+            MERGE (n:SwarmNode {node_id:$node_id})
+            ON CREATE SET n.created_at=datetime(), n.created_at_ts=timestamp()
+            SET n += $props,
+                n.last_seen_at=datetime(),
+                n.last_seen_at_ts=timestamp(),
+                n.updated_at=datetime(),
+                n.updated_at_ts=timestamp(),
+                n.throughput_tokens_per_second=$tokens_per_second,
+                n.queue_wait_ms=$queue_wait_ms,
+                n.load_time_ms=$load_time_ms,
+                n.value_per_second=$value_per_second,
+                n.model_id=coalesce($model_id, n.model_id)
+            """,
+            {
+                "node_id": node_id,
+                "props": props,
+                "tokens_per_second": payload.get("tokens_per_second"),
+                "queue_wait_ms": payload.get("queue_wait_ms"),
+                "load_time_ms": payload.get("load_time_ms"),
+                "value_per_second": payload.get("value_per_second"),
+                "model_id": model_id or None,
+            },
+        ).consume()
+        if model_id:
+            model_props = _neo4j_props(
+                {
+                    "model_id": model_id,
+                    "provider": payload.get("provider"),
+                    "provider_id": payload.get("provider_id"),
+                    "provider_model_id": payload.get("provider_model_id") or model_id,
+                }
+            )
+            s.run(
+                """
+                MERGE (m:Model {model_id:$model_id})
+                ON CREATE SET m.created_at=datetime(), m.created_at_ts=timestamp()
+                SET m += $props, m.updated_at=datetime(), m.updated_at_ts=timestamp()
+                WITH m
+                MATCH (n:SwarmNode {node_id:$node_id})
+                MERGE (n)-[:USES_MODEL]->(m)
+                """,
+                {"node_id": node_id, "model_id": model_id, "props": model_props},
+            ).consume()
+        rec = s.run("MATCH (n:SwarmNode {node_id:$node_id}) RETURN n", {"node_id": node_id}).single()
+        return dict(rec["n"]) if rec else props
 
 
 def upsert_swarm_node(neo: Neo4jClient, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -730,6 +935,7 @@ TRACE_STATE_ORDER = [
     "route.blocked",
     "assignment.heartbeat",
     "assignment.claimed",
+    "router.route_decision",
     "route.selected",
     "assignment.requested",
     "dispatch.accepted",
@@ -739,6 +945,26 @@ TRACE_STATE_ORDER = [
     "voice.auth.error",
     "voice.auth.requested",
 ]
+
+
+def record_route_decision_trace(
+    neo: Neo4jClient,
+    event: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> None:
+    correlation_id = str(event.get("correlation_id") or payload.get("correlation_id") or "").strip()
+    if not correlation_id:
+        return
+    record_trace_event(
+        neo,
+        correlation_id=correlation_id,
+        event_type=str(event.get("event_type") or "router.route_decision"),
+        source=str(event.get("source_repo") or event.get("source_service") or payload.get("source") or "auto-router"),
+        task_id=str(payload.get("task_id") or "").strip() or None,
+        dispatch_id=str(payload.get("dispatch_id") or "").strip() or None,
+        route_id=str(payload.get("route_id") or "").strip() or None,
+        payload=payload,
+    )
 
 
 def record_trace_event(
@@ -835,6 +1061,8 @@ def _derive_trace_state(events: List[Dict[str, Any]]) -> str:
         return "blocked"
     if latest_type == "assignment.expired":
         return "expired"
+    if latest_type == "assignment.released":
+        return "pending_assignment"
     if latest_type in ("assignment.heartbeat", "assignment.claimed"):
         return "running"
     if latest_type == "route.selected":

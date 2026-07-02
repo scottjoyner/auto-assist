@@ -986,6 +986,65 @@ class LLMStreamIn(BaseModel):
 # =======================
 # UI / Orchestration (v1)
 # =======================
+def _auto_router_base_url() -> str:
+    return os.getenv("AUTO_ROUTER_BASE_URL", "").strip().rstrip("/")
+
+
+def _fetch_json(url: str, *, timeout: float = 6.0) -> dict[str, Any]:
+    resp = requests.get(url, timeout=timeout)
+    resp.raise_for_status()
+    try:
+        payload = resp.json()
+    except Exception as exc:
+        raise ValueError(f"non-JSON response from {url}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"expected JSON object from {url}")
+    return payload
+
+
+def _fetch_auto_router_fleet_report() -> dict[str, Any]:
+    base_url = _auto_router_base_url()
+    if not base_url:
+        return {
+            "ok": False,
+            "configured": False,
+            "source_url": None,
+            "error": "AUTO_ROUTER_BASE_URL is not configured",
+            "report": {},
+            "summary": {},
+            "loadouts": [],
+            "task_profiles": [],
+        }
+
+    source_url = f"{base_url}/admin/ops/summary"
+    try:
+        summary = _fetch_json(source_url)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "configured": True,
+            "source_url": source_url,
+            "error": str(exc)[:500],
+            "report": {},
+            "summary": {},
+            "loadouts": [],
+            "task_profiles": [],
+        }
+
+    report = summary.get("fleet_loadout_report") or {}
+    return {
+        "ok": bool(report),
+        "configured": True,
+        "source_url": source_url,
+        "captured_at": report.get("captured_at"),
+        "report": report,
+        "summary": summary.get("fleet_dispatcher_stats") or {},
+        "loadouts": report.get("loadouts") or [],
+        "task_profiles": report.get("task_profiles") or [],
+        "snapshot_summary": report.get("snapshot_summary") or report.get("summary") or {},
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, user: str = Depends(auth)):
     return templates.TemplateResponse("index.html", {"request": request})
@@ -995,6 +1054,20 @@ def home(request: Request, user: str = Depends(auth)):
 @app.get("/command-center", response_class=HTMLResponse)
 def command_center(request: Request, user: str = Depends(auth)):
     return templates.TemplateResponse("command_center.html", {"request": request})
+
+@app.get("/fleet", response_class=HTMLResponse)
+def fleet_ui(request: Request, user: str = Depends(auth)):
+    return templates.TemplateResponse("fleet.html", {"request": request})
+
+@app.get("/routing", response_class=HTMLResponse)
+def routing_ui(request: Request, user: str = Depends(auth)):
+    return templates.TemplateResponse("routing.html", {"request": request})
+
+
+@app.get("/trading", response_class=HTMLResponse)
+def trading_ui(request: Request, user: str = Depends(auth)):
+    return templates.TemplateResponse("trading.html", {"request": request})
+
 
 @app.get("/intents", response_class=HTMLResponse)
 def intents_ui(request: Request, user: str = Depends(auth)):
@@ -1116,7 +1189,13 @@ def runs(request: Request, limit: int = 50, user: str = Depends(auth)):
     neo.close()
     return templates.TemplateResponse("runs.html", {"request": request, "runs": rows})
 
-@app.get("/metrics")
+
+@app.get("/api/fleet/loadouts")
+def api_fleet_loadouts(user: str = Depends(auth)):
+    payload = _fetch_auto_router_fleet_report()
+    return JSONResponse(payload, status_code=200 if payload.get("ok") else 503)
+
+@app.get("/metrics", response_class=HTMLResponse)
 def metrics(user: str = Depends(auth)):
     try:
         q = get_q()

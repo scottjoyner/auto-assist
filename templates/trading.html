@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}AssistX – Paper Trading{% endblock %}
+
+{% block content %}
+<div class="grid">
+  <section class="card hero">
+    <div class="section-header">
+      <div>
+        <h1>Paper trading</h1>
+        <p class="kicker">xwing is the active paper-trading node; the Rust-heavy trader v4 and the dashboard are already live, so this page keeps the repo, watchdog, and agent tooling in one place.</p>
+      </div>
+      <div class="actions">
+        <a class="btn" href="/command-center">Command center</a>
+        <a class="btn secondary" href="/routing">Routing</a>
+        <a class="btn secondary" href="/fleet">Fleet</a>
+      </div>
+    </div>
+
+    <div id="trading-badges" class="summary-line mt-4">
+      <span class="badge ok">paper-first</span>
+      <span class="badge">xwing / portfolio-management</span>
+      <span class="badge">watchdog + agent tooling</span>
+      <span class="badge">dashboard on 8002</span>
+    </div>
+  </section>
+
+  <section class="card half">
+    <h3>Portfolio-management repo</h3>
+    <p class="kicker">Current working repo and the main surfaces you referenced.</p>
+    <div class="stack-sm mt-3">
+      <div class="panel">
+        <div class="summary-line"><span class="badge">repo</span> <span class="muted">/home/scott/git/portfolio-management</span></div>
+        <div class="muted mt-2">Top-level README describes the unified market-data and trading system; the trading_system subtree hosts the API/UI/dashboard scaffolding.</div>
+      </div>
+      <div class="panel">
+        <div class="summary-line"><span class="badge">paper trading</span> <span class="badge">safe sandbox</span></div>
+        <div class="muted mt-2">Useful entry points include verify_paper_trading.py, verify_integration.py, run_paper_trading.sh, and the trading_system/brokers/paper.py adapter.</div>
+      </div>
+      <div class="panel">
+        <div class="summary-line"><span class="badge">dashboard</span> <span class="badge">xwing:8002</span> <span class="badge">trader-v4:9090</span></div>
+        <div class="muted mt-2">Trading dashboard: http://xwing:8002/dashboard · Health: http://xwing:8002/health · Trader v4 status: http://xwing:9090/status.</div>
+      </div>
+      <div class="panel">
+        <div class="summary-line"><span class="badge">deployment</span> <span class="badge">systemd</span></div>
+        <div class="muted mt-2">The sample service is trading_system/deploy/systemd/portfolio.service and the deployment docs keep the live/paper split explicit.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card half">
+    <h3>Ongoing paper-trading workflow</h3>
+    <p class="kicker">The bits we should keep front and center while xwing keeps accumulating paper data.</p>
+    <div class="stack-sm mt-3">
+      <div class="summary-line"><span class="badge">1</span> Define the strategy / signal.</div>
+      <div class="summary-line"><span class="badge">2</span> Route through paper trading only; no live capital mutation.</div>
+      <div class="summary-line"><span class="badge">3</span> Verify fills, balances, and P&amp;L via the integration checks.</div>
+      <div class="summary-line"><span class="badge">4</span> Persist outcomes so the model can compare paper results vs. hypotheses.</div>
+    </div>
+    <div class="panel mt-3">
+      <div class="summary-line"><span class="badge">watch for</span> <span class="muted">slow data providers, API key drift, and stale positions</span></div>
+      <div class="muted mt-2">The repo’s docs already call out backtesting, approval workflows, and production safety as unresolved gaps, so paper mode is the right default surface for now.</div>
+    </div>
+  </section>
+
+  <section class="card half">
+    <h3>LLM watchdog / monitoring</h3>
+    <p class="kicker">We should keep the model-side watchdog visible next to the trading stack.</p>
+    <div class="stack-sm mt-3">
+      <div class="panel">
+        <div class="summary-line"><span class="badge">watchdog path</span> <span class="muted">/home/scott/git/knowledge-graph/docs/deploy/watchdog.py</span></div>
+        <div class="muted mt-2">This is the file-system watcher / sync loop used to keep the vault and graph aligned. It’s a good anchor for LLM output monitoring and agent-side health checks.</div>
+      </div>
+      <div class="panel">
+        <div class="summary-line"><span class="badge">LLM checks</span> <span class="badge">model latency</span> <span class="badge">response quality</span></div>
+        <div class="muted mt-2">For the trading workflow, we should treat any LLM helper as advisory unless the watchdog confirms output quality, latency, and route provenance.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card half">
+    <h3>OpenCode agent configuration</h3>
+    <p class="kicker">This host has OpenCode installed; the missing piece is provider auth.</p>
+    <div class="stack-sm mt-3">
+      <div class="panel">
+        <div class="summary-line"><span class="badge">binary</span> <span class="muted">/home/scott/.opencode/bin/opencode</span></div>
+        <div class="muted mt-2">Local verification showed the binary is present, but auth list currently returns zero credentials.</div>
+      </div>
+      <div class="panel">
+        <div class="summary-line"><span class="badge">next step</span> <span class="muted">run opencode auth login or set provider env vars</span></div>
+        <div class="muted mt-2">Once a provider is configured, OpenCode can be used for code review, refactors, and repo-specific tasks in an isolated workdir.</div>
+      </div>
+      <div class="panel">
+        <div class="summary-line"><span class="badge">suggested check</span> <span class="muted">opencode auth list</span></div>
+        <div class="muted mt-2">If you want, I can turn that into a repeatable setup check for AssistX or a small ops page that shows the current auth state.</div>
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}

@@ -946,6 +946,90 @@ def test_command_center_reassign(seeded_neo4j, monkeypatch):
     assert r.json()["reassigned"] is True
 
 
+def test_command_center_fleet_proxy_and_page(monkeypatch):
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://router.example")
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+            self.status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, timeout=6.0):
+        assert url == "http://router.example/admin/ops/summary"
+        return FakeResponse(
+            {
+                "fleet_dispatcher_stats": {"success": 12, "worker_slots": 7, "reviewer_slots": 2},
+                "fleet_loadout_report": {
+                    "captured_at": "2026-06-30T00:35:12.765935+00:00",
+                    "task_profiles": [{"id": "coding_review_strict", "name": "Coding / strict review", "quality_target": 0.9, "throughput_target": "medium", "context_need": "high"}],
+                    "loadouts": [
+                        {
+                            "task_profile_id": "coding_review_strict",
+                            "task_profile_name": "Coding / strict review",
+                            "score": 390.638,
+                            "rationale": "worker + reviewer pair",
+                            "primary": {"node_name": "deathstar-xps-8920", "model_id": "vibethinker-3b-i1"},
+                            "reviewer": {"node_name": "xwing", "model_id": "qwen3.6-35b-a3b-claude-4.7-opus-reasoning-distilled-apex-mtp"},
+                            "fallback": {"node_name": "x1-370", "model_id": "ornith-1.0-35b"},
+                        }
+                    ],
+                },
+            }
+        )
+
+    monkeypatch.setattr("assistx.api.requests.get", fake_get)
+
+    r = client.get("/api/fleet/loadouts", auth=auth)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["summary"]["success"] == 12
+    assert body["loadouts"][0]["task_profile_id"] == "coding_review_strict"
+
+    page = client.get("/fleet", auth=auth)
+    assert page.status_code == 200
+    assert "Fleet view" in page.text
+
+
+def test_routing_overlay_page_and_status(seeded_neo4j, monkeypatch):
+    neo = seeded_neo4j
+    monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr(neo, "close", lambda: None)
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    page = client.get("/routing", auth=auth)
+    assert page.status_code == 200, page.text
+    assert "Routing / overlay" in page.text
+
+    status = client.get("/api/router/status", auth=auth)
+    assert status.status_code == 200, status.text
+    body = status.json()
+    assert body["ok"] is True
+    assert "endpoints" in body
+    assert body["graph"]["neo4j"] == "online"
+
+
+def test_trading_page_and_links(monkeypatch):
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+
+    page = client.get("/trading", auth=auth)
+    assert page.status_code == 200, page.text
+    assert "Paper trading" in page.text
+    assert "portfolio-management" in page.text
+    assert "OpenCode agent configuration" in page.text
+    assert "/home/scott/git/portfolio-management" in page.text
+
+
 def test_phase9_feeds_and_evaluations_api(seeded_neo4j, monkeypatch):
     neo = seeded_neo4j
     monkeypatch.setattr("assistx.api._neo", lambda: neo)

@@ -59,12 +59,12 @@ Phases 0-4 of the Auto-Repos Orchestration Plan are complete with all tests pass
 
 **What is NOT done yet (next steps):**
 
-1. Wire auto-router outbox dispatcher to POST `route.selected` events back to AssistX `/api/events`
+1. Wire auto-router outbox dispatcher to POST `router.route_decision` and `router.execution_stage.*` events back to AssistX `/api/events`
 2. Decide HMAC auth policy for trace endpoints (operator auth vs unauthenticated for local dev)
 3. Sophia trace viewer (Phase 2) - Sophia consumes AssistX traces instead of inferring locally
 4. auto-ingest context publisher (Phase 5)
 5. End-to-end validation harness (Phase 6)
-6. Test full chain: Sophia signed event → AssistX trace → route request → route.selected → assignment.claimed → heartbeat → completion
+6. Test full chain: Sophia signed event → AssistX trace → route request → router.route_decision → assignment.claimed → heartbeat → completion
 
 ### Active Blocker
 

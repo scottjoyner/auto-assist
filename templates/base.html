@@ -4,111 +4,441 @@
   <meta charset="utf-8"/>
   <title>{% block title %}AssistX{% endblock %}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <!-- reuse your existing styles; add tiny base overrides -->
   <link rel="stylesheet" href="{{ url_for('static', path='css/ingest.css') }}">
   <style>
-    :root { --bg:#0b1224; --panel:#0f1a33; --muted:#94a3b8; --text:#e2e8f0; --brand:#60a5fa; --ok:#16a34a; --bad:#ef4444; --accent:#1d4ed8; }
+    :root {
+      --bg: #07111f;
+      --panel: #0e1a31;
+      --panel-2: #0b162a;
+      --panel-3: #12213f;
+      --line: #243556;
+      --line-2: #1a2741;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --brand: #60a5fa;
+      --brand-2: #38bdf8;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --bad: #ef4444;
+      --accent: #1d4ed8;
+      --accent-2: #2563eb;
+      --shadow: 0 18px 48px rgba(2, 6, 23, 0.35);
+      --sidebar-w: 290px;
+    }
     * { box-sizing: border-box; }
-    body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto; background:var(--bg); color:var(--text); }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(37, 99, 235, 0.14), transparent 30%),
+        radial-gradient(circle at top right, rgba(14, 165, 233, 0.10), transparent 26%),
+        var(--bg);
+      color: var(--text);
+    }
     a { color: var(--brand); text-decoration: none; }
-    header.topbar { position:sticky; top:0; z-index:50; background:rgba(11,18,36,.85); backdrop-filter: blur(6px); border-bottom:1px solid #1f2a4d; }
-    header .wrap { display:flex; align-items:center; justify-content:space-between; gap:.75rem; padding:0.75rem 1rem; max-width:1200px; margin:0 auto; }
-    .brand { display:flex; gap:.6rem; align-items:center; font-weight:700; letter-spacing:.3px; }
-    .brand .dot { width:10px; height:10px; border-radius:50%; background:var(--brand); box-shadow:0 0 12px var(--brand); }
-    nav { display:flex; flex-wrap:wrap; align-items:center; gap:.35rem; justify-content:flex-end; }
-    nav a { margin:0; padding:.35rem .6rem; border-radius:.5rem; }
-    nav a:hover { background:#0f1a33; }
-    .badge { display:inline-flex; align-items:center; font-size:.78rem; padding:.15rem .5rem; border-radius:999px; border:1px solid #1f2a4d; color:var(--muted); white-space:nowrap; }
-    .badge.ok { color:#bbf7d0; border-color:#134e4a; }
-    .badge.err { color:#fecaca; border-color:#7f1d1d; }
-    main.container { max-width:1200px; margin:1rem auto; padding:1rem; }
-    .grid { display:grid; grid-template-columns: repeat(12, 1fr); gap:16px; }
-    .card { grid-column: span 12; background:var(--panel); border:1px solid #1f2a4d; border-radius:12px; padding:16px; }
+    a:hover { color: #93c5fd; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .app-shell {
+      display: grid;
+      grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+      min-height: 100vh;
+    }
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      border-right: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(10, 18, 35, 0.98), rgba(8, 14, 27, 0.98));
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.02);
+    }
+    .brand-block {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      padding: 0.75rem 0.8rem;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(10, 18, 35, 0.96));
+      box-shadow: var(--shadow);
+    }
+    .brand-row {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+    }
+    .brand-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, var(--brand), var(--brand-2));
+      box-shadow: 0 0 14px rgba(96, 165, 250, 0.8);
+      flex: 0 0 auto;
+    }
+    .brand-title {
+      font-weight: 750;
+      letter-spacing: 0.02em;
+      font-size: 1rem;
+      line-height: 1.2;
+    }
+    .brand-subtitle {
+      color: var(--muted);
+      font-size: 0.84rem;
+      line-height: 1.45;
+    }
+    .sidebar-section {
+      display: grid;
+      gap: 0.5rem;
+    }
+    .sidebar-section-title {
+      margin: 0 0 0.1rem;
+      color: #cbd5e1;
+      font-size: 0.74rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      padding: 0 0.25rem;
+    }
+    .nav-list {
+      display: grid;
+      gap: 0.35rem;
+    }
+    .nav-link {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      border: 1px solid transparent;
+      border-radius: 0.9rem;
+      padding: 0.65rem 0.8rem;
+      color: #dbeafe;
+      background: rgba(15, 23, 42, 0.35);
+      transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+    }
+    .nav-link:hover {
+      background: rgba(29, 78, 216, 0.18);
+      border-color: rgba(96, 165, 250, 0.18);
+      transform: translateX(1px);
+    }
+    .nav-link.active {
+      background: linear-gradient(135deg, rgba(37, 99, 235, 0.30), rgba(14, 165, 233, 0.18));
+      border-color: rgba(96, 165, 250, 0.38);
+      color: #eff6ff;
+      box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.08) inset;
+    }
+    .nav-link .nav-label { font-weight: 600; }
+    .nav-link small {
+      color: var(--muted);
+      font-size: 0.76rem;
+      white-space: nowrap;
+    }
+    .sidebar-footer {
+      margin-top: auto;
+      padding-top: 0.5rem;
+      border-top: 1px solid var(--line-2);
+      display: grid;
+      gap: 0.5rem;
+    }
+    .sidebar-footer .status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.78rem;
+      padding: 0.2rem 0.55rem;
+      border-radius: 999px;
+      border: 1px solid #1f2a4d;
+      color: var(--muted);
+      white-space: nowrap;
+      background: rgba(15, 23, 42, 0.55);
+    }
+    .badge.ok { color: #bbf7d0; border-color: #14532d; }
+    .badge.err { color: #fecaca; border-color: #7f1d1d; }
+    .workspace {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .workspace-topbar {
+      display: none;
+    }
+    main.container {
+      width: min(100%, 1600px);
+      margin: 0 auto;
+      padding: 1.15rem 1.15rem 2rem;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .card {
+      grid-column: span 12;
+      background: linear-gradient(180deg, rgba(14, 26, 49, 0.98), rgba(11, 22, 42, 0.98));
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+      min-width: 0;
+    }
     .half { grid-column: span 12; }
     .third { grid-column: span 12; }
-    @media (min-width: 900px) {
+    @media (min-width: 960px) {
       .half { grid-column: span 6; }
       .third { grid-column: span 4; }
     }
-    .muted{ color: var(--muted); }
-    .btn { display:inline-flex; align-items:center; justify-content:center; background:var(--accent); color:white; border:none; padding:.52rem .85rem; border-radius:.55rem; cursor:pointer; font-size:.92rem; line-height:1.2; }
-    .btn.secondary { background:#334155; }
-    .btn.danger { background:#b91c1c; }
-    textarea, input[type="text"], select {
-      width:100%;
-      background:#0b132a;
-      color:var(--text);
-      border:1px solid #26305f;
-      border-radius:.55rem;
-      padding:.55rem .65rem;
-      min-height:2.3rem;
+    .muted { color: var(--muted); }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.35rem;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: white;
+      border: 1px solid rgba(96, 165, 250, 0.20);
+      padding: 0.55rem 0.85rem;
+      border-radius: 0.7rem;
+      cursor: pointer;
+      font-size: 0.92rem;
+      line-height: 1.2;
+      box-shadow: 0 10px 24px rgba(29, 78, 216, 0.22);
     }
-    select { appearance:none; }
+    .btn.secondary {
+      background: rgba(51, 65, 85, 0.72);
+      box-shadow: none;
+      border-color: rgba(148, 163, 184, 0.18);
+    }
+    .btn.danger { background: var(--bad); }
+    textarea, input[type="text"], select {
+      width: 100%;
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid #26385d;
+      border-radius: 0.7rem;
+      padding: 0.58rem 0.7rem;
+      min-height: 2.3rem;
+      outline: none;
+    }
+    textarea:focus, input[type="text"]:focus, select:focus {
+      border-color: rgba(96, 165, 250, 0.5);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
+    }
+    select { appearance: none; }
     pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .feed { max-height:320px; overflow:auto; border:1px solid #243158; border-radius:.6rem; background:#0c1430; }
-    .feed .row{ padding:.5rem .7rem; border-bottom:1px solid #18254a; }
-    .row .status{ font-size:.75rem; padding:.1rem .5rem; border-radius:999px; background:#18254a; margin-left:.4rem; }
-    .stack-xs > * + * { margin-top:.35rem; }
-    .stack-sm > * + * { margin-top:.6rem; }
-    .stack-md > * + * { margin-top:1rem; }
-    .actions { display:flex; gap:.45rem; flex-wrap:wrap; align-items:center; }
-    .panel { background:#0c1530; border:1px solid #1f2a4d; border-radius:8px; padding:.75rem; }
-    .label { display:block; font-size:.78rem; color:var(--muted); margin-bottom:.35rem; }
-    .kicker { margin:0; color:var(--muted); font-size:.92rem; }
-    .summary-line { display:flex; gap:.4rem; flex-wrap:wrap; align-items:center; }
-    .nowrap { white-space:nowrap; }
-    .mt-2 { margin-top:.45rem; }
-    .mt-3 { margin-top:.6rem; }
-    .mt-4 { margin-top:.75rem; }
-    .mt-5 { margin-top:1rem; }
-    .mb-4 { margin-bottom:1rem; }
-    .grid-flow { display:grid; gap:.5rem; }
-    .feed-sm { max-height:260px; }
-    .feed-audit { max-height:360px; }
-    .feed-md { max-height:500px; }
-    .feed-lg { max-height:600px; }
-    .feed-xl { max-height:700px; }
-    .prewrap { white-space:pre-wrap; }
-    .pad-2 { padding:8px; }
-    .input-flex-wide { min-width:260px; flex:1 1 280px; }
-    .input-flex { min-width:220px; flex:1 1 220px; }
-    .minw-180 { min-width:180px; }
-    @media (max-width: 900px) {
-      header .wrap { flex-direction:column; align-items:flex-start; }
-      nav { justify-content:flex-start; }
-      main.container { margin:.5rem auto; padding:.75rem; }
-      .card { padding:12px; border-radius:10px; }
+    .feed {
+      max-height: 320px;
+      overflow: auto;
+      border: 1px solid #243158;
+      border-radius: 0.85rem;
+      background: #09132b;
+    }
+    .feed .row { padding: 0.55rem 0.75rem; border-bottom: 1px solid #18254a; }
+    .row .status { font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 999px; background: #18254a; margin-left: 0.4rem; }
+    .stack-xs > * + * { margin-top: 0.35rem; }
+    .stack-sm > * + * { margin-top: 0.6rem; }
+    .stack-md > * + * { margin-top: 1rem; }
+    .actions { display: flex; gap: 0.45rem; flex-wrap: wrap; align-items: center; }
+    .panel {
+      background: rgba(10, 19, 39, 0.78);
+      border: 1px solid #1f2a4d;
+      border-radius: 0.95rem;
+      padding: 0.8rem;
+    }
+    .hero {
+      background: linear-gradient(135deg, rgba(15, 26, 51, 0.98), rgba(11, 19, 42, 0.98));
+      border: 1px solid #21345d;
+      border-radius: 1.1rem;
+      padding: 20px;
+    }
+    .hero h1, .hero h2 { margin-top: 0; }
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: flex-end;
+      flex-wrap: wrap;
+    }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .metric {
+      grid-column: span 12;
+      background: var(--panel-2);
+      border: 1px solid #26305f;
+      border-radius: 1rem;
+      padding: 14px;
+      min-width: 0;
+    }
+    .metric-value { font-size: 1.4rem; font-weight: 750; margin-top: 0.15rem; }
+    .metric-label {
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .metric-note { color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; }
+    .table-wrap { overflow: auto; border: 1px solid #243158; border-radius: 0.85rem; background: #09132b; }
+    table.dashboard-table { width: 100%; border-collapse: collapse; }
+    table.dashboard-table th, table.dashboard-table td {
+      padding: 0.7rem 0.8rem;
+      border-bottom: 1px solid #18254a;
+      text-align: left;
+      vertical-align: top;
+    }
+    table.dashboard-table th {
+      color: #cbd5e1;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      position: sticky;
+      top: 0;
+      background: #09132b;
+    }
+    .label { display: block; font-size: 0.78rem; color: var(--muted); margin-bottom: 0.35rem; }
+    .kicker { margin: 0; color: var(--muted); font-size: 0.92rem; }
+    .summary-line { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; }
+    .nowrap { white-space: nowrap; }
+    .mt-2 { margin-top: 0.45rem; }
+    .mt-3 { margin-top: 0.6rem; }
+    .mt-4 { margin-top: 0.75rem; }
+    .mt-5 { margin-top: 1rem; }
+    .mb-4 { margin-bottom: 1rem; }
+    .grid-flow { display: grid; gap: 0.5rem; }
+    .feed-sm { max-height: 260px; }
+    .feed-audit { max-height: 360px; }
+    .feed-md { max-height: 500px; }
+    .feed-lg { max-height: 600px; }
+    .feed-xl { max-height: 700px; }
+    .prewrap { white-space: pre-wrap; }
+    .pad-2 { padding: 8px; }
+    .input-flex-wide { min-width: 260px; flex: 1 1 280px; }
+    .input-flex { min-width: 220px; flex: 1 1 220px; }
+    .minw-180 { min-width: 180px; }
+    @media (min-width: 960px) {
+      .metric { grid-column: span 3; }
+    }
+    @media (max-width: 960px) {
+      .app-shell { grid-template-columns: 1fr; }
+      .sidebar {
+        position: relative;
+        top: auto;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 0.85rem;
+      }
+      .workspace-topbar { display: block; }
+      main.container { padding: 0.85rem; }
+      .card { padding: 12px; border-radius: 14px; }
+    }
+    @media (max-width: 700px) {
+      .nav-link { padding: 0.58rem 0.72rem; }
+      .nav-link small { display: none; }
+      .section-header { align-items: flex-start; }
     }
   </style>
   {% block head %}{% endblock %}
 </head>
 <body>
-<header class="topbar">
-  <div class="wrap">
-    <div class="brand">
-      <span class="dot"></span>
-      <span>AssistX</span>
+{%- macro nav_link(label, href, match=None, note=None) -%}
+  {% set is_active = request.url.path == href or (match and match != '/' and request.url.path.startswith(match)) -%}
+  <a class="nav-link{% if is_active %} active{% endif %}" href="{{ href }}">
+    <span class="nav-label">{{ label }}</span>
+    {% if note %}<small>{{ note }}</small>{% endif %}
+  </a>
+{%- endmacro %}
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand-block">
+      <div class="brand-row">
+        <span class="brand-dot"></span>
+        <div class="brand-title">AssistX</div>
+      </div>
+      <div class="brand-subtitle">Neo4j-backed command center for tasks, fleet routing, memory, and review.</div>
     </div>
-    <nav>
-      <a href="/">Home</a>
-      <a href="/command-center">Cmd Center</a>
-      <a href="/intents">Intents</a>
-      <a href="/dispatches">Dispatches</a>
-      <a href="/sessions">Sessions</a>
-      <a href="/memory">Memory</a>
-      <a href="/ingest">Ingest</a>
-      <a href="/answers">Answers</a>
-      <a href="/tasks/ready">Ready</a>
-      <a href="/tasks/review">Review</a>
-      <a href="/runs">Runs</a>
-      <span id="live-badge" class="badge">live: connecting…</span>
-    </nav>
-  </div>
-</header>
 
-<main class="container">
-  {% block content %}{% endblock %}
-</main>
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Overview</div>
+      <div class="nav-list">
+        {{ nav_link("Overview", "/command-center", match="/command-center", note="main dashboard") }}
+        {{ nav_link("Ask", "/", match="/", note="query + live answers") }}
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Fleet & routing</div>
+      <div class="nav-list">
+        {{ nav_link("Fleet", "/fleet", match="/fleet", note="loadouts + history") }}
+        {{ nav_link("Routing", "/routing", match="/routing", note="overlay + graph") }}
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Trading</div>
+      <div class="nav-list">
+        {{ nav_link("Paper trading", "/trading", match="/trading", note="xwing + watchdog") }}
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Operations</div>
+      <div class="nav-list">
+        {{ nav_link("Ready tasks", "/tasks/ready", match="/tasks/ready", note="queue intake") }}
+        {{ nav_link("Review", "/review", match="/review", note="human triage") }}
+        {{ nav_link("Dispatches", "/dispatches", match="/dispatches", note="execution log") }}
+        {{ nav_link("Runs", "/runs", match="/runs", note="agent activity") }}
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Knowledge</div>
+      <div class="nav-list">
+        {{ nav_link("Sessions", "/sessions", match="/sessions", note="agent sessions") }}
+        {{ nav_link("Memory", "/memory", match="/memory", note="graph writes") }}
+        {{ nav_link("Answers", "/answers", match="/answers", note="live responses") }}
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Data & tools</div>
+      <div class="nav-list">
+        {{ nav_link("Intents", "/intents", match="/intents", note="policy / routing") }}
+        {{ nav_link("Ingest", "/ingest", match="/ingest", note="audio uploads") }}
+        {{ nav_link("Devices", "/devices", match="/devices", note="registered nodes") }}
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="status-row">
+        <span id="live-badge" class="badge">live: connecting…</span>
+        <span class="badge">AssistX UI</span>
+      </div>
+      <div class="muted" style="font-size:0.84rem; line-height:1.45;">
+        Keep the left rail as the primary navigation. Every major workflow has its own page.
+      </div>
+    </div>
+  </aside>
+
+  <div class="workspace">
+    <div class="workspace-topbar"></div>
+    <main class="container">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
 
 <script src="{{ url_for('static', path='js/ui_utils.js') }}"></script>
 {% block scripts %}{% endblock %}

@@ -22,8 +22,13 @@ services:
   redis:
     image: redis:7-alpine
     container_name: assistx-redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
+    deploy:
+      resources:
+        limits:
+          memory: 4G
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -31,10 +36,13 @@ services:
       retries: 20
 
   api:
+    env_file:
+      - .env
     build:
       context: .
       dockerfile: Dockerfile
     container_name: assistx-api
+    restart: unless-stopped
     environment:
       # --- AssistX core ---
       - BASIC_AUTH_USER=${BASIC_AUTH_USER:-admin}
@@ -46,7 +54,7 @@ services:
       - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS:-*}
 
       # --- Datastores (defaults assume containerized infra) ---
-      - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
+      - NEO4J_URI=${NEO4J_URI:-bolt://host.docker.internal:7687}
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-livelongandprosper}
       - NEO4J_DATABASE=${NEO4J_DATABASE:-assistx}
@@ -79,6 +87,10 @@ services:
       - PAPERCLIP_WEBHOOK_SECRET=${PAPERCLIP_WEBHOOK_SECRET:-}
       - VOICE_WEBHOOK_SECRET=${VOICE_WEBHOOK_SECRET:-}
 
+      # --- Overlay services ---
+      - AUTO_ROUTER_BASE_URL=${AUTO_ROUTER_BASE_URL:-http://host.docker.internal:8088}
+      - AUTO_ASSIGN_BASE_URL=${AUTO_ASSIGN_BASE_URL:-http://host.docker.internal:8090}
+
       # --- App paths ---
       - CACHE_PATH=/app/.assistx_cache.sqlite
     depends_on:
@@ -86,6 +98,10 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+    deploy:
+      resources:
+        limits:
+          memory: 6G
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -106,15 +122,18 @@ services:
       start_period: 15s
 
   worker:
+    env_file:
+      - .env
     build:
       context: .
     container_name: assistx-worker
     command: python -m assistx.worker
+    restart: unless-stopped
     environment:
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - RQ_QUEUE=${RQ_QUEUE:-assistx}
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-1}
-      - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
+      - NEO4J_URI=${NEO4J_URI:-bolt://host.docker.internal:7687}
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-livelongandprosper}
       - NEO4J_DATABASE=${NEO4J_DATABASE:-assistx}
@@ -142,6 +161,10 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 4G
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -158,10 +181,13 @@ services:
       start_period: 20s
 
   hermes-adapter:
+    env_file:
+      - .env
     build:
       context: .
     container_name: assistx-hermes-adapter
     command: python -m assistx.agents.hermes_agent_adapter
+    restart: unless-stopped
     environment:
       - ASSISTX_URL=${ASSISTX_URL:-http://api:8000}
       - ASSISTX_USER=${ASSISTX_USER:-admin}
@@ -173,7 +199,7 @@ services:
       - HERMES_MAX_TASKS_PER_LOOP=${HERMES_MAX_TASKS_PER_LOOP:-3}
       - HERMES_BIN=${HERMES_BIN:-hermes}
       - HERMES_LOG_LEVEL=${HERMES_LOG_LEVEL:-INFO}
-      - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
+      - NEO4J_URI=${NEO4J_URI:-bolt://host.docker.internal:7687}
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-livelongandprosper}
       - NEO4J_DATABASE=${NEO4J_DATABASE:-assistx}
@@ -189,7 +215,6 @@ services:
       - ./src:/app/src
     profiles:
       - hermes
-    restart: unless-stopped
 
 volumes:
   assistx_cache: {}

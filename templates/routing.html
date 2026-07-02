@@ -1,0 +1,237 @@
+{% extends "base.html" %}
+{% block title %}AssistX – Routing{% endblock %}
+
+{% block content %}
+<div class="grid">
+  <section class="card hero">
+    <div class="section-header">
+      <div>
+        <h1>Routing / overlay</h1>
+        <p class="kicker">Where AssistX gets its live graph context, provider projection, and dry-run backlog candidates.</p>
+      </div>
+      <div class="actions">
+        <a class="btn" href="/command-center">Overview</a>
+        <a class="btn secondary" href="/fleet">Fleet</a>
+        <a class="btn secondary" href="/api/router/status" target="_blank">Router status JSON</a>
+      </div>
+    </div>
+
+    <div class="metric-grid mt-4">
+      <div class="metric">
+        <div class="metric-label">Router</div>
+        <div id="router-status-value" class="metric-value">—</div>
+        <div id="router-status-note" class="metric-note">Loading router integration…</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Graph nodes</div>
+        <div id="router-node-count" class="metric-value">—</div>
+        <div class="metric-note">Context projection nodes</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Services</div>
+        <div id="router-service-count" class="metric-value">—</div>
+        <div class="metric-note">Visible in the projection</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Backlog</div>
+        <div id="router-backlog-count" class="metric-value">—</div>
+        <div class="metric-note">Dry-run candidates</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card half">
+    <div class="section-header">
+      <div>
+        <h3>Router status</h3>
+        <p class="kicker">The simple read-only health summary AssistX exposes to auto-router.</p>
+      </div>
+    </div>
+    <div id="router-status" class="stack-sm mt-3">Loading…</div>
+  </section>
+
+  <section class="card half">
+    <div class="section-header">
+      <div>
+        <h3>Overlay / ops status</h3>
+        <p class="kicker">Queue depth, review pressure, and runtime state that influence routing decisions.</p>
+      </div>
+    </div>
+    <div id="ops-status" class="stack-sm mt-3">Loading…</div>
+  </section>
+
+  <section class="card half">
+    <div class="section-header">
+      <div>
+        <h3>Context projection</h3>
+        <p class="kicker">The nodes, providers, and services that auto-router sees from AssistX.</p>
+      </div>
+    </div>
+    <div id="projection-summary" class="stack-sm mt-3">Loading…</div>
+  </section>
+
+  <section class="card half">
+    <div class="section-header">
+      <div>
+        <h3>Backlog candidates</h3>
+        <p class="kicker">Read-only task candidates selected for dry-run planning.</p>
+      </div>
+    </div>
+    <div id="backlog-list" class="stack-sm mt-3">Loading…</div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(async () => {
+  const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString());
+  const short = window.UIUtils?.shortId || ((v, n = 8) => (v || "").toString().slice(0, n));
+
+  async function loadJSON(url) {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) return null;
+      return await r.json();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function row(label, value) {
+    const div = document.createElement('div');
+    div.className = 'summary-line';
+    div.innerHTML = `<span class="badge">${esc(label)}</span> <span class="muted">${esc(String(value))}</span>`;
+    return div;
+  }
+
+  const [router, ops, context, backlog] = await Promise.all([
+    loadJSON('/api/router/status'),
+    loadJSON('/api/ops/status'),
+    loadJSON('/api/router/context-projection'),
+    loadJSON('/api/router/backlog-candidates?limit=12'),
+  ]);
+
+  const routerStatusValue = document.getElementById('router-status-value');
+  const routerStatusNote = document.getElementById('router-status-note');
+  const routerNodeCount = document.getElementById('router-node-count');
+  const routerServiceCount = document.getElementById('router-service-count');
+  const routerBacklogCount = document.getElementById('router-backlog-count');
+  const routerStatus = document.getElementById('router-status');
+  const opsStatus = document.getElementById('ops-status');
+  const projectionSummary = document.getElementById('projection-summary');
+  const backlogList = document.getElementById('backlog-list');
+
+  if (router) {
+    routerStatusValue.textContent = router.ok ? 'ok' : (router.graph?.neo4j || 'degraded');
+    routerStatusNote.textContent = router.base_url || router.source || 'AssistX router integration';
+    routerNodeCount.textContent = String((context?.nodes || router.graph?.nodes || []).length || 0);
+    routerServiceCount.textContent = String((context?.services || []).length || 0);
+    routerBacklogCount.textContent = String(backlog?.count ?? 0);
+
+    routerStatus.innerHTML = '';
+    [
+      ['Source', router.source || 'assistx'],
+      ['Base URL', router.base_url || 'current host'],
+      ['Neo4j', router.graph?.neo4j || 'unknown'],
+      ['Nodes', String(router.graph?.nodes ?? (context?.nodes || []).length ?? 0)],
+      ['Services', String(router.graph?.services ?? (context?.services || []).length ?? 0)],
+      ['Agent CLIs', String(router.graph?.agent_clis ?? '—')],
+    ].forEach(([label, value]) => routerStatus.appendChild(row(label, value)));
+
+    opsStatus.innerHTML = '';
+    if (ops) {
+      [
+        ['Runtime', ops.runtime?.status || ops.runtime?.service || 'unknown'],
+        ['Queue', `depth ${ops.queue?.depth ?? 0} · running ${ops.queue?.running ?? 0} · failed ${ops.queue?.failed ?? 0}`],
+        ['Review', `backlog ${ops.review?.backlog ?? 0} · breached ${ops.review?.sla_breached ? 'yes' : 'no'}`],
+        ['Workflow', `backlog ${ops.workflow?.backlog ?? 0} · running ${ops.workflow?.running ?? 0}`],
+        ['Dispatches', `failed/cancelled ${ops.dispatches?.failed_or_cancelled ?? 0}`],
+        ['Neo4j', ops.neo4j?.status || 'unknown'],
+      ].forEach(([label, value]) => opsStatus.appendChild(row(label, value)));
+    } else {
+      opsStatus.textContent = 'No ops status available.';
+    }
+  } else {
+    routerStatusValue.textContent = 'offline';
+    routerStatusNote.textContent = 'Router status unavailable';
+    routerNodeCount.textContent = '—';
+    routerServiceCount.textContent = '—';
+    routerBacklogCount.textContent = '—';
+    routerStatus.textContent = 'Router status unavailable.';
+    opsStatus.textContent = 'Ops status unavailable.';
+  }
+
+  if (context) {
+    projectionSummary.innerHTML = '';
+    const metadata = context.metadata || {};
+    [
+      ['Revision', context.revision || '—'],
+      ['Generated', context.generated_at ? new Date(context.generated_at * 1000).toLocaleString() : '—'],
+      ['Projection', metadata.projection_version || '—'],
+      ['Read only', metadata.read_only ? 'yes' : 'no'],
+      ['Node count', String((context.nodes || []).length)],
+      ['Provider count', String((context.providers || []).length)],
+      ['Service count', String((context.services || []).length)],
+    ].forEach(([label, value]) => projectionSummary.appendChild(row(label, value)));
+
+    if ((context.nodes || []).length) {
+      const tableWrap = document.createElement('div');
+      tableWrap.className = 'table-wrap mt-3';
+      tableWrap.innerHTML = `
+        <table class="dashboard-table">
+          <thead>
+            <tr>
+              <th>Node</th>
+              <th>Lane</th>
+              <th>Running</th>
+              <th>Capabilities</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${(context.nodes || []).map((node) => `
+              <tr>
+                <td><code>${esc(node.node_id || '')}</code><div class="muted">${esc(node.display_name || '')}</div></td>
+                <td>${esc(node.lane || '')}</td>
+                <td>${node.running ? '<span class="badge ok">online</span>' : '<span class="badge err">offline</span>'}</td>
+                <td>${esc((node.capabilities || []).join(', '))}</td>
+                <td>${esc(node.detail || '')}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+      projectionSummary.appendChild(tableWrap);
+    }
+  } else {
+    projectionSummary.textContent = 'Context projection unavailable.';
+  }
+
+  if (backlog && Array.isArray(backlog.tasks)) {
+    backlogList.innerHTML = '';
+    if (backlog.tasks.length === 0) {
+      backlogList.textContent = 'No backlog candidates found.';
+    } else {
+      backlog.tasks.forEach((task) => {
+        const panel = document.createElement('div');
+        panel.className = 'panel';
+        const taskId = task.id || task.task_id || '';
+        panel.innerHTML = `
+          <div class="summary-line">
+            <span class="badge">${esc(task.status || 'candidate')}</span>
+            <span class="badge">${esc(task.kind || 'task')}</span>
+            ${task.priority ? `<span class="badge">priority ${esc(task.priority)}</span>` : ''}
+          </div>
+          <div class="mt-2"><strong><code>${esc(short(taskId, 10))}</code></strong> ${esc(task.title || task.text || '')}</div>
+          <div class="muted mt-2">${esc(task.summary || task.prompt || task.reason || '')}</div>
+        `;
+        backlogList.appendChild(panel);
+      });
+    }
+  } else {
+    backlogList.textContent = backlog?.error || 'Backlog candidates unavailable.';
+  }
+})();
+</script>
+{% endblock %}

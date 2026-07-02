@@ -104,6 +104,7 @@ Each task is normalized to the shape expected by auto-router:
 - `prompt`
 - `model`
 - `priority`
+- `queue_class`
 - `local_only`
 - `allow_cloud`
 - `sensitive`
@@ -114,6 +115,22 @@ Each task is normalized to the shape expected by auto-router:
 - `metadata.request` for shared request context
 - `metadata.task` for shared task context
 - `metadata`
+
+### Priority and queue contract
+
+The backlog endpoint is intentionally conservative. Use these priority classes when preparing tasks for the router:
+
+| AssistX priority | Router priority | Queue expectation |
+| --- | --- | --- |
+| `low`, `deferred`, `idle` | `background` | Eligible for backlog burn-down |
+| `normal`, `medium` | `batch` | Eligible for backlog burn-down |
+| `high`, `urgent` | `critical` | Do not send to backlog burn-down |
+| `critical` | `critical` | Immediate/priority lane, not backlog |
+| `repo_critical` | `repo_critical` | Repo-critical lane, not backlog |
+| `interactive`, `realtime` | `interactive` | Interactive lane, not backlog |
+| `local_only`, `local` | `local_only` | Local execution only |
+
+Only `batch` and `background` work should appear in `/api/router/backlog-candidates` for dry-run selection. High-priority or interactive work should be queued through the immediate router lanes instead of the backlog burn path.
 
 ## 4. Safety behavior
 
@@ -171,7 +188,7 @@ Expected after this integration:
 
 ## 7. Next steps
 
-1. Add Neo4j merge handlers for auto-router events posted to `/api/events`.
+1. Add Neo4j merge handlers for auto-router events posted to `/api/events`, including `router.route_decision` and `router.execution_stage.*`.
 2. Persist remote service and CLI self-report data into Neo4j.
 3. Add AssistX task claim/approval flow after auto-router dry-run selection.
 4. Keep Paperclip/Hermes as the approved execution path until a separate worker execution release is approved.

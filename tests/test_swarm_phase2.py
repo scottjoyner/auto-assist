@@ -15,6 +15,7 @@ from assistx.swarm_core import (
     list_model_endpoints,
     list_swarm_nodes,
     record_event,
+    record_trace_event,
     release_expired_task_leases,
     set_task_lease,
     upsert_model_endpoint,
@@ -214,6 +215,136 @@ def test_task_claim_heartbeat_complete_fail_and_lease_release(seeded_neo4j):
     assert terminal["status"] == "FAILED"
 
 
+
+
+def test_router_execution_event_updates_swarm_node_runtime_and_model_link(seeded_neo4j):
+    event = _base_event(
+        event_id="event-router-runtime",
+        event_type="router.execution_stage.completed",
+        source_repo="auto-router",
+        source_service="llm-router",
+        node_id="x1-370",
+        idempotency_key="router-runtime-key",
+        subject={"kind": "route_execution", "id": "req-1"},
+        payload={
+            "request_id": "req-1",
+            "node_id": "x1-370",
+            "provider": "lmstudio",
+            "provider_id": "lmstudio",
+            "model": "reasoning-large",
+            "provider_model_id": "lmstudio.reasoning-large",
+            "status": "completed",
+            "stage": "final",
+            "tokens_per_second": 123.4,
+            "queue_wait_ms": 7,
+            "load_time_ms": 11,
+            "value_per_second": 22.1,
+        },
+    )
+    record_event(seeded_neo4j, event)
+
+    with seeded_neo4j._session() as s:
+        rec = s.run(
+            """
+            MATCH (n:SwarmNode {node_id:$node_id})
+            OPTIONAL MATCH (n)-[:USES_MODEL]->(m:Model)
+            RETURN n.status AS status,
+                   n.last_route_status AS last_route_status,
+                   n.throughput_tokens_per_second AS tps,
+                   n.queue_wait_ms AS queue_wait_ms,
+                   n.load_time_ms AS load_time_ms,
+                   n.model_id AS model_id,
+                   count(DISTINCT m) AS model_count
+            """,
+            {"node_id": "x1-370"},
+        ).single()
+
+    assert rec["status"] == "online"
+    assert rec["last_route_status"] == "completed"
+    assert rec["tps"] == 123.4
+    assert rec["queue_wait_ms"] == 7
+    assert rec["load_time_ms"] == 11
+    assert rec["model_id"] == "lmstudio.reasoning-large"
+    assert rec["model_count"] == 1
+
+
+def test_assignment_events_project_lease_state_and_release(seeded_neo4j):
+    claim = _base_event(
+        event_id="event-assignment-claimed",
+        event_type="assignment.claimed",
+        idempotency_key="assignment-claimed-key",
+        subject={"kind": "task", "id": "task:assignment-1"},
+        payload={
+            "assignment_id": "assignment-1",
+            "task_id": "task:assignment-1",
+            "worker_id": "worker-1",
+            "node_id": "node-1",
+            "route_id": "route-1",
+            "status": "running",
+            "lease_seconds": 900,
+            "lease_expires_at": 1_729_000_000.0,
+            "correlation_id": "corr-1",
+        },
+    )
+    record_event(seeded_neo4j, claim)
+
+    with seeded_neo4j._session() as s:
+        claimed = s.run(
+            """
+            MATCH (e:EventEnvelope {event_id:$event_id})-[:ABOUT_TASK]->(t:Task {id:$task_id})
+            RETURN t.status AS status,
+                   t.claimed_by AS claimed_by,
+                   t.node_id AS node_id,
+                   t.assignment_id AS assignment_id,
+                   t.lease_expires_at_ts AS lease_expires_at_ts,
+                   count(e) AS event_links
+            """,
+            {"event_id": claim["event_id"], "task_id": "task:assignment-1"},
+        ).single()
+
+    assert claimed["status"] == "CLAIMED"
+    assert claimed["claimed_by"] == "worker-1"
+    assert claimed["node_id"] == "node-1"
+    assert claimed["assignment_id"] == "assignment-1"
+    assert claimed["lease_expires_at_ts"] is not None
+    assert claimed["event_links"] == 1
+
+    release = _base_event(
+        event_id="event-assignment-released",
+        event_type="assignment.released",
+        idempotency_key="assignment-released-key",
+        subject={"kind": "task", "id": "task:assignment-1"},
+        payload={
+            "assignment_id": "assignment-1",
+            "task_id": "task:assignment-1",
+            "worker_id": "worker-1",
+            "node_id": "node-1",
+            "reason": "operator_release",
+            "retryable": True,
+        },
+    )
+    record_event(seeded_neo4j, release)
+
+    with seeded_neo4j._session() as s:
+        released = s.run(
+            """
+            MATCH (t:Task {id:$task_id})
+            RETURN t.status AS status,
+                   t.claimed_by AS claimed_by,
+                   t.claim_id AS claim_id,
+                   t.lease_expires_at_ts AS lease_expires_at_ts,
+                   t.lease_released_reason AS lease_released_reason
+            """,
+            {"task_id": "task:assignment-1"},
+        ).single()
+
+    assert released["status"] == "READY"
+    assert released["claimed_by"] is None
+    assert released["claim_id"] is None
+    assert released["lease_expires_at_ts"] is None
+    assert released["lease_released_reason"] == "operator_release"
+
+
 def test_direct_worker_cannot_claim_paperclip_dispatched_task(seeded_neo4j):
     task_id = seeded_neo4j.upsert_ticket(
         title="Paperclip owns this execution",
@@ -269,6 +400,7 @@ def test_dispatch_creation_reuses_dispatch_created_by_early_paperclip_event(seed
 
 
 def test_swarm_routes_registered(monkeypatch, seeded_neo4j):
+
     monkeypatch.setattr("assistx.swarm_routes._neo", lambda: seeded_neo4j)
     monkeypatch.setattr(seeded_neo4j, "close", lambda: None)
     client = TestClient(app)
@@ -358,6 +490,24 @@ def test_swarm_auth_401(monkeypatch, seeded_neo4j):
     assert resp4.status_code == 401, resp4.text
     resp5 = client.post("/api/drafts/generate", json={"prompt": "unauthorized"})
     assert resp5.status_code == 401, resp5.text
+
+
+def test_router_route_decision_is_recorded_as_pending_assignment(seeded_neo4j):
+    event_id = record_trace_event(
+        seeded_neo4j,
+        correlation_id="corr-router-decision",
+        event_type="router.route_decision",
+        source="auto-router",
+        task_id="task-123",
+        route_id="route-abc",
+        payload={"task_id": "task-123", "route_id": "route-abc", "provider": "cerebras"},
+    )
+
+    trace = seeded_neo4j.get_trace("corr-router-decision")
+    assert trace is not None
+    assert trace["current_state"] == "pending_assignment"
+    assert trace["events"][-1]["event_type"] == "router.route_decision"
+    assert trace["events"][-1]["event_id"] == event_id
 
 
 def test_event_internal_failure_is_not_queued_or_accepted(monkeypatch, seeded_neo4j):

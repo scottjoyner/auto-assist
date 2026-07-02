@@ -3,59 +3,111 @@
 
 {% block content %}
 <div class="grid">
-  <section class="card">
-    <h2>Command Center</h2>
-    <p class="kicker">Overview of intents, dispatches, sessions, review operations, and memory.</p>
-  </section>
+  <section class="card hero">
+    <div class="section-header">
+      <div>
+        <h1>AssistX Command Center</h1>
+        <p class="kicker">A control surface for task intake, fleet health, router overlay state, and historical loadouts.</p>
+      </div>
+      <div class="actions">
+        <a class="btn" href="/fleet">Open fleet view</a>
+        <a class="btn secondary" href="/routing">Routing</a>
+        <a class="btn secondary" href="/trading">Paper trading</a>
+        <a class="btn secondary" href="/dispatches">Dispatches</a>
+        <a class="btn secondary" href="/tasks/ready">READY tasks</a>
+      </div>
+    </div>
 
-  <section class="card third">
-    <h3>Intents</h3>
-    <p class="kicker">Incoming voice, UI, webhook, and schedule intents.</p>
-    <div id="intent-summary" class="stack-xs">Loading…</div>
-    <div class="actions mt-3"><a class="btn" href="/intents">View intents</a></div>
-  </section>
+    <div id="hero-badges" class="summary-line mt-4">
+      <span class="badge">Loading runtime…</span>
+    </div>
 
-  <section class="card third">
-    <h3>Dispatches</h3>
-    <p class="kicker">Queued, assigned, running, and completed dispatches.</p>
-    <div id="dispatch-summary" class="stack-xs">Loading…</div>
-    <div class="actions mt-3"><a class="btn" href="/dispatches">View dispatches</a></div>
-  </section>
-
-  <section class="card third">
-    <h3>Sessions</h3>
-    <p class="kicker">Hermes agent sessions, devices, and capabilities.</p>
-    <div id="session-summary" class="stack-xs">Loading…</div>
-    <div class="actions mt-3"><a class="btn" href="/sessions">View sessions</a></div>
-  </section>
-
-  <section class="card third">
-    <h3>Review Queue</h3>
-    <p class="kicker">Operator triage for review-dispatch and clarification intents.</p>
-    <div id="review-summary" class="stack-xs">Loading…</div>
-    <div id="review-audit-summary" class="muted mt-2">Loading audit summary…</div>
-    <div class="actions mt-3"><a class="btn" href="/review">Open review queue</a></div>
-  </section>
-
-  <section class="card third">
-    <h3>Sophia Voice</h3>
-    <p class="kicker">Auth-state and queue distribution for Sophia voice ingress.</p>
-    <div id="sophia-summary" class="stack-xs">Loading…</div>
-    <div id="sophia-policy-drift" class="muted stack-xs mt-2">Loading policy drift…</div>
+    <div class="metric-grid mt-4">
+      <div class="metric">
+        <div class="metric-label">Runtime</div>
+        <div id="metric-runtime" class="metric-value">—</div>
+        <div id="metric-runtime-note" class="metric-note">Loading health…</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Queue depth</div>
+        <div id="metric-queue" class="metric-value">—</div>
+        <div id="metric-queue-note" class="metric-note">READY / REVIEW / RUNNING / FAILED</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Fleet loadouts</div>
+        <div id="metric-loadouts" class="metric-value">—</div>
+        <div id="metric-loadouts-note" class="metric-note">Latest persistent snapshot</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Overlay mode</div>
+        <div id="metric-overlay" class="metric-value">—</div>
+        <div id="metric-overlay-note" class="metric-note">Router / assign integration</div>
+      </div>
+    </div>
   </section>
 
   <section class="card half">
-    <h3>Memory</h3>
-    <p class="kicker">Recent memory writes, freshness, and source.</p>
-    <div id="memory-feed" class="feed">Loading…</div>
+    <div class="section-header">
+      <div>
+        <h3>Control plane</h3>
+        <p class="kicker">Live health, task throughput, and routing integration.</p>
+      </div>
+    </div>
+    <div id="control-plane" class="stack-sm mt-3">Loading…</div>
+  </section>
+
+  <section class="card half">
+    <div class="section-header">
+      <div>
+        <h3>Fleet loadouts</h3>
+        <p class="kicker">The current worker/reviewer builds selected by the rebuilder.</p>
+      </div>
+      <div class="actions">
+        <a class="btn secondary" href="/fleet">Detailed fleet page</a>
+      </div>
+    </div>
+    <div id="fleet-loadouts" class="stack-sm mt-3">Loading…</div>
+  </section>
+
+  <section class="card half">
+    <h3>Intake and dispatch</h3>
+    <p class="kicker">Recent intents and current dispatch mix.</p>
+    <div id="intent-summary" class="stack-xs">Loading…</div>
+    <div id="dispatch-summary" class="stack-xs mt-3">Loading…</div>
+    <div class="actions mt-3"><a class="btn" href="/intents">Inspect intents</a></div>
+  </section>
+
+  <section class="card half">
+    <h3>Task operations</h3>
+    <p class="kicker">Ready queue, review workload, and operator triage.</p>
+    <div id="review-summary" class="stack-xs">Loading…</div>
+    <div id="review-audit-summary" class="muted mt-2">Loading audit summary…</div>
+    <div class="actions mt-3">
+      <a class="btn" href="/review">Review queue</a>
+      <a class="btn secondary" href="/runs">Agent runs</a>
+    </div>
+  </section>
+
+  <section class="card half">
+    <h3>Knowledge and memory</h3>
+    <p class="kicker">Recent memory writes and registered devices.</p>
+    <div id="memory-feed" class="feed feed-md">Loading…</div>
     <div class="actions mt-3"><a class="btn" href="/memory">View memory</a></div>
   </section>
 
   <section class="card half">
-    <h3>Devices</h3>
-    <p class="kicker">Registered agent devices and last seen times.</p>
-    <div id="device-summary" class="stack-xs">Loading…</div>
-    <div class="actions mt-3"><a class="btn" href="/devices">View devices</a></div>
+    <h3>Devices and sessions</h3>
+    <p class="kicker">Hermes sessions and known devices.</p>
+    <div id="session-summary" class="stack-xs">Loading…</div>
+    <div id="device-summary" class="stack-xs mt-3">Loading…</div>
+    <div class="actions mt-3"><a class="btn" href="/sessions">View sessions</a></div>
+  </section>
+
+  <section class="card half">
+    <h3>Sophia voice</h3>
+    <p class="kicker">Auth-state and queue distribution for Sophia ingress.</p>
+    <div id="sophia-summary" class="stack-xs">Loading…</div>
+    <div id="sophia-policy-drift" class="muted stack-xs mt-2">Loading policy drift…</div>
   </section>
 </div>
 {% endblock %}
@@ -67,9 +119,13 @@
   const short = window.UIUtils?.shortId || ((v, n = 8) => (v || "").toString().slice(0, n));
 
   async function loadJSON(url) {
-    const r = await fetch(url);
-    if (!r.ok) return null;
-    return r.json();
+    try {
+      const r = await fetch(url);
+      if (!r.ok) return null;
+      return await r.json();
+    } catch (_) {
+      return null;
+    }
   }
 
   function el(tag, cls, txt) {
@@ -79,7 +135,123 @@
     return e;
   }
 
-  // intents summary
+  const [health, ops, router, fleet] = await Promise.all([
+    loadJSON('/health'),
+    loadJSON('/api/ops/status'),
+    loadJSON('/api/router/status'),
+    loadJSON('/api/fleet/loadouts'),
+  ]);
+
+  const heroBadges = document.getElementById('hero-badges');
+  const runtimeMetric = document.getElementById('metric-runtime');
+  const runtimeNote = document.getElementById('metric-runtime-note');
+  const queueMetric = document.getElementById('metric-queue');
+  const queueNote = document.getElementById('metric-queue-note');
+  const loadoutsMetric = document.getElementById('metric-loadouts');
+  const loadoutsNote = document.getElementById('metric-loadouts-note');
+  const overlayMetric = document.getElementById('metric-overlay');
+  const overlayNote = document.getElementById('metric-overlay-note');
+
+  if (health) {
+    runtimeMetric.textContent = health.status || (health.ok ? 'ok' : 'degraded');
+    runtimeNote.textContent = `${health.service || 'assistx'} · ${health.profile || 'unknown profile'}`;
+  } else {
+    runtimeMetric.textContent = 'offline';
+    runtimeNote.textContent = 'Health endpoint unavailable';
+  }
+
+  if (ops) {
+    const queueDepth = ops.queue_depth ?? 0;
+    queueMetric.textContent = String(queueDepth);
+    queueNote.textContent = `READY ${ops.queue?.ready ?? '—'} · REVIEW ${ops.queue?.review ?? '—'} · RUNNING ${ops.queue?.running ?? '—'} · FAILED ${ops.queue?.failed ?? '—'}`;
+  }
+
+  if (fleet && fleet.ok) {
+    const loadoutCount = fleet.report?.loadouts?.length ?? fleet.loadouts?.length ?? 0;
+    loadoutsMetric.textContent = String(loadoutCount);
+    const captured = fleet.captured_at ? new Date(fleet.captured_at).toLocaleString() : 'latest';
+    loadoutsNote.textContent = `captured ${captured}`;
+  } else {
+    loadoutsMetric.textContent = '—';
+    loadoutsNote.textContent = fleet?.error ? fleet.error : 'No fleet report configured';
+  }
+
+  if (ops?.overlay) {
+    overlayMetric.textContent = ops.overlay.mode || 'direct';
+    overlayNote.textContent = ops.overlay.ok ? 'overlay healthy' : 'overlay degraded';
+  } else {
+    overlayMetric.textContent = health?.overlay?.mode || 'direct';
+    overlayNote.textContent = health?.overlay?.status || 'unknown';
+  }
+
+  if (health) {
+    const badges = [];
+    badges.push(`<span class="badge ${health.ok ? 'ok' : 'err'}">${esc(health.status || 'unknown')}</span>`);
+    if (health.overlay) badges.push(`<span class="badge">overlay: ${esc(health.overlay.mode || 'direct')}</span>`);
+    if (ops) badges.push(`<span class="badge">queue: ${esc(String(ops.queue_depth ?? 0))}</span>`);
+    if (fleet) badges.push(`<span class="badge">loadouts: ${esc(String(fleet.report?.loadouts?.length ?? fleet.loadouts?.length ?? 0))}</span>`);
+    heroBadges.innerHTML = badges.join(' ');
+  }
+
+  const controlPlane = document.getElementById('control-plane');
+  if (health || ops || router) {
+    controlPlane.innerHTML = '';
+    const rows = [
+      ['Runtime', health ? `${health.status || 'unknown'} · ${health.version || ''}` : 'unavailable'],
+      ['Redis', health?.dependencies?.redis?.status || 'unknown'],
+      ['Neo4j', health?.dependencies?.neo4j?.status || 'unknown'],
+      ['LLM', health?.dependencies?.llm?.status || 'unknown'],
+      ['Overlay', ops?.overlay?.status || health?.overlay?.status || 'unknown'],
+      ['Router graph', router?.graph?.neo4j || router?.graph?.status || 'unknown'],
+    ];
+    rows.forEach(([label, value]) => {
+      const row = el('div', 'summary-line');
+      row.innerHTML = `<span class="badge">${esc(label)}</span> <span class="muted">${esc(String(value))}</span>`;
+      controlPlane.appendChild(row);
+    });
+    if (router?.endpoints) {
+      const ep = el('div', 'muted mt-2');
+      ep.innerHTML = `<div class="summary-line"><span class="badge">router endpoints</span> <code>${esc(short(router.endpoints.context_projection || '', 44))}</code></div>`;
+      controlPlane.appendChild(ep);
+    }
+  } else {
+    controlPlane.textContent = 'No control plane data available.';
+  }
+
+  const fleetWrap = document.getElementById('fleet-loadouts');
+  if (fleet && fleet.ok && Array.isArray(fleet.loadouts)) {
+    fleetWrap.innerHTML = '';
+    const top = fleet.loadouts.slice(0, 5);
+    if (top.length === 0) {
+      fleetWrap.textContent = 'No loadouts in the report yet.';
+    } else {
+      top.forEach(item => {
+        const row = el('div', 'panel');
+        const primary = item.primary || {};
+        const reviewer = item.reviewer || {};
+        const fallback = item.fallback || {};
+        row.innerHTML = `
+          <div class="summary-line">
+            <span class="badge">${esc(item.task_profile_id || 'profile')}</span>
+            <span class="badge">score ${esc((item.score ?? 0).toFixed ? item.score.toFixed(2) : String(item.score ?? 0))}</span>
+          </div>
+          <div class="mt-2"><strong>${esc(item.task_profile_name || item.task_profile_id || '')}</strong></div>
+          <div class="muted mt-2">${esc(item.rationale || '')}</div>
+          <div class="mt-2">
+            <span class="badge">worker: ${esc(primary.node_name || '?')}/${esc(primary.model_id || '?')}</span>
+            <span class="badge">reviewer: ${esc(reviewer.node_name || '?')}/${esc(reviewer.model_id || '?')}</span>
+            <span class="badge">fallback: ${esc(fallback.node_name || '?')}/${esc(fallback.model_id || '?')}</span>
+          </div>
+        `;
+        fleetWrap.appendChild(row);
+      });
+    }
+  } else if (fleet?.error) {
+    fleetWrap.innerHTML = `<div class="muted">${esc(fleet.error)}</div>`;
+  } else {
+    fleetWrap.textContent = 'Fleet report unavailable.';
+  }
+
   const intents = await loadJSON('/api/intents?limit=5');
   const is = document.getElementById('intent-summary');
   if (intents && intents.items) {
@@ -95,18 +267,16 @@
     is.textContent = 'No intents found.';
   }
 
-  // dispatches summary
   const dispatches = await loadJSON('/api/dispatches?limit=5');
   const ds = document.getElementById('dispatch-summary');
   if (dispatches && dispatches.items) {
     const statusCounts = {};
     dispatches.items.forEach(d => { statusCounts[d.status] = (statusCounts[d.status] || 0) + 1; });
-    ds.innerHTML = `<div class="summary-line">` + Object.entries(statusCounts).map(([k, v]) => `<span class="badge">${k}: ${v}</span>`).join(' ') + `</div>`;
+    ds.innerHTML = `<div class="summary-line">` + Object.entries(statusCounts).map(([k, v]) => `<span class="badge">${esc(k)}: ${esc(String(v))}</span>`).join(' ') + `</div>`;
   } else {
     ds.textContent = 'No dispatches found.';
   }
 
-  // sessions summary
   const sessions = await loadJSON('/api/sessions?limit=5');
   const ss = document.getElementById('session-summary');
   if (sessions && sessions.items) {
@@ -122,7 +292,6 @@
     ss.textContent = 'No sessions found.';
   }
 
-  // memory feed
   const memory = await loadJSON('/api/memory?limit=10');
   const mf = document.getElementById('memory-feed');
   if (memory && memory.items) {
@@ -136,7 +305,6 @@
     mf.textContent = 'No memory items found.';
   }
 
-  // devices summary
   const devices = await loadJSON('/api/devices?limit=5');
   const dv = document.getElementById('device-summary');
   if (devices && devices.items) {
@@ -152,7 +320,6 @@
     dv.textContent = 'No devices found.';
   }
 
-  // review summary
   const review = await loadJSON('/api/review/tasks?status=REVIEW&limit=100');
   const rv = document.getElementById('review-summary');
   if (review && review.items) {
@@ -162,7 +329,7 @@
       byPolicy[policy] = (byPolicy[policy] || 0) + 1;
     });
     rv.innerHTML = `<div class="summary-line"><span class="badge">${review.count} in review</span> ` +
-      Object.entries(byPolicy).slice(0, 3).map(([k, v]) => `<span class="badge">${k}: ${v}</span>`).join(' ') + `</div>`;
+      Object.entries(byPolicy).slice(0, 3).map(([k, v]) => `<span class="badge">${esc(k)}: ${esc(String(v))}</span>`).join(' ') + `</div>`;
   } else {
     rv.textContent = 'No review tasks.';
   }
@@ -173,7 +340,7 @@
     const parts = Object.entries(reviewAudit.by_decision)
       .map(([k, v]) => `${k}: ${v}`)
       .join(' · ');
-    ras.innerHTML = `<div class="summary-line">24h decisions: <span class="badge">${reviewAudit.total_decisions || 0}</span> <span>${parts}</span></div>`;
+    ras.innerHTML = `<div class="summary-line">24h decisions: <span class="badge">${reviewAudit.total_decisions || 0}</span> <span>${esc(parts)}</span></div>`;
   } else {
     ras.textContent = '24h decisions unavailable.';
   }
@@ -191,8 +358,8 @@
       .map(([k, v]) => `${k}: ${v}`)
       .join(' · ');
     sv.innerHTML = `<div class="summary-line"><span class="badge">events: ${sophia.sample_size || 0}</span></div>` +
-      `<div class="muted">auth ${authParts || 'none'}</div>` +
-      `<div class="muted">queue ${queueParts || 'none'}</div>` +
+      `<div class="muted">auth ${esc(authParts || 'none')}</div>` +
+      `<div class="muted">queue ${esc(queueParts || 'none')}</div>` +
       `<div class="muted">auth incidents ${sophia.auth_anomaly_incidents || 0}</div>`;
   } else {
     sv.textContent = 'No Sophia data yet.';
@@ -205,7 +372,7 @@
       .slice(0, 3)
       .map(i => {
         const ts = i.created_at_ts ? new Date(i.created_at_ts).toISOString() : '';
-        return `<div>${ts} <span class="badge">${i.severity || 'info'}</span></div>`;
+        return `<div>${esc(ts)} <span class="badge">${esc(i.severity || 'info')}</span></div>`;
       })
       .join('');
     spd.innerHTML = rows || 'No routing-policy changes recorded.';

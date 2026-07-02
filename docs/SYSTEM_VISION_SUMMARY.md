@@ -124,7 +124,7 @@ READY → CLAIMED → RUNNING → DONE
 - `/api/router/backlog-candidates` - Read-only task candidates for dry-run
 
 **auto-router → auto-assist**:
-- Event write-back via `/api/events` - Provenance events to Neo4j
+- Event write-back via `/api/events` - Provenance events to Neo4j, including `router.route_decision` and `router.execution_stage.*`
 
 ### auto-assign ↔ auto-assist (Bidirectional Read/Write)
 

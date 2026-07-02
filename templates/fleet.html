@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+{% block title %}AssistX – Fleet{% endblock %}
+
+{% block content %}
+<div class="grid">
+  <section class="card hero">
+    <div class="section-header">
+      <div>
+        <h1>Fleet view</h1>
+        <p class="kicker">Worker/reviewer topology, loadout recommendations, and router overlay status.</p>
+      </div>
+      <div class="actions">
+        <a class="btn" href="/command-center">Command center</a>
+        <a class="btn secondary" href="/api/router/status" target="_blank">Router status JSON</a>
+        <a class="btn secondary" href="/api/fleet/loadouts" target="_blank">Loadout JSON</a>
+      </div>
+    </div>
+
+    <div class="metric-grid mt-4">
+      <div class="metric">
+        <div class="metric-label">Snapshot</div>
+        <div id="fleet-snapshot" class="metric-value">—</div>
+        <div id="fleet-snapshot-note" class="metric-note">Latest rebuilder run</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Profiles</div>
+        <div id="fleet-profiles" class="metric-value">—</div>
+        <div class="metric-note">Task classes tracked in Neo4j</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Loadouts</div>
+        <div id="fleet-loadout-count" class="metric-value">—</div>
+        <div id="fleet-loadout-note" class="metric-note">Primary / reviewer / fallback builds</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Source</div>
+        <div id="fleet-source" class="metric-value">—</div>
+        <div class="metric-note">AUTO_ROUTER_BASE_URL / admin ops summary</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card half">
+    <div class="section-header">
+      <div>
+        <h3>Current loadouts</h3>
+        <p class="kicker">The latest planned worker + reviewer builds ranked by score.</p>
+      </div>
+    </div>
+    <div id="fleet-loadouts-list" class="stack-sm mt-3">Loading…</div>
+  </section>
+
+  <section class="card half">
+    <div class="section-header">
+      <div>
+        <h3>Fleet summary</h3>
+        <p class="kicker">Snapshot totals and the rebuilder’s summary stats.</p>
+      </div>
+    </div>
+    <div id="fleet-summary" class="stack-sm mt-3">Loading…</div>
+  </section>
+
+  <section class="card half">
+    <div class="section-header">
+      <div>
+        <h3>Task profiles</h3>
+        <p class="kicker">The workload classes being optimized.</p>
+      </div>
+    </div>
+    <div id="task-profiles" class="table-wrap mt-3">
+      <table class="dashboard-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Quality</th>
+            <th>Throughput</th>
+            <th>Context</th>
+          </tr>
+        </thead>
+        <tbody id="task-profile-body">
+          <tr><td colspan="5" class="muted">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card half">
+    <div class="section-header">
+      <div>
+        <h3>Router / graph status</h3>
+        <p class="kicker">Local AssistX router integration and graph health.</p>
+      </div>
+    </div>
+    <div id="router-status" class="stack-sm mt-3">Loading…</div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(async () => {
+  const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString());
+  const short = window.UIUtils?.shortId || ((v, n = 8) => (v || "").toString().slice(0, n));
+
+  async function loadJSON(url) {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) return null;
+      return await r.json();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function el(tag, cls, txt) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (txt) e.textContent = txt;
+    return e;
+  }
+
+  const [fleet, router] = await Promise.all([
+    loadJSON('/api/fleet/loadouts'),
+    loadJSON('/api/router/status'),
+  ]);
+
+  const snapshot = document.getElementById('fleet-snapshot');
+  const snapshotNote = document.getElementById('fleet-snapshot-note');
+  const profiles = document.getElementById('fleet-profiles');
+  const loadoutCount = document.getElementById('fleet-loadout-count');
+  const loadoutNote = document.getElementById('fleet-loadout-note');
+  const source = document.getElementById('fleet-source');
+  const summary = document.getElementById('fleet-summary');
+  const list = document.getElementById('fleet-loadouts-list');
+  const profileBody = document.getElementById('task-profile-body');
+  const routerStatus = document.getElementById('router-status');
+
+  if (fleet && fleet.ok) {
+    const report = fleet.report || {};
+    snapshot.textContent = report.captured_at ? new Date(report.captured_at).toLocaleString() : 'latest';
+    snapshotNote.textContent = fleet.source_url || 'auto-router summary';
+    profiles.textContent = String((fleet.task_profiles || []).length);
+    loadoutCount.textContent = String((fleet.loadouts || []).length);
+    loadoutNote.textContent = report.summary ? `success ${report.summary.success ?? '—'} · worker slots ${report.summary.worker_slots ?? '—'} · reviewer slots ${report.summary.reviewer_slots ?? '—'}` : 'No summary';
+    source.textContent = fleet.configured ? 'configured' : 'missing';
+
+    summary.innerHTML = '';
+    const summaryRows = [
+      ['Captured', fleet.captured_at || report.captured_at || 'unknown'],
+      ['Loadouts', String((fleet.loadouts || []).length)],
+      ['Profiles', String((fleet.task_profiles || []).length)],
+      ['Source URL', fleet.source_url || 'not configured'],
+    ];
+    summaryRows.forEach(([label, value]) => {
+      const row = el('div', 'summary-line');
+      row.innerHTML = `<span class="badge">${esc(label)}</span> <span class="muted">${esc(String(value))}</span>`;
+      summary.appendChild(row);
+    });
+
+    list.innerHTML = '';
+    const topLoadouts = (fleet.loadouts || []).slice(0, 10);
+    topLoadouts.forEach((item) => {
+      const panel = el('div', 'panel');
+      const primary = item.primary || {};
+      const reviewer = item.reviewer || {};
+      const fallback = item.fallback || {};
+      panel.innerHTML = `
+        <div class="summary-line">
+          <span class="badge">${esc(item.task_profile_id || 'profile')}</span>
+          <span class="badge">score ${esc(item.score?.toFixed ? item.score.toFixed(2) : String(item.score ?? '—'))}</span>
+        </div>
+        <div class="mt-2"><strong>${esc(item.task_profile_name || item.task_profile_id || '')}</strong></div>
+        <div class="muted mt-2">${esc(item.rationale || '')}</div>
+        <div class="mt-2 summary-line">
+          <span class="badge">worker ${esc(primary.node_name || '?')}/${esc(primary.model_id || '?')}</span>
+          <span class="badge">reviewer ${esc(reviewer.node_name || '?')}/${esc(reviewer.model_id || '?')}</span>
+          <span class="badge">fallback ${esc(fallback.node_name || '?')}/${esc(fallback.model_id || '?')}</span>
+        </div>
+      `;
+      list.appendChild(panel);
+    });
+
+    profileBody.innerHTML = '';
+    (fleet.task_profiles || []).forEach((profile) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><code>${esc(profile.id || '')}</code></td>
+        <td>${esc(profile.name || '')}</td>
+        <td>${esc(String(profile.quality_target ?? '—'))}</td>
+        <td>${esc(String(profile.throughput_target ?? '—'))}</td>
+        <td>${esc(profile.context_need || '')}</td>
+      `;
+      profileBody.appendChild(tr);
+    });
+    if ((fleet.task_profiles || []).length === 0) {
+      profileBody.innerHTML = '<tr><td colspan="5" class="muted">No task profiles found.</td></tr>';
+    }
+  } else {
+    snapshot.textContent = 'unavailable';
+    snapshotNote.textContent = fleet?.error || 'AUTO_ROUTER_BASE_URL not configured';
+    profiles.textContent = '—';
+    loadoutCount.textContent = '—';
+    loadoutNote.textContent = 'No report loaded';
+    source.textContent = 'missing';
+    list.innerHTML = `<div class="muted">${esc(fleet?.error || 'No fleet report available.')}</div>`;
+    summary.innerHTML = `<div class="muted">${esc(fleet?.error || 'No fleet summary available.')}</div>`;
+    profileBody.innerHTML = '<tr><td colspan="5" class="muted">No task profiles found.</td></tr>';
+  }
+
+  if (router) {
+    const rows = [];
+    rows.push(['Status', router.graph?.neo4j || router.graph?.status || 'unknown']);
+    rows.push(['Tasks', `ready ${router.graph?.tasks?.ready ?? '—'} · review ${router.graph?.tasks?.review ?? '—'} · running ${router.graph?.tasks?.running ?? '—'}`]);
+    rows.push(['Services', String(router.graph?.services ?? '—')]);
+    rows.push(['Agent CLIs', String(router.graph?.agent_clis ?? '—')]);
+    rows.push(['Base URL', router.base_url || router.source || 'current host']);
+    routerStatus.innerHTML = '';
+    rows.forEach(([label, value]) => {
+      const row = el('div', 'summary-line');
+      row.innerHTML = `<span class="badge">${esc(label)}</span> <span class="muted">${esc(String(value))}</span>`;
+      routerStatus.appendChild(row);
+    });
+    if (router.endpoints) {
+      const ep = el('div', 'muted mt-2');
+      ep.textContent = `Context: ${router.endpoints.context_projection || '—'} · Backlog: ${router.endpoints.backlog_candidates || '—'}`;
+      routerStatus.appendChild(ep);
+    }
+  } else {
+    routerStatus.textContent = 'Router status unavailable.';
+  }
+})();
+</script>
+{% endblock %}

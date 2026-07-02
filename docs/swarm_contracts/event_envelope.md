@@ -140,7 +140,8 @@ dispatch.cancelled
 **Routing events:**
 ```text
 route.requested
-route.selected
+router.route_decision
+route.selected  # legacy alias supported for backward compatibility
 route.failed
 route.blocked
 ```
