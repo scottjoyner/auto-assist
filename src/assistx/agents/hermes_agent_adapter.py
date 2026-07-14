@@ -24,6 +24,14 @@ try:
 except Exception:  # pragma: no cover
     swarm_memory = None
 
+# Optional dynamic fleet registry (assistx.fleet). Resolves a bare model to a
+# node-prefixed id so every machine in the swarm actually does work, instead of
+# the router's stale bare-name routing silently dropping/centralising it.
+try:
+    from assistx import fleet  # type: ignore
+except Exception:  # pragma: no cover
+    fleet = None
+
 logger = logging.getLogger(__name__)
 
 ASSISTX_URL = os.getenv("ASSISTX_URL", "http://localhost:8000")
@@ -65,7 +73,7 @@ MODEL_PROFILE_DEFAULTS = {
     "reasoning-mid": {
         "tier": "reasoning-mid",
         "profile": "reasoning-mid",
-        "model": "orinth-1.0-9b",
+        "model": "ornith-1.0-9b",
         "provider": "assistx-router",
         "context_length": 32768,
     },
@@ -109,6 +117,20 @@ _MODEL_TIER_KEYWORDS = [
     ("reasoning-large", ["architect", "design", "complex", "review", "deep", "migrate", "investigate"]),
 ]
 _MODEL_TIER_ORDER = ["compress-tiny", "cpu-micro", "tool-small", "reasoning-mid", "reasoning-large"]
+
+# How each tier's work behaves, so the fleet can route it well (capability, not
+# a fixed model name -- models churn too fast to hardcode):
+#   min_params        -> smallest model size that can do the job (capability floor)
+#   latency_tolerance -> 0 = a human is waiting (avoid slow nodes); 1 = background
+#   quality_need      -> 0 = cheap/summarise; 1 = hard reasoning (prefer smart/MoE)
+#   toolish           -> require a tool-capable model (for agentic tiers)
+_TIER_TASK = {
+    "reasoning-large": {"min_params": 9,  "latency_tolerance": 0.4,  "quality_need": 0.9,  "toolish": False},
+    "reasoning-mid":   {"min_params": 3,  "latency_tolerance": 0.45, "quality_need": 0.7,  "toolish": False},
+    "tool-small":      {"min_params": 3,  "latency_tolerance": 0.5,  "quality_need": 0.35, "toolish": True},
+    "compress-tiny":   {"min_params": 0.8, "latency_tolerance": 0.95, "quality_need": 0.2,  "toolish": False},
+    "cpu-micro":       {"min_params": 0.5, "latency_tolerance": 0.9,  "quality_need": 0.15, "toolish": False},
+}
 
 _SELFTASK_ARCHETYPES = ["bulk_summarize", "session_compress", "corpus_extract", "triage", "ideation"]
 
@@ -380,8 +402,24 @@ def _route_by_shape(task: Optional[Dict[str, Any]] = None, payload: Optional[Dic
     return capable[h % len(capable)]
 
 
-def select_tier_model(tier: Optional[str], seed: Optional[str] = None) -> Optional[str]:
-    """Pick the concrete model for a tier, rotating across candidates by seed."""
+def select_tier_model(tier: Optional[str], seed: Optional[str] = None,
+                      task: Optional[dict] = None) -> Optional[str]:
+    """Pick a live model for a tier by CAPABILITY across the whole fleet.
+
+    Routes by the tier's task profile (min size, latency tolerance, quality need,
+    tool requirement) scored against every model the fleet currently hosts and has
+    measured -- so it adapts as models appear/disappear and as slow nodes (beelink
+    9B) are kept out of interactive sessions but still used for background work.
+    No fixed model name is required, so churning model sets never break routing.
+    """
+    ctx = task or dict(_TIER_TASK.get(tier, {"min_params": 0, "latency_tolerance": 0.5,
+                                             "quality_need": 0.5, "toolish": False}))
+    ctx["tier"] = tier
+    if fleet is not None:
+        _, full = fleet.select_any(fleet.list_models(), task=ctx)
+        if full:
+            return full
+    # Fallback to the static tier model if the fleet has nothing usable.
     t = get_model_tier(tier)
     if not t:
         return None
@@ -646,6 +684,8 @@ def call_self_task_llm(prompt: str, model: str, max_tokens: int = SELFTASK_MAX_T
             except Exception:
                 detail = resp.text[:200]
             logger.warning("Self-task LLM HTTP %d: %s", resp.status_code, detail)
+            if fleet is not None:
+                fleet.record_outcome(model, elapsed, None, success=False)
             return {"success": False, "output": "", "error": f"http_{resp.status_code}", "elapsed": elapsed}
         data = resp.json()
         content = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
@@ -654,10 +694,15 @@ def call_self_task_llm(prompt: str, model: str, max_tokens: int = SELFTASK_MAX_T
         content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
         # Reasoning models may put the answer in content but fall back to reasoning if empty.
         final = content or reasoning
+        ntok = (data.get("usage") or {}).get("completion_tokens")
+        if fleet is not None:
+            fleet.record_outcome(model, elapsed, ntok, success=True)
         return {"success": True, "output": final, "error": None, "elapsed": elapsed}
     except requests.RequestException as exc:
         elapsed = time.monotonic() - start
         logger.warning("Self-task LLM request failed: %s", exc)
+        if fleet is not None:
+            fleet.record_outcome(model, elapsed, None, success=False)
         return {"success": False, "output": "", "error": f"request_error:{type(exc).__name__}", "elapsed": elapsed}
 
 
@@ -831,11 +876,33 @@ def _selftask_prompt(archetype: str, context: str = "") -> str:
 
 def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -> None:
     arch = archetype or _next_selftask_archetype()
-    model = _pick_bulk_model(arch)
-    if not model:
-        logger.info("No SELFTASK_BULK_MODELS configured; skipping self-task %s", arch)
+    # Background self-tasks are latency-tolerant, so route across the WHOLE live
+    # fleet (not a static list) -- this is what puts slow-but-usable nodes like
+    # beelink's 9B or destroyer's MoE to work on summarise/extract instead of
+    # leaving them idle. corpus_extract needs a stronger model (>=3B).
+    model, target_model = None, None
+    if fleet is not None:
+        # Background self-tasks are latency-tolerant, so route across the WHOLE
+        # live fleet -- this is what puts every node to work (slow-but-usable
+        # machines like beelink's 9B or destroyer's MoE earn summarise/extract
+        # instead of sitting idle, and the fleet's load-spreading shares work
+        # across all capable nodes like worker bees). The optional
+        # HERMES_SELFTASK_BULK_MODELS list is only a fallback when the fleet
+        # can't be reached. corpus_extract needs a stronger model (>=3B).
+        pool = fleet.list_models()
+        task = {
+            "min_params": 3.0 if arch == "corpus_extract" else 0.8,
+            "latency_tolerance": 0.95,
+            "quality_need": 0.35,
+        }
+        model, target_model = fleet.select_any(pool, task=task)
+    if not target_model:
+        model = _pick_bulk_model(arch)
+        target_model = model
+    if not target_model:
+        logger.info("No live model for self-task %s; skipping", arch)
         return
-    logger.info("Self-task %s on model %s", arch, model)
+    logger.info("Self-task %s on model %s (resolved %s)", arch, target_model, model)
     # Prefer semantic retrieval (relevant chunks) over a blind snapshot; fall back
     # to the bounded snapshot if the embed model is unavailable.
     context = ""
@@ -853,7 +920,7 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
     # no max_tokens cap (unbounded generation -> timeout) and misuses file tools.
     # The adapter injects the vault context, caps output tokens, and persists the
     # returned text itself.
-    result = call_self_task_llm(prompt, model, max_tokens=SELFTASK_MAX_TOKENS)
+    result = call_self_task_llm(prompt, target_model, max_tokens=SELFTASK_MAX_TOKENS)
     # Small/tiny models are unreliable at writing files via tools, so the adapter
     # persists the returned text itself. Success = hermes ok AND non-trivial text
     # was produced AND we wrote it to the artifact path.
@@ -929,13 +996,23 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
     assistx.heartbeat(task_id, session_id)
 
     start = time.monotonic()
-    result = run_hermes(
-        prompt,
-        timeout=HERMES_TIMEOUT,
-        model=model,
-        provider=HERMES_PROVIDER,
-        toolsets=HERMES_TOOLSETS,
-    )
+    if tier in ("compress-tiny", "cpu-micro"):
+        # Tiny models must NOT run interactive Hermes sessions (they can't drive
+        # tools reliably, and burn leases looping). They still do summarize /
+        # compress / review work, but via a direct bounded router call (no Hermes)
+        # -- exactly the path self-tasks use. This keeps 0.8B/1.2B productive
+        # without putting them in agentic sessions.
+        result = call_self_task_llm(
+            prompt, model, max_tokens=SELFTASK_MAX_TOKENS, timeout=HERMES_TIMEOUT
+        )
+    else:
+        result = run_hermes(
+            prompt,
+            timeout=HERMES_TIMEOUT,
+            model=model,
+            provider=HERMES_PROVIDER,
+            toolsets=HERMES_TOOLSETS,
+        )
     elapsed = result.get("elapsed", time.monotonic() - start)
 
     hermes_session_id = result.get("session_id")
@@ -944,6 +1021,8 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
 
     trivial = is_trivial_output(result.get("output", ""))
     actual_success = bool(result["success"]) and not trivial
+    if fleet is not None:
+        fleet.record_outcome(model, elapsed, max(0, len(result.get("output", "")) // 4), actual_success, tier=tier)
     record_task_eval(model, category, actual_success, elapsed, error=result.get("error"), trivial=trivial)
 
     if result["success"]:
@@ -1000,6 +1079,12 @@ def run_loop(once: bool = False) -> None:
         POLL_INTERVAL,
         SELFTASK_BULK_MODELS,
     )
+
+    # Start the fleet's background loop immediately: proactive discovery, probing,
+    # the /metrics server and periodic FLEET METRICS logging -- so the swarm is
+    # measured and load-balanced from the first second, not only after a select().
+    if fleet is not None:
+        fleet.start()
 
     assistx = AssistXClient()
     consecutive_empty = 0
