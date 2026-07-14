@@ -60,9 +60,19 @@ SELFTASK_INTERVAL = int(os.getenv("HERMES_SELFTASK_INTERVAL", "3"))
 # with N in flight, the small/fast 3B nodes saturate (in-flight penalty) and the
 # fleet's relative utilisation pressure spills the overflow onto the idle 1.2B /
 # 8B / 9B "worker bee" nodes -- otherwise a single serial self-task leaves every
-# other machine idle. Capped at the number of distinct archetypes so each run
-# writes its own artifact file; repeats are safe (per-archetype write lock).
-SELFTASK_CONCURRENCY = int(os.getenv("HERMES_SELFTASK_CONCURRENCY", "5"))
+# other machine idle. We deliberately run MORE than the smaller nodes' total
+# per-node self-task capacity (8), so the overflow spills onto the 35B brain too
+# (its affinity guard reserves it for hard tasks, but under saturation it still
+# earns background work -- true full-fleet utilisation). Each archetype writes its
+# own artifact file; repeats are safe (per-archetype write lock).
+SELFTASK_CONCURRENCY = int(os.getenv("HERMES_SELFTASK_CONCURRENCY", "10"))
+# Background self-tasks must fail FAST on a hung node. requests' read timeout only
+# fires on inactivity between bytes, so a genuinely slow (but alive) generation
+# keeps trickling and is never cut -- but a truly hung LM Studio (connection
+# accepted, zero bytes for minutes) fails here instead of hogging a pool slot for
+# the full HERMES_TIMEOUT. 120s is well below a legit 450-token gen on the slowest
+# 3B node yet recovers a wedged slot in ~2 min instead of ~7.
+SELFTASK_TIMEOUT = int(os.getenv("HERMES_SELFTASK_TIMEOUT", "120"))
 # Background self-tasks are pure text-in/text-out harvesting; we call the router's
 # chat API directly (no Hermes CLI) so we can cap max_tokens. Small/tiny models are
 # slow and Hermes sends no token cap, which made them generate unbounded and time out.
@@ -917,6 +927,14 @@ def _launch_selftasks(assistx: "AssistXClient", max_n: int) -> int:
     if slots <= 0:
         return 0
     free = [a for a in _SELFTASK_ARCHETYPES if a not in running]
+    # If we still have slots after exhausting distinct archetypes, allow repeats
+    # (the per-archetype write lock serialises same-archetype file writes, so two
+    # runs of the same archetype just write the same artifact last-wins). This is
+    # what lets concurrency exceed the archetype count and spill onto big nodes.
+    i = 0
+    while len(free) < slots:
+        free.append(_SELFTASK_ARCHETYPES[i % len(_SELFTASK_ARCHETYPES)])
+        i += 1
     launched = 0
     for arch in free[:slots]:
         t = threading.Thread(
@@ -985,7 +1003,7 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
     # no max_tokens cap (unbounded generation -> timeout) and misuses file tools.
     # The adapter injects the vault context, caps output tokens, and persists the
     # returned text itself.
-    result = call_self_task_llm(prompt, target_model, max_tokens=SELFTASK_MAX_TOKENS)
+    result = call_self_task_llm(prompt, target_model, max_tokens=SELFTASK_MAX_TOKENS, timeout=SELFTASK_TIMEOUT)
     if _st_node:
         try:
             fleet._mark_selftask_done(fleet._node_of(_st_node))
@@ -1168,17 +1186,17 @@ def run_loop(once: bool = False) -> None:
 
             if not tasks:
                 consecutive_empty += 1
-                if consecutive_empty >= 3:
-                    logger.info("No tasks available (poll %d)", consecutive_empty)
-                if consecutive_empty >= SELFTASK_INTERVAL and SELFTASK_BULK_MODELS:
+                if consecutive_empty >= SELFTASK_INTERVAL and consecutive_empty % SELFTASK_INTERVAL == 0:
+                    logger.info("No tasks available (poll %d); self-task pool running", consecutive_empty)
+                if SELFTASK_BULK_MODELS:
+                    # Pipeline the self-task pool: top up free slots every idle
+                    # cycle instead of one batch per SELFTASK_INTERVAL. This keeps
+                    # the whole fleet saturated (worker-bee utilisation) so no node
+                    # -- e.g. a slower 3B like beelink -- sits idle between batches.
+                    # _launch_selftasks only fills free slots (respects the cap).
                     launched = _launch_selftasks(assistx, SELFTASK_CONCURRENCY)
                     if launched:
-                        logger.info("Launched %d concurrent self-task(s)", launched)
-                    else:
-                        # Pool already at capacity; keep the counter reset so we
-                        # re-check next idle cycle rather than busy-looping.
-                        pass
-                    consecutive_empty = 0
+                        logger.info("Topped up %d self-task(s)", launched)
             else:
                 consecutive_empty = 0
                 logger.info("Found %d available task(s)", len(tasks))
