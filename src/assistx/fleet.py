@@ -25,6 +25,8 @@ import logging
 import math
 import os
 import re
+import socket
+import subprocess
 import threading
 import time
 from typing import Dict, List, Optional, Tuple
@@ -69,6 +71,27 @@ ASSUMED_TOK_S = float(os.getenv("FLEET_ASSUMED_TOK_S", "12"))
 UTIL_TAU = float(os.getenv("FLEET_UTIL_TAU", "120"))      # idle window for pressure
 INFLOW_PENALTY = float(os.getenv("FLEET_INFLOW_PENALTY", "0.25"))  # per in-flight task
 REL_PRESSURE = float(os.getenv("FLEET_REL_PRESSURE", "0.9"))      # pressure band (+/-)
+
+# Watchdog: nodes that actually crash (not just sleep) need a poke, not only
+# avoidance. When a node's models have tripped the failure demotion (3 strikes ->
+# down_until), the watchdog tries to bring it back: first a user-supplied wake
+# command (FLEET_WAKE_CMD, "{node}" substituted), then a Wake-on-LAN magic packet
+# to the MAC in FLEET_WAKE_MAP. Both are optional; without them the watchdog just
+# logs the down node so the gap in "every node utilised" is visible. A per-node
+# cooldown stops us spamming a dead box.
+WATCHDOG_INTERVAL = int(os.getenv("FLEET_WATCHDOG_INTERVAL", "30"))  # secs between sweeps
+WAKE_COOLDOWN = float(os.getenv("FLEET_WAKE_COOLDOWN", "300"))      # min secs between wake tries
+WAKE_BROADCAST = os.getenv("FLEET_WAKE_BROADCAST", "255.255.255.255")
+WAKE_PORT = int(os.getenv("FLEET_WAKE_PORT", "9"))
+WAKE_MAP = {}
+for _wpair in os.getenv("FLEET_WAKE_MAP", "").split(","):
+    if "=" in _wpair:
+        _wn, _wm = _wpair.split("=", 1)
+        _wn, _wm = _wn.strip(), _wm.strip()
+        if _wn and _wm:
+            WAKE_MAP[_wn] = _wm
+WAKE_CMD = os.getenv("FLEET_WAKE_CMD", "").strip()  # template, {node} substituted
+_last_wake: Dict[str, float] = {}
 
 _lock = threading.Lock()
 _nodes: dict = {}          # node -> {"models": {bare: full_id}}
@@ -212,6 +235,10 @@ def _ensure_refresh_thread() -> None:
                 discover(force=True)
                 _probe_stale()
                 cyc += 1
+                # Watchdog: detect crashed nodes and try to wake them (every
+                # WATCHDOG_INTERVAL seconds). Runs in the same background thread.
+                if cyc % max(1, int(WATCHDOG_INTERVAL / REGISTRY_TTL)) == 0:
+                    _watchdog_sweep()
                 if cyc % 12 == 0:  # ~ every minute: persist + surface intuition
                     _save_metrics()
                     log_summary()
@@ -294,6 +321,97 @@ def _record_choice(full_id: str, task: dict, score: float) -> None:
     })
     if len(_decisions) > _DECISION_CAP * 2:
         del _decisions[:-_DECISION_CAP]
+
+
+# ---------------------------------------------------------------------------
+# Watchdog: detect crashed nodes and try to wake them (not just avoid them)
+# ---------------------------------------------------------------------------
+def _send_wol(mac: str, broadcast: str = WAKE_BROADCAST, port: int = WAKE_PORT) -> bool:
+    """Send a Wake-on-LAN magic packet to ``mac`` via UDP broadcast. Self-contained
+    (no external dependency). Returns True if the packet was sent."""
+    try:
+        addr = [int(x, 16) for x in mac.replace("-", ":").split(":")]
+        if len(addr) != 6:
+            return False
+        payload = bytes([0xFF] * 6 + addr * 16)
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        s.sendto(payload, (broadcast, port))
+        s.close()
+        return True
+    except Exception as exc:  # bad MAC, no broadcast route, etc.
+        logger.debug("Watchdog: WoL send failed for %s: %s", mac, exc)
+        return False
+
+
+def wake_node(node: str) -> bool:
+    """Best-effort attempt to bring a crashed node back. Returns True if a wake
+    action was issued (not whether it succeeded -- the node has to actually boot).
+    Respects WAKE_COOLDOWN so we don't hammer a dead box every sweep."""
+    now = time.time()
+    if now - _last_wake.get(node, 0.0) < WAKE_COOLDOWN:
+        return False
+    _last_wake[node] = now
+    if WAKE_CMD:
+        try:
+            subprocess.run(
+                WAKE_CMD.format(node=node), shell=True, timeout=30,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            logger.info("Watchdog: sent wake command for node %s", node)
+            return True
+        except Exception as exc:
+            logger.warning("Watchdog: wake command failed for %s: %s", node, exc)
+    mac = WAKE_MAP.get(node)
+    if mac:
+        if _send_wol(mac):
+            logger.info("Watchdog: sent WoL magic packet to %s (%s)", node, mac)
+            return True
+        logger.warning("Watchdog: WoL send failed for %s", node)
+    logger.info(
+        "Watchdog: node %s is down; no wake mechanism configured "
+        "(set FLEET_WAKE_MAP='%s=MA:CA:DD:RS' and/or FLEET_WAKE_CMD)", node, node
+    )
+    return False
+
+
+def node_health() -> Dict[str, dict]:
+    """Per-node liveness: how many of its models are currently demoted (down), and
+    until when. Surfaces the gap in 'every node utilised' at a glance."""
+    out: Dict[str, dict] = {}
+    with _lock:
+        nodes = {n: dict(i) for n, i in _nodes.items()}
+    now = time.time()
+    for node, info in nodes.items():
+        down = 0
+        total = 0
+        worst = 0.0
+        for model, full in info.get("models", {}).items():
+            p = _perf.get(full)
+            if p is None:
+                continue
+            total += 1
+            du = p.get("down_until", 0.0) or 0.0
+            if (du and now < du) or (p.get("fail_streak", 0) or 0) >= FAIL_DEMOTE:
+                down += 1
+                worst = max(worst, du)
+        if total:
+            out[node] = {
+                "models": total, "down": down,
+                "down_until": worst, "state": "DOWN" if down else "up",
+            }
+    return out
+
+
+def _watchdog_sweep() -> None:
+    """One watchdog pass: find nodes whose models have tripped failure demotion and
+    try to wake them. A node is considered crashed when ANY of its models is demoted
+    (they share one machine, so one dead model == dead node)."""
+    for node, h in node_health().items():
+        if h["state"] == "DOWN":
+            logger.warning("Watchdog: node %s is DOWN (%d/%d models demoted)",
+                           node, h["down"], h["models"])
+            wake_node(node)
 
 
 def _probe(full_id: str) -> None:
@@ -609,6 +727,13 @@ def log_summary() -> None:
             flag = "  [DOWN]"
         logger.info("  %-50s tok/s=%.1f succ=%.2f calls=%d fs=%d in=%d nin=%d idle=%.0fs%s",
                     full, tok_s, succ, n, fs, inf, ninf, idle, flag)
+    # Node-level liveness so a crashed machine is visible at a glance (the gap in
+    # "every node utilised"), not just buried in per-model rows.
+    down_nodes = [n for n, h in node_health().items() if h["state"] == "DOWN"]
+    if down_nodes:
+        logger.warning("FLEET NODES DOWN: %s (watchdog will attempt wake)", ", ".join(sorted(down_nodes)))
+    else:
+        logger.info("All %d nodes UP", len(node_health()))
 
 
 def _start_metrics_server() -> None:
