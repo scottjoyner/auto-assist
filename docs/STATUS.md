@@ -172,25 +172,42 @@ are the only models deathstar's LM Studio currently has loaded
   `hermes chat --help`). Every self-task was therefore silently running on the
   default `local/reasoning-large` (→ `ornith-1.0-35b`) instead of the tiny model,
   which is why "0.8B self-tasks" produced empty output. `run_hermes` now passes
-  `-m <model>` and `--provider <provider>` as CLI flags. Verified: a `qwen3.5-0.8b`
-  self-task now returns real output.
+  `-m <model>` and `--provider <provider>` as CLI flags.
+- Self-tasks hung/looped on tiny models. Root causes: (1) Hermes's `search_files`
+  tool is rooted at `/home/user` (not the mounted vault), so the model couldn't
+  read via tools and looped on `ls`; (2) tiny models are unreliable at writing
+  files via tools; (3) Hermes sends **no `max_tokens` cap**, so slow tiny models
+  generated unbounded and timed out. Fix: self-tasks now call the router's chat
+  API **directly** via `call_self_task_llm` (token-capped, no tools). The adapter
+  injects a bounded vault snapshot (`_gather_knowledge_context`) into the prompt
+  and **persists the returned text** to the artifact file itself — the model never
+  touches the filesystem. Verified: 3B `triage` (86s) and 0.8B `bulk_summarize`
+  (38s) both complete and write real artifacts. `<think>` tags are stripped.
 - Eval "success" was inflated by trivial replies ("Done - I've completed that for
   you"). `record_task_eval` now requires non-trivial output (and hermes-ok) to
   count as success, and records `error_kind` (timeout / exit / empty / other) plus
   a 10-entry `recent_failures` ring buffer in `model-profiles.json`.
 
 **Known gaps (open)**
-- deathstar only has 0.8B + 3B loaded; its provider config still lists `ornith-1.0-9b`
-  / `ornith-1.0-35b`, but those are not loaded on deathstar (LM Studio JIT disabled)
-  so any 9B/35B request routed to deathstar returns `model_not_found` → circuit
-  opens → 503. Remove the phantom entries or load the models on deathstar. The
-  router re-registers them via dynamic discovery, so the static config trim alone
-  may not suppress them — confirm after a router restart.
+- deathstar only has 0.8B + 3B loaded; the router re-registers `ornith-1.0-9b` /
+  `ornith-1.0-35b` for deathstar via dynamic discovery even though they are not
+  loaded there (LM Studio JIT disabled) → `model_not_found` → circuit opens → 503.
+  35B fails over to xwing/lenovo, but the phantom entries cause avoidable circuit
+  blips. Either **load 9B/35B on deathstar** (improves utilization — deathstar is
+  currently just a bulk node) or suppress discovery registration of unloaded models.
+- Tiny/bulk models are slow on deathstar (~9 tok/s for 0.8B). `SELFTASK_MAX_TOKENS`
+  (600) keeps self-tasks bounded, but some archetypes (corpus_extract, ideation)
+  occasionally exceed the 300s LLM HTTP timeout. Tune token cap / context size or
+  route bulk self-tasks to a faster node (xwing/lenovo also expose 0.8B).
 - `refinedtoolcallv5-3b` shows elevated `repo:git` failures (`exit_code_1`, now
   captured as `error_kind`); needs a deeper look.
-- The router forwards the canonical model id (e.g. `ornith-1.0-35b`) to a node's LM
-  Studio; nodes accept either the canonical id or a `local/...` id depending on how
-  the model was loaded. Verify each node serves the id the router advertises.
+- Idle capability: `orinth-1.0-9b` (0 runs), `lfm2.5-8b` (destroyer, 0% on
+  self-tasks, "not agentic"), `liquid/lfm2-1.2b` (excluded — <64K ctx). Decide
+  allocation once the scoring matrix is populated.
+- Roadmap after the scoring matrix is solid: (1) tool refinement per tier, then
+  (2) vector search over `model-profiles.json` + Neo4j + hermes session history,
+  (3) memory/semantic search for self-tasks, (4) more dynamic routing (load-aware,
+  latency-aware) instead of static priority.
 
 ### Verification
 

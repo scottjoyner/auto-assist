@@ -41,6 +41,11 @@ EVAL_LOCK = threading.Lock()
 SELFTASK_BULK_MODELS = [m for m in os.getenv("HERMES_SELFTASK_BULK_MODELS", "").split(",") if m]
 SELFTASK_BULK_TIMEOUT = int(os.getenv("HERMES_SELFTASK_BULK_TIMEOUT", "600"))
 SELFTASK_INTERVAL = int(os.getenv("HERMES_SELFTASK_INTERVAL", "3"))
+# Background self-tasks are pure text-in/text-out harvesting; we call the router's
+# chat API directly (no Hermes CLI) so we can cap max_tokens. Small/tiny models are
+# slow and Hermes sends no token cap, which made them generate unbounded and time out.
+SELFTASK_MAX_TOKENS = int(os.getenv("HERMES_SELFTASK_MAX_TOKENS", "600"))
+ROUTER_CHAT_URL = os.getenv("HERMES_ROUTER_CHAT_URL", "http://host.docker.internal:8088/v1/chat/completions")
 
 MODEL_PROFILE_DEFAULTS = {
     "reasoning-large": {
@@ -99,6 +104,15 @@ _MODEL_TIER_KEYWORDS = [
 _MODEL_TIER_ORDER = ["compress-tiny", "cpu-micro", "tool-small", "reasoning-mid", "reasoning-large"]
 
 _SELFTASK_ARCHETYPES = ["bulk_summarize", "session_compress", "corpus_extract", "triage", "ideation"]
+
+# Artifact filename each self-task archetype writes into KNOWLEDGE_ROOT.
+_SELFTASK_TARGETS = {
+    "bulk_summarize": "SUMMARY.md",
+    "session_compress": "recap.md",
+    "corpus_extract": "extracted_facts.md",
+    "triage": "TRIAGE.md",
+    "ideation": "IDEAS.md",
+}
 
 
 def _safe_model_dir(model: Optional[str] = None) -> str:
@@ -590,6 +604,47 @@ def run_hermes(
     }
 
 
+def call_self_task_llm(prompt: str, model: str, max_tokens: int = SELFTASK_MAX_TOKENS,
+                       timeout: int = 300) -> Dict[str, Any]:
+    """Direct router chat call for background self-tasks.
+
+    Hermes is not used here: small/tiny models are slow and Hermes sends no
+    ``max_tokens`` cap, so they generate unbounded and time out. Calling the
+    router directly lets us bound output length and avoid the tool-use loops
+    that plague tiny models. Returns ``{"success", "output", "error", "elapsed"}``.
+    """
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+    start = time.monotonic()
+    try:
+        resp = requests.post(ROUTER_CHAT_URL, json=payload, timeout=timeout)
+        elapsed = time.monotonic() - start
+        if resp.status_code != 200:
+            detail = ""
+            try:
+                detail = resp.json().get("detail", "")
+            except Exception:
+                detail = resp.text[:200]
+            logger.warning("Self-task LLM HTTP %d: %s", resp.status_code, detail)
+            return {"success": False, "output": "", "error": f"http_{resp.status_code}", "elapsed": elapsed}
+        data = resp.json()
+        content = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+        reasoning = (data.get("choices", [{}])[0].get("message", {}).get("reasoning_content") or "").strip()
+        # Some tiny reasoning models inline <think>...</think> in content; strip it.
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        # Reasoning models may put the answer in content but fall back to reasoning if empty.
+        final = content or reasoning
+        return {"success": True, "output": final, "error": None, "elapsed": elapsed}
+    except requests.RequestException as exc:
+        elapsed = time.monotonic() - start
+        logger.warning("Self-task LLM request failed: %s", exc)
+        return {"success": False, "output": "", "error": f"request_error:{type(exc).__name__}", "elapsed": elapsed}
+
+
 # ---------------------------------------------------------------------------
 # Self-tasks (background harvesting on the small/bulk models)
 # ---------------------------------------------------------------------------
@@ -677,50 +732,85 @@ def _build_structured_prompt(instruction: str, target_file: str, sections: List[
     sec = "\n".join(f"{i+1}. {s}" for i, s in enumerate(sections))
     return (
         f"BACKGROUND MAINTENANCE (low-priority, non-urgent). {instruction}\n"
-        f"Write the result to {target_file} (overwrite).\n\n"
-        "Produce ONLY the structured content below — no greeting, no preamble.\n"
+        "Produce ONLY the structured content below as your response — no greeting, "
+        "no preamble, and do NOT write any file yourself.\n"
         "Be CONCRETE: include file paths, commands, values, decisions. Avoid vague phrases.\n"
         "Do NOT write only 'done' / 'completed' — produce the actual content.\n\n"
         f"Use exactly these sections:\n{sec}\n"
     )
 
 
-def _selftask_prompt(archetype: str) -> str:
+def _gather_knowledge_context(max_chars: int = 6000) -> str:
+    """Bounded snapshot of the knowledge vault so small models can summarize
+    without needing file/terminal tools (which they misuse and loop on)."""
+    chunks: List[str] = []
+    total = 0
+    if not os.path.isdir(KNOWLEDGE_ROOT):
+        return ""
+    files: List[str] = []
+    for name in os.listdir(KNOWLEDGE_ROOT):
+        fp = os.path.join(KNOWLEDGE_ROOT, name)
+        if os.path.isfile(fp) and name.endswith((".md", ".txt")) and name not in _KNOWLEDGE_TEMPLATE_FILES:
+            files.append(fp)
+        elif os.path.isdir(fp):
+            for fn in os.listdir(fp):
+                sub = os.path.join(fp, fn)
+                if os.path.isfile(sub) and fn.endswith((".md", ".txt")):
+                    files.append(sub)
+    files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+    for fp in files:
+        if total >= max_chars:
+            break
+        try:
+            with open(fp, "r", errors="ignore") as fh:
+                txt = fh.read()
+        except OSError:
+            continue
+        txt = txt[:1500]
+        total += len(txt)
+        chunks.append(f"# {os.path.relpath(fp, KNOWLEDGE_ROOT)}\n{txt}")
+    return "\n\n".join(chunks)[:max_chars]
+
+
+def _selftask_prompt(archetype: str, context: str = "") -> str:
     if archetype == "bulk_summarize":
-        return _build_structured_prompt(
+        body = _build_structured_prompt(
             "Summarize the notes and documents under ~/knowledge into a single DENSE recap "
             "of what matters (decisions, open threads, facts).",
-            "~/knowledge/SUMMARY.md",
+            "SUMMARY.md",
             ["Summary", "Key Points", "Decisions", "Open Items", "Artifacts"],
         )
-    if archetype == "session_compress":
-        return _build_structured_prompt(
+    elif archetype == "session_compress":
+        body = _build_structured_prompt(
             "Compress the most recent hermes session transcripts you can locate under ~/knowledge "
             "into a compact context recap that preserves decisions, tool outcomes, and unresolved items.",
-            "~/knowledge/recap.md",
+            "recap.md",
             ["Active Task", "Completed Actions (numbered: action + file + outcome)",
              "In Progress", "Key Decisions", "Remaining Work"],
         )
-    if archetype == "corpus_extract":
-        return _build_structured_prompt(
+    elif archetype == "corpus_extract":
+        body = _build_structured_prompt(
             "Extract structured facts (entities, relationships, decisions) from documents under "
             "~/knowledge and append them as bullets.",
-            "~/knowledge/extracted_facts.md",
+            "extracted_facts.md",
             ["Entities", "Relationships", "Decisions"],
         )
-    if archetype == "ideation":
-        return _build_structured_prompt(
+    elif archetype == "ideation":
+        body = _build_structured_prompt(
             "Brainstorm concrete improvements and next ideas for the local swarm, grounded in the "
             "current ~/knowledge contents.",
-            "~/knowledge/IDEAS.md",
+            "IDEAS.md",
             ["Ideas (numbered, each with a one-line rationale)", "Top Pick", "Risks"],
         )
-    # triage (default)
-    return _build_structured_prompt(
-        "Triage the current contents of ~/knowledge.",
-        "~/knowledge/TRIAGE.md",
-        ["Stale", "High-Value", "Suggested Action"],
-    )
+    else:  # triage (default)
+        body = _build_structured_prompt(
+            "Triage the current contents of ~/knowledge.",
+            "TRIAGE.md",
+            ["Stale", "High-Value", "Suggested Action"],
+        )
+    if context:
+        return body + "\n\n---\nINPUT MATERIAL (already loaded; do NOT open files):\n" + context + "\n---\n"
+    return body
 
 
 def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -> None:
@@ -730,18 +820,30 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
         logger.info("No SELFTASK_BULK_MODELS configured; skipping self-task %s", arch)
         return
     logger.info("Self-task %s on model %s", arch, model)
-    prompt = _selftask_prompt(arch)
+    context = _gather_knowledge_context()
+    prompt = _selftask_prompt(arch, context)
+    target_rel = _SELFTASK_TARGETS.get(arch, "SELFTASK.md")
+    target_path = os.path.join(KNOWLEDGE_ROOT, target_rel)
     run_start = time.time()
-    result = run_hermes(
-        prompt,
-        timeout=SELFTASK_BULK_TIMEOUT,
-        model=model,
-        provider=HERMES_PROVIDER,
-        toolsets=HERMES_TOOLSETS,
-    )
-    # Self-task success = hermes ok AND the expected artifact was actually written.
-    # The chat confirmation is short by design, so we judge the file, not the reply.
-    artifact_present, _detail = _self_artifact_present(model, run_start)
+    # Direct router call (no Hermes): small/tiny models are slow and Hermes sends
+    # no max_tokens cap (unbounded generation -> timeout) and misuses file tools.
+    # The adapter injects the vault context, caps output tokens, and persists the
+    # returned text itself.
+    result = call_self_task_llm(prompt, model, max_tokens=SELFTASK_MAX_TOKENS)
+    # Small/tiny models are unreliable at writing files via tools, so the adapter
+    # persists the returned text itself. Success = hermes ok AND non-trivial text
+    # was produced AND we wrote it to the artifact path.
+    output = (result.get("output") or "").strip()
+    non_trivial = bool(output) and not is_trivial_output(output)
+    artifact_present = False
+    if non_trivial:
+        try:
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            with open(target_path, "w") as fh:
+                fh.write(output + "\n")
+            artifact_present = True
+        except OSError as exc:
+            logger.error("Self-task %s failed to write %s: %s", arch, target_path, exc)
     actual_success = bool(result["success"]) and artifact_present
     record_task_eval(model, f"self:{arch}", actual_success, result.get("elapsed", 0), error=result.get("error"))
     logger.info("Self-task %s -> success=%s artifact=%s", arch, actual_success, artifact_present)
