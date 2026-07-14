@@ -97,8 +97,16 @@ _last_wake: Dict[str, float] = {}
 # we fire in bursts (HERMES_SELFTASK_CONCURRENCY at once); a single small node must
 # never run more than this many at once or it overloads and crashes (which is what
 # took the laptops down). The relative pressure already spreads work, but this is
-# the hard backstop. Tunable per environment (small laptops -> 1).
+# the hard backstop. Default 1 (small laptops), with a size-aware bump for big
+# nodes (they can take the load) and optional per-node overrides.
 NODE_SELFTASK_CAP = int(os.getenv("FLEET_NODE_SELFTASK_CAP", "1"))
+NODE_SELFTASK_CAP_MAP = {}  # node -> cap override
+for _cpair in os.getenv("FLEET_NODE_SELFTASK_CAP_MAP", "").split(","):
+    if "=" in _cpair:
+        _cn, _cv = _cpair.split("=", 1)
+        _cn, _cv = _cn.strip(), _cv.strip()
+        if _cn and _cv.isdigit():
+            NODE_SELFTASK_CAP_MAP[_cn] = int(_cv)
 _node_selftask_inflight: Dict[str, int] = {}
 
 _lock = threading.Lock()
@@ -622,6 +630,22 @@ def healthy_node_count() -> int:
         return max(1, len(_nodes))
 
 
+def _node_cap(node: str) -> int:
+    """Max concurrent self-tasks a node may run. Explicit overrides win; otherwise
+    a size-aware default: a node hosting a big model can absorb more background
+    load than a tiny laptop (which stays at the safe default of 1)."""
+    if node in NODE_SELFTASK_CAP_MAP:
+        return NODE_SELFTASK_CAP_MAP[node]
+    biggest = 0
+    for model in _nodes.get(node, {}).get("models", {}).values():
+        biggest = max(biggest, _params_of(model))
+    if biggest >= 20:
+        return 3
+    if biggest >= 8:
+        return 2
+    return NODE_SELFTASK_CAP
+
+
 def select(model: str, task: Optional[dict] = None,
           prefer_nodes: Optional[list] = None) -> Optional[str]:
     """Return a node-prefixed id for ``model``.
@@ -683,7 +707,7 @@ def select_any(models, task: Optional[dict] = None,
         for node, full, model in _model_map.get(m, []):
             if prefer_nodes and node not in prefer_nodes:
                 continue
-            if selftask and _node_selftask_inflight.get(node, 0) >= NODE_SELFTASK_CAP:
+            if selftask and _node_selftask_inflight.get(node, 0) >= _node_cap(node):
                 continue
             comp = _score(full, model, task)
             if comp is None:
