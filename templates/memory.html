@@ -4,16 +4,20 @@
 {% block content %}
 <section class="card">
   <h2>Memory</h2>
-  <p class="kicker">Durable memory items from Hermes, voice, and direct writes. Includes facts, notes, preferences, plans, and summaries.</p>
+  <p class="kicker">Durable memory items from Hermes, voice, and direct writes. Default view shows durable items only; diagnostics are available separately.</p>
 
   <div class="actions mb-4">
-    <a class="btn secondary" href="/memory">All</a>
-    <a class="btn secondary" href="/memory?kind=note">Notes</a>
-    <a class="btn secondary" href="/memory?kind=fact">Facts</a>
-    <a class="btn secondary" href="/memory?kind=preference">Preferences</a>
-    <a class="btn secondary" href="/memory?kind=plan">Plans</a>
-    <a class="btn secondary" href="/memory?kind=summary">Summaries</a>
+    <a class="btn secondary" href="/memory?view=durable">Durable</a>
+    <a class="btn secondary" href="/memory?view=all">All</a>
+    <a class="btn secondary" href="/memory?view=diagnostics">Diagnostics</a>
+    <a class="btn secondary" href="/memory?kind=note&view=all">Notes</a>
+    <a class="btn secondary" href="/memory?kind=fact&view=all">Facts</a>
+    <a class="btn secondary" href="/memory?kind=preference&view=all">Preferences</a>
+    <a class="btn secondary" href="/memory?kind=plan&view=all">Plans</a>
+    <a class="btn secondary" href="/memory?kind=summary&view=all">Summaries</a>
   </div>
+
+  <div id="memory-stats" class="mb-4 flex flex-wrap gap-2 text-xs text-router-muted"></div>
 
   <div id="memory-list" class="feed feed-lg">
     <div class="row muted">Loading memory…</div>
@@ -29,11 +33,22 @@
 
   const params = new URLSearchParams(window.location.search);
   const kind = params.get('kind') || '';
-  let url = '/api/memory?limit=100';
+  const view = params.get('view') || 'durable';
+  let url = `/api/memory?limit=100&view=${encodeURIComponent(view)}`;
   if (kind) url += `&kind=${kind}`;
   const r = await fetch(url);
   const data = await r.json();
+  const stats = [];
   const list = document.getElementById('memory-list');
+  if (data && data.view) stats.push(`view: ${esc(data.view)}`);
+  if (data && typeof data.count === 'number') stats.push(`items: ${esc(String(data.count))}`);
+  if (data && data.kind_counts) {
+    Object.entries(data.kind_counts).forEach(([k, v]) => stats.push(`${esc(k)}: ${esc(String(v))}`));
+  }
+  const statsEl = document.getElementById('memory-stats');
+  if (statsEl) {
+    statsEl.innerHTML = stats.map(s => `<span class="badge">${s}</span>`).join(' ');
+  }
   list.innerHTML = '';
   if (!data || !data.items || data.items.length === 0) {
     list.innerHTML = '<div class="row muted">No memory items found.</div>';

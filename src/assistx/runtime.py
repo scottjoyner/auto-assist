@@ -119,11 +119,16 @@ def build_runtime_health() -> Dict[str, Any]:
         "neo4j": _check_neo4j(),
         "llm": _check_llm(),
     }
-    overlay_health = build_overlay_health()
+    overlay_health = {
+        "ok": True,
+        "status": "skipped",
+        "mode": os.getenv("ASSISTX_OVERLAY_MODE", "direct"),
+        "reason": "overlay status is reported separately at /api/overlay/status",
+    }
     core_ok = dependencies["redis"]["status"] == "ok" and dependencies["neo4j"]["status"] == "ok"
     llm_ok = dependencies["llm"]["status"] in {"ok", "degraded"}
     overlay_ok = overlay_health["status"] in {"ok", "degraded"} and overlay_health["ok"]
-    overall_ok = core_ok and llm_ok and configuration["ok"] and overlay_ok
+    overall_ok = core_ok and llm_ok and configuration["ok"]
     overall_status = "ok" if overall_ok else "degraded"
     return {
         "ok": overall_ok,

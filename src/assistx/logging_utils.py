@@ -24,6 +24,26 @@ class CorrelationIdFilter(logging.Filter):
         return True
 
 
+class Neo4jNoiseFilter(logging.Filter):
+    """Suppress expected Neo4j schema-drift warnings that are already handled elsewhere."""
+
+    NOISE_MARKERS = (
+        "missing label name is: Service",
+        "missing label name is: AgentCli",
+        "missing label name is: WorkflowBudget",
+        "missing relationship type is: HAS_BUDGET",
+        "missing property name is: dead_lettered",
+        "missing property name is: retry_budget",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name == "neo4j.notifications":
+            msg = record.getMessage()
+            if any(marker in msg for marker in self.NOISE_MARKERS):
+                return False
+        return True
+
+
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         obj: dict[str, Any] = {
@@ -56,6 +76,7 @@ def setup_logging() -> None:
         root.removeHandler(h)
     handler = logging.StreamHandler(sys.stdout)
     handler.addFilter(CorrelationIdFilter())
+    handler.addFilter(Neo4jNoiseFilter())
     if LOG_FORMAT == "json":
         handler.setFormatter(JsonFormatter())
     else:

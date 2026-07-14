@@ -3,6 +3,17 @@ import os
 os.environ["ASSISTX_RUNTIME_PROFILE"] = "test"
 os.environ["ASSISTX_DEPENDENCY_MODE"] = "compat"
 
+# Ensure the ``src`` layout is importable from subprocesses spawned by the code
+# under test (e.g. the analysis sandbox runs ``python3 -m assistx.sandbox_runner``).
+# pytest's ``pythonpath`` ini option only adjusts the in-process ``sys.path`` and is
+# not propagated to child processes, so export it explicitly here.
+_SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+_existing_pythonpath = os.environ.get("PYTHONPATH", "")
+if _SRC_DIR not in _existing_pythonpath.split(os.pathsep):
+    os.environ["PYTHONPATH"] = (
+        f"{_SRC_DIR}{os.pathsep}{_existing_pythonpath}" if _existing_pythonpath else _SRC_DIR
+    )
+
 import socket
 import shutil
 import subprocess

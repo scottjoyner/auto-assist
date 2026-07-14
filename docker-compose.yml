@@ -88,8 +88,8 @@ services:
       - VOICE_WEBHOOK_SECRET=${VOICE_WEBHOOK_SECRET:-}
 
       # --- Overlay services ---
-      - AUTO_ROUTER_BASE_URL=${AUTO_ROUTER_BASE_URL:-http://host.docker.internal:8088}
-      - AUTO_ASSIGN_BASE_URL=${AUTO_ASSIGN_BASE_URL:-http://host.docker.internal:8090}
+      - AUTO_ROUTER_BASE_URL=${AUTO_ROUTER_BASE_URL:-http://auto-router:8088}
+      - AUTO_ASSIGN_BASE_URL=${AUTO_ASSIGN_BASE_URL:-http://auto-assign:8090}
 
       # --- App paths ---
       - CACHE_PATH=/app/.assistx_cache.sqlite
@@ -106,6 +106,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./src:/app/src
+      - ./templates:/app/templates
       - assistx_cache:/app/.cache
       - ./artifacts:/app/artifacts
       - transcriptions:/app/transcriptions
@@ -169,6 +170,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./src:/app/src
+      - ./templates:/app/templates
       - assistx_cache:/app/.cache
       - ./artifacts:/app/artifacts
       - transcriptions:/app/transcriptions
@@ -186,10 +188,11 @@ services:
     build:
       context: .
     container_name: assistx-hermes-adapter
-    command: python -m assistx.agents.hermes_agent_adapter
+    command: sh -c "umask 0002 && exec python -m assistx.agents.hermes_agent_adapter"
+    user: "0:1000"
     restart: unless-stopped
     environment:
-      - ASSISTX_URL=${ASSISTX_URL:-http://api:8000}
+      - ASSISTX_URL=${ASSISTX_URL:-http://host.docker.internal:8000}
       - ASSISTX_USER=${ASSISTX_USER:-admin}
       - ASSISTX_PASS=${ASSISTX_PASS:-change-me}
       - HERMES_AGENT_ID=${HERMES_AGENT_ID:-hermes-local}
@@ -197,8 +200,21 @@ services:
       - HERMES_POLL_INTERVAL=${HERMES_POLL_INTERVAL:-15}
       - HERMES_TASK_TIMEOUT=${HERMES_TASK_TIMEOUT:-300}
       - HERMES_MAX_TASKS_PER_LOOP=${HERMES_MAX_TASKS_PER_LOOP:-3}
-      - HERMES_BIN=${HERMES_BIN:-hermes}
+      - HERMES_BIN=${HERMES_BIN:-/home/scott/git/hermes-agent/venv/bin/hermes}
+      - HERMES_SMOKE_MODEL=${HERMES_SMOKE_MODEL:-groq.llama-3.1-8b-instant}
       - HERMES_LOG_LEVEL=${HERMES_LOG_LEVEL:-INFO}
+      - AUTO_ASSIGN_BASE_URL=${AUTO_ASSIGN_BASE_URL:-http://host.docker.internal:8090}
+      - HERMES_PROVIDER=${HERMES_PROVIDER:-openai}
+      - HERMES_LM_BASE_URL=${HERMES_LM_BASE_URL:-http://host.docker.internal:8088/v1}
+      - HERMES_MODEL=${HERMES_MODEL:-groq.llama-3.1-8b-instant}
+      - HERMES_LEASE_SECONDS=${HERMES_LEASE_SECONDS:-900}
+      - HERMES_SELFTASK_ENABLED=${HERMES_SELFTASK_ENABLED:-true}
+      - HERMES_SELFTASK_DIR=${HERMES_SELFTASK_DIR:-/root/.hermes/harvest}
+      - HERMES_SELFTASK_KIND=${HERMES_SELFTASK_KIND:-harvest}
+      - HERMES_SELFTASK_TIMEOUT=${HERMES_SELFTASK_TIMEOUT:-180}
+      - HERMES_SELFTASK_MODEL=${HERMES_SELFTASK_MODEL:-refinedtoolcallv5-3b}
+      - HERMES_SELFTASK_MODELS=${HERMES_SELFTASK_MODELS:-refinedtoolcallv5-3b}
+      - HERMES_SELFTASK_BULK_MODELS=${HERMES_SELFTASK_BULK_MODELS:-qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled,refinedtoolcallv5-3b}
       - NEO4J_URI=${NEO4J_URI:-bolt://host.docker.internal:7687}
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-livelongandprosper}
@@ -213,6 +229,12 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./src:/app/src
+      - /home/scott/git:/home/scott/git:rw
+      - /media/scott/SSD_4TB:/media/scott/SSD_4TB:rw
+      - /media/scott/NAS5:/media/scott/NAS5:rw
+      - /home/scott/knowledge:/root/knowledge:rw
+      - /home/scott/.cache/auto-assist-hermes-home:/root/.hermes
+      - /home/scott/.local/share/uv/python:/home/scott/.local/share/uv/python:ro
     profiles:
       - hermes
 

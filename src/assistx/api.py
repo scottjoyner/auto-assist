@@ -349,7 +349,7 @@ async def lifespan(app: FastAPI):
         neo = Neo4jClient()
         neo.ensure_schema()
     except Exception as e:
-        _lifespan_logger.warning(f"Neo4j not reachable at startup: {e}")
+        _lifespan_logger.warning(f"Neo4j schema initialization warning at startup: {e}")
     finally:
         try:
             neo.close()
@@ -604,7 +604,7 @@ _workflow_control_state: Dict[str, Any] = {
 
 def _get_workflow_control() -> dict[str, Any]:
     with _workflow_control_lock:
-        return _get_workflow_control()
+        return dict(_workflow_control_state)
 
 
 def _set_workflow_control(**kwargs: Any) -> None:
@@ -754,21 +754,17 @@ def _queue_class_for_task(task: Dict[str, Any]) -> str:
 
 
 def _workflow_runtime_snapshot(neo: Neo4jClient) -> Dict[str, int]:
-    with neo.driver.session() as s:
+    with neo._session() as s:
         rec = s.run(
             """
             MATCH (t:Task)
             WHERE t.status IN ['READY','CLAIMED','RUNNING']
             RETURN
-              sum(CASE WHEN t.status='RUNNING' THEN 1 ELSE 0 END) AS running,
-              sum(CASE WHEN coalesce(t.status,'')='READY'
-                        AND coalesce(t.queue_class, '')='batch'
-                       THEN 1 ELSE 0 END) AS batch_ready_direct
+              sum(CASE WHEN t.status='RUNNING' THEN 1 ELSE 0 END) AS running
             """
         ).single()
         running = int(rec["running"] if rec and rec["running"] is not None else 0)
-        batch_ready_direct = int(rec["batch_ready_direct"] if rec and rec["batch_ready_direct"] is not None else 0)
-    return {"running": running, "batch_ready_direct": batch_ready_direct}
+    return {"running": running, "batch_ready_direct": 0}
 
 
 def _maybe_dead_letter_exhausted_task(
@@ -780,7 +776,10 @@ def _maybe_dead_letter_exhausted_task(
     if completed_status not in {"FAILED", "CANCELLED"}:
         return None
     try:
-        with neo.driver.session() as s:
+        with neo._session() as s:
+            labels = {row["label"] for row in s.run("CALL db.labels() YIELD label RETURN label")}
+            if "WorkflowBudget" not in labels:
+                return None
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
@@ -1098,7 +1097,7 @@ def review_ui(request: Request, user: str = Depends(auth)):
 @app.get("/tasks/review", response_class=HTMLResponse)
 def tasks_review(request: Request, limit: int = 50, user: str = Depends(auth)):
     neo = _neo()
-    with neo.driver.session() as s:
+    with neo._session() as s:
         res = s.run(
             """
             MATCH (s:Summary)-[:GENERATED_TASK]->(t:Task {status:'REVIEW'})
@@ -1126,7 +1125,7 @@ def approve_task(task_id: str, user: str = Depends(auth)):
 @app.get("/tasks/ready", response_class=HTMLResponse)
 def tasks_ready(request: Request, limit: int = 50, user: str = Depends(auth)):
     neo = _neo()
-    with neo.driver.session() as s:
+    with neo._session() as s:
         res = s.run(
             """
             MATCH (t:Task {status:'READY'})
@@ -1155,7 +1154,7 @@ def tasks_ready(request: Request, limit: int = 50, user: str = Depends(auth)):
 @app.post("/tasks/{task_id}/execute")
 def execute_task(task_id: str, dry_run: bool = False, user: str = Depends(auth)):
     neo = _neo()
-    with neo.driver.session() as s:
+    with neo._session() as s:
         rec = s.run("MATCH (t:Task{id:$id}) RETURN t", {"id": task_id}).single()
         if not rec:
             neo.close()
@@ -1183,7 +1182,7 @@ def enqueue_task(task_id: str, dry_run: bool = False, user: str = Depends(auth))
 @app.get("/runs", response_class=HTMLResponse)
 def runs(request: Request, limit: int = 50, user: str = Depends(auth)):
     neo = _neo()
-    with neo.driver.session() as s:
+    with neo._session() as s:
         res = s.run("MATCH (r:AgentRun) RETURN r ORDER BY r.started_at DESC LIMIT $limit", {"limit": limit})
         rows = [dict(r[0]) for r in res]
     neo.close()
@@ -1292,7 +1291,7 @@ def api_ops_status(
         pass
     try:
         neo = _neo()
-        with neo.driver.session() as s:
+        with neo._session() as s:
             stale_rec = s.run(
                 """
                 MATCH (sess:AgentSession)
@@ -1610,7 +1609,7 @@ def api_list_transcriptions(
 ):
     neo = _neo()
     try:
-        with neo.driver.session() as s:
+        with neo._session() as s:
             if q:
                 res = s.run(
                     """
@@ -1642,7 +1641,7 @@ def api_list_transcriptions(
 def api_get_transcription(tid: str, user: str = Depends(auth)):
     neo = _neo()
     try:
-        with neo.driver.session() as s:
+        with neo._session() as s:
             rec = s.run(
                 """
                 MATCH (tr:Transcription {id:$id})
@@ -1672,7 +1671,7 @@ class CreateTaskIn(BaseModel):
 def api_create_task_from_transcription(tid: str, body: CreateTaskIn, user: str = Depends(auth)):
     neo = _neo()
     try:
-        with neo.driver.session() as s:
+        with neo._session() as s:
             has = s.run("MATCH (tr:Transcription {id:$id}) RETURN tr", {"id": tid}).single()
             if not has:
                 raise HTTPException(status_code=404, detail="Transcription not found")
@@ -1694,7 +1693,7 @@ def api_create_task_from_transcription(tid: str, body: CreateTaskIn, user: str =
                         "title": body.title,
                         "status": body.status,
                         "kind": body.kind,
-                        "payload": body.payload or {},
+                        "payload_json": json.dumps(body.payload or {}),
                         "transcription_id": tid,
                     },
                     "tid": tid,
@@ -1709,7 +1708,7 @@ def api_create_task_from_transcription(tid: str, body: CreateTaskIn, user: str =
 def api_embed_transcription(tid: str, user: str = Depends(auth)):
     neo = _neo()
     try:
-        with neo.driver.session() as s:
+        with neo._session() as s:
             rec = s.run("MATCH (tr:Transcription {id:$id}) RETURN tr", {"id": tid}).single()
             if not rec:
                 raise HTTPException(status_code=404, detail="Transcription not found")
@@ -1743,7 +1742,7 @@ def api_list_tasks(
 ):
     neo = _neo()
     try:
-        with neo.driver.session() as s:
+        with neo._session() as s:
             if status:
                 res = s.run(
                     """
@@ -1774,7 +1773,7 @@ def api_list_tasks(
 def api_get_task(task_id: str, user: str = Depends(auth)):
     neo = _neo()
     try:
-        with neo.driver.session() as s:
+        with neo._session() as s:
             rec = s.run(
                 """
                 MATCH (t:Task {id:$id})
@@ -2397,7 +2396,7 @@ def api_sophia_event(body: SophiaVoiceEventIn, user: str = Depends(auth)):
                     auto_dispatch=False,
                 )
                 created_task_id = task_res["task_id"]
-                with neo.driver.session() as s:
+                with neo._session() as s:
                     s.run(
                         "MATCH (i:Intent {id:$iid}), (t:Task {id:$tid}) "
                         "MERGE (i)-[:CREATED_TASK]->(t)",
@@ -2464,7 +2463,7 @@ def api_sophia_summary(
         by_event_type: Dict[str, int] = {}
         by_queue_class: Dict[str, int] = {"interactive": 0, "batch": 0, "critical": 0, "unknown": 0}
 
-        with neo.driver.session() as s:
+        with neo._session() as s:
             rows = s.run(
                 """
                 MATCH (e:SignalEvent)
@@ -2585,7 +2584,7 @@ def api_list_intents(
 ):
     neo = _neo()
     try:
-        with neo.driver.session() as s:
+        with neo._session() as s:
             if source:
                 res = s.run(
                     "MATCH (i:Intent {source:$source}) "
@@ -2606,7 +2605,7 @@ def api_list_intents(
 def api_get_intent(intent_id: str, user: str = Depends(auth)):
     neo = _neo()
     try:
-        with neo.driver.session() as s:
+        with neo._session() as s:
             rec = s.run(
                 "MATCH (i:Intent {id:$id}) "
                 "OPTIONAL MATCH (i)-[:CREATED_TASK]->(t:Task) "
@@ -2751,7 +2750,7 @@ def api_workflows_queue(
 ):
     neo = _neo()
     try:
-        with neo.driver.session() as s:
+        with neo._session() as s:
             rows = s.run(
                 """
                 MATCH (t:Task)
@@ -2795,7 +2794,7 @@ def api_workflows_slo(
     cutoff = int(_time.time() * 1000) - (window_hours * 60 * 60 * 1000)
     neo = _neo()
     try:
-        with neo.driver.session() as s:
+        with neo._session() as s:
             rows = s.run(
                 """
                 MATCH (t:Task)
@@ -2879,7 +2878,7 @@ def api_workflow_replan(workflow_id: str, body: WorkflowReplanIn, user: str = De
             detail=body.reason,
             metadata={**(body.metadata or {}), "requested_by": user},
         )
-        with neo.driver.session() as s:
+        with neo._session() as s:
             s.run(
                 """
                 MATCH (t:Task {id:$id})
@@ -2981,7 +2980,7 @@ def api_review_audit(
                 cursor_id = id_part
             except Exception:
                 raise HTTPException(status_code=400, detail="Invalid cursor format")
-        with neo.driver.session() as s:
+        with neo._session() as s:
             where_cursor = ""
             params: Dict[str, Any] = {"limit": limit}
             if cursor_ts is not None and cursor_id is not None:
@@ -3039,7 +3038,7 @@ def api_review_audit_summary(user: str = Depends(auth)):
     neo = _neo()
     try:
         cutoff_ts = int(_time.time() * 1000) - (24 * 60 * 60 * 1000)
-        with neo.driver.session() as s:
+        with neo._session() as s:
             rows = s.run(
                 """
                 MATCH (r:Task)
@@ -3098,7 +3097,7 @@ def api_approve_review_task(task_id: str, body: ReviewDecisionIn, user: str = De
         )
 
         created_task_id = result["task_id"]
-        with neo.driver.session() as s:
+        with neo._session() as s:
             s.run(
                 "MATCH (r:Task {id:$rid}), (t:Task {id:$tid}) "
                 "SET r.status='DONE', "
@@ -3138,7 +3137,7 @@ def api_reject_review_task(task_id: str, body: ReviewDecisionIn, user: str = Dep
             raise HTTPException(status_code=404, detail="Review task not found")
         if review_task.get("status") != "REVIEW":
             raise HTTPException(status_code=400, detail="Task is not in REVIEW status")
-        with neo.driver.session() as s:
+        with neo._session() as s:
             s.run(
                 "MATCH (r:Task {id:$rid}) "
                 "SET r.status='CANCELLED', "
@@ -3165,7 +3164,7 @@ def api_clarify_review_task(task_id: str, body: ReviewDecisionIn, user: str = De
             raise HTTPException(status_code=404, detail="Review task not found")
         if review_task.get("status") != "REVIEW":
             raise HTTPException(status_code=400, detail="Task is not in REVIEW status")
-        with neo.driver.session() as s:
+        with neo._session() as s:
             s.run(
                 "MATCH (r:Task {id:$rid}) "
                 "SET r.review_decision='clarification_requested', "
@@ -3200,7 +3199,7 @@ def api_get_device(device_id: str, user: str = Depends(auth)):
         device = neo.get_agent_device(device_id)
         if not device:
             raise HTTPException(status_code=404, detail="Device not found")
-        with neo.driver.session() as s:
+        with neo._session() as s:
             sessions = s.run(
                 "MATCH (s:AgentSession) WHERE s.device_id=$did "
                 "RETURN s ORDER BY s.updated_at_ts DESC LIMIT 10",
@@ -3248,18 +3247,30 @@ def api_heartbeat_device(device_id: str, body: DeviceHeartbeatIn, user: str = De
 def api_list_memory(
     kind: Optional[str] = Query(None, description="filter by memory kind"),
     source: Optional[str] = Query(None, description="filter by source"),
+    view: str = Query("durable", description="memory surface view: durable, diagnostics, all"),
     limit: int = Query(50, ge=1, le=500),
     user: str = Depends(auth),
 ):
+    durable_kinds = ["fact", "note", "preference", "plan", "summary"]
+    diagnostic_kinds = ["outcome", "task_result", "user_profile"]
+    normalized_view = (view or "durable").lower().strip()
+    if normalized_view not in {"durable", "diagnostics", "all"}:
+        raise HTTPException(status_code=400, detail="view must be one of: durable, diagnostics, all")
     neo = _neo()
     try:
-        with neo.driver.session() as s:
+        with neo._session() as s:
             q = "MATCH (m:MemoryItem)"
-            params = {"limit": limit}
+            params: dict[str, Any] = {"limit": limit}
             conditions = []
             if kind:
                 conditions.append("m.kind=$kind")
                 params["kind"] = kind
+            elif normalized_view == "durable":
+                conditions.append("m.kind IN $allowed_kinds")
+                params["allowed_kinds"] = durable_kinds
+            elif normalized_view == "diagnostics":
+                conditions.append("m.kind IN $allowed_kinds")
+                params["allowed_kinds"] = diagnostic_kinds
             if source:
                 conditions.append("m.source=$source")
                 params["source"] = source
@@ -3268,7 +3279,11 @@ def api_list_memory(
             q += " RETURN m ORDER BY m.updated_at_ts DESC LIMIT $limit"
             res = s.run(q, params)
             items = [dict(r["m"]) for r in res]
-            return {"items": items, "count": len(items)}
+            kind_counts: dict[str, int] = {}
+            for item in items:
+                k = item.get("kind") or "unknown"
+                kind_counts[k] = kind_counts.get(k, 0) + 1
+            return {"items": items, "count": len(items), "view": normalized_view, "kind_counts": kind_counts}
     finally:
         neo.close()
 
@@ -3276,7 +3291,7 @@ def api_list_memory(
 def api_get_memory(memory_id: str, user: str = Depends(auth)):
     neo = _neo()
     try:
-        with neo.driver.session() as s:
+        with neo._session() as s:
             rec = s.run(
                 "MATCH (m:MemoryItem {id:$id}) "
                 "OPTIONAL MATCH (m)<-[:WROTE_MEMORY]-(s:AgentSession) "
@@ -3306,7 +3321,7 @@ def api_cancel_task(task_id: str, user: str = Depends(auth)):
 def api_pause_task(task_id: str, user: str = Depends(auth)):
     neo = _neo()
     try:
-        with neo.driver.session() as s:
+        with neo._session() as s:
             s.run(
                 "MATCH (t:Task {id:$id}) SET t.paused=true, t.paused_at=datetime(), t.paused_at_ts=timestamp()",
                 {"id": task_id},
@@ -3319,7 +3334,7 @@ def api_pause_task(task_id: str, user: str = Depends(auth)):
 def api_resume_task(task_id: str, user: str = Depends(auth)):
     neo = _neo()
     try:
-        with neo.driver.session() as s:
+        with neo._session() as s:
             s.run(
                 "MATCH (t:Task {id:$id}) SET t.paused=false, t.resumed_at=datetime(), t.resumed_at_ts=timestamp()",
                 {"id": task_id},
@@ -3332,7 +3347,7 @@ def api_resume_task(task_id: str, user: str = Depends(auth)):
 def api_reassign_dispatch(dispatch_id: str, target: DispatchTarget, user: str = Depends(auth)):
     neo = _neo()
     try:
-        with neo.driver.session() as s:
+        with neo._session() as s:
             s.run(
                 "MATCH (d:Dispatch {id:$id}) "
                 "SET d.paperclip_agent_id=$agent_id, d.updated_at=datetime(), d.updated_at_ts=timestamp()",

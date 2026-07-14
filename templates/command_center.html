@@ -6,8 +6,8 @@
   <section class="card hero">
     <div class="section-header">
       <div>
-        <h1>AssistX Command Center</h1>
-        <p class="kicker">A control surface for task intake, fleet health, router overlay state, and historical loadouts.</p>
+        <h1>AssistX Workflow Command Center</h1>
+        <p class="kicker">The live operator surface for intake, READY/review flow, router overlay state, memory writes, sessions, and voice ingress.</p>
       </div>
       <div class="actions">
         <a class="btn" href="/fleet">Open fleet view</a>
@@ -26,22 +26,22 @@
       <div class="metric">
         <div class="metric-label">Runtime</div>
         <div id="metric-runtime" class="metric-value">—</div>
-        <div id="metric-runtime-note" class="metric-note">Loading health…</div>
+        <div id="metric-runtime-note" class="metric-note">Live service + dependency health</div>
       </div>
       <div class="metric">
         <div class="metric-label">Queue depth</div>
         <div id="metric-queue" class="metric-value">—</div>
-        <div id="metric-queue-note" class="metric-note">READY / REVIEW / RUNNING / FAILED</div>
+        <div id="metric-queue-note" class="metric-note">READY / REVIEW / RUNNING / FAILED pressure</div>
       </div>
       <div class="metric">
         <div class="metric-label">Fleet loadouts</div>
         <div id="metric-loadouts" class="metric-value">—</div>
-        <div id="metric-loadouts-note" class="metric-note">Latest persistent snapshot</div>
+        <div id="metric-loadouts-note" class="metric-note">Latest routing snapshot and loadout rebuild</div>
       </div>
       <div class="metric">
         <div class="metric-label">Overlay mode</div>
         <div id="metric-overlay" class="metric-value">—</div>
-        <div id="metric-overlay-note" class="metric-note">Router / assign integration</div>
+        <div id="metric-overlay-note" class="metric-note">Router graph / AssistX overlay integration</div>
       </div>
     </div>
   </section>
@@ -54,6 +54,16 @@
       </div>
     </div>
     <div id="control-plane" class="stack-sm mt-3">Loading…</div>
+  </section>
+
+  <section class="card half">
+    <div class="section-header">
+      <div>
+        <h3>Graph drilldown</h3>
+        <p class="kicker">Why Neo4j is green here even when one surface says degraded.</p>
+      </div>
+    </div>
+    <div id="graph-drilldown" class="stack-sm mt-3">Loading…</div>
   </section>
 
   <section class="card half">
@@ -103,10 +113,11 @@
     <div class="actions mt-3"><a class="btn" href="/sessions">View sessions</a></div>
   </section>
 
-  <section class="card half">
+  <section class="card half" id="sophia-voice">
     <h3>Sophia voice</h3>
-    <p class="kicker">Auth-state and queue distribution for Sophia ingress.</p>
+    <p class="kicker">Auth-state, queue distribution, ingress source, and policy drift for Sophia.</p>
     <div id="sophia-summary" class="stack-xs">Loading…</div>
+    <div id="sophia-latest-ingress" class="muted stack-xs mt-2">Loading latest ingress…</div>
     <div id="sophia-policy-drift" class="muted stack-xs mt-2">Loading policy drift…</div>
   </section>
 </div>
@@ -117,6 +128,11 @@
 (async () => {
   const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString());
   const short = window.UIUtils?.shortId || ((v, n = 8) => (v || "").toString().slice(0, n));
+  const fmtTs = (ts) => {
+    if (ts === undefined || ts === null || ts === '') return null;
+    const d = new Date(Number(ts));
+    return Number.isNaN(d.getTime()) ? null : d.toLocaleString();
+  };
 
   async function loadJSON(url) {
     try {
@@ -187,35 +203,28 @@
   if (health) {
     const badges = [];
     badges.push(`<span class="badge ${health.ok ? 'ok' : 'err'}">${esc(health.status || 'unknown')}</span>`);
+    if (health.timestamp) badges.push(`<span class="badge">health ${esc(fmtTs(health.timestamp) || String(health.timestamp))}</span>`);
     if (health.overlay) badges.push(`<span class="badge">overlay: ${esc(health.overlay.mode || 'direct')}</span>`);
     if (ops) badges.push(`<span class="badge">queue: ${esc(String(ops.queue_depth ?? 0))}</span>`);
     if (fleet) badges.push(`<span class="badge">loadouts: ${esc(String(fleet.report?.loadouts?.length ?? fleet.loadouts?.length ?? 0))}</span>`);
+    if (fleet?.captured_at) badges.push(`<span class="badge">fleet ${esc(fmtTs(fleet.captured_at) || String(fleet.captured_at))}</span>`);
     heroBadges.innerHTML = badges.join(' ');
   }
 
-  const controlPlane = document.getElementById('control-plane');
+  const graphDrilldown = document.getElementById('graph-drilldown');
   if (health || ops || router) {
-    controlPlane.innerHTML = '';
-    const rows = [
-      ['Runtime', health ? `${health.status || 'unknown'} · ${health.version || ''}` : 'unavailable'],
-      ['Redis', health?.dependencies?.redis?.status || 'unknown'],
-      ['Neo4j', health?.dependencies?.neo4j?.status || 'unknown'],
-      ['LLM', health?.dependencies?.llm?.status || 'unknown'],
-      ['Overlay', ops?.overlay?.status || health?.overlay?.status || 'unknown'],
-      ['Router graph', router?.graph?.neo4j || router?.graph?.status || 'unknown'],
+    graphDrilldown.innerHTML = '';
+    const graphRows = [
+      ['Runtime Neo4j', health?.dependencies?.neo4j?.status || 'unknown'],
+      ['Ops Neo4j', ops?.neo4j?.status || 'unknown'],
+      ['Router Neo4j', router?.graph?.neo4j || 'unknown'],
+      ['AssistX DB', health?.dependencies?.neo4j?.database || 'default'],
+      ['AssistX URI', health?.dependencies?.neo4j?.uri || 'unreported'],
+      ['Evidence', 'source /health · /api/ops/status · /api/router/status'],
     ];
-    rows.forEach(([label, value]) => {
-      const row = el('div', 'summary-line');
-      row.innerHTML = `<span class="badge">${esc(label)}</span> <span class="muted">${esc(String(value))}</span>`;
-      controlPlane.appendChild(row);
-    });
-    if (router?.endpoints) {
-      const ep = el('div', 'muted mt-2');
-      ep.innerHTML = `<div class="summary-line"><span class="badge">router endpoints</span> <code>${esc(short(router.endpoints.context_projection || '', 44))}</code></div>`;
-      controlPlane.appendChild(ep);
-    }
+    graphDrilldown.innerHTML = graphRows.map(([label, value]) => `<div class="summary-line"><span class="badge">${esc(label)}</span> <span class="muted">${esc(String(value))}</span></div>`).join('');
   } else {
-    controlPlane.textContent = 'No control plane data available.';
+    graphDrilldown.textContent = 'No graph data available.';
   }
 
   const fleetWrap = document.getElementById('fleet-loadouts');
@@ -346,8 +355,11 @@
   }
 
   const sophia = await loadJSON('/api/sophia/summary?limit=200');
+  const sophiaIntentFeed = await loadJSON('/api/intents?source=voice&limit=1');
   const sv = document.getElementById('sophia-summary');
+  const latestIngress = document.getElementById('sophia-latest-ingress');
   const spd = document.getElementById('sophia-policy-drift');
+  const drift = await loadJSON('/api/workflows/sophia-policy/incidents?limit=5');
   if (sophia && sophia.auth_states) {
     const authParts = Object.entries(sophia.auth_states)
       .filter(([, v]) => v > 0)
@@ -365,7 +377,16 @@
     sv.textContent = 'No Sophia data yet.';
   }
 
-  const drift = await loadJSON('/api/workflows/sophia-policy/incidents?limit=5');
+  if (sophiaIntentFeed && sophiaIntentFeed.items) {
+    const latest = sophiaIntentFeed.items[0];
+    if (latest && latestIngress) {
+      latestIngress.innerHTML = `<div class="summary-line"><span class="badge">latest ingress</span> <span class="muted">${esc(latest.source || 'voice')} · ${esc((latest.text || latest.intent || '').toString().slice(0, 120) || 'no text')}</span></div>`;
+    } else if (latestIngress) {
+      latestIngress.textContent = 'No voice intents yet.';
+    }
+  } else if (latestIngress) {
+    latestIngress.textContent = 'Voice intent feed unavailable.';
+  }
   if (drift && drift.items && drift.items.length > 0) {
     const rows = drift.items
       .filter(i => (i.incident_type || '') === 'routing_policy_changed')

@@ -5,8 +5,8 @@
 <div class="grid">
   <!-- Ask anything (auto mode: async with short inline wait) -->
   <section class="card half">
-    <h2>Ask</h2>
-    <p class="kicker">Type a question. We derive Cypher from your Neo4j schema, fetch data, analyze it in a sandbox, and compose the answer using <code>/api/ask</code> (<code>mode=auto</code>).</p>
+    <h2>Workspace</h2>
+    <p class="kicker">Use this workspace to ask questions, inspect graph-backed answers, and jump into the operator pages that now drive the system.</p>
     <textarea id="ask-q" rows="5" placeholder="e.g., How many READY tasks by kind in the last 24h?"></textarea>
     <div class="actions mt-3">
       <button class="btn" id="ask-btn">Ask</button>
@@ -18,8 +18,8 @@
     </div>
   </section>
   <section class="card half">
-    <h2>Model stream (live thoughts)</h2>
-    <p class="kicker">Streams tokens from your Ollama model. Nothing here is stored.</p>
+    <h2>Model lane</h2>
+    <p class="kicker">Streams tokens from the selected model lane for debugging and quick checks. Nothing here is stored.</p>
     <div class="grid-flow">
       <input id="llm-model" type="text" placeholder="model (defaults to OLLAMA_MODEL)" />
       <textarea id="llm-system" rows="2" placeholder="optional system prompt"></textarea>
@@ -36,12 +36,67 @@
   
   <!-- Live Answers feed (WebSocket with SSE fallback) -->
   <section class="card half">
-    <h2>Live answers</h2>
-    <p class="kicker">New and updated answers as they happen (global stream).</p>
+    <h2>Live dispatch</h2>
+    <p class="kicker">New and updated answers as they land in the system stream.</p>
     <div class="feed" id="live-feed"></div>
     <div class="actions mt-3">
       <a class="btn secondary" href="/answers" target="_blank">Open dashboard</a>
     </div>
+  </section>
+
+  <section class="card">
+    <div class="section-header">
+      <div>
+        <h2>Live snapshot</h2>
+        <p class="kicker">Tangible state only: runtime, routing, voice ingress, and durable memory.</p>
+      </div>
+      <div class="actions">
+        <a class="btn secondary" href="/command-center">Open command center</a>
+        <a class="btn secondary" href="/command-center#sophia-voice">Sophia voice</a>
+      </div>
+    </div>
+    <div class="metric-grid mt-4">
+      <div class="metric">
+        <div class="metric-label">Runtime</div>
+        <div id="home-runtime" class="metric-value">—</div>
+        <div id="home-runtime-note" class="metric-note">Loading…</div>
+        <div class="metric-note">source: <code>/health</code></div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Neo4j</div>
+        <div id="home-neo4j" class="metric-value">—</div>
+        <div id="home-neo4j-note" class="metric-note">Loading…</div>
+        <div class="metric-note">source: <code>/health</code></div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Router graph</div>
+        <div id="home-router" class="metric-value">—</div>
+        <div id="home-router-note" class="metric-note">Loading…</div>
+        <div class="metric-note">source: <code>/api/router/status</code></div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Sophia voice</div>
+        <div id="home-voice" class="metric-value">—</div>
+        <div id="home-voice-note" class="metric-note">Loading…</div>
+        <div class="metric-note">source: <code>/api/intents?source=voice</code></div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Durable memory</div>
+        <div id="home-memory" class="metric-value">—</div>
+        <div id="home-memory-note" class="metric-note">Loading…</div>
+        <div class="metric-note">source: <code>/api/memory?view=durable</code></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="section-header">
+      <div>
+        <h2>Validation mode</h2>
+        <p class="kicker">Read-only checks that show whether the live surface is actually answering.</p>
+      </div>
+    </div>
+    <div id="validation-summary" class="stack-sm mt-4">Loading…</div>
   </section>
 
   <!-- Quick shortcuts -->
@@ -52,6 +107,7 @@
       <a class="btn" href="/routing">Routing / overlay</a>
       <a class="btn" href="/trading">Paper trading</a>
       <a class="btn" href="/command-center">Command center</a>
+      <a class="btn" href="/command-center#sophia-voice">Sophia voice</a>
       <a class="btn" href="/ingest">Record / Upload audio</a>
       <a class="btn" href="/tasks/ready">Review READY tasks</a>
       <a class="btn" href="/runs">Inspect recent runs</a>
@@ -60,7 +116,7 @@
 
   <!-- System status tips -->
   <section class="card third">
-    <h3>System status</h3>
+    <h3>Runtime checks</h3>
     <ul class="muted">
       <li>Redis queue needed for async <code>/api/ask</code></li>
       <li>Neo4j required for data-backed answers</li>
@@ -71,7 +127,7 @@
 
   <!-- Docs -->
   <section class="card third">
-    <h3>Endpoints</h3>
+    <h3>Surface map</h3>
     <ul class="muted">
       <li><code>POST /api/ask</code> – sync/async/auto</li>
       <li><code>POST /api/ask_async</code></li>

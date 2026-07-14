@@ -7,7 +7,7 @@
   <div class="capture-header">
     <div>
       <h1>Capture</h1>
-      <p class="muted">Record audio or video, add transcript/context, and write the intake record to Neo4j.</p>
+      <p class="muted">Record or upload audio, add transcript/context, and write the intake record to Neo4j.</p>
     </div>
     <span id="captureStatus" class="badge">ready</span>
   </div>
@@ -48,8 +48,8 @@
   <audio id="audioPreview" controls hidden></audio>
 
   <div id="fallback" class="drop">
-    <input id="fileInput" type="file" accept="audio/*,video/*" capture>
-    <strong>Upload or camera fallback</strong>
+    <input id="fileInput" type="file" accept="audio/*">
+    <strong>Upload or record audio</strong>
     <span id="pickedFile" class="muted">Drop a file here, or tap to record/upload on mobile.</span>
   </div>
 </section>

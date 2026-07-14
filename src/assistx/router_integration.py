@@ -25,12 +25,13 @@ def build_router_integration_router(neo_factory: Callable[[], Any]) -> APIRouter
         base_url = _base_url(request)
         graph = _graph_summary(neo_factory)
         services = _service_projection(base_url)
+        providers = _merge_providers(_provider_projection(base_url), _live_provider_projection(neo_factory))
         return {
             "revision": f"assistx-{int(time.time())}",
             "source": "assistx",
             "generated_at": int(time.time()),
             "nodes": _node_projection(base_url, graph),
-            "providers": _provider_projection(base_url),
+            "providers": providers,
             "services": services,
             "metadata": {
                 "projection_version": "router-context-v1",
@@ -88,6 +89,7 @@ def _graph_summary(neo_factory: Callable[[], Any]) -> dict[str, Any]:
     try:
         neo = neo_factory()
         with neo.driver.session() as s:
+            labels = {row["label"] for row in s.run("CALL db.labels() YIELD label RETURN label")}
             task_row = s.run(
                 """
                 MATCH (t:Task)
@@ -100,8 +102,8 @@ def _graph_summary(neo_factory: Callable[[], Any]) -> dict[str, Any]:
                   sum(CASE WHEN t.status='FAILED' THEN 1 ELSE 0 END) AS failed
                 """
             ).single()
-            service_row = s.run("MATCH (s:Service) RETURN count(s) AS count").single()
-            agent_row = s.run("MATCH (a:AgentCli) RETURN count(a) AS count").single()
+            service_row = s.run("MATCH (s:ServiceEndpoint) RETURN count(s) AS count").single() if "ServiceEndpoint" in labels else None
+            agent_row = s.run("MATCH (a:Agent) RETURN count(a) AS count").single() if "Agent" in labels else None
         return {
             "neo4j": "online",
             "tasks": {
@@ -181,6 +183,7 @@ def _node_projection(base_url: str, graph: dict[str, Any]) -> list[dict[str, Any
 def _provider_projection(base_url: str) -> list[dict[str, Any]]:
     return [
         {
+            "provider_id": "assistx",
             "provider": "assistx",
             "lane": "paperclip",
             "local": True,
@@ -196,6 +199,7 @@ def _provider_projection(base_url: str) -> list[dict[str, Any]]:
             ],
         },
         {
+            "provider_id": "paperclip",
             "provider": "paperclip",
             "lane": "paperclip",
             "local": True,
@@ -207,6 +211,7 @@ def _provider_projection(base_url: str) -> list[dict[str, Any]]:
             "detail": "Paperclip/Hermes remains the approved execution path during cutover",
         },
         {
+            "provider_id": "lmstudio-local",
             "provider": "lmstudio-local",
             "lane": "local",
             "local": True,
@@ -218,6 +223,7 @@ def _provider_projection(base_url: str) -> list[dict[str, Any]]:
             "detail": "Local LM Studio fallback lane; concrete endpoint comes from auto-router provider config",
         },
         {
+            "provider_id": "cerebras",
             "provider": "cerebras",
             "lane": "free_api",
             "local": False,
@@ -229,6 +235,36 @@ def _provider_projection(base_url: str) -> list[dict[str, Any]]:
             "detail": "Fast free-tier flash-start planning lane when auto-router policy allows cloud use",
         },
     ]
+
+
+def _live_provider_projection(neo_factory: Callable[[], Any]) -> list[dict[str, Any]]:
+    neo = None
+    try:
+        neo = neo_factory()
+        projection = neo.export_context_projection()
+        providers = projection.get("providers") or []
+        return [provider for provider in providers if isinstance(provider, dict)]
+    except Exception:
+        return []
+    finally:
+        try:
+            if neo is not None:
+                neo.close()
+        except Exception:
+            pass
+
+
+def _merge_providers(static: list[dict[str, Any]], live: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+
+    def key_for(provider: dict[str, Any]) -> str:
+        return str(provider.get("provider_id") or provider.get("provider") or provider.get("node_id") or "unknown")
+
+    for provider in static + live:
+        if not isinstance(provider, dict):
+            continue
+        merged[key_for(provider)] = provider
+    return list(merged.values())
 
 
 def _service_projection(base_url: str) -> list[dict[str, Any]]:

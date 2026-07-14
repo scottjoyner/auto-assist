@@ -22,6 +22,12 @@ else:
 HEALTH_PORT = int(os.getenv("WORKER_HEALTH_PORT", "8100"))
 
 
+def _worker_name(index: int) -> str:
+    hostname = socket.gethostname().split(".", 1)[0].replace("_", "-")
+    pid = os.getpid()
+    return f"assistx-worker-{index}-{hostname}-{pid}"
+
+
 def _health_server() -> None:
     """Minimal HTTP health endpoint so Docker can check worker liveness."""
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -51,7 +57,7 @@ def _health_server() -> None:
 
 def _run_one_worker(index: int, listen: list[str], redis_url: str) -> None:
     conn = redis.from_url(redis_url)
-    worker_name = f"assistx-worker-{index}"
+    worker_name = _worker_name(index)
     with Connection(conn):
         w = Worker([Queue(name) for name in listen], name=worker_name)
         w.work(with_scheduler=True)

@@ -9,7 +9,7 @@ def test_assistx_health(assistx_client: httpx.Client) -> None:
     resp = assistx_client.get("/health")
     assert resp.is_success, f"AssistX health failed: {resp.status_code}"
     data = resp.json()
-    assert data.get("service") == "assistx"
+    assert data.get("service") == "auto-assist"
     assert data.get("ok") is not False
 
 
@@ -31,7 +31,7 @@ def test_cross_service_health(assistx_client: httpx.Client) -> None:
     """AssistX health response includes deps status for router and other backends."""
     resp = assistx_client.get("/health")
     data = resp.json()
-    deps = data.get("deps", {})
+    deps = data.get("dependencies", {})
     for dep in ("redis",):
         assert dep in deps, f"Missing dep '{dep}' in AssistX health response"
 

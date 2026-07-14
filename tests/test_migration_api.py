@@ -1,7 +1,10 @@
 import os
 
 from fastapi.testclient import TestClient
-from assistx.api import app
+# Import the fully-assembled app (``assistx.api_router:app`` is the deployed
+# entrypoint per the Dockerfile), which registers the router-integration,
+# overlay, and passive routers on top of the base ``assistx.api`` app.
+from assistx.api_router import app
 
 
 def test_api_intent_and_context_packet(seeded_neo4j, monkeypatch):

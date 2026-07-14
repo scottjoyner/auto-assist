@@ -2,11 +2,16 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Optional
 import hashlib
 import json
+import logging
 import os
 import time
 import uuid
 from urllib.parse import urlparse
 from neo4j import GraphDatabase, Driver, Session
+
+from .auto_assign_client import notify_task_created
+
+logger = logging.getLogger(__name__)
 
 _UNSET = object()
 EXECUTABLE_TASK_STATUSES = {"READY", "CLAIMED", "RUNNING", "DONE", "FAILED", "CANCELLED"}
@@ -204,7 +209,12 @@ class Neo4jClient:
         ]
         with self._session() as s:
             for q in cypher:
-                s.run(q)
+                try:
+                    s.run(q)  # type: ignore[arg-type]
+                except Exception as exc:
+                    if "ConstraintCreationFailed" in str(exc):
+                        continue
+                    raise
 
     # Back-compat with v2's method name
     def ensure_indexes(self) -> None:
@@ -729,38 +739,39 @@ class Neo4jClient:
         """
         Return graph-trigger tasks an agent can work on.
 
-        Tasks with no required_capabilities are considered generally eligible.
-        Tasks can target a specific agent with target_agent_id.
+        This path intentionally keeps the Cypher light because the live graph
+        schema has drifted in places (missing newer properties/relationships).
+        We fetch a small READY slice and filter in Python to avoid slow or noisy
+        queries against absent keys.
         """
         caps = capabilities or []
-        q = (
-            "MATCH (t:Task {status:$status}) "
-            "WHERE NOT EXISTS { "
-            "  MATCH (t)-[:DISPATCHED_AS]->(pc:Dispatch) "
-            "  WHERE pc.paperclip_issue_id IS NOT NULL "
-            "} "
-            "WITH t, coalesce(t.required_capabilities, t.capabilities, []) AS required "
-            "WHERE (size(required)=0 OR size($caps)=0 OR all(cap IN required WHERE cap IN $caps)) "
-            "  AND ($agent_id IS NULL OR t.target_agent_id IS NULL OR t.target_agent_id=$agent_id) "
-            "RETURN t, required "
-            "ORDER BY coalesce(t.priority_rank, 999), coalesce(t.created_at_ts, 0) ASC "
-            "LIMIT $limit"
-        )
+        scan_limit = max(limit * 10, limit)
         with self._session() as s:
             res = s.run(
-                q,
-                {
-                    "status": status,
-                    "caps": caps,
-                    "agent_id": agent_id,
-                    "limit": limit,
-                },
+                "MATCH (t:Task {status:$status}) "
+                "WHERE NOT EXISTS { "
+                "  MATCH (t)-[:DISPATCHED_AS]->(pc:Dispatch) "
+                "  WHERE pc.paperclip_issue_id IS NOT NULL "
+                "} "
+                "RETURN t ORDER BY coalesce(t.created_at_ts, 0) ASC LIMIT $limit",
+                {"status": status, "limit": scan_limit},
             )
             items = []
             for r in res:
                 item = dict(r["t"])
-                item["required_capabilities"] = r["required"] or []
+                required = item.get("required_capabilities") or item.get("capabilities") or []
+                if not isinstance(required, list):
+                    required = []
+                target_agent = item.get("target_agent_id")
+                if caps and required and not all(cap in caps for cap in required):
+                    continue
+                if agent_id is not None and target_agent is not None and target_agent != agent_id:
+                    continue
+                item["required_capabilities"] = required
                 items.append(item)
+                if len(items) >= limit:
+                    break
+            items.sort(key=lambda t: (t.get("priority_rank", 999), t.get("created_at_ts", 0) or 0))
             return items
 
     def claim_task(
@@ -1907,6 +1918,7 @@ class Neo4jClient:
                 models = [dict(model) for model in rec["models"] if model]
                 base_url = str(endpoint.get("base_url") or "")
                 provider_name = str(endpoint.get("provider") or endpoint.get("service_type") or endpoint.get("endpoint_id") or endpoint.get("model_endpoint_id") or "unknown")
+                provider_id = str(endpoint.get("model_endpoint_id") or endpoint.get("endpoint_id") or provider_name)
                 lane, local, blocked = lane_for_endpoint(endpoint, base_url)
                 free_api_credits = endpoint.get("free_api_credits")
                 if free_api_credits is None:
@@ -1917,14 +1929,16 @@ class Neo4jClient:
                 parsed = urlparse(base_url) if base_url else None
                 if parsed and parsed.hostname:
                     aliases.append(parsed.hostname)
-                providers_by_id[str(endpoint.get("model_endpoint_id") or provider_name)] = {
-                    "provider": provider_name,
+                providers_by_id[provider_id] = {
+                    "provider": provider_id,
+                    "provider_type": provider_name,
                     "lane": lane,
                     "local": local,
                     "can_use_free_api": lane == "free_api",
                     "free_api_credits": free_api_credits,
                     "blocked": blocked,
                     "node_id": node_id,
+                    "provider_id": provider_id,
                     "aliases": sorted({alias for alias in aliases if alias}),
                     "capabilities": merge_caps(endpoint.get("capabilities") or [], [cap for model in models for cap in (model.get("capabilities") or [])]),
                     "detail": base_url or endpoint.get("status") or provider_name,
@@ -2329,6 +2343,16 @@ class Neo4jClient:
             idempotency_key=idempotency_key,
         )
         result: Dict[str, Any] = {"task_id": task_id, "context_packet_id": None, "dispatch_id": None}
+
+        # Notify auto-assign about the new task candidate
+        correlation_id = (payload or {}).get("correlation_id")
+        notify_task_created(
+            task_id=task_id,
+            correlation_id=correlation_id,
+            title=title,
+            required_capabilities=required_capabilities,
+            kind=kind,
+        )
 
         if context_query:
             packet = self.create_context_packet(

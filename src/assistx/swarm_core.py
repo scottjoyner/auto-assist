@@ -305,7 +305,11 @@ def project_assignment_event(neo: Neo4jClient, event: Dict[str, Any], payload: D
     release_reason = None
 
     if event_type == "assignment.claimed":
-        status = status or "CLAIMED"
+        # A claim event canonically transitions the task to CLAIMED; the payload
+        # ``status`` (e.g. an assignment-lifecycle value like "running") must not
+        # leak into the Task node, which uses the uppercase status vocabulary that
+        # downstream lease queries filter on (['CLAIMED','RUNNING']).
+        status = "CLAIMED"
     elif event_type == "assignment.heartbeat":
         status = status or "RUNNING"
     elif event_type == "assignment.completed":
@@ -542,14 +546,33 @@ def list_capabilities(neo: Neo4jClient, limit: int = 200) -> List[Dict[str, Any]
         return [dict(r["c"]) for r in res]
 
 
+def _endpoint_label(neo: Neo4jClient) -> Optional[str]:
+    """Return the active endpoint label if present in the live graph."""
+    with neo._session() as s:
+        labels = {row["label"] for row in s.run("CALL db.labels() YIELD label RETURN label")}
+    if "ModelEndpoint" in labels:
+        return "ModelEndpoint"
+    if "ServiceEndpoint" in labels:
+        return "ServiceEndpoint"
+    return None
+
+
+def _endpoint_id_key(endpoint: Dict[str, Any]) -> str:
+    return str(endpoint.get("model_endpoint_id") or endpoint.get("endpoint_id") or "unknown")
+
+
 def list_model_endpoints(neo: Neo4jClient) -> List[Dict[str, Any]]:
+    label = _endpoint_label(neo)
+    if not label:
+        return []
+    id_key = "model_endpoint_id" if label == "ModelEndpoint" else "endpoint_id"
     with neo._session() as s:
         res = s.run(
-            """
-            MATCH (e:ModelEndpoint)
+            f"""
+            MATCH (e:{label})
             OPTIONAL MATCH (e)-[:SERVES]->(m:Model)
             RETURN e, collect(DISTINCT m) AS models
-            ORDER BY e.model_endpoint_id
+            ORDER BY coalesce(e.{id_key}, e.endpoint_id)
             """
         )
         out = []
@@ -563,7 +586,7 @@ def list_model_endpoints(neo: Neo4jClient) -> List[Dict[str, Any]]:
 def probe_model_endpoint(neo: Neo4jClient, endpoint: Dict[str, Any]) -> Dict[str, Any]:
     import urllib.request, urllib.error
     base_url = endpoint.get("base_url", "").rstrip("/")
-    ep_id = endpoint.get("model_endpoint_id", endpoint.get("endpoint_id", "unknown"))
+    ep_id = _endpoint_id_key(endpoint)
     node_id = endpoint.get("node_id", "unknown")
     if base_url.endswith("/v1"):
         base_url = base_url[:-3]
@@ -573,11 +596,14 @@ def probe_model_endpoint(neo: Neo4jClient, endpoint: Dict[str, Any]) -> Dict[str
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = json.loads(resp.read().decode())
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError) as e:
+        label = _endpoint_label(neo)
         with neo._session() as s:
-            s.run(
-                "MATCH (e:ModelEndpoint {model_endpoint_id:$ep_id}) SET e.status='offline', e.probe_error=$err, e.last_probed_at=datetime(), e.last_probed_at_ts=timestamp()",
-                {"ep_id": ep_id, "err": str(e)[:200]},
-            ).consume()
+            if label:
+                id_key = "model_endpoint_id" if label == "ModelEndpoint" else "endpoint_id"
+                s.run(
+                    f"MATCH (e:{label} {{{id_key}:$ep_id}}) SET e.status='offline', e.probe_error=$err, e.last_probed_at=datetime(), e.last_probed_at_ts=timestamp()",
+                    {"ep_id": ep_id, "err": str(e)[:200]},
+                ).consume()
         return {"model_endpoint_id": ep_id, "status": "offline", "error": str(e)}
 
     data = body.get("data") or body.get("models") or []
@@ -616,11 +642,14 @@ def probe_model_endpoint(neo: Neo4jClient, endpoint: Dict[str, Any]) -> Dict[str
         "privacy": {"pii": False, "privacy_class": "public", "retention_class": "keep"},
     }
     record_event(neo, event)
+    label = _endpoint_label(neo)
     with neo._session() as s:
-        s.run(
-            "MATCH (e:ModelEndpoint {model_endpoint_id:$ep_id}) SET e.status='online', e.last_probed_at=datetime(), e.last_probed_at_ts=timestamp(), e.probe_error=null",
-            {"ep_id": ep_id},
-        ).consume()
+        if label:
+            id_key = "model_endpoint_id" if label == "ModelEndpoint" else "endpoint_id"
+            s.run(
+                f"MATCH (e:{label} {{{id_key}:$ep_id}}) SET e.status='online', e.last_probed_at=datetime(), e.last_probed_at_ts=timestamp(), e.probe_error=null",
+                {"ep_id": ep_id},
+            ).consume()
     return {"model_endpoint_id": ep_id, "status": "online", "models_count": len(models)}
 
 
@@ -1065,7 +1094,7 @@ def _derive_trace_state(events: List[Dict[str, Any]]) -> str:
         return "pending_assignment"
     if latest_type in ("assignment.heartbeat", "assignment.claimed"):
         return "running"
-    if latest_type == "route.selected":
+    if latest_type in ("route.selected", "router.route_decision"):
         return "pending_assignment"
     if latest_type == "dispatch.accepted":
         return "pending_route"

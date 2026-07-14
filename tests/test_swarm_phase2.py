@@ -11,6 +11,7 @@ from assistx.swarm_core import (
     EventConflictError,
     action_requires_approval,
     fail_task,
+    get_trace,
     list_capabilities,
     list_model_endpoints,
     list_swarm_nodes,
@@ -503,7 +504,7 @@ def test_router_route_decision_is_recorded_as_pending_assignment(seeded_neo4j):
         payload={"task_id": "task-123", "route_id": "route-abc", "provider": "cerebras"},
     )
 
-    trace = seeded_neo4j.get_trace("corr-router-decision")
+    trace = get_trace(seeded_neo4j, "corr-router-decision")
     assert trace is not None
     assert trace["current_state"] == "pending_assignment"
     assert trace["events"][-1]["event_type"] == "router.route_decision"

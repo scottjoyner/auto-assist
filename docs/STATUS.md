@@ -140,6 +140,58 @@ suggests switching local execution to the direct worker to avoid the Paperclip
 timeout. That is not adopted for the current release: it would reintroduce a
 second execution authority before the existing dispatch path is diagnosed.
 
+### Swarm Self-Task Harvester & Watchdog (2026-07-14)
+
+A background "harvester" runs cheap, structured self-tasks (compression,
+summarization, ideation, corpus extraction) on the small/bulk model tiers so the
+large reasoning models stay reserved for real agentic work. A watchdog validates
+that completed work actually produced output.
+
+**Components**
+- `src/assistx/agents/hermes_agent_adapter.py` — model-tier routing
+  (`classify_model_tier` / `_route_by_shape`), eval recording
+  (`record_task_eval` with `is_trivial_output` + `error_kind` + `recent_failures`
+  ring buffer), and self-task prompts (`_build_structured_prompt`,
+  `COMPRESSION_PROMPT_TEMPLATE`, `ideation` archetype, `_pick_bulk_model`).
+- `swarm_watchdog.py` — `report` / `validate` / `watch`; self-task completion is
+  validated by artifact presence (top-level `.md` under the self-task dir), real
+  task completion by non-trivial output.
+- `~/.config/systemd/user/swarm-watchdog.{service,timer}` — runs `validate` every
+  5 min, logs to `~/knowledge/watchdog.log` (service `SuccessExitStatus=2`).
+- `~/.config/systemd/user/router-discovery.{service,timer}` — 5-min discovery-only
+  timer (keeps the router's live model registry current without a full restart).
+
+**Self-task model pool (bulk/background)**: `qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled`
+(compress/summarize/ideate) and `refinedtoolcallv5-3b` (tool/extraction). These
+are the only models deathstar's LM Studio currently has loaded
+(`http://100.78.106.121:1234/v1` → `qwen3.5-0.8b-...`, `refinedtoolcallv5-3b`).
+
+**Bugs fixed this cycle**
+- `run_hermes` was setting `HERMES_MODEL` as an **environment variable**, but the
+  Hermes CLI reads the model only from the `-m/--model` flag (confirmed in
+  `hermes chat --help`). Every self-task was therefore silently running on the
+  default `local/reasoning-large` (→ `ornith-1.0-35b`) instead of the tiny model,
+  which is why "0.8B self-tasks" produced empty output. `run_hermes` now passes
+  `-m <model>` and `--provider <provider>` as CLI flags. Verified: a `qwen3.5-0.8b`
+  self-task now returns real output.
+- Eval "success" was inflated by trivial replies ("Done - I've completed that for
+  you"). `record_task_eval` now requires non-trivial output (and hermes-ok) to
+  count as success, and records `error_kind` (timeout / exit / empty / other) plus
+  a 10-entry `recent_failures` ring buffer in `model-profiles.json`.
+
+**Known gaps (open)**
+- deathstar only has 0.8B + 3B loaded; its provider config still lists `ornith-1.0-9b`
+  / `ornith-1.0-35b`, but those are not loaded on deathstar (LM Studio JIT disabled)
+  so any 9B/35B request routed to deathstar returns `model_not_found` → circuit
+  opens → 503. Remove the phantom entries or load the models on deathstar. The
+  router re-registers them via dynamic discovery, so the static config trim alone
+  may not suppress them — confirm after a router restart.
+- `refinedtoolcallv5-3b` shows elevated `repo:git` failures (`exit_code_1`, now
+  captured as `error_kind`); needs a deeper look.
+- The router forwards the canonical model id (e.g. `ornith-1.0-35b`) to a node's LM
+  Studio; nodes accept either the canonical id or a `local/...` id depending on how
+  the model was loaded. Verify each node serves the id the router advertises.
+
 ### Verification
 
 ```bash
