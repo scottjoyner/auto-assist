@@ -43,25 +43,44 @@ _embed_broken_until: float = 0.0
 _EMBED_COOLDOWN_S = 300.0
 
 
-def embed(text: str, timeout: int = 12) -> Optional[List[float]]:
-    """Return the embedding vector for ``text`` or ``None`` on any failure."""
+def embed(text: str, timeout: int = 30) -> Optional[List[float]]:
+    """Return the embedding vector for ``text`` or ``None`` on any failure.
+
+    The embed model is slow (~5s) and occasionally exceeds a short timeout under
+    load. Retries briefly on transient failures (429 / timeout). Only a hard
+    connection failure disables embeddings fleet-wide (cooldown) — timeouts and
+    429s are transient and must not kill a bulk build.
+    """
     global _embed_broken_until
     if requests is None or time.time() < _embed_broken_until:
         return None
-    try:
-        resp = requests.post(
-            ROUTER_EMBED_URL,
-            json={"model": EMBED_MODEL, "input": text},
-            timeout=timeout,
-        )
-        if resp.status_code != 200:
+    last_err = None
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                ROUTER_EMBED_URL,
+                json={"model": EMBED_MODEL, "input": text},
+                timeout=timeout,
+            )
+            if resp.status_code == 200:
+                return resp.json().get("data", [{}])[0].get("embedding")
+            last_err = resp.status_code
+            if resp.status_code == 429:
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            return None  # 4xx other than 429: bad input, not retryable
+        except requests.Timeout:
+            last_err = "timeout"
+            time.sleep(1.0 * (attempt + 1))
+            continue
+        except requests.ConnectionError:
             _embed_broken_until = time.time() + _EMBED_COOLDOWN_S
             return None
-        data = resp.json()
-        return data.get("data", [{}])[0].get("embedding")
-    except Exception:
-        _embed_broken_until = time.time() + _EMBED_COOLDOWN_S
-        return None
+        except requests.RequestException as exc:
+            last_err = exc
+            time.sleep(1.0 * (attempt + 1))
+            continue
+    return None
 
 
 def _norm(v: List[float]) -> float:
@@ -128,8 +147,13 @@ class MemoryIndex:
         return [(t, m) for _, t, m in scored[:k]]
 
     def index_vault(self, max_chars: int = 900) -> int:
-        self.items = []
+        # Accumulate into the existing index rather than wiping it, so an
+        # interrupted/re-run build keeps whatever was already embedded.
+        global _embed_broken_until
+        _embed_broken_until = 0.0  # a build run should never be blocked by cooldown
         count = 0
+        self.load()  # pick up anything a prior (partial) run already persisted
+        existing_sources = {it.get("meta", {}).get("source") for it in self.items}
         if not os.path.isdir(KNOWLEDGE_ROOT):
             return 0
         files: List[str] = []
@@ -149,21 +173,31 @@ class MemoryIndex:
             except OSError:
                 continue
             rel = os.path.relpath(fp, KNOWLEDGE_ROOT)
+            if rel in existing_sources:
+                continue  # already indexed; skip to avoid re-embedding
             for chunk in _chunk_text(text, max_chars):
                 if self.add(chunk, {"source": rel}):
                     count += 1
+                    if count % 15 == 0:
+                        self.save()  # persist incrementally so a slow build survives
+                time.sleep(0.15)  # throttle to avoid embed-endpoint rate limits
         self.built_at = time.time()
         self.save()
         return count
 
 
 def vault_semantic_context(query: str, k: int = 5, fallback: str = "") -> str:
-    """Top-k relevant vault chunks for ``query``; falls back to ``fallback``."""
+    """Top-k relevant vault chunks for ``query``; falls back to ``fallback``.
+
+    This only *queries* a prebuilt index — it never builds it on the fly (a full
+    build is slow and must run as a scheduled/background job). If the index is
+    empty or the embed model is down, callers fall back to the snapshot.
+    """
     if time.time() < _embed_broken_until:
         return fallback
     idx = MemoryIndex()
     if not idx.items:
-        idx.index_vault()
+        return fallback
     results = idx.search(query, k)
     if not results:
         return fallback
