@@ -904,10 +904,16 @@ def _selftask_worker(assistx: "AssistXClient", archetype: str) -> None:
 
 def _launch_selftasks(assistx: "AssistXClient", max_n: int) -> int:
     """Launch up to ``max_n`` self-tasks on distinct archetypes, respecting the
-    concurrency cap. Returns how many were actually started."""
+    concurrency cap. Returns how many were actually started.
+
+    Concurrency is also clamped to the number of *healthy* nodes: when part of
+    the fleet is down/crashed, we fire fewer background tasks so the surviving
+    nodes aren't overloaded (the laptops crashed from exactly this)."""
+    healthy = fleet.healthy_node_count() if fleet is not None else SELFTASK_CONCURRENCY
+    effective_cap = max(1, min(max_n, SELFTASK_CONCURRENCY, healthy))
     with _SELFTASK_ACTIVE_LOCK:
         running = set(_SELFTASK_ACTIVE.values())
-        slots = max(0, min(max_n, SELFTASK_CONCURRENCY) - len(_SELFTASK_ACTIVE))
+        slots = max(0, effective_cap - len(_SELFTASK_ACTIVE))
     if slots <= 0:
         return 0
     free = [a for a in _SELFTASK_ARCHETYPES if a not in running]
@@ -945,7 +951,7 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
             "latency_tolerance": 0.95,
             "quality_need": 0.35,
         }
-        model, target_model = fleet.select_any(pool, task=task)
+        model, target_model = fleet.select_any(pool, task=task, selftask=True)
     if not target_model:
         model = _pick_bulk_model(arch)
         target_model = model
@@ -953,6 +959,15 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
         logger.info("No live model for self-task %s; skipping", arch)
         return
     logger.info("Self-task %s on model %s (resolved %s)", arch, target_model, model)
+    # Track per-node self-task load so the fleet's per-node cap holds (the overload
+    # backstop that keeps a single small laptop from being hammered by N concurrent
+    # background tasks). Only meaningful for fleet-routed (lmstudio-*) models.
+    _st_node = target_model if (target_model and target_model.startswith("lmstudio-")) else None
+    if _st_node:
+        try:
+            fleet._mark_selftask_dispatched(fleet._node_of(_st_node))
+        except Exception:
+            _st_node = None
     # Prefer semantic retrieval (relevant chunks) over a blind snapshot; fall back
     # to the bounded snapshot if the embed model is unavailable.
     context = ""
@@ -971,6 +986,11 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
     # The adapter injects the vault context, caps output tokens, and persists the
     # returned text itself.
     result = call_self_task_llm(prompt, target_model, max_tokens=SELFTASK_MAX_TOKENS)
+    if _st_node:
+        try:
+            fleet._mark_selftask_done(fleet._node_of(_st_node))
+        except Exception:
+            pass
     # Small/tiny models are unreliable at writing files via tools, so the adapter
     # persists the returned text itself. Success = hermes ok AND non-trivial text
     # was produced AND we wrote it to the artifact path.

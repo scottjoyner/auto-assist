@@ -93,6 +93,14 @@ for _wpair in os.getenv("FLEET_WAKE_MAP", "").split(","):
 WAKE_CMD = os.getenv("FLEET_WAKE_CMD", "").strip()  # template, {node} substituted
 _last_wake: Dict[str, float] = {}
 
+# Per-node self-task concurrency cap. Background self-tasks are the only workload
+# we fire in bursts (HERMES_SELFTASK_CONCURRENCY at once); a single small node must
+# never run more than this many at once or it overloads and crashes (which is what
+# took the laptops down). The relative pressure already spreads work, but this is
+# the hard backstop. Tunable per environment (small laptops -> 1).
+NODE_SELFTASK_CAP = int(os.getenv("FLEET_NODE_SELFTASK_CAP", "1"))
+_node_selftask_inflight: Dict[str, int] = {}
+
 _lock = threading.Lock()
 _nodes: dict = {}          # node -> {"models": {bare: full_id}}
 _model_map: dict = {}      # bare model -> [(node, full_id, bare), ...]
@@ -593,6 +601,27 @@ def _mark_done(full_id: str) -> None:
         _node_inflight[node] = max(0, _node_inflight.get(node, 0) - 1)
 
 
+def _mark_selftask_dispatched(node: str) -> None:
+    """Count a background self-task as in-flight on ``node`` (per-node cap)."""
+    with _lock:
+        _node_selftask_inflight[node] = _node_selftask_inflight.get(node, 0) + 1
+
+
+def _mark_selftask_done(node: str) -> None:
+    """Free a node's self-task in-flight slot."""
+    with _lock:
+        _node_selftask_inflight[node] = max(0, _node_selftask_inflight.get(node, 0) - 1)
+
+
+def healthy_node_count() -> int:
+    """How many nodes are currently UP (not demoted). Used to scale self-task
+    concurrency so survivors aren't overloaded when part of the fleet is down."""
+    try:
+        return sum(1 for h in node_health().values() if h["state"] == "up")
+    except Exception:
+        return max(1, len(_nodes))
+
+
 def select(model: str, task: Optional[dict] = None,
           prefer_nodes: Optional[list] = None) -> Optional[str]:
     """Return a node-prefixed id for ``model``.
@@ -631,13 +660,15 @@ def select(model: str, task: Optional[dict] = None,
 
 
 def select_any(models, task: Optional[dict] = None,
-               prefer_nodes: Optional[list] = None):
+               prefer_nodes: Optional[list] = None, selftask: bool = False):
     """Return (bare_model, full_id) of the BEST live candidate across the fleet.
 
     Every candidate of every model in ``models`` is scored against ``task`` and
     the globally best-fit node/model wins -- so a small tool model beats a big
     one for tool-small, and a slow node is still chosen for latency-tolerant
-    background work.
+    background work. When ``selftask`` is True, nodes already running their per-
+    node cap of background self-tasks are skipped (the overload backstop that
+    keeps small laptops from crashing).
     """
     _ensure_refresh_thread()  # also kicks off the metrics server + probing
     discover()
@@ -651,6 +682,8 @@ def select_any(models, task: Optional[dict] = None,
     for m in models:
         for node, full, model in _model_map.get(m, []):
             if prefer_nodes and node not in prefer_nodes:
+                continue
+            if selftask and _node_selftask_inflight.get(node, 0) >= NODE_SELFTASK_CAP:
                 continue
             comp = _score(full, model, task)
             if comp is None:
