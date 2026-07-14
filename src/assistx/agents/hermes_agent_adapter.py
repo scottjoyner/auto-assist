@@ -44,7 +44,7 @@ SELFTASK_INTERVAL = int(os.getenv("HERMES_SELFTASK_INTERVAL", "3"))
 # Background self-tasks are pure text-in/text-out harvesting; we call the router's
 # chat API directly (no Hermes CLI) so we can cap max_tokens. Small/tiny models are
 # slow and Hermes sends no token cap, which made them generate unbounded and time out.
-SELFTASK_MAX_TOKENS = int(os.getenv("HERMES_SELFTASK_MAX_TOKENS", "600"))
+SELFTASK_MAX_TOKENS = int(os.getenv("HERMES_SELFTASK_MAX_TOKENS", "450"))
 ROUTER_CHAT_URL = os.getenv("HERMES_ROUTER_CHAT_URL", "http://host.docker.internal:8088/v1/chat/completions")
 
 MODEL_PROFILE_DEFAULTS = {
@@ -605,7 +605,7 @@ def run_hermes(
 
 
 def call_self_task_llm(prompt: str, model: str, max_tokens: int = SELFTASK_MAX_TOKENS,
-                       timeout: int = 300) -> Dict[str, Any]:
+                       timeout: int = 450) -> Dict[str, Any]:
     """Direct router chat call for background self-tasks.
 
     Hermes is not used here: small/tiny models are slow and Hermes sends no
@@ -740,7 +740,7 @@ def _build_structured_prompt(instruction: str, target_file: str, sections: List[
     )
 
 
-def _gather_knowledge_context(max_chars: int = 6000) -> str:
+def _gather_knowledge_context(max_chars: int = 2500) -> str:
     """Bounded snapshot of the knowledge vault so small models can summarize
     without needing file/terminal tools (which they misuse and loop on)."""
     chunks: List[str] = []
