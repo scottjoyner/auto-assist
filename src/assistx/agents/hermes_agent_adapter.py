@@ -56,6 +56,13 @@ EVAL_LOCK = threading.Lock()
 SELFTASK_BULK_MODELS = [m for m in os.getenv("HERMES_SELFTASK_BULK_MODELS", "").split(",") if m]
 SELFTASK_BULK_TIMEOUT = int(os.getenv("HERMES_SELFTASK_BULK_TIMEOUT", "600"))
 SELFTASK_INTERVAL = int(os.getenv("HERMES_SELFTASK_INTERVAL", "3"))
+# Run several self-tasks concurrently. This is what actually utilises the fleet:
+# with N in flight, the small/fast 3B nodes saturate (in-flight penalty) and the
+# fleet's relative utilisation pressure spills the overflow onto the idle 1.2B /
+# 8B / 9B "worker bee" nodes -- otherwise a single serial self-task leaves every
+# other machine idle. Capped at the number of distinct archetypes so each run
+# writes its own artifact file; repeats are safe (per-archetype write lock).
+SELFTASK_CONCURRENCY = int(os.getenv("HERMES_SELFTASK_CONCURRENCY", "5"))
 # Background self-tasks are pure text-in/text-out harvesting; we call the router's
 # chat API directly (no Hermes CLI) so we can cap max_tokens. Small/tiny models are
 # slow and Hermes sends no token cap, which made them generate unbounded and time out.
@@ -874,6 +881,49 @@ def _selftask_prompt(archetype: str, context: str = "") -> str:
     return body
 
 
+# ---------------------------------------------------------------------------
+# Concurrent self-task pool (utilise the whole fleet, not just the fast tier)
+# ---------------------------------------------------------------------------
+# Tracks in-flight self-task threads so run_loop can keep N of them running at
+# once. A per-archetype write lock lets the same archetype run twice without
+# clobbering its artifact file (last writer wins, which is fine for harvesting).
+_SELFTASK_ACTIVE: "dict[threading.Thread, str]" = {}
+_SELFTASK_ACTIVE_LOCK = threading.Lock()
+_SELFTASK_WRITE_LOCKS = {a: threading.Lock() for a in _SELFTASK_ARCHETYPES}
+
+
+def _selftask_worker(assistx: "AssistXClient", archetype: str) -> None:
+    try:
+        process_self_task(assistx, archetype=archetype)
+    except Exception as e:  # never let a worker kill the pool
+        logger.exception("Self-task %s error: %s", archetype, e)
+    finally:
+        with _SELFTASK_ACTIVE_LOCK:
+            _SELFTASK_ACTIVE.pop(threading.current_thread(), None)
+
+
+def _launch_selftasks(assistx: "AssistXClient", max_n: int) -> int:
+    """Launch up to ``max_n`` self-tasks on distinct archetypes, respecting the
+    concurrency cap. Returns how many were actually started."""
+    with _SELFTASK_ACTIVE_LOCK:
+        running = set(_SELFTASK_ACTIVE.values())
+        slots = max(0, min(max_n, SELFTASK_CONCURRENCY) - len(_SELFTASK_ACTIVE))
+    if slots <= 0:
+        return 0
+    free = [a for a in _SELFTASK_ARCHETYPES if a not in running]
+    launched = 0
+    for arch in free[:slots]:
+        t = threading.Thread(
+            target=_selftask_worker, args=(assistx, arch),
+            name=f"selftask-{arch}", daemon=True,
+        )
+        with _SELFTASK_ACTIVE_LOCK:
+            _SELFTASK_ACTIVE[t] = arch
+        t.start()
+        launched += 1
+    return launched
+
+
 def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -> None:
     arch = archetype or _next_selftask_archetype()
     # Background self-tasks are latency-tolerant, so route across the WHOLE live
@@ -928,13 +978,16 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
     non_trivial = bool(output) and not is_trivial_output(output)
     artifact_present = False
     if non_trivial:
-        try:
-            os.makedirs(os.path.dirname(target_path), exist_ok=True)
-            with open(target_path, "w") as fh:
-                fh.write(output + "\n")
-            artifact_present = True
-        except OSError as exc:
-            logger.error("Self-task %s failed to write %s: %s", arch, target_path, exc)
+        # Serialise writes per archetype so two concurrent runs of the same
+        # archetype can't clobber each other's artifact file.
+        with _SELFTASK_WRITE_LOCKS.get(arch, threading.Lock()):
+            try:
+                os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                with open(target_path, "w") as fh:
+                    fh.write(output + "\n")
+                artifact_present = True
+            except OSError as exc:
+                logger.error("Self-task %s failed to write %s: %s", arch, target_path, exc)
     actual_success = bool(result["success"]) and artifact_present
     record_task_eval(model, f"self:{arch}", actual_success, result.get("elapsed", 0), error=result.get("error"))
     logger.info("Self-task %s -> success=%s artifact=%s", arch, actual_success, artifact_present)
@@ -1098,10 +1151,13 @@ def run_loop(once: bool = False) -> None:
                 if consecutive_empty >= 3:
                     logger.info("No tasks available (poll %d)", consecutive_empty)
                 if consecutive_empty >= SELFTASK_INTERVAL and SELFTASK_BULK_MODELS:
-                    try:
-                        process_self_task(assistx)
-                    except Exception as e:
-                        logger.exception("Self-task error: %s", e)
+                    launched = _launch_selftasks(assistx, SELFTASK_CONCURRENCY)
+                    if launched:
+                        logger.info("Launched %d concurrent self-task(s)", launched)
+                    else:
+                        # Pool already at capacity; keep the counter reset so we
+                        # re-check next idle cycle rather than busy-looping.
+                        pass
                     consecutive_empty = 0
             else:
                 consecutive_empty = 0
