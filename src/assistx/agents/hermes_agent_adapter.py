@@ -17,6 +17,13 @@ from typing import Any, Dict, List, Optional
 import requests
 import yaml
 
+# Optional semantic-memory helper (assistx.swarm_memory). Imported lazily and
+# guarded so the adapter still runs if it is absent or the embed model is down.
+try:
+    from assistx import swarm_memory  # type: ignore
+except Exception:  # pragma: no cover
+    swarm_memory = None
+
 logger = logging.getLogger(__name__)
 
 ASSISTX_URL = os.getenv("ASSISTX_URL", "http://localhost:8000")
@@ -112,6 +119,15 @@ _SELFTASK_TARGETS = {
     "corpus_extract": "extracted_facts.md",
     "triage": "TRIAGE.md",
     "ideation": "IDEAS.md",
+}
+
+# Semantic-retrieval query used to pull relevant vault context for each archetype.
+_SELFTASK_QUERIES = {
+    "bulk_summarize": "decisions open threads facts notes summary",
+    "session_compress": "recent hermes session transcript tool outcomes decisions",
+    "corpus_extract": "entities relationships decisions facts documents",
+    "triage": "stale high-value knowledge contents action",
+    "ideation": "improvements next ideas local swarm architecture",
 }
 
 
@@ -820,7 +836,15 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
         logger.info("No SELFTASK_BULK_MODELS configured; skipping self-task %s", arch)
         return
     logger.info("Self-task %s on model %s", arch, model)
-    context = _gather_knowledge_context()
+    # Prefer semantic retrieval (relevant chunks) over a blind snapshot; fall back
+    # to the bounded snapshot if the embed model is unavailable.
+    context = ""
+    if swarm_memory is not None:
+        context = swarm_memory.vault_semantic_context(
+            _SELFTASK_QUERIES.get(arch, arch), k=4, fallback=""
+        )
+    if not context:
+        context = _gather_knowledge_context()
     prompt = _selftask_prompt(arch, context)
     target_rel = _SELFTASK_TARGETS.get(arch, "SELFTASK.md")
     target_path = os.path.join(KNOWLEDGE_ROOT, target_rel)

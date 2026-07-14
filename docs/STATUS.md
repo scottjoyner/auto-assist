@@ -156,6 +156,12 @@ that completed work actually produced output.
 - `swarm_watchdog.py` — `report` / `validate` / `watch`; self-task completion is
   validated by artifact presence (top-level `.md` under the self-task dir), real
   task completion by non-trivial output.
+- `assistx/swarm_memory.py` — vector memory over the vault (semantic retrieval).
+  Embeds via the fleet `text-embedding-nomic-embed-text-v1.5` through the router;
+  index persisted under `<KNOWLEDGE_ROOT>/.memory/index.json`. Self-tasks use it
+  for relevant context (`vault_semantic_context`) and fall back to the bounded
+  snapshot when the embed model is not loaded. Wire-up is complete; it activates
+  automatically once the embed model is preloaded (currently unloaded fleet-wide).
 - `~/.config/systemd/user/swarm-watchdog.{service,timer}` — runs `validate` every
   5 min, logs to `~/knowledge/watchdog.log` (service `SuccessExitStatus=2`).
 - `~/.config/systemd/user/router-discovery.{service,timer}` — 5-min discovery-only
