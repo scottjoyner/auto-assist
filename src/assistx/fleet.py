@@ -20,6 +20,7 @@ routes to the intended machine.
 """
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import math
@@ -29,6 +30,7 @@ import socket
 import subprocess
 import threading
 import time
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import requests
@@ -133,6 +135,27 @@ _last_metrics_save = 0.0
 _EMA_ALPHA = 0.3          # smoothing for tok/s + latency
 _DECISION_CAP = 300
 
+# ---------------------------------------------------------------------------
+# Value layer: route by BENCHMARKED VALUE, not just latency + reliability.
+#
+# The scoring above uses measured speed (tok/s) and observed success
+# (reliability). That is necessary but not sufficient: a model can be up and fast
+# yet produce weak output, and a large model on weak hardware is slow/bad. The
+# `lms` toolkit (git/lms) benchmarks models on each machine with deterministic
+# evaluators and emits a capability matrix + model-fit report. We ingest those
+# artifacts here and fold a *value* multiplier into the base score, so routing
+# prefers models that actually earn their keep for the task at hand and avoids
+# models that benchmark poorly on their hardware. With no benchmark data present
+# the multiplier is 1.0, so behaviour is identical to before (degrades safe).
+LMS_RUNS_DIR = os.getenv("FLEET_LMS_RUNS_DIR", "/home/scott/git/lms/runs")
+LMS_RELOAD_INTERVAL = float(os.getenv("FLEET_LMS_RELOAD_INTERVAL", "120"))
+
+_value_lock = threading.Lock()
+_value_index: Dict[Tuple[str, str, str], dict] = {}   # (node, model, family) -> cap row
+_fit_index: Dict[Tuple[str, str], str] = {}            # (node, model) -> fit_grade
+_summary_index: Dict[Tuple[str, str], dict] = {}       # (node, model) -> summary row
+_value_loaded_at = 0.0
+
 
 def _load_metrics() -> None:
     global _perf, _decisions
@@ -194,12 +217,174 @@ def quality_score(model: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Value layer (benchmarked value, from the `lms` toolkit)
+# ---------------------------------------------------------------------------
+def _norm_node(name: str) -> str:
+    """Normalise a node/host name for matching benchmark data.
+
+    Fleet nodes are ``lmstudio-<node>``; lms host names may be ``destroyer`` or a
+    Tailscale FQDN like ``destroyer.tailcb8954.ts.net``. Collapse both to the short
+    lower-cased host label."""
+    n = (name or "").lower()
+    if n.startswith("lmstudio-"):
+        n = n[len("lmstudio-"):]
+    return n.split(".")[0]
+
+
+def _norm_model(model: str) -> str:
+    """Normalise a model id: drop any ``lmstudio-<node>.`` prefix, keep the bare id."""
+    m = (model or "").lower()
+    if m.startswith("lmstudio-"):
+        m = m.split(".", 1)[1] if "." in m else m
+    return m
+
+
+def _task_family(task: Optional[dict]) -> str:
+    """Map a swarm task to an lms benchmark task family.
+
+    Callers may set ``task['task_family']`` explicitly for accuracy. Otherwise we
+    infer from the task's declared need: hard/large reasoning -> agent_planning,
+    quality-hungry -> coding, fast interactive or latency-tolerant background work
+    -> structured_output (summarise/extract)."""
+    if not task:
+        return "structured_output"
+    tf = task.get("task_family")
+    if tf:
+        return tf
+    minp = float(task.get("min_params", 0) or 0)
+    qn = float(task.get("quality_need", 0.5) or 0.5)
+    lat = float(task.get("latency_tolerance", 0.5) or 0.5)
+    if minp >= 9:
+        return "agent_planning"
+    if qn >= 0.7:
+        return "coding"
+    if lat < 0.3:
+        return "structured_output"
+    return "structured_output"
+
+
+def _to_float(v) -> Optional[float]:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+_GRADE_MULT = {"a": 1.25, "b": 1.0, "c": 0.8, "d": 0.5, "f": 0.15}
+_FIT_MULT = {"good": 1.0, "borderline": 0.9, "risky": 0.6, "poor": 0.3, "unknown": 1.0}
+
+
+def _load_value_data(force: bool = False) -> None:
+    """Ingest lms benchmark artifacts (capability_matrix.csv, run_summary.csv,
+    model_fit.csv) from ``LMS_RUNS_DIR`` into the in-memory value indexes.
+
+    Cheap + self-throttled: only re-reads every ``LMS_RELOAD_INTERVAL`` seconds.
+    A missing/empty dir is fine -- the value multiplier stays neutral (1.0) and the
+    fleet behaves exactly as before."""
+    global _value_index, _fit_index, _summary_index, _value_loaded_at
+    now = time.time()
+    if not force and now - _value_loaded_at < LMS_RELOAD_INTERVAL:
+        return
+    with _value_lock:
+        _value_loaded_at = now
+        vi: Dict[Tuple[str, str, str], dict] = {}
+        fi: Dict[Tuple[str, str], str] = {}
+        si: Dict[Tuple[str, str], dict] = {}
+        base = Path(LMS_RUNS_DIR)
+        if not base.exists():
+            _value_index, _fit_index, _summary_index = vi, fi, si
+            return
+        for run in sorted(p for p in base.iterdir() if p.is_dir()):
+            cap = run / "capability_matrix.csv"
+            if cap.exists():
+                try:
+                    with cap.open(newline="", encoding="utf-8") as fh:
+                        for row in csv.DictReader(fh):
+                            host = _norm_node(row.get("host_name") or row.get("host") or "")
+                            mk = _norm_model(row.get("model_key") or row.get("model_id") or "")
+                            fam = (row.get("task_family") or "").strip().lower()
+                            if not host or not mk or not fam:
+                                continue
+                            vi[(host, mk, fam)] = {
+                                "grade": (row.get("grade") or "").strip().lower(),
+                                "route_score": _to_float(row.get("score")),
+                                "recommended_use": (row.get("recommended_use") or ""),
+                                "avoid_use": (row.get("avoid_use") or ""),
+                            }
+                except Exception as exc:
+                    logger.warning("value-layer: skip %s: %s", cap, exc)
+            summ = run / "run_summary.csv"
+            if summ.exists():
+                try:
+                    with summ.open(newline="", encoding="utf-8") as fh:
+                        for row in csv.DictReader(fh):
+                            host = _norm_node(row.get("host_name") or row.get("host") or "")
+                            mk = _norm_model(row.get("model_key") or row.get("model_id") or "")
+                            if not host or not mk:
+                                continue
+                            si[(host, mk)] = {
+                                "ok_rate": _to_float(row.get("ok_rate")),
+                                "eval_ok_rate": _to_float(row.get("eval_ok_rate")),
+                                "eval_score_avg": _to_float(row.get("eval_score_avg")),
+                                "tps_med": _to_float(row.get("tps_med")),
+                            }
+                except Exception as exc:
+                    logger.warning("value-layer: skip %s: %s", summ, exc)
+            fit = run / "model_fit.csv"
+            if fit.exists():
+                try:
+                    with fit.open(newline="", encoding="utf-8") as fh:
+                        for row in csv.DictReader(fh):
+                            mk = _norm_model(row.get("model_key") or row.get("model_id") or "")
+                            if not mk:
+                                continue
+                            host = _norm_node(row.get("host_name") or run.name or "")
+                            fi[(host, mk)] = (row.get("fit_grade") or "unknown").strip().lower()
+                except Exception as exc:
+                    logger.warning("value-layer: skip %s: %s", fit, exc)
+        _value_index, _fit_index, _summary_index = vi, fi, si
+        logger.info(
+            "value-layer: loaded %d capability rows, %d fit rows, %d summary rows from %s",
+            len(vi), len(fi), len(si), base,
+        )
+
+
+def _value_factor(full_id: str, model: str, task_family: str) -> float:
+    """Return a value multiplier (clamped ~[0.05, 1.3]) for ``(node, model, family)``.
+
+    1.0 when no benchmark data exists (degrades safe). Below 1.0 penalises models
+    that benchmark poorly for this task / on this hardware; above 1.0 rewards ones
+    that earn their keep. A model flagged ``avoid_use`` for the task (or grade F)
+    is crushed so it is only used as a last resort."""
+    node = _norm_node(_node_of(full_id))
+    mk = _norm_model(model)
+    fit = _fit_index.get((node, mk), "unknown")
+    fit_mult = _FIT_MULT.get(fit, 1.0)
+    cap = _value_index.get((node, mk, task_family))
+    if cap:
+        grade = cap.get("grade") or ""
+        avoid = (cap.get("avoid_use") or "").strip().lower()
+        if grade == "f" or "avoid" in avoid or task_family in avoid:
+            return max(0.05, 0.15 * fit_mult)
+        rs = cap.get("route_score")
+        if rs is not None:
+            # route_score in [0,1]: map 0.5->1.0, 1.0->1.25, 0.0->0.5
+            rs_mult = 0.5 + max(0.0, min(1.0, rs)) * 0.75
+            return max(0.05, min(1.3, fit_mult * rs_mult))
+        return max(0.05, min(1.3, fit_mult * _GRADE_MULT.get(grade, 1.0)))
+    return fit_mult
+
+
+# ---------------------------------------------------------------------------
 # Discovery
 # ---------------------------------------------------------------------------
 def discover(force: bool = False) -> None:
     """Refresh node/model maps from the router. Cached via TTL; the background
     thread keeps it warm so callers rarely block."""
     global _nodes, _model_map, _last_refresh
+    # Ingest lms benchmark value data (self-throttled; cheap when fresh). Runs on
+    # every discover so the value layer tracks new benchmark runs without a restart.
+    _load_value_data()
     now = time.time()
     if not force and _nodes and now - _last_refresh < REGISTRY_TTL:
         return
@@ -539,6 +724,13 @@ def _score(full_id: str, model: str, task: dict) -> Optional[dict]:
     # background task accepts slow models (so beelink's 9B still earns BG work).
     latency_fit = lat_tol + (1.0 - lat_tol) * speed
     base = (size_fit * latency_fit + 0.15 * success) * health
+    # Value layer: fold benchmarked value into the base score. `_value_factor`
+    # returns 1.0 when no lms benchmark data exists, so this is a strict superset
+    # of the old behaviour. It penalises models that benchmark poorly for this
+    # task / on this hardware (e.g. a large model on a weak box, or a model that
+    # produces weak output) and rewards ones that earn their keep.
+    value = _value_factor(full_id, model, _task_family(task))
+    base = base * value
     # Oversize affinity: a model FAR larger than the task needs (e.g. a 35B brain
     # asked to do a trivial summarise) should NOT be yanked into lightweight work
     # just because it has been idle -- that wastes the fleet's "smart" capacity.
@@ -549,7 +741,7 @@ def _score(full_id: str, model: str, task: dict) -> Optional[dict]:
     affinity = 1.0 / (1.0 + oversize)
     idle = (now - last) if last else max(now - perf.get("first_seen", now), UTIL_TAU * 4)
     return {"down": False, "base": base, "idle_s": idle, "affinity": affinity,
-            "inflight": inflight, "ninflight": ninflight}
+            "value": value, "inflight": inflight, "ninflight": ninflight}
 
 
 def _apply_pressure(scored: list) -> list:

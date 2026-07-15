@@ -964,10 +964,21 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
         # HERMES_SELFTASK_BULK_MODELS list is only a fallback when the fleet
         # can't be reached. corpus_extract needs a stronger model (>=3B).
         pool = fleet.list_models()
+        # Map each self-task archetype to an lms benchmark task family so the
+        # fleet's value layer (benchmarked capability + hardware fit) scores it
+        # correctly. Falls back to an inferred family when no benchmark data exists.
+        _SELFTASK_FAMILY = {
+            "bulk_summarize": "structured_output",
+            "session_compress": "structured_output",
+            "corpus_extract": "structured_output",
+            "ideation": "agent_planning",
+            "triage": "structured_output",
+        }
         task = {
             "min_params": 3.0 if arch == "corpus_extract" else 0.8,
             "latency_tolerance": 0.95,
             "quality_need": 0.35,
+            "task_family": _SELFTASK_FAMILY.get(arch, "structured_output"),
         }
         model, target_model = fleet.select_any(pool, task=task, selftask=True)
     if not target_model:
