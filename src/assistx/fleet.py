@@ -74,6 +74,20 @@ UTIL_TAU = float(os.getenv("FLEET_UTIL_TAU", "120"))      # idle window for pres
 INFLOW_PENALTY = float(os.getenv("FLEET_INFLOW_PENALTY", "0.25"))  # per in-flight task
 REL_PRESSURE = float(os.getenv("FLEET_REL_PRESSURE", "0.9"))      # pressure band (+/-)
 
+# Load-spreading hardening. The earlier design only ADDED relative pressure on top
+# of `base`, so a model with a consistently higher base won every time and the
+# fleet piled onto it while peers idled. Worse, never-used models were capped at an
+# `idle_s` of ~480s, making them look LESS idle than long-idle-used models, so they
+# were deprioritised -- backwards. The fix: a fit GATE keeps grossly-unfit models
+# out while letting a wide peer set compete, then IDLE + NODE-IDLE pressure
+# DOMINATE base (which becomes a light tiebreak). "Never used" is treated as the
+# most idle, so fresh/idle models are actively rotated in. Node idleness drags work
+# toward machines that have been quiet, spreading load across the whole fleet.
+GATE_FRAC = float(os.getenv("FLEET_GATE_FRAC", "0.5"))        # keep candidates >= GATE_FRAC*best_base
+NODE_PRESSURE = float(os.getenv("FLEET_NODE_PRESSURE", "0.6")) # pull work toward idle nodes
+BASE_WEIGHT = float(os.getenv("FLEET_BASE_WEIGHT", "0.15"))    # base is a light tiebreak
+IDLE_NEVER = float(os.getenv("FLEET_IDLE_NEVER", "1000000.0")) # "never used" == most idle
+
 # Watchdog: nodes that actually crash (not just sleep) need a poke, not only
 # avoidance. When a node's models have tripped the failure demotion (3 strikes ->
 # down_until), the watchdog tries to bring it back: first a user-supplied wake
@@ -364,9 +378,15 @@ def _value_factor(full_id: str, model: str, task_family: str) -> float:
     if cap:
         grade = cap.get("grade") or ""
         avoid = (cap.get("avoid_use") or "").strip().lower()
+        # A benchmark run that could not execute (ok_rate == 0 -> route_score 0/None)
+        # is NOT evidence the model is weak -- e.g. the node's LM Studio 500'd or was
+        # mid-load-swap during benchmarking. Treating that as grade-F would wrongly
+        # crush a perfectly good model, so fall through to neutral (fit_mult only).
+        rs = cap.get("route_score")
+        if rs is None or float(rs or 0) <= 0:
+            return fit_mult
         if grade == "f" or "avoid" in avoid or task_family in avoid:
             return max(0.05, 0.15 * fit_mult)
-        rs = cap.get("route_score")
         if rs is not None:
             # route_score in [0,1]: map 0.5->1.0, 1.0->1.25, 0.0->0.5
             rs_mult = 0.5 + max(0.0, min(1.0, rs)) * 0.75
@@ -745,27 +765,44 @@ def _score(full_id: str, model: str, task: dict) -> Optional[dict]:
 
 
 def _apply_pressure(scored: list) -> list:
-    """Add RELATIVE utilisation pressure and load penalty to a scored pool.
+    """Spread load across the fleet like worker bees instead of hammering one model.
 
-    ``scored`` is a list of ``(comp, *rest, full)`` tuples where ``comp`` is the
-    dict from ``_score`` and ``full`` (the final element) is the model id used
-    for the LRU tiebreak. Each candidate's idle time is compared to the pool's
-    mean: a node quiet longer than its peers is pulled UP, a just-used node is
-    pushed DOWN (negative consequence of having been served / under-utilisation
-    pressure on the rest). Bounded to ``+/- REL_PRESSURE`` so fit still wins
-    among peers but a starved node is actively rotated back in.
-    """
+    Among candidates that pass a fit GATE (so grossly-unfit models are excluded but
+    a wide peer set competes), IDLE + NODE-IDLE pressure DOMINATE the final score
+    while ``base`` (capability x measured speed x benchmarked value) is only a light
+    tiebreak. ``idle_s`` is the real time-since-last-use; a never-used model/node is
+    treated as the MOST idle so fresh/idle capacity is actively rotated in. The
+    negative consequence of under-utilisation (a quiet model) is a positive pull."""
     if not scored:
         return []
-    idles = [c["idle_s"] for c, *_ in scored]
-    avg_idle = sum(idles) / len(idles)
+    now = time.time()
+    best_base = max((c["base"] for c, *_ in scored), default=0.0)
+    gate = max(best_base * GATE_FRAC, 0.05)
+    pool = [(c, *rest) for c, *rest in scored if c["base"] >= gate] or scored
+
+    def _idle(ts: float) -> float:
+        return (now - ts) if ts else IDLE_NEVER
+
+    model_idles = []
+    for c, *rest in pool:
+        full = rest[-1] if rest else c.get("full_id")
+        model_idles.append(_idle(_lru.get(full, 0.0)))
+    avg_idle = sum(model_idles) / len(model_idles)
+
+    node_idles = []
+    for c, *rest in pool:
+        full = rest[-1] if rest else c.get("full_id")
+        node_idles.append(_idle(_node_last_used.get(_node_of(full), 0.0)))
+    avg_node_idle = sum(node_idles) / len(node_idles)
+
     finals = []
-    for comp, *rest in scored:
+    for (comp, *rest), midle, nidle in zip(pool, model_idles, node_idles):
         full = rest[-1] if rest else comp.get("full_id")
-        rel = max(-1.0, min(1.0, (comp["idle_s"] - avg_idle) / UTIL_TAU)) * REL_PRESSURE
+        rel = max(-1.0, min(1.0, (midle - avg_idle) / UTIL_TAU)) * REL_PRESSURE
         rel *= comp.get("affinity", 1.0)  # don't yank oversized models into light work
+        nrel = max(-1.0, min(1.0, (nidle - avg_node_idle) / UTIL_TAU)) * NODE_PRESSURE
         load = INFLOW_PENALTY * comp["inflight"] + 0.5 * INFLOW_PENALTY * comp["ninflight"]
-        finals.append((comp["base"] + rel - load, *rest))
+        finals.append((BASE_WEIGHT * comp["base"] + rel + nrel - load, *rest))
     return finals
 
 
