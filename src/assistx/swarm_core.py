@@ -1131,3 +1131,40 @@ def _build_trace_summary(events: List[Dict[str, Any]]) -> Dict[str, Any]:
             if "node_id" in payload:
                 summary["node_id"] = payload["node_id"]
     return summary
+
+
+# W-29: receiver-side stub for auto-ingest contract events. auto-ingest emits
+# ``ingest.evidence.linked`` / ``context.available`` via ``auto_ingest_client``;
+# this maps them into the canonical EventEnvelope store so they appear in the
+# coordination timeline. Kept intentionally thin until auto-ingest is wired.
+_AUTO_INGEST_EVENT_TYPES = {
+    "ingest.evidence.linked",
+    "context.available",
+}
+
+
+def record_auto_ingest_event(
+    neo: Neo4jClient,
+    event_type: str,
+    payload: Dict[str, Any],
+    correlation_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Ingest a single auto-ingest contract event into the coordination store.
+
+    TODO(W-29): once auto-ingest is connected, callers should POST to
+    ``/api/events`` instead; this helper remains for tests/internal use.
+    """
+    if event_type not in _AUTO_INGEST_EVENT_TYPES:
+        raise ValueError(f"unsupported auto-ingest event type: {event_type}")
+    event = {
+        "event_id": f"evt_{uuid.uuid4().hex}",
+        "event_type": event_type,
+        "source_repo": "auto-ingest",
+        "source_service": "auto-ingest",
+        "idempotency_key": idempotency_key or f"auto-ingest:{event_type}:{uuid.uuid4().hex}",
+        "correlation_id": correlation_id or uuid.uuid4().hex,
+        "payload": payload,
+        "links": {"correlation_id": correlation_id or uuid.uuid4().hex},
+    }
+    return record_event(neo, event)
