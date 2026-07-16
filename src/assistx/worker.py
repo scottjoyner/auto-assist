@@ -111,6 +111,13 @@ def _start_execution_pollers() -> list[threading.Thread]:
 
     if not threads:
         logger.warning("no execution pollers started for backend=%s", backend)
+    logger.info(
+        "execution authority active backend=%s (paperclip=%s, direct=%s) pollers=%d",
+        backend,
+        want_paperclip,
+        want_direct,
+        len(threads),
+    )
     return threads
 
 

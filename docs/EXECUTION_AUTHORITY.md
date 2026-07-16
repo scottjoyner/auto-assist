@@ -15,7 +15,14 @@ records the reconciliation plan and the implemented single config-gated switch.
 
 `config.py` exposes `settings.execution_backend`, sourced from the
 `EXECUTION_BACKEND` env var (default `auto`). `worker.py:_start_execution_pollers()`
-starts pollers based on it:
+branches on it and starts the matching poller(s); `worker.main()` emits a single
+startup log line stating the active backend and which pollers are live:
+
+```
+execution authority active backend=auto (paperclip=True, direct=True) pollers=2
+```
+
+The switch matrix:
 
 | `EXECUTION_BACKEND` | Paperclip poller | Direct hermes poller |
 |----------------------|------------------|----------------------|
