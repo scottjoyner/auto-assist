@@ -1600,139 +1600,6 @@ else:
     async def upload_audio(user: str = Depends(auth)):
         raise HTTPException(status_code=503, detail="python-multipart is required for /upload-audio")
 
-@app.get("/api/transcriptions")
-def api_list_transcriptions(
-    q: Optional[str] = Query(None, description="text contains (case-insensitive)"),
-    limit: int = Query(50, ge=1, le=500),
-    user: str = Depends(auth),
-):
-    neo = _neo()
-    try:
-        with neo._session() as s:
-            if q:
-                res = s.run(
-                    """
-                    MATCH (tr:Transcription)
-                    WHERE toLower(tr.text) CONTAINS toLower($q)
-                    RETURN tr
-                    ORDER BY coalesce(tr.created_at_ts,0) DESC
-                    LIMIT $limit
-                    """,
-                    {"q": q, "limit": limit},
-                )
-            else:
-                res = s.run(
-                    """
-                    MATCH (tr:Transcription)
-                    RETURN tr
-                    ORDER BY coalesce(tr.created_at_ts,0) DESC
-                    LIMIT $limit
-                    """,
-                    {"limit": limit},
-                )
-            items = [dict(r["tr"]) for r in res]
-            return {"items": items, "count": len(items)}
-    finally:
-        neo.close()
-
-
-@app.get("/api/transcriptions/{tid}")
-def api_get_transcription(tid: str, user: str = Depends(auth)):
-    neo = _neo()
-    try:
-        with neo._session() as s:
-            rec = s.run(
-                """
-                MATCH (tr:Transcription {id:$id})
-                OPTIONAL MATCH (tr)<-[:ABOUT]-(t:Task)
-                RETURN tr, collect(t) AS tasks
-                """,
-                {"id": tid},
-            ).single()
-            if not rec:
-                raise HTTPException(status_code=404, detail="Transcription not found")
-            tr = dict(rec["tr"])
-            tasks = [dict(t) for t in rec["tasks"] if t]
-            return {"transcription": tr, "tasks": tasks}
-    finally:
-        neo.close()
-
-# ---------- Create Task from a transcription ----------
-class CreateTaskIn(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    title: str
-    status: str = "REVIEW"           # READY/REVIEW/RUNNING/DONE/FAILED
-    kind: Optional[str] = "transcription_summary"
-    payload: Optional[Dict[str, Any]] = None
-
-@app.post("/api/transcriptions/{tid}/task")
-def api_create_task_from_transcription(tid: str, body: CreateTaskIn, user: str = Depends(auth)):
-    neo = _neo()
-    try:
-        with neo._session() as s:
-            has = s.run("MATCH (tr:Transcription {id:$id}) RETURN tr", {"id": tid}).single()
-            if not has:
-                raise HTTPException(status_code=404, detail="Transcription not found")
-
-            task_id = uuid.uuid4().hex
-            res = s.run(
-                """
-                CREATE (t:Task {id:$task_id})
-                SET t += $props,
-                    t.created_at = datetime(), t.created_at_ts = timestamp()
-                WITH t
-                MATCH (tr:Transcription {id:$tid})
-                MERGE (t)-[:ABOUT]->(tr)
-                RETURN t.id AS id
-                """,
-                {
-                    "task_id": task_id,
-                    "props": {
-                        "title": body.title,
-                        "status": body.status,
-                        "kind": body.kind,
-                        "payload_json": json.dumps(body.payload or {}),
-                        "transcription_id": tid,
-                    },
-                    "tid": tid,
-                },
-            ).single()
-            return {"task_id": res["id"]}
-    finally:
-        neo.close()
-
-# ---------- Optional: enqueue an "embed" job as a Task ----------
-@app.post("/api/transcriptions/{tid}/embed")
-def api_embed_transcription(tid: str, user: str = Depends(auth)):
-    neo = _neo()
-    try:
-        with neo._session() as s:
-            rec = s.run("MATCH (tr:Transcription {id:$id}) RETURN tr", {"id": tid}).single()
-            if not rec:
-                raise HTTPException(status_code=404, detail="Transcription not found")
-
-            task_id = uuid.uuid4().hex
-            res = s.run(
-                """
-                CREATE (t:Task {id:$task_id})
-                SET t.title='Embed transcription',
-                    t.status='READY',
-                    t.kind='embed_transcription',
-                    t.transcription_id=$tid,
-                    t.created_at=datetime(), t.created_at_ts=timestamp()
-                WITH t
-                MATCH (tr:Transcription {id:$tid})
-                MERGE (t)-[:ABOUT]->(tr)
-                RETURN t.id AS id
-                """,
-                {"task_id": task_id, "tid": tid},
-            ).single()
-            return {"task_id": res["id"], "status": "READY"}
-    finally:
-        neo.close()
-
-# ---------- TASKS: list/get (JSON) ----------
 @app.get("/api/tasks")
 def api_list_tasks(
     status: Optional[str] = Query(None, description="filter by status"),
@@ -1940,22 +1807,6 @@ def api_paperclip_event(
     finally:
         neo.close()
 
-@app.post("/api/memory/items")
-def api_write_memory(body: MemoryWriteIn, user: str = Depends(auth)):
-    neo = _neo()
-    try:
-        memory_id = neo.upsert_memory_item(
-            kind=body.kind,
-            text=body.text,
-            source=body.source,
-            session_id=body.session_id,
-            task_id=body.task_id,
-            metadata=body.metadata,
-        )
-        return {"memory_item_id": memory_id}
-    finally:
-        neo.close()
-
 @app.post("/api/brain/signals")
 def api_create_signal_event(body: SignalEventIn, user: str = Depends(auth)):
     neo = _neo()
@@ -1984,22 +1835,6 @@ def api_voice_event(
     if user is None:
         _verify_voice_signature(body, x_voice_signature)
         user = "voice_webhook"
-
-    supported = {
-        "task_created",
-        "ralph_iteration",
-        "tts_chunk",
-        "cancel_active",
-        "task_cancelled",
-        "barge_in",
-        "voice_auth",
-        "meeting_transcript",
-        "voice_enrolled",
-        "speaker_identified",
-    }
-    if body.event_type not in supported:
-        raise HTTPException(status_code=400, detail=f"Unsupported voice event type: {body.event_type}")
-
     event_payload = {
         "event_id": body.event_id,
         "event_type": body.event_type,
@@ -2720,71 +2555,6 @@ def api_workflow_incidents(
     finally:
         neo.close()
 
-
-@app.get("/api/memory")
-def api_list_memory(
-    kind: Optional[str] = Query(None, description="filter by memory kind"),
-    source: Optional[str] = Query(None, description="filter by source"),
-    view: str = Query("durable", description="memory surface view: durable, diagnostics, all"),
-    limit: int = Query(50, ge=1, le=500),
-    user: str = Depends(auth),
-):
-    durable_kinds = ["fact", "note", "preference", "plan", "summary"]
-    diagnostic_kinds = ["outcome", "task_result", "user_profile"]
-    normalized_view = (view or "durable").lower().strip()
-    if normalized_view not in {"durable", "diagnostics", "all"}:
-        raise HTTPException(status_code=400, detail="view must be one of: durable, diagnostics, all")
-    neo = _neo()
-    try:
-        with neo._session() as s:
-            q = "MATCH (m:MemoryItem)"
-            params: dict[str, Any] = {"limit": limit}
-            conditions = []
-            if kind:
-                conditions.append("m.kind=$kind")
-                params["kind"] = kind
-            elif normalized_view == "durable":
-                conditions.append("m.kind IN $allowed_kinds")
-                params["allowed_kinds"] = durable_kinds
-            elif normalized_view == "diagnostics":
-                conditions.append("m.kind IN $allowed_kinds")
-                params["allowed_kinds"] = diagnostic_kinds
-            if source:
-                conditions.append("m.source=$source")
-                params["source"] = source
-            if conditions:
-                q += " WHERE " + " AND ".join(conditions)
-            q += " RETURN m ORDER BY m.updated_at_ts DESC LIMIT $limit"
-            res = s.run(q, params)
-            items = [dict(r["m"]) for r in res]
-            kind_counts: dict[str, int] = {}
-            for item in items:
-                k = item.get("kind") or "unknown"
-                kind_counts[k] = kind_counts.get(k, 0) + 1
-            return {"items": items, "count": len(items), "view": normalized_view, "kind_counts": kind_counts}
-    finally:
-        neo.close()
-
-@app.get("/api/memory/{memory_id}")
-def api_get_memory(memory_id: str, user: str = Depends(auth)):
-    neo = _neo()
-    try:
-        with neo._session() as s:
-            rec = s.run(
-                "MATCH (m:MemoryItem {id:$id}) "
-                "OPTIONAL MATCH (m)<-[:WROTE_MEMORY]-(s:AgentSession) "
-                "OPTIONAL MATCH (m)<-[:RELATED_MEMORY]-(t:Task) "
-                "RETURN m, collect(DISTINCT s) AS sessions, collect(DISTINCT t) AS tasks",
-                {"id": memory_id},
-            ).single()
-            if not rec:
-                raise HTTPException(status_code=404, detail="Memory not found")
-            memory = dict(rec["m"])
-            sessions = [dict(s) for s in rec["sessions"] if s]
-            tasks = [dict(t) for t in rec["tasks"] if t]
-            return {"memory": memory, "sessions": sessions, "tasks": tasks}
-    finally:
-        neo.close()
 
 @app.post("/api/tasks/{task_id}/cancel")
 def api_cancel_task(task_id: str, user: str = Depends(auth)):

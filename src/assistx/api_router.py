@@ -12,7 +12,8 @@ from .routers.devices import build_devices_router
 from .routers.feeds import build_feeds_router
 from .routers.review import build_review_router
 from .routers.intents import build_intents_router
-from .routers.tickets import build_tickets_router
+from .routers.memory import build_memory_router
+from .routers.transcriptions import build_transcriptions_router
 
 
 app.include_router(build_router_integration_router(_neo))
@@ -27,3 +28,5 @@ app.include_router(build_feeds_router())
 app.include_router(build_review_router())
 app.include_router(build_intents_router())
 app.include_router(build_tickets_router())
+app.include_router(build_memory_router())
+app.include_router(build_transcriptions_router())

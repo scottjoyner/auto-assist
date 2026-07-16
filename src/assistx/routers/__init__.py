@@ -12,7 +12,8 @@ from .devices import build_devices_router
 from .feeds import build_feeds_router
 from .review import build_review_router
 from .intents import build_intents_router
-from .tickets import build_tickets_router
+from .memory import build_memory_router
+from .transcriptions import build_transcriptions_router
 
 __all__ = [
     "build_devices_router",
@@ -20,4 +21,6 @@ __all__ = [
     "build_review_router",
     "build_intents_router",
     "build_tickets_router",
+    "build_memory_router",
+    "build_transcriptions_router",
 ]
