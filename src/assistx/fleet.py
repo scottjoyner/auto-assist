@@ -3,17 +3,9 @@
 DEPRECATED: fleet/router ownership moves to auto-router. This module is kept
 functionally intact for now but should be considered read-only; new routing
 logic belongs in auto-router. See docs/LLD_UNIFIED_FLEET.md W-21.
-"""
-from __future__ import annotations
-
-import logging as _logging
-
-_log = _logging.getLogger(__name__)
-_log.warning("DEPRECATED module assistx.fleet imported — fleet/router ownership moves to auto-router")
 
 The swarm's models change faster than any config file. So this module does NOT
 rely on static model lists. Instead it:
-
   * discovers every live node/model from the router's ``/v1/models`` *aggressively*
     (a background refresh thread re-checks every few seconds), so nodes appearing
     or sleeping are picked up automatically;

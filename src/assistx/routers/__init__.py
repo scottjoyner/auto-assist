@@ -9,5 +9,6 @@ route behavior is preserved byte-for-byte where possible.
 """
 
 from .devices import build_devices_router
+from .feeds import build_feeds_router
 
-__all__ = ["build_devices_router"]
+__all__ = ["build_devices_router", "build_feeds_router"]
