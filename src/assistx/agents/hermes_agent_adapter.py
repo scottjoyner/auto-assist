@@ -50,6 +50,15 @@ LEASE_SECONDS = int(os.getenv("HERMES_LEASE_SECONDS", "900"))
 PROFILES_PATH = os.getenv("HERMES_PROFILES_PATH", "/root/.hermes/profiles.yaml")
 PROFILES_DEFAULT = os.getenv("HERMES_PROFILES_DEFAULT", "exec")
 HERMES_TOOLSETS = os.getenv("HERMES_TOOLSETS", "terminal,file,code_execution,web,memory")
+# Tiers that should be solved by delegating to a real opencode-cli session via
+# Hermes's delegate_task tool (return contract). Comma-separated tier names, or
+# "" to disable. When a task routes to one of these tiers, process_task forces a
+# thin pass-through: Hermes calls delegate_task(provider="opencode-cli",
+# return_format=HERMES_DELEGATE_RETURN_FORMAT, ...) and relays the child's
+# machine-usable result verbatim -- see run_hermes_delegated().
+HERMES_DELEGATE_OPENCODE_TIERS = [t for t in os.getenv("HERMES_DELEGATE_OPENCODE_TIERS", "").split(",") if t]
+# verbatim -> child returns the exact token (no prose); json -> single object.
+HERMES_DELEGATE_RETURN_FORMAT = os.getenv("HERMES_DELEGATE_RETURN_FORMAT", "verbatim")
 EVAL_PATH = os.getenv("HERMES_EVAL_PATH", "/root/knowledge/model-profiles.json")
 KNOWLEDGE_ROOT = os.getenv("HERMES_KNOWLEDGE_ROOT", os.path.dirname(EVAL_PATH))
 EVAL_LOCK = threading.Lock()
@@ -675,6 +684,66 @@ def run_hermes(
     }
 
 
+def run_hermes_delegated(
+    prompt: str,
+    *,
+    timeout: int = HERMES_TIMEOUT,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    return_format: str = HERMES_DELEGATE_RETURN_FORMAT,
+    toolsets: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Solve a task by delegating to a real opencode-cli session via Hermes's
+    ``delegate_task`` tool, returning a *machine-usable* result.
+
+    Unlike :func:`run_hermes`, which lets the model decide how to solve the
+    task (and returns whatever prose it writes), this forces a thin
+    pass-through so the result is programmatically consumable:
+
+      * the ``delegation`` toolset is enabled (appended to the base toolsets),
+      * the prompt instructs Hermes to call ``delegate_task`` exactly once with
+        ``provider="opencode-cli"``, ``role="leaf"``, ``return_format`` set, and
+        the original task as the ``goal``,
+      * Hermes is told to relay the delegation result *verbatim* -- no preamble,
+        fences, or commentary.
+
+    The child opencode session then returns just the requested value
+    (``return_format="verbatim"`` -> the exact token; ``"json"`` -> a single
+    object), which is what auto-ingest / auto-assign / auto-router want when a
+    task's answer feeds another tool, a comparison, or a parser. This is the
+    return-contract pattern documented in the hermes-agent repo
+    (AGENTS.md / website/docs/guides/delegation-patterns.md).
+
+    Returns the same dict shape as :func:`run_hermes`.
+    """
+    if return_format not in ("verbatim", "json", "summary"):
+        return_format = "verbatim"
+    base = [t.strip() for t in (toolsets or HERMES_TOOLSETS).split(",") if t.strip()]
+    if "delegation" not in base:
+        base.append("delegation")
+    delegation_toolsets = ",".join(base)
+
+    directive = (
+        "ROUTING DIRECTIVE (follow exactly): Solve the TASK below by calling the "
+        'delegate_task tool exactly once with arguments '
+        f'provider="opencode-cli", goal=<the TASK verbatim>, return_format="{return_format}", '
+        'role="leaf", toolsets="terminal,file,code_execution". '
+        "When delegate_task returns, output its returned value VERBATIM as your final "
+        "answer -- no preamble, no markdown fences, no extra commentary. Do not solve "
+        "the task yourself; only delegate and relay the result."
+    )
+    full_prompt = f"{directive}\n\nTASK:\n{prompt}"
+
+    logger.info("Delegating task to opencode-cli (return_format=%s)", return_format)
+    return run_hermes(
+        full_prompt,
+        timeout=timeout,
+        model=model,
+        provider=provider,
+        toolsets=delegation_toolsets,
+    )
+
+
 def call_self_task_llm(prompt: str, model: str, max_tokens: int = SELFTASK_MAX_TOKENS,
                        timeout: int = 450) -> Dict[str, Any]:
     """Direct router chat call for background self-tasks.
@@ -1106,6 +1175,19 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
         # without putting them in agentic sessions.
         result = call_self_task_llm(
             prompt, model, max_tokens=SELFTASK_MAX_TOKENS, timeout=HERMES_TIMEOUT
+        )
+    elif HERMES_DELEGATE_OPENCODE_TIERS and tier in HERMES_DELEGATE_OPENCODE_TIERS:
+        # This tier is solved by delegating to a real opencode-cli session via
+        # Hermes's delegate_task tool (return contract). The child returns a
+        # machine-usable value (verbatim token / json object) instead of prose,
+        # so auto-ingest / auto-assign / auto-router can consume the answer
+        # directly. See run_hermes_delegated().
+        result = run_hermes_delegated(
+            prompt,
+            timeout=HERMES_TIMEOUT,
+            model=model,
+            provider=HERMES_PROVIDER,
+            return_format=HERMES_DELEGATE_RETURN_FORMAT,
         )
     else:
         result = run_hermes(

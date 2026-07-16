@@ -347,6 +347,48 @@ Use `uname -a` and `hostname` to confirm if these values are current.
 
 ---
 
+## Delegating to opencode-cli (machine-usable results)
+
+Some swarm tasks need a *programmatically consumable* answer, not a prose
+summary — e.g. auto-ingest asking for a classification token, auto-assign
+asking for a JSON assignment, or auto-router asking for a placement decision.
+For those, solve the task by delegating to a real **opencode-cli** session via
+Hermes's `delegate_task` tool and a **return contract**:
+
+```python
+# in src/assistx/agents/hermes_agent_adapter.py
+result = run_hermes_delegated(
+    prompt,                                   # the task
+    model=model,                              # tool-capable tier model
+    provider=HERMES_PROVIDER,
+    return_format="verbatim",                 # or "json" / "summary"
+)
+```
+
+`run_hermes_delegated()` enables the `delegation` toolset and instructs Hermes
+to call `delegate_task(provider="opencode-cli", goal=<task>, return_format=...,
+role="leaf")` exactly once, then relay the child's result **verbatim**. The
+child opencode session returns just the requested value (a token for
+`"verbatim"`, a single object for `"json"`) instead of narrative — that value
+can then be parsed, compared, or fed to the next tool.
+
+Enable it per tier via env (no code change needed):
+
+```bash
+export HERMES_DELEGATE_OPENCODE_TIERS="tool-small"   # tiers that delegate
+export HERMES_DELEGATE_RETURN_FORMAT="verbatim"      # verbatim | json | summary
+```
+
+When a routed task's tier is in `HERMES_DELEGATE_OPENCODE_TIERS`,
+`process_task()` calls `run_hermes_delegated()` instead of a free-form
+`hermes chat` session, and the auto-ingest / auto-assign / auto-router
+consumers receive the machine-usable result in the task `result.output`.
+
+> Return-contract semantics and the full `delegate_task` wiring live in the
+> hermes-agent repo: `AGENTS.md` and `website/docs/guides/delegation-patterns.md`.
+
+---
+
 ## File Location
 
 This skill lives at `~/.hermes/skills/assistx/SKILL.md` on the node. To update:
