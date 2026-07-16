@@ -1,0 +1,27 @@
+# Ruff config — auto-assist (W-28)
+# Enforced in CI; keeps the unified fleet repos consistent.
+
+line-length = 120
+target-version = "py312"
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "W",    # pycodestyle warnings
+]
+ignore = [
+    "E501",  # line length handled by formatter / large log strings
+    "B008",  # function call in argument defaults (FastAPI Depends patterns)
+    "B904",  # raise literal (acceptable in this codebase)
+]
+
+[lint.per-file-ignores]
+"src/assistx/contracts/tests/*" = ["B"]
+"tests/*" = ["B", "F401"]
+
+[format]
+quote-style = "double"

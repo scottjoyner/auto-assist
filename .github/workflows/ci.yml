@@ -30,6 +30,14 @@ jobs:
         run: |
           python -m py_compile $(find src tests -name "*.py" -type f)
 
+      - name: Lint (ruff)
+        run: |
+          ruff check src tests
+
+      - name: Type check (mypy)
+        run: |
+          mypy src/assistx --ignore-missing-imports --no-error-summary || true
+
       - name: Run tests
         env:
           BASIC_AUTH_USER: neo4j
