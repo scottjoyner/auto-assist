@@ -71,7 +71,17 @@ class PaperclipClient:
                     msg = f"{resp.status_code} {resp.reason} for {method} {url}: {body}"
                     err = requests.HTTPError(msg, response=resp)
                     raise err
-                return resp.json()
+                # W-30: wrap resp.json() so non-JSON/empty bodies don't raise
+                # an unhandled error outside the retry loop (which would surface as
+                # a 500). On decode failure, treat it as a retryable server fault.
+                try:
+                    return resp.json()
+                except ValueError:
+                    if attempt < 2:
+                        time.sleep(0.25 * (2 ** attempt))
+                        continue
+                    msg = f"{resp.status_code} {resp.reason} for {method} {url}: non-JSON response body"
+                    raise requests.HTTPError(msg, response=resp)
             except requests.RequestException as e:
                 last_exc = e
                 if attempt >= 2:
