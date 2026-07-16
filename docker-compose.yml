@@ -91,6 +91,10 @@ services:
       - AUTO_ROUTER_BASE_URL=${AUTO_ROUTER_BASE_URL:-http://auto-router:8088}
       - AUTO_ASSIGN_BASE_URL=${AUTO_ASSIGN_BASE_URL:-http://auto-assign:8090}
 
+      # --- W-27: make ASSISTX_OVERLAY_MODE explicit ---
+      # Default matches the unified router+assign path. Override as needed.
+      - ASSISTX_OVERLAY_MODE=${ASSISTX_OVERLAY_MODE:-router_plus_assign}
+
       # --- App paths ---
       - CACHE_PATH=/app/.assistx_cache.sqlite
     depends_on:
@@ -159,6 +163,8 @@ services:
       - TASK_RETENTION_DAYS=${TASK_RETENTION_DAYS:-30}
       - MEMORY_RETENTION_DAYS=${MEMORY_RETENTION_DAYS:-90}
       - WORKER_HEALTH_PORT=${WORKER_HEALTH_PORT:-8100}
+      # --- W-27: make ASSISTX_OVERLAY_MODE explicit on the worker too ---
+      - ASSISTX_OVERLAY_MODE=${ASSISTX_OVERLAY_MODE:-router_plus_assign}
     depends_on:
       redis:
         condition: service_healthy
@@ -229,9 +235,9 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./src:/app/src
-      - /home/scott/git:/home/scott/git:rw
-      - /media/scott/SSD_4TB:/media/scott/SSD_4TB:rw
-      - /media/scott/NAS5:/media/scott/NAS5:rw
+      - ${HOST_GIT_MOUNT:-/home/scott/git}:${HOST_GIT_MOUNT_TARGET:-/home/scott/git}:rw
+      - ${HOST_SSD_MOUNT:-/media/scott/SSD_4TB}:${HOST_SSD_MOUNT_TARGET:-/media/scott/SSD_4TB}:rw
+      - ${HOST_NAS5_MOUNT:-/media/scott/NAS5}:${HOST_NAS5_MOUNT_TARGET:-/media/scott/NAS5}:rw
       - /home/scott/knowledge:/root/knowledge:rw
       - /home/scott/.cache/auto-assist-hermes-home:/root/.hermes
       - /home/scott/.local/share/uv/python:/home/scott/.local/share/uv/python:ro
