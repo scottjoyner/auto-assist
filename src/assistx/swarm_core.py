@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from .contracts.event_envelope import EventEnvelop
 from .coordination_metadata import build_event_metadata
 from .neo4j_client import Neo4jClient
 
@@ -1007,9 +1008,35 @@ def record_trace_event(
     route_id: Optional[str] = None,
     assignment_id: Optional[str] = None,
     payload: Optional[Dict[str, Any]] = None,
+    links: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
+    """Persist a ``(:TraceEvent)`` and wire it into its ``(:TraceGroup)``.
+
+    When ``links`` are supplied (or derived from ``task_id``/``dispatch_id``/
+    ``route_id``/``assignment_id``), the event is connected to the relevant
+    domain nodes:
+      ``(:TraceEvent)-[:FOR_TASK]->(:Task)``,
+      ``[:FOR_DISPATCH]->(:Dispatch)``, ``[:FOR_ASSIGNMENT]->(:Assignment)``,
+      ``[:FOR_ROUTE]->(:RouteDecision)``.
+
+    ``TraceGroup.current_state`` is recomputed from the latest event in the
+    group so the control plane always reflects the most recent observation.
+    """
     event_id = f"trace:{correlation_id}:{event_type}:{uuid.uuid4().hex[:12]}"
     payload_json = _json_dumps(payload or {})
+
+    # Derive explicit links from the scalar ids when the caller supplied them
+    # without a structured link list.
+    resolved_links: List[Dict[str, Any]] = list(links or [])
+    if task_id and not any(l.get("target_type") == "Task" for l in resolved_links):
+        resolved_links.append({"rel": "FOR_TASK", "target_type": "Task", "target_id": task_id})
+    if dispatch_id and not any(l.get("target_type") == "Dispatch" for l in resolved_links):
+        resolved_links.append({"rel": "FOR_DISPATCH", "target_type": "Dispatch", "target_id": dispatch_id})
+    if route_id and not any(l.get("target_type") == "RouteDecision" for l in resolved_links):
+        resolved_links.append({"rel": "FOR_ROUTE", "target_type": "RouteDecision", "target_id": route_id})
+    if assignment_id and not any(l.get("target_type") == "Assignment" for l in resolved_links):
+        resolved_links.append({"rel": "FOR_ASSIGNMENT", "target_type": "Assignment", "target_id": assignment_id})
+
     with neo._session() as s:
         s.run(
             """
@@ -1038,18 +1065,135 @@ def record_trace_event(
                 "payload_json": payload_json,
             },
         ).consume()
-        # Link to correlation group
+
+        # Link to the domain nodes this event is about.
+        for link in resolved_links:
+            rel = str(link.get("rel") or "FOR_TASK").upper()
+            target_type = str(link.get("target_type") or "Task")
+            target_id = str(link.get("target_id") or "")
+            if not target_id:
+                continue
+            s.run(
+                f"""
+                MATCH (t:TraceEvent {{event_id:$event_id}})
+                MERGE (n:{target_type} {{id:$target_id}})
+                MERGE (t)-[:{rel}]->(n)
+                """,
+                {"event_id": event_id, "target_id": target_id},
+            ).consume()
+
+        # Link to correlation group and recompute current_state from the latest
+        # event in the group.
         s.run(
             """
             MERGE (g:TraceGroup {correlation_id:$correlation_id})
             ON CREATE SET g.created_at=datetime(), g.created_at_ts=timestamp()
+            SET g.updated_at=datetime(), g.updated_at_ts=timestamp()
             WITH g
             MATCH (t:TraceEvent {event_id:$event_id})
             MERGE (g)-[:HAS_EVENT]->(t)
             """,
             {"event_id": event_id, "correlation_id": correlation_id},
-        )
+        ).consume()
+        s.run(
+            """
+            MATCH (g:TraceGroup {correlation_id:$correlation_id})-[:HAS_EVENT]->(t:TraceEvent)
+            WITH g, t ORDER BY t.ts_ms DESC
+            WITH g, collect(t.event_type) AS types
+            CALL apoc.do.when(
+              size(types) > 0,
+              'SET g.current_state = CASE types[0]
+                 WHEN "assignment.completed" THEN "completed"
+                 WHEN "assignment.failed" THEN "failed"
+                 WHEN "route.blocked" THEN "blocked"
+                 WHEN "assignment.expired" THEN "expired"
+                 WHEN "assignment.released" THEN "pending_assignment"
+                 WHEN "assignment.heartbeat" THEN "running"
+                 WHEN "assignment.claimed" THEN "running"
+                 WHEN "route.selected" THEN "pending_assignment"
+                 WHEN "router.route_decision" THEN "pending_assignment"
+                 WHEN "dispatch.accepted" THEN "pending_route"
+                 WHEN "voice.auth.rejected" THEN "rejected"
+                 WHEN "dispatch.rejected" THEN "rejected"
+                 WHEN "assignment.requested" THEN "pending_assignment"
+                 ELSE "pending" END,
+              g.current_state)',
+              '',
+              {g:g, types:types}) YIELD value
+            RETURN value
+            """,
+            {"correlation_id": correlation_id},
+        ).consume() if _has_apoc(neo) else _update_trace_state_inline(neo, correlation_id)
     return event_id
+
+
+def _has_apoc(neo: Neo4jClient) -> bool:
+    try:
+        with neo._session() as s:
+            rec = s.run(
+                "CALL dbms.procedures() YIELD name WHERE name STARTS WITH 'apoc' RETURN count(name) AS c"
+            ).single()
+            return bool(rec and rec["c"])
+    except Exception:
+        return False
+
+
+def _update_trace_state_inline(neo: Neo4jClient, correlation_id: str) -> None:
+    """Fallback TraceGroup.current_state recompute when APOC is unavailable."""
+    with neo._session() as s:
+        rows = s.run(
+            """
+            MATCH (t:TraceEvent {correlation_id:$correlation_id})
+            RETURN t.event_type AS et
+            ORDER BY t.ts_ms DESC
+            """,
+            {"correlation_id": correlation_id},
+        )
+        types = [r["et"] for r in rows]
+        if not types:
+            return
+        from_state = {
+            "assignment.completed": "completed",
+            "assignment.failed": "failed",
+            "route.blocked": "blocked",
+            "assignment.expired": "expired",
+            "assignment.released": "pending_assignment",
+            "assignment.heartbeat": "running",
+            "assignment.claimed": "running",
+            "route.selected": "pending_assignment",
+            "router.route_decision": "pending_assignment",
+            "dispatch.accepted": "pending_route",
+            "voice.auth.rejected": "rejected",
+            "dispatch.rejected": "rejected",
+            "assignment.requested": "pending_assignment",
+        }
+        state = from_state.get(types[0], "pending")
+        s.run(
+            "MATCH (g:TraceGroup {correlation_id:$correlation_id}) SET g.current_state=$state",
+            {"correlation_id": correlation_id, "state": state},
+        ).consume()
+
+
+def record_trace_from_envelope(
+    neo: Neo4jClient,
+    envelope: EventEnvelop,
+    source: Optional[str] = None,
+) -> str:
+    """Record a trace event from a canonical ``EventEnvelop``.
+
+    Links are taken from ``envelope.links`` (each ``EventLink`` carries the
+    relationship type, target label and target id). ``correlation_id`` is
+    guaranteed present because ``EventEnvelop`` validation requires it.
+    """
+    links = [link.model_dump() for link in envelope.links]
+    return record_trace_event(
+        neo,
+        correlation_id=str(envelope.correlation_id),
+        event_type=str(envelope.event_type),
+        source=source or str(envelope.source_repo),
+        payload=dict(envelope.payload or {}),
+        links=links,
+    )
 
 
 def get_trace(neo: Neo4jClient, correlation_id: str) -> Optional[Dict[str, Any]]:

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
 
+from .contracts.event_envelope import EventEnvelop
 from .draft_model import DraftModelUnavailable, generate_draft
 from .neo4j_client import Neo4jClient
 from .outbox_client import OutboxClient
@@ -22,6 +26,7 @@ from .swarm_core import (
     probe_model_endpoint,
     record_event,
     record_trace_event,
+    record_trace_from_envelope,
     release_expired_task_leases,
     set_task_lease,
     upsert_model_endpoint,
@@ -50,7 +55,7 @@ class EventEnvelopeIn(BaseModel):
     privacy: Dict[str, Any]
     correlation_id: Optional[str] = None
     actor: Optional[Dict[str, Any]] = None
-    links: Optional[Dict[str, Any]] = None
+    links: Optional[List[Dict[str, Any]]] = None
 
 
 class SwarmNodeRegisterIn(BaseModel):
@@ -159,9 +164,22 @@ def _default_auth(
 
 @router.post("/api/events")
 def api_events(body: EventEnvelopeIn, user: str = Depends(_default_auth)):
+    # W-05/W-06: enforce a valid (UUID) correlation_id at the boundary. The
+    # canonical EventEnvelop model requires it, so parse through it first and
+    # return 422 on any validation failure (incl. a missing/garbage id).
+    try:
+        envelope = EventEnvelop.model_validate(body.model_dump())
+    except Exception as e:  # pydantic ValidationError
+        raise HTTPException(status_code=422, detail=f"Invalid event envelope: {str(e)[:400]}")
     neo = _neo()
     try:
-        return record_event(neo, body.model_dump())
+        result = record_event(neo, body.model_dump())
+        # Persist the trace linkage for this envelope (correlation_id guaranteed).
+        try:
+            record_trace_from_envelope(neo, envelope)
+        except Exception as trace_exc:  # trace is best-effort; never block ingest
+            logger.warning("trace recording skipped for %s: %s", envelope.correlation_id, trace_exc)
+        return result
     except EventValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except EventConflictError as e:

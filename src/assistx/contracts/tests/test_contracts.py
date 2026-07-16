@@ -39,6 +39,24 @@ def test_envelope_requires_correlation_id() -> None:
         )
 
 
+def test_envelope_rejects_missing_correlation_id_field() -> None:
+    """W-06: omitting correlation_id entirely must fail validation at the boundary."""
+    with pytest.raises(Exception):
+        EventEnvelope(
+            schema_version=SCHEMA_VERSION,
+            source_repo="auto-assist",
+            event_type="task.candidate.created",
+        )
+
+
+def test_envelope_event_link_shape() -> None:
+    """W-05: EventLink carries rel/target_type/target_id for FOR_* relations."""
+    link = EventLink(rel="FOR_TASK", target_type="Task", target_id="t-1")
+    assert link.rel == "FOR_TASK"
+    assert link.target_type == "Task"
+    assert link.target_id == "t-1"
+
+
 def test_envelope_accepts_valid_uuid_correlation_id() -> None:
     env = EventEnvelope(
         schema_version=SCHEMA_VERSION,

@@ -573,3 +573,73 @@ def test_custom_lease_seconds_on_heartbeat(seeded_neo4j):
     hb_default = seeded_neo4j.heartbeat_task(task["id"], agent_id="agent-heartbeatlease", status="RUNNING")
     assert hb_default.get("lease_seconds") == 30
     assert hb_default.get("lease_expires_at_ts", 0) > now_ms
+
+
+# ---------------------------------------------------------------------------
+# W-05 / W-06 — trace observability: correlation_id required + TraceEvent links
+# ---------------------------------------------------------------------------
+
+def test_events_endpoint_rejects_missing_correlation_id():
+    """An envelope without a valid UUID correlation_id is rejected (HTTP 422)."""
+    from fastapi import HTTPException
+
+    from assistx.swarm_routes import api_events, EventEnvelopeIn
+
+    bad = _base_event()
+    # correlation_id present but not a UUID -> canonical validation must fail
+    bad["correlation_id"] = "not-a-uuid"
+    with pytest.raises(HTTPException) as exc:
+        api_events(EventEnvelopeIn(**bad), user="test")
+    assert exc.value.status_code == 422
+
+
+def test_trace_event_links_to_task_and_updates_group_state(seeded_neo4j):
+    from assistx.contracts.event_envelope import EventEnvelop, EventLink
+    from assistx.swarm_core import record_trace_from_envelope
+
+    task_id = seeded_neo4j.upsert_ticket(
+        title="trace-link-task", ticket_type="task", status="READY", kind="w05"
+    )
+    correlation_id = str(uuid.uuid4())
+    envelope = EventEnvelop(
+        schema_version="2026-06-08.v1",
+        source_repo="auto-assist",
+        event_type="task.candidate.created",
+        correlation_id=correlation_id,
+        links=[EventLink(rel="FOR_TASK", target_type="Task", target_id=task_id)],
+    )
+    record_trace_from_envelope(seeded_neo4j, envelope)
+
+    with seeded_neo4j._session() as s:
+        link = s.run(
+            """
+            MATCH (t:TraceEvent {correlation_id:$cid})-[r:FOR_TASK]->(n:Task {id:$tid})
+            RETURN type(r) AS rel, n.id AS tid
+            """,
+            {"cid": correlation_id, "tid": task_id},
+        ).single()
+        assert link is not None, "expected (TraceEvent)-[:FOR_TASK]->(Task)"
+        assert link["rel"] == "FOR_TASK"
+
+        group = s.run(
+            "MATCH (g:TraceGroup {correlation_id:$cid}) RETURN g.current_state AS state",
+            {"cid": correlation_id},
+        ).single()
+        assert group is not None
+        assert group["state"] == "pending"
+
+    # A follow-up completion event should advance current_state -> "completed".
+    done = EventEnvelop(
+        schema_version="2026-06-08.v1",
+        source_repo="auto-assist",
+        event_type="assignment.completed",
+        correlation_id=correlation_id,
+        links=[EventLink(rel="FOR_TASK", target_type="Task", target_id=task_id)],
+    )
+    record_trace_from_envelope(seeded_neo4j, done)
+    with seeded_neo4j._session() as s:
+        state = s.run(
+            "MATCH (g:TraceGroup {correlation_id:$cid}) RETURN g.current_state AS state",
+            {"cid": correlation_id},
+        ).single()["state"]
+        assert state == "completed"
