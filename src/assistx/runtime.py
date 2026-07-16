@@ -58,7 +58,8 @@ def build_runtime_configuration() -> Dict[str, Any]:
     add_field("REDIS_URL", default="redis://redis:6379/0", required=profile == "production")
     add_field("NEO4J_URI", default="bolt://neo4j:7687", required=profile == "production", validator=lambda value: value.startswith(("bolt://", "neo4j://")))
     add_field("NEO4J_USER", default="neo4j", required=profile == "production")
-    add_field("NEO4J_PASSWORD", default="knowledge_graph_2026", required=profile == "production", secret=True)
+    # No default password. Production profiles require it to be injected.
+    add_field("NEO4J_PASSWORD", default="", required=profile == "production", secret=True)
     add_field("NEO4J_DATABASE", default="assistx")
     add_field("LLM_BACKEND", default="openai", required=profile == "production")
     add_field("OPENAI_BASE_URL", default="http://host.docker.internal:1234/v1", required=profile == "production", validator=_is_http_url)

@@ -11,7 +11,9 @@ class Settings:
     dependency_mode: str = os.getenv("ASSISTX_DEPENDENCY_MODE", os.getenv("ASSISTX_RUNTIME_PROFILE", "production"))
     neo4j_uri: str = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
     neo4j_user: str = os.getenv("NEO4J_USER", "neo4j")
-    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "knowledge_graph_2026")
+    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "")
+    # Password is required at runtime; runtime.validate_runtime_configuration
+    # enforces presence for production profiles. Never default to a real secret.
     neo4j_database: str | None = os.getenv("NEO4J_DATABASE")
 
     llm_backend: str = os.getenv("LLM_BACKEND", "openai")
