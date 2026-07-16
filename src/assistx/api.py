@@ -1056,10 +1056,14 @@ def command_center(request: Request, user: str = Depends(auth)):
 
 @app.get("/fleet", response_class=HTMLResponse)
 def fleet_ui(request: Request, user: str = Depends(auth)):
+    # DEPRECATED: fleet/router ownership moves to auto-router.
+    _api_logger.warning("DEPRECATED route /fleet accessed — fleet/router ownership moves to auto-router")
     return templates.TemplateResponse("fleet.html", {"request": request})
 
 @app.get("/routing", response_class=HTMLResponse)
 def routing_ui(request: Request, user: str = Depends(auth)):
+    # DEPRECATED: fleet/router ownership moves to auto-router.
+    _api_logger.warning("DEPRECATED route /routing accessed — fleet/router ownership moves to auto-router")
     return templates.TemplateResponse("routing.html", {"request": request})
 
 
