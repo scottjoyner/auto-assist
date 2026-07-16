@@ -14,6 +14,7 @@ from .routers.review import build_review_router
 from .routers.intents import build_intents_router
 from .routers.tickets import build_tickets_router
 from .routers.memory import build_memory_router
+from .routers.transcriptions import build_transcriptions_router
 from .routers.dispatch import build_dispatch_router
 
 

@@ -15,7 +15,16 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..api import CreateTaskIn, auth, _neo
+from pydantic import BaseModel, Field
+
+from ..api import auth, _neo
+
+
+class TranscriptionTaskIn(BaseModel):
+    title: str
+    status: str = "pending"
+    kind: str = "transcription"
+    payload: dict = Field(default_factory=dict)
 
 
 router = APIRouter(tags=["transcriptions"])
@@ -80,7 +89,7 @@ def api_get_transcription(tid: str, user: str = Depends(auth)):
 
 
 @router.post("/api/transcriptions/{tid}/task")
-def api_create_task_from_transcription(tid: str, body: CreateTaskIn, user: str = Depends(auth)):
+def api_create_task_from_transcription(tid: str, body: TranscriptionTaskIn, user: str = Depends(auth)):
     neo = _neo()
     try:
         with neo._session() as s:
