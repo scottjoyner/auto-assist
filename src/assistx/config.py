@@ -25,7 +25,14 @@ class Settings:
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://ollama:11434")
     ollama_model: str = os.getenv("OLLAMA_MODEL", "gemma2:2b")
 
-    overlay_mode: str = os.getenv("ASSISTX_OVERLAY_MODE", "direct")
+    overlay_mode: str = os.getenv("ASSISTX_OVERLAY_MODE", "router_plus_assign")
+
+    # W-22: single config-gated switch for the execution authority.
+    # paperclip -> Paperclip cutover poller owns execution dispatch.
+    # direct   -> direct hermes_agent_adapter poller owns execution dispatch.
+    # auto     -> prefer paperclip, fall back to direct if unavailable.
+    # Default preserved as-is (was implicit paperclip/direct both running).
+    execution_backend: str = os.getenv("EXECUTION_BACKEND", "auto").strip().lower()
     auto_router_base_url: str = os.getenv("AUTO_ROUTER_BASE_URL", "")
     auto_assign_base_url: str = os.getenv("AUTO_ASSIGN_BASE_URL", "")
     auto_router_health_path: str = os.getenv("AUTO_ROUTER_HEALTH_PATH", "/health")
