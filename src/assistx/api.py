@@ -1063,11 +1063,6 @@ def routing_ui(request: Request, user: str = Depends(auth)):
     return templates.TemplateResponse("routing.html", {"request": request})
 
 
-@app.get("/trading", response_class=HTMLResponse)
-def trading_ui(request: Request, user: str = Depends(auth)):
-    return templates.TemplateResponse("trading.html", {"request": request})
-
-
 @app.get("/intents", response_class=HTMLResponse)
 def intents_ui(request: Request, user: str = Depends(auth)):
     return templates.TemplateResponse("intents.html", {"request": request})
