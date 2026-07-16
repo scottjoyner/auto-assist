@@ -12,6 +12,7 @@ from .routers.devices import build_devices_router
 from .routers.feeds import build_feeds_router
 from .routers.review import build_review_router
 from .routers.intents import build_intents_router
+from .routers.tickets import build_tickets_router
 from .routers.memory import build_memory_router
 from .routers.dispatch import build_dispatch_router
 
