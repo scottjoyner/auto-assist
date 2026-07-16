@@ -10,6 +10,9 @@ from .router_integration import build_router_integration_router
 from .overlay_routes import build_overlay_router
 from .routers.devices import build_devices_router
 from .routers.feeds import build_feeds_router
+from .routers.review import build_review_router
+from .routers.intents import build_intents_router
+from .routers.tickets import build_tickets_router
 
 
 app.include_router(build_router_integration_router(_neo))
@@ -21,3 +24,6 @@ app.include_router(build_passive_status_router(_neo, auth_dependency=auth))
 app.include_router(build_passive_event_router(_neo, auth_dependency=auth))
 app.include_router(build_devices_router())
 app.include_router(build_feeds_router())
+app.include_router(build_review_router())
+app.include_router(build_intents_router())
+app.include_router(build_tickets_router())

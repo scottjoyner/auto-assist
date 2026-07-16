@@ -10,5 +10,14 @@ route behavior is preserved byte-for-byte where possible.
 
 from .devices import build_devices_router
 from .feeds import build_feeds_router
+from .review import build_review_router
+from .intents import build_intents_router
+from .tickets import build_tickets_router
 
-__all__ = ["build_devices_router", "build_feeds_router"]
+__all__ = [
+    "build_devices_router",
+    "build_feeds_router",
+    "build_review_router",
+    "build_intents_router",
+    "build_tickets_router",
+]
