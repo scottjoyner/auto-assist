@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from .contracts.event_envelope import EventEnvelop
+from .contracts.event_envelope import EventEnvelope
 from .coordination_metadata import build_event_metadata
 from .neo4j_client import Neo4jClient
 
@@ -1176,14 +1176,14 @@ def _update_trace_state_inline(neo: Neo4jClient, correlation_id: str) -> None:
 
 def record_trace_from_envelope(
     neo: Neo4jClient,
-    envelope: EventEnvelop,
+    envelope: EventEnvelope,
     source: Optional[str] = None,
 ) -> str:
-    """Record a trace event from a canonical ``EventEnvelop``.
+    """Record a trace event from a canonical ``EventEnvelope``.
 
     Links are taken from ``envelope.links`` (each ``EventLink`` carries the
     relationship type, target label and target id). ``correlation_id`` is
-    guaranteed present because ``EventEnvelop`` validation requires it.
+    guaranteed present because ``EventEnvelope`` validation requires it.
     """
     links = [link.model_dump() for link in envelope.links]
     return record_trace_event(

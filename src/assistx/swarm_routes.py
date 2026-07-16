@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
 
-from .contracts.event_envelope import EventEnvelop
+from .contracts.event_envelope import EventEnvelope
 from .draft_model import DraftModelUnavailable, generate_draft
 from .neo4j_client import Neo4jClient
 from .outbox_client import OutboxClient
@@ -165,10 +165,10 @@ def _default_auth(
 @router.post("/api/events")
 def api_events(body: EventEnvelopeIn, user: str = Depends(_default_auth)):
     # W-05/W-06: enforce a valid (UUID) correlation_id at the boundary. The
-    # canonical EventEnvelop model requires it, so parse through it first and
+    # canonical EventEnvelope model requires it, so parse through it first and
     # return 422 on any validation failure (incl. a missing/garbage id).
     try:
-        envelope = EventEnvelop.model_validate(body.model_dump())
+        envelope = EventEnvelope.model_validate(body.model_dump())
     except Exception as e:  # pydantic ValidationError
         raise HTTPException(status_code=422, detail=f"Invalid event envelope: {str(e)[:400]}")
     neo = _neo()
