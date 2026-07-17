@@ -400,7 +400,13 @@ async def lifespan(app: FastAPI):
         schedule_prober()
     except Exception as e:
         _lifespan_logger.warning(f"Model prober not scheduled: {e}")
+    try:
+        from .maintenance import run_stale_claim_reaper_loop
+        run_stale_claim_reaper_loop()
+    except Exception as e:
+        _lifespan_logger.warning(f"Stale claim reaper not started: {e}")
     yield
+
 
 app = FastAPI(title="AssistX API & UI", lifespan=lifespan)
 setup_logging()
@@ -1766,13 +1772,15 @@ def api_claim_task(task_id: str, body: TaskClaimIn, user: str = Depends(auth)):
         if not allowed:
             TASK_CLAIMS.labels(result="drain_blocked").inc()
             raise HTTPException(status_code=409, detail={"claimed": False, "reason": "drain_mode_block", "message": reason})
-        result = neo.claim_task(
-            task_id=task_id,
-            agent_id=body.agent_id,
-            capabilities=body.capabilities,
-            session_id=body.session_id,
-            idempotency_key=body.idempotency_key,
-            lease_seconds=body.lease_seconds,
+        result = neo._with_retry(
+            lambda: neo.claim_task(
+                task_id=task_id,
+                agent_id=body.agent_id,
+                capabilities=body.capabilities,
+                session_id=body.session_id,
+                idempotency_key=body.idempotency_key,
+                lease_seconds=body.lease_seconds,
+            )
         )
         if result.get("claimed"):
             TASK_CLAIMS.labels(result="claimed").inc()
@@ -1809,14 +1817,16 @@ def api_complete_task(task_id: str, body: TaskCompleteIn, user: str = Depends(au
         raise HTTPException(status_code=400, detail="status must be DONE, FAILED, or CANCELLED")
     neo = _neo()
     try:
-        task = neo.complete_task(
-            task_id=task_id,
-            agent_id=body.agent_id,
-            status=body.status,
-            summary=body.summary,
-            result=body.result,
-            session_id=body.session_id,
-            idempotency_key=body.idempotency_key,
+        task = neo._with_retry(
+            lambda: neo.complete_task(
+                task_id=task_id,
+                agent_id=body.agent_id,
+                status=body.status,
+                summary=body.summary,
+                result=body.result,
+                session_id=body.session_id,
+                idempotency_key=body.idempotency_key,
+            )
         )
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")

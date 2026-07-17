@@ -53,12 +53,15 @@ class Neo4jClient:
         pool_size = int(os.getenv("NEO4J_MAX_CONNECTION_POOL_SIZE", "50"))
         acq_timeout = float(os.getenv("NEO4J_CONNECTION_ACQUISITION_TIMEOUT", "30"))
         max_tx_retry = float(os.getenv("NEO4J_MAX_TRANSACTION_RETRY_TIME", "10"))
+        max_conn_lifetime = float(os.getenv("NEO4J_MAX_CONNECTION_LIFETIME", "300"))
         self.driver: Driver = GraphDatabase.driver(
             self.uri,
             auth=(self.user, self.password),
             max_connection_pool_size=pool_size,
             connection_acquisition_timeout=acq_timeout,
             max_transaction_retry_time=max_tx_retry,
+            max_connection_lifetime=max_conn_lifetime,
+            keep_alive=True,
         )
 
     # ---------- setup / teardown ----------
@@ -69,6 +72,20 @@ class Neo4jClient:
     def _session(self) -> Session:
         # database may be None → Neo4j routes to default
         return self.driver.session(database=self.database) if self.database else self.driver.session()
+
+    def _with_retry(self, fn, attempts: int = 3):
+        """Run a session-backed callable, transparently retrying transient
+        ServiceUnavailable (dropped connections / momentary unavailability).
+        Avoids surfacing 503s to fleet callers under load."""
+        from neo4j.exceptions import ServiceUnavailable as _SU
+        last = None
+        for _ in range(attempts):
+            try:
+                return fn()
+            except _SU as e:
+                last = e
+                continue
+        raise last
 
     @staticmethod
     def _load_settings_fallback() -> Dict[str, Optional[str]]:
