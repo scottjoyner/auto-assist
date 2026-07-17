@@ -155,6 +155,31 @@ class TaskCompleteIn(BaseModel):
     session_id: Optional[str] = None
     idempotency_key: Optional[str] = None
 
+
+class TaskCreateIn(BaseModel):
+    """Create a swarm task that a capability-tagged fleet node can pick up.
+
+    Used by auto-ingest (and any producer) to fan a batch/folder into
+    READY tasks without touching Neo4j directly. The fleet node-agent polls
+    ``GET /api/agent/tasks?capabilities=...`` and executes ``payload.command``
+    or ``payload.yolo_command``.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    task_id: Optional[str] = None
+    title: str
+    task_type: str = "swarm_task"
+    status: str = "READY"
+    kind: Optional[str] = None
+    required_capabilities: Optional[List[str]] = None
+    target_agent_id: Optional[str] = None
+    priority: Optional[str] = None
+    payload: Optional[Dict[str, Any]] = None
+    idempotency_key: Optional[str] = None
+    correlation_id: Optional[str] = None
+
+
 class PaperclipEventIn(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -1599,6 +1624,34 @@ else:
     @app.post("/upload-audio")
     async def upload_audio(user: str = Depends(auth)):
         raise HTTPException(status_code=503, detail="python-multipart is required for /upload-audio")
+
+@app.post("/api/tasks")
+def api_create_task(body: TaskCreateIn, user: str = Depends(auth)):
+    """Create a READY swarm task for fleet nodes to execute.
+
+    Returns the created task_id. If ``task_id`` is supplied and already exists
+    (idempotent), the existing task is returned without duplication.
+    """
+    neo = _neo()
+    try:
+        payload = dict(body.payload or {})
+        if body.correlation_id:
+            payload.setdefault("correlation_id", body.correlation_id)
+        result = neo.create_task_with_context(
+            title=body.title,
+            task_type=body.task_type,
+            status=body.status,
+            kind=body.kind,
+            required_capabilities=body.required_capabilities,
+            target_agent_id=body.target_agent_id,
+            priority=body.priority,
+            payload=payload,
+            idempotency_key=body.idempotency_key,
+        )
+        return {"task_id": result.get("task_id"), "dispatch_id": result.get("dispatch_id")}
+    finally:
+        neo.close()
+
 
 @app.get("/api/tasks")
 def api_list_tasks(
