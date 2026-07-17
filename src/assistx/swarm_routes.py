@@ -165,10 +165,22 @@ def _default_auth(
 @router.post("/api/events")
 def api_events(body: EventEnvelopeIn, user: str = Depends(_default_auth)):
     # W-05/W-06: enforce a valid (UUID) correlation_id at the boundary. The
-    # canonical EventEnvelope model requires it, so parse through it first and
-    # return 422 on any validation failure (incl. a missing/garbage id).
+    # canonical EventEnvelope model requires it, so validate just the canonical
+    # fields. EventEnvelopeIn is a superset (extra="ignore") carrying repo-local
+    # fields (event_id, source_service, idempotency_key, ...); project only the
+    # canonical subset so the strict envelope (extra="forbid") accepts it.
     try:
-        envelope = EventEnvelope.model_validate(body.model_dump())
+        envelope = EventEnvelope.model_validate(
+            {
+                "schema_version": body.schema_version,
+                "source_repo": body.source_repo,
+                "event_type": body.event_type,
+                "correlation_id": body.correlation_id,
+                "actor": body.actor,
+                "payload": body.payload,
+                "links": body.links or [],
+            }
+        )
     except Exception as e:  # pydantic ValidationError
         raise HTTPException(status_code=422, detail=f"Invalid event envelope: {str(e)[:400]}")
     neo = _neo()
