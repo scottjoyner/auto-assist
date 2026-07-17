@@ -405,6 +405,11 @@ async def lifespan(app: FastAPI):
         run_stale_claim_reaper_loop()
     except Exception as e:
         _lifespan_logger.warning(f"Stale claim reaper not started: {e}")
+    try:
+        from .fleet_executor import _start_executor_loop
+        _start_executor_loop()
+    except Exception as e:
+        _lifespan_logger.warning(f"Fleet executor not started: {e}")
     yield
 
 

@@ -76,16 +76,22 @@ class Neo4jClient:
     def _with_retry(self, fn, attempts: int = 3):
         """Run a session-backed callable, transparently retrying transient
         ServiceUnavailable (dropped connections / momentary unavailability).
-        Avoids surfacing 503s to fleet callers under load."""
+        Avoids surfacing 503s to fleet callers under load.  If repeated
+        attempts still fail we close+reopen the driver to shed any stale
+        pool connections (the Docker bridge + tailscale combo regularly
+        drops TCP conns without notifying the pool)."""
         from neo4j.exceptions import ServiceUnavailable as _SU
         last = None
-        for _ in range(attempts):
+        for i in range(attempts):
             try:
                 return fn()
             except _SU as e:
                 last = e
+                logger.warning("Neo4j ServiceUnavailable (attempt %d/%d), recycling driver", i + 1, attempts)
+                self.close()
+                self.__init__()
                 continue
-        raise last
+        raise last  # type: ignore[arg-type]
 
     @staticmethod
     def _load_settings_fallback() -> Dict[str, Optional[str]]:
