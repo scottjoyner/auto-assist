@@ -1271,6 +1271,20 @@ def api_context_projection():
     finally:
         neo.close()
 
+@app.get("/fleet/status")
+def api_fleet_status(
+    window_minutes: int = Query(30, ge=1, le=24 * 60),
+    user: str = Depends(auth),
+):
+    """Single-call live view of fleet work: task counts by status, online
+    nodes, and recent completions/failures. For operator dashboards."""
+    neo = _neo()
+    try:
+        return neo.fleet_status(window_minutes=window_minutes)
+    finally:
+        neo.close()
+
+
 @app.get("/api/ops/status")
 def api_ops_status(
     stale_minutes: int = Query(30, ge=1, le=24 * 60),

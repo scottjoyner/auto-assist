@@ -729,6 +729,55 @@ class Neo4jClient:
                 "children": [dict(child) for child in rec["children"] if child],
             }
 
+    def fleet_status(self, window_minutes: int = 30) -> Dict[str, Any]:
+        """Aggregated live view of fleet work for operator dashboards.
+
+        Returns task counts by status, online node count, and recent
+        completions/failures within the window. Cheap, read-only.
+        """
+        with self._session() as s:
+            by_status = {}
+            for r in s.run("MATCH (t:Task) RETURN t.status AS st, count(t) AS c"):
+                by_status[r["st"]] = r["c"]
+            recent = []
+            try:
+                res = s.run(
+                    """
+                    MATCH (t:Task)
+                    WHERE t.updated_at_ts >= $since
+                      AND t.status IN ['DONE','FAILED','CANCELLED']
+                    RETURN t.id AS id, t.title AS title, t.status AS status,
+                           t.completed_by AS node, t.result_summary AS summary,
+                           t.updated_at_ts AS ts
+                    ORDER BY coalesce(t.updated_at_ts, 0) DESC LIMIT 20
+                    """,
+                    {"since": int((__import__("time").time() - window_minutes * 60) * 1000)},
+                )
+                for r in res:
+                    recent.append({
+                        "id": r.get("id"),
+                        "title": r.get("title"),
+                        "status": r.get("status"),
+                        "node": r.get("node"),
+                        "summary": r.get("summary"),
+                    })
+            except Exception:
+                pass
+            nodes_online = 0
+            try:
+                nodes_online = s.run(
+                    "MATCH (n:SwarmNode) WHERE coalesce(n.last_seen_at_ts,0) >= $since RETURN count(n) AS c",
+                    {"since": int((__import__("time").time() - 5 * 60) * 1000)},
+                ).single()["c"]
+            except Exception:
+                pass
+        return {
+            "task_counts_by_status": by_status,
+            "nodes_online_5m": nodes_online,
+            "recent_completions": recent,
+            "total_tasks": sum(by_status.values()),
+        }
+
     def list_agent_tasks(
         self,
         status: str = "READY",
