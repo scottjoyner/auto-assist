@@ -1538,6 +1538,146 @@ def _now_ts() -> int:
     return int(_time.time() * 1000)
 
 
+@app.get("/api/live/dashboard")
+def api_live_dashboard(user: str = Depends(auth)):
+    """Aggregated live dashboard data: fleet nodes, pipeline, Neo4j insights."""
+    now = _now_ts()
+    five_min_ago = now - 300_000
+    one_hour_ago = now - 3_600_000
+
+    # --- fleet nodes from Neo4j ModelEndpoint ---
+    neo = _neo()
+    fleet_nodes: List[dict] = []
+    try:
+        with neo._session() as s:
+            res = s.run("""
+                MATCH (m:ModelEndpoint)
+                RETURN m.node_id AS node_id, m.base_url AS base_url,
+                       m.status AS status, m.models_json AS models_json,
+                       m.last_probed_at_ts AS last_probed_ts,
+                       m.network_preference AS network_pref,
+                       m.purpose AS purpose
+                ORDER BY m.node_id
+            """)
+            for row in res:
+                node_id = row.get("node_id") or ""
+                models_raw = row.get("models_json") or "[]"
+                models_list: list = []
+                try:
+                    models_list = json.loads(models_raw) if isinstance(models_raw, str) else (models_raw or [])
+                except (json.JSONDecodeError, TypeError):
+                    models_list = []
+                fleet_nodes.append({
+                    "node_id": node_id,
+                    "base_url": row.get("base_url") or "",
+                    "status": row.get("status") or "unknown",
+                    "models": models_list,
+                    "last_probed_ts": row.get("last_probed_ts"),
+                    "network_pref": row.get("network_pref") or "",
+                    "purpose": row.get("purpose") or "",
+                    "model_count": len(models_list),
+                })
+    except Exception as exc:
+        _api_logger.warning("live dashboard fleet query: %s", exc)
+
+    # --- task counts by status ---
+    task_counts: dict = {}
+    try:
+        with neo._session() as s:
+            res = s.run("""
+                MATCH (t:Task)
+                RETURN t.status AS status, count(t) AS cnt
+                ORDER BY cnt DESC
+            """)
+            for row in res:
+                task_counts[row["status"] or "UNKNOWN"] = row["cnt"]
+    except Exception as exc:
+        _api_logger.warning("live dashboard task query: %s", exc)
+
+    # --- recent AgentRuns ---
+    recent_runs: dict = {}
+    try:
+        with neo._session() as s:
+            res = s.run("""
+                MATCH (r:AgentRun)
+                WHERE r.created_at_ts > $five_min_ago
+                RETURN r.status AS status, count(r) AS cnt
+                ORDER BY cnt DESC
+            """, five_min_ago=five_min_ago)
+            for row in res:
+                recent_runs[row["status"] or "UNKNOWN"] = row["cnt"]
+    except Exception as exc:
+        _api_logger.warning("live dashboard recent runs query: %s", exc)
+
+    # --- runs breakdown (last 1h) ---
+    runs_last_hour: dict = {}
+    try:
+        with neo._session() as s:
+            res = s.run("""
+                MATCH (r:AgentRun)
+                WHERE r.created_at_ts > $one_hour_ago
+                RETURN r.status AS status, r.model AS model, count(r) AS cnt
+                ORDER BY cnt DESC
+                LIMIT 30
+            """, one_hour_ago=one_hour_ago)
+            for row in res:
+                st = row["status"] or "UNKNOWN"
+                mdl = row["model"] or "?"
+                key = f"{st}/{mdl}"
+                runs_last_hour[key] = {"status": st, "model": mdl, "cnt": row["cnt"]}
+    except Exception as exc:
+        _api_logger.warning("live dashboard runs detail query: %s", exc)
+
+    # --- Neo4j DB size (label counts) ---
+    label_counts: list = []
+    try:
+        with neo._session() as s:
+            res = s.run("CALL db.labels() YIELD label RETURN label ORDER BY label")
+            labels = [row["label"] for row in res]
+            for label in labels:
+                cres = s.run(f"MATCH (n:{label}) RETURN count(n) AS cnt")
+                cnt = cres.single()["cnt"] if cres else 0
+                if cnt > 0:
+                    label_counts.append({"label": label, "count": cnt})
+            label_counts.sort(key=lambda x: -x["count"])
+    except Exception as exc:
+        _api_logger.warning("live dashboard label counts: %s", exc)
+
+    # --- queue depth from Redis ---
+    queue_depth = 0
+    try:
+        qq = get_q()
+        queue_depth = len(qq)
+    except Exception as exc:
+        _api_logger.warning("live dashboard queue depth: %s", exc)
+
+    neo.close()
+
+    return {
+        "ts": now,
+        "fleet": {
+            "nodes": fleet_nodes,
+            "total": len(fleet_nodes),
+            "online": sum(1 for n in fleet_nodes if n["status"] == "online"),
+        },
+        "pipeline": {
+            "task_counts": task_counts,
+            "recent_runs_5m": recent_runs,
+            "runs_last_hour": list(runs_last_hour.values()),
+            "queue_depth": queue_depth,
+        },
+        "neo4j": {
+            "label_counts": label_counts,
+            "total_labels": len(label_counts),
+        },
+    }
+
+
+@app.get("/live", response_class=HTMLResponse)
+def live_dashboard(request: Request, user: str = Depends(auth)):
+    return templates.TemplateResponse("live.html", {"request": request})
+
+
 @app.get("/api/ops/status")
 def api_ops_status(
     stale_minutes: int = Query(30, ge=1, le=24 * 60),
