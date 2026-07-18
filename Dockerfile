@@ -33,8 +33,10 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 # ---- Install Hermes CLI ----
 RUN pip install --no-cache-dir "hermes-agent[all]"
 
-# ---- Install OpenCode CLI (npm global install) ----
-RUN npm install -g @opencode-ai/opencode && opencode --version
+# ---- Install OpenCode CLI ----
+# OpenCode is a ~180MB precompiled ELF binary. It is mounted from the host at
+# runtime (docker-compose volume), not baked into the image to keep layers
+# small.  See the hermes-adapter service volume in docker-compose.yml.
 
 # ---- App code & assets ----
 COPY src /app/src

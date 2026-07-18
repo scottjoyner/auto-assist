@@ -271,6 +271,8 @@ services:
       - /media/scott/NAS5:/media/scott/NAS5:rw
       # MCP servers (read-only, from host .hermes)
       - /home/scott/.hermes/mcp:/root/.hermes/mcp:ro
+      # OpenCode CLI binary (not baked into image to keep layers small)
+      - /home/scott/.opencode/bin/opencode:/usr/local/bin/opencode:ro
       # Container Hermes home (mutable state on SSD)
       - /media/scott/SSD_4TB/hermes-home/container/hermes-home:/app/hermes-home
       # Knowledge / eval data
