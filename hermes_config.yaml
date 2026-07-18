@@ -1,0 +1,86 @@
+# Container Hermes config — AssistX worker runtime
+# Auto-generated; do not edit. Mutable state goes to /app/hermes-home.
+
+model:
+  default: refinedtoolcallv5-3b
+  provider: lmstudio
+  base_url: http://host.docker.internal:1234/v1
+
+terminal:
+  backend: local
+  cwd: /media/scott/SSD_4TB/hermes-home
+  timeout: 180
+  persistent_shell: true
+
+web:
+  backend: ""
+  search_backend: ""
+
+toolsets:
+  - hermes-cli
+
+agent:
+  max_turns: 90
+  gateway_timeout: 1800
+  tool_use_enforcement: auto
+  disabled_toolsets: []
+
+delegation:
+  model: ""
+  provider: ""
+  base_url: ""
+  api_key: ""
+  inherit_mcp_toolsets: true
+  max_iterations: 50
+  child_timeout_seconds: 600
+  max_spawn_depth: 1
+  orchestrator_enabled: true
+
+memory:
+  memory_enabled: true
+  provider: knowledge_graph
+
+knowledge_graph:
+  enabled: true
+  uri: bolt://host.docker.internal:7687
+  user: neo4j
+  password: knowledge_graph_2026
+  database: neo4j
+  embeddings:
+    backend: local
+    base_url: http://host.docker.internal:1234/v1
+    model: text-embedding-nomic-embed-text-v1.5
+  capture:
+    sessions: true
+    tool_calls: true
+    user_messages: true
+    assistant_messages: true
+
+mcp_servers:
+  neo4j:
+    command: node
+    args:
+      - /root/.hermes/mcp/neo4j-control/server.mjs
+    env:
+      NEO4J_URL: bolt://host.docker.internal:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: knowledge_graph_2026
+      NEO4J_DATABASE: neo4j
+    enabled: true
+
+display:
+  compact: true
+  streaming: false
+  show_cost: false
+
+context:
+  engine: compressor
+
+approvals:
+  mode: auto
+
+code_execution:
+  mode: project
+
+logging:
+  level: INFO

@@ -1,0 +1,392 @@
+{% extends "base.html" %}
+{% block title %}AssistX – Fleet Dashboard{% endblock %}
+
+{% block content %}
+<div class="grid">
+  <section class="card hero">
+    <div class="section-header">
+      <div>
+        <h1>Fleet Dashboard</h1>
+        <p class="kicker">Live node state, model inventory, task distribution, and performance metrics.</p>
+      </div>
+      <div class="actions">
+        <button class="btn" id="btn-refresh">Refresh</button>
+        <button class="btn secondary" id="btn-auto">Auto: ON</button>
+        <a class="btn secondary" href="/api/fleet/dashboard" target="_blank">Raw JSON</a>
+      </div>
+    </div>
+
+    <div class="metric-grid mt-4" id="fleet-summary">
+      <div class="metric">
+        <div class="metric-label">Nodes Online</div>
+        <div id="nodes-online" class="metric-value">—</div>
+        <div class="metric-note">LM Studio responsive</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Total Models</div>
+        <div id="total-models" class="metric-value">—</div>
+        <div class="metric-note">Across all nodes</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">LLM Tasks Ready</div>
+        <div id="ready-llm" class="metric-value">—</div>
+        <div class="metric-note">Waiting for capacity</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Running Tasks</div>
+        <div id="running-tasks" class="metric-value">—</div>
+        <div class="metric-note">Currently executing</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Total RAM</div>
+        <div id="total-ram" class="metric-value">—</div>
+        <div class="metric-note">Fleet aggregate GiB</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Total VRAM</div>
+        <div id="total-vram" class="metric-value">—</div>
+        <div class="metric-note">GPU memory GiB</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card half" id="section-nodes">
+    <div class="section-header">
+      <div>
+        <h3>Fleet Nodes</h3>
+        <p class="kicker">Live node state, capacity, and hardware specs. Green = healthy, Yellow = stale, Red = down.</p>
+      </div>
+    </div>
+    <div id="nodes-grid" class="grid mt-3">Loading nodes…</div>
+  </section>
+
+  <section class="card half" id="section-model-matrix">
+    <div class="section-header">
+      <div>
+        <h3>Model Performance Matrix</h3>
+        <p class="kicker">TPS × Eval Score composite per model per node. Higher = better routing target.</p>
+      </div>
+    </div>
+    <div id="model-matrix" class="table-wrap mt-3">Loading…</div>
+  </section>
+
+  <section class="card half" id="section-routing">
+    <div class="section-header">
+      <div>
+        <h3>Routing Map</h3>
+        <p class="kicker">Best node for each model (from benchmark composite scores).</p>
+      </div>
+    </div>
+    <div id="routing-map" class="table-wrap mt-3">Loading…</div>
+  </section>
+
+  <section class="card half" id="section-tasks">
+    <div class="section-header">
+      <div>
+        <h3>Task Queue & Execution</h3>
+        <p class="kicker">Ready backlog and currently running tasks by node.</p>
+      </div>
+    </div>
+    <div class="stack-sm mt-3">
+      <div id="ready-summary" class="metric-grid">Loading…</div>
+      <div class="table-wrap" id="running-table">Loading…</div>
+    </div>
+  </section>
+
+  <section class="card half" id="section-completions">
+    <div class="section-header">
+      <div>
+        <h3>Recent Completions (1h)</h3>
+        <p class="kicker">Last 50 completed tasks with node attribution.</p>
+      </div>
+    </div>
+    <div id="completions-list" class="stack-sm mt-3">Loading…</div>
+  </section>
+
+  <section class="card half" id="section-hardware">
+    <div class="section-header">
+      <div>
+        <h3>Hardware Inventory</h3>
+        <p class="kicker">Aggregate fleet resources from fleet_state.json benchmarks.</p>
+      </div>
+    </div>
+    <div id="hardware-table" class="table-wrap mt-3">Loading…</div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(async () => {
+  const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString().replace(/[&<>"']/g, c => ({'&':'&','<':'<','>':'>','"':'"',"'":'''}[c])));
+  const short = window.UIUtils?.shortId || ((v, n = 8) => (v || "").toString().slice(0, n));
+  const relTime = (ts) => ts ? `${((Date.now() - ts) / 1000).toFixed(1)}s ago` : 'never';
+
+  let autoRefresh = true;
+  let refreshTimer = null;
+
+  function row(label, value, cls = '') {
+    const div = document.createElement('div');
+    div.className = 'summary-line ' + cls;
+    div.innerHTML = `<span class="badge">${esc(label)}</span> <span class="muted">${esc(String(value))}</span>`;
+    return div;
+  }
+
+  async function loadDashboard() {
+    try {
+      const r = await fetch('/api/fleet/dashboard');
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    } catch (e) {
+      console.error('Dashboard load failed:', e);
+      return null;
+    }
+  }
+
+  function renderSummary(data) {
+    if (!data) return;
+    document.getElementById('nodes-online').textContent = data.nodes?.filter(n => n.lmstudio_ok).length ?? '—';
+    document.getElementById('total-models').textContent = data.nodes?.reduce((a, n) => a + (n.loaded_models?.length || 0), 0) ?? '—';
+    document.getElementById('ready-llm').textContent = data.task_summary?.ready_llm ?? '—';
+    const running = data.task_summary?.running_by_node?.reduce((a, r) => a + (r.cnt || 0), 0) ?? 0;
+    document.getElementById('running-tasks').textContent = running;
+    document.getElementById('total-ram').textContent = (data.nodes?.reduce((a, n) => a + (n.hardware?.ram_gib || 0), 0).toFixed(1) + ' GiB') || '—';
+    document.getElementById('total-vram').textContent = (data.nodes?.reduce((a, n) => a + (n.hardware?.vram_gib || 0), 0).toFixed(1) + ' GiB') || '—';
+  }
+
+  function renderNodes(data) {
+    const grid = document.getElementById('nodes-grid');
+    if (!data?.nodes?.length) {
+      grid.innerHTML = '<div class="muted">No nodes discovered</div>';
+      return;
+    }
+    grid.innerHTML = '';
+    data.nodes.forEach(n => {
+      const healthy = n.lmstudio_ok && n.last_seen_ago_sec !== null && n.last_seen_ago_sec < 120;
+      const stale = n.lmstudio_ok && n.last_seen_ago_sec !== null && n.last_seen_ago_sec >= 120;
+      const statusCls = healthy ? 'ok' : (stale ? 'warn' : 'err');
+      const statusText = healthy ? 'online' : (stale ? 'stale' : 'offline');
+      const utilPct = n.max_concurrent > 0 ? Math.round((n.inflight_tasks / n.max_concurrent) * 100) : 0;
+      
+      const card = document.createElement('div');
+      card.className = 'panel node-card ' + (healthy ? '' : 'node-' + statusText);
+      card.innerHTML = `
+        <div class="node-header">
+          <div>
+            <strong><code>${esc(n.hostname)}</code></strong>
+            <span class="badge ${statusCls}" style="margin-left:8px">${esc(statusText)}</span>
+          </div>
+          <div class="muted">${esc(n.ip || '')}</div>
+        </div>
+        <div class="mt-2 summary-line">
+          <span class="badge">Cap: ${esc((n.capabilities || []).join(', '))}</span>
+          <span class="badge">Weight: ${esc(n.weight)}</span>
+          <span class="badge">In-flight: ${esc(n.inflight_tasks)}/${esc(n.max_concurrent)}</span>
+        </div>
+        <div class="mt-1 summary-line">
+          <span class="badge">Latency: ${esc(n.latency_ema_sec.toFixed(3))}s</span>
+          <span class="badge">Seen: ${esc(relTime(n.last_seen ? n.last_seen * 1000 : 0))}</span>
+          <span class="badge">Picks: ${esc(n.pick_count)}</span>
+        </div>
+        <div class="mt-2">
+          <div class="progress-bar" style="height:6px;background:#2a2a3a;border-radius:3px;overflow:hidden">
+            <div style="width:${utilPct}%;height:100%;background:linear-gradient(90deg,#4ade80,#22c55e);transition:width .3s"></div>
+          </div>
+          <div class="muted" style="font-size:11px">${utilPct}% utilized (${n.inflight_tasks}/${n.max_concurrent})</div>
+        </div>
+        <div class="mt-2 stack-xs">
+          <div class="summary-line">
+            <span class="badge">RAM: ${esc(n.hardware?.ram_gib ? n.hardware.ram_gib.toFixed(1) + ' GiB' : '—')}</span>
+            <span class="badge">VRAM: ${esc(n.hardware?.vram_gib ? n.hardware.vram_gib.toFixed(1) + ' GiB' : '—')}</span>
+            <span class="badge">CPU: ${esc(n.hardware?.cpu || '—')}</span>
+          </div>
+          <div class="muted">Models: ${esc((n.loaded_models || []).slice(0, 8).join(', '))}${n.loaded_models?.length > 8 ? ' …' : ''}</div>
+        </div>
+      `;
+      grid.appendChild(card);
+    });
+  }
+
+  function renderModelMatrix(data) {
+    const wrap = document.getElementById('model-matrix');
+    if (!data?.models || !Object.keys(data.models).length) {
+      wrap.innerHTML = '<div class="muted">No benchmark data loaded</div>';
+      return;
+    }
+    const models = Object.entries(data.models).sort((a, b) => (b[1][0]?.composite_score || 0) - (a[1][0]?.composite_score || 0));
+    let html = `
+      <table class="dashboard-table">
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>Best Node</th>
+            <th>Best TPS</th>
+            <th>Best Eval</th>
+            <th>Composite</th>
+            <th>Tier</th>
+            <th>All Nodes</th>
+          </tr>
+        </thead>
+        <tbody>
+    `;
+    for (const [model, nodes] of models) {
+      const best = nodes[0];
+      const bestNode = data.routing?.best_node_per_model?.[model] || best?.node || '—';
+      const nodeBadges = nodes.map(n => 
+        `<span class="badge" title="${esc(n.node)}: ${n.tps_med.toFixed(1)} TPS, eval ${n.eval_score.toFixed(2)}">${esc(n.node)}: ${n.composite_score.toFixed(1)}</span>`
+      ).join(' ');
+      html += `
+        <tr>
+          <td><code>${esc(model)}</code></td>
+          <td>${esc(bestNode)}</td>
+          <td>${best?.tps_med?.toFixed(1) ?? '—'}</td>
+          <td>${best?.eval_score?.toFixed(2) ?? '—'}</td>
+          <td><strong>${best?.composite_score?.toFixed(1) ?? '—'}</strong></td>
+          <td>${best?.concurrency_tier ?? '—'}</td>
+          <td>${nodeBadges}</td>
+        </tr>
+      `;
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  }
+
+  function renderRouting(data) {
+    const wrap = document.getElementById('routing-map');
+    if (!data?.routing?.best_node_per_model) {
+      wrap.innerHTML = '<div class="muted">No routing data</div>';
+      return;
+    }
+    const entries = Object.entries(data.routing.best_node_per_model).sort();
+    let html = `
+      <table class="dashboard-table">
+        <thead><tr><th>Model</th><th>Primary Node</th><th>Fallbacks</th></tr></thead>
+        <tbody>
+    `;
+    for (const [model, node] of entries) {
+      const fallbacks = (data.routing.fallbacks?.[model] || []).join(', ') || '—';
+      html += `
+        <tr>
+          <td><code>${esc(model)}</code></td>
+          <td>${esc(node)}</td>
+          <td class="muted">${esc(fallbacks)}</td>
+        </tr>
+      `;
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  }
+
+  function renderTasks(data) {
+    const readyDiv = document.getElementById('ready-summary');
+    readyDiv.innerHTML = '';
+    if (data?.task_summary) {
+      readyDiv.appendChild(row('LLM Ready', data.task_summary.ready_llm));
+      readyDiv.appendChild(row('Script Ready', data.task_summary.ready_script));
+      readyDiv.appendChild(row('Running Total', data.task_summary.running_by_node?.reduce((a, r) => a + (r.cnt || 0), 0) || 0));
+    } else {
+      readyDiv.textContent = 'No task data';
+    }
+
+    const wrap = document.getElementById('running-table');
+    if (!data?.task_summary?.running_by_node?.length) {
+      wrap.innerHTML = '<div class="muted">No running tasks</div>';
+      return;
+    }
+    let html = `
+      <table class="dashboard-table">
+        <thead><tr><th>Node</th><th>Running</th><th>Details</th></tr></thead>
+        <tbody>
+    `;
+    for (const r of data.task_summary.running_by_node) {
+      html += `<tr><td>${esc(r.node || 'local')}</td><td>${esc(r.cnt)}</td><td class="muted">—</td></tr>`;
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  }
+
+  function renderCompletions(data) {
+    const wrap = document.getElementById('completions-list');
+    if (!data?.task_summary?.recent_completions?.length) {
+      wrap.innerHTML = '<div class="muted">No recent completions</div>';
+      return;
+    }
+    wrap.innerHTML = '';
+    data.task_summary.recent_completions.forEach(t => {
+      const panel = document.createElement('div');
+      panel.className = 'panel';
+      const ts = new Date(t.completed_at_ts).toLocaleString();
+      panel.innerHTML = `
+        <div class="summary-line">
+          <span class="badge">${esc(t.kind || 'task')}</span>
+          <span class="badge">${esc(t.node || 'local')}</span>
+        </div>
+        <div class="mt-2"><strong><code>${esc(short(t.id, 10))}</code></strong></div>
+        <div class="muted mt-2">${esc(ts)}</div>
+      `;
+      wrap.appendChild(panel);
+    });
+  }
+
+  function renderHardware(data) {
+    const wrap = document.getElementById('hardware-table');
+    if (!data?.nodes?.length) {
+      wrap.innerHTML = '<div class="muted">No hardware data</div>';
+      return;
+    }
+    let html = `
+      <table class="dashboard-table">
+        <thead>
+          <tr><th>Node</th><th>RAM (GiB)</th><th>VRAM (GiB)</th><th>CPU</th><th>Weight</th><th>Models</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+    `;
+    for (const n of data.nodes) {
+      const healthy = n.lmstudio_ok;
+      html += `
+        <tr>
+          <td><code>${esc(n.hostname)}</code></td>
+          <td>${n.hardware?.ram_gib?.toFixed(1) ?? '—'}</td>
+          <td>${n.hardware?.vram_gib?.toFixed(1) ?? '—'}</td>
+          <td>${esc(n.hardware?.cpu || '—')}</td>
+          <td>${esc(n.weight)}</td>
+          <td>${esc((n.loaded_models || []).length)}</td>
+          <td><span class="badge ${healthy ? 'ok' : 'err'}">${healthy ? 'online' : 'offline'}</span></td>
+        </tr>
+      `;
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  }
+
+  async function refresh() {
+    const data = await loadDashboard();
+    if (data) {
+      renderSummary(data);
+      renderNodes(data);
+      renderModelMatrix(data);
+      renderRouting(data);
+      renderTasks(data);
+      renderCompletions(data);
+      renderHardware(data);
+    }
+  }
+
+  document.getElementById('btn-refresh').addEventListener('click', refresh);
+  document.getElementById('btn-auto').addEventListener('click', function() {
+    autoRefresh = !autoRefresh;
+    this.textContent = 'Auto: ' + (autoRefresh ? 'ON' : 'OFF');
+    this.classList.toggle('secondary', !autoRefresh);
+  });
+
+  async function startAuto() {
+    await refresh();
+    if (autoRefresh) {
+      refreshTimer = setTimeout(startAuto, 10000);
+    }
+  }
+
+  startAuto();
+})();
+</script>
+{% endblock %}

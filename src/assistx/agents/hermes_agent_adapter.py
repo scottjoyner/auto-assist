@@ -727,7 +727,7 @@ def run_hermes_delegated(
         "ROUTING DIRECTIVE (follow exactly): Solve the TASK below by calling the "
         'delegate_task tool exactly once with arguments '
         f'provider="opencode-cli", goal=<the TASK verbatim>, return_format="{return_format}", '
-        'role="leaf", toolsets="terminal,file,code_execution". '
+        f'role="leaf", toolsets="{delegation_toolsets}". '
         "When delegate_task returns, output its returned value VERBATIM as your final "
         "answer -- no preamble, no markdown fences, no extra commentary. Do not solve "
         "the task yourself; only delegate and relay the result."
