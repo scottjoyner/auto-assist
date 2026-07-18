@@ -162,25 +162,75 @@ def _filter_slow_nodes(urls: List[str]) -> List[str]:
     return out
 
 
-def fleet_base_urls_for(model: str) -> List[str]:
-    """Return base URLs that have `model` loaded (probed live), shuffled randomly,
-    with the local endpoint and (if configured) OpenRouter free tier appended.
+def _weighted_shuffle(urls: List[str]) -> List[str]:
+    """Order URLs so faster nodes (lower EMA latency) appear earlier with high
+    probability, while still preserving randomness so all workers don't pile on
+    the same node.
 
-    Slow nodes (measured EMA latency > ``LLM_NODE_SLOW_MULTIPLIER`` × median)
-    are excluded until their EMA decays or *LLM_NODE_REPROBE_AFTER_S* elapses.
+    Each URL receives an *inverse-latency* weight; unmeasured nodes get the
+    median weight so they are not starved.  Weighted random ordering smooths
+    load across heterogeneous nodes: a node 2× faster gets ~2× the traffic.
+    """
+    if len(urls) < 2:
+        return list(urls)
+    import random as _random
+    now = time.time()
+    weights: List[float] = []
+    with _node_ema_lock:
+        # Compute weights
+        for u in urls:
+            v = _node_ema.get(u)
+            if v is not None and now - _node_ema_at.get(u, 0) < _NODE_REPROBE_AFTER_S:
+                w = 1.0 / max(v, 0.01)   # inverse latency → higher is faster
+            else:
+                w = 0.0                   # unmeasured / stale → will get median weight
+            weights.append(w)
+    # Assign median weight to unmeasured/stale nodes so they aren't excluded.
+    measured_w = [w for w in weights if w > 0.0]
+    if measured_w:
+        median_w = sorted(measured_w)[len(measured_w) // 2]
+        weights = [w if w > 0.0 else median_w for w in weights]
+    else:
+        return list(urls)
+    # Weighted random permutation: repeatedly pick from remaining with P ∝ weight.
+    remaining = list(range(len(urls)))
+    result: List[str] = []
+    while remaining:
+        total = sum(weights[i] for i in remaining)
+        if total <= 0:
+            result.extend(urls[i] for i in remaining)
+            break
+        r = _random.random() * total
+        cumulative = 0.0
+        for idx, pos in enumerate(remaining):
+            cumulative += weights[pos]
+            if r <= cumulative:
+                result.append(urls[pos])
+                remaining.pop(idx)
+                break
+    return result
+
+
+def fleet_base_urls_for(model: str) -> List[str]:
+    """Return base URLs, in latency-weighted random order, that have `model`
+    loaded (probed live) with the local endpoint and (if configured) OpenRouter
+    appended as trailing fallback.
+
+    Slow nodes (EMA > ``LLM_NODE_SLOW_MULTIPLIER`` × median) are excluded.
+    Among the remaining candidates the weighted shuffle means a node 2× faster
+    gets ~2× the traffic.
     """
     loaded = _loaded_nodes_for(model)
-    # Shuffle so the ~32 workers spread across all available nodes instead of
-    # round-robining through a broken per-process counter.
-    import random
-    urls = random.sample(loaded, len(loaded)) if loaded else []
-    # Local endpoint first as a fast default if it has the model (or as fallback).
+    # Exclude node-starvers first, then arrange survivors by speed.
+    fit = _filter_slow_nodes(loaded) if loaded else []
+    urls = _weighted_shuffle(fit) if len(fit) > 1 else list(fit)
+    # Local endpoint last (fallback) since it always has the model.
     if OPENAI_BASE_URL not in urls:
         urls.append(OPENAI_BASE_URL)
     # Free-tier review/orchestrator tier for non-sensitive traffic.
     if OPENROUTER_API_KEY:
         urls.append(OPENROUTER_BASE_URL)
-    return _filter_slow_nodes(urls)
+    return urls
 
 
 def _cb_is_open(model: str) -> bool:
