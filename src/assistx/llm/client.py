@@ -15,6 +15,17 @@ CB_FAIL_THRESHOLD = int(os.getenv("LLM_CB_FAIL_THRESHOLD", "3"))
 CB_OPEN_S = int(os.getenv("LLM_CB_OPEN_SECONDS", "60"))
 _CB_STATE: Dict[str, Dict[str, float]] = {}
 
+# --- Reasoning-content capture (thread-local) --------------------------------
+_reasoning_local = threading.local()
+
+def _set_reasoning_content(text: str) -> None:
+    _reasoning_local.reasoning_content = text
+
+def last_reasoning_content() -> str:
+    """Return the *reasoning_content* field from the most recent chat response
+    on this thread.  Returns empty string if none was present."""
+    return getattr(_reasoning_local, "reasoning_content", "")
+
 # --- Per-node speed tracking ------------------------------------------------
 # Each worker process tracks how fast each responding endpoint is (exponential-
 # moving average of request latency).  Nodes that are more than N× slower than
@@ -342,7 +353,10 @@ def _chat_openai(messages: List[Dict[str, str]], model: str, json_mode: bool, ba
         timeout=TIMEOUT,
     )
     r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
+    resp_data = r.json()
+    msg = resp_data["choices"][0]["message"]
+    _set_reasoning_content(msg.get("reasoning_content", ""))
+    return msg["content"]
 
 def _chat_ollama(messages: List[Dict[str, str]], model: str, json_mode: bool) -> str:
     payload: Dict[str, Any] = {"model": model, "messages": messages, "stream": False}

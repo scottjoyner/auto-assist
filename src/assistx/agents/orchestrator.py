@@ -4,6 +4,7 @@ from typing import Dict, Any, List
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel
 from ..ollama_llm import json_chat
+from ..llm.client import last_reasoning_content
 from ..tools.web_search import web_search
 from ..tools.python_exec import run_python
 from ..tools.files import write_text
@@ -75,7 +76,8 @@ def decide(state: AgentState) -> AgentState:
     tools_desc = "\n".join([f"- {k}: {v['desc']} schema={v['schema']}" for k, v in TOOLS.items()])
     prompt = DECIDE_PROMPT.replace("__TOOLS__", tools_desc).replace("__TASK__", json.dumps(_json_safe(state.task), ensure_ascii=False))
     j = json_chat(prompt, schema_hint="AgentDecision")
-    state.history.append({"decision": j})
+    reasoning = last_reasoning_content()
+    state.history.append({"decision": j, "reasoning": reasoning} if reasoning else {"decision": j})
     logger.info(f"decision for task {state.task.get('id','?')}: {j}")
     if not isinstance(j, dict):
         state.history.append({"error": f"malformed decision (not an object): {type(j).__name__}"})
