@@ -26,6 +26,12 @@ _node_ema: Dict[str, float] = {}       # base_url -> EMA of request latency (sec
 _node_ema_at: Dict[str, float] = {}    # base_url -> last update timestamp
 _node_ema_lock = threading.Lock()
 
+# --- Per-node failure tracking -----------------------------------------------
+_node_results: Dict[str, List[bool]] = {}  # base_url -> sliding window of successes (True) / failures (False)
+_NODE_RESULTS_WINDOW = int(os.getenv("LLM_NODE_RESULTS_WINDOW", "50"))
+_NODE_MAX_FAILURE_RATE = float(os.getenv("LLM_NODE_MAX_FAILURE_RATE", "0.5"))
+_node_results_lock = threading.Lock()
+
 # --- Fleet-aware routing ---------------------------------------------------
 # The source of truth for "which model is loaded where" is each live LM Studio
 # node's own /v1/models endpoint. fleet_state.json is used ONLY to enumerate the
@@ -68,8 +74,19 @@ def _node_urls_from_state() -> List[str]:
     return urls
 
 
+_EMBED_KEYWORDS = ("embedding", "nomic-embed", "text-embedding")
+
+def _is_embedding_model(model_id: str) -> bool:
+    ml = model_id.lower()
+    return any(kw in ml for kw in _EMBED_KEYWORDS)
+
+
 def _probe_loaded_models(base_url: str) -> Optional[List[str]]:
-    """Return the list of model IDs actually loaded on a node, or None if down."""
+    """Return the list of model IDs actually loaded on a node, or None if down.
+
+    Embedding models are excluded from the returned list so they never appear
+    as candidates for chat/tool-call routing.
+    """
     try:
         r = requests.get(f"{base_url}/models", timeout=8)
         if r.status_code != 200:
@@ -78,7 +95,7 @@ def _probe_loaded_models(base_url: str) -> Optional[List[str]]:
         out: List[str] = []
         for m in data.get("data", []):
             mid = m.get("id") or m.get("name") or m.get("model")
-            if mid:
+            if mid and not _is_embedding_model(mid):
                 out.append(mid)
         return out
     except Exception:
@@ -129,6 +146,42 @@ def _track_node_latency(base_url: str, latency_s: float) -> None:
         else:
             _node_ema[base_url] = (1.0 - _NODE_EMA_ALPHA) * prev + _NODE_EMA_ALPHA * latency_s
         _node_ema_at[base_url] = time.time()
+
+
+def _track_node_result(base_url: str, ok: bool) -> None:
+    """Record a success or failure for *base_url* in a sliding window."""
+    with _node_results_lock:
+        buf = _node_results.setdefault(base_url, [])
+        buf.append(ok)
+        if len(buf) > _NODE_RESULTS_WINDOW:
+            buf.pop(0)
+
+
+def _node_failure_rate(base_url: str) -> Optional[float]:
+    """Return the failure rate (0..1) for *base_url*, or None if insufficient data."""
+    with _node_results_lock:
+        buf = _node_results.get(base_url)
+        if not buf or len(buf) < 5:
+            return None
+        failures = sum(1 for r in buf if not r)
+        return failures / len(buf)
+
+
+def _filter_high_failure_nodes(urls: List[str]) -> List[str]:
+    """Exclude nodes whose recent failure rate exceeds the configured threshold.
+
+    Nodes with fewer than 5 observations are always kept (cold start). The
+    failure rate is checked before the slow-node exclusion because a failing
+    node is worse than a slow one.
+    """
+    if len(urls) < 2:
+        return list(urls)
+    out: List[str] = []
+    for u in urls:
+        fr = _node_failure_rate(u)
+        if fr is None or fr <= _NODE_MAX_FAILURE_RATE:
+            out.append(u)
+    return out
 
 
 def _filter_slow_nodes(urls: List[str]) -> List[str]:
@@ -221,8 +274,9 @@ def fleet_base_urls_for(model: str) -> List[str]:
     gets ~2× the traffic.
     """
     loaded = _loaded_nodes_for(model)
-    # Exclude node-starvers first, then arrange survivors by speed.
-    fit = _filter_slow_nodes(loaded) if loaded else []
+    # Exclude high-failure nodes first, then slow nodes, then arrange by speed.
+    healthy = _filter_high_failure_nodes(loaded) if loaded else []
+    fit = _filter_slow_nodes(healthy) if healthy else []
     urls = _weighted_shuffle(fit) if len(fit) > 1 else list(fit)
     # Local endpoint last (fallback) since it always has the model.
     if OPENAI_BASE_URL not in urls:
@@ -319,11 +373,13 @@ def chat(messages: List[Dict[str, str]], model: Optional[str] = None, json_mode:
                 out = dispatch(messages, candidate, json_mode, base_url=base_url)
                 _cb_on_success(candidate)
                 _track_node_latency(base_url, time.time() - t0)
+                _track_node_result(base_url, True)
                 return out
             except Exception as e:
                 _cb_on_failure(candidate)
                 if base_url != OPENAI_BASE_URL:
                     _track_node_latency(base_url, time.time() - t0)
+                    _track_node_result(base_url, False)
                 last_err = e
                 continue
     if last_err:

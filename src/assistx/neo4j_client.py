@@ -1758,9 +1758,14 @@ class Neo4jClient:
             ).single()
             return rec["id"]
 
-    def complete_run(self, run_id: str, status: str):
+    def complete_run(self, run_id: str, status: str, result_json: Optional[Dict[str, Any]] = None):
         with self._session() as s:
-            s.run("MATCH (r:AgentRun{id:$id}) SET r.status=$st, r.ended_at=datetime(), r.ended_at_ts=timestamp()", {"id": run_id, "st": status})
+            extra = ""
+            params: Dict[str, Any] = {"id": run_id, "st": status}
+            if result_json is not None:
+                extra = ", r.result_json=$rj"
+                params["rj"] = json.dumps(result_json)
+            s.run(f"MATCH (r:AgentRun{{id:$id}}) SET r.status=$st, r.ended_at=datetime(), r.ended_at_ts=timestamp(){extra}", params)
 
     def log_tool_call(self, run_id: str, tool: str, input_json: Dict[str, Any], output_json: Dict[str, Any] | None, ok: bool):
         call_id = uuid.uuid4().hex

@@ -136,7 +136,7 @@ def run_task(neo: Neo4jClient, task: Dict[str, Any], dry_run: bool = False) -> D
         if dry_run:
             preview = decide(state)
             neo.log_tool_call(run_id=rid, tool="preview", input_json=task, output_json=preview.model_dump(), ok=True)
-            neo.complete_run(rid, "DONE")
+            neo.complete_run(rid, "DONE", result_json={"history": state.history, "result": state.result})
             out = preview.model_dump(); out["run_id"] = rid
             return out
         max_steps = 8
@@ -158,14 +158,14 @@ def run_task(neo: Neo4jClient, task: Dict[str, Any], dry_run: bool = False) -> D
             if state.done or len(state.history) >= max_steps or len(state.history) == last_len:
                 if not state.done:
                     state.done = True
-                neo.complete_run(rid, "DONE")
+                neo.complete_run(rid, "DONE", result_json={"history": state.history, "result": state.result})
                 break
             # Wall-clock guard: stop the loop if we've blown the task budget so a
             # slow/hanging LLM or tool call can't wedge the worker indefinitely.
             if time.time() > deadline:
                 logger.warning("run_task budget exceeded for task %s", task.get("id"))
                 state.done = True
-                neo.complete_run(rid, "DONE")
+                neo.complete_run(rid, "DONE", result_json={"history": state.history, "result": state.result})
                 break
         # Log artifacts for write_text outputs
         for step in state.history:
@@ -178,6 +178,6 @@ def run_task(neo: Neo4jClient, task: Dict[str, Any], dry_run: bool = False) -> D
         ret = state.model_dump(); ret["run_id"] = rid
         return _json_safe(ret)
     except Exception as e:
-        neo.complete_run(rid, "FAILED")
+        neo.complete_run(rid, "FAILED", result_json={"history": state.history, "error": str(e)})
         neo.log_tool_call(rid, "error", {"task": task}, {"error": str(e)}, False)
         raise
