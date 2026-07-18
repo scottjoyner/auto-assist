@@ -26,12 +26,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     XDG_CACHE_HOME=/app/.cache \
     TRANSCRIPTIONS_ROOT=/app/transcriptions
 
-# ---- Python deps ----
+# ---- Python deps (assistx first, then hermes-agent on top) ----
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# ---- Install Hermes CLI ----
-RUN pip install --no-cache-dir "hermes-agent[all]"
+# ---- Install Hermes CLI (installs side-by-side; hermes pins its own deps) ----
+RUN pip install --no-cache-dir "hermes-agent[all]" 2>&1 | tail -5
+RUN which hermes && hermes --version
 
 # ---- Install OpenCode CLI ----
 # OpenCode is a ~180MB precompiled ELF binary. It is mounted from the host at
