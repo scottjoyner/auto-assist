@@ -15,6 +15,17 @@ CB_FAIL_THRESHOLD = int(os.getenv("LLM_CB_FAIL_THRESHOLD", "3"))
 CB_OPEN_S = int(os.getenv("LLM_CB_OPEN_SECONDS", "60"))
 _CB_STATE: Dict[str, Dict[str, float]] = {}
 
+# --- Per-node speed tracking ------------------------------------------------
+# Each worker process tracks how fast each responding endpoint is (exponential-
+# moving average of request latency).  Nodes that are more than N× slower than
+# the fleet median are skipped until their EMA decays or they are re-probed.
+_NODE_EMA_ALPHA = float(os.getenv("LLM_NODE_EMA_ALPHA", "0.3"))
+_NODE_SLOW_MULTIPLIER = float(os.getenv("LLM_NODE_SLOW_MULTIPLIER", "3.0"))
+_NODE_REPROBE_AFTER_S = float(os.getenv("LLM_NODE_REPROBE_AFTER_S", "120.0"))
+_node_ema: Dict[str, float] = {}       # base_url -> EMA of request latency (seconds)
+_node_ema_at: Dict[str, float] = {}    # base_url -> last update timestamp
+_node_ema_lock = threading.Lock()
+
 # --- Fleet-aware routing ---------------------------------------------------
 # The source of truth for "which model is loaded where" is each live LM Studio
 # node's own /v1/models endpoint. fleet_state.json is used ONLY to enumerate the
@@ -109,9 +120,55 @@ def _loaded_nodes_for(model: str) -> List[str]:
     return loaded
 
 
+def _track_node_latency(base_url: str, latency_s: float) -> None:
+    """Update the exponential-moving-average latency for *base_url*."""
+    with _node_ema_lock:
+        prev = _node_ema.get(base_url)
+        if prev is None:
+            _node_ema[base_url] = latency_s
+        else:
+            _node_ema[base_url] = (1.0 - _NODE_EMA_ALPHA) * prev + _NODE_EMA_ALPHA * latency_s
+        _node_ema_at[base_url] = time.time()
+
+
+def _filter_slow_nodes(urls: List[str]) -> List[str]:
+    """Return only URLs whose EMA latency is within *slow_multiplier* × median.
+
+    Nodes that have never been measured (or whose EMA is stale) are always
+    kept, so a new or recovered node is never permanently excluded.
+    """
+    if len(urls) < 3:
+        return list(urls)
+    now = time.time()
+    measured: List[float] = []
+    with _node_ema_lock:
+        for u in urls:
+            v = _node_ema.get(u)
+            if v is not None and now - _node_ema_at.get(u, 0) < _NODE_REPROBE_AFTER_S:
+                measured.append(v)
+    if len(measured) < 2:
+        return list(urls)
+    measured.sort()
+    median = measured[len(measured) // 2]
+    threshold = median * _NODE_SLOW_MULTIPLIER
+    out: List[str] = []
+    with _node_ema_lock:
+        for u in urls:
+            v = _node_ema.get(u)
+            if v is None or now - _node_ema_at.get(u, 0) >= _NODE_REPROBE_AFTER_S:
+                out.append(u)          # never measured or data too old → keep
+            elif v <= threshold:
+                out.append(u)          # fast enough
+    return out
+
+
 def fleet_base_urls_for(model: str) -> List[str]:
     """Return base URLs that have `model` loaded (probed live), shuffled randomly,
-    with the local endpoint and (if configured) OpenRouter free tier appended."""
+    with the local endpoint and (if configured) OpenRouter free tier appended.
+
+    Slow nodes (measured EMA latency > ``LLM_NODE_SLOW_MULTIPLIER`` × median)
+    are excluded until their EMA decays or *LLM_NODE_REPROBE_AFTER_S* elapses.
+    """
     loaded = _loaded_nodes_for(model)
     # Shuffle so the ~32 workers spread across all available nodes instead of
     # round-robining through a broken per-process counter.
@@ -123,7 +180,7 @@ def fleet_base_urls_for(model: str) -> List[str]:
     # Free-tier review/orchestrator tier for non-sensitive traffic.
     if OPENROUTER_API_KEY:
         urls.append(OPENROUTER_BASE_URL)
-    return urls
+    return _filter_slow_nodes(urls)
 
 
 def _cb_is_open(model: str) -> bool:
@@ -207,12 +264,16 @@ def chat(messages: List[Dict[str, str]], model: Optional[str] = None, json_mode:
         for base_url in base_urls:
             if time.time() > deadline:
                 break
+            t0 = time.time()
             try:
                 out = dispatch(messages, candidate, json_mode, base_url=base_url)
                 _cb_on_success(candidate)
+                _track_node_latency(base_url, time.time() - t0)
                 return out
             except Exception as e:
                 _cb_on_failure(candidate)
+                if base_url != OPENAI_BASE_URL:
+                    _track_node_latency(base_url, time.time() - t0)
                 last_err = e
                 continue
     if last_err:
