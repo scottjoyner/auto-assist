@@ -168,6 +168,34 @@ It also includes provider/lane records for:
 
 The Cerebras record is advisory. auto-router still owns actual provider API keys, quota policy, and cloud-use permission checks.
 
+## 5b. Privacy wall & fleet dispatch (current state, 2026-07-18)
+
+**Fleet dispatch is ENABLED** (`AUTO_ROUTER_FLEET_DISPATCHER_ENABLED: true` in
+`docker-compose.unified.yml` router service). The router actively load-balances
+`auto/*` calls across the tailnet LM Studio fleet (verified `auto/fast` → local
+node ~1s). This was previously `false`, which left `auto/*` registered but inert.
+
+**Privacy wall — local trusted plane + isolated cloud lane.** The router enforces
+a hard wall in `policy.py:_request_requires_local_execution`:
+
+- Aliases `auto/local`, `auto/private`, `auto/sophia` force `local_only` — they
+  can NEVER route to a cloud/public provider, regardless of key state.
+- `auto/fast` / `auto/high-quality` / `auto/code` / `auto/review` are
+  **cloud-ELIGIBLE by default** (`allow_cloud` defaults True when no privacy
+  marker). Use `auto/local`/`auto/private` for any session that must stay local.
+- Cloud providers (openrouter/groq/cerebras/mistral/gemini/zai) are registered
+  but keyed by PLACEHOLDER values (`***`) in `.env` → `ok=False`, inert until
+  armed with real keys.
+
+**opencode wiring (x1-370):** `lm_router` provider → `http://localhost:8088/v1`
+with `swarm-fast`→`auto/local`, `swarm-high-quality`→`auto/private`,
+`swarm-code`→`auto/code`, `swarm-review`→`auto/private` (all walled). A separate
+`lm_cloud` provider (same baseURL) exposes explicit `openrouter.*`/`groq.*`/
+`cerebras.*` models as the ISOLATED opt-in delegation lane — used only for scoped
+outward jobs, never ambient context. Cloud is armed by putting real keys in the
+router `.env` and recreating `git-router-1` (`docker compose -f
+docker-compose.unified.yml up -d --no-deps router`).
+
 ## 6. Validation commands
 
 From the auto-router container or another container on the Docker network:

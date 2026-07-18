@@ -131,9 +131,44 @@ worker model and completing the authorized enrollment canary.
 
 ### Deferred Work
 
-- Direct worker claiming and distributed/fleet routing.
 - Model endpoint probing as an execution selection mechanism; current probing supports inventory and draft canaries only.
 - Paperclip deprecation or demotion to an optional mirror.
+
+### Orchestrator session — swarm mount + privacy wall (2026-07-18)
+
+A master-orchestrator opencode session on x1-370 reconciled the swarm env and
+wired the information wall. Changes (no LM Studio restarts — models stayed warm
+on tailnet workers):
+
+- **Fleet dispatcher ENABLED.** `AUTO_ROUTER_FLEET_DISPATCHER_ENABLED` flipped
+  `false`→`true` in `docker-compose.unified.yml` (router service); `git-router-1`
+  recreated with `--no-deps`. The router now actively dispatches `auto/*` calls
+  to the least-loaded tailnet LM Studio node (verified `auto/fast`→`qwen3.5-0.8b`
+  ~1s). NOTE: `auto/fast`/`auto/high-quality` are cloud-ELIGIBLE by default.
+- **Privacy wall (local trusted plane + isolated cloud lane).** Default opencode
+  lanes use `auto/local`/`auto/private` (router forces `local_only`, can never
+  hit cloud). A separate `lm_cloud` provider exposes explicit `openrouter.*`/
+  `groq.*`/`cerebras.*` models as the isolated opt-in delegation lane. Cloud keys
+  in router `.env` are placeholder (`***`) → inert until armed. See
+  `auto-router/src/auto_router/policy.py:_request_requires_local_execution`.
+- **Swarm mountpoint fix.** `git-assistx-1` + `git-assistx-worker-1` had ZERO
+  data mounts; added SSD_4TB/NAS5/NAS3/knowledge/nas-knowledge bind-mounts +
+  `KNOWLEDGE_ROOT`/`HERMES_KNOWLEDGE_ROOT`. Host `/media/scott/knowledge` +
+  `nas-knowledge` symlinks recreated (sudo). Verified all 5 mountpoints OK,
+  API :8000=200, worker listening.
+- **opencode autoroutes to swarm.** `lm_router` (auto/local/auto/private/auto/code)
+  added as FIRST `enabled_providers`; `lm_cloud` as 2nd (isolated). Removed a
+  broken `nomic-embed` model block whose `modalities.output:["embedding"]`
+  crashed opencode startup.
+- **Prune correction.** `snapd` is ACTIVE on x1-370 → `snap/` (1.5G) +
+  `var-lib-snapd` (3.1G) are live, NOT cruft — left alone. Only the orphaned
+  `/home/scott/.cache/auto-assist-hermes-home` was harvested (→ `.HARVESTED-*`).
+- Target-state doc `HERMES_HOME_LAYOUT.md` written at hermes-home root;
+  repeatable playbook encoded in the `hermes-home-migration` skill (incl. the
+  privacy-wall Phase E).
+
+**Live compose is `docker-compose.unified.yml` (project `git`)** — NOT
+`auto-assist/docker-compose.yml` (that spawns a duplicate competing worker).
 
 The draft proposal in `docs/plans/messaging-trigger-fundamental-changes.md`
 suggests switching local execution to the direct worker to avoid the Paperclip
