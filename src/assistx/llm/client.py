@@ -1,4 +1,4 @@
-import os, json, time, requests
+import os, json, time, threading, requests
 from typing import Optional, Dict, Any, List, Generator
 from dotenv import load_dotenv
 load_dotenv()
@@ -7,13 +7,124 @@ LLM_BACKEND = os.getenv("LLM_BACKEND", "openai").strip().lower()
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "http://localhost:1234/v1").rstrip("/")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "not-needed")
 LLM_MODEL = os.getenv("LLM_MODEL", os.getenv("OLLAMA_MODEL", "llama3.1:8b"))
-EMBED_MODEL = os.getenv("EMBED_MODEL", os.getenv("QA_EMBED_MODEL", "nomic-embed-text"))
+EMBED_MODEL = os.getenv("EMBED_MODEL", os.getenv("QA_EMBED_QUERY_MODEL", "nomic-embed-text"))
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 TIMEOUT = int(os.getenv("LLM_TIMEOUT_S", "180"))
 FALLBACK_MODELS = [m.strip() for m in os.getenv("LLM_FALLBACK_MODELS", "").split(",") if m.strip()]
 CB_FAIL_THRESHOLD = int(os.getenv("LLM_CB_FAIL_THRESHOLD", "3"))
 CB_OPEN_S = int(os.getenv("LLM_CB_OPEN_SECONDS", "60"))
 _CB_STATE: Dict[str, Dict[str, float]] = {}
+
+# --- Fleet-aware routing ---------------------------------------------------
+# The source of truth for "which model is loaded where" is each live LM Studio
+# node's own /v1/models endpoint. fleet_state.json is used ONLY to enumerate the
+# candidate node URLs (hostname + url); we then probe each node directly to find
+# which ones actually have the requested model loaded & live. This avoids relying
+# on a static snapshot that drifts from reality.
+FLEET_STATE_PATH = os.getenv("FLEET_STATE_PATH", "/home/scott/git/lms/fleet_state.json")
+# Free-tier cloud endpoint (assistx-only key) used as a review/orchestrator tier
+# for non-sensitive traffic. Disabled unless OPENROUTER_API_KEY is set.
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_fleet_lock = threading.Lock()
+_fleet_nodes: List[str] = []                      # candidate base URLs (from state)
+_fleet_nodes_at = 0.0
+_fleet_loaded: Dict[str, List[str]] = {}          # model -> [base_url, ...] (probed)
+_fleet_loaded_at: Dict[str, float] = {}           # model -> last probe time
+_fleet_rr: Dict[str, int] = {}                    # model -> next index
+
+
+def _node_urls_from_state() -> List[str]:
+    """Enumerate candidate LM Studio base URLs from fleet_state.json."""
+    try:
+        with open(FLEET_STATE_PATH, "r") as f:
+            state = json.load(f)
+    except Exception:
+        return []
+    urls: List[str] = []
+    for node in state.get("nodes", []):
+        # Skip nodes that are stale AND localhost (127.0.0.1) — those are
+        # truly gone.  Include stale nodes that have real network URLs (tailscale
+        # etc.) because they may still be reachable and sitting idle.
+        url = (node.get("url") or "").rstrip("/")
+        if not url:
+            continue
+        if node.get("stale", False) and "127.0.0.1" in url:
+            continue
+        base = url.rsplit("/v1", 1)[0].rstrip("/") + "/v1"
+        if base not in urls:
+            urls.append(base)
+    return urls
+
+
+def _probe_loaded_models(base_url: str) -> Optional[List[str]]:
+    """Return the list of model IDs actually loaded on a node, or None if down."""
+    try:
+        r = requests.get(f"{base_url}/models", timeout=8)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        out: List[str] = []
+        for m in data.get("data", []):
+            mid = m.get("id") or m.get("name") or m.get("model")
+            if mid:
+                out.append(mid)
+        return out
+    except Exception:
+        return None
+
+
+def _refresh_fleet_nodes() -> None:
+    global _fleet_nodes, _fleet_nodes_at
+    now = time.time()
+    if now - _fleet_nodes_at < 120 and _fleet_nodes:
+        return
+    with _fleet_lock:
+        _fleet_nodes = _node_urls_from_state()
+        _fleet_nodes_at = now
+
+
+def _loaded_nodes_for(model: str) -> List[str]:
+    """Probe live nodes and return base URLs that currently have `model` loaded.
+
+    Cached per-model for 60s so we don't hammer /v1/models on every call."""
+    _refresh_fleet_nodes()
+    now = time.time()
+    with _fleet_lock:
+        cached = _fleet_loaded.get(model)
+        if cached is not None and now - _fleet_loaded_at.get(model, 0) < 60:
+            return list(cached)
+    nodes = _fleet_nodes or [OPENAI_BASE_URL]
+    mlow = model.lower()
+    loaded: List[str] = []
+    for base in nodes:
+        ids = _probe_loaded_models(base)
+        if not ids:
+            continue
+        if any(mlow in mid.lower() for mid in ids):
+            loaded.append(base)
+    with _fleet_lock:
+        _fleet_loaded[model] = loaded
+        _fleet_loaded_at[model] = now
+    return loaded
+
+
+def fleet_base_urls_for(model: str) -> List[str]:
+    """Return base URLs that have `model` loaded (probed live), shuffled randomly,
+    with the local endpoint and (if configured) OpenRouter free tier appended."""
+    loaded = _loaded_nodes_for(model)
+    # Shuffle so the ~32 workers spread across all available nodes instead of
+    # round-robining through a broken per-process counter.
+    import random
+    urls = random.sample(loaded, len(loaded)) if loaded else []
+    # Local endpoint first as a fast default if it has the model (or as fallback).
+    if OPENAI_BASE_URL not in urls:
+        urls.append(OPENAI_BASE_URL)
+    # Free-tier review/orchestrator tier for non-sensitive traffic.
+    if OPENROUTER_API_KEY:
+        urls.append(OPENROUTER_BASE_URL)
+    return urls
+
 
 def _cb_is_open(model: str) -> bool:
     st = _CB_STATE.get(model)
@@ -38,14 +149,35 @@ def _candidate_models(model: Optional[str] = None) -> List[str]:
             out.append(m)
     return out
 
-def _chat_openai(messages: List[Dict[str, str]], model: str, json_mode: bool) -> str:
+def _chat_openai(messages: List[Dict[str, str]], model: str, json_mode: bool, base_url: Optional[str] = None) -> str:
     payload: Dict[str, Any] = {"model": model, "messages": messages, "stream": False}
     if json_mode:
-        payload["response_format"] = {"type": "json_object"}
+        # LM Studio (OpenAI-compatible) rejects "json_object"; it requires
+        # "json_schema". A permissive schema with strict=false lets the model
+        # return arbitrary JSON while still forcing JSON-only output.
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "assistx_json",
+                "strict": False,
+                "schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": True,
+                },
+            },
+        }
+    base = (base_url or OPENAI_BASE_URL).rstrip("/")
+    if "openrouter.ai" in base:
+        auth = f"Bearer {OPENROUTER_API_KEY}" if OPENROUTER_API_KEY else OPENAI_API_KEY
+        extra = {"HTTP-Referer": "https://assistx.local", "X-Title": "assistx"}
+    else:
+        auth = f"Bearer {OPENAI_API_KEY}"
+        extra = {}
     r = requests.post(
-        f"{OPENAI_BASE_URL}/chat/completions",
+        f"{base}/chat/completions",
         json=payload,
-        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+        headers={"Authorization": auth, **extra},
         timeout=TIMEOUT,
     )
     r.raise_for_status()
@@ -62,17 +194,27 @@ def _chat_ollama(messages: List[Dict[str, str]], model: str, json_mode: bool) ->
 def chat(messages: List[Dict[str, str]], model: Optional[str] = None, json_mode: bool = False) -> str:
     last_err: Optional[Exception] = None
     dispatch = _chat_ollama if LLM_BACKEND == "ollama" else _chat_openai
+    # Hard wall-clock budget for the whole chat attempt so a hang on one fleet
+    # node can't wedge a task for minutes. Per-call timeout is honored, but we
+    # also bail out of the node/model loop once the budget is spent.
+    deadline = time.time() + max(20, TIMEOUT)
     for candidate in _candidate_models(model):
         if _cb_is_open(candidate):
             continue
-        try:
-            out = dispatch(messages, candidate, json_mode)
-            _cb_on_success(candidate)
-            return out
-        except Exception as e:
-            _cb_on_failure(candidate)
-            last_err = e
-            continue
+        # Spread across the Tailscale LM Studio fleet (plus local), trying each
+        # base URL that has this model loaded before moving to the next model.
+        base_urls = fleet_base_urls_for(candidate) or [OPENAI_BASE_URL]
+        for base_url in base_urls:
+            if time.time() > deadline:
+                break
+            try:
+                out = dispatch(messages, candidate, json_mode, base_url=base_url)
+                _cb_on_success(candidate)
+                return out
+            except Exception as e:
+                _cb_on_failure(candidate)
+                last_err = e
+                continue
     if last_err:
         raise last_err
     raise RuntimeError("No available LLM models (all circuit breakers open)")

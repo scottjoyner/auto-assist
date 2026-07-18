@@ -5,7 +5,7 @@ from .neo4j_client import Neo4jClient
 import os, re, requests
 
 def _get_artifacts(neo: Neo4jClient, run_id: str) -> List[Dict[str, Any]]:
-    with neo.driver.session() as s:
+    with neo._session() as s:
         res = s.run("MATCH (r:AgentRun{id:$rid})-[:PRODUCED]->(a:Artifact) RETURN a", {"rid": run_id})
         return [dict(r[0]) for r in res]
 

@@ -11,4 +11,5 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
 def get_q() -> Queue:
     r = Redis.from_url(REDIS_URL)
-    return Queue("assistx", connection=r)
+    job_timeout = int(os.getenv("RQ_JOB_TIMEOUT_S", "1800"))
+    return Queue("assistx", connection=r, default_timeout=job_timeout)

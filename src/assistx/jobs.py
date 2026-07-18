@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 import logging
-from .agents.orchestrator import run_task
+from .agents.orchestrator import run_task, _json_safe
 from .acceptance import evaluate_acceptance
 import os, traceback
 from typing import Optional
@@ -18,11 +18,11 @@ logger = logging.getLogger(__name__)
 
 def execute_task_job(task_id: str, dry_run: bool = False):
     neo = Neo4jClient()
-    with neo.driver.session() as s:
+    with neo._session() as s:
         rec = s.run("MATCH (t:Task{id:$id}) RETURN t", {"id": task_id}).single()
         if not rec:
             neo.close(); return {"error": "task not found", "task_id": task_id}
-        t = dict(rec[0])
+        t = _json_safe(dict(rec[0]))
     neo.update_task_status(task_id, "RUNNING")
     try:
         state = run_task(neo, t, dry_run=dry_run)
@@ -32,10 +32,10 @@ def execute_task_job(task_id: str, dry_run: bool = False):
         if rid:
             neo.log_tool_call(rid, 'acceptance', {'task_id': task_id, 'acceptance': t.get('acceptance')}, acc, final_status=='DONE')
         neo.update_task_status(task_id, final_status)
-        return {"status": final_status, "state": state, "task_id": task_id, "acceptance": acc}
+        return _json_safe({"status": final_status, "state": state, "task_id": task_id, "acceptance": acc})
     except Exception as e:
         neo.update_task_status(task_id, "FAILED")
-        return {"status": "FAILED", "error": str(e), "task_id": task_id}
+        return _json_safe({"status": "FAILED", "error": str(e), "task_id": task_id})
     finally:
         neo.close()
 

@@ -137,7 +137,7 @@ services:
     environment:
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - RQ_QUEUE=${RQ_QUEUE:-assistx}
-      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-1}
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-32}
       - NEO4J_URI=${NEO4J_URI:-bolt://host.docker.internal:7687}
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-livelongandprosper}
@@ -165,6 +165,21 @@ services:
       - WORKER_HEALTH_PORT=${WORKER_HEALTH_PORT:-8100}
       # --- W-27: make ASSISTX_OVERLAY_MODE explicit on the worker too ---
       - ASSISTX_OVERLAY_MODE=${ASSISTX_OVERLAY_MODE:-router_plus_assign}
+      # Worker reaches the API via Docker DNS (host.docker.internal often
+      # misses the API from inside the worker network).
+      - ASSISTX_URL=http://assistx-api:8000
+      - FLEET_ASSISTX_URL=http://assistx-api:8000
+      - FLEET_STATE_PATH=/home/scott/git/lms/fleet_state.json
+      - FLEET_LOADOUT_PATH=/home/scott/git/lms/fleet_loadout.json
+      # assistx-only OpenRouter key (free tier) used as review/orchestrator tier
+      # for non-sensitive traffic. Provided via .env (OPENROUTER_API_KEY).
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      # Per-job timeout for RQ (agent loops can exceed the 180s default).
+      - RQ_JOB_TIMEOUT_S=${RQ_JOB_TIMEOUT_S:-1800}
+      # LLM call timeout and overall per-task wall-clock guard (fail fast so the
+      # drain keeps moving instead of wedging on one slow/hung node).
+      - LLM_TIMEOUT_S=${LLM_TIMEOUT_S:-45}
+      - TASK_WALLCLOCK_S=${TASK_WALLCLOCK_S:-600}
     depends_on:
       redis:
         condition: service_healthy
@@ -181,6 +196,7 @@ services:
       - ./artifacts:/app/artifacts
       - transcriptions:/app/transcriptions
       - ./.assistx_cache.sqlite:/app/.assistx_cache.sqlite
+      - /home/scott/git/lms:/home/scott/git/lms:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health', timeout=2).read()"]
       interval: 10s

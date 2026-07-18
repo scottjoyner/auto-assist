@@ -254,7 +254,7 @@ def list_passive_claims(
             rows = s.run(
                 """
                 MATCH (t:Task)
-                WHERE t.status = 'CLAIMED_PASSIVE'
+                WHERE toUpper(coalesce(t.status, '')) = 'CLAIMED_PASSIVE'
                   AND ($agent_id IS NULL OR t.passive_claim_agent_id = $agent_id)
                   AND ($include_expired = true OR coalesce(t.passive_claim_expires_at_ts, 0) >= $now_ms)
                 RETURN t
@@ -325,7 +325,7 @@ def _tx_claim_passive_task(tx: Any, body: PassiveClaimIn, claim_id: str, now_ms:
         """
         MATCH (t:Task)
         WHERE coalesce(t.id, t.task_id) = $task_id
-          AND t.status IN ['READY','REVIEW']
+          AND toUpper(coalesce(t.status, 'READY')) IN ['READY','REVIEW']
         SET t.previous_status = t.status,
             t.status = 'CLAIMED_PASSIVE',
             t.passive_claim_id = $claim_id,
@@ -367,7 +367,7 @@ def _tx_renew_passive_claim(tx: Any, body: PassiveClaimRenewIn, now_ms: int, exp
         """
         MATCH (t:Task)
         WHERE coalesce(t.id, t.task_id) = $task_id
-          AND t.status = 'CLAIMED_PASSIVE'
+          AND toUpper(coalesce(t.status, '')) = 'CLAIMED_PASSIVE'
           AND t.passive_claim_id = $claim_id
           AND t.passive_claim_agent_id = $agent_id
           AND coalesce(t.passive_claim_expires_at_ts, 0) >= $now_ms
@@ -458,7 +458,7 @@ def _tx_expire_passive_claims(tx: Any, now_ms: int, limit: int) -> list[dict[str
     result = tx.run(
         """
         MATCH (t:Task)
-        WHERE t.status = 'CLAIMED_PASSIVE'
+        WHERE toUpper(coalesce(t.status, '')) = 'CLAIMED_PASSIVE'
           AND coalesce(t.passive_claim_expires_at_ts, 0) < $now_ms
         WITH t
         ORDER BY coalesce(t.passive_claim_expires_at_ts, 0) ASC

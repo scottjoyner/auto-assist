@@ -46,15 +46,24 @@ def maintenance_job() -> Dict[str, Any]:
                 reap = s.run(
                     """
                     MATCH (t:Task)
-                    WHERE t.status IN ['CLAIMED','RUNNING']
-                      AND coalesce(t.lease_expires_at_ts,
-                                   coalesce(t.last_heartbeat_ts, t.claimed_at_ts, 0) + $lease*1000, 0) < timestamp()
+                    WHERE toUpper(coalesce(t.status, '')) IN ['CLAIMED','RUNNING','CLAIMED_PASSIVE']
+                      AND coalesce(t.passive_claim_expires_at_ts,
+                                   t.lease_expires_at_ts,
+                                   coalesce(t.last_heartbeat_ts, t.last_heartbeat_at_ts, t.claimed_at_ts, 0) + $lease*1000, 0) < timestamp()
                     WITH t LIMIT 2000
                     SET t.status = 'READY',
                         t.claimed_by = null,
                         t.claimed_at_ts = null,
                         t.lease_expires_at_ts = null,
-                        t.last_heartbeat_ts = null
+                        t.last_heartbeat_ts = null,
+                        t.last_passive_claim_result = 'expired_stale_reaped'
+                    REMOVE t.passive_claim_id,
+                           t.passive_claim_agent_id,
+                           t.passive_claim_lease_id,
+                           t.passive_claim_mode,
+                           t.passive_claimed_at,
+                           t.passive_claimed_at_ts,
+                           t.passive_claim_expires_at_ts
                     RETURN count(t) AS reaped
                     """,
                     {"lease": STALE_CLAIM_REAP_SECONDS},
@@ -140,24 +149,33 @@ def run_stale_claim_reaper_loop() -> None:
                 try:
                     with neo._session() as s:
                         reap = s.run(
-                            """
-                            MATCH (t:Task)
-                            WHERE t.status IN ['CLAIMED','RUNNING']
-                              AND coalesce(t.lease_expires_at_ts,
-                                           coalesce(t.last_heartbeat_ts, t.claimed_at_ts, 0) + $lease*1000, 0) < timestamp()
-                            WITH t LIMIT 2000
-                            SET t.status = 'READY',
-                                t.claimed_by = null,
-                                t.claimed_at_ts = null,
-                                t.lease_expires_at_ts = null,
-                                t.last_heartbeat_ts = null
-                            RETURN count(t) AS reaped
-                            """,
-                            {"lease": STALE_CLAIM_REAP_SECONDS},
-                        ).single()
-                        reaped = int(reap["reaped"] if reap else 0)
-                        if reaped:
-                            logger.info("stale claim reaper reset %d task(s) to READY", reaped)
+                        """
+                        MATCH (t:Task)
+                        WHERE toUpper(coalesce(t.status, '')) IN ['CLAIMED','RUNNING','CLAIMED_PASSIVE']
+                          AND coalesce(t.passive_claim_expires_at_ts,
+                                       t.lease_expires_at_ts,
+                                       coalesce(t.last_heartbeat_ts, t.last_heartbeat_at_ts, t.claimed_at_ts, 0) + $lease*1000, 0) < timestamp()
+                        WITH t LIMIT 2000
+                        SET t.status = 'READY',
+                            t.claimed_by = null,
+                            t.claimed_at_ts = null,
+                            t.lease_expires_at_ts = null,
+                            t.last_heartbeat_ts = null,
+                            t.last_passive_claim_result = 'expired_stale_reaped'
+                        REMOVE t.passive_claim_id,
+                               t.passive_claim_agent_id,
+                               t.passive_claim_lease_id,
+                               t.passive_claim_mode,
+                               t.passive_claimed_at,
+                               t.passive_claimed_at_ts,
+                               t.passive_claim_expires_at_ts
+                        RETURN count(t) AS reaped
+                        """,
+                        {"lease": STALE_CLAIM_REAP_SECONDS},
+                    ).single()
+                    reaped = int(reap["reaped"] if reap else 0)
+                    if reaped:
+                        logger.info("stale claim reaper reset %d task(s) to READY", reaped)
                 finally:
                     neo.close()
             except Exception as e:

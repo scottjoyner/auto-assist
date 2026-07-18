@@ -410,6 +410,16 @@ async def lifespan(app: FastAPI):
         _start_executor_loop()
     except Exception as e:
         _lifespan_logger.warning(f"Fleet executor not started: {e}")
+    try:
+        from .kg_harvester import _start_harvester_loop
+        _start_harvester_loop()
+    except Exception as e:
+        _lifespan_logger.warning(f"KG harvester not started: {e}")
+    try:
+        from .repo_task_generator import start_repo_task_generator
+        start_repo_task_generator()
+    except Exception as e:
+        _lifespan_logger.warning(f"Repo task generator not started: {e}")
     yield
 
 
@@ -626,7 +636,22 @@ def _neo() -> Neo4jClient:
     global _neo_instance
     if _neo_instance is None:
         _neo_instance = Neo4jClient()
+        _neo_instance.shared = True
     return _neo_instance
+
+_neo_fleet_instance: Optional[Neo4jClient] = None
+
+def _neo_fleet() -> Neo4jClient:
+    """Dedicated Neo4j client/pool for high-concurrency fleet executor endpoints
+    (agent task listing, claim, complete) so they never starve /health or
+    human-facing routes on the shared _neo() pool."""
+    global _neo_fleet_instance
+    if _neo_fleet_instance is None:
+        _neo_fleet_instance = Neo4jClient(
+            pool_size=int(os.getenv("NEO4J_FLEET_POOL_SIZE", "200"))
+        )
+        _neo_fleet_instance.shared = True
+    return _neo_fleet_instance
 
 _paperclip_client: Optional[PaperclipClient] = None
 _workflow_control_lock = threading.Lock()
@@ -1096,6 +1121,11 @@ def fleet_ui(request: Request, user: str = Depends(auth)):
     _api_logger.warning("DEPRECATED route /fleet accessed — fleet/router ownership moves to auto-router")
     return templates.TemplateResponse("fleet.html", {"request": request})
 
+@app.get("/fleet-dashboard", response_class=HTMLResponse)
+def fleet_dashboard_ui(request: Request, user: str = Depends(auth)):
+    """New comprehensive fleet dashboard with live node/model/task visualization."""
+    return templates.TemplateResponse("fleet_dashboard.html", {"request": request})
+
 @app.get("/routing", response_class=HTMLResponse)
 def routing_ui(request: Request, user: str = Depends(auth)):
     # DEPRECATED: fleet/router ownership moves to auto-router.
@@ -1294,6 +1324,218 @@ def api_fleet_status(
         return neo.fleet_status(window_minutes=window_minutes)
     finally:
         neo.close()
+
+
+# =======================
+# Fleet Dashboard API
+# =======================
+
+_fleet_executor_instance: Optional[Any] = None
+
+def _get_fleet_executor() -> Any:
+    """Get or create the fleet executor instance to access its state."""
+    global _fleet_executor_instance
+    if _fleet_executor_instance is None:
+        from .fleet_executor import FleetExecutor
+        _fleet_executor_instance = FleetExecutor()
+        _fleet_executor_instance._refresh_nodes()
+    return _fleet_executor_instance
+
+def _get_fleet_routing() -> Any:
+    """Get the fleet routing singleton."""
+    from .fleet_executor import _get_routing
+    return _get_routing()
+
+
+@app.get("/api/fleet/dashboard")
+def api_fleet_dashboard(user: str = Depends(auth)):
+    """Comprehensive fleet dashboard: nodes, models, tasks, performance."""
+    executor = _get_fleet_executor()
+    routing = _get_fleet_routing()
+    
+    nodes = []
+    for n in executor._nodes:
+        hn = n.get("hostname", n.get("ip", "?"))
+        inflight = executor._node_inflight.get(hn, 0)
+        latency = executor._node_latency.get(hn, 0)
+        pick_count = executor._pick_count.get(hn, 0)
+        weight = n.get("weight", 1)
+        sem = executor._node_semaphores.get(hn)
+        sem_available = sem._value if sem else 0
+        
+        # Get benchmark performance for models on this node
+        model_perf = {}
+        for model in n.get("loaded_models", []):
+            perf = routing.get_model_perf(hn, model)
+            if perf:
+                model_perf[model] = {
+                    "tps_med": perf.get("tps_med", 0),
+                    "eval_score": perf.get("eval_score", 0),
+                    "composite": perf.get("composite_score", 0),
+                    "ttft_med": perf.get("ttft_med", 0),
+                    "load_s": perf.get("load_s", 0),
+                    "ok": perf.get("ok", True),
+                    "concurrency_tier": perf.get("concurrency_tier", 1),
+                }
+        
+        # Get hardware specs
+        specs = routing._node_specs.get(hn, {})
+        
+        nodes.append({
+            "hostname": hn,
+            "ip": n.get("ip", ""),
+            "weight": weight,
+            "capabilities": n.get("capabilities", []),
+            "loaded_models": n.get("loaded_models", []),
+            "model_perf": model_perf,
+            "hardware": {
+                "ram_gib": specs.get("ram_gib"),
+                "vram_gib": specs.get("vram_gib"),
+                "cpu": specs.get("cpu"),
+            },
+            "health": {
+                "last_seen": n.get("last_seen"),
+                "lmstudio_ok": n.get("lmstudio_ok", False),
+                "inflight_tasks": inflight,
+                "max_concurrent": weight,
+                "latency_ema_s": round(latency, 2),
+                "pick_count": pick_count,
+                "semaphore_available": sem_available,
+            },
+            "routing": {
+                "best_models": routing._node_models.get(hn.lower(), []),
+            },
+        })
+    
+    # Task distribution by node
+    task_distribution = {}
+    for hn, count in executor._node_inflight.items():
+        task_distribution[hn] = count
+    
+    # Overall stats
+    total_inflight = sum(executor._node_inflight.values())
+    total_weight = sum(n.get("weight", 1) for n in executor._nodes)
+    healthy_nodes = sum(1 for n in executor._nodes if n.get("lmstudio_ok", False))
+    
+    return {
+        "timestamp": _now_ts(),
+        "summary": {
+            "total_nodes": len(executor._nodes),
+            "healthy_nodes": healthy_nodes,
+            "total_weight": total_weight,
+            "total_inflight": total_inflight,
+            "llm_semaphore_available": executor._llm_sem._value,
+            "script_semaphore_available": executor._script_sem._value,
+        },
+        "nodes": nodes,
+        "task_distribution": task_distribution,
+        "routing": {
+            "model_to_best_node": routing._model_to_node,
+            "model_routing": routing._routing,
+        },
+    }
+
+
+@app.get("/api/fleet/nodes")
+def api_fleet_nodes(user: str = Depends(auth)):
+    """List all fleet nodes with live state."""
+    executor = _get_fleet_executor()
+    return {
+        "nodes": [
+            {
+                "hostname": n.get("hostname", n.get("ip", "?")),
+                "ip": n.get("ip", ""),
+                "weight": n.get("weight", 1),
+                "capabilities": n.get("capabilities", []),
+                "loaded_models": n.get("loaded_models", []),
+                "lmstudio_ok": n.get("lmstudio_ok", False),
+                "last_seen": n.get("last_seen"),
+                "inflight": executor._node_inflight.get(n.get("hostname", n.get("ip", "")), 0),
+            }
+            for n in executor._nodes
+        ]
+    }
+
+
+@app.get("/api/fleet/models")
+def api_fleet_models(user: str = Depends(auth)):
+    """Model inventory across all nodes with benchmark performance."""
+    executor = _get_fleet_executor()
+    routing = _get_fleet_routing()
+    
+    models = {}
+    for n in executor._nodes:
+        hn = n.get("hostname", n.get("ip", "?"))
+        for model in n.get("loaded_models", []):
+            if model not in models:
+                models[model] = {"nodes": [], "best_node": None, "best_composite": 0}
+            
+            perf = routing.get_model_perf(hn, model)
+            composite = perf.get("composite_score", 0) if perf else 0
+            
+            models[model]["nodes"].append({
+                "hostname": hn,
+                "tps_med": perf.get("tps_med", 0) if perf else 0,
+                "eval_score": perf.get("eval_score", 0) if perf else 0,
+                "composite": composite,
+                "ok": perf.get("ok", True) if perf else False,
+            })
+            
+            if composite > models[model]["best_composite"]:
+                models[model]["best_composite"] = composite
+                models[model]["best_node"] = hn
+    
+    return {"models": models}
+
+
+@app.get("/api/fleet/tasks")
+def api_fleet_tasks(
+    status: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    user: str = Depends(auth),
+):
+    """Get tasks with node assignment info."""
+    neo = _neo()
+    try:
+        with neo._session() as s:
+            where = ""
+            params = {"limit": limit}
+            if status:
+                where = "WHERE t.status = $status"
+                params["status"] = status
+            
+            query = f"""
+            MATCH (t:Task)
+            {where}
+            OPTIONAL MATCH (t)-[:DISPATCHED_AS]->(d:Dispatch)
+            RETURN t, d.node_id as assigned_node
+            ORDER BY t.created_at_ts DESC
+            LIMIT $limit
+            """
+            res = s.run(query, params)
+            tasks = []
+            for row in res:
+                t = dict(row["t"])
+                t["assigned_node"] = row["assigned_node"]
+                tasks.append(t)
+            return {"tasks": tasks, "count": len(tasks)}
+    finally:
+        neo.close()
+
+
+@app.get("/api/fleet/benchmarks")
+def api_fleet_benchmarks(user: str = Depends(auth)):
+    """Get benchmark data from fleet_state.json."""
+    routing = _get_fleet_routing()
+    return {
+        "nodes": routing._state.get("nodes", []),
+        "loadout": routing._loadout.get("routing", {}),
+        "timestamp": routing._state.get("timestamp"),
+    }
+
+
+def _now_ts() -> int:
+    return int(_time.time() * 1000)
 
 
 @app.get("/api/ops/status")
@@ -1736,6 +1978,35 @@ def api_get_task(task_id: str, user: str = Depends(auth)):
     finally:
         neo.close()
 
+
+@app.post("/api/tasks/{task_id}/enqueue")
+def api_enqueue_task(task_id: str, dry_run: bool = False, user: str = Depends(auth)):
+    """JSON enqueue endpoint used by auto-assign / fleet drain.
+
+    Mirrors the HTML ``/tasks/{task_id}/enqueue`` route but returns a
+    machine-readable payload and 404s when the task does not exist. Returns
+    409 when the task already has a queued/started job so callers can treat
+    it as idempotent."""
+    neo = _neo()
+    try:
+        with neo._session() as s:
+            rec = s.run(
+                "MATCH (t:Task {id:$id}) RETURN t.status AS status",
+                {"id": task_id},
+            ).single()
+            if not rec:
+                raise HTTPException(status_code=404, detail="Task not found")
+            status = rec["status"]
+        if status in ("RUNNING", "SUCCESS", "FAILURE", "COMPLETED"):
+            return {"enqueued": False, "already": True, "status_code": 409, "task_id": task_id}
+        q = get_q()
+        job = q.enqueue(execute_task_job, task_id, dry_run)
+        EXECUTIONS.labels(status="ENQUEUED").inc()
+        return {"enqueued": True, "job_id": job.get_id(), "task_id": task_id}
+    finally:
+        neo.close()
+
+
 @app.get("/api/agent/tasks")
 def api_agent_tasks(
     status: str = Query("READY", description="task status to poll"),
@@ -1744,58 +2015,52 @@ def api_agent_tasks(
     limit: int = Query(20, ge=1, le=100),
     user: str = Depends(auth),
 ):
-    neo = _neo()
-    try:
-        items = neo.list_agent_tasks(
-            status=status,
-            capabilities=capabilities,
-            agent_id=agent_id,
-            limit=limit,
-        )
-        runtime = _workflow_runtime_snapshot(neo)
-        admitted = _apply_workflow_admission(items, runtime)
-        return {
-            "items": admitted,
-            "count": len(admitted),
-            "admission": {
-                **_get_workflow_control(),
-                "running": runtime.get("running"),
-                "batch_ready_direct": runtime.get("batch_ready_direct"),
-            },
-        }
-    finally:
-        neo.close()
+    neo = _neo_fleet()
+    items = neo.list_agent_tasks(
+        status=status,
+        capabilities=capabilities,
+        agent_id=agent_id,
+        limit=limit,
+    )
+    runtime = _workflow_runtime_snapshot(neo)
+    admitted = _apply_workflow_admission(items, runtime)
+    return {
+        "items": admitted,
+        "count": len(admitted),
+        "admission": {
+            **_get_workflow_control(),
+            "running": runtime.get("running"),
+            "batch_ready_direct": runtime.get("batch_ready_direct"),
+        },
+    }
 
 @app.post("/api/tasks/{task_id}/claim")
 def api_claim_task(task_id: str, body: TaskClaimIn, user: str = Depends(auth)):
-    neo = _neo()
-    try:
-        task_obj = neo.get_task(task_id)
-        if not task_obj:
-            raise HTTPException(status_code=404, detail="Task not found")
-        allowed, reason = _is_claim_allowed_for_workflow_control(task_obj)
-        if not allowed:
-            TASK_CLAIMS.labels(result="drain_blocked").inc()
-            raise HTTPException(status_code=409, detail={"claimed": False, "reason": "drain_mode_block", "message": reason})
-        result = neo._with_retry(
-            lambda: neo.claim_task(
-                task_id=task_id,
-                agent_id=body.agent_id,
-                capabilities=body.capabilities,
-                session_id=body.session_id,
-                idempotency_key=body.idempotency_key,
-                lease_seconds=body.lease_seconds,
-            )
+    neo = _neo_fleet()
+    task_obj = neo.get_task(task_id)
+    if not task_obj:
+        raise HTTPException(status_code=404, detail="Task not found")
+    allowed, reason = _is_claim_allowed_for_workflow_control(task_obj)
+    if not allowed:
+        TASK_CLAIMS.labels(result="drain_blocked").inc()
+        raise HTTPException(status_code=409, detail={"claimed": False, "reason": "drain_mode_block", "message": reason})
+    result = neo._with_retry(
+        lambda: neo.claim_task(
+            task_id=task_id,
+            agent_id=body.agent_id,
+            capabilities=body.capabilities,
+            session_id=body.session_id,
+            idempotency_key=body.idempotency_key,
+            lease_seconds=body.lease_seconds,
         )
-        if result.get("claimed"):
-            TASK_CLAIMS.labels(result="claimed").inc()
-            return result
-        TASK_CLAIMS.labels(result=result.get("reason", "conflict")).inc()
-        if result.get("reason") == "not_found":
-            raise HTTPException(status_code=404, detail="Task not found")
-        raise HTTPException(status_code=409, detail=result)
-    finally:
-        neo.close()
+    )
+    if result.get("claimed"):
+        TASK_CLAIMS.labels(result="claimed").inc()
+        return result
+    TASK_CLAIMS.labels(result=result.get("reason", "conflict")).inc()
+    if result.get("reason") == "not_found":
+        raise HTTPException(status_code=404, detail="Task not found")
+    raise HTTPException(status_code=409, detail=result)
 
 @app.post("/api/tasks/{task_id}/heartbeat")
 def api_heartbeat_task(task_id: str, body: TaskHeartbeatIn, user: str = Depends(auth)):
@@ -1820,35 +2085,32 @@ def api_heartbeat_task(task_id: str, body: TaskHeartbeatIn, user: str = Depends(
 def api_complete_task(task_id: str, body: TaskCompleteIn, user: str = Depends(auth)):
     if body.status not in {"DONE", "FAILED", "CANCELLED"}:
         raise HTTPException(status_code=400, detail="status must be DONE, FAILED, or CANCELLED")
-    neo = _neo()
-    try:
-        task = neo._with_retry(
-            lambda: neo.complete_task(
-                task_id=task_id,
-                agent_id=body.agent_id,
-                status=body.status,
-                summary=body.summary,
-                result=body.result,
-                session_id=body.session_id,
-                idempotency_key=body.idempotency_key,
-            )
-        )
-        if not task:
-            raise HTTPException(status_code=404, detail="Task not found")
-        dead_letter_incident_id = _maybe_dead_letter_exhausted_task(
-            neo=neo,
+    neo = _neo_fleet()
+    task = neo._with_retry(
+        lambda: neo.complete_task(
             task_id=task_id,
-            completed_status=body.status,
-            actor=user,
+            agent_id=body.agent_id,
+            status=body.status,
+            summary=body.summary,
+            result=body.result,
+            session_id=body.session_id,
+            idempotency_key=body.idempotency_key,
         )
-        if dead_letter_incident_id:
-            refreshed = neo.get_task(task_id)
-            if refreshed:
-                task = refreshed
-        TASK_COMPLETIONS.labels(status=body.status).inc()
-        return {"task": task, "dead_letter_incident_id": dead_letter_incident_id}
-    finally:
-        neo.close()
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    dead_letter_incident_id = _maybe_dead_letter_exhausted_task(
+        neo=neo,
+        task_id=task_id,
+        completed_status=body.status,
+        actor=user,
+    )
+    if dead_letter_incident_id:
+        refreshed = neo.get_task(task_id)
+        if refreshed:
+            task = refreshed
+    TASK_COMPLETIONS.labels(status=body.status).inc()
+    return {"task": task, "dead_letter_incident_id": dead_letter_incident_id}
 
 
 @app.post("/api/paperclip/events")

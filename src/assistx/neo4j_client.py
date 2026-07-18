@@ -36,6 +36,7 @@ class Neo4jClient:
         user: Optional[str] = None,
         password: Optional[str] = None,
         database: object = _UNSET,
+        pool_size: Optional[int] = None,
     ):
         # Try explicit args → config.settings → environment
         cfg = self._load_settings_fallback()
@@ -50,7 +51,7 @@ class Neo4jClient:
                 "Neo4jClient requires uri, user, and password (via args, config.settings, or env)."
             )
 
-        pool_size = int(os.getenv("NEO4J_MAX_CONNECTION_POOL_SIZE", "50"))
+        pool_size = pool_size if pool_size is not None else int(os.getenv("NEO4J_MAX_CONNECTION_POOL_SIZE", "50"))
         acq_timeout = float(os.getenv("NEO4J_CONNECTION_ACQUISITION_TIMEOUT", "30"))
         max_tx_retry = float(os.getenv("NEO4J_MAX_TRANSACTION_RETRY_TIME", "10"))
         max_conn_lifetime = float(os.getenv("NEO4J_MAX_CONNECTION_LIFETIME", "300"))
@@ -63,10 +64,15 @@ class Neo4jClient:
             max_connection_lifetime=max_conn_lifetime,
             keep_alive=True,
         )
+        # When True, close() is a no-op so a cached/shared client's driver pool
+        # is not torn down by per-request `finally: neo.close()` handlers.
+        self.shared: bool = False
 
     # ---------- setup / teardown ----------
 
     def close(self) -> None:
+        if self.shared:
+            return
         self.driver.close()
 
     def _session(self) -> Session:
@@ -74,22 +80,19 @@ class Neo4jClient:
         return self.driver.session(database=self.database) if self.database else self.driver.session()
 
     def _with_retry(self, fn, attempts: int = 3):
-        """Run a session-backed callable, transparently retrying transient
-        ServiceUnavailable (dropped connections / momentary unavailability).
-        Avoids surfacing 503s to fleet callers under load.  If repeated
-        attempts still fail we close+reopen the driver to shed any stale
-        pool connections (the Docker bridge + tailscale combo regularly
-        drops TCP conns without notifying the pool)."""
+        """Run a session-backed callable, retrying transient errors.
+        Catches ServiceUnavailable + rare driver races (None response in
+        fetch_all).  Does NOT recycle the shared driver — that would corrupt
+        other in-flight sessions using the same pool.  Transient errors are
+        infrequent enough that a simple retry suffices."""
         from neo4j.exceptions import ServiceUnavailable as _SU
         last = None
         for i in range(attempts):
             try:
                 return fn()
-            except _SU as e:
+            except (_SU, AttributeError) as e:
                 last = e
-                logger.warning("Neo4j ServiceUnavailable (attempt %d/%d), recycling driver", i + 1, attempts)
-                self.close()
-                self.__init__()
+                logger.warning("Neo4j transient error (attempt %d/%d): %s", i + 1, attempts, e)
                 continue
         raise last  # type: ignore[arg-type]
 
@@ -581,7 +584,7 @@ class Neo4jClient:
                     "MERGE (t:Task {idempotency_key:$idempotency_key}) "
                     "ON CREATE SET t.id=$id, t.status=$status, t.created_at=datetime(), t.created_at_ts=timestamp() "
                     "SET t += $props, "
-                    "    t.status=CASE WHEN t.status IN ['DONE','CANCELLED','FAILED'] AND $status='READY' "
+                    "    t.status=CASE WHEN t.status IN ['DONE','CANCELLED'] AND $status='READY' "
                     "                  THEN t.status ELSE $status END, "
                     "    t.updated_at=datetime(), t.updated_at_ts=timestamp() "
                     "RETURN t.id AS id",
@@ -609,6 +612,58 @@ class Neo4jClient:
                     {"parent_id": parent_id, "ticket_id": ticket_id},
                 )
             return ticket_id
+
+    def create_tasks_batch(self, tasks: list[dict]) -> int:
+        """Create many READY tasks in a single session.
+
+        Each item: {title, kind, required_capabilities, priority, payload,
+        idempotency_key}. Tasks with an existing idempotency_key are merged
+        (reset to READY if FAILED; left as-is if DONE/CANCELLED). Returns the
+        number of tasks actually written. Batching avoids one session per task,
+        which previously saturated Neo4j under high harvest rates.
+        """
+        if not tasks:
+            return 0
+        written = 0
+        with self._session() as s:
+            for t in tasks:
+                ik = t.get("idempotency_key")
+                props = {
+                    "title": t.get("title", ""),
+                    "ticket_type": t.get("kind", "task"),
+                    "status": "READY",
+                    "kind": t.get("kind", "task"),
+                    "required_capabilities": t.get("required_capabilities") or [],
+                    "priority": t.get("priority"),
+                    "payload_json": json.dumps(t.get("payload") or {}),
+                }
+                if ik:
+                    rec = s.run(
+                        "MERGE (t:Task {idempotency_key:$ik}) "
+                        "ON CREATE SET t.id=$id, t.created_at=datetime(), t.created_at_ts=timestamp() "
+                        "SET t += $props, "
+                        "    t.status=CASE WHEN t.status IN ['DONE','CANCELLED'] AND $st='READY' "
+                        "                  THEN t.status ELSE $st END, "
+                        "    t.updated_at=datetime(), t.updated_at_ts=timestamp() "
+                        "RETURN t.id AS id",
+                        {
+                            "ik": ik,
+                            "id": uuid.uuid4().hex,
+                            "st": "READY",
+                            "props": {k: v for k, v in props.items() if k != "status"},
+                        },
+                    ).single()
+                else:
+                    rec = s.run(
+                        "CREATE (t:Task {id:$id}) SET t += $props, "
+                        "t.created_at=datetime(), t.created_at_ts=timestamp(), "
+                        "t.updated_at=datetime(), t.updated_at_ts=timestamp() "
+                        "RETURN t.id AS id",
+                        {"id": uuid.uuid4().hex, "props": props},
+                    ).single()
+                if rec and rec.get("id"):
+                    written += 1
+        return written
 
     def create_deliverable_from_ask(
         self,
@@ -817,17 +872,25 @@ class Neo4jClient:
         queries against absent keys.
         """
         caps = capabilities or []
-        scan_limit = max(limit * 10, limit)
         with self._session() as s:
-            res = s.run(
-                "MATCH (t:Task {status:$status}) "
-                "WHERE NOT EXISTS { "
-                "  MATCH (t)-[:DISPATCHED_AS]->(pc:Dispatch) "
-                "  WHERE pc.paperclip_issue_id IS NOT NULL "
-                "} "
-                "RETURN t ORDER BY coalesce(t.created_at_ts, 0) ASC LIMIT $limit",
-                {"status": status, "limit": scan_limit},
-            )
+            if caps:
+                # Capability-targeted query: use the composite
+                # (status, required_capabilities) index so this is a fast
+                # lookup, not a full scan of the 12K-task backlog. We dropped
+                # the DISPATCHED_AS NOT EXISTS check — it forced an O(n)
+                # relationship scan per poll and saturated Neo4j.
+                query = (
+                    "MATCH (t:Task {status:$status}) "
+                    "WHERE $caps IN coalesce(t.required_capabilities, []) "
+                    "RETURN t ORDER BY coalesce(t.created_at_ts, 0) ASC LIMIT $limit"
+                )
+                res = s.run(query, {"status": status, "caps": caps[0], "limit": limit})
+            else:
+                query = (
+                    "MATCH (t:Task {status:$status}) "
+                    "RETURN t ORDER BY coalesce(t.created_at_ts, 0) ASC LIMIT $limit"
+                )
+                res = s.run(query, {"status": status, "limit": max(limit * 10, limit)})
             items = []
             for r in res:
                 item = dict(r["t"])
@@ -987,10 +1050,34 @@ class Neo4jClient:
                     {"task_id": task_id, "completion_id": idempotency_key},
                 ).single()
                 if prior:
-                    task = dict(prior["t"])
-                    task["run_id"] = prior["run_id"]
-                    task["idempotent"] = True
-                    return task
+                    prior_task = dict(prior["t"])
+                    prior_task["run_id"] = prior["run_id"]
+                    prior_task["idempotent"] = True
+                    # Still update the task status and result even if idempotent,
+                    # so a later successful execution can un-FAIL a prior failure.
+                    if prior_task.get("status") != status:
+                        s.run(
+                            """
+                            MATCH (t:Task {id:$task_id})
+                            SET t.status=$status,
+                                t.result_summary=$summary,
+                                t.result_json=$result_json,
+                                t.completed_by=$agent_id,
+                                t.completed_at=datetime(),
+                                t.completed_at_ts=timestamp(),
+                                t.updated_at=datetime(),
+                                t.updated_at_ts=timestamp()
+                            """,
+                            {
+                                "task_id": task_id,
+                                "status": status,
+                                "summary": summary,
+                                "result_json": json.dumps(result or {}),
+                                "agent_id": agent_id,
+                            },
+                        )
+                        prior_task["status"] = status
+                    return prior_task
             run_id = uuid.uuid4().hex
             rec = s.run(
                 """
@@ -1614,7 +1701,7 @@ class Neo4jClient:
 
     def add_summary_and_tasks(self, conversation_id: str, summary: Dict[str, Any], tasks: Iterable[Dict[str, Any]]):
         summary_id = uuid.uuid4().hex
-        with self.driver.session() as s:
+        with self._session() as s:
             sr = s.run(
             "CREATE (m:Summary {id:$id}) "
             "SET m += $sprops, m.created_at = timestamp(), m.created_at_ts = timestamp(), "
@@ -1654,12 +1741,12 @@ class Neo4jClient:
             return [dict(r["t"]) for r in res]
 
     def update_task_status(self, task_id: str, status: str):
-        with self.driver.session() as s:
+        with self._session() as s:
             s.run("MATCH (t:Task{id:$id}) SET t.status=$st, t.updated_at_ts = timestamp()", {"id": task_id, "st": status})
 
     def create_run(self, task_id: str, agent: str, model: str, manifest: Dict[str, Any]):
         run_id = uuid.uuid4().hex
-        with self.driver.session() as s:
+        with self._session() as s:
             rec = s.run(
                 "MATCH (t:Task{id:$tid}) "
                 "CREATE (r:AgentRun {id:$run_id, task_id:$tid, agent:$agent, model:$model, status:'RUNNING', "
@@ -1672,12 +1759,12 @@ class Neo4jClient:
             return rec["id"]
 
     def complete_run(self, run_id: str, status: str):
-        with self.driver.session() as s:
+        with self._session() as s:
             s.run("MATCH (r:AgentRun{id:$id}) SET r.status=$st, r.ended_at=datetime(), r.ended_at_ts=timestamp()", {"id": run_id, "st": status})
 
     def log_tool_call(self, run_id: str, tool: str, input_json: Dict[str, Any], output_json: Dict[str, Any] | None, ok: bool):
         call_id = uuid.uuid4().hex
-        with self.driver.session() as s:
+        with self._session() as s:
             s.run(
                 "MATCH (r:AgentRun{id:$rid}) "
                 "CREATE (k:ToolCall {id:$call_id, run_id:$rid, tool:$tool, input_json:$in, output_json:$out, ok:$ok, "
@@ -1690,7 +1777,7 @@ class Neo4jClient:
 
     def log_artifact(self, run_id: str, kind: str, path: str, sha256: str | None):
         artifact_id = uuid.uuid4().hex
-        with self.driver.session() as s:
+        with self._session() as s:
             s.run(
                 "MATCH (r:AgentRun{id:$rid}) "
                 "CREATE (a:Artifact {id:$artifact_id, run_id:$rid, kind:$k, path:$p, sha256:$h, created_at:datetime(), created_at_ts:timestamp(), updated_at:datetime(), updated_at_ts:timestamp()}) "

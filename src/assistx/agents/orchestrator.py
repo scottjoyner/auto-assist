@@ -13,8 +13,35 @@ from ..logging_utils import get_logger
 from ..metrics import TOOL_CALLS, TOOL_LATENCY, LLM_TOKENS
 
 import json, time
+from datetime import datetime, date, time as dtime
 
 logger = get_logger()
+
+
+def _json_safe(value: Any) -> Any:
+    """Recursively convert values that are not JSON-serializable (Neo4j
+    DateTime, datetime/date/time, bytes) into strings so agent run results
+    can be stored by RQ without raising ``... is not JSON serializable``."""
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (datetime, date, dtime)):
+        return value.isoformat()
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8", "replace")
+        except Exception:
+            return repr(value)
+    # Neo4j driver DateTime / Duration etc. expose isoformat()
+    if hasattr(value, "isoformat") and callable(value.isoformat):
+        try:
+            return value.isoformat()
+        except Exception:
+            pass
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
 
 TOOLS = {
     "web_search": {"desc": "Search the web for facts, URLs, and recent info.", "schema": {"query": "str", "max_results": "int?"}, "func": lambda args: web_search(args.get("query", ""), int(args.get("max_results", 5)))},
@@ -39,16 +66,21 @@ Respond ONLY in JSON with one of:
 - {"tool":"<name>", "input":{...}, "reason":"..."}
 - {"final": {"result":{...}, "summary":"..."}}
 Tools:
-{tools}
+__TOOLS__
 Task:
-{task}
+__TASK__
 """
 
 def decide(state: AgentState) -> AgentState:
     tools_desc = "\n".join([f"- {k}: {v['desc']} schema={v['schema']}" for k, v in TOOLS.items()])
-    j = json_chat(DECIDE_PROMPT.format(tools=tools_desc, task=state.task), schema_hint="AgentDecision")
+    prompt = DECIDE_PROMPT.replace("__TOOLS__", tools_desc).replace("__TASK__", json.dumps(_json_safe(state.task), ensure_ascii=False))
+    j = json_chat(prompt, schema_hint="AgentDecision")
     state.history.append({"decision": j})
     logger.info(f"decision for task {state.task.get('id','?')}: {j}")
+    if not isinstance(j, dict):
+        state.history.append({"error": f"malformed decision (not an object): {type(j).__name__}"})
+        state.done = True
+        return state
     if "final" in j:
         state.result = j["final"]
         state.done = True
@@ -88,14 +120,18 @@ def should_continue(state: AgentState) -> str:
 def build_graph():
     g = StateGraph(AgentState)
     g.add_node("decide", decide)
-    g.add_edge("decide", should_continue)
+    g.add_conditional_edges("decide", should_continue)
     g.set_entry_point("decide")
     return g.compile()
 
 def run_task(neo: Neo4jClient, task: Dict[str, Any], dry_run: bool = False) -> Dict[str, Any]:
+    import os as _os
     graph = build_graph()
     state = AgentState(task=task)
     rid = neo.create_run(task_id=task["id"], agent="LangGraphExecutor", model="ollama:" + task.get("model", "auto"), manifest={"begin": task})
+    # Hard wall-clock guard so a single task can never wedge a worker forever.
+    task_budget_s = float(_os.getenv("TASK_WALLCLOCK_S", "600"))
+    deadline = time.time() + task_budget_s
     try:
         if dry_run:
             preview = decide(state)
@@ -103,16 +139,32 @@ def run_task(neo: Neo4jClient, task: Dict[str, Any], dry_run: bool = False) -> D
             neo.complete_run(rid, "DONE")
             out = preview.model_dump(); out["run_id"] = rid
             return out
+        max_steps = 8
         while True:
             last_len = len(state.history)
-            state = graph.invoke(state)
+            # LangGraph returns an AddableValuesDict, not our pydantic AgentState,
+            # so re-hydrate it after each invoke.
+            result = graph.invoke(state.model_dump())
+            state = AgentState(**{**state.model_dump(), **dict(result)})
             if len(state.history) > last_len:
                 step = state.history[-1]
                 if "tool" in step:
                     neo.log_tool_call(rid, step["tool"], step.get("input", {}), step.get("output", {}), True)
                 if "policy_denied" in step:
                     neo.log_tool_call(rid, "policy_denied", step["policy_denied"], {}, False)
-            if state.done:
+            # Terminate when the task is marked done OR the agent graph can no
+            # longer make progress (entry guard caps history at 8 steps). Without
+            # this the outer loop would spin forever doing nothing.
+            if state.done or len(state.history) >= max_steps or len(state.history) == last_len:
+                if not state.done:
+                    state.done = True
+                neo.complete_run(rid, "DONE")
+                break
+            # Wall-clock guard: stop the loop if we've blown the task budget so a
+            # slow/hanging LLM or tool call can't wedge the worker indefinitely.
+            if time.time() > deadline:
+                logger.warning("run_task budget exceeded for task %s", task.get("id"))
+                state.done = True
                 neo.complete_run(rid, "DONE")
                 break
         # Log artifacts for write_text outputs
@@ -124,7 +176,7 @@ def run_task(neo: Neo4jClient, task: Dict[str, Any], dry_run: bool = False) -> D
                 if isinstance(p, str):
                     neo.log_artifact(rid, kind='file', path=p, sha256=sha)
         ret = state.model_dump(); ret["run_id"] = rid
-        return ret
+        return _json_safe(ret)
     except Exception as e:
         neo.complete_run(rid, "FAILED")
         neo.log_tool_call(rid, "error", {"task": task}, {"error": str(e)}, False)

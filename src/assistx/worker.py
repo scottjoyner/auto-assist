@@ -1,11 +1,24 @@
 # src/assistx/worker.py
+import faulthandler
 import json
 import logging
 import multiprocessing as mp
 import os
+import signal
 import socket
 import threading
 import time
+
+# Dump all thread stacks on SIGUSR1 for debugging wedged workers.
+faulthandler.enable()
+try:
+    import sys
+    def _dump_threads(*_):
+        with open("/tmp/faulthandler_dump.txt", "w") as _fh:
+            faulthandler.dump_traceback(all_threads=True, file=_fh)
+    signal.signal(signal.SIGUSR1, _dump_threads)
+except (ValueError, OSError):
+    pass
 
 from .config import settings
 from .deps import load_redis_module, use_compat_shims
@@ -22,6 +35,7 @@ if use_compat_shims():
         Worker = Connection = None
 else:
     from rq import Worker, Queue, Connection
+    from rq import SimpleWorker
 
 HEALTH_PORT = int(os.getenv("WORKER_HEALTH_PORT", "8100"))
 
@@ -62,9 +76,31 @@ def _health_server() -> None:
 def _run_one_worker(index: int, listen: list[str], redis_url: str) -> None:
     conn = redis.from_url(redis_url)
     worker_name = _worker_name(index)
+    # Agent loops (decide + tool calls + retries) can run well past RQ's
+    # default 180s. We raise the default timeout on the Queue instance so jobs
+    # we pull use a generous window instead of being killed mid-loop.
+    job_timeout = int(os.getenv("RQ_JOB_TIMEOUT_S", "1800"))
+    # The heavy import chain (assistx.jobs -> langgraph -> langchain -> tornado)
+    # was already warmed up in the parent process and inherited via fork, so it
+    # is cached in sys.modules. This no-op import never touches the import lock
+    # and guards against any module that slipped the parent warmup.
+    try:
+        import assistx.jobs  # noqa: F401
+        from .agents.orchestrator import run_task  # noqa: F401
+    except Exception as exc:  # pragma: no cover
+        logger.warning("child warmup import failed: %s", exc)
     with Connection(conn):
-        w = Worker([Queue(name) for name in listen], name=worker_name)
-        w.work(with_scheduler=True)
+        queues = [Queue(name, default_timeout=job_timeout) for name in listen]
+        # Use SimpleWorker: runs jobs in-process without forking a horse.
+        # The default Worker forks, and forking after background threads were
+        # started deadlocks the child on Python's import lock (classic
+        # fork-after-thread). SimpleWorker reuses the already-imported modules
+        # in the worker process, eliminating that deadlock.
+        # with_scheduler=False: RQ's scheduler spawns a background thread that
+        # imports concurrently and races on the import lock; we don't need the
+        # scheduler (the drainer enqueues directly).
+        w = SimpleWorker(queues, name=worker_name)
+        w.work(with_scheduler=False)
 
 
 def _start_execution_pollers() -> list[threading.Thread]:
@@ -123,6 +159,41 @@ def _start_execution_pollers() -> list[threading.Thread]:
 
 def main():
     validate_runtime_configuration(strict=True)
+    # Warm up the full import chain in the PARENT process, single-threaded,
+    # BEFORE forking the worker children. The fork copy-on-write then hands
+    # each child an already-populated sys.modules, so child job execution
+    # never has to import (assistx.jobs -> langgraph -> langchain -> tornado,
+    # a huge chain). This avoids Python's per-process import-lock deadlock that
+    # occurs when a worker thread (e.g. RQ's scheduler) imports the same chain
+    # concurrently with a job thread.
+    try:
+        import importlib
+        _warm = [
+            "assistx.jobs",
+            "assistx.agents.orchestrator",
+            "assistx.ollama_llm",
+            "assistx.metrics",
+            "assistx.tools.web_search",
+            "assistx.llm.client",
+            "assistx.fleet",
+            "assistx.outbox_client",
+            "assistx.neo4j_client",
+            "prometheus_client",
+            "prometheus_client.exposition",
+            "prometheus_client.registry",
+            "prometheus_client.openmetrics",
+            "langgraph",
+            "langchain_core",
+            "tornado",
+            "tenacity",
+        ]
+        for _m in _warm:
+            try:
+                importlib.import_module(_m)
+            except Exception as exc:  # pragma: no cover
+                logger.warning("parent warmup import of %s failed: %s", _m, exc)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("parent warmup failed: %s", exc)
     _start_execution_pollers()
     listen = [os.getenv("RQ_QUEUE", "assistx")]
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")

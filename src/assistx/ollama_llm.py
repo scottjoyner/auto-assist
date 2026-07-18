@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 from typing import Any, Dict
 
 from .llm_client import chat as _chat, tool_json as _tool_json
@@ -46,16 +47,24 @@ def _cache_or_call(key: str, call_fn):
     return out
 
 
+def _active_model() -> str:
+    # Prefer LLM_MODEL (the configured OpenAI/OpenRouter model) over the legacy
+    # OLLAMA_MODEL, which historically pointed at a local LM Studio node that
+    # may be offline. This keeps the orchestrator on the live backend.
+    return os.getenv("LLM_MODEL") or settings.ollama_model
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.8, min=0.5, max=4), reraise=True)
 def json_chat(prompt: str, schema_hint: str | None = None, temperature: float = 0.2) -> Dict[str, Any]:
-    key = make_key(settings.ollama_model, f"JSON|{schema_hint}|{prompt}", mode="json")
+    model = _active_model()
+    key = make_key(model, f"JSON|{schema_hint}|{prompt}", mode="json")
 
     def _do():
         messages = [
             {"role": "system", "content": SYSTEM_BASE + ("\nSchema:" + schema_hint if schema_hint else "")},
             {"role": "user", "content": prompt},
         ]
-        raw = _chat(messages, model=settings.ollama_model, json_mode=True)
+        raw = _chat(messages, model=model, json_mode=True)
         return raw
 
     raw = _cache_or_call(key, _do)
@@ -65,7 +74,7 @@ def json_chat(prompt: str, schema_hint: str | None = None, temperature: float = 
             obj = orjson.loads(raw)
         except ModuleNotFoundError:
             obj = json.loads(raw)
-        LLM_TOKENS.labels(model=settings.ollama_model, mode="json").inc(_estimate_tokens(prompt))
+        LLM_TOKENS.labels(model=model, mode="json").inc(_estimate_tokens(prompt))
         return obj
     except Exception as e:
         logger.warning("JSON parse failed; retrying...")
@@ -74,15 +83,16 @@ def json_chat(prompt: str, schema_hint: str | None = None, temperature: float = 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.8, min=0.5, max=4), reraise=True)
 def text_chat(prompt: str, temperature: float = 0.2) -> str:
-    key = make_key(settings.ollama_model, f"TEXT|{prompt}", mode="text")
+    model = _active_model()
+    key = make_key(model, f"TEXT|{prompt}", mode="text")
 
     def _do():
         messages = [
             {"role": "system", "content": SYSTEM_BASE},
             {"role": "user", "content": prompt},
         ]
-        return _chat(messages, model=settings.ollama_model).strip()
+        return _chat(messages, model=model).strip()
 
     out = _cache_or_call(key, _do)
-    LLM_TOKENS.labels(model=settings.ollama_model, mode="text").inc(_estimate_tokens(prompt))
+    LLM_TOKENS.labels(model=model, mode="text").inc(_estimate_tokens(prompt))
     return out
