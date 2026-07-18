@@ -88,7 +88,7 @@ artifact_id: art_20260526_001
 kind: transcript
 storage_root: nas1
 relative_path: fileserver/dashcam/transcriptions/2026/05/26/example.json
-host_path: /media/scott/NAS1/fileserver/dashcam/transcriptions/2026/05/26/example.json
+host_path: \/media\/scott\/NAS1/dashcam/transcriptions/2026/05/26/example.json
 container_path: /nas/fileserver/dashcam/transcriptions/2026/05/26/example.json
 tailscale_host_hint: x1-370
 sha256: optional
