@@ -290,7 +290,7 @@ def main() -> None:
     p.add_argument("--assistx-url", default=os.getenv("FLEET_ASSISTX_URL", "http://assistx:8000"))
     p.add_argument("--router-url", default=os.getenv("FLEET_ROUTER_URL", "http://router:8088"))
     p.add_argument("--auth-user", default=os.getenv("FLEET_AUTH_USER", "admin"))
-    p.add_argument("--auth-pass", default=os.getenv("FLEET_AUTH_PASS", "fuck-you"))
+    p.add_argument("--auth-pass", default=os.getenv("FLEET_AUTH_PASS", "gluhlaf8"))
     p.add_argument("--node-id", default=os.getenv("FLEET_NODE_ID"))
     p.add_argument("--lmstudio-url", default=os.getenv("FLEET_LMSTUDIO_URL"))
     p.add_argument("--capabilities", default=os.getenv("FLEET_CAPABILITIES", ""))

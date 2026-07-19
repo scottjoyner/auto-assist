@@ -53,7 +53,7 @@ for _pair in _raw.split(","):
         except ValueError:
             pass
 BASIC_AUTH_USER = os.getenv("FLEET_BASIC_AUTH_USER", "admin")
-BASIC_AUTH_PASS = os.getenv("FLEET_BASIC_AUTH_PASS", "fuck-you")
+BASIC_AUTH_PASS = os.getenv("FLEET_BASIC_AUTH_PASS", "gluhlaf8")
 ASSISTX_URL = os.getenv("FLEET_ASSISTX_URL", "http://assistx:8000")
 ROUTER_URL = os.getenv("FLEET_ROUTER_URL", "http://router:8088")
 KNOWN_HOSTS = os.getenv("FLEET_KNOWN_HOSTS", "").split(",") if os.getenv("FLEET_KNOWN_HOSTS") else []

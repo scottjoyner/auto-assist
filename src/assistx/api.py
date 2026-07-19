@@ -1630,7 +1630,19 @@ def api_live_dashboard(user: str = Depends(auth)):
         probe = live_results.get(n["base_url"], {})
         n["status"] = "online" if probe.get("online") else "offline"
         n["response_ms"] = probe.get("response_ms")
-        n["models"] = [{"served_name": m} for m in probe.get("models", [])] if probe.get("models") else n.get("models", [])
+        if probe.get("models"):
+            n["models"] = [{"served_name": m, "live": True} for m in probe.get("models", [])]
+        else:
+            cached = n.get("models", [])
+            tagged = []
+            for m in cached:
+                if isinstance(m, str):
+                    tagged.append({"served_name": m, "live": False})
+                elif isinstance(m, dict):
+                    tagged.append(dict(m, live=False))
+                else:
+                    tagged.append({"served_name": str(m), "live": False})
+            n["models"] = tagged
         n["model_count"] = len(n["models"])
 
     # --- task counts ---

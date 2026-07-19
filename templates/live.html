@@ -189,7 +189,21 @@
     border: 1px solid rgba(96,165,250,0.15);
     color: #bfdbfe;
     white-space: nowrap;
+    transition: background 0.3s, border-color 0.3s, color 0.3s, box-shadow 0.3s;
   }
+  .model-chip.live {
+    background: rgba(34,197,94,0.15);
+    border-color: rgba(34,197,94,0.35);
+    color: #bbf7d0;
+    box-shadow: 0 0 10px rgba(34,197,94,0.12);
+  }
+  .model-chip.cached {
+    opacity: 0.45;
+    background: rgba(107,114,128,0.08);
+    border-color: rgba(107,114,128,0.12);
+    color: #9ca3af;
+  }
+  .node-card.offline .model-chip.live { display: none; }
 
   /* Traces feed */
   .traces-feed {
@@ -393,9 +407,8 @@
     grid.innerHTML = nodes.map(function(n) {
       var sc = n.status||'unknown';
       var chips = (n.models||[]).map(function(m) {
-        var id = (m.served_name || m.model_id || '').toLowerCase();
-        var cls = (id.includes('embedding')||id.includes('35b')||id.includes('27b')||id.includes('31b')) ? 'embedding' : '';
-        return '<span class="model-chip'+(cls?' '+cls:'')+'">'+esc(m.served_name||m.model_id||'?')+'</span>';
+        var liveCls = m.live ? 'live' : 'cached';
+        return '<span class="model-chip '+liveCls+'">'+esc(m.served_name||m.model_id||'?')+'</span>';
       }).join('');
       var url = (n.base_url||'').replace(/^https?:\/\//,'');
       return '<div class="node-card '+sc+'">' +
