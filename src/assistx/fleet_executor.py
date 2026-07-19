@@ -39,7 +39,10 @@ MAX_CONCURRENT_SCRIPT = int(os.getenv("FLEET_EXECUTOR_SCRIPT_CONCURRENCY", "16")
 NODE_HEALTH_TTL = float(os.getenv("FLEET_NODE_HEALTH_TTL", "90"))
 # Hard cap on total wall-time a single task may occupy a semaphore slot. Guards
 # against flaky fleet nodes wedging the pipeline by holding slots indefinitely.
-TASK_WALL_TIMEOUT = int(os.getenv("FLEET_TASK_WALL_TIMEOUT", "180"))
+# Default is generous (10 min) because under sustained generator load tasks can
+# legitimately take minutes across node retries; the watchdog only fires to
+# prevent permanent wedging, not to interrupt normal long-running work.
+TASK_WALL_TIMEOUT = int(os.getenv("FLEET_TASK_WALL_TIMEOUT", "600"))
 # Bound a single LM Studio call so retries across nodes can't run for hours.
 LMSTUDIO_CALL_TIMEOUT = int(os.getenv("FLEET_LMSTUDIO_CALL_TIMEOUT", "120"))
 # Composite valuation: quality_weight * eval_score + (1-quality_weight) * normalized_tps
