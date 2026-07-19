@@ -1488,6 +1488,20 @@ def api_fleet_models(user: str = Depends(auth)):
     return {"models": models}
 
 
+@app.post("/api/fleet/refresh-models")
+def api_fleet_refresh_models(user: str = Depends(auth)):
+    """Force re-probe of all fleet nodes for hot models. Invalidates the
+    60s cache so the LLM client picks up newly loaded models immediately."""
+    try:
+        from assistx.llm import client as llm_client
+        llm_client._fleet_inventory_at = 0.0
+        llm_client._fleet_inventory.clear()
+        inv = llm_client._fleet_model_inventory()
+        return {"ok": True, "hot_models": len(inv), "models": list(inv.keys())}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.get("/api/fleet/tasks")
 def api_fleet_tasks(
     status: Optional[str] = Query(None),
@@ -1569,8 +1583,22 @@ def _live_probe_node(url: str, timeout: float = 5.0) -> Optional[dict]:
                             "max_tokens": 1, "temperature": 0, "stream": False,
                         }, timeout=per_model_timeout)
                         elapsed = int((_time.time() - t1) * 1000)
-                        return mid, rr.status_code == 200 and elapsed < 1500, elapsed
-                    except requests.RequestException:
+                        if rr.status_code != 200 or elapsed >= 1500:
+                            return mid, False, elapsed
+                        body = rr.json()
+                        if not isinstance(body, dict):
+                            return mid, False, elapsed
+                        responded_model = body.get("model", "")
+                        if responded_model and mid not in responded_model:
+                            return mid, False, elapsed
+                        choices = body.get("choices", [])
+                        if not choices or not isinstance(choices, list):
+                            return mid, False, elapsed
+                        msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+                        if not msg.get("content"):
+                            return mid, False, elapsed
+                        return mid, True, elapsed
+                    except (requests.RequestException, json.JSONDecodeError, LookupError, TypeError):
                         return mid, False, None
                 for mid, is_loaded, pms in pool.map(_check_loaded, model_ids):
                     if is_loaded:
@@ -1989,6 +2017,51 @@ def api_live_strategy(user: str = Depends(auth)):
     finally:
         neo.close()
 
+    # --- Model routing health ---
+    # Probe fleet nodes from Neo4j (not LLM client's fleet_state.json which
+    # may not exist inside the container) to determine which models are hot.
+    model_routing = {"hot_models": {}, "blacklisted_pairs": [], "refresh_available": True}
+    try:
+        fleet_nodes_for_probe: List[dict] = []
+        neo2 = _neo()
+        try:
+            with neo2._session() as s:
+                res = s.run("""
+                    MATCH (m:ModelEndpoint)
+                    RETURN m.base_url AS base_url
+                """)
+                for row in res:
+                    url = row.get("base_url") or ""
+                    if url:
+                        fleet_nodes_for_probe.append({"base_url": url})
+        finally:
+            neo2.close()
+
+        if fleet_nodes_for_probe:
+            live = _probe_nodes_parallel(fleet_nodes_for_probe)
+            # Aggregate hot models across all probed nodes
+            hot_by_model: dict = {}
+            for url, result in live.items():
+                if result and result.get("online") and result.get("loaded_models"):
+                    for mid in result["loaded_models"]:
+                        url_short = url.rsplit("/v1", 1)[0] if "/v1" in url else url
+                        hot_by_model.setdefault(mid, []).append(url_short)
+            for mid, urls in sorted(hot_by_model.items(), key=lambda x: -len(x[1])):
+                model_routing["hot_models"][mid] = {"nodes": len(urls), "urls": urls}
+
+            # Get blacklisted pairs from the LLM client (cheap, no I/O)
+            from assistx.llm import client as llm_client
+            import time as _t
+            now_t = _t.time()
+            for pair_key, fail_ts in sorted(llm_client._pair_results.items()):
+                remaining = max(0, int(300 - (now_t - fail_ts)))
+                if remaining > 0:
+                    model_routing["blacklisted_pairs"].append({
+                        "pair": pair_key, "remaining_s": remaining
+                    })
+    except Exception as exc:
+        model_routing["error"] = str(exc)[:120]
+
     return {
         "ts": now,
         "work_by_kind": sorted(work_by_kind.values(), key=lambda x: -x["total"]),
@@ -1997,6 +2070,7 @@ def api_live_strategy(user: str = Depends(auth)):
         "intent_inflow": intent_inflow,
         "deliverable_trees": deliverable_trees,
         "guidance": guidance_list,
+        "model_routing": model_routing,
     }
 
 

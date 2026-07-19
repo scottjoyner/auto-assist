@@ -10,7 +10,8 @@ LLM_MODEL = os.getenv("LLM_MODEL", os.getenv("OLLAMA_MODEL", "llama3.1:8b"))
 EMBED_MODEL = os.getenv("EMBED_MODEL", os.getenv("QA_EMBED_QUERY_MODEL", "nomic-embed-text"))
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 TIMEOUT = int(os.getenv("LLM_TIMEOUT_S", "30"))
-_COLD_START_TIMEOUT = 8  # short timeout for probing whether a model is hot
+_COLD_START_TIMEOUT = 8  # per-model HTTP timeout when probing (hangs if longer)
+_HOT_THRESHOLD_S = float(os.getenv("LLM_HOT_THRESHOLD_S", "2.0"))  # max seconds for a 1-token response to consider model truly hot
 FALLBACK_MODELS = [m.strip() for m in os.getenv("LLM_FALLBACK_MODELS", "").split(",") if m.strip()]
 CB_FAIL_THRESHOLD = int(os.getenv("LLM_CB_FAIL_THRESHOLD", "3"))
 CB_OPEN_S = int(os.getenv("LLM_CB_OPEN_SECONDS", "60"))
@@ -167,11 +168,18 @@ def _fleet_model_inventory() -> Dict[str, list]:
     import concurrent.futures as cf
 
     def _probe_and_verify(base):
-        """Get model list, then verify each is hot via a tiny chat completion."""
+        """Get model list, then verify each is hot via a tiny chat completion.
+
+        A model is "hot" only if:
+          - responds within _HOT_THRESHOLD_S seconds (no cold-load delay)
+          - response `model` field matches the requested model
+          - response has valid `choices` with a `message.content`
+        """
         ids = _probe_loaded_models(base)
         if not ids:
             return base, []
         hot = []
+        threshold_ms = _HOT_THRESHOLD_S * 1000
         for mid in ids:
             try:
                 t0 = time.time()
@@ -180,9 +188,22 @@ def _fleet_model_inventory() -> Dict[str, list]:
                     "max_tokens": 1, "temperature": 0, "stream": False,
                 }, timeout=_COLD_START_TIMEOUT)
                 elapsed = (time.time() - t0) * 1000
-                if r.status_code == 200 and elapsed < _COLD_START_TIMEOUT * 1000 * 0.9:
-                    hot.append(mid)
-            except requests.RequestException:
+                if r.status_code != 200 or elapsed >= threshold_ms:
+                    continue
+                body = r.json()
+                if not isinstance(body, dict):
+                    continue
+                responded_model = body.get("model", "")
+                if responded_model and mid not in responded_model:
+                    continue
+                choices = body.get("choices", [])
+                if not choices or not isinstance(choices, list):
+                    continue
+                msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+                if not msg.get("content"):
+                    continue
+                hot.append(mid)
+            except (requests.RequestException, json.JSONDecodeError, LookupError, TypeError):
                 pass
         return base, hot
 

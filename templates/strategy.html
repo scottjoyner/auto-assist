@@ -14,6 +14,7 @@
         "buckets priority"
         "agents  inflow"
         "trees   trees"
+        "models  models"
         "steer   steer";
     }
   }
@@ -24,6 +25,8 @@
         "header  header  header"
         "buckets priority inflow"
         "agents  trees   trees"
+        "models  steer   steer"
+        "steer   steer   steer"
         "steer   steer   steer";
     }
   }
@@ -196,6 +199,27 @@
   .btn-sm:hover { background: rgba(51,65,85,0.8); }
   .btn-sm.danger { border-color: rgba(239,68,68,0.3); color: #fca5a5; }
   .btn-sm.danger:hover { background: rgba(239,68,68,0.15); }
+
+  /* Model routing */
+  .strat-models { grid-area: models; }
+  .model-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    border-bottom: 1px solid rgba(36,53,86,0.12);
+    font-size: 0.78rem;
+  }
+  .model-row:last-child { border-bottom: 0; }
+  .model-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .model-nodes { color: var(--muted); font-size: 0.72rem; white-space: nowrap; }
+  .blacklist-row {
+    font-size: 0.74rem;
+    color: var(--bad);
+    padding: 3px 10px;
+    font-family: ui-monospace, monospace;
+  }
+
 </style>
 {% endblock %}
 
@@ -237,6 +261,17 @@
   <div class="strat-trees card">
     <div class="section-title">Active deliverables <span class="badge" id="tree-count">0</span></div>
     <div id="tree-list"><div class="empty-state">Loading...</div></div>
+  </div>
+
+  <!-- Model routing health -->
+  <div class="strat-models card">
+    <div class="section-title">
+      Model routing
+      <span class="badge" id="model-count">0</span>
+      <button class="btn-sm" onclick="refreshModels()" id="refresh-btn">Refresh</button>
+    </div>
+    <div id="model-list" class="feed feed-md"><div class="empty-state">Loading...</div></div>
+    <div id="blacklist-list" style="margin-top:8px;"></div>
   </div>
 
   <!-- Steering panel -->
@@ -458,7 +493,35 @@
     renderInflow(data);
     renderTrees(data);
     renderGuidance(data);
+    renderModelRouting(data);
     document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
+  }
+
+  function renderModelRouting(data) {
+    var mr = data.model_routing || {};
+    var hot = mr.hot_models || {};
+    var blacklist = mr.blacklisted_pairs || [];
+    var keys = Object.keys(hot);
+    document.getElementById('model-count').textContent = keys.length;
+    var el = document.getElementById('model-list');
+    if (!keys.length) {
+      el.innerHTML = '<div class="empty-state">No hot models. Click Refresh to probe.</div>';
+    } else {
+      el.innerHTML = keys.map(function(mid) {
+        var info = hot[mid];
+        var nodeInfo = (info.urls || []).length + ' node' + (info.urls.length !== 1 ? 's' : '');
+        return '<div class="model-row"><span class="model-name">' + esc(mid) + '</span><span class="model-nodes">' + nodeInfo + '</span></div>';
+      }).join('');
+    }
+    var bl = document.getElementById('blacklist-list');
+    if (blacklist.length) {
+      bl.innerHTML = '<div style="font-size:0.78rem;font-weight:700;color:var(--bad);margin-bottom:4px;">Blacklisted (' + blacklist.length + ')</div>' +
+        blacklist.map(function(b) {
+          return '<div class="blacklist-row">' + esc(b.pair) + ' &middot; ' + b.remaining_s + 's</div>';
+        }).join('');
+    } else {
+      bl.innerHTML = '';
+    }
   }
 
   async function fetchStrategy() {
@@ -506,6 +569,22 @@
     } catch (err) {
       console.error(err);
       alert('Failed to deactivate: '+err.message);
+    }
+  };
+
+  window.refreshModels = async function() {
+    var btn = document.getElementById('refresh-btn');
+    btn.disabled = true;
+    btn.textContent = 'Probing...';
+    try {
+      await fetch(BASE + '/api/fleet/refresh-models', {method: 'POST'});
+      await fetchStrategy();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to refresh: '+err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Refresh';
     }
   };
 
