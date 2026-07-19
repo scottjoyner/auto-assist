@@ -4,21 +4,19 @@
 <style>
   :root {
     --card-bg: linear-gradient(180deg, rgba(14,26,49,0.98), rgba(11,22,42,0.98));
-    --node-card-border: 1px solid var(--line);
     --glow-blue: 0 0 20px rgba(96,165,250,0.12);
     --glow-green: 0 0 20px rgba(34,197,94,0.10);
   }
-  .dashboard-grid {
-    display: grid;
-    gap: 20px;
-  }
-  /* === Metrics row === */
+  .dash-grid { display: grid; gap: 20px; }
+  /* === Metrics row (flex, not grid — fixes stacking bug) === */
   .metrics-row {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    display: flex;
+    flex-wrap: wrap;
     gap: 12px;
   }
   .metric-tile {
+    flex: 1 1 160px;
+    min-width: 140px;
     background: var(--card-bg);
     border: 1px solid var(--line);
     border-radius: 16px;
@@ -43,101 +41,16 @@
     margin-top: 2px;
   }
 
-  /* === Fleet node cards === */
-  .fleet-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-    gap: 16px;
-  }
-  .node-card {
-    background: var(--card-bg);
-    border: 1px solid var(--line);
-    border-radius: 18px;
-    padding: 18px;
-    box-shadow: var(--shadow), var(--glow-blue);
-    transition: border-color 0.2s, box-shadow 0.2s;
-  }
-  .node-card.online {
-    border-color: rgba(34,197,94,0.25);
-    box-shadow: var(--shadow), var(--glow-green);
-  }
-  .node-card.offline {
-    opacity: 0.6;
-    border-color: rgba(239,68,68,0.20);
-  }
-  .node-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    margin-bottom: 12px;
-  }
-  .node-name {
-    font-weight: 700;
-    font-size: 1rem;
-  }
-  .node-status-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    flex: 0 0 auto;
-  }
-  .node-status-dot.online { background: var(--ok); box-shadow: 0 0 10px rgba(34,197,94,0.5); }
-  .node-status-dot.offline { background: var(--bad); }
-  .node-status-dot.unknown { background: var(--muted); }
-  .node-meta {
-    font-size: 0.78rem;
-    color: var(--muted);
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 12px;
-    margin-bottom: 10px;
-  }
-  .node-models {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-  }
-  .model-chip {
-    font-size: 0.7rem;
-    padding: 2px 8px;
-    border-radius: 999px;
-    background: rgba(37,99,235,0.14);
-    border: 1px solid rgba(96,165,250,0.15);
-    color: #bfdbfe;
-    white-space: nowrap;
-  }
-  .model-chip.active {
-    background: rgba(34,197,94,0.12);
-    border-color: rgba(34,197,94,0.20);
-    color: #bbf7d0;
-  }
-  .model-chip.embedding {
-    background: rgba(148,163,184,0.10);
-    border-color: rgba(148,163,184,0.12);
-    color: var(--muted);
-  }
-  .model-chip.big {
-    border-color: rgba(250,204,21,0.2);
-    color: #fde68a;
-  }
-
   /* === Pipeline bars === */
-  .pipeline-bars {
-    display: grid;
-    gap: 8px;
-  }
+  .pipeline-bars { display: grid; gap: 8px; }
   .pipeline-bar-row {
     display: grid;
-    grid-template-columns: 90px 1fr 50px;
+    grid-template-columns: 90px 1fr 60px;
     align-items: center;
     gap: 10px;
     font-size: 0.84rem;
   }
-  .pipeline-bar-label {
-    color: var(--muted);
-    font-weight: 600;
-  }
+  .pipeline-bar-label { color: var(--muted); font-weight: 600; }
   .pipeline-bar-track {
     height: 22px;
     background: rgba(15,23,42,0.6);
@@ -156,59 +69,108 @@
   .pipeline-bar-fill.done { background: linear-gradient(90deg, #22c55e, #4ade80); }
   .pipeline-bar-fill.failed { background: linear-gradient(90deg, #ef4444, #f87171); }
   .pipeline-bar-fill.other { background: linear-gradient(90deg, #6b7280, #9ca3af); }
-  .pipeline-bar-count {
-    text-align: right;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-  }
+  .pipeline-bar-count { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
 
-  /* === Recent runs feed === */
-  .runs-feed {
-    max-height: 400px;
-    overflow-y: auto;
+  /* === Neo4j label tags === */
+  .label-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+  .label-tag {
+    font-size: 0.7rem;
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: rgba(15,23,42,0.5);
+    border: 1px solid rgba(36,53,86,0.3);
+    white-space: nowrap;
   }
-  .run-row {
+  .label-tag .count { color: var(--muted); margin-left: 3px; }
+
+  /* === Top row: pipeline + neo4j side by side === */
+  .top-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 900px) { .top-row { grid-template-columns: 1fr; } }
+
+  /* === Fleet node cards === */
+  .fleet-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 16px;
+  }
+  .node-card {
+    background: var(--card-bg);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 18px;
+    box-shadow: var(--shadow), var(--glow-blue);
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  .node-card.online {
+    border-color: rgba(34,197,94,0.25);
+    box-shadow: var(--shadow), var(--glow-green);
+  }
+  .node-card.offline { opacity: 0.6; border-color: rgba(239,68,68,0.20); }
+  .node-header {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 10px;
-    padding: 8px 10px;
-    border-bottom: 1px solid rgba(36,53,86,0.2);
-    font-size: 0.82rem;
+    margin-bottom: 10px;
   }
-  .run-row:last-child { border-bottom: 0; }
-  .run-status-badge {
-    font-size: 0.68rem;
+  .node-name { font-weight: 700; font-size: 1rem; }
+  .node-status-dot {
+    width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto;
+  }
+  .node-status-dot.online { background: var(--ok); box-shadow: 0 0 10px rgba(34,197,94,0.5); }
+  .node-status-dot.offline { background: var(--bad); }
+  .node-status-dot.unknown { background: var(--muted); }
+  .node-meta {
+    font-size: 0.78rem;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin-bottom: 10px;
+  }
+  .node-models { display: flex; flex-wrap: wrap; gap: 5px; }
+  .model-chip {
+    font-size: 0.7rem;
     padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(37,99,235,0.14);
+    border: 1px solid rgba(96,165,250,0.15);
+    color: #bfdbfe;
+    white-space: nowrap;
+  }
+  .model-chip.big { border-color: rgba(250,204,21,0.2); color: #fde68a; }
+
+  /* === Traces feed === */
+  .traces-feed {
+    max-height: 500px;
+    overflow-y: auto;
+    font-size: 0.8rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .trace-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid rgba(36,53,86,0.15);
+    line-height: 1.4;
+  }
+  .trace-row:last-child { border-bottom: 0; }
+  .trace-time { color: var(--muted); white-space: nowrap; flex: 0 0 auto; min-width: 70px; }
+  .trace-status {
+    font-size: 0.65rem;
+    padding: 1px 7px;
     border-radius: 999px;
     font-weight: 600;
     flex: 0 0 auto;
   }
-  .run-status-badge.DONE { background: rgba(34,197,94,0.15); color: #bbf7d0; }
-  .run-status-badge.FAILED { background: rgba(239,68,68,0.15); color: #fecaca; }
-  .run-status-badge.RUNNING { background: rgba(245,158,11,0.15); color: #fde68a; }
-  .run-status-badge.QUEUED { background: rgba(148,163,184,0.12); color: var(--muted); }
-  .run-model { color: var(--muted); }
-  .run-count { margin-left: auto; font-weight: 700; }
+  .trace-status.DONE { background: rgba(34,197,94,0.15); color: #bbf7d0; }
+  .trace-status.FAILED { background: rgba(239,68,68,0.15); color: #fecaca; }
+  .trace-status.RUNNING { background: rgba(245,158,11,0.15); color: #fde68a; }
+  .trace-status.READY { background: rgba(96,165,250,0.12); color: #93c5fd; }
+  .trace-msg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 
-  /* === Neo4j label tags === */
-  .label-tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .label-tag {
-    font-size: 0.72rem;
-    padding: 3px 10px;
-    border-radius: 999px;
-    background: rgba(15,23,42,0.5);
-    border: 1px solid rgba(36,53,86,0.3);
-  }
-  .label-tag .count {
-    color: var(--muted);
-    margin-left: 4px;
-  }
-
-  /* === Section layout === */
+  /* === Shared === */
   .section-title {
     font-size: 1rem;
     font-weight: 700;
@@ -225,29 +187,18 @@
     background: rgba(96,165,250,0.12);
     color: #93c5fd;
   }
-  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
-  .last-updated {
-    font-size: 0.78rem;
-    color: var(--muted);
-    text-align: right;
-  }
-  .empty-state {
-    color: var(--muted);
-    font-size: 0.88rem;
-    padding: 20px;
-    text-align: center;
-  }
+  .last-updated { font-size: 0.78rem; color: var(--muted); text-align: right; }
+  .empty-state { color: var(--muted); font-size: 0.88rem; padding: 20px; text-align: center; }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="dashboard-grid">
+<div class="dash-grid">
   <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
     <div>
       <h1 style="margin:0; font-size:1.3rem;">Live Dashboard</h1>
       <p style="margin:2px 0 0; color:var(--muted); font-size:0.84rem;">
-        Fleet nodes · Pipeline · Neo4j — updated every 10s
+        Pipeline · Fleet · Traces — updated every 10s
       </p>
     </div>
     <div class="last-updated" id="last-updated">—</div>
@@ -255,11 +206,23 @@
 
   <!-- Metrics row -->
   <div class="metrics-row" id="metrics-row">
-    <div class="metric-tile"><div class="label">Fleet nodes</div><div class="value" id="m-fleet-nodes">—</div><div class="sub" id="m-fleet-online"></div></div>
     <div class="metric-tile"><div class="label">Queue depth</div><div class="value" id="m-queue">—</div><div class="sub">in RQ</div></div>
-    <div class="metric-tile"><div class="label">DONE</div><div class="value" id="m-done">—</div><div class="sub">total completed tasks</div></div>
+    <div class="metric-tile"><div class="label">Running</div><div class="value" id="m-running">—</div><div class="sub">in-flight tasks</div></div>
+    <div class="metric-tile"><div class="label">DONE</div><div class="value" id="m-done">—</div><div class="sub">total completed</div></div>
     <div class="metric-tile"><div class="label">Runs (5m)</div><div class="value" id="m-runs">—</div><div class="sub" id="m-runs-sub">last 5 minutes</div></div>
-    <div class="metric-tile"><div class="label">Neo4j labels</div><div class="value" id="m-labels">—</div><div class="sub" id="m-labels-total"></div></div>
+    <div class="metric-tile"><div class="label">Fleet nodes</div><div class="value" id="m-fleet-nodes">—</div><div class="sub" id="m-fleet-online"></div></div>
+  </div>
+
+  <!-- Top row: Pipeline + Neo4j -->
+  <div class="top-row">
+    <div class="card" style="margin:0;">
+      <div class="section-title">Pipeline <span class="count-badge" id="pipeline-total">0</span></div>
+      <div class="pipeline-bars" id="pipeline-bars"></div>
+    </div>
+    <div class="card" style="margin:0;">
+      <div class="section-title">Neo4j database <span class="count-badge" id="neo4j-count">0</span></div>
+      <div class="label-tags" id="neo4j-labels"></div>
+    </div>
   </div>
 
   <!-- Fleet nodes -->
@@ -268,26 +231,12 @@
     <div class="fleet-grid" id="fleet-grid"></div>
   </div>
 
-  <div class="two-col">
-    <!-- Pipeline -->
-    <div class="card">
-      <div class="section-title">Pipeline</div>
-      <div class="pipeline-bars" id="pipeline-bars"></div>
-    </div>
-
-    <!-- Recent runs -->
-    <div class="card">
-      <div class="section-title">Runs (last hour)</div>
-      <div class="runs-feed" id="runs-feed">
-        <div class="empty-state">Loading…</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Neo4j insights -->
+  <!-- Live traces -->
   <div class="card">
-    <div class="section-title">Neo4j database</div>
-    <div class="label-tags" id="neo4j-labels"></div>
+    <div class="section-title">Live traces <span class="count-badge" id="traces-count">0</span></div>
+    <div class="traces-feed" id="traces-feed">
+      <div class="empty-state">Loading…</div>
+    </div>
   </div>
 </div>
 {% endblock %}
@@ -296,183 +245,162 @@
 <script>
 (function() {
   'use strict';
-
   const BASE = '';
-  let lastData = null;
 
   function fmt(n) {
-    if (n === null || n === undefined) return '—';
-    if (typeof n === 'number' && n >= 1_000_000) return (n/1_000_000).toFixed(1) + 'M';
-    if (typeof n === 'number' && n >= 1_000) return (n/1_000).toFixed(1) + 'k';
+    if (n == null) return '—';
+    if (typeof n === 'number' && n >= 1e6) return (n/1e6).toFixed(1)+'M';
+    if (typeof n === 'number' && n >= 1e3) return (n/1e3).toFixed(1)+'k';
     return String(n);
   }
 
-  function fmtTs(ts) {
-    if (!ts) return '—';
-    const d = new Date(ts);
-    return d.toLocaleTimeString();
+  function ago(ts_ms) {
+    if (!ts_ms) return '—';
+    const ms = Date.now() - ts_ms;
+    if (ms < 2000) return 'just now';
+    if (ms < 60_000) return Math.round(ms/1000)+'s';
+    if (ms < 3_600_000) return Math.round(ms/60_000)+'m';
+    return Math.round(ms/3_600_000)+'h';
   }
 
-  function ago(ts) {
-    if (!ts) return '—';
-    const ms = Date.now() - ts;
-    if (ms < 60_000) return Math.round(ms/1000) + 's ago';
-    if (ms < 3_600_000) return Math.round(ms/60_000) + 'm ago';
-    return Math.round(ms/3_600_000) + 'h ago';
+  function fmtTime(ts_ms) {
+    if (!ts_ms) return '—';
+    return new Date(ts_ms).toLocaleTimeString();
   }
 
-  function modelFamily(modelId) {
-    const id = (modelId || '').toLowerCase();
+  function shortId(id) {
+    return id ? id.slice(0, 8) : '?';
+  }
+
+  function modelFamily(m) {
+    const id = (m.served_name || m.model_id || '').toLowerCase();
     if (id.includes('embedding')) return 'embedding';
-    if (id.includes('35b') || id.includes('27b') || id.includes('31b')) return 'big';
+    if (id.includes('35b')||id.includes('27b')||id.includes('31b')) return 'big';
     return '';
   }
 
+  /* ========== Renderers ========== */
+
   function renderMetrics(data) {
-    const fleet = data.fleet || {};
     const pipe = data.pipeline || {};
     const tc = pipe.task_counts || {};
-    const neo = data.neo4j || {};
-
-    document.getElementById('m-fleet-nodes').textContent = fleet.total || 0;
-    const online = fleet.online || 0;
-    document.getElementById('m-fleet-online').textContent = online + ' online';
+    const fleet = data.fleet || {};
+    const runs5m = pipe.recent_runs_5m || {};
+    const total5m = Object.values(runs5m).reduce((a,b)=>a+b, 0);
 
     document.getElementById('m-queue').textContent = fmt(pipe.queue_depth);
-
+    document.getElementById('m-running').textContent = fmt(tc.RUNNING || 0);
     document.getElementById('m-done').textContent = fmt(tc.DONE || 0);
-
-    const runs5m = pipe.recent_runs_5m || {};
-    const total5m = Object.values(runs5m).reduce((a,b) => a + b, 0);
     document.getElementById('m-runs').textContent = total5m;
-    document.getElementById('m-runs-sub').textContent = total5m === 1 ? '1 run in 5m' : total5m + ' runs in 5m';
-
-    document.getElementById('m-labels').textContent = neo.total_labels || 0;
-    document.getElementById('m-labels-total').textContent = (neo.label_counts || []).reduce((a,b) => a + b.count, 0) + ' total nodes';
-  }
-
-  function renderFleetNodes(data) {
-    const nodes = (data.fleet || {}).nodes || [];
-    const grid = document.getElementById('fleet-grid');
-    document.getElementById('fleet-count').textContent = nodes.length;
-
-    if (nodes.length === 0) {
-      grid.innerHTML = '<div class="empty-state">No fleet nodes found in Neo4j</div>';
-      return;
-    }
-
-    grid.innerHTML = nodes.map(n => {
-      const statusClass = n.status || 'unknown';
-      const models = n.models || [];
-      const chips = models.map(m => {
-        const fam = modelFamily(m.served_name || m.model_id || '');
-        const extra = fam ? ` ${fam}` : '';
-        return `<span class="model-chip${extra}">${m.served_name || m.model_id || '?'}</span>`;
-      }).join('');
-
-      const urlDisplay = (n.base_url || '').replace(/^https?:\/\//, '');
-      const lastSeen = n.last_probed_ts ? ago(n.last_probed_ts) : '—';
-      const networkIcon = n.network_pref === 'tailscale' ? '🔒' : '🌐';
-
-      return `<div class="node-card ${statusClass}">
-        <div class="node-header">
-          <span class="node-name">${n.node_id}</span>
-          <span class="node-status-dot ${statusClass}"></span>
-        </div>
-        <div class="node-meta">
-          <span>${networkIcon} ${urlDisplay}</span>
-          <span>probed ${lastSeen}</span>
-          ${n.purpose ? `<span>${n.purpose}</span>` : ''}
-          <span>${n.model_count} models</span>
-        </div>
-        <div class="node-models">${chips || '<span style="color:var(--muted);font-size:0.78rem;">no models reported</span>'}</div>
-      </div>`;
-    }).join('');
+    document.getElementById('m-runs-sub').textContent = total5m + ' runs in 5m';
+    document.getElementById('m-fleet-nodes').textContent = fleet.total || 0;
+    document.getElementById('m-fleet-online').textContent = (fleet.online||0) + ' online';
   }
 
   function renderPipeline(data) {
-    const tc = (data.pipeline || {}).task_counts || {};
-    const total = Object.values(tc).reduce((a,b) => a + b, 0);
-    const bar = document.getElementById('pipeline-bars');
+    const tc = (data.pipeline||{}).task_counts || {};
+    const total = Object.values(tc).reduce((a,b)=>a+b, 0);
+    document.getElementById('pipeline-total').textContent = fmt(total);
 
-    if (total === 0) {
-      bar.innerHTML = '<div class="empty-state">No task data</div>';
-      return;
-    }
+    const el = document.getElementById('pipeline-bars');
+    if (!total) { el.innerHTML = '<div class="empty-state">No tasks</div>'; return; }
 
-    const order = ['READY', 'RUNNING', 'DONE', 'FAILED'];
-    const colors = {READY: 'ready', RUNNING: 'running', DONE: 'done', FAILED: 'failed'};
-
-    bar.innerHTML = order.map(st => {
-      const cnt = tc[st] || 0;
-      const pct = total > 0 ? (cnt / total * 100) : 0;
-      const cls = colors[st] || 'other';
+    const order = ['RUNNING','READY','DONE','FAILED'];
+    const colors = {RUNNING:'running',READY:'ready',DONE:'done',FAILED:'failed'};
+    el.innerHTML = order.map(st => {
+      const cnt = tc[st]||0;
+      const pct = cnt/total*100;
       return `<div class="pipeline-bar-row">
         <span class="pipeline-bar-label">${st}</span>
-        <div class="pipeline-bar-track">
-          <div class="pipeline-bar-fill ${cls}" style="width:${Math.max(pct, 0.5)}%"></div>
-        </div>
+        <div class="pipeline-bar-track"><div class="pipeline-bar-fill ${colors[st]||'other'}" style="width:${Math.max(pct,0.4)}%"></div></div>
         <span class="pipeline-bar-count">${fmt(cnt)}</span>
       </div>`;
     }).join('');
   }
 
-  function renderRuns(data) {
-    const runs = (data.pipeline || {}).runs_last_hour || [];
-    const feed = document.getElementById('runs-feed');
+  function renderFleetNodes(data) {
+    const nodes = (data.fleet||{}).nodes || [];
+    document.getElementById('fleet-count').textContent = nodes.length;
+    const grid = document.getElementById('fleet-grid');
 
-    if (runs.length === 0) {
-      feed.innerHTML = '<div class="empty-state">No runs in the last hour</div>';
+    if (!nodes.length) {
+      grid.innerHTML = '<div class="empty-state">No fleet nodes</div>';
       return;
     }
 
-    feed.innerHTML = runs.map(r => {
-      const st = r.status || 'UNKNOWN';
-      return `<div class="run-row">
-        <span class="run-status-badge ${st}">${st}</span>
-        <span class="run-model">${r.model || '?'}</span>
-        <span class="run-count">${r.cnt}</span>
+    grid.innerHTML = nodes.map(n => {
+      const sc = n.status||'unknown';
+      const chips = (n.models||[]).map(m => {
+        const fam = modelFamily(m);
+        return `<span class="model-chip${fam?' '+fam:''}">${m.served_name||m.model_id||'?'}</span>`;
+      }).join('');
+      const url = (n.base_url||'').replace(/^https?:\/\//,'');
+      return `<div class="node-card ${sc}">
+        <div class="node-header">
+          <span class="node-name">${n.node_id}</span>
+          <span class="node-status-dot ${sc}"></span>
+        </div>
+        <div class="node-meta">
+          <span>🔒 ${url}</span>
+          <span>${n.response_ms ? n.response_ms+'ms' : '—'}</span>
+          ${n.purpose ? '<span>'+n.purpose+'</span>' : ''}
+          <span>${n.model_count} models</span>
+        </div>
+        <div class="node-models">${chips||'<span style="color:var(--muted);font-size:0.78rem;">no models</span>'}</div>
       </div>`;
     }).join('');
   }
 
   function renderNeo4j(data) {
-    const labels = (data.neo4j || {}).label_counts || [];
-    const container = document.getElementById('neo4j-labels');
-
-    if (labels.length === 0) {
-      container.innerHTML = '<span class="empty-state" style="padding:0">No label data</span>';
-      return;
-    }
-
-    container.innerHTML = labels.map(l =>
+    const labels = (data.neo4j||{}).label_counts || [];
+    document.getElementById('neo4j-count').textContent = labels.length;
+    const el = document.getElementById('neo4j-labels');
+    if (!labels.length) { el.innerHTML = '<span class="empty-state" style="padding:0">—</span>'; return; }
+    el.innerHTML = labels.map(l =>
       `<span class="label-tag">${l.label} <span class="count">${fmt(l.count)}</span></span>`
     ).join('');
   }
 
+  function renderTraces(data) {
+    const traces = (data.traces||{}).events || [];
+    document.getElementById('traces-count').textContent = traces.length;
+    const el = document.getElementById('traces-feed');
+    if (!traces.length) { el.innerHTML = '<div class="empty-state">No recent activity</div>'; return; }
+
+    el.innerHTML = traces.map(t => {
+      const st = t.status||'';
+      const label = t.task_id ? shortId(t.task_id) : (t.run_id ? shortId(t.run_id) : '—');
+      const msg = t.model ? (t.model+' '+ (t.status||'')) : (t.event_type||'');
+      const ts = t.created_at_ts || t.ts_ms || t.ts;
+      return `<div class="trace-row">
+        <span class="trace-time">${ts ? ago(ts) : '—'}</span>
+        <span class="trace-status ${st}">${st||'—'}</span>
+        <span class="trace-msg">${label} ${msg}</span>
+      </div>`;
+    }).join('');
+  }
+
   function renderAll(data) {
-    lastData = data;
     renderMetrics(data);
-    renderFleetNodes(data);
     renderPipeline(data);
-    renderRuns(data);
+    renderFleetNodes(data);
     renderNeo4j(data);
-    document.getElementById('last-updated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+    renderTraces(data);
+    document.getElementById('last-updated').textContent = 'Updated: '+new Date().toLocaleTimeString();
   }
 
   async function fetchDashboard() {
     try {
       const resp = await fetch(BASE + '/api/live/dashboard');
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      if (!resp.ok) throw new Error('HTTP '+resp.status);
       const data = await resp.json();
       renderAll(data);
     } catch (err) {
-      console.error('live dashboard fetch failed:', err);
-      document.getElementById('last-updated').textContent = 'Error: ' + err.message;
+      console.error(err);
+      document.getElementById('last-updated').textContent = 'Error: '+err.message;
     }
   }
 
-  // Fetch immediately, then every 10s
   fetchDashboard();
   setInterval(fetchDashboard, 10000);
 })();

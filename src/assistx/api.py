@@ -1105,9 +1105,9 @@ def _fetch_auto_router_fleet_report() -> dict[str, Any]:
     }
 
 
-@app.get("/", response_class=HTMLResponse)
-def home(request: Request, user: str = Depends(auth)):
-    return templates.TemplateResponse("index.html", {"request": request})
+@app.get("/", response_class=RedirectResponse)
+def home():
+    return RedirectResponse(url="/live")
 
 # ---------- Phase 4 Command Center UI ----------
 
@@ -1538,29 +1538,74 @@ def _now_ts() -> int:
     return int(_time.time() * 1000)
 
 
+def _live_probe_node(url: str, timeout: float = 3.0) -> Optional[dict]:
+    """Hit a node's /v1/models endpoint and return live status + response ms."""
+    base = url.rstrip("/")
+    if "/v1" not in base:
+        base = base + "/v1"
+    t0 = _time.time()
+    try:
+        r = requests.get(f"{base}/models", timeout=timeout)
+        ms = int((_time.time() - t0) * 1000)
+        if r.status_code != 200:
+            return {"online": False, "response_ms": ms, "error": f"HTTP {r.status_code}"}
+        data = r.json()
+        models = []
+        for m in data.get("data", []):
+            mid = m.get("id") or m.get("name") or m.get("model")
+            if mid:
+                models.append(mid)
+        return {"online": True, "response_ms": ms, "models": models, "model_count": len(models)}
+    except requests.RequestException as e:
+        ms = int((_time.time() - t0) * 1000)
+        return {"online": False, "response_ms": ms, "error": str(e)[:120]}
+
+
+def _probe_nodes_parallel(nodes: List[dict]) -> Dict[str, dict]:
+    """Probe all fleet node URLs in parallel, return dict keyed by base_url."""
+    out: Dict[str, dict] = {}
+    import concurrent.futures as cf
+    with cf.ThreadPoolExecutor(max_workers=min(len(nodes) or 1, 16)) as pool:
+        fut_map = {pool.submit(_live_probe_node, n["base_url"]): n["base_url"] for n in nodes}
+        for fut in cf.as_completed(fut_map, timeout=15):
+            url = fut_map[fut]
+            try:
+                out[url] = fut.result()
+            except Exception as exc:
+                out[url] = {"online": False, "response_ms": None, "error": str(exc)[:120]}
+    return out
+
+
 @app.get("/api/live/dashboard")
 def api_live_dashboard(user: str = Depends(auth)):
-    """Aggregated live dashboard data: fleet nodes, pipeline, Neo4j insights."""
+    """Aggregated live dashboard data with live-probed fleet nodes."""
     now = _now_ts()
     five_min_ago = now - 300_000
     one_hour_ago = now - 3_600_000
 
-    # --- fleet nodes from Neo4j ModelEndpoint ---
     neo = _neo()
     fleet_nodes: List[dict] = []
+    task_counts: dict = {}
+    recent_runs: dict = {}
+    runs_last_hour: dict = {}
+    label_counts: list = []
+    recent_events: list = []
+    queue_depth = 0
+
+    # --- fleet nodes ---
     try:
         with neo._session() as s:
             res = s.run("""
                 MATCH (m:ModelEndpoint)
                 RETURN m.node_id AS node_id, m.base_url AS base_url,
                        m.status AS status, m.models_json AS models_json,
-                       m.last_probed_at_ts AS last_probed_ts,
                        m.network_preference AS network_pref,
                        m.purpose AS purpose
                 ORDER BY m.node_id
             """)
             for row in res:
                 node_id = row.get("node_id") or ""
+                base_url = row.get("base_url") or ""
                 models_raw = row.get("models_json") or "[]"
                 models_list: list = []
                 try:
@@ -1569,56 +1614,55 @@ def api_live_dashboard(user: str = Depends(auth)):
                     models_list = []
                 fleet_nodes.append({
                     "node_id": node_id,
-                    "base_url": row.get("base_url") or "",
-                    "status": row.get("status") or "unknown",
+                    "base_url": base_url,
                     "models": models_list,
-                    "last_probed_ts": row.get("last_probed_ts"),
                     "network_pref": row.get("network_pref") or "",
                     "purpose": row.get("purpose") or "",
                     "model_count": len(models_list),
                 })
     except Exception as exc:
-        _api_logger.warning("live dashboard fleet query: %s", exc)
+        _api_logger.warning("live fleet query: %s", exc)
 
-    # --- task counts by status ---
-    task_counts: dict = {}
+    # --- live-probe each fleet node (3s per-node timeout, parallel) ---
+    live_results = _probe_nodes_parallel(fleet_nodes)
+
+    for n in fleet_nodes:
+        probe = live_results.get(n["base_url"], {})
+        n["status"] = "online" if probe.get("online") else "offline"
+        n["response_ms"] = probe.get("response_ms")
+        n["models"] = [{"served_name": m} for m in probe.get("models", [])] if probe.get("models") else n.get("models", [])
+        n["model_count"] = len(n["models"])
+
+    # --- task counts ---
     try:
         with neo._session() as s:
-            res = s.run("""
-                MATCH (t:Task)
-                RETURN t.status AS status, count(t) AS cnt
-                ORDER BY cnt DESC
-            """)
+            res = s.run("MATCH (t:Task) RETURN t.status AS status, count(t) AS cnt ORDER BY cnt DESC")
             for row in res:
                 task_counts[row["status"] or "UNKNOWN"] = row["cnt"]
     except Exception as exc:
-        _api_logger.warning("live dashboard task query: %s", exc)
+        _api_logger.warning("live task query: %s", exc)
 
-    # --- recent AgentRuns ---
-    recent_runs: dict = {}
+    # --- recent runs (5m) ---
     try:
         with neo._session() as s:
             res = s.run("""
                 MATCH (r:AgentRun)
                 WHERE r.created_at_ts > $five_min_ago
                 RETURN r.status AS status, count(r) AS cnt
-                ORDER BY cnt DESC
             """, five_min_ago=five_min_ago)
             for row in res:
                 recent_runs[row["status"] or "UNKNOWN"] = row["cnt"]
     except Exception as exc:
-        _api_logger.warning("live dashboard recent runs query: %s", exc)
+        _api_logger.warning("live recent runs: %s", exc)
 
     # --- runs breakdown (last 1h) ---
-    runs_last_hour: dict = {}
     try:
         with neo._session() as s:
             res = s.run("""
                 MATCH (r:AgentRun)
                 WHERE r.created_at_ts > $one_hour_ago
                 RETURN r.status AS status, r.model AS model, count(r) AS cnt
-                ORDER BY cnt DESC
-                LIMIT 30
+                ORDER BY cnt DESC LIMIT 30
             """, one_hour_ago=one_hour_ago)
             for row in res:
                 st = row["status"] or "UNKNOWN"
@@ -1626,10 +1670,9 @@ def api_live_dashboard(user: str = Depends(auth)):
                 key = f"{st}/{mdl}"
                 runs_last_hour[key] = {"status": st, "model": mdl, "cnt": row["cnt"]}
     except Exception as exc:
-        _api_logger.warning("live dashboard runs detail query: %s", exc)
+        _api_logger.warning("live runs detail: %s", exc)
 
-    # --- Neo4j DB size (label counts) ---
-    label_counts: list = []
+    # --- Neo4j label counts ---
     try:
         with neo._session() as s:
             res = s.run("CALL db.labels() YIELD label RETURN label ORDER BY label")
@@ -1641,15 +1684,37 @@ def api_live_dashboard(user: str = Depends(auth)):
                     label_counts.append({"label": label, "count": cnt})
             label_counts.sort(key=lambda x: -x["count"])
     except Exception as exc:
-        _api_logger.warning("live dashboard label counts: %s", exc)
+        _api_logger.warning("live label counts: %s", exc)
 
-    # --- queue depth from Redis ---
-    queue_depth = 0
+    # --- recent trace events (last 5 min) ---
+    try:
+        with neo._session() as s:
+            res = s.run("""
+                MATCH (r:AgentRun)
+                WHERE r.created_at_ts > $five_min_ago
+                RETURN r.id AS run_id, r.status AS status,
+                       r.model AS model, r.task_id AS task_id,
+                       r.created_at_ts AS created_at_ts
+                ORDER BY r.created_at_ts DESC
+                LIMIT 100
+            """, five_min_ago=five_min_ago)
+            for row in res:
+                recent_events.append({
+                    "run_id": row.get("run_id"),
+                    "task_id": row.get("task_id"),
+                    "status": row.get("status") or "UNKNOWN",
+                    "model": row.get("model") or "?",
+                    "created_at_ts": row.get("created_at_ts"),
+                })
+    except Exception as exc:
+        _api_logger.warning("live trace events: %s", exc)
+
+    # --- queue depth ---
     try:
         qq = get_q()
         queue_depth = len(qq)
     except Exception as exc:
-        _api_logger.warning("live dashboard queue depth: %s", exc)
+        _api_logger.warning("live queue depth: %s", exc)
 
     neo.close()
 
@@ -1658,7 +1723,7 @@ def api_live_dashboard(user: str = Depends(auth)):
         "fleet": {
             "nodes": fleet_nodes,
             "total": len(fleet_nodes),
-            "online": sum(1 for n in fleet_nodes if n["status"] == "online"),
+            "online": sum(1 for n in fleet_nodes if n.get("status") == "online"),
         },
         "pipeline": {
             "task_counts": task_counts,
@@ -1669,6 +1734,9 @@ def api_live_dashboard(user: str = Depends(auth)):
         "neo4j": {
             "label_counts": label_counts,
             "total_labels": len(label_counts),
+        },
+        "traces": {
+            "events": recent_events,
         },
     }
 
