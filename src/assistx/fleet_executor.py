@@ -48,6 +48,16 @@ LMSTUDIO_CALL_TIMEOUT = int(os.getenv("FLEET_LMSTUDIO_CALL_TIMEOUT", "120"))
 # Composite valuation: quality_weight * eval_score + (1-quality_weight) * normalized_tps
 # 0.0 = pure speed (TPS), 1.0 = pure quality (eval_score)
 ROUTING_QUALITY_WEIGHT = float(os.getenv("FLEET_ROUTING_QUALITY_WEIGHT", "0.5"))
+# When a task carries complexity:high|medium we route to the *largest* resident
+# model on a node (operator-curated "quality" tier) rather than the fastest.
+# The fleet adapts to whatever the operator has loaded — if they swap a model on
+# a machine we honor it. Default (no hint or complexity:low) keeps the current
+# speed-first weighted round-robin.
+COMPLEXITY_HINTS = {"high", "medium"}
+# Floor (in billions of params) below which a model is treated as a "small"
+# model and deprioritized for quality routing. Anything at or above this counts
+# as a candidate quality model when a task asks for quality.
+QUALITY_MODEL_FLOOR_B = float(os.getenv("FLEET_QUALITY_MODEL_FLOOR_B", "9"))
 # Per-node concurrency weight: "host:weight,host2:weight2" — lets a node
 # that can run N concurrent LM Studio sessions pull N× the work.
 NODE_CONCURRENCY = {}
@@ -79,6 +89,20 @@ def _model_billions(model_key: str) -> float:
         if billions > best:
             best = billions
     return best
+
+
+def _resident_quality_models(loaded_models: list[str]) -> list[str]:
+    """Return the resident models that count as 'quality' tier for a node,
+    sorted largest-first. Adapts to whatever the operator has loaded — we never
+    hard-code model names, we just look at parameter size."""
+    if not loaded_models:
+        return []
+    quality = [
+        m for m in loaded_models
+        if _model_billions(m) >= QUALITY_MODEL_FLOOR_B
+    ]
+    quality.sort(key=_model_billions, reverse=True)
+    return quality
 
 
 def _auto_weight(specs: Optional[dict], loaded_models: Optional[list] = None) -> int:
@@ -698,12 +722,23 @@ class FleetExecutor:
         except Exception:
             return False
 
-    def _pick_node(self, required: list[str], preferred_model: str = "", exclude: set[str] | None = None) -> Optional[dict]:
-        """Pick the best node for a task. If a specific model is requested,
-        use benchmark-based routing to pick the optimal node. Otherwise use
-        composite benchmark scores (TPS * eval) across loaded models as the
-        effective weight for weighted round-robin. Skips nodes that haven't
-        been seen recently. ``exclude`` is a set of hostnames/IPs to skip."""
+    def _pick_node(
+        self,
+        required: list[str],
+        preferred_model: str = "",
+        exclude: set[str] | None = None,
+        complexity: str = "",
+    ) -> Optional[dict]:
+        """Pick the best node for a task.
+
+        - Specific ``preferred_model`` -> benchmark-best node that has it.
+        - ``complexity`` in {high, medium} -> prefer nodes running a large
+          "quality" resident model (operator-curated by whatever they loaded),
+          weighted round-robin among those; falls back to any LLM node if no
+          large model is resident anywhere.
+        - Otherwise (default) -> speed-first weighted round-robin across all LLM
+          nodes using composite benchmark scores (TPS * eval).
+        """
         with self._node_lock:
             candidates = list(self._nodes)
         now = time.time()
@@ -764,6 +799,40 @@ class FleetExecutor:
                 node_models_lower = [m.lower() for m in n.get("loaded_models", [])]
                 if any(model_lower in m for m in node_models_lower):
                     return n
+
+        # Quality-aware routing: when a task asks for quality (complex/hard),
+        # prefer nodes running a large resident model. We adapt to whatever the
+        # operator has loaded — no hard-coded model names. Falls back to any LLM
+        # node if nowhere currently has a large model resident.
+        if "llm" in required and complexity in COMPLEXITY_HINTS:
+            quality_nodes = []
+            for n in matched:
+                if _resident_quality_models(n.get("loaded_models", [])):
+                    quality_nodes.append(n)
+            if quality_nodes:
+                best = None
+                best_score = float("inf")
+                for n in quality_nodes:
+                    hn = n.get("hostname", n.get("ip", "?"))
+                    effective_weight = float(n.get("weight", 1))
+                    picked = self._pick_count.get(hn, 0)
+                    score = picked / effective_weight
+                    if score < best_score:
+                        best_score = score
+                        best = n
+                if best:
+                    hn = best.get("hostname", best.get("ip", "?"))
+                    self._pick_count[hn] = self._pick_count.get(hn, 0) + 1
+                    if sum(self._pick_count.values()) > len(matched) * 20:
+                        for k in list(self._pick_count.keys()):
+                            self._pick_count[k] = self._pick_count[k] // 2
+                    logger.info(
+                        "fleet executor: quality routing %s task -> node %s (resident: %s)",
+                        complexity,
+                        hn,
+                        _resident_quality_models(best.get("loaded_models", [])),
+                    )
+                    return best
 
         # Generic LLM task (no specific model): use composite benchmark scores
         # as effective weights. Compute each node's best composite score across
@@ -863,7 +932,14 @@ class FleetExecutor:
         # Last resort: size-based heuristic
         return self._pick_fast_model(models)
 
-    def _call_lmstudio(self, node: dict, messages: list[dict], model: str = "", timeout: int = LMSTUDIO_CALL_TIMEOUT) -> dict:
+    def _call_lmstudio(
+        self,
+        node: dict,
+        messages: list[dict],
+        model: str = "",
+        timeout: int = LMSTUDIO_CALL_TIMEOUT,
+        complexity: str = "",
+    ) -> dict:
         ip = node.get("ip", "127.0.0.1")
         hostname = node.get("hostname", ip)
         url = f"http://{ip}:{LMSTUDIO_PORT}/v1/chat/completions"
@@ -874,6 +950,12 @@ class FleetExecutor:
         }
         if model:
             payload["model"] = model
+        elif complexity in COMPLEXITY_HINTS:
+            # Quality routing: pick the largest resident model on this node.
+            # We adapt to whatever the operator has loaded, honoring manual swaps.
+            quality = _resident_quality_models(node.get("loaded_models", []))
+            if quality:
+                payload["model"] = quality[0]
         elif node.get("loaded_models"):
             payload["model"] = self._pick_best_model(node)
 
@@ -1008,7 +1090,13 @@ class FleetExecutor:
             },
         }
 
-    def _pick_and_reserve_node(self, required: list[str], preferred_model: str = "", exclude: set[str] | None = None) -> Optional[dict]:
+    def _pick_and_reserve_node(
+        self,
+        required: list[str],
+        preferred_model: str = "",
+        exclude: set[str] | None = None,
+        complexity: str = "",
+    ) -> Optional[dict]:
         """Atomically pick a node and increment its inflight counter.
         Returns the node dict or None if no suitable node available.
 
@@ -1016,7 +1104,7 @@ class FleetExecutor:
         the lock here — doing so would deadlock on the non-reentrant lock.
         We only take the lock around the inflight counter mutation.
         """
-        node = self._pick_node(required, preferred_model, exclude)
+        node = self._pick_node(required, preferred_model, exclude, complexity)
         if node:
             with self._node_lock:
                 hn = node.get("hostname", node.get("ip", "?"))
@@ -1055,6 +1143,8 @@ class FleetExecutor:
                 {"role": "user", "content": payload.get("prompt", payload.get("command", ""))}
             ]
             model = payload.get("model", "")
+            # Opt-in quality routing: honor an explicit complexity/quality hint.
+            complexity = str(payload.get("complexity") or payload.get("quality") or "").strip().lower()
             tried: set[str] = set()
 
             # First attempt: use reserved node if provided
@@ -1063,7 +1153,7 @@ class FleetExecutor:
                 tried.add(hn)
                 try:
                     start = time.time()
-                    result = self._call_lmstudio(reserved_node, messages, model)
+                    result = self._call_lmstudio(reserved_node, messages, model, complexity=complexity)
                     elapsed = time.time() - start
                 finally:
                     self._release_node(hn)
@@ -1077,16 +1167,16 @@ class FleetExecutor:
                     hn, model,
                 )
 
-            # Pass 1: nodes that have the requested model loaded.
+            # Pass 1: nodes that have the requested model loaded (or quality tier).
             for _ in range(min(4, len(self._nodes) + 1)):
-                node = self._pick_and_reserve_node(["llm"], preferred_model=model, exclude=tried)
+                node = self._pick_and_reserve_node(["llm"], preferred_model=model, exclude=tried, complexity=complexity)
                 if not node:
                     break
                 hn = node.get("hostname", node.get("ip", "?"))
                 tried.add(hn)
                 try:
                     start = time.time()
-                    result = self._call_lmstudio(node, messages, model)
+                    result = self._call_lmstudio(node, messages, model, complexity=complexity)
                     elapsed = time.time() - start
                 finally:
                     self._release_node(hn)
@@ -1181,6 +1271,7 @@ class FleetExecutor:
                     except Exception:
                         payload = {}
                     model_hint = payload.get("model", "")
+                    complexity_hint = str(payload.get("complexity") or payload.get("quality") or "").strip().lower()
                     raw_caps = row.get("required_capabilities") or []
                     if isinstance(raw_caps, str):
                         try:
@@ -1189,7 +1280,7 @@ class FleetExecutor:
                             req_caps = ["llm"]
                     else:
                         req_caps = list(raw_caps) if raw_caps else ["llm"]
-                    reserved_node = self._pick_and_reserve_node(req_caps, preferred_model=model_hint)
+                    reserved_node = self._pick_and_reserve_node(req_caps, preferred_model=model_hint, complexity=complexity_hint)
                     if not reserved_node:
                         # No node available; release semaphore and re-queue task implicitly
                         self._llm_sem.release()
