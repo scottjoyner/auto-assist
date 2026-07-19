@@ -99,6 +99,10 @@ services:
       - FLEET_BASIC_AUTH_USER=${FLEET_BASIC_AUTH_USER:-admin}
       - FLEET_BASIC_AUTH_PASS=${FLEET_BASIC_AUTH_PASS:-gluhlaf8}
       - FLEET_ROUTER_URL=${FLEET_ROUTER_URL:-http://router:8088}
+      # Nodes that don't register with the router (git-router-1 only learns
+      # about hosts that send node-report). Seed them directly so the executor
+      # probes + routes LLM work to them. Resolved via Tailscale magic DNS.
+      - FLEET_KNOWN_HOSTS=scotts-macbook-air,joyner,beelink-ryzen-7-mini-pc
 
       # --- W-27: make ASSISTX_OVERLAY_MODE explicit ---
       # Default matches the unified router+assign path. Override as needed.
