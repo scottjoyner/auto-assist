@@ -1538,8 +1538,8 @@ def _now_ts() -> int:
     return int(_time.time() * 1000)
 
 
-def _live_probe_node(url: str, timeout: float = 3.0) -> Optional[dict]:
-    """Hit a node's /v1/models endpoint and return live status + response ms."""
+def _live_probe_node(url: str, timeout: float = 4.0) -> Optional[dict]:
+    """Hit a node's /v1/models endpoint, then check which models are actually loaded in GPU memory."""
     base = url.rstrip("/")
     if "/v1" not in base:
         base = base + "/v1"
@@ -1550,12 +1550,31 @@ def _live_probe_node(url: str, timeout: float = 3.0) -> Optional[dict]:
         if r.status_code != 200:
             return {"online": False, "response_ms": ms, "error": f"HTTP {r.status_code}"}
         data = r.json()
-        models = []
+        all_models = []
         for m in data.get("data", []):
             mid = m.get("id") or m.get("name") or m.get("model")
             if mid:
-                models.append(mid)
-        return {"online": True, "response_ms": ms, "models": models, "model_count": len(models)}
+                all_models.append(mid)
+        remaining = max(0.5, timeout - (_time.time() - t0))
+        if all_models:
+            test_model = all_models[0]
+            try:
+                t1 = _time.time()
+                rr = requests.post(f"{base}/chat/completions", json={
+                    "model": test_model, "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 1, "temperature": 0,
+                }, timeout=remaining)
+                probe_ms = int((_time.time() - t1) * 1000)
+                loaded = rr.status_code == 200 and probe_ms < 1500
+            except requests.RequestException:
+                loaded = False
+                probe_ms = None
+            ms = int((_time.time() - t0) * 1000)
+            return {
+                "online": True, "response_ms": ms, "models": all_models, "model_count": len(all_models),
+                "loaded": loaded, "loaded_response_ms": probe_ms,
+            }
+        return {"online": True, "response_ms": ms, "models": [], "model_count": 0, "loaded": False}
     except requests.RequestException as e:
         ms = int((_time.time() - t0) * 1000)
         return {"online": False, "response_ms": ms, "error": str(e)[:120]}
@@ -1630,18 +1649,21 @@ def api_live_dashboard(user: str = Depends(auth)):
         probe = live_results.get(n["base_url"], {})
         n["status"] = "online" if probe.get("online") else "offline"
         n["response_ms"] = probe.get("response_ms")
+        n["loaded"] = probe.get("loaded", False)
+        n["loaded_response_ms"] = probe.get("loaded_response_ms")
         if probe.get("models"):
-            n["models"] = [{"served_name": m, "live": True} for m in probe.get("models", [])]
+            loaded = probe.get("loaded", False)
+            n["models"] = [{"served_name": m, "loaded": loaded} for m in probe.get("models", [])]
         else:
             cached = n.get("models", [])
             tagged = []
             for m in cached:
                 if isinstance(m, str):
-                    tagged.append({"served_name": m, "live": False})
+                    tagged.append({"served_name": m, "loaded": False})
                 elif isinstance(m, dict):
-                    tagged.append(dict(m, live=False))
+                    tagged.append(dict(m, loaded=False))
                 else:
-                    tagged.append({"served_name": str(m), "live": False})
+                    tagged.append({"served_name": str(m), "loaded": False})
             n["models"] = tagged
         n["model_count"] = len(n["models"])
 

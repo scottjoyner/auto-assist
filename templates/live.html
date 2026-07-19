@@ -407,8 +407,8 @@
     grid.innerHTML = nodes.map(function(n) {
       var sc = n.status||'unknown';
       var chips = (n.models||[]).map(function(m) {
-        var liveCls = m.live ? 'live' : 'cached';
-        return '<span class="model-chip '+liveCls+'">'+esc(m.served_name||m.model_id||'?')+'</span>';
+        var loadedCls = m.loaded ? 'live' : 'cached';
+        return '<span class="model-chip '+loadedCls+'">'+esc(m.served_name||m.model_id||'?')+'</span>';
       }).join('');
       var url = (n.base_url||'').replace(/^https?:\/\//,'');
       return '<div class="node-card '+sc+'">' +
@@ -421,6 +421,7 @@
           (n.response_ms ? '<span>'+n.response_ms+'ms</span>' : '') +
           (n.purpose ? '<span>'+esc(n.purpose)+'</span>' : '') +
           '<span>'+n.model_count+' model'+(n.model_count!==1?'s':'')+'</span>' +
+          (n.loaded ? '<span style="color:#4ade80">loaded</span>' : (n.status==='online' ? '<span style="color:#fbbf24">on disk</span>' : '')) +
         '</div>' +
         '<div class="node-models">'+(chips||'<span style="color:var(--muted);font-size:0.74rem;">empty</span>')+'</div>' +
         '</div>';
