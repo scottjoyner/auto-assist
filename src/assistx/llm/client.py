@@ -9,7 +9,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "not-needed")
 LLM_MODEL = os.getenv("LLM_MODEL", os.getenv("OLLAMA_MODEL", "llama3.1:8b"))
 EMBED_MODEL = os.getenv("EMBED_MODEL", os.getenv("QA_EMBED_QUERY_MODEL", "nomic-embed-text"))
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-TIMEOUT = int(os.getenv("LLM_TIMEOUT_S", "180"))
+TIMEOUT = int(os.getenv("LLM_TIMEOUT_S", "30"))
+_COLD_START_TIMEOUT = 8  # short timeout for probing whether a model is hot
 FALLBACK_MODELS = [m.strip() for m in os.getenv("LLM_FALLBACK_MODELS", "").split(",") if m.strip()]
 CB_FAIL_THRESHOLD = int(os.getenv("LLM_CB_FAIL_THRESHOLD", "3"))
 CB_OPEN_S = int(os.getenv("LLM_CB_OPEN_SECONDS", "60"))
@@ -42,6 +43,26 @@ _node_results: Dict[str, List[bool]] = {}  # base_url -> sliding window of succe
 _NODE_RESULTS_WINDOW = int(os.getenv("LLM_NODE_RESULTS_WINDOW", "50"))
 _NODE_MAX_FAILURE_RATE = float(os.getenv("LLM_NODE_MAX_FAILURE_RATE", "0.5"))
 _node_results_lock = threading.Lock()
+
+# --- Per-(model, node) pair tracking ----------------------------------------
+# Remember which (model, node) combos have recently failed so we don't waste
+# time retrying combos that are known to be broken (e.g. MTP conflict on a
+# node that can't load the requested model alongside its primary workload).
+_pair_results: Dict[str, float] = {}   # "model|base_url" -> time of last failure
+_PAIR_BACKOFF_S = int(os.getenv("LLM_PAIR_BACKOFF_S", "300"))  # 5 min blacklist
+_pair_lock = threading.Lock()
+
+def _mark_pair_failed(model: str, base_url: str) -> None:
+    with _pair_lock:
+        _pair_results[f"{model}|{base_url}"] = time.time()
+
+def _is_pair_blacklisted(model: str, base_url: str) -> bool:
+    with _pair_lock:
+        ts = _pair_results.get(f"{model}|{base_url}")
+        if ts is None:
+            return False
+        return (time.time() - ts) < _PAIR_BACKOFF_S
+
 
 # --- Fleet-aware routing ---------------------------------------------------
 # The source of truth for "which model is loaded where" is each live LM Studio
@@ -127,12 +148,14 @@ def _refresh_fleet_nodes() -> None:
 
 
 def _fleet_model_inventory() -> Dict[str, list]:
-    """Probe all fleet nodes in parallel and return every available model with
-    node URLs.
+    """Probe all fleet nodes in parallel and return models that are HOT
+    (confirmed loaded in GPU, not just on disk).
 
-    Returns {model_name: [base_urls...]} — every model available on at least
-    one node.  Cached for 60s so we don't hammer /v1/models on every request.
-    Probes run in parallel so total wall time is ~max(node_timeout).
+    Returns {model_name: [base_urls...]} — every model confirmed hot on at
+    least one node.  Cached for 60s.  Only includes models that respond
+    quickly to a tiny completion (< COLD_START_TIMEOUT), which avoids
+    sending traffic to models that would trigger an MTP conflict or
+    prolonged cold-start load.
     """
     global _fleet_inventory, _fleet_inventory_at
     now = time.time()
@@ -142,12 +165,31 @@ def _fleet_model_inventory() -> Dict[str, list]:
     nodes = _fleet_nodes or [OPENAI_BASE_URL]
     inventory: Dict[str, list] = {}
     import concurrent.futures as cf
-    with cf.ThreadPoolExecutor(max_workers=min(len(nodes) or 1, 16)) as pool:
-        results = list(pool.map(_probe_loaded_models, nodes))
-    for base, ids in zip(nodes, results):
+
+    def _probe_and_verify(base):
+        """Get model list, then verify each is hot via a tiny chat completion."""
+        ids = _probe_loaded_models(base)
         if not ids:
-            continue
+            return base, []
+        hot = []
         for mid in ids:
+            try:
+                t0 = time.time()
+                r = requests.post(f"{base}/chat/completions", json={
+                    "model": mid, "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 1, "temperature": 0, "stream": False,
+                }, timeout=_COLD_START_TIMEOUT)
+                elapsed = (time.time() - t0) * 1000
+                if r.status_code == 200 and elapsed < _COLD_START_TIMEOUT * 1000 * 0.9:
+                    hot.append(mid)
+            except requests.RequestException:
+                pass
+        return base, hot
+
+    with cf.ThreadPoolExecutor(max_workers=min(len(nodes) or 1, 16)) as pool:
+        results = list(pool.map(_probe_and_verify, nodes))
+    for base, hot_ids in results:
+        for mid in hot_ids:
             inventory.setdefault(mid, []).append(base)
     with _fleet_lock:
         _fleet_inventory = inventory
@@ -396,7 +438,7 @@ def _candidate_models(model: Optional[str] = None) -> List[str]:
             out.append(m)
     return out
 
-def _chat_openai(messages: List[Dict[str, str]], model: str, json_mode: bool, base_url: Optional[str] = None) -> str:
+def _chat_openai(messages: List[Dict[str, str]], model: str, json_mode: bool, base_url: Optional[str] = None, _timeout_override: Optional[int] = None) -> str:
     payload: Dict[str, Any] = {"model": model, "messages": messages, "stream": False}
     if json_mode:
         # LM Studio (OpenAI-compatible) rejects "json_object"; it requires
@@ -425,7 +467,7 @@ def _chat_openai(messages: List[Dict[str, str]], model: str, json_mode: bool, ba
         f"{base}/chat/completions",
         json=payload,
         headers={"Authorization": auth, **extra},
-        timeout=TIMEOUT,
+        timeout=_timeout_override or TIMEOUT,
     )
     r.raise_for_status()
     resp_data = r.json()
@@ -433,11 +475,11 @@ def _chat_openai(messages: List[Dict[str, str]], model: str, json_mode: bool, ba
     _set_reasoning_content(msg.get("reasoning_content", ""))
     return msg["content"]
 
-def _chat_ollama(messages: List[Dict[str, str]], model: str, json_mode: bool) -> str:
+def _chat_ollama(messages: List[Dict[str, str]], model: str, json_mode: bool, base_url: Optional[str] = None, _timeout_override: Optional[int] = None) -> str:
     payload: Dict[str, Any] = {"model": model, "messages": messages, "stream": False}
     if json_mode:
         payload["format"] = "json"
-    r = requests.post(f"{OLLAMA_HOST}/api/chat", json=payload, timeout=TIMEOUT)
+    r = requests.post(f"{OLLAMA_HOST}/api/chat", json=payload, timeout=_timeout_override or TIMEOUT)
     r.raise_for_status()
     return r.json()["message"]["content"]
 
@@ -451,15 +493,24 @@ def chat(messages: List[Dict[str, str]], model: Optional[str] = None, json_mode:
     for candidate in _candidate_models(model):
         if _cb_is_open(candidate):
             continue
-        # Spread across the Tailscale LM Studio fleet (plus local), trying each
-        # base URL that has this model loaded before moving to the next model.
         base_urls = fleet_base_urls_for(candidate) or [OPENAI_BASE_URL]
         for base_url in base_urls:
             if time.time() > deadline:
                 break
+            # Skip (model, node) pairs that have recently failed (MTP conflict,
+            # model not actually loadable on this node).
+            if base_url != OPENAI_BASE_URL and _is_pair_blacklisted(candidate, base_url):
+                continue
+            # Use a short probe timeout for unconfirmed (model, node) pairs so
+            # a cold-start or MTP conflict doesn't clog the worker for minutes.
+            pair_key = f"{candidate}|{base_url}"
+            with _pair_lock:
+                known_good = pair_key not in _pair_results
+            effective_timeout = _COLD_START_TIMEOUT if known_good else TIMEOUT
             t0 = time.time()
             try:
-                out = dispatch(messages, candidate, json_mode, base_url=base_url)
+                out = dispatch(messages, candidate, json_mode, base_url=base_url,
+                              _timeout_override=effective_timeout)
                 _cb_on_success(candidate)
                 _track_node_latency(base_url, time.time() - t0)
                 _track_node_result(base_url, True)
@@ -469,6 +520,7 @@ def chat(messages: List[Dict[str, str]], model: Optional[str] = None, json_mode:
                 if base_url != OPENAI_BASE_URL:
                     _track_node_latency(base_url, time.time() - t0)
                     _track_node_result(base_url, False)
+                    _mark_pair_failed(candidate, base_url)
                 last_err = e
                 continue
     if last_err:
