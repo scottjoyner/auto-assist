@@ -60,6 +60,9 @@ _fleet_nodes_at = 0.0
 _fleet_loaded: Dict[str, List[str]] = {}          # model -> [base_url, ...] (probed)
 _fleet_loaded_at: Dict[str, float] = {}           # model -> last probe time
 _fleet_rr: Dict[str, int] = {}                    # model -> next index
+_fleet_inventory: Dict[str, dict] = {}            # model -> {"hot": [urls], "cold": [urls]}
+_fleet_inventory_at: float = 0.0
+LLM_MODEL_MIX = os.getenv("LLM_MODEL_MIX", "1") == "1"  # enable model mixing
 
 
 def _node_urls_from_state() -> List[str]:
@@ -121,6 +124,62 @@ def _refresh_fleet_nodes() -> None:
     with _fleet_lock:
         _fleet_nodes = _node_urls_from_state()
         _fleet_nodes_at = now
+
+
+def _fleet_model_inventory() -> Dict[str, list]:
+    """Probe all fleet nodes in parallel and return every available model with
+    node URLs.
+
+    Returns {model_name: [base_urls...]} — every model available on at least
+    one node.  Cached for 60s so we don't hammer /v1/models on every request.
+    Probes run in parallel so total wall time is ~max(node_timeout).
+    """
+    global _fleet_inventory, _fleet_inventory_at
+    now = time.time()
+    if now - _fleet_inventory_at < 60 and _fleet_inventory:
+        return dict(_fleet_inventory)
+    _refresh_fleet_nodes()
+    nodes = _fleet_nodes or [OPENAI_BASE_URL]
+    inventory: Dict[str, list] = {}
+    import concurrent.futures as cf
+    with cf.ThreadPoolExecutor(max_workers=min(len(nodes) or 1, 16)) as pool:
+        results = list(pool.map(_probe_loaded_models, nodes))
+    for base, ids in zip(nodes, results):
+        if not ids:
+            continue
+        for mid in ids:
+            inventory.setdefault(mid, []).append(base)
+    with _fleet_lock:
+        _fleet_inventory = inventory
+        _fleet_inventory_at = now
+    return inventory
+
+
+def _select_model_weighted(inventory: Dict[str, list]) -> List[str]:
+    """Return all model names in weighted-random order so models available on
+    more nodes get proportionally more traffic.
+
+    Weight = node_count * 3 for exploration coverage (every model on >=1 node
+    gets traffic proportional to its fleet footprint).
+    """
+    import random as _random
+    items = [(mid, max(len(urls) * 3.0, 1.0)) for mid, urls in inventory.items()]
+    if not items:
+        return []
+    _random.shuffle(items)
+    result = []
+    remaining = list(items)
+    while remaining:
+        total = sum(w for _, w in remaining)
+        r = _random.random() * total
+        cumulative = 0.0
+        for idx, (mid, w) in enumerate(remaining):
+            cumulative += w
+            if r <= cumulative:
+                result.append(mid)
+                remaining.pop(idx)
+                break
+    return result
 
 
 def _loaded_nodes_for(model: str) -> List[str]:
@@ -316,7 +375,23 @@ def _cb_on_failure(model: str) -> None:
 def _candidate_models(model: Optional[str] = None) -> List[str]:
     primary = (model or LLM_MODEL).strip()
     out: List[str] = []
-    for m in [primary, *FALLBACK_MODELS]:
+    if model is None and LLM_MODEL_MIX:
+        # Mix across ALL fleet-available models so traffic distributes
+        # naturally.  The weighted random order means models on more nodes
+        # appear earlier (and thus get tried first) proportionally more
+        # often, but every model gets explored.
+        inventory = _fleet_model_inventory()
+        mixed = _select_model_weighted(inventory)
+        for m in mixed:
+            if m and m not in out:
+                out.append(m)
+        # Ensure the configured default is always somewhere in the list
+        # (not necessarily first) so it remains in rotation.
+        if primary not in out:
+            out.append(primary)
+    else:
+        out.append(primary)
+    for m in FALLBACK_MODELS:
         if m and m not in out:
             out.append(m)
     return out
