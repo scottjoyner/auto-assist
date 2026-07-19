@@ -204,6 +204,40 @@ def _check_llm() -> Dict[str, Any]:
         resp = requests.get(f"{base_url}/models", timeout=timeout)
         if resp.ok:
             return {"status": "ok", "backend": backend, "endpoint": base_url}
+        # The host/local LM Studio is the default probe target, but the
+        # operator drives the fleet: models are loaded on remote LM Studio
+        # nodes, not necessarily on the host.  If the local probe is down but
+        # the fleet actually has models resident in VRAM, the LLM dependency
+        # is satisfied — report degraded (not down) so dependent services
+        # (e.g. auto-assign's neo4j brain) still treat assistx as reachable.
+        try:
+            from .llm import client as _lc
+            inv = _lc._fleet_model_inventory()
+            if inv:
+                return {
+                    "status": "degraded",
+                    "backend": backend,
+                    "endpoint": base_url,
+                    "reason": f"local LM Studio unreachable; {len(inv)} model(s) resident on fleet",
+                    "fleet_models": len(inv),
+                }
+        except Exception:
+            pass
         return {"status": "degraded", "backend": backend, "endpoint": base_url, "reason": f"HTTP {resp.status_code}"}
     except Exception as exc:
+        # Same fleet fallback for connection failures (host LM Studio down,
+        # operator runs models on the fleet instead).
+        try:
+            from .llm import client as _lc
+            inv = _lc._fleet_model_inventory()
+            if inv:
+                return {
+                    "status": "degraded",
+                    "backend": backend,
+                    "endpoint": base_url,
+                    "reason": f"local LM Studio unreachable; {len(inv)} model(s) resident on fleet",
+                    "fleet_models": len(inv),
+                }
+        except Exception:
+            pass
         return {"status": "down", "backend": backend, "reason": str(exc)[:500]}

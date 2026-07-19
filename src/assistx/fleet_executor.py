@@ -37,6 +37,11 @@ LMSTUDIO_PORT = int(os.getenv("FLEET_LMSTUDIO_PORT", "1234"))
 MAX_CONCURRENT_LLM = int(os.getenv("FLEET_EXECUTOR_LLM_CONCURRENCY", "64"))
 MAX_CONCURRENT_SCRIPT = int(os.getenv("FLEET_EXECUTOR_SCRIPT_CONCURRENCY", "16"))
 NODE_HEALTH_TTL = float(os.getenv("FLEET_NODE_HEALTH_TTL", "90"))
+# Hard cap on total wall-time a single task may occupy a semaphore slot. Guards
+# against flaky fleet nodes wedging the pipeline by holding slots indefinitely.
+TASK_WALL_TIMEOUT = int(os.getenv("FLEET_TASK_WALL_TIMEOUT", "180"))
+# Bound a single LM Studio call so retries across nodes can't run for hours.
+LMSTUDIO_CALL_TIMEOUT = int(os.getenv("FLEET_LMSTUDIO_CALL_TIMEOUT", "120"))
 # Composite valuation: quality_weight * eval_score + (1-quality_weight) * normalized_tps
 # 0.0 = pure speed (TPS), 1.0 = pure quality (eval_score)
 ROUTING_QUALITY_WEIGHT = float(os.getenv("FLEET_ROUTING_QUALITY_WEIGHT", "0.5"))
@@ -356,6 +361,12 @@ class FleetExecutor:
         self._node_lock = threading.Lock()
         self._llm_sem = threading.Semaphore(MAX_CONCURRENT_LLM)
         self._script_sem = threading.Semaphore(MAX_CONCURRENT_SCRIPT)
+        # Process-wide set of task ids already dispatched to a worker thread.
+        # Prevents the same READY task from being fetched and double-claimed
+        # across successive 2s poll iterations (the claim only happens inside
+        # the worker, after fetch, so a local per-call seen-set is not enough).
+        self._inflight_ids: set[str] = set()
+        self._inflight_lock = threading.Lock()
         self._rr_index: int = 0
         self._pick_count: dict[str, int] = {}
         self._node_inflight: dict[str, int] = {}
@@ -811,7 +822,7 @@ class FleetExecutor:
         # Last resort: size-based heuristic
         return self._pick_fast_model(models)
 
-    def _call_lmstudio(self, node: dict, messages: list[dict], model: str = "", timeout: int = 300) -> dict:
+    def _call_lmstudio(self, node: dict, messages: list[dict], model: str = "", timeout: int = LMSTUDIO_CALL_TIMEOUT) -> dict:
         ip = node.get("ip", "127.0.0.1")
         hostname = node.get("hostname", ip)
         url = f"http://{ip}:{LMSTUDIO_PORT}/v1/chat/completions"
@@ -977,6 +988,18 @@ class FleetExecutor:
             if hostname in self._node_inflight:
                 self._node_inflight[hostname] = max(0, self._node_inflight[hostname] - 1)
 
+    def _mark_inflight(self, task_id: str) -> bool:
+        """Reserve a task id for dispatch. Returns False if already in flight."""
+        with self._inflight_lock:
+            if task_id in self._inflight_ids:
+                return False
+            self._inflight_ids.add(task_id)
+            return True
+
+    def _clear_inflight(self, task_id: str) -> None:
+        with self._inflight_lock:
+            self._inflight_ids.discard(task_id)
+
     def _execute_task(self, task: dict, reserved_node: dict | None = None) -> dict:
         payload = task.get("payload", {})
         if isinstance(payload, str):
@@ -1107,6 +1130,9 @@ class FleetExecutor:
                     break
                 for row in fresh:
                     seen_ids.add(row.get("id"))
+                    tid = row.get("id")
+                    if not self._mark_inflight(tid):
+                        continue
                     # Atomically pick and reserve a node for this LLM task
                     payload_raw = row.get("payload_json") or row.get("payload") or "{}"
                     try:
@@ -1158,6 +1184,9 @@ class FleetExecutor:
                     break
                 for row in fresh:
                     script_seen.add(row.get("id"))
+                    tid = row.get("id")
+                    if not self._mark_inflight(tid):
+                        continue
                     t = threading.Thread(
                         target=self._handle_one,
                         args=(row, "script"),
@@ -1168,13 +1197,24 @@ class FleetExecutor:
                 break
 
     def _handle_one(self, row: dict, kind: str = "script", reserved_node: dict | None = None) -> None:
-        try:
-            self._do_handle(row, reserved_node)
-        finally:
-            if kind == "llm":
-                self._llm_sem.release()
-            else:
-                self._script_sem.release()
+        # Hard wall-clock guard: a single task must never hold a semaphore slot
+        # longer than TASK_WALL_TIMEOUT seconds. _execute_task can retry across
+        # several nodes with a long per-call timeout, so without this a flaky
+        # fleet node would wedge the entire LLM (or script) pipeline by
+        # exhausting the semaphore with stuck threads. The finally-block below
+        # always releases the slot even if the inner work times out.
+        sem = self._llm_sem if kind == "llm" else self._script_sem
+        worker = threading.Thread(target=self._do_handle, args=(row, reserved_node), daemon=True)
+        worker.start()
+        worker.join(timeout=TASK_WALL_TIMEOUT)
+        if worker.is_alive():
+            task_id = row.get("id", "?")
+            logger.error(
+                "fleet executor: task %s (%s) exceeded wall timeout %ss; releasing slot (worker continues detached)",
+                task_id, kind, TASK_WALL_TIMEOUT,
+            )
+        sem.release()
+        self._clear_inflight(row.get("id"))
 
     def _do_handle(self, row: dict, reserved_node: dict | None = None) -> None:
         """Execute a single task end-to-end: claim, run, complete."""
