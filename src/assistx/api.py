@@ -1538,8 +1538,8 @@ def _now_ts() -> int:
     return int(_time.time() * 1000)
 
 
-def _live_probe_node(url: str, timeout: float = 4.0) -> Optional[dict]:
-    """Hit a node's /v1/models endpoint, then check which models are actually loaded in GPU memory."""
+def _live_probe_node(url: str, timeout: float = 5.0) -> Optional[dict]:
+    """Probe a node: list all models on device, then check per-model loadedness in parallel."""
     base = url.rstrip("/")
     if "/v1" not in base:
         base = base + "/v1"
@@ -1550,31 +1550,39 @@ def _live_probe_node(url: str, timeout: float = 4.0) -> Optional[dict]:
         if r.status_code != 200:
             return {"online": False, "response_ms": ms, "error": f"HTTP {r.status_code}"}
         data = r.json()
-        all_models = []
+        model_ids = []
         for m in data.get("data", []):
             mid = m.get("id") or m.get("name") or m.get("model")
             if mid:
-                all_models.append(mid)
-        remaining = max(0.5, timeout - (_time.time() - t0))
-        if all_models:
-            test_model = all_models[0]
-            try:
-                t1 = _time.time()
-                rr = requests.post(f"{base}/chat/completions", json={
-                    "model": test_model, "messages": [{"role": "user", "content": "hi"}],
-                    "max_tokens": 1, "temperature": 0,
-                }, timeout=remaining)
-                probe_ms = int((_time.time() - t1) * 1000)
-                loaded = rr.status_code == 200 and probe_ms < 1500
-            except requests.RequestException:
-                loaded = False
-                probe_ms = None
+                model_ids.append(mid)
+        remaining = max(1.0, timeout - (_time.time() - t0))
+        if model_ids:
+            loaded_set = set()
+            import concurrent.futures as cf
+            per_model_timeout = max(0.5, remaining / max(len(model_ids), 1))
+            with cf.ThreadPoolExecutor(max_workers=min(len(model_ids), 12)) as pool:
+                def _check_loaded(mid):
+                    try:
+                        t1 = _time.time()
+                        rr = requests.post(f"{base}/chat/completions", json={
+                            "model": mid, "messages": [{"role": "user", "content": "hi"}],
+                            "max_tokens": 1, "temperature": 0, "stream": False,
+                        }, timeout=per_model_timeout)
+                        elapsed = int((_time.time() - t1) * 1000)
+                        return mid, rr.status_code == 200 and elapsed < 1500, elapsed
+                    except requests.RequestException:
+                        return mid, False, None
+                for mid, is_loaded, pms in pool.map(_check_loaded, model_ids):
+                    if is_loaded:
+                        loaded_set.add(mid)
             ms = int((_time.time() - t0) * 1000)
             return {
-                "online": True, "response_ms": ms, "models": all_models, "model_count": len(all_models),
-                "loaded": loaded, "loaded_response_ms": probe_ms,
+                "online": True, "response_ms": ms,
+                "models": model_ids, "model_count": len(model_ids),
+                "loaded_models": list(loaded_set), "loaded_count": len(loaded_set),
             }
-        return {"online": True, "response_ms": ms, "models": [], "model_count": 0, "loaded": False}
+        return {"online": True, "response_ms": ms, "models": [], "model_count": 0,
+                "loaded_models": [], "loaded_count": 0}
     except requests.RequestException as e:
         ms = int((_time.time() - t0) * 1000)
         return {"online": False, "response_ms": ms, "error": str(e)[:120]}
@@ -1649,11 +1657,9 @@ def api_live_dashboard(user: str = Depends(auth)):
         probe = live_results.get(n["base_url"], {})
         n["status"] = "online" if probe.get("online") else "offline"
         n["response_ms"] = probe.get("response_ms")
-        n["loaded"] = probe.get("loaded", False)
-        n["loaded_response_ms"] = probe.get("loaded_response_ms")
+        loaded_set = set(probe.get("loaded_models", []))
         if probe.get("models"):
-            loaded = probe.get("loaded", False)
-            n["models"] = [{"served_name": m, "loaded": loaded} for m in probe.get("models", [])]
+            n["models"] = [{"served_name": m, "loaded": m in loaded_set} for m in probe.get("models", [])]
         else:
             cached = n.get("models", [])
             tagged = []
@@ -1666,6 +1672,7 @@ def api_live_dashboard(user: str = Depends(auth)):
                     tagged.append({"served_name": str(m), "loaded": False})
             n["models"] = tagged
         n["model_count"] = len(n["models"])
+        n["loaded_count"] = probe.get("loaded_count", 0)
 
     # --- task counts ---
     try:
