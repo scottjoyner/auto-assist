@@ -1746,6 +1746,59 @@ def live_dashboard(request: Request, user: str = Depends(auth)):
     return templates.TemplateResponse("live.html", {"request": request})
 
 
+@app.get("/links.json")
+def api_links(user: str = Depends(auth)):
+    return {
+        "assistx": {
+            "name": "AssistX",
+            "version": "2.0",
+            "description": "Workflow control plane — intake, routing, review, memory, and live operator state",
+        },
+        "dashboard": {
+            "live": {"href": "/live", "title": "Operational HQ — fleet, pipeline, traces"},
+        },
+        "pipeline": {
+            "tasks": {"href": "/api/tasks", "title": "Task CRUD", "counts": "/api/live/dashboard#pipeline"},
+            "runs": {"href": "/runs", "title": "Agent run history"},
+            "queue": {"href": "/api/workflows/queue", "title": "Workflow queue by class"},
+        },
+        "fleet": {
+            "dashboard": {"href": "/api/live/dashboard", "title": "Live aggregated dashboard JSON"},
+            "nodes": {"href": "/api/fleet/nodes", "title": "Fleet node list"},
+            "models": {"href": "/api/fleet/models", "title": "Model inventory across nodes"},
+            "benchmarks": {"href": "/api/fleet/benchmarks", "title": "Benchmark data"},
+            "loadouts": {"href": "/api/fleet/loadouts", "title": "Auto-router loadout report"},
+        },
+        "operations": {
+            "health": {"href": "/health", "title": "Service health"},
+            "status": {"href": "/api/ops/status", "title": "Operational status (queue, feeds, eval suites)"},
+            "metrics": {"href": "/metrics", "title": "Prometheus metrics"},
+            "dispatches": {"href": "/dispatches", "title": "Dispatch execution log"},
+            "intents": {"href": "/intents", "title": "Raw incoming intents"},
+            "review": {"href": "/review", "title": "Human review triage queue"},
+            "tasks_ready": {"href": "/tasks/ready", "title": "READY tasks (approve/enqueue)"},
+        },
+        "knowledge": {
+            "sessions": {"href": "/sessions", "title": "Agent sessions"},
+            "memory": {"href": "/memory", "title": "Durable memory items"},
+            "answers": {"href": "/answers", "title": "Q&A responses"},
+            "qa_ask": {"href": "/api/ask", "title": "Ask a question (POST)", "methods": ["POST"]},
+        },
+        "data": {
+            "ingest": {"href": "/ingest", "title": "Audio/video capture"},
+            "devices": {"href": "/devices", "title": "Registered devices"},
+        },
+        "evaluation": {
+            "suites": {"href": "/api/evaluations/suites", "title": "Evaluation suite definitions"},
+            "runs": {"href": "/api/evaluations", "title": "Evaluation run records"},
+        },
+        "swarm": {
+            "nodes": {"href": "/api/swarm/nodes", "title": "Swarm node registrations"},
+            "endpoints": {"href": "/api/swarm/model-endpoints", "title": "Model endpoint registry"},
+        },
+    }
+
+
 @app.get("/api/ops/status")
 def api_ops_status(
     stale_minutes: int = Query(30, ge=1, le=24 * 60),
@@ -2898,9 +2951,6 @@ def api_get_intent(intent_id: str, user: str = Depends(auth)):
             return {"intent": intent, "tasks": tasks}
     finally:
         neo.close()
-
-
-@app.get("/api/feeds")
 
 
 @app.get("/api/workflows/queue")
