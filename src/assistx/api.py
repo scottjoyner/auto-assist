@@ -419,7 +419,12 @@ async def lifespan(app: FastAPI):
         from .repo_task_generator import start_repo_task_generator
         start_repo_task_generator()
     except Exception as e:
-        _lifespan_logger.warning(f"Repo task generator not started: {e}")
+        _lifespan_logger.warning(f"Repo task generator not scheduled: {e}")
+    try:
+        from .llm.client import start_fleet_loader
+        start_fleet_loader()
+    except Exception as e:
+        _lifespan_logger.warning(f"Fleet loader not started: {e}")
     yield
 
 
@@ -1502,6 +1507,118 @@ def api_fleet_refresh_models(user: str = Depends(auth)):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.get("/api/fleet/loader/status")
+def api_fleet_loader_status(user: str = Depends(auth)):
+    """Return the autonomous loader's current state: discovered models, per-node
+    plan (budget, hot models, planned models, actions), and learned ModelPerf
+    scores from the knowledge graph."""
+    try:
+        from assistx.llm import client as llm_client
+        state = llm_client.get_loader_state()
+        # Pull learned ModelPerf scores from the KG for context.
+        perf = {}
+        try:
+            neo = _neo()
+            with neo._session() as s:
+                res = s.run("""
+                    MATCH (p:ModelPerf)
+                    RETURN p.model AS model, avg(p.quality_score) AS q,
+                           avg(p.latency_ms) AS lat, avg(p.tps) AS tps,
+                           count(p) AS runs
+                """)
+                for row in res:
+                    perf[row["model"]] = {
+                        "quality": round(row.get("q") or 0.0, 3),
+                        "latency_ms": round(row.get("lat") or 0.0, 1),
+                        "tps": round(row.get("tps") or 0.0, 1),
+                        "runs": row.get("runs") or 0,
+                    }
+        except Exception:
+            pass
+        from assistx.llm import client as _lc
+        return {
+            "running": state.get("running", False),
+            "cycle": state.get("cycle", 0),
+            "last_action": state.get("last_action", ""),
+            "last_run_ts": state.get("last_run_ts", 0),
+            "discovered_models": state.get("discovered_models", []),
+            "owners": state.get("owners", {}),
+            "pinned": sorted(_lc._loader_pinned_models),
+            "demand": sorted(_lc._loader_demand),
+            "node_configs": {f"{b}|{m}": c
+                             for (b, m), c in _lc._loader_node_configs.items()},
+            "nodes": list(_lc._fleet_nodes),
+            "per_node": state.get("per_node", {}),
+            "learned_perf": perf,
+            "hot_inventory": {},
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/fleet/loader/wishlist")
+def api_fleet_loader_wishlist(payload: Dict[str, Any], user: str = Depends(auth)):
+    """Operator pins the loader's wishlist to a specific set of model ids (or
+    empty list to return control to the auto heuristic).  The operator decides
+    what loads — not the code."""
+    from assistx.llm import client as llm_client
+    models = payload.get("models", []) or []
+    llm_client.set_loader_wishlist(models)
+    return {"ok": True, "pinned": sorted(llm_client._loader_pinned_models)}
+
+
+@app.post("/api/fleet/loader/load")
+def api_fleet_loader_load(payload: Dict[str, Any], user: str = Depends(auth)):
+    """Operator loads a specific model on a specific node now and waits for hot."""
+    from assistx.llm import client as llm_client
+    base = payload.get("base_url")
+    mid = payload.get("model")
+    if not base or not mid:
+        raise HTTPException(status_code=400, detail="base_url and model required")
+    return llm_client.load_model_on_node(base, mid)
+
+
+@app.post("/api/fleet/loader/unload")
+def api_fleet_loader_unload(payload: Dict[str, Any], user: str = Depends(auth)):
+    """Operator unloads a specific model from a specific node."""
+    from assistx.llm import client as llm_client
+    base = payload.get("base_url")
+    mid = payload.get("model")
+    if not base or not mid:
+        raise HTTPException(status_code=400, detail="base_url and model required")
+    return llm_client.unload_model_on_node(base, mid)
+
+
+@app.post("/api/fleet/loader/config")
+def api_fleet_loader_config(payload: Dict[str, Any], user: str = Depends(auth)):
+    """Set (or clear with config=null) the per-node load config for a model:
+    context_length, speculative_draft_mtp, speculative_draft_model, parallel, ….
+    Applied on the next load of that model on that node."""
+    from assistx.llm import client as llm_client
+    base = payload.get("base_url")
+    mid = payload.get("model")
+    cfg = payload.get("config", None)
+    if not base or not mid:
+        raise HTTPException(status_code=400, detail="base_url and model required")
+    llm_client.set_node_config(base, mid, cfg)
+    return {"ok": True, "config": llm_client._loader_node_configs.get((base, mid))}
+
+
+@app.post("/api/fleet/loader/demand")
+def api_fleet_loader_demand(payload: Dict[str, Any], user: str = Depends(auth)):
+    """Request (or release) that a model be kept resident on the fleet — used by
+    subsystems like the portfolio trader.  Pass release=true to drop the request."""
+    from assistx.llm import client as llm_client
+    mid = payload.get("model")
+    if not mid:
+        raise HTTPException(status_code=400, detail="model required")
+    if payload.get("release"):
+        llm_client.release_model(mid)
+        return {"ok": True, "demand": sorted(llm_client._loader_demand), "action": "released"}
+    llm_client.request_model(mid)
+    return {"ok": True, "demand": sorted(llm_client._loader_demand), "action": "requested"}
+
+
 @app.get("/api/fleet/tasks")
 def api_fleet_tasks(
     status: Optional[str] = Query(None),
@@ -2049,16 +2166,34 @@ def api_live_strategy(user: str = Depends(auth)):
             for mid, urls in sorted(hot_by_model.items(), key=lambda x: -len(x[1])):
                 model_routing["hot_models"][mid] = {"nodes": len(urls), "urls": urls}
 
-            # Get blacklisted pairs from the LLM client (cheap, no I/O)
+            # Soft-suppressed (model, node) pairs from the LLM client.
             from assistx.llm import client as llm_client
-            import time as _t
-            now_t = _t.time()
-            for pair_key, fail_ts in sorted(llm_client._pair_results.items()):
-                remaining = max(0, int(300 - (now_t - fail_ts)))
-                if remaining > 0:
+            suppressed = llm_client._pair_failures if hasattr(llm_client, "_pair_failures") else {}
+            for pair_key, fails in sorted(suppressed.items()):
+                if fails >= llm_client._PAIR_HARD_FAIL_LIMIT:
                     model_routing["blacklisted_pairs"].append({
-                        "pair": pair_key, "remaining_s": remaining
+                        "pair": pair_key, "failures": fails
                     })
+            model_routing["loader"] = llm_client.get_loader_state()
+            # Learned quality×speed from the KG.
+            try:
+                with neo2._session() as s2:
+                    res = s2.run("""
+                        MATCH (p:ModelPerf)
+                        RETURN p.model AS model, avg(p.quality_score) AS q,
+                               avg(p.latency_ms) AS lat, count(p) AS runs
+                        GROUP BY p.model
+                    """)
+                    perf = {}
+                    for row in res:
+                        perf[row["model"]] = {
+                            "quality": round(row.get("q") or 0.0, 3),
+                            "latency_ms": round(row.get("lat") or 0.0, 1),
+                            "runs": row.get("runs") or 0,
+                        }
+                    model_routing["learned_perf"] = perf
+            except Exception:
+                model_routing["learned_perf"] = {}
     except Exception as exc:
         model_routing["error"] = str(exc)[:120]
 

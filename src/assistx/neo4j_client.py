@@ -55,6 +55,7 @@ class Neo4jClient:
         acq_timeout = float(os.getenv("NEO4J_CONNECTION_ACQUISITION_TIMEOUT", "30"))
         max_tx_retry = float(os.getenv("NEO4J_MAX_TRANSACTION_RETRY_TIME", "10"))
         max_conn_lifetime = float(os.getenv("NEO4J_MAX_CONNECTION_LIFETIME", "300"))
+        conn_timeout = float(os.getenv("NEO4J_CONNECT_TIMEOUT", "10"))
         self.driver: Driver = GraphDatabase.driver(
             self.uri,
             auth=(self.user, self.password),
@@ -62,7 +63,7 @@ class Neo4jClient:
             connection_acquisition_timeout=acq_timeout,
             max_transaction_retry_time=max_tx_retry,
             max_connection_lifetime=max_conn_lifetime,
-            keep_alive=True,
+            connection_timeout=conn_timeout,
         )
         # When True, close() is a no-op so a cached/shared client's driver pool
         # is not torn down by per-request `finally: neo.close()` handlers.

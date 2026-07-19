@@ -272,6 +272,19 @@
     </div>
     <div id="model-list" class="feed feed-md"><div class="empty-state">Loading...</div></div>
     <div id="blacklist-list" style="margin-top:8px;"></div>
+    <div id="loader-status"></div>
+    <div id="loader-control" style="margin-top:10px;border-top:1px solid var(--line);padding-top:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-size:0.78rem;font-weight:700;">Fleet model control</span>
+        <button class="btn-sm" onclick="loadFleetModels()">Reload list</button>
+      </div>
+      <div id="fleet-models" style="margin-top:6px;max-height:220px;overflow:auto;font-size:0.72rem;"></div>
+      <div style="margin-top:6px;display:flex;gap:6px;">
+        <button class="btn-sm" onclick="applyWishlist()">Pin selected as wishlist</button>
+        <button class="btn-sm" onclick="clearWishlist()">Release to auto</button>
+        <span id="pinned-note" style="color:var(--muted);font-size:0.68rem;align-self:center;"></span>
+      </div>
+    </div>
   </div>
 
   <!-- Steering panel -->
@@ -501,26 +514,62 @@
     var mr = data.model_routing || {};
     var hot = mr.hot_models || {};
     var blacklist = mr.blacklisted_pairs || [];
+    var perf = mr.learned_perf || {};
+    var loader = mr.loader || {};
     var keys = Object.keys(hot);
     document.getElementById('model-count').textContent = keys.length;
     var el = document.getElementById('model-list');
     if (!keys.length) {
-      el.innerHTML = '<div class="empty-state">No hot models. Click Refresh to probe.</div>';
+      el.innerHTML = '<div class="empty-state">No hot models on the fleet right now.</div>';
     } else {
       el.innerHTML = keys.map(function(mid) {
         var info = hot[mid];
         var nodeInfo = (info.urls || []).length + ' node' + (info.urls.length !== 1 ? 's' : '');
-        return '<div class="model-row"><span class="model-name">' + esc(mid) + '</span><span class="model-nodes">' + nodeInfo + '</span></div>';
+        var p = perf[mid];
+        var pInfo = p ? ' <span style="color:var(--muted);font-size:0.68rem;">q=' + p.quality + ' ' + p.latency_ms + 'ms</span>' : '';
+        return '<div class="model-row"><span class="model-name">' + esc(mid) + '</span><span class="model-nodes">' + nodeInfo + pInfo + '</span></div>';
       }).join('');
     }
     var bl = document.getElementById('blacklist-list');
     if (blacklist.length) {
-      bl.innerHTML = '<div style="font-size:0.78rem;font-weight:700;color:var(--bad);margin-bottom:4px;">Blacklisted (' + blacklist.length + ')</div>' +
+      bl.innerHTML = '<div style="font-size:0.78rem;font-weight:700;color:var(--bad);margin:6px 0 4px;">Suppressed pairs (' + blacklist.length + ')</div>' +
         blacklist.map(function(b) {
-          return '<div class="blacklist-row">' + esc(b.pair) + ' &middot; ' + b.remaining_s + 's</div>';
+          return '<div class="blacklist-row">' + esc(b.pair) + ' &middot; ' + b.failures + ' fails</div>';
         }).join('');
     } else {
       bl.innerHTML = '';
+    }
+    var ls = document.getElementById('loader-status');
+    if (loader && loader.last_action) {
+      var disc = (loader.discovered_models || []).length;
+      var cyc = loader.cycle || 0;
+      var pn = loader.per_node || {};
+      var rows = Object.keys(pn).map(function(b) {
+        var n = pn[b];
+        var hot = (n.hot || []).length;
+        var plan = (n.plan || []).length;
+        var ok = n.loaded_ok || {};
+        var fails = Object.keys(ok).filter(function(k){ return !ok[k]; });
+        var ip = b.replace('http://','').replace('/v1','');
+        var cfgs = n.configs || {};
+        var owners = n.owners || {};
+        var loaded = Object.keys(cfgs);
+        var cfgLine = loaded.map(function(m){
+          var own = owners[m] === 'user' ? ' <span style="color:var(--ok);">yours</span>'
+                  : owners[m] === 'assistx' ? ' <span style="color:var(--accent);">loader</span>' : '';
+          return esc(m.split('/').pop()) + ' ' + (cfgs[m] || '') + own;
+        }).join(' &middot; ');
+        return '<div style="font-size:0.68rem;color:var(--muted);">' + esc(ip) +
+          ': hot ' + hot + '/' + plan +
+          (fails.length ? ' <span style="color:var(--bad);">load-fail ' + fails.length + '</span>' : ' <span style="color:var(--ok);">ok</span>') +
+          (cfgLine ? '<br>&nbsp;&nbsp;' + cfgLine : '') +
+          '</div>';
+      }).join('');
+      ls.innerHTML = '<div style="font-size:0.74rem;color:var(--muted);margin-top:6px;">' +
+        'cycle ' + cyc + ' &middot; ' + disc + ' models discovered<br>' +
+        esc(loader.last_action) + (rows ? '<br>' + rows : '') + '</div>';
+    } else {
+      ls.innerHTML = '';
     }
   }
 
@@ -588,8 +637,120 @@
     }
   };
 
+  async function loadFleetModels() {
+    try {
+      var resp = await fetch(BASE + '/api/fleet/loader/status');
+      var d = await resp.json();
+      window._fleetModels = (d.discovered_models || []).slice(0, 60);
+      window._fleetNodes = (d.nodes || []).map(function(b){ return b.replace('http://','').replace('/v1',''); });
+      window._fleetPinned = d.pinned || [];
+      window._fleetOwners = d.owners || {};
+      window._fleetDemand = d.demand || [];
+      renderFleetModels();
+    } catch (err) { console.error(err); }
+  }
+
+  function renderFleetModels() {
+    var models = window._fleetModels || [];
+    var nodes = window._fleetNodes || [];
+    var pinned = window._fleetPinned || [];
+    var owners = window._fleetOwners || {};
+    var demand = window._fleetDemand || [];
+    var box = document.getElementById('fleet-models');
+    var html = models.map(function(m) {
+      var checked = pinned.indexOf(m) >= 0 ? 'checked' : '';
+      var want = demand.indexOf(m) >= 0;
+      // Which nodes currently have this model, and who owns it.
+      var nodeBtns = nodes.map(function(n) {
+        var key = 'http://' + n + ':1234/v1|' + m;
+        var own = owners[key];
+        var tag = own === 'user' ? ' <span style="color:var(--ok);">yours</span>'
+                : own === 'assistx' ? ' <span style="color:var(--accent);">loader</span>' : '';
+        return '<button class="btn-sm" style="font-size:0.6rem;padding:1px 5px;" ' +
+          'onclick="loadOnNode(\'' + esc(n) + '\',\'' + esc(m) + '\')">+ ' + esc(n) + '</button>' + tag;
+      }).join(' ');
+      return '<div style="padding:3px 0;border-bottom:1px solid var(--line);">' +
+        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">' +
+        '<input type="checkbox" class="fm" value="' + esc(m) + '" ' + checked + '>' +
+        '<span style="flex:1;word-break:break-all;">' + esc(m) + '</span>' +
+        '<button class="btn-sm ' + (want ? 'danger' : 'secondary') + '" style="font-size:0.6rem;padding:1px 5px;" ' +
+          'onclick="toggleDemand(\'' + esc(m) + '\')">' + (want ? 'release' : 'keep resident') + '</button>' +
+        '</label>' +
+        '<div style="margin-left:18px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">' + nodeBtns + '</div></div>';
+    }).join('');
+    box.innerHTML = html || '<div class="empty-state">No models discovered yet.</div>';
+    document.getElementById('pinned-note').textContent =
+      pinned.length ? ('pinned: ' + pinned.length) : 'mirror mode (auto)';
+  }
+
+  async function toggleDemand(model) {
+    var want = (window._fleetDemand || []).indexOf(model) >= 0;
+    try {
+      await fetch(BASE + '/api/fleet/loader/demand', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({model: model, release: want})
+      });
+      await loadFleetModels();
+    } catch (err) { alert('Demand failed: ' + err.message); }
+  }
+
+  async function applyWishlist() {
+    var sel = Array.prototype.slice.call(document.querySelectorAll('.fm:checked')).map(function(c){ return c.value; });
+    try {
+      await fetch(BASE + '/api/fleet/loader/wishlist', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({models: sel})
+      });
+      await loadFleetModels();
+    } catch (err) { alert('Pin failed: ' + err.message); }
+  }
+
+  async function clearWishlist() {
+    try {
+      await fetch(BASE + '/api/fleet/loader/wishlist', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({models: []})
+      });
+      await loadFleetModels();
+    } catch (err) { alert('Release failed: ' + err.message); }
+  }
+
+  async function loadOnNode(ip, model) {
+    var base = 'http://' + ip + ':1234/v1';
+    try {
+      var resp = await fetch(BASE + '/api/fleet/loader/load', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({base_url: base, model: model})
+      });
+      var r = await resp.json();
+      alert((r.hot ? 'HOT ' : 'loaded (not hot) ') + model + ' @ ' + ip);
+      await fetchStrategy();
+    } catch (err) { alert('Load failed: ' + err.message); }
+  }
+
+  async function unloadOnNode(ip, model) {
+    var base = 'http://' + ip + ':1234/v1';
+    try {
+      await fetch(BASE + '/api/fleet/loader/unload', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({base_url: base, model: model})
+      });
+      await fetchStrategy();
+    } catch (err) { alert('Unload failed: ' + err.message); }
+  }
+
+  loadFleetModels();
   fetchStrategy();
   setInterval(fetchStrategy, 15000);
+
+  // Expose handlers referenced by inline onclick= attributes (the IIFE scope
+  // keeps them private otherwise, which breaks the buttons).
+  window.loadFleetModels = loadFleetModels;
+  window.applyWishlist = applyWishlist;
+  window.clearWishlist = clearWishlist;
+  window.loadOnNode = loadOnNode;
+  window.unloadOnNode = unloadOnNode;
+  window.toggleDemand = toggleDemand;
 })();
 </script>
 {% endblock %}
