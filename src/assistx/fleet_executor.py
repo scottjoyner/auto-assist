@@ -52,6 +52,33 @@ for _pair in _raw.split(","):
             NODE_CONCURRENCY[_h.strip()] = max(1, int(_w))
         except ValueError:
             pass
+
+
+def _auto_weight(specs: Optional[dict]) -> int:
+    """Derive a sensible per-node concurrency from reported hardware so nodes
+    the operator adds are delegated work in proportion to their capacity
+    (instead of every node being capped at 1 concurrent task).
+
+    Heuristic: GPU nodes can serve many concurrent LM Studio sessions; pad
+    further for many-core CPUs.  Small/CPU-only boxes stay modest.
+    """
+    if not specs or not isinstance(specs, dict):
+        return 4
+    cores = int(specs.get("cpu_cores") or 0)
+    gpu = str(specs.get("gpu") or "").strip()
+    ram_gib = float(specs.get("system_ram_gib") or 0.0)
+    has_gpu = bool(gpu) and gpu.lower() not in ("", "none", "unknown")
+    if has_gpu:
+        # GPU present: scale with cores, floor 6 so a single GPU still pulls
+        # real work, cap 16 to avoid overwhelming modest cards.
+        w = max(6, min(16, 4 + cores // 2))
+    else:
+        # CPU-only: be conservative.
+        w = max(2, min(6, 1 + cores // 4))
+    # Big-memory boxes can hold more concurrent contexts.
+    if ram_gib >= 24:
+        w = min(20, w + 2)
+    return w
 BASIC_AUTH_USER = os.getenv("FLEET_BASIC_AUTH_USER", "admin")
 BASIC_AUTH_PASS = os.getenv("FLEET_BASIC_AUTH_PASS", "gluhlaf8")
 ASSISTX_URL = os.getenv("FLEET_ASSISTX_URL", "http://assistx:8000")
@@ -334,6 +361,12 @@ class FleetExecutor:
         self._node_inflight: dict[str, int] = {}
         self._node_semaphores: dict[str, threading.Semaphore] = {}
         self._node_latency: dict[str, float] = {}
+        # Cache the last successfully-resolved IP per hostname across refresh
+        # cycles.  The router sometimes advertises a docker-internal IP and
+        # Tailscale DNS can be intermittently unresolvable for some hosts, so
+        # without this cache a node the operator added would flap in and out of
+        # the fleet.  A cached real IP keeps it reachable between blips.
+        self._ip_cache: dict[str, str] = {}
         self._tld = os.getenv("TAILSCALE_DOMAIN", "tailcb8954.ts.net")
         # Load model routing data from LMS benchmark results
         self._model_routing: dict = {}
@@ -445,7 +478,11 @@ class FleetExecutor:
                     # may not have Tailscale magic DNS, so resolving hostnames
                     # here would silently drop nodes.  Keep the IP as a hint.
                     ip = n.get("ip") or ""
-                    seed_nodes.append({"hostname": hostname, "ip": ip})
+                    seed_nodes.append({
+                        "hostname": hostname,
+                        "ip": ip,
+                        "specs": n.get("specs") or {},
+                    })
                     seen_hostnames.add(hostname)
 
         # Inject any known hosts not already tracked by the router.
@@ -475,10 +512,20 @@ class FleetExecutor:
             # reported IP when DNS resolution fails (e.g. macbook-air not in
             # Tailscale DNS).
             ip = self._resolve(hostname, self._tld)
-            if not ip:
+            if ip:
+                # Remember a good IP so a later flaky DNS cycle can't drop the
+                # node entirely.
+                self._ip_cache[hostname] = ip
+            else:
                 hint = (n.get("ip") or "").strip()
                 if hint and not hint.startswith("172."):
                     ip = hint
+                    self._ip_cache[hostname] = ip
+            if not ip:
+                # Last resort: a previously-cached real IP for this host.
+                cached = self._ip_cache.get(hostname)
+                if cached and not cached.startswith("172."):
+                    ip = cached
             if not ip:
                 prev = prev_by_host.get(hostname)
                 if prev:
@@ -526,7 +573,13 @@ class FleetExecutor:
             n["capabilities"] = list(caps)
             n["ip"] = ip
             n["hostname"] = hostname
-            n["weight"] = NODE_CONCURRENCY.get(hostname, 1)
+            # Preserve a previously-derived weight across refreshes so a node's
+            # delegated capacity doesn't reset to the floor on every 2s probe.
+            prev_weight = (prev_by_host.get(hostname) or {}).get("weight")
+            if prev_weight:
+                n["weight"] = prev_weight
+            else:
+                n["weight"] = NODE_CONCURRENCY.get(hostname, _auto_weight(n.get("specs") or {}))
             n["last_seen"] = now
             enriched.append(n)
 
