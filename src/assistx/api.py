@@ -1670,64 +1670,38 @@ def _now_ts() -> int:
 
 
 def _live_probe_node(url: str, timeout: float = 5.0) -> Optional[dict]:
-    """Probe a node: list all models on device, then check per-model loadedness in parallel."""
-    base = url.rstrip("/")
-    if "/v1" not in base:
-        base = base + "/v1"
+    """Probe a node by reading LM Studio's native /api/v1/models loaded_instances.
+
+    This is the authoritative source of truth for what is physically resident
+    in VRAM. We do NOT probe each model with a chat completion (which is slow,
+    flaky under load, and can spuriously drop resident models from the list).
+    Offline nodes return ``online: False`` gracefully so x1-370/xwing remain
+    routing candidates but simply report no loaded models.
+    """
     t0 = _time.time()
     try:
-        r = requests.get(f"{base}/models", timeout=timeout)
+        native = url.rstrip("/")
+        if native.endswith("/v1"):
+            native = native[: -len("/v1")]
+        r = requests.get(f"{native}/api/v1/models", timeout=timeout)
         ms = int((_time.time() - t0) * 1000)
         if r.status_code != 200:
             return {"online": False, "response_ms": ms, "error": f"HTTP {r.status_code}"}
-        data = r.json()
-        model_ids = []
-        for m in data.get("data", []):
-            mid = m.get("id") or m.get("name") or m.get("model")
-            if mid:
-                model_ids.append(mid)
-        remaining = max(1.0, timeout - (_time.time() - t0))
-        if model_ids:
-            loaded_set = set()
-            import concurrent.futures as cf
-            per_model_timeout = max(0.5, remaining / max(len(model_ids), 1))
-            with cf.ThreadPoolExecutor(max_workers=min(len(model_ids), 12)) as pool:
-                def _check_loaded(mid):
-                    try:
-                        t1 = _time.time()
-                        rr = requests.post(f"{base}/chat/completions", json={
-                            "model": mid, "messages": [{"role": "user", "content": "hi"}],
-                            "max_tokens": 1, "temperature": 0, "stream": False,
-                        }, timeout=per_model_timeout)
-                        elapsed = int((_time.time() - t1) * 1000)
-                        if rr.status_code != 200 or elapsed >= 1500:
-                            return mid, False, elapsed
-                        body = rr.json()
-                        if not isinstance(body, dict):
-                            return mid, False, elapsed
-                        responded_model = body.get("model", "")
-                        if responded_model and mid not in responded_model:
-                            return mid, False, elapsed
-                        choices = body.get("choices", [])
-                        if not choices or not isinstance(choices, list):
-                            return mid, False, elapsed
-                        msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
-                        if not msg.get("content"):
-                            return mid, False, elapsed
-                        return mid, True, elapsed
-                    except (requests.RequestException, json.JSONDecodeError, LookupError, TypeError):
-                        return mid, False, None
-                for mid, is_loaded, pms in pool.map(_check_loaded, model_ids):
-                    if is_loaded:
-                        loaded_set.add(mid)
-            ms = int((_time.time() - t0) * 1000)
-            return {
-                "online": True, "response_ms": ms,
-                "models": model_ids, "model_count": len(model_ids),
-                "loaded_models": list(loaded_set), "loaded_count": len(loaded_set),
-            }
-        return {"online": True, "response_ms": ms, "models": [], "model_count": 0,
-                "loaded_models": [], "loaded_count": 0}
+        payload = r.json()
+        models = []
+        loaded_set = set()
+        for m in payload.get("models", []):
+            key = m.get("key") or m.get("id") or m.get("name") or m.get("model")
+            if not key:
+                continue
+            models.append(key)
+            if m.get("loaded_instances"):
+                loaded_set.add(key)
+        return {
+            "online": True, "response_ms": ms,
+            "models": models, "model_count": len(models),
+            "loaded_models": list(loaded_set), "loaded_count": len(loaded_set),
+        }
     except requests.RequestException as e:
         ms = int((_time.time() - t0) * 1000)
         return {"online": False, "response_ms": ms, "error": str(e)[:120]}

@@ -137,15 +137,20 @@ def _is_local_url(url: str) -> bool:
 def _node_urls_from_state() -> List[str]:
     """Enumerate candidate LM Studio base URLs from the knowledge graph.
 
-    Reads :ModelEndpoint nodes that are online and serve chat, returns their
-    base URLs (with /v1 appended).  Excludes any localhost/host URLs so we
-    never route onto the finetuning box.  Falls back to an empty list (never
-    to localhost) so that when the fleet is unreachable we simply serve no
-    traffic rather than hammering the host.
+    Reads :ModelEndpoint nodes that are online and serve chat/completions,
+    returns their base URLs (with /v1 appended).  Excludes any localhost/host
+    URLs so we never route onto the finetuning box.
 
-    Uses the loader-private Neo4j driver (_loader_neo) which we have verified
-    connects reliably from background threads; the request path keeps
-    _fleet_nodes fresh via its own shared driver.
+    IMPORTANT: nodes are candidates even when temporarily unreachable (e.g.
+    xwing / x1-370 offline for training/finetuning).  The routing/inventory
+    probes tolerate a down node (graceful timeout) and simply contribute
+    nothing until the node comes back and the operator loads models on it —
+    at which point the next inventory refresh auto-picks them up.  So we do
+    NOT filter by reachability here, only by "is it meant to serve LLM chat".
+
+    The purpose filter is intentionally broad: any online endpoint that is a
+    chat-serving LM Studio (purpose mentions llm / chat / fleet / lane / model)
+    is included.  Uses the loader-private Neo4j driver.
     """
     try:
         client = _loader_neo()
@@ -153,8 +158,8 @@ def _node_urls_from_state() -> List[str]:
             res = s.run("""
                 MATCH (e:ModelEndpoint)
                 WHERE e.status = 'online'
-                  AND (e.purpose IS NULL OR e.purpose CONTAINS 'llm' OR e.purpose = 'model_endpoint')
-                RETURN e.base_url AS base_url, e.node_id AS node_id
+                RETURN e.base_url AS base_url, e.node_id AS node_id,
+                       e.purpose AS purpose
             """)
             urls: List[str] = []
             for row in res:
@@ -162,6 +167,12 @@ def _node_urls_from_state() -> List[str]:
                 if not raw:
                     continue
                 if _is_local_url(raw):
+                    continue
+                purp = (row.get("purpose") or "").lower()
+                # A node serves chat if its purpose mentions any of these.
+                is_llm = (not purp) or any(k in purp for k in
+                          ("llm", "chat", "fleet", "lane", "model", "infer"))
+                if not is_llm:
                     continue
                 base = raw.rstrip("/")
                 if "/v1" not in base:
@@ -251,16 +262,19 @@ _loader_lock = threading.Lock()
 
 
 def _fleet_model_inventory() -> Dict[str, list]:
-    """Return models that are HOT (confirmed resident in GPU) across the fleet.
+    """Return models that are HOT (resident in GPU) across the fleet.
 
-    This is the single source of truth for routing.  A model is HOT only if it
-    answers a 1-token completion in < _HOT_THRESHOLD_S with a matching `model`
-    field and valid content.  Critically, we only PROBE models that are in the
-    loader's target set (_loader_target_models) — never every on-disk model —
-    so we don't accidentally trigger cold loads on models we have no intention
-    of using.
+    This is the single source of truth for routing.  A model is HOT on a node
+    iff LM Studio reports it with a loaded instance there (``loaded_instances``
+    in the native /api/v1/models response) — i.e. it is physically in VRAM.
+    We read this directly from each node; we never probe with a completion and
+    we never trigger a cold load.  Offline nodes (e.g. x1-370 down for
+    training) are skipped gracefully, so when the operator brings one up and
+    loads models, the next refresh auto-picks them up.
 
-    Cached for 60s to avoid probing on every chat call.
+    Cached for 60s to avoid hitting /api/v1/models on every chat call.  Also
+    seeds ``_loader_target_models`` so the loader's mirror/converge logic stays
+    in sync with what is actually resident (the operator's layout).
     """
     global _fleet_inventory, _fleet_inventory_at
     now = time.time()
@@ -276,50 +290,39 @@ def _fleet_model_inventory() -> Dict[str, list]:
             _fleet_inventory_at = now
         return {}
 
-    with _loader_lock:
-        candidate_models = list(_loader_target_models)
-
     inventory: Dict[str, list] = {}
     import concurrent.futures as cf
 
-    def _probe_and_verify(base):
-        """Confirm which candidate models are hot on this node right now."""
-        if not candidate_models:
-            return base, []
-        hot = []
-        for mid in candidate_models:
-            try:
-                t0 = time.time()
-                r = requests.post(f"{base}/chat/completions", json={
-                    "model": mid, "messages": [{"role": "user", "content": "hi"}],
-                    "max_tokens": 1, "temperature": 0, "stream": False,
-                }, timeout=_COLD_START_TIMEOUT)
-                elapsed = (time.time() - t0) * 1000
-                if r.status_code != 200 or elapsed >= _HOT_THRESHOLD_S * 1000:
+    def _resident_on(base):
+        """Return the set of model ids physically loaded (in GPU) on `base`."""
+        try:
+            r = requests.get(_native_models_url(base), timeout=_COLD_START_TIMEOUT)
+            if r.status_code != 200:
+                return base, set()
+            loaded = set()
+            for m in r.json().get("models", []):
+                key = m.get("key") or m.get("id")
+                if not key:
                     continue
-                body = r.json()
-                if not isinstance(body, dict):
-                    continue
-                responded_model = body.get("model", "")
-                if responded_model and mid not in responded_model:
-                    continue
-                choices = body.get("choices", [])
-                if not choices or not isinstance(choices, list):
-                    continue
-                msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
-                if not msg.get("content"):
-                    continue
-                hot.append(mid)
-            except (requests.RequestException, json.JSONDecodeError, LookupError, TypeError):
-                pass
-        return base, hot
+                if m.get("loaded_instances"):
+                    loaded.add(key)
+            return base, loaded
+        except Exception:
+            return base, set()
 
     with cf.ThreadPoolExecutor(max_workers=min(len(nodes) or 1, 16)) as pool:
-        results = list(pool.map(_probe_and_verify, nodes))
-    for base, hot_ids in results:
-        for mid in hot_ids:
+        results = list(pool.map(_resident_on, nodes))
+    seen: set = set()
+    for base, loaded in results:
+        for mid in loaded:
+            if _is_embedding_model(mid):
+                continue
             inventory.setdefault(mid, []).append(base)
-    with _fleet_lock:
+            seen.add(mid)
+    # Keep the loader's target set aligned with reality so converge/mirror
+    # logic always knows what the operator has made resident.
+    with _loader_lock:
+        _loader_target_models.update(seen)
         _fleet_inventory = inventory
         _fleet_inventory_at = now
     return inventory
