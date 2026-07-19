@@ -905,13 +905,18 @@ class FleetExecutor:
 
     def _pick_and_reserve_node(self, required: list[str], preferred_model: str = "", exclude: set[str] | None = None) -> Optional[dict]:
         """Atomically pick a node and increment its inflight counter.
-        Returns the node dict or None if no suitable node available."""
-        with self._node_lock:
-            node = self._pick_node(required, preferred_model, exclude)
-            if node:
+        Returns the node dict or None if no suitable node available.
+
+        NOTE: _pick_node() acquires _node_lock itself, so we must NOT hold
+        the lock here — doing so would deadlock on the non-reentrant lock.
+        We only take the lock around the inflight counter mutation.
+        """
+        node = self._pick_node(required, preferred_model, exclude)
+        if node:
+            with self._node_lock:
                 hn = node.get("hostname", node.get("ip", "?"))
                 self._node_inflight[hn] = self._node_inflight.get(hn, 0) + 1
-            return node
+        return node
 
     def _release_node(self, hostname: str) -> None:
         """Decrement inflight counter for a node."""

@@ -91,6 +91,15 @@ services:
       - AUTO_ROUTER_BASE_URL=${AUTO_ROUTER_BASE_URL:-http://auto-router:8088}
       - AUTO_ASSIGN_BASE_URL=${AUTO_ASSIGN_BASE_URL:-http://auto-assign:8090}
 
+      # --- Fleet executor: it runs INSIDE this api container and polls the
+      # local API for READY tasks, so point it at localhost.  (The default
+      # http://assistx:8000 does not resolve — the container is named
+      # assistx-api — which silently starved the executor of all tasks.)
+      - FLEET_ASSISTX_URL=${FLEET_ASSISTX_URL:-http://localhost:8000}
+      - FLEET_BASIC_AUTH_USER=${FLEET_BASIC_AUTH_USER:-admin}
+      - FLEET_BASIC_AUTH_PASS=${FLEET_BASIC_AUTH_PASS:-gluhlaf8}
+      - FLEET_ROUTER_URL=${FLEET_ROUTER_URL:-http://router:8088}
+
       # --- W-27: make ASSISTX_OVERLAY_MODE explicit ---
       # Default matches the unified router+assign path. Override as needed.
       - ASSISTX_OVERLAY_MODE=${ASSISTX_OVERLAY_MODE:-router_plus_assign}
