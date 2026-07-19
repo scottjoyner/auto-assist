@@ -673,10 +673,6 @@ class FleetExecutor:
             caps = set(n.get("capabilities") or [])
             if not caps.issuperset(required):
                 continue
-            hn = n.get("hostname", n.get("ip", "?"))
-            w = max(1, n.get("weight", 1))
-            if self._node_inflight.get(hn, 0) >= w:
-                continue
             matched.append(n)
 
         if not matched:
