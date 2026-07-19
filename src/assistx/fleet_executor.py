@@ -59,30 +59,72 @@ for _pair in _raw.split(","):
             pass
 
 
-def _auto_weight(specs: Optional[dict]) -> int:
+def _model_billions(model_key: str) -> float:
+    """Best-effort extraction of a model's parameter count (in billions) from
+    its key/name, e.g. 'qwen3.6-28b-reap20-a3b' -> 28.0, 'lfm2.5-1.2b' -> 1.2.
+    Used as a VRAM-capacity proxy when the router reports no hardware specs."""
+    import re
+    if not model_key:
+        return 0.0
+    # Match a number followed by 'b' (billions) or 'm' (millions), allowing a
+    # decimal point; capture the largest such value in the key.
+    best = 0.0
+    for m in re.finditer(r"(\d+(?:\.\d+)?)\s*([bm])", model_key, re.IGNORECASE):
+        val = float(m.group(1))
+        unit = m.group(2).lower()
+        billions = val / 1000.0 if unit == "m" else val
+        if billions > best:
+            best = billions
+    return best
+
+
+def _auto_weight(specs: Optional[dict], loaded_models: Optional[list] = None) -> int:
     """Derive a sensible per-node concurrency from reported hardware so nodes
     the operator adds are delegated work in proportion to their capacity
     (instead of every node being capped at 1 concurrent task).
 
-    Heuristic: GPU nodes can serve many concurrent LM Studio sessions; pad
-    further for many-core CPUs.  Small/CPU-only boxes stay modest.
+    Prefers explicit hardware specs (ram/vram/cores) when the router provides
+    them.  When specs are absent (common — our router doesn't gather hardware),
+    fall back to estimating capacity from the models the node actually has
+    resident: a node running a 28B model clearly has a large GPU, while one
+    with only 0.8B models is a small/CPU box.  This keeps auto-detection
+    meaningful without requiring hardware probing.
     """
-    if not specs or not isinstance(specs, dict):
-        return 4
-    cores = int(specs.get("cpu_cores") or 0)
-    gpu = str(specs.get("gpu") or "").strip()
-    ram_gib = float(specs.get("system_ram_gib") or 0.0)
-    has_gpu = bool(gpu) and gpu.lower() not in ("", "none", "unknown")
-    if has_gpu:
-        # GPU present: scale with cores, floor 6 so a single GPU still pulls
-        # real work, cap 16 to avoid overwhelming modest cards.
-        w = max(6, min(16, 4 + cores // 2))
+    loaded_models = loaded_models or []
+    if specs and isinstance(specs, dict):
+        cores = int(specs.get("cpu_cores") or 0)
+        gpu = str(specs.get("gpu") or "").strip()
+        ram_gib = float(specs.get("system_ram_gib") or 0.0)
+        vram_gib = float(specs.get("vram_gib") or 0.0)
+        has_gpu = bool(gpu) and gpu.lower() not in ("", "none", "unknown")
+        if has_gpu:
+            w = max(6, min(16, 4 + cores // 2))
+        else:
+            w = max(2, min(6, 1 + cores // 4))
+        if ram_gib >= 24 or vram_gib >= 8:
+            w = min(20, w + 2)
+        return w
+
+    # No specs: estimate from resident models.
+    if not loaded_models:
+        # Node is reachable but has nothing loaded — give it a modest floor so
+        # it can still pick up work if models arrive, but don't over-delegate.
+        return 3
+    biggest = max((_model_billions(m) for m in loaded_models), default=0.0)
+    n_models = len(loaded_models)
+    # Map estimated VRAM to weight: ~1B≈small, ~9B≈mid, ~24B+≈big GPU.
+    if biggest >= 20:
+        w = 14
+    elif biggest >= 9:
+        w = 10
+    elif biggest >= 3:
+        w = 8
+    elif biggest >= 1:
+        w = 5
     else:
-        # CPU-only: be conservative.
-        w = max(2, min(6, 1 + cores // 4))
-    # Big-memory boxes can hold more concurrent contexts.
-    if ram_gib >= 24:
-        w = min(20, w + 2)
+        w = 4
+    # More resident models => more headroom for concurrent contexts.
+    w = min(20, w + max(0, n_models - 1))
     return w
 BASIC_AUTH_USER = os.getenv("FLEET_BASIC_AUTH_USER", "admin")
 BASIC_AUTH_PASS = os.getenv("FLEET_BASIC_AUTH_PASS", "gluhlaf8")
@@ -590,7 +632,7 @@ class FleetExecutor:
             if prev_weight:
                 n["weight"] = prev_weight
             else:
-                n["weight"] = NODE_CONCURRENCY.get(hostname, _auto_weight(n.get("specs") or {}))
+                n["weight"] = NODE_CONCURRENCY.get(hostname, _auto_weight(n.get("specs") or {}, n.get("loaded_models") or []))
             n["last_seen"] = now
             enriched.append(n)
 
