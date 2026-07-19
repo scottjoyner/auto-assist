@@ -108,6 +108,11 @@ services:
           memory: 6G
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Join the git router's network so FLEET_ROUTER_URL (http://router:8088)
+    # is reachable for fleet node discovery / hot-lane routing.
+    networks:
+      - default
+      - git_default
     volumes:
       - ./src:/app/src
       - ./templates:/app/templates
@@ -286,4 +291,11 @@ volumes:
   assistx_cache: {}
   transcriptions: {}
   neo4j_data: {}
+
+networks:
+  default:
+    name: home_scott_git_auto-assist_default
+  git_default:
+    external: true
+    name: git_default
 

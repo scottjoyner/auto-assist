@@ -438,9 +438,15 @@ class FleetExecutor:
             if isinstance(nodes, list):
                 for n in nodes:
                     hostname = n.get("hostname") or n.get("ip", "")
-                    if hostname:
-                        seed_nodes.append({"hostname": hostname})
-                        seen_hostnames.add(hostname)
+                    if not hostname:
+                        continue
+                    # Prefer the router-provided IP (already resolved via
+                    # Tailscale on the router side).  Inside this container we
+                    # may not have Tailscale magic DNS, so resolving hostnames
+                    # here would silently drop nodes.  Keep the IP as a hint.
+                    ip = n.get("ip") or ""
+                    seed_nodes.append({"hostname": hostname, "ip": ip})
+                    seen_hostnames.add(hostname)
 
         # Inject any known hosts not already tracked by the router.
         for h in KNOWN_HOSTS:
@@ -462,7 +468,17 @@ class FleetExecutor:
             hostname = n.get("hostname", "")
             if not hostname:
                 continue
+            # Prefer resolving the hostname via Tailscale DNS (authoritative
+            # 100.x.x.x addresses).  The router may advertise a docker-internal
+            # IP (e.g. 172.26.0.5) for nodes on its own subnet, which is NOT
+            # reachable from this container — so only fall back to the router's
+            # reported IP when DNS resolution fails (e.g. macbook-air not in
+            # Tailscale DNS).
             ip = self._resolve(hostname, self._tld)
+            if not ip:
+                hint = (n.get("ip") or "").strip()
+                if hint and not hint.startswith("172."):
+                    ip = hint
             if not ip:
                 prev = prev_by_host.get(hostname)
                 if prev:
