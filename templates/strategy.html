@@ -1,0 +1,516 @@
+{% extends "base.html" %}
+{% block title %}Strategy — AssistX{% endblock %}
+{% block head %}
+<style>
+  .strat-grid {
+    display: grid;
+    gap: 14px;
+  }
+  @media (min-width: 900px) {
+    .strat-grid {
+      grid-template-columns: 1fr 1fr;
+      grid-template-areas:
+        "header  header"
+        "buckets priority"
+        "agents  inflow"
+        "trees   trees"
+        "steer   steer";
+    }
+  }
+  @media (min-width: 1400px) {
+    .strat-grid {
+      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-areas:
+        "header  header  header"
+        "buckets priority inflow"
+        "agents  trees   trees"
+        "steer   steer   steer";
+    }
+  }
+  .strat-header { grid-area: header; }
+  .strat-buckets { grid-area: buckets; }
+  .strat-priority { grid-area: priority; }
+  .strat-agents { grid-area: agents; }
+  .strat-inflow { grid-area: inflow; }
+  .strat-trees { grid-area: trees; }
+  .strat-steer { grid-area: steer; }
+
+  .section-title {
+    font-size: 1rem;
+    font-weight: 700;
+    margin: 0 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-title .badge {
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(96,165,250,0.12);
+    color: #93c5fd;
+  }
+  .last-updated { font-size: 0.78rem; color: var(--muted); text-align: right; }
+  .empty-state { color: var(--muted); font-size: 0.84rem; padding: 16px; text-align: center; }
+
+  .strat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .strat-header h1 { margin: 0; font-size: 1.2rem; }
+  .strat-header p { margin: 2px 0 0; color: var(--muted); font-size: 0.8rem; }
+
+  .kind-row, .priority-row, .agent-row, .inflow-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid rgba(36,53,86,0.12);
+    font-size: 0.82rem;
+  }
+  .kind-row:last-child, .priority-row:last-child, .agent-row:last-child, .inflow-row:last-child {
+    border-bottom: 0;
+  }
+  .kind-name, .priority-name, .agent-name, .inflow-name {
+    font-weight: 600;
+    flex: 0 0 auto;
+  }
+  .kind-total, .priority-total, .agent-total {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .status-dots {
+    display: flex;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+  }
+  .status-dot {
+    font-size: 0.6rem;
+    padding: 1px 5px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .status-dot.READY { background: rgba(96,165,250,0.12); color: #93c5fd; }
+  .status-dot.RUNNING { background: rgba(245,158,11,0.12); color: #fde68a; }
+  .status-dot.DONE { background: rgba(34,197,94,0.12); color: #bbf7d0; }
+  .status-dot.FAILED { background: rgba(239,68,68,0.12); color: #fecaca; }
+  .status-dot.REVIEW { background: rgba(168,85,247,0.12); color: #d8b4fe; }
+  .status-dot.CANCELLED { background: rgba(107,114,128,0.12); color: #9ca3af; }
+
+  /* Trees */
+  .tree-card {
+    background: rgba(10,19,39,0.6);
+    border: 1px solid rgba(36,53,86,0.2);
+    border-radius: 12px;
+    padding: 12px;
+  }
+  .tree-card + .tree-card { margin-top: 10px; }
+  .tree-title { font-weight: 700; font-size: 0.88rem; }
+  .tree-meta {
+    font-size: 0.74rem;
+    color: var(--muted);
+    display: flex;
+    gap: 6px 14px;
+    flex-wrap: wrap;
+    margin: 4px 0 8px;
+  }
+  .epic-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px;
+    font-size: 0.78rem;
+    border-left: 2px solid rgba(96,165,250,0.2);
+    margin: 2px 0 2px 8px;
+  }
+
+  /* Steering */
+  .guidance-card {
+    background: rgba(10,19,39,0.6);
+    border: 1px solid rgba(96,165,250,0.15);
+    border-radius: 12px;
+    padding: 12px;
+  }
+  .guidance-card + .guidance-card { margin-top: 8px; }
+  .guidance-type {
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(96,165,250,0.1);
+    color: #93c5fd;
+  }
+  .guidance-message {
+    font-size: 0.84rem;
+    margin: 4px 0;
+    line-height: 1.4;
+  }
+  .guidance-target {
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+  .guidance-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+  }
+
+  .steer-form {
+    display: grid;
+    gap: 10px;
+  }
+  .steer-form-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .steer-form-row label {
+    font-size: 0.78rem;
+    color: var(--muted);
+    min-width: 60px;
+    padding-top: 6px;
+  }
+  .steer-form-row input,
+  .steer-form-row textarea,
+  .steer-form-row select {
+    flex: 1;
+    min-width: 180px;
+  }
+  .btn-sm {
+    font-size: 0.78rem;
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(148,163,184,0.2);
+    background: rgba(51,65,85,0.5);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .btn-sm:hover { background: rgba(51,65,85,0.8); }
+  .btn-sm.danger { border-color: rgba(239,68,68,0.3); color: #fca5a5; }
+  .btn-sm.danger:hover { background: rgba(239,68,68,0.15); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="strat-grid">
+  <div class="strat-header">
+    <div>
+      <h1>Strategy — Overseer View</h1>
+      <p>Work buckets / Objectives / Steering</p>
+    </div>
+    <div class="last-updated" id="last-updated">—</div>
+  </div>
+
+  <!-- Work buckets by kind -->
+  <div class="strat-buckets card" style="margin:0;">
+    <div class="section-title">Work by kind <span class="badge" id="kind-count">0</span></div>
+    <div class="feed feed-md" id="kind-list"><div class="empty-state">Loading...</div></div>
+  </div>
+
+  <!-- Work by priority -->
+  <div class="strat-priority card" style="margin:0;">
+    <div class="section-title">Work by priority <span class="badge" id="priority-count">0</span></div>
+    <div class="feed feed-md" id="priority-list"><div class="empty-state">Loading...</div></div>
+  </div>
+
+  <!-- Intent inflow -->
+  <div class="strat-inflow card" style="margin:0;">
+    <div class="section-title">Intent inflow (1h) <span class="badge" id="inflow-count">0</span></div>
+    <div class="feed feed-md" id="inflow-list"><div class="empty-state">Loading...</div></div>
+  </div>
+
+  <!-- Agent utilization -->
+  <div class="strat-agents card" style="margin:0;">
+    <div class="section-title">Agent runs (24h) <span class="badge" id="agent-count">0</span></div>
+    <div class="feed feed-md" id="agent-list"><div class="empty-state">Loading...</div></div>
+  </div>
+
+  <!-- Active deliverable trees -->
+  <div class="strat-trees card">
+    <div class="section-title">Active deliverables <span class="badge" id="tree-count">0</span></div>
+    <div id="tree-list"><div class="empty-state">Loading...</div></div>
+  </div>
+
+  <!-- Steering panel -->
+  <div class="strat-steer card">
+    <div class="section-title">
+      Steering — guidance & objectives
+      <span class="badge" id="guidance-count">0</span>
+      <button class="btn-sm" onclick="document.getElementById('steer-form').style.display='block'; this.style.display='none'">+ New</button>
+    </div>
+
+    <div id="steer-form" class="steer-form" style="display:none; margin-bottom: 16px;">
+      <div class="steer-form-row">
+        <label>Type</label>
+        <select id="g-type">
+          <option value="objective">Objective</option>
+          <option value="priority">Priority shift</option>
+          <option value="instruction">Instruction</option>
+          <option value="constraint">Constraint</option>
+        </select>
+      </div>
+      <div class="steer-form-row">
+        <label>Target</label>
+        <select id="g-target">
+          <option value="all">All agents</option>
+          <option value="kind:research">Kind: research</option>
+          <option value="kind:code">Kind: code</option>
+          <option value="kind:design">Kind: design</option>
+          <option value="kind:analysis">Kind: analysis</option>
+          <option value="kind:documentation">Kind: documentation</option>
+          <option value="kind:orchestrated">Kind: orchestrated</option>
+          <option value="kind:sophia_voice">Kind: sophia_voice</option>
+          <option value="kind:repo_*">Kind: repo_*</option>
+          <option value="priority:high">Priority: HIGH</option>
+          <option value="priority:critical">Priority: CRITICAL</option>
+          <option value="queue:batch">Queue: batch</option>
+          <option value="queue:interactive">Queue: interactive</option>
+        </select>
+      </div>
+      <div class="steer-form-row">
+        <label>Priority</label>
+        <select id="g-priority">
+          <option value="HIGH">HIGH</option>
+          <option value="MEDIUM">MEDIUM</option>
+          <option value="LOW">LOW</option>
+        </select>
+      </div>
+      <div class="steer-form-row">
+        <label>Message</label>
+        <textarea id="g-message" rows="2" placeholder="e.g. Focus on high-priority research tasks, defer documentation"></textarea>
+      </div>
+      <div class="steer-form-row">
+        <button class="btn" onclick="postGuidance()">Set guidance</button>
+        <button class="btn secondary" onclick="document.getElementById('steer-form').style.display='none'">Cancel</button>
+      </div>
+    </div>
+
+    <div id="guidance-list"><div class="empty-state">Loading...</div></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  'use strict';
+  const BASE = '';
+  const now = Date.now();
+
+  function fmt(n) {
+    if (n == null) return '\u2014';
+    if (typeof n === 'number' && n >= 1e6) return (n/1e6).toFixed(1)+'M';
+    if (typeof n === 'number' && n >= 1e3) return (n/1e3).toFixed(1)+'k';
+    return String(n);
+  }
+
+  function ago(ts_ms) {
+    if (!ts_ms) return '\u2014';
+    var ms = Date.now() - ts_ms;
+    if (ms < 2000) return 'now';
+    if (ms < 60_000) return Math.round(ms/1000)+'s';
+    if (ms < 3_600_000) return Math.round(ms/60_000)+'m';
+    return Math.round(ms/3_600_000)+'h';
+  }
+
+  function esc(s) {
+    if (!s) return '';
+    var d = document.createElement('div');
+    d.textContent = String(s);
+    return d.innerHTML;
+  }
+
+  /* ========== Renderers ========== */
+
+  function renderKindBuckets(data) {
+    var items = data.work_by_kind || [];
+    document.getElementById('kind-count').textContent = items.length;
+    var el = document.getElementById('kind-list');
+    if (!items.length) { el.innerHTML = '<div class="empty-state">No tasks</div>'; return; }
+
+    var statusOrder = ['RUNNING','READY','REVIEW','DONE','FAILED','CANCELLED'];
+    el.innerHTML = items.map(function(k) {
+      var dots = statusOrder.map(function(st) {
+        var cnt = k.by_status[st];
+        return cnt ? '<span class="status-dot '+st+'">'+st+' '+fmt(cnt)+'</span>' : '';
+      }).filter(Boolean).join('');
+      return '<div class="kind-row">' +
+        '<span class="kind-name">'+esc(k.kind)+'</span>' +
+        '<span class="status-dots">'+dots+'</span>' +
+        '<span class="kind-total">'+fmt(k.total)+'</span>' +
+        '</div>';
+    }).join('');
+  }
+
+  function renderPriorityBuckets(data) {
+    var items = data.work_by_priority || [];
+    document.getElementById('priority-count').textContent = items.length;
+    var el = document.getElementById('priority-list');
+    if (!items.length) { el.innerHTML = '<div class="empty-state">No tasks</div>'; return; }
+
+    el.innerHTML = items.map(function(p) {
+      var dots = ['RUNNING','READY','REVIEW','DONE','FAILED'].map(function(st) {
+        var cnt = p.by_status[st];
+        return cnt ? '<span class="status-dot '+st+'">'+st+' '+fmt(cnt)+'</span>' : '';
+      }).filter(Boolean).join('');
+      return '<div class="priority-row">' +
+        '<span class="priority-name">'+esc(p.priority)+'</span>' +
+        '<span class="status-dots">'+dots+'</span>' +
+        '<span class="priority-total">'+fmt(p.total)+'</span>' +
+        '</div>';
+    }).join('');
+  }
+
+  function renderAgents(data) {
+    var items = data.agent_utilization || [];
+    document.getElementById('agent-count').textContent = items.length;
+    var el = document.getElementById('agent-list');
+    if (!items.length) { el.innerHTML = '<div class="empty-state">No runs in 24h</div>'; return; }
+
+    el.innerHTML = items.map(function(a) {
+      var dots = ['RUNNING','DONE','FAILED'].map(function(st) {
+        var cnt = a.by_status[st];
+        return cnt ? '<span class="status-dot '+st+'">'+st+' '+fmt(cnt)+'</span>' : '';
+      }).filter(Boolean).join('');
+      return '<div class="agent-row">' +
+        '<span class="agent-name">'+esc(a.agent)+'</span>' +
+        '<span class="status-dots">'+dots+'</span>' +
+        '<span class="agent-total">'+fmt(a.total)+'</span>' +
+        '</div>';
+    }).join('');
+  }
+
+  function renderInflow(data) {
+    var inflow = data.intent_inflow || {};
+    var keys = Object.keys(inflow);
+    document.getElementById('inflow-count').textContent = keys.length;
+    var el = document.getElementById('inflow-list');
+    if (!keys.length) { el.innerHTML = '<div class="empty-state">No intents in last hour</div>'; return; }
+
+    el.innerHTML = keys.map(function(k) {
+      return '<div class="inflow-row">' +
+        '<span class="inflow-name">'+esc(k)+'</span>' +
+        '<span class="kind-total">'+fmt(inflow[k])+'</span>' +
+        '</div>';
+    }).join('');
+  }
+
+  function renderTrees(data) {
+    var trees = data.deliverable_trees || [];
+    document.getElementById('tree-count').textContent = trees.length;
+    var el = document.getElementById('tree-list');
+    if (!trees.length) { el.innerHTML = '<div class="empty-state">No active deliverable trees</div>'; return; }
+
+    el.innerHTML = trees.map(function(d) {
+      var epics = (d.epics || []).map(function(e) {
+        return '<div class="epic-row">' +
+          '<span class="status-dot '+(e.status||'UNKNOWN')+'">'+esc(e.status||'?')+'</span> ' +
+          '<span>'+esc(e.title||e.id||'?')+'</span>' +
+          '</div>';
+      }).join('');
+      return '<div class="tree-card">' +
+        '<div class="tree-title">'+esc(d.title||'Untitled')+'</div>' +
+        '<div class="tree-meta">' +
+          '<span>'+esc(d.status)+'</span>' +
+          '<span>'+esc(d.priority)+'</span>' +
+          '<span>'+d.epics.length+' epics</span>' +
+          '<span>'+d.story_count+' stories</span>' +
+          '<span>'+d.task_count+' tasks</span>' +
+        '</div>' +
+        (epics ? '<div>'+epics+'</div>' : '') +
+        '</div>';
+    }).join('');
+  }
+
+  function renderGuidance(data) {
+    var items = data.guidance || [];
+    document.getElementById('guidance-count').textContent = items.length;
+    var el = document.getElementById('guidance-list');
+    if (!items.length) { el.innerHTML = '<div class="empty-state">No active guidance. Use the form above to set objectives.</div>'; return; }
+
+    el.innerHTML = items.map(function(g) {
+      return '<div class="guidance-card">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">' +
+          '<span class="guidance-type">'+esc(g.type)+'</span>' +
+          '<span style="color:var(--muted);font-size:0.7rem;">'+ago(g.created_at_ts)+' by '+esc(g.created_by||'?')+'</span>' +
+        '</div>' +
+        '<div class="guidance-message">'+esc(g.message)+'</div>' +
+        '<div class="guidance-target">target: '+esc(g.target)+' &middot; priority: '+esc(g.priority)+'</div>' +
+        '<div class="guidance-actions">' +
+          '<button class="btn-sm danger" onclick="deleteGuidance(\''+esc(g.id)+'\')">Deactivate</button>' +
+        '</div>' +
+        '</div>';
+    }).join('');
+  }
+
+  function renderAll(data) {
+    renderKindBuckets(data);
+    renderPriorityBuckets(data);
+    renderAgents(data);
+    renderInflow(data);
+    renderTrees(data);
+    renderGuidance(data);
+    document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
+  }
+
+  async function fetchStrategy() {
+    try {
+      var resp = await fetch(BASE + '/api/live/strategy');
+      if (!resp.ok) throw new Error('HTTP '+resp.status);
+      var data = await resp.json();
+      renderAll(data);
+    } catch (err) {
+      console.error(err);
+      document.getElementById('last-updated').textContent = 'Error: '+err.message;
+    }
+  }
+
+  window.postGuidance = async function() {
+    var type = document.getElementById('g-type').value;
+    var target = document.getElementById('g-target').value;
+    var priority = document.getElementById('g-priority').value;
+    var message = document.getElementById('g-message').value;
+    if (!message.trim()) return;
+
+    try {
+      var resp = await fetch(BASE + '/api/steering/guidance', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({type: type, target: target, priority: priority, message: message})
+      });
+      if (!resp.ok) throw new Error('HTTP '+resp.status);
+      document.getElementById('g-message').value = '';
+      document.getElementById('steer-form').style.display = 'none';
+      document.querySelector('.section-title .btn-sm').style.display = '';
+      await fetchStrategy();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to set guidance: '+err.message);
+    }
+  };
+
+  window.deleteGuidance = async function(id) {
+    if (!confirm('Deactivate this guidance?')) return;
+    try {
+      var resp = await fetch(BASE + '/api/steering/guidance/' + id, {method: 'DELETE'});
+      if (!resp.ok) throw new Error('HTTP '+resp.status);
+      await fetchStrategy();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to deactivate: '+err.message);
+    }
+  };
+
+  fetchStrategy();
+  setInterval(fetchStrategy, 15000);
+})();
+</script>
+{% endblock %}

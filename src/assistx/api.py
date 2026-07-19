@@ -1764,6 +1764,7 @@ def api_links(user: str = Depends(auth)):
         },
         "dashboard": {
             "live": {"href": "/live", "title": "Operational HQ — fleet, pipeline, traces"},
+            "strategy": {"href": "/strategy", "title": "Strategic overseer — work buckets, objectives, steering"},
         },
         "pipeline": {
             "tasks": {"href": "/api/tasks", "title": "Task CRUD", "counts": "/api/live/dashboard#pipeline"},
@@ -1805,6 +1806,257 @@ def api_links(user: str = Depends(auth)):
             "endpoints": {"href": "/api/swarm/model-endpoints", "title": "Model endpoint registry"},
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Strategy — work categorization and steering
+# ---------------------------------------------------------------------------
+
+@app.get("/api/live/strategy")
+def api_live_strategy(user: str = Depends(auth)):
+    """Strategic overview: work buckets, priorities, deliverable trees, agent utilization."""
+    neo = _neo()
+    now = _now_ts()
+    one_hour_ago = now - 3_600_000
+    twenty_four_hours = now - 86_400_000
+
+    work_by_kind = {}
+    work_by_priority = {}
+    work_by_queue_class = {}
+    agent_utilization = {}
+    intent_inflow = {}
+    deliverable_trees = []
+    guidance_list = []
+
+    try:
+        with neo._session() as s:
+            # Work by kind x status
+            res = s.run("""
+                MATCH (t:Task)
+                RETURN coalesce(t.kind, 'uncategorized') AS kind,
+                       coalesce(t.status, 'UNKNOWN') AS status,
+                       count(t) AS cnt
+                ORDER BY kind, status
+            """)
+            for row in res:
+                k = row["kind"]
+                st = row["status"]
+                cnt = row["cnt"]
+                if k not in work_by_kind:
+                    work_by_kind[k] = {"kind": k, "total": 0, "by_status": {}}
+                work_by_kind[k]["by_status"][st] = cnt
+                work_by_kind[k]["total"] += cnt
+
+            # Work by priority x status
+            res = s.run("""
+                MATCH (t:Task)
+                RETURN coalesce(t.priority, 'UNSET') AS priority,
+                       coalesce(t.status, 'UNKNOWN') AS status,
+                       count(t) AS cnt
+                ORDER BY priority, status
+            """)
+            for row in res:
+                p = row["priority"]
+                st = row["status"]
+                cnt = row["cnt"]
+                if p not in work_by_priority:
+                    work_by_priority[p] = {"priority": p, "total": 0, "by_status": {}}
+                work_by_priority[p]["by_status"][st] = cnt
+                work_by_priority[p]["total"] += cnt
+
+            # Agent runs (last 24h) by agent x status
+            res = s.run("""
+                MATCH (r:AgentRun)
+                WHERE r.created_at_ts > $since
+                RETURN coalesce(r.agent, 'unknown') AS agent,
+                       coalesce(r.status, 'UNKNOWN') AS status,
+                       count(r) AS cnt
+                ORDER BY agent, status
+            """, since=twenty_four_hours)
+            for row in res:
+                a = row["agent"]
+                st = row["status"]
+                cnt = row["cnt"]
+                if a not in agent_utilization:
+                    agent_utilization[a] = {"agent": a, "total": 0, "by_status": {}}
+                agent_utilization[a]["by_status"][st] = cnt
+                agent_utilization[a]["total"] += cnt
+
+            # Intent inflow (last 1h)
+            res = s.run("""
+                MATCH (i:Intent)
+                WHERE i.created_at_ts > $since
+                RETURN coalesce(i.classification, 'unknown') AS classification,
+                       count(i) AS cnt
+                ORDER BY cnt DESC
+            """, since=one_hour_ago)
+            for row in res:
+                intent_inflow[row["classification"]] = row["cnt"]
+
+            # Active deliverable trees
+            res = s.run("""
+                MATCH (d:Task {ticket_type: 'deliverable'})
+                WHERE d.status IN ['READY', 'RUNNING', 'REVIEW']
+                OPTIONAL MATCH path = (d)-[:HAS_CHILD*1..3]->(child:Task)
+                WITH d, collect(DISTINCT child) AS children
+                RETURN d.id AS id, d.title AS title, d.status AS status,
+                       d.priority AS priority, d.kind AS kind,
+                       [c IN children WHERE c.ticket_type = 'epic' | {
+                           id: c.id, title: c.title, status: c.status,
+                           priority: c.priority
+                       }] AS epics,
+                       size([c IN children WHERE c.ticket_type = 'story']) AS story_count,
+                       size([c IN children WHERE c.ticket_type = 'task']) AS task_count
+                ORDER BY d.created_at_ts DESC
+                LIMIT 20
+            """)
+            for row in res:
+                deliverable_trees.append({
+                    "id": row.get("id"),
+                    "title": row.get("title"),
+                    "status": row.get("status"),
+                    "priority": row.get("priority"),
+                    "kind": row.get("kind"),
+                    "epics": row.get("epics") or [],
+                    "story_count": row.get("story_count") or 0,
+                    "task_count": row.get("task_count") or 0,
+                })
+
+            # Guidance / objectives
+            res = s.run("""
+                MATCH (g:Guidance)
+                WHERE g.active = true
+                RETURN g.id AS id, g.type AS type,
+                       g.target AS target, g.message AS message,
+                       g.priority AS priority,
+                       g.created_at_ts AS created_at_ts,
+                       g.created_by AS created_by
+                ORDER BY g.created_at_ts DESC
+            """)
+            for row in res:
+                guidance_list.append({
+                    "id": row.get("id"),
+                    "type": row.get("type"),
+                    "target": row.get("target"),
+                    "message": row.get("message"),
+                    "priority": row.get("priority"),
+                    "created_at_ts": row.get("created_at_ts"),
+                    "created_by": row.get("created_by"),
+                })
+    except Exception as exc:
+        _api_logger.warning("strategy query: %s", exc)
+    finally:
+        neo.close()
+
+    return {
+        "ts": now,
+        "work_by_kind": sorted(work_by_kind.values(), key=lambda x: -x["total"]),
+        "work_by_priority": sorted(work_by_priority.values(), key=_priority_sort_key),
+        "agent_utilization": sorted(agent_utilization.values(), key=lambda x: -x["total"]),
+        "intent_inflow": intent_inflow,
+        "deliverable_trees": deliverable_trees,
+        "guidance": guidance_list,
+    }
+
+
+def _priority_sort_key(item):
+    order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "BACKGROUND": 4, "BATCH": 5, "UNSET": 9}
+    return order.get(item["priority"].upper(), 9)
+
+
+# ---------------------------------------------------------------------------
+# Steering — guidance and objectives
+# ---------------------------------------------------------------------------
+
+class GuidanceIn(BaseModel):
+    type: str = "objective"
+    target: str = "all"
+    message: str
+    priority: str = "MEDIUM"
+
+
+@app.get("/api/steering/guidance")
+def api_get_guidance(user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        with neo._session() as s:
+            res = s.run("""
+                MATCH (g:Guidance)
+                WHERE g.active = true
+                RETURN g.id AS id, g.type AS type,
+                       g.target AS target, g.message AS message,
+                       g.priority AS priority,
+                       g.created_at_ts AS created_at_ts,
+                       g.created_by AS created_by
+                ORDER BY g.created_at_ts DESC
+            """)
+            items = []
+            for row in res:
+                items.append({
+                    "id": row.get("id"),
+                    "type": row.get("type"),
+                    "target": row.get("target"),
+                    "message": row.get("message"),
+                    "priority": row.get("priority"),
+                    "created_at_ts": row.get("created_at_ts"),
+                    "created_by": row.get("created_by"),
+                })
+            return {"guidance": items}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        neo.close()
+
+
+@app.post("/api/steering/guidance")
+def api_set_guidance(body: GuidanceIn, user: str = Depends(auth)):
+    neo = _neo()
+    gid = uuid.uuid4().hex
+    now = _now_ts()
+    try:
+        with neo._session() as s:
+            s.run("""
+                CREATE (g:Guidance {
+                    id: $id, type: $type, target: $target,
+                    message: $message, priority: $priority,
+                    active: true,
+                    created_at_ts: $now, created_by: $user
+                })
+            """, id=gid, type=body.type, target=body.target,
+                 message=body.message, priority=body.priority.upper(),
+                 now=now, user=user)
+        return {"id": gid, "created_at_ts": now}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        neo.close()
+
+
+@app.delete("/api/steering/guidance/{gid}")
+def api_delete_guidance(gid: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        with neo._session() as s:
+            result = s.run("""
+                MATCH (g:Guidance {id: $id})
+                SET g.active = false, g.deactivated_at_ts = $now,
+                    g.deactivated_by = $user
+                RETURN g.id AS id
+            """, id=gid, now=_now_ts(), user=user)
+            if not result.single():
+                raise HTTPException(status_code=404, detail="Guidance not found")
+            return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        neo.close()
+
+
+@app.get("/strategy", response_class=HTMLResponse)
+def strategy_page(request: Request, user: str = Depends(auth)):
+    return templates.TemplateResponse("strategy.html", {"request": request})
 
 
 @app.get("/api/ops/status")
