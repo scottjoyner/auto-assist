@@ -1694,7 +1694,11 @@ def api_live_dashboard(user: str = Depends(auth)):
                 WHERE r.created_at_ts > $five_min_ago
                 RETURN r.id AS run_id, r.status AS status,
                        r.model AS model, r.task_id AS task_id,
-                       r.created_at_ts AS created_at_ts
+                       r.agent AS agent,
+                       r.started_at_ts AS started_at_ts,
+                       r.ended_at_ts AS ended_at_ts,
+                       r.created_at_ts AS created_at_ts,
+                       substring(coalesce(r.result_json, '{}'), 0, 120) AS result_preview
                 ORDER BY r.created_at_ts DESC
                 LIMIT 100
             """, five_min_ago=five_min_ago)
@@ -1704,7 +1708,11 @@ def api_live_dashboard(user: str = Depends(auth)):
                     "task_id": row.get("task_id"),
                     "status": row.get("status") or "UNKNOWN",
                     "model": row.get("model") or "?",
+                    "agent": row.get("agent") or "?",
+                    "started_at_ts": row.get("started_at_ts"),
+                    "ended_at_ts": row.get("ended_at_ts"),
                     "created_at_ts": row.get("created_at_ts"),
+                    "result_preview": row.get("result_preview") or "",
                 })
     except Exception as exc:
         _api_logger.warning("live trace events: %s", exc)

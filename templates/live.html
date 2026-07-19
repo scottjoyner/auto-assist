@@ -2,175 +2,41 @@
 {% block title %}Live — AssistX{% endblock %}
 {% block head %}
 <style>
-  :root {
-    --card-bg: linear-gradient(180deg, rgba(14,26,49,0.98), rgba(11,22,42,0.98));
-    --glow-blue: 0 0 20px rgba(96,165,250,0.12);
-    --glow-green: 0 0 20px rgba(34,197,94,0.10);
-  }
-  .dash-grid { display: grid; gap: 20px; }
-  /* === Metrics row (flex, not grid — fixes stacking bug) === */
-  .metrics-row {
-    display: flex;
-    flex-wrap: wrap;
+  .dash-grid {
+    display: grid;
+    grid-template-columns: 1fr;
     gap: 12px;
   }
-  .metric-tile {
-    flex: 1 1 160px;
-    min-width: 140px;
-    background: var(--card-bg);
-    border: 1px solid var(--line);
-    border-radius: 16px;
-    padding: 16px 18px;
-    box-shadow: var(--shadow);
+  @media (min-width: 768px) {
+    .dash-grid { gap: 16px; }
   }
-  .metric-tile .label {
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--muted);
+  @media (min-width: 1024px) {
+    .dash-grid {
+      grid-template-columns: 1fr 1fr;
+      grid-template-areas:
+        "header header"
+        "pipeline neo4j"
+        "fleet   fleet"
+        "traces  traces";
+    }
   }
-  .metric-tile .value {
-    font-size: 1.8rem;
-    font-weight: 750;
-    line-height: 1.2;
-    margin-top: 4px;
+  @media (min-width: 1400px) {
+    .dash-grid {
+      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-areas:
+        "header  header  header"
+        "pipeline neo4j   metrics"
+        "fleet   fleet   fleet"
+        "traces  traces  traces";
+    }
   }
-  .metric-tile .sub {
-    font-size: 0.82rem;
-    color: var(--muted);
-    margin-top: 2px;
-  }
+  .dash-header { grid-area: header; }
+  .dash-pipeline { grid-area: pipeline; }
+  .dash-neo4j { grid-area: neo4j; }
+  .dash-metrics { grid-area: metrics; }
+  .dash-fleet { grid-area: fleet; }
+  .dash-traces { grid-area: traces; }
 
-  /* === Pipeline bars === */
-  .pipeline-bars { display: grid; gap: 8px; }
-  .pipeline-bar-row {
-    display: grid;
-    grid-template-columns: 90px 1fr 60px;
-    align-items: center;
-    gap: 10px;
-    font-size: 0.84rem;
-  }
-  .pipeline-bar-label { color: var(--muted); font-weight: 600; }
-  .pipeline-bar-track {
-    height: 22px;
-    background: rgba(15,23,42,0.6);
-    border-radius: 999px;
-    overflow: hidden;
-    border: 1px solid rgba(36,53,86,0.3);
-  }
-  .pipeline-bar-fill {
-    height: 100%;
-    border-radius: 999px;
-    transition: width 0.5s ease;
-    min-width: 4px;
-  }
-  .pipeline-bar-fill.ready { background: linear-gradient(90deg, #3b82f6, #60a5fa); }
-  .pipeline-bar-fill.running { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
-  .pipeline-bar-fill.done { background: linear-gradient(90deg, #22c55e, #4ade80); }
-  .pipeline-bar-fill.failed { background: linear-gradient(90deg, #ef4444, #f87171); }
-  .pipeline-bar-fill.other { background: linear-gradient(90deg, #6b7280, #9ca3af); }
-  .pipeline-bar-count { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
-
-  /* === Neo4j label tags === */
-  .label-tags { display: flex; flex-wrap: wrap; gap: 5px; }
-  .label-tag {
-    font-size: 0.7rem;
-    padding: 2px 9px;
-    border-radius: 999px;
-    background: rgba(15,23,42,0.5);
-    border: 1px solid rgba(36,53,86,0.3);
-    white-space: nowrap;
-  }
-  .label-tag .count { color: var(--muted); margin-left: 3px; }
-
-  /* === Top row: pipeline + neo4j side by side === */
-  .top-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  @media (max-width: 900px) { .top-row { grid-template-columns: 1fr; } }
-
-  /* === Fleet node cards === */
-  .fleet-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-    gap: 16px;
-  }
-  .node-card {
-    background: var(--card-bg);
-    border: 1px solid var(--line);
-    border-radius: 18px;
-    padding: 18px;
-    box-shadow: var(--shadow), var(--glow-blue);
-    transition: border-color 0.2s, box-shadow 0.2s;
-  }
-  .node-card.online {
-    border-color: rgba(34,197,94,0.25);
-    box-shadow: var(--shadow), var(--glow-green);
-  }
-  .node-card.offline { opacity: 0.6; border-color: rgba(239,68,68,0.20); }
-  .node-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    margin-bottom: 10px;
-  }
-  .node-name { font-weight: 700; font-size: 1rem; }
-  .node-status-dot {
-    width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto;
-  }
-  .node-status-dot.online { background: var(--ok); box-shadow: 0 0 10px rgba(34,197,94,0.5); }
-  .node-status-dot.offline { background: var(--bad); }
-  .node-status-dot.unknown { background: var(--muted); }
-  .node-meta {
-    font-size: 0.78rem;
-    color: var(--muted);
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 14px;
-    margin-bottom: 10px;
-  }
-  .node-models { display: flex; flex-wrap: wrap; gap: 5px; }
-  .model-chip {
-    font-size: 0.7rem;
-    padding: 2px 8px;
-    border-radius: 999px;
-    background: rgba(37,99,235,0.14);
-    border: 1px solid rgba(96,165,250,0.15);
-    color: #bfdbfe;
-    white-space: nowrap;
-  }
-  .model-chip.big { border-color: rgba(250,204,21,0.2); color: #fde68a; }
-
-  /* === Traces feed === */
-  .traces-feed {
-    max-height: 500px;
-    overflow-y: auto;
-    font-size: 0.8rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  }
-  .trace-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 6px 10px;
-    border-bottom: 1px solid rgba(36,53,86,0.15);
-    line-height: 1.4;
-  }
-  .trace-row:last-child { border-bottom: 0; }
-  .trace-time { color: var(--muted); white-space: nowrap; flex: 0 0 auto; min-width: 70px; }
-  .trace-status {
-    font-size: 0.65rem;
-    padding: 1px 7px;
-    border-radius: 999px;
-    font-weight: 600;
-    flex: 0 0 auto;
-  }
-  .trace-status.DONE { background: rgba(34,197,94,0.15); color: #bbf7d0; }
-  .trace-status.FAILED { background: rgba(239,68,68,0.15); color: #fecaca; }
-  .trace-status.RUNNING { background: rgba(245,158,11,0.15); color: #fde68a; }
-  .trace-status.READY { background: rgba(96,165,250,0.12); color: #93c5fd; }
-  .trace-msg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-
-  /* === Shared === */
   .section-title {
     font-size: 1rem;
     font-weight: 700;
@@ -189,53 +55,245 @@
   }
   .last-updated { font-size: 0.78rem; color: var(--muted); text-align: right; }
   .empty-state { color: var(--muted); font-size: 0.88rem; padding: 20px; text-align: center; }
+
+  /* Header */
+  .dash-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+  .dash-header h1 { margin: 0; font-size: 1.2rem; }
+  .dash-header p { margin: 2px 0 0; color: var(--muted); font-size: 0.8rem; }
+
+  /* Pipeline bars */
+  .pipeline-bars { display: grid; gap: 6px; }
+  .pipeline-bar-row {
+    display: grid;
+    grid-template-columns: 80px 1fr 50px;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+  }
+  .pipeline-bar-label { color: var(--muted); font-weight: 600; }
+  .pipeline-bar-track {
+    height: 20px;
+    background: rgba(15,23,42,0.6);
+    border-radius: 999px;
+    overflow: hidden;
+    border: 1px solid rgba(36,53,86,0.3);
+  }
+  .pipeline-bar-fill {
+    height: 100%;
+    border-radius: 999px;
+    transition: width 0.5s ease;
+    min-width: 3px;
+  }
+  .pipeline-bar-fill.ready { background: linear-gradient(90deg, #3b82f6, #60a5fa); }
+  .pipeline-bar-fill.running { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+  .pipeline-bar-fill.done { background: linear-gradient(90deg, #22c55e, #4ade80); }
+  .pipeline-bar-fill.failed { background: linear-gradient(90deg, #ef4444, #f87171); }
+  .pipeline-bar-fill.other { background: linear-gradient(90deg, #6b7280, #9ca3af); }
+  .pipeline-bar-count { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+  /* Neo4j label tags */
+  .label-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+  .label-tag {
+    font-size: 0.68rem;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(15,23,42,0.5);
+    border: 1px solid rgba(36,53,86,0.3);
+    white-space: nowrap;
+  }
+  .label-tag .count { color: var(--muted); margin-left: 3px; }
+
+  /* Metrics (compact row, shown inline on big screens) */
+  .metrics-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .metric-tile {
+    flex: 1 1 120px;
+    min-width: 100px;
+    background: var(--card-bg, linear-gradient(180deg, rgba(14,26,49,0.98), rgba(11,22,42,0.98)));
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 12px 14px;
+  }
+  .metric-tile .label {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+  .metric-tile .value {
+    font-size: 1.5rem;
+    font-weight: 750;
+    line-height: 1.2;
+    margin-top: 2px;
+  }
+  .metric-tile .sub {
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+
+  @media (min-width: 1400px) {
+    .metrics-row { flex-direction: column; }
+    .metric-tile { flex: 0 0 auto; }
+  }
+
+  /* Fleet node cards */
+  .fleet-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  @media (min-width: 640px) {
+    .fleet-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+  }
+  .node-card {
+    background: var(--card-bg, linear-gradient(180deg, rgba(14,26,49,0.98), rgba(11,22,42,0.98)));
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 14px;
+    transition: border-color 0.2s;
+  }
+  .node-card.online { border-color: rgba(34,197,94,0.25); }
+  .node-card.offline { opacity: 0.55; border-color: rgba(239,68,68,0.18); }
+  .node-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .node-name { font-weight: 700; font-size: 0.92rem; }
+  .node-status-dot {
+    width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
+  }
+  .node-status-dot.online { background: var(--ok); box-shadow: 0 0 8px rgba(34,197,94,0.5); }
+  .node-status-dot.offline { background: var(--bad); }
+  .node-status-dot.unknown { background: var(--muted); }
+  .node-meta {
+    font-size: 0.74rem;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin-bottom: 8px;
+  }
+  .node-models { display: flex; flex-wrap: wrap; gap: 4px; }
+  .model-chip {
+    font-size: 0.65rem;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: rgba(37,99,235,0.14);
+    border: 1px solid rgba(96,165,250,0.15);
+    color: #bfdbfe;
+    white-space: nowrap;
+  }
+
+  /* Traces feed */
+  .traces-feed {
+    max-height: 480px;
+    overflow-y: auto;
+    font-size: 0.78rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .trace-row {
+    display: grid;
+    grid-template-columns: 60px 55px auto 1fr;
+    gap: 6px;
+    align-items: baseline;
+    padding: 5px 8px;
+    border-bottom: 1px solid rgba(36,53,86,0.12);
+    line-height: 1.4;
+  }
+  .trace-row:last-child { border-bottom: 0; }
+  .trace-time { color: var(--muted); white-space: nowrap; font-size: 0.72rem; }
+  .trace-dur { color: var(--muted); white-space: nowrap; font-size: 0.68rem; text-align: center; }
+  .trace-status {
+    font-size: 0.62rem;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-weight: 600;
+    text-align: center;
+    white-space: nowrap;
+  }
+  .trace-status.DONE { background: rgba(34,197,94,0.15); color: #bbf7d0; }
+  .trace-status.FAILED { background: rgba(239,68,68,0.15); color: #fecaca; }
+  .trace-status.RUNNING { background: rgba(245,158,11,0.15); color: #fde68a; }
+  .trace-status.READY { background: rgba(96,165,250,0.12); color: #93c5fd; }
+  .trace-body {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+  }
+  .trace-body .agent { color: #a5b4fc; font-weight: 500; }
+  .trace-body .model { color: #f9a8d4; }
+  .trace-preview {
+    color: var(--muted);
+    font-size: 0.72rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .trace-preview .output {
+    color: #6ee7b7;
+  }
+
+  @media (max-width: 639px) {
+    .trace-row {
+      grid-template-columns: 55px 48px 1fr;
+    }
+    .trace-dur { display: none; }
+    .trace-preview { display: none; }
+  }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="dash-grid">
-  <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+  <div class="dash-header">
     <div>
-      <h1 style="margin:0; font-size:1.3rem;">Live Dashboard</h1>
-      <p style="margin:2px 0 0; color:var(--muted); font-size:0.84rem;">
-        Pipeline · Fleet · Traces — updated every 10s
-      </p>
+      <h1>Live Dashboard</h1>
+      <p>Pipeline / Fleet / Traces — updates every 10s</p>
     </div>
     <div class="last-updated" id="last-updated">—</div>
   </div>
 
-  <!-- Metrics row -->
-  <div class="metrics-row" id="metrics-row">
-    <div class="metric-tile"><div class="label">Queue depth</div><div class="value" id="m-queue">—</div><div class="sub">in RQ</div></div>
-    <div class="metric-tile"><div class="label">Running</div><div class="value" id="m-running">—</div><div class="sub">in-flight tasks</div></div>
-    <div class="metric-tile"><div class="label">DONE</div><div class="value" id="m-done">—</div><div class="sub">total completed</div></div>
-    <div class="metric-tile"><div class="label">Runs (5m)</div><div class="value" id="m-runs">—</div><div class="sub" id="m-runs-sub">last 5 minutes</div></div>
-    <div class="metric-tile"><div class="label">Fleet nodes</div><div class="value" id="m-fleet-nodes">—</div><div class="sub" id="m-fleet-online"></div></div>
+  <!-- Pipeline -->
+  <div class="dash-pipeline card" style="margin:0;">
+    <div class="section-title">Pipeline <span class="count-badge" id="pipeline-total">0</span></div>
+    <div class="pipeline-bars" id="pipeline-bars"></div>
   </div>
 
-  <!-- Top row: Pipeline + Neo4j -->
-  <div class="top-row">
-    <div class="card" style="margin:0;">
-      <div class="section-title">Pipeline <span class="count-badge" id="pipeline-total">0</span></div>
-      <div class="pipeline-bars" id="pipeline-bars"></div>
-    </div>
-    <div class="card" style="margin:0;">
-      <div class="section-title">Neo4j database <span class="count-badge" id="neo4j-count">0</span></div>
-      <div class="label-tags" id="neo4j-labels"></div>
-    </div>
+  <!-- Neo4j -->
+  <div class="dash-neo4j card" style="margin:0;">
+    <div class="section-title">Neo4j <span class="count-badge" id="neo4j-count">0</span></div>
+    <div class="label-tags" id="neo4j-labels"></div>
   </div>
 
-  <!-- Fleet nodes -->
-  <div class="card">
+  <!-- Metrics (only visible as separate column on 1400+, otherwise inline) -->
+  <div class="dash-metrics metrics-row" id="metrics-row">
+    <div class="metric-tile"><div class="label">Queue</div><div class="value" id="m-queue">—</div></div>
+    <div class="metric-tile"><div class="label">Running</div><div class="value" id="m-running">—</div></div>
+    <div class="metric-tile"><div class="label">Done</div><div class="value" id="m-done">—</div></div>
+    <div class="metric-tile"><div class="label">5m Runs</div><div class="value" id="m-runs">—</div></div>
+    <div class="metric-tile"><div class="label">Fleet</div><div class="value" id="m-fleet-nodes">—</div></div>
+  </div>
+
+  <!-- Fleet -->
+  <div class="dash-fleet card">
     <div class="section-title">Fleet nodes <span class="count-badge" id="fleet-count">0</span></div>
     <div class="fleet-grid" id="fleet-grid"></div>
   </div>
 
-  <!-- Live traces -->
-  <div class="card">
-    <div class="section-title">Live traces <span class="count-badge" id="traces-count">0</span></div>
+  <!-- Traces -->
+  <div class="dash-traces card">
+    <div class="section-title">Traces <span class="count-badge" id="traces-count">0</span></div>
     <div class="traces-feed" id="traces-feed">
-      <div class="empty-state">Loading…</div>
+      <div class="empty-state">Loading...</div>
     </div>
   </div>
 </div>
@@ -248,135 +306,167 @@
   const BASE = '';
 
   function fmt(n) {
-    if (n == null) return '—';
+    if (n == null) return '\u2014';
     if (typeof n === 'number' && n >= 1e6) return (n/1e6).toFixed(1)+'M';
     if (typeof n === 'number' && n >= 1e3) return (n/1e3).toFixed(1)+'k';
     return String(n);
   }
 
   function ago(ts_ms) {
-    if (!ts_ms) return '—';
+    if (!ts_ms) return '\u2014';
     const ms = Date.now() - ts_ms;
-    if (ms < 2000) return 'just now';
+    if (ms < 2000) return 'now';
     if (ms < 60_000) return Math.round(ms/1000)+'s';
     if (ms < 3_600_000) return Math.round(ms/60_000)+'m';
     return Math.round(ms/3_600_000)+'h';
   }
 
-  function fmtTime(ts_ms) {
-    if (!ts_ms) return '—';
-    return new Date(ts_ms).toLocaleTimeString();
+  function durMs(start, end) {
+    if (!start) return null;
+    const e = end || Date.now();
+    const d = e - start;
+    if (d < 1000) return d+'ms';
+    if (d < 60_000) return (d/1000).toFixed(1)+'s';
+    return Math.round(d/60_000)+'m';
   }
 
   function shortId(id) {
     return id ? id.slice(0, 8) : '?';
   }
 
-  function modelFamily(m) {
-    const id = (m.served_name || m.model_id || '').toLowerCase();
-    if (id.includes('embedding')) return 'embedding';
-    if (id.includes('35b')||id.includes('27b')||id.includes('31b')) return 'big';
-    return '';
+  function esc(s) {
+    if (!s) return '';
+    var d = document.createElement('div');
+    d.textContent = String(s).slice(0, 100);
+    return d.innerHTML;
   }
 
   /* ========== Renderers ========== */
 
   function renderMetrics(data) {
-    const pipe = data.pipeline || {};
-    const tc = pipe.task_counts || {};
-    const fleet = data.fleet || {};
-    const runs5m = pipe.recent_runs_5m || {};
-    const total5m = Object.values(runs5m).reduce((a,b)=>a+b, 0);
+    var pipe = data.pipeline || {};
+    var tc = pipe.task_counts || {};
+    var fleet = data.fleet || {};
+    var runs5m = pipe.recent_runs_5m || {};
+    var total5m = 0;
+    for (var k in runs5m) total5m += runs5m[k];
 
     document.getElementById('m-queue').textContent = fmt(pipe.queue_depth);
     document.getElementById('m-running').textContent = fmt(tc.RUNNING || 0);
     document.getElementById('m-done').textContent = fmt(tc.DONE || 0);
     document.getElementById('m-runs').textContent = total5m;
-    document.getElementById('m-runs-sub').textContent = total5m + ' runs in 5m';
-    document.getElementById('m-fleet-nodes').textContent = fleet.total || 0;
-    document.getElementById('m-fleet-online').textContent = (fleet.online||0) + ' online';
+    document.getElementById('m-fleet-nodes').textContent = (fleet.online||0)+'/'+(fleet.total||0);
   }
 
   function renderPipeline(data) {
-    const tc = (data.pipeline||{}).task_counts || {};
-    const total = Object.values(tc).reduce((a,b)=>a+b, 0);
+    var tc = (data.pipeline||{}).task_counts || {};
+    var total = 0;
+    for (var k in tc) total += tc[k];
     document.getElementById('pipeline-total').textContent = fmt(total);
 
-    const el = document.getElementById('pipeline-bars');
+    var el = document.getElementById('pipeline-bars');
     if (!total) { el.innerHTML = '<div class="empty-state">No tasks</div>'; return; }
 
-    const order = ['RUNNING','READY','DONE','FAILED'];
-    const colors = {RUNNING:'running',READY:'ready',DONE:'done',FAILED:'failed'};
-    el.innerHTML = order.map(st => {
-      const cnt = tc[st]||0;
-      const pct = cnt/total*100;
-      return `<div class="pipeline-bar-row">
-        <span class="pipeline-bar-label">${st}</span>
-        <div class="pipeline-bar-track"><div class="pipeline-bar-fill ${colors[st]||'other'}" style="width:${Math.max(pct,0.4)}%"></div></div>
-        <span class="pipeline-bar-count">${fmt(cnt)}</span>
-      </div>`;
+    var order = ['RUNNING','READY','DONE','FAILED'];
+    var colors = {RUNNING:'running',READY:'ready',DONE:'done',FAILED:'failed'};
+    el.innerHTML = order.map(function(st) {
+      var cnt = tc[st]||0;
+      var pct = cnt/total*100;
+      return '<div class="pipeline-bar-row">' +
+        '<span class="pipeline-bar-label">'+st+'</span>' +
+        '<div class="pipeline-bar-track"><div class="pipeline-bar-fill '+(colors[st]||'other')+'" style="width:'+Math.max(pct,0.4)+'%"></div></div>' +
+        '<span class="pipeline-bar-count">'+fmt(cnt)+'</span>' +
+        '</div>';
     }).join('');
   }
 
   function renderFleetNodes(data) {
-    const nodes = (data.fleet||{}).nodes || [];
+    var nodes = (data.fleet||{}).nodes || [];
     document.getElementById('fleet-count').textContent = nodes.length;
-    const grid = document.getElementById('fleet-grid');
+    var grid = document.getElementById('fleet-grid');
 
     if (!nodes.length) {
       grid.innerHTML = '<div class="empty-state">No fleet nodes</div>';
       return;
     }
 
-    grid.innerHTML = nodes.map(n => {
-      const sc = n.status||'unknown';
-      const chips = (n.models||[]).map(m => {
-        const fam = modelFamily(m);
-        return `<span class="model-chip${fam?' '+fam:''}">${m.served_name||m.model_id||'?'}</span>`;
+    grid.innerHTML = nodes.map(function(n) {
+      var sc = n.status||'unknown';
+      var chips = (n.models||[]).map(function(m) {
+        var id = (m.served_name || m.model_id || '').toLowerCase();
+        var cls = (id.includes('embedding')||id.includes('35b')||id.includes('27b')||id.includes('31b')) ? 'embedding' : '';
+        return '<span class="model-chip'+(cls?' '+cls:'')+'">'+esc(m.served_name||m.model_id||'?')+'</span>';
       }).join('');
-      const url = (n.base_url||'').replace(/^https?:\/\//,'');
-      return `<div class="node-card ${sc}">
-        <div class="node-header">
-          <span class="node-name">${n.node_id}</span>
-          <span class="node-status-dot ${sc}"></span>
-        </div>
-        <div class="node-meta">
-          <span>🔒 ${url}</span>
-          <span>${n.response_ms ? n.response_ms+'ms' : '—'}</span>
-          ${n.purpose ? '<span>'+n.purpose+'</span>' : ''}
-          <span>${n.model_count} models</span>
-        </div>
-        <div class="node-models">${chips||'<span style="color:var(--muted);font-size:0.78rem;">no models</span>'}</div>
-      </div>`;
+      var url = (n.base_url||'').replace(/^https?:\/\//,'');
+      return '<div class="node-card '+sc+'">' +
+        '<div class="node-header">' +
+          '<span class="node-name">'+esc(n.node_id)+'</span>' +
+          '<span class="node-status-dot '+sc+'"></span>' +
+        '</div>' +
+        '<div class="node-meta">' +
+          '<span>'+esc(url)+'</span>' +
+          (n.response_ms ? '<span>'+n.response_ms+'ms</span>' : '') +
+          (n.purpose ? '<span>'+esc(n.purpose)+'</span>' : '') +
+          '<span>'+n.model_count+' model'+(n.model_count!==1?'s':'')+'</span>' +
+        '</div>' +
+        '<div class="node-models">'+(chips||'<span style="color:var(--muted);font-size:0.74rem;">empty</span>')+'</div>' +
+        '</div>';
     }).join('');
   }
 
   function renderNeo4j(data) {
-    const labels = (data.neo4j||{}).label_counts || [];
+    var labels = (data.neo4j||{}).label_counts || [];
     document.getElementById('neo4j-count').textContent = labels.length;
-    const el = document.getElementById('neo4j-labels');
-    if (!labels.length) { el.innerHTML = '<span class="empty-state" style="padding:0">—</span>'; return; }
-    el.innerHTML = labels.map(l =>
-      `<span class="label-tag">${l.label} <span class="count">${fmt(l.count)}</span></span>`
-    ).join('');
+    var el = document.getElementById('neo4j-labels');
+    if (!labels.length) { el.innerHTML = '<span class="empty-state" style="padding:0">\u2014</span>'; return; }
+    el.innerHTML = labels.map(function(l) {
+      return '<span class="label-tag">'+esc(l.label)+' <span class="count">'+fmt(l.count)+'</span></span>';
+    }).join('');
   }
 
   function renderTraces(data) {
-    const traces = (data.traces||{}).events || [];
+    var traces = (data.traces||{}).events || [];
     document.getElementById('traces-count').textContent = traces.length;
-    const el = document.getElementById('traces-feed');
+    var el = document.getElementById('traces-feed');
     if (!traces.length) { el.innerHTML = '<div class="empty-state">No recent activity</div>'; return; }
 
-    el.innerHTML = traces.map(t => {
-      const st = t.status||'';
-      const label = t.task_id ? shortId(t.task_id) : (t.run_id ? shortId(t.run_id) : '—');
-      const msg = t.model ? (t.model+' '+ (t.status||'')) : (t.event_type||'');
-      const ts = t.created_at_ts || t.ts_ms || t.ts;
-      return `<div class="trace-row">
-        <span class="trace-time">${ts ? ago(ts) : '—'}</span>
-        <span class="trace-status ${st}">${st||'—'}</span>
-        <span class="trace-msg">${label} ${msg}</span>
-      </div>`;
+    el.innerHTML = traces.map(function(t) {
+      var st = t.status||'';
+      var ts = t.created_at_ts;
+      var start = t.started_at_ts;
+      var end = t.ended_at_ts;
+      var d = st === 'RUNNING' ? durMs(start) : (end ? durMs(start, end) : null);
+      var preview = t.result_preview || '';
+      var output = '';
+      if (preview) {
+        try {
+          var parsed = JSON.parse(preview);
+          if (parsed.output) {
+            output = esc(parsed.output).slice(0, 80);
+          } else if (parsed.history && parsed.history.length) {
+            var last = parsed.history[parsed.history.length - 1];
+            if (last && last.output) {
+              var out = typeof last.output === 'string' ? last.output : JSON.stringify(last.output);
+              output = esc(out).slice(0, 80);
+            }
+          } else if (parsed.result && typeof parsed.result === 'string') {
+            output = esc(parsed.result).slice(0, 80);
+          }
+        } catch(e) {
+          output = esc(preview).slice(0, 80);
+        }
+      }
+      return '<div class="trace-row">' +
+        '<span class="trace-time">'+(ts ? ago(ts) : '\u2014')+'</span>' +
+        '<span class="trace-dur">'+(d||'')+'</span>' +
+        '<span class="trace-status '+st+'">'+esc(st||'\u2014')+'</span>' +
+        '<div class="trace-body">' +
+          '<span class="agent">'+esc(t.agent||'?')+'</span> ' +
+          '<span class="model">'+esc(t.model||'?')+'</span> ' +
+          '<span>'+esc(shortId(t.run_id||t.task_id))+'</span>' +
+          (output ? '<div class="trace-preview"><span class="output">'+output+'</span></div>' : '') +
+        '</div>' +
+        '</div>';
     }).join('');
   }
 
@@ -386,14 +476,14 @@
     renderFleetNodes(data);
     renderNeo4j(data);
     renderTraces(data);
-    document.getElementById('last-updated').textContent = 'Updated: '+new Date().toLocaleTimeString();
+    document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
   }
 
   async function fetchDashboard() {
     try {
-      const resp = await fetch(BASE + '/api/live/dashboard');
+      var resp = await fetch(BASE + '/api/live/dashboard');
       if (!resp.ok) throw new Error('HTTP '+resp.status);
-      const data = await resp.json();
+      var data = await resp.json();
       renderAll(data);
     } catch (err) {
       console.error(err);
