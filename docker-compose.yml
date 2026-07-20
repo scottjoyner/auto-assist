@@ -293,6 +293,10 @@ services:
       - /home/scott/.opencode/bin/opencode:/usr/local/bin/opencode:ro
       # Container Hermes home (mutable state on SSD)
       - /media/scott/SSD_4TB/hermes-home/container/hermes-home:/app/hermes-home
+      # SSH identity + config so the agent can SSH into tailscale nodes for remediation
+      - /home/scott/.ssh/id_hermes:/root/.ssh/id_hermes:ro
+      - /home/scott/.ssh/id_hermes.pub:/root/.ssh/id_hermes.pub:ro
+      - /media/scott/SSD_4TB/hermes-home/container/ssh_config:/root/.ssh/config:ro
       # Knowledge / eval data
       - /home/scott/knowledge:/root/knowledge:ro
       - /media/scott/SSD_4TB/hermes-home/.hermes/model-profiles.json:/media/scott/SSD_4TB/hermes-home/.hermes/model-profiles.json:rw
