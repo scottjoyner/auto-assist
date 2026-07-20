@@ -23,8 +23,8 @@ services:
     image: redis:7-alpine
     container_name: assistx-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    # Internal dependency only; do not publish host port 6379.
+    # Another stack may reserve that port, while api/worker use Docker DNS.
     deploy:
       resources:
         limits:
@@ -237,7 +237,7 @@ services:
       - ASSISTX_PASS=${ASSISTX_PASS:-change-me}
       - HERMES_AGENT_ID=${HERMES_AGENT_ID:-hermes-local}
       - HERMES_AGENT_CAPABILITIES=${HERMES_AGENT_CAPABILITIES:-terminal,file,code_execution,web,search,browser,vision,skills,memory,session_search,delegation,cronjob,clarify,todo}
-      - HERMES_TOOLSETS=${HERMES_TOOLSETS:-terminal,file,code_execution,web,search,browser,vision,skills,memory,session_search,delegation,cronjob,clarify,todo}
+      - HERMES_TOOLSETS=${HERMES_TOOLSETS:-terminal,file,code_execution,web,search,browser,vision,skills,memory,session_search,delegation,cronjob,clarify,todo,mcp,kg}
       - HERMES_POLL_INTERVAL=${HERMES_POLL_INTERVAL:-15}
       - HERMES_TASK_TIMEOUT=${HERMES_TASK_TIMEOUT:-300}
       - HERMES_MAX_TASKS_PER_LOOP=${HERMES_MAX_TASKS_PER_LOOP:-3}
@@ -260,7 +260,7 @@ services:
       - HERMES_DELEGATE_RETURN_FORMAT=${HERMES_DELEGATE_RETURN_FORMAT:-verbatim}
       - HERMES_HOME=${HERMES_HOME:-/app/hermes-home}
       - HERMES_PROFILES_PATH=${HERMES_PROFILES_PATH:-/app/hermes-home/profiles.yaml}
-      - HERMES_EVAL_PATH=${HERMES_EVAL_PATH:-/media/scott/SSD_4TB/hermes-home/.hermes/profiles.json}
+      - HERMES_EVAL_PATH=${HERMES_EVAL_PATH:-/media/scott/SSD_4TB/hermes-home/.hermes/model-profiles.json}
       - NEO4J_URI=${NEO4J_URI:-bolt://host.docker.internal:7687}
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-knowledge_graph_2026}
@@ -295,7 +295,7 @@ services:
       - /media/scott/SSD_4TB/hermes-home/container/hermes-home:/app/hermes-home
       # Knowledge / eval data
       - /home/scott/knowledge:/root/knowledge:ro
-      - /media/scott/SSD_4TB/hermes-home/.hermes/profiles.json:/media/scott/SSD_4TB/hermes-home/.hermes/profiles.json:ro
+      - /media/scott/SSD_4TB/hermes-home/.hermes/model-profiles.json:/media/scott/SSD_4TB/hermes-home/.hermes/model-profiles.json:rw
       - /media/scott/SSD_4TB/hermes-home/.hermes/SOUL.md:/media/scott/SSD_4TB/hermes-home/.hermes/SOUL.md:ro
     #  hermes-adapter is always-on, not profile-gated
     # (remove profiles: to make it first-class)
