@@ -18,6 +18,9 @@ web:
 
 toolsets:
   - hermes-cli
+  - mcp
+  - knowledge_graph
+  - kg
 
 agent:
   max_turns: 90
@@ -44,7 +47,7 @@ knowledge_graph:
   enabled: true
   uri: bolt://host.docker.internal:7687
   user: neo4j
-  password: knowledge_graph_2026
+  password: ${NEO4J_PASSWORD}
   database: neo4j
   embeddings:
     backend: local
@@ -57,6 +60,14 @@ knowledge_graph:
     assistant_messages: true
 
 mcp_servers:
+  signal-cli:
+    command: python3
+    args:
+      - /root/.hermes/mcp/signal-cli-mcp/server.py
+    env:
+      SIGNAL_CLI_REST_URL: http://host.docker.internal:8080
+      SIGNAL_FROM: +170****5781
+    enabled: true
   neo4j:
     command: node
     args:
@@ -64,7 +75,7 @@ mcp_servers:
     env:
       NEO4J_URL: bolt://host.docker.internal:7687
       NEO4J_USER: neo4j
-      NEO4J_PASSWORD: knowledge_graph_2026
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
       NEO4J_DATABASE: neo4j
     enabled: true
 
