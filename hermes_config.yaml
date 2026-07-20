@@ -1,5 +1,12 @@
-# Container Hermes config — AssistX worker runtime
-# Auto-generated; do not edit. Mutable state goes to /app/hermes-home.
+# AssistX-specific Hermes config (ops/remediation agent)
+# Purpose-built for the AssistX Hermes session: query the knowledge graph,
+# search the web, SSH into tailscale nodes for remediation, and handle
+# Signal "note to self" commands. Tuned for performance — only the toolsets
+# the role needs, no browser/vision/computer-use bloat.
+#
+# Writable copy: /media/scott/SSD_4TB/hermes-home/container/hermes-home/config.yaml
+# (symlinked into the container at /app/hermes-home/config.yaml and /root/.hermes/config.yaml)
+# HERMES_HOME drives the path; hermes reads config.yaml by default name.
 
 model:
   default: refinedtoolcallv5-3b
@@ -16,11 +23,21 @@ web:
   backend: ""
   search_backend: ""
 
+# Only what the AssistX ops role needs. Deliberately EXCLUDES browser / vision /
+# computer_use to keep token/context cost low for an SSH+KG+web agent.
 toolsets:
   - hermes-cli
-  - mcp
+  - mcp            # loads neo4j + signal-cli MCP servers below
+  - kg             # kg_search / kg_query / kg_related
   - knowledge_graph
-  - kg
+  - web
+  - search
+  - terminal
+  - file
+  - code_execution
+  - memory
+  - session_search
+  - delegation
 
 agent:
   max_turns: 90
@@ -47,6 +64,7 @@ knowledge_graph:
   enabled: true
   uri: bolt://host.docker.internal:7687
   user: neo4j
+  # Env-interpolated: container mounts .env which holds the real NEO4J_PASSWORD.
   password: ${NEO4J_PASSWORD}
   database: neo4j
   embeddings:
@@ -60,14 +78,6 @@ knowledge_graph:
     assistant_messages: true
 
 mcp_servers:
-  signal-cli:
-    command: python3
-    args:
-      - /root/.hermes/mcp/signal-cli-mcp/server.py
-    env:
-      SIGNAL_CLI_REST_URL: http://host.docker.internal:8080
-      SIGNAL_FROM: +170****5781
-    enabled: true
   neo4j:
     command: node
     args:
@@ -77,6 +87,14 @@ mcp_servers:
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD}
       NEO4J_DATABASE: neo4j
+    enabled: true
+  signal-cli:
+    command: python3
+    args:
+      - /root/.hermes/mcp/signal-cli-mcp/server.py
+    env:
+      SIGNAL_CLI_REST_URL: http://host.docker.internal:8080
+      SIGNAL_FROM: +170****5781
     enabled: true
 
 display:
@@ -95,3 +113,12 @@ code_execution:
 
 logging:
   level: INFO
+
+# Auto-router (assistx-router) — OpenAI-compatible endpoint the adapter uses.
+# Lets the agent route through the fleet router instead of a single local model.
+providers:
+  assistx-router:
+    type: openai
+    base_url: http://host.docker.internal:8088/v1
+    api_key: dummy
+    default_model: groq.llama-3.1-8b-instant
