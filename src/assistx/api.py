@@ -42,6 +42,7 @@ from .recovery_control import (
 )
 from .recovery_runbooks import build_runbook, sign_runbook
 from .node_identity import verify_node_token
+from .operations_readiness import build_operations_readiness
 from .self_healing import SelfHealingController
 
 CONTENT_TYPE_LATEST, generate_latest = load_prometheus_client()
@@ -207,6 +208,12 @@ class AllocationReservationIn(BaseModel):
     model_id: Optional[str] = None
     snapshot_revision: int
     ttl_seconds: int = Field(default=120, ge=30, le=600)
+
+
+class NodeControlIn(BaseModel):
+    mode: str = Field(pattern="^(maintenance|quarantined)$")
+    reason: str = Field(min_length=1, max_length=500)
+    ttl_seconds: int = Field(default=3600, ge=60, le=86_400)
 
 
 class TaskCreateIn(BaseModel):
@@ -671,6 +678,8 @@ def _auth_user_from_credentials(
         if trusted_user:
             return trusted_user
     if credentials is None:
+        return None
+    if USER is None or PASS is None:
         return None
     username_ok = hmac.compare_digest(credentials.username, USER)
     password_ok = hmac.compare_digest(credentials.password, PASS)
@@ -1216,7 +1225,7 @@ def command_center(request: Request, user: str = Depends(auth)):
 def fleet_ui(request: Request, user: str = Depends(auth)):
     # DEPRECATED: fleet/router ownership moves to auto-router.
     _api_logger.warning("DEPRECATED route /fleet accessed — fleet/router ownership moves to auto-router")
-    return templates.TemplateResponse("fleet.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="fleet.html")
 
 @app.get("/fleet-dashboard", response_class=HTMLResponse)
 def fleet_dashboard_ui(request: Request, user: str = Depends(auth)):
@@ -1226,7 +1235,12 @@ def fleet_dashboard_ui(request: Request, user: str = Depends(auth)):
 @app.get("/operations", response_class=HTMLResponse)
 def operations_ui(request: Request, user: str = Depends(auth)):
     """Unified operator workspace for attention, work, fleet, and improvements."""
-    return templates.TemplateResponse("operations.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="operations.html")
+
+
+@app.get("/trading", response_class=HTMLResponse)
+def trading_ui(request: Request, user: str = Depends(auth)):
+    return templates.TemplateResponse(request=request, name="trading.html")
 
 @app.get("/routing", response_class=HTMLResponse)
 def routing_ui(request: Request, user: str = Depends(auth)):
@@ -1563,7 +1577,11 @@ def api_loadout_execute(proposal_id: str, user: str = Depends(auth)):
 def api_self_healing_status(user: str = Depends(auth)):
     neo = _neo()
     try:
-        return {**_self_healing.status(), "incidents": _self_healing.list_incidents(neo)}
+        return {
+            **_self_healing.status(),
+            "incidents": _self_healing.list_incidents(neo),
+            "controls": _self_healing.list_node_controls(neo),
+        }
     finally:
         neo.close()
 
@@ -1604,6 +1622,43 @@ def api_self_healing_rejoin(node_id: str, user: str = Depends(auth)):
         result = _self_healing.rejoin(neo, node_id, user, plan)
         if result.get("blocked"):
             return JSONResponse(status_code=409, content=result)
+        return result
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/self-healing/nodes/{node_id}/control")
+def api_set_node_control(
+    node_id: str,
+    body: NodeControlIn,
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        result = _self_healing.set_node_control(
+            neo,
+            node_id,
+            user,
+            mode=body.mode,
+            reason=body.reason,
+            ttl_seconds=body.ttl_seconds,
+        )
+        if not result.get("updated"):
+            raise HTTPException(status_code=404, detail="fleet node not found")
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/self-healing/nodes/{node_id}/control/release")
+def api_release_node_control(node_id: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        result = _self_healing.clear_node_control(neo, node_id, user)
+        if not result.get("cleared"):
+            raise HTTPException(status_code=404, detail="fleet node not found")
         return result
     finally:
         neo.close()
@@ -1710,6 +1765,11 @@ def api_recovery_control_status(user: str = Depends(auth)):
         neo.close()
 
 
+@app.get("/api/fleet/operations-readiness")
+def api_operations_readiness(user: str = Depends(auth)):
+    return build_operations_readiness(os.environ)
+
+
 @app.post("/api/fleet/allocation/reservations")
 def api_create_allocation_reservation(
     body: AllocationReservationIn,
@@ -1738,6 +1798,25 @@ def api_create_allocation_reservation(
                 },
             )
         ALLOCATION_RESERVATIONS.labels(result="reserved").inc()
+        return result
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/allocation/reservations/{reservation_id}/release")
+def api_release_allocation_reservation(
+    reservation_id: str,
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        result = neo.release_task_allocation(reservation_id, user)
+        if not result.get("released"):
+            return JSONResponse(
+                status_code=409,
+                content={"released": False, "reason": "reservation is not active"},
+            )
+        ALLOCATION_RESERVATIONS.labels(result="released").inc()
         return result
     finally:
         neo.close()
@@ -1870,6 +1949,37 @@ def api_recovery_outcome(
         neo.close()
 
 
+@app.get("/api/fleet/recovery-control/proposals/{proposal_id}/evidence")
+def api_recovery_evidence_bundle(proposal_id: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        store = Neo4jRecoveryStore(neo)
+        proposal = store.get(proposal_id)
+        if not proposal:
+            raise HTTPException(status_code=404, detail="recovery proposal not found")
+        bundle = {
+            "schema_version": 1,
+            "exported_at_ts": _now_ts(),
+            "exported_by": user,
+            "proposal": proposal,
+            "audit": [
+                event
+                for event in store.list_audit()
+                if event.get("proposal_id") == proposal_id
+            ],
+        }
+        return JSONResponse(
+            content=bundle,
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="recovery-evidence-{proposal_id}.json"'
+                )
+            },
+        )
+    finally:
+        neo.close()
+
+
 @app.get("/api/fleet/dashboard")
 def api_fleet_dashboard(user: str = Depends(auth)):
     """Unified fleet view: live router reports plus AssistX execution state."""
@@ -1963,6 +2073,27 @@ def api_fleet_dashboard(user: str = Depends(auth)):
             },
         })
 
+    controls: dict[str, Any] = {"nodes": [], "audit": []}
+    active_reservations: list[dict[str, Any]] = []
+    neo = _neo()
+    try:
+        controls = _self_healing.list_node_controls(neo)
+        active_reservations = neo.list_active_allocation_reservations()
+    except Exception as exc:
+        router_errors.append(f"assistx-control-state: {str(exc)[:240]}")
+    finally:
+        neo.close()
+    control_by_node = {
+        str(row.get("node_id")): row for row in controls.get("nodes") or []
+    }
+    for node in nodes:
+        control = control_by_node.get(str(node.get("hostname")), {})
+        node["is_blocked"] = bool(control.get("blocked"))
+        node["control_mode"] = control.get("mode") or "enabled"
+        node["control_reason"] = control.get("reason")
+        node["control_actor"] = control.get("actor")
+        node["control_expires_at_ts"] = control.get("expires_at_ts")
+
     entries = value_matrix.get("entries") or []
     models: dict[str, list[dict[str, Any]]] = {}
     for entry in entries:
@@ -2004,9 +2135,10 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         "loadout_simulation": loadout_simulation,
         "capacity_forecast": capacity_forecast,
         "allocation_plan": allocation_plan,
+        "allocation_reservations": active_reservations,
         "health_plan": health_plan,
         "diagnoses": diagnoses,
-        "self_healing": _self_healing.status(),
+        "self_healing": {**_self_healing.status(), "controls": controls},
         "task_distribution": task_distribution,
         "task_summary": {
             "ready_llm": None,
