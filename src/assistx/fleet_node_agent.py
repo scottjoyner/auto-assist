@@ -170,6 +170,52 @@ def execute_task(task: dict[str, Any], lmstudio_url: Optional[str], workdir: str
 
     # LLM job: call local LM Studio chat completion.
     if "llm" in required and lmstudio_url:
+        if payload.get("benchmark"):
+            cases = payload.get("cases") if isinstance(payload.get("cases"), list) else []
+            scores: list[float] = []
+            token_total = 0
+            elapsed_total = 0.0
+            case_results = []
+            for case in cases[:10]:
+                started = time.perf_counter()
+                st, body = _http(
+                    "POST", f"{lmstudio_url}/v1/chat/completions",
+                    data={
+                        "model": payload.get("model"),
+                        "messages": [{"role": "user", "content": str(case.get("prompt") or "")}],
+                        "temperature": 0,
+                        "max_tokens": int(payload.get("max_tokens_per_case") or 256),
+                    },
+                    timeout=min(300, int(payload.get("deadline_seconds") or 900)),
+                )
+                elapsed = max(time.perf_counter() - started, 0.001)
+                text = ""
+                if st == 200 and isinstance(body, dict):
+                    text = str(body.get("choices", [{}])[0].get("message", {}).get("content", ""))
+                terms = [str(term).lower() for term in case.get("required_terms") or []]
+                term_score = sum(term in text.lower() for term in terms) / max(len(terms), 1)
+                length_ok = len(text.strip()) >= int(case.get("min_chars") or 1)
+                score = term_score * (1.0 if length_ok else 0.5) if st == 200 else 0.0
+                usage = body.get("usage", {}) if isinstance(body, dict) else {}
+                tokens = int(usage.get("completion_tokens") or max(1, len(text) // 4))
+                token_total += tokens
+                elapsed_total += elapsed
+                scores.append(score)
+                case_results.append({"ok": score >= 0.7, "score": round(score, 3), "latency_ms": int(elapsed * 1000)})
+            quality = sum(scores) / len(scores) if scores else 0.0
+            return {
+                "status": "DONE" if cases and quality >= 0.5 else "FAILED",
+                "summary": f"benchmark quality={quality:.3f}",
+                "result": {
+                    "quality_score": round(quality, 3),
+                    "validation_passed": bool(cases and quality >= 0.7),
+                    "tokens_per_second": round(token_total / max(elapsed_total, 0.001), 3),
+                    "case_count": len(cases),
+                    "cases": case_results,
+                    "model": payload.get("model"),
+                    "task_family": payload.get("task_family"),
+                },
+            }
         prompt = payload.get("prompt") or task.get("title") or ""
         st, body = _http(
             "POST", f"{lmstudio_url}/v1/chat/completions",
@@ -219,7 +265,7 @@ def run_node(args: argparse.Namespace) -> None:
         while not stop.is_set():
             try:
                 query = urllib.parse.urlencode(
-                    [("status", "READY"), ("limit", str(args.concurrency))]
+                    [("status", "READY"), ("limit", str(args.concurrency)), ("agent_id", node_id)]
                     + [("capabilities", c) for c in caps]
                 )
                 st, resp = _http(
