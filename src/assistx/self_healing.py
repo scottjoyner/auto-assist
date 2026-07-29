@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
 import os
 import time
+import uuid
 from typing import Any
 
 
@@ -89,6 +89,130 @@ class SelfHealingController:
                 {"key": incident_key, "actor": actor, "now": now},
             ).single()
         return {"quarantined": bool(row), "node_id": row["node_id"] if row else None}
+
+    def set_node_control(
+        self,
+        neo: Any,
+        node_id: str,
+        actor: str,
+        *,
+        mode: str,
+        reason: str,
+        ttl_seconds: int,
+    ) -> dict[str, Any]:
+        if mode not in {"maintenance", "quarantined"}:
+            raise ValueError("control mode must be maintenance or quarantined")
+        reason = reason.strip()
+        if not reason:
+            raise ValueError("a control reason is required")
+        now = int(time.time() * 1000)
+        expires_at = now + max(60, min(ttl_seconds, 86_400)) * 1000
+        event_id = f"node-control-{uuid.uuid4().hex}"
+        with neo._session() as session:
+            row = session.run(
+                """
+                MATCH (n:SwarmNode {node_id:$node_id})
+                CREATE (e:FleetControlEvent {
+                    id:$event_id, node_id:$node_id, actor:$actor,
+                    action:'set_control', mode:$mode, reason:$reason,
+                    created_at_ts:$now, expires_at_ts:$expires_at
+                })
+                MERGE (n)-[:HAS_CONTROL_EVENT]->(e)
+                SET n.is_blocked=true, n.control_mode=$mode,
+                    n.control_reason=$reason, n.control_actor=$actor,
+                    n.control_expires_at_ts=$expires_at,
+                    n.updated_at_ts=$now
+                RETURN n
+                """,
+                {
+                    "node_id": node_id,
+                    "event_id": event_id,
+                    "actor": actor,
+                    "mode": mode,
+                    "reason": reason[:500],
+                    "now": now,
+                    "expires_at": expires_at,
+                },
+            ).single()
+        return {
+            "updated": bool(row),
+            "node": dict(row["n"]) if row else None,
+            "event_id": event_id if row else None,
+        }
+
+    def clear_node_control(self, neo: Any, node_id: str, actor: str) -> dict[str, Any]:
+        now = int(time.time() * 1000)
+        event_id = f"node-control-{uuid.uuid4().hex}"
+        with neo._session() as session:
+            row = session.run(
+                """
+                MATCH (n:SwarmNode {node_id:$node_id})
+                CREATE (e:FleetControlEvent {
+                    id:$event_id, node_id:$node_id, actor:$actor,
+                    action:'clear_control', previous_mode:n.control_mode,
+                    previous_reason:n.control_reason, created_at_ts:$now
+                })
+                MERGE (n)-[:HAS_CONTROL_EVENT]->(e)
+                SET n.is_blocked=false, n.control_mode='enabled',
+                    n.control_reason=null, n.control_actor=$actor,
+                    n.control_expires_at_ts=null, n.updated_at_ts=$now
+                RETURN n
+                """,
+                {
+                    "node_id": node_id,
+                    "event_id": event_id,
+                    "actor": actor,
+                    "now": now,
+                },
+            ).single()
+        return {
+            "cleared": bool(row),
+            "node": dict(row["n"]) if row else None,
+            "event_id": event_id if row else None,
+        }
+
+    def list_node_controls(self, neo: Any, limit: int = 100) -> dict[str, Any]:
+        now = int(time.time() * 1000)
+        with neo._session() as session:
+            session.run(
+                """
+                MATCH (n:SwarmNode)
+                WHERE coalesce(n.is_blocked,false)=true
+                  AND n.control_expires_at_ts IS NOT NULL
+                  AND n.control_expires_at_ts <= $now
+                CREATE (e:FleetControlEvent {
+                    id:randomUUID(), node_id:n.node_id, actor:'control-expiry',
+                    action:'expire_control', previous_mode:n.control_mode,
+                    previous_reason:n.control_reason, created_at_ts:$now
+                })
+                MERGE (n)-[:HAS_CONTROL_EVENT]->(e)
+                SET n.is_blocked=false, n.control_mode='enabled',
+                    n.control_reason=null, n.control_expires_at_ts=null,
+                    n.updated_at_ts=$now
+                """,
+                {"now": now},
+            ).consume()
+            nodes = session.run(
+                """
+                MATCH (n:SwarmNode)
+                RETURN n.node_id AS node_id, coalesce(n.is_blocked,false) AS blocked,
+                       coalesce(n.control_mode,'enabled') AS mode,
+                       n.control_reason AS reason, n.control_actor AS actor,
+                       n.control_expires_at_ts AS expires_at_ts
+                ORDER BY node_id
+                """
+            )
+            events = session.run(
+                """
+                MATCH (e:FleetControlEvent)
+                RETURN e ORDER BY coalesce(e.created_at_ts,0) DESC LIMIT $limit
+                """,
+                {"limit": limit},
+            )
+            return {
+                "nodes": [dict(row) for row in nodes],
+                "audit": [dict(row["e"]) for row in events],
+            }
 
     def rejoin(self, neo: Any, node_id: str, actor: str, health_plan: dict[str, Any]) -> dict[str, Any]:
         active = [
