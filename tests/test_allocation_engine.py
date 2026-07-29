@@ -28,3 +28,62 @@ def test_allocation_explains_unplaceable_work():
 
     assert plan["summary"]["blocked"] == 1
     assert plan["recommendations"][0]["blocked_reason"]
+    assert plan["recommendations"][0]["rejected"] == [
+        {
+            "node_id": "cpu",
+            "reason": "capability_mismatch",
+            "missing_capabilities": ["gpu"],
+        }
+    ]
+
+
+def test_allocation_explains_opportunity_cost_and_operator_controls():
+    plan = build_allocation_plan(
+        [{"id": "task", "status": "READY"}],
+        [
+            {
+                "hostname": "best",
+                "online": True,
+                "loaded_models": ["m"],
+                "max_concurrent": 1,
+            },
+            {
+                "hostname": "second",
+                "online": True,
+                "loaded_models": ["m"],
+                "max_concurrent": 1,
+            },
+            {
+                "hostname": "maintenance",
+                "online": True,
+                "is_blocked": True,
+                "control_mode": "maintenance",
+            },
+        ],
+        {
+            "entries": [
+                {
+                    "node_id": "best",
+                    "model_id": "m",
+                    "quality_score": 0.9,
+                    "confidence": 0.9,
+                    "tokens_per_second": 50,
+                },
+                {
+                    "node_id": "second",
+                    "model_id": "m",
+                    "quality_score": 0.7,
+                    "confidence": 0.9,
+                    "tokens_per_second": 30,
+                },
+            ]
+        },
+    )
+
+    recommendation = plan["recommendations"][0]
+    assert recommendation["recommended"]["node_id"] == "best"
+    assert recommendation["opportunity_cost"] > 0
+    assert "leads by" in recommendation["decision_summary"]
+    assert {"node_id": "maintenance", "reason": "operator_control"} in recommendation[
+        "rejected"
+    ]
