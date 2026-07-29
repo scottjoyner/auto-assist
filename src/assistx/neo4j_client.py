@@ -973,9 +973,19 @@ class Neo4jClient:
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
-                OPTIONAL MATCH (t)-[:HAS_ALLOCATION]->(ar:AllocationReservation {status:'ACTIVE'})
                 WHERE t.status='READY'
-                  AND (ar IS NULL OR (ar.node_id=$agent_id AND ar.expires_at_ts > timestamp()))
+                OPTIONAL MATCH (t)-[:HAS_ALLOCATION]->(ar:AllocationReservation {status:'ACTIVE'})
+                WHERE ar.expires_at_ts > timestamp()
+                WITH t, ar
+                WHERE (ar IS NULL OR ar.node_id=$agent_id)
+                  AND (t.target_agent_id IS NULL OR t.target_agent_id=$agent_id)
+                  AND (
+                    size($capabilities)=0
+                    OR all(
+                      required IN coalesce(t.required_capabilities, t.capabilities, [])
+                      WHERE required IN $capabilities
+                    )
+                  )
                   AND NOT EXISTS {
                     MATCH (t)-[:DISPATCHED_AS]->(pc:Dispatch)
                     WHERE pc.paperclip_issue_id IS NOT NULL
@@ -1000,6 +1010,7 @@ class Neo4jClient:
                     "session_id": session_id,
                     "claim_id": claim_id,
                     "lease_seconds": effective_lease,
+                    "capabilities": caps,
                 },
             ).single()
 
