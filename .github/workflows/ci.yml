@@ -62,7 +62,7 @@ jobs:
           BASIC_AUTH_USER: neo4j
           BASIC_AUTH_PASS: livelongandprosper
         run: |
-          pytest -q --ignore=tests/integration
+          pytest -q -m "not integration" --ignore=tests/integration
 
   recovery-canary:
     runs-on: ubuntu-latest
