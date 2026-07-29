@@ -304,6 +304,7 @@ def test_voice_event_signature_auth(monkeypatch):
     secret = "voice-secret-test"
     monkeypatch.setattr("assistx.api._neo", lambda: FakeNeo())
     monkeypatch.setattr("assistx.api.VOICE_WEBHOOK_SECRET", secret)
+    monkeypatch.setattr("assistx.api.record_trace_event", lambda *args, **kwargs: "trace-test")
 
     client = TestClient(app)
     payload = {
