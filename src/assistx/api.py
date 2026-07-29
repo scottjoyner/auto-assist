@@ -34,8 +34,14 @@ from .loadout_control import LoadoutControlPlane, Neo4jLoadoutStore
 from .capacity_forecast import build_capacity_forecast
 from .allocation_engine import build_allocation_plan
 from .diagnosis_engine import diagnose_incident
-from .recovery_control import Neo4jRecoveryStore, RecoveryControlPlane
-from .recovery_runbooks import build_runbook
+from .diagnostic_probes import execute_diagnostic_probes
+from .recovery_control import (
+    Neo4jRecoveryStore,
+    RecoveryControlPlane,
+    start_recovery_reconciler,
+)
+from .recovery_runbooks import build_runbook, sign_runbook
+from .node_identity import verify_node_token
 from .self_healing import SelfHealingController
 
 CONTENT_TYPE_LATEST, generate_latest = load_prometheus_client()
@@ -45,6 +51,12 @@ Queue = load_queue_class()
 from .metrics import QA_REQUESTS, JOBS_ENQUEUED, TASK_CLAIMS, TASK_COMPLETIONS, TASK_HEARTBEATS, CONTEXT_PACKETS
 from .metrics import RQ_JOBS_IN_QUEUE, RQ_JOBS_RUNNING, RQ_JOBS_FAILED
 from .metrics import REQUESTS
+from .metrics import (
+    ALLOCATION_RESERVATIONS,
+    FLEET_DIAGNOSES,
+    RECOVERY_OUTCOMES,
+    RECOVERY_TRANSITIONS,
+)
 from .idempotency_store import save as idemp_save, load as idemp_load
 from .neo4j_client import Neo4jClient  # unified client
 from .paperclip_client import PaperclipClient
@@ -187,6 +199,14 @@ class RecoveryApprovalIn(BaseModel):
 class RecoveryOutcomeIn(BaseModel):
     verified: bool
     evidence: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AllocationReservationIn(BaseModel):
+    task_id: str
+    node_id: str
+    model_id: Optional[str] = None
+    snapshot_revision: int
+    ttl_seconds: int = Field(default=120, ge=30, le=600)
 
 
 class TaskCreateIn(BaseModel):
@@ -443,6 +463,10 @@ async def lifespan(app: FastAPI):
         _start_executor_loop()
     except Exception as e:
         _lifespan_logger.warning(f"Fleet executor not started: {e}")
+    try:
+        start_recovery_reconciler(Neo4jClient)
+    except Exception as e:
+        _lifespan_logger.warning(f"Recovery reconciler not started: {e}")
     try:
         from .kg_harvester import _start_harvester_loop
         _start_harvester_loop()
@@ -1599,6 +1623,55 @@ def api_diagnose_fleet_incident(incident_key: str, user: str = Depends(auth)):
     if not incident:
         raise HTTPException(status_code=404, detail="active incident not found")
     diagnosis = diagnose_incident(incident, snapshot)
+
+    def service_probe(node: dict[str, Any]) -> dict[str, Any]:
+        ip = str(node.get("ip") or "")
+        if not ip:
+            return {"ok": False, "reason": "node_ip_missing"}
+        observed = _live_probe_node(f"http://{ip}:1234", timeout=5.0) or {}
+        return {
+            "ok": bool(observed.get("online")),
+            "response_ms": observed.get("response_ms"),
+            "protocol": observed.get("protocol"),
+            "reason": "" if observed.get("online") else "service_probe_failed",
+        }
+
+    def canary_probe(node: dict[str, Any], model_id: str | None) -> dict[str, Any]:
+        ip = str(node.get("ip") or "")
+        model = model_id or next(iter(node.get("loaded_models") or []), None)
+        if not ip or not model:
+            return {"ok": False, "reason": "canary_target_missing"}
+        started = _time.time()
+        try:
+            response = requests.post(
+                f"http://{ip}:1234/v1/chat/completions",
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "Reply OK"}],
+                    "temperature": 0,
+                    "max_tokens": 2,
+                },
+                timeout=10,
+            )
+            return {
+                "ok": response.status_code == 200,
+                "status_code": response.status_code,
+                "latency_ms": int((_time.time() - started) * 1000),
+                "reason": "" if response.status_code == 200 else "canary_inference_failed",
+            }
+        except Exception as exc:
+            return {"ok": False, "reason": "canary_inference_failed", "detail": str(exc)[:240]}
+
+    diagnosis = execute_diagnostic_probes(
+        diagnosis,
+        snapshot,
+        service_probe=service_probe,
+        canary_probe=canary_probe,
+    )
+    FLEET_DIAGNOSES.labels(
+        incident_type=str(diagnosis.get("incident_type") or "unknown"),
+        severity=str(diagnosis.get("severity") or "unknown"),
+    ).inc()
     neo = _neo()
     try:
         with neo._session() as session:
@@ -1631,7 +1704,41 @@ def api_recovery_control_status(user: str = Depends(auth)):
             "execution_enabled": _recovery_control.execution_enabled,
             "flow": ["diagnose", "propose", "approve_fingerprint", "dispatch", "verify", "record_outcome"],
             "proposals": Neo4jRecoveryStore(neo).list(),
+            "audit": Neo4jRecoveryStore(neo).list_audit(),
         }
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/allocation/reservations")
+def api_create_allocation_reservation(
+    body: AllocationReservationIn,
+    user: str = Depends(auth),
+):
+    now_ms = _now_ts()
+    if body.snapshot_revision > now_ms + 5_000 or now_ms - body.snapshot_revision > 30_000:
+        raise HTTPException(status_code=409, detail="allocation snapshot is stale")
+    neo = _neo()
+    try:
+        result = neo.reserve_task_allocation(
+            task_id=body.task_id,
+            node_id=body.node_id,
+            model_id=body.model_id,
+            snapshot_revision=body.snapshot_revision,
+            actor=user,
+            ttl_seconds=body.ttl_seconds,
+        )
+        if not result.get("reserved"):
+            ALLOCATION_RESERVATIONS.labels(result="conflict").inc()
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "reserved": False,
+                    "reason": "task, node, or capacity changed; refresh allocation plan",
+                },
+            )
+        ALLOCATION_RESERVATIONS.labels(result="reserved").inc()
+        return result
     finally:
         neo.close()
 
@@ -1640,7 +1747,9 @@ def api_recovery_control_status(user: str = Depends(auth)):
 def api_recovery_propose(body: RecoveryProposalIn, user: str = Depends(auth)):
     neo = _neo()
     try:
-        return _recovery_control.propose(Neo4jRecoveryStore(neo), body.diagnosis, user)
+        result = _recovery_control.propose(Neo4jRecoveryStore(neo), body.diagnosis, user)
+        RECOVERY_TRANSITIONS.labels(status="PROPOSED").inc()
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
@@ -1655,9 +1764,11 @@ def api_recovery_approve(
 ):
     neo = _neo()
     try:
-        return _recovery_control.approve(
+        result = _recovery_control.approve(
             Neo4jRecoveryStore(neo), proposal_id, body.fingerprint, user
         )
+        RECOVERY_TRANSITIONS.labels(status="APPROVED").inc()
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     finally:
@@ -1671,6 +1782,20 @@ def api_recovery_execute(proposal_id: str, user: str = Depends(auth)):
     try:
         def dispatch(plan: dict[str, Any]) -> dict[str, Any]:
             runbook = build_runbook(plan, proposal_id)
+            signing_keys = _json_object_env("ASSISTX_RUNBOOK_SIGNING_KEYS")
+            key_id = os.getenv("ASSISTX_RUNBOOK_ACTIVE_KEY_ID", "").strip()
+            secret = str(signing_keys.get(key_id) or "")
+            if not key_id or not secret:
+                raise HTTPException(
+                    status_code=503,
+                    detail="runbook signing key is not configured",
+                )
+            runbook = sign_runbook(
+                runbook,
+                key_id=key_id,
+                secret=secret,
+                ttl_seconds=int(os.getenv("ASSISTX_RUNBOOK_TTL_SECONDS", "900")),
+            )
             result = neo.create_task_with_context(
                 title=f"Recovery: {plan.get('action')} on {plan.get('node_id') or 'fleet'}",
                 task_type="fleet_recovery",
@@ -1698,6 +1823,7 @@ def api_recovery_execute(proposal_id: str, user: str = Depends(auth)):
         )
         if result.get("blocked"):
             return JSONResponse(status_code=409, content=result)
+        RECOVERY_TRANSITIONS.labels(status="DISPATCHED").inc()
         return result
     finally:
         neo.close()
@@ -1720,6 +1846,7 @@ def api_recovery_outcome(
             verified=body.verified,
             evidence=body.evidence,
         )
+        RECOVERY_OUTCOMES.labels(verified=str(body.verified).lower()).inc()
         with neo._session() as session:
             session.run(
                 """
@@ -3274,8 +3401,11 @@ def api_agent_tasks(
     capabilities: Optional[List[str]] = Query(None, description="agent capabilities"),
     agent_id: Optional[str] = Query(None, description="optional agent id for targeted tasks"),
     limit: int = Query(20, ge=1, le=100),
+    x_fleet_node_token: Optional[str] = Header(None),
     user: str = Depends(auth),
 ):
+    if capabilities and "recovery" in capabilities:
+        _verify_recovery_node_identity(agent_id, x_fleet_node_token)
     neo = _neo_fleet()
     items = neo.list_agent_tasks(
         status=status,
@@ -3296,11 +3426,18 @@ def api_agent_tasks(
     }
 
 @app.post("/api/tasks/{task_id}/claim")
-def api_claim_task(task_id: str, body: TaskClaimIn, user: str = Depends(auth)):
+def api_claim_task(
+    task_id: str,
+    body: TaskClaimIn,
+    x_fleet_node_token: Optional[str] = Header(None),
+    user: str = Depends(auth),
+):
     neo = _neo_fleet()
     task_obj = neo.get_task(task_id)
     if not task_obj:
         raise HTTPException(status_code=404, detail="Task not found")
+    if _is_recovery_task(task_obj):
+        _verify_recovery_node_identity(body.agent_id, x_fleet_node_token)
     allowed, reason = _is_claim_allowed_for_workflow_control(task_obj)
     if not allowed:
         TASK_CLAIMS.labels(result="drain_blocked").inc()
@@ -3324,9 +3461,17 @@ def api_claim_task(task_id: str, body: TaskClaimIn, user: str = Depends(auth)):
     raise HTTPException(status_code=409, detail=result)
 
 @app.post("/api/tasks/{task_id}/heartbeat")
-def api_heartbeat_task(task_id: str, body: TaskHeartbeatIn, user: str = Depends(auth)):
+def api_heartbeat_task(
+    task_id: str,
+    body: TaskHeartbeatIn,
+    x_fleet_node_token: Optional[str] = Header(None),
+    user: str = Depends(auth),
+):
     neo = _neo()
     try:
+        task_before = neo.get_task(task_id)
+        if task_before and _is_recovery_task(task_before):
+            _verify_recovery_node_identity(body.agent_id, x_fleet_node_token)
         task = neo.heartbeat_task(
             task_id=task_id,
             agent_id=body.agent_id,
@@ -3343,11 +3488,18 @@ def api_heartbeat_task(task_id: str, body: TaskHeartbeatIn, user: str = Depends(
         neo.close()
 
 @app.post("/api/tasks/{task_id}/complete")
-def api_complete_task(task_id: str, body: TaskCompleteIn, user: str = Depends(auth)):
+def api_complete_task(
+    task_id: str,
+    body: TaskCompleteIn,
+    x_fleet_node_token: Optional[str] = Header(None),
+    user: str = Depends(auth),
+):
     if body.status not in {"DONE", "FAILED", "CANCELLED"}:
         raise HTTPException(status_code=400, detail="status must be DONE, FAILED, or CANCELLED")
     neo = _neo_fleet()
     task_before = neo.get_task(task_id) or {}
+    if _is_recovery_task(task_before):
+        _verify_recovery_node_identity(body.agent_id, x_fleet_node_token)
     task = neo._with_retry(
         lambda: neo.complete_task(
             task_id=task_id,
@@ -3449,6 +3601,42 @@ def _record_recovery_task_outcome(
     except ValueError as exc:
         _api_logger.warning("Recovery outcome was not recorded for %s: %s", proposal_id, exc)
         return {"recorded": False, "reason": str(exc), "proposal_id": proposal_id}
+
+
+def _json_object_env(name: str) -> dict[str, Any]:
+    try:
+        value = json.loads(os.getenv(name, "{}"))
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _is_recovery_task(task: dict[str, Any]) -> bool:
+    required = task.get("required_capabilities") or []
+    payload = task.get("payload") or task.get("payload_json") or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+    return "recovery" in required or bool(
+        isinstance(payload, dict) and payload.get("runbook")
+    )
+
+
+def _verify_recovery_node_identity(
+    agent_id: str | None,
+    supplied_token: str | None,
+) -> None:
+    tokens = _json_object_env("ASSISTX_FLEET_NODE_TOKENS")
+    error = verify_node_token(tokens, agent_id, supplied_token)
+    if error == "node_identity_not_registered":
+        raise HTTPException(
+            status_code=403,
+            detail="target node has no registered recovery identity",
+        )
+    if error:
+        raise HTTPException(status_code=403, detail="invalid recovery node identity")
 
 
 @app.post("/api/paperclip/events")
