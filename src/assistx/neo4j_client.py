@@ -1,13 +1,16 @@
 from __future__ import annotations
-from typing import Any, Dict, Iterable, List, Optional
+
 import hashlib
 import json
 import logging
 import os
 import time
 import uuid
+from collections.abc import Iterable
+from typing import Any
 from urllib.parse import urlparse
-from neo4j import GraphDatabase, Driver, Session
+
+from neo4j import Driver, GraphDatabase, Session
 
 from .auto_assign_client import notify_task_created
 
@@ -32,11 +35,11 @@ class Neo4jClient:
 
     def __init__(
         self,
-        uri: Optional[str] = None,
-        user: Optional[str] = None,
-        password: Optional[str] = None,
+        uri: str | None = None,
+        user: str | None = None,
+        password: str | None = None,
         database: object = _UNSET,
-        pool_size: Optional[int] = None,
+        pool_size: int | None = None,
     ):
         # Try explicit args → config.settings → environment
         cfg = self._load_settings_fallback()
@@ -98,7 +101,7 @@ class Neo4jClient:
         raise last  # type: ignore[arg-type]
 
     @staticmethod
-    def _load_settings_fallback() -> Dict[str, Optional[str]]:
+    def _load_settings_fallback() -> dict[str, str | None]:
         """
         Attempt to load from modules:
           1) .config.settings (package-local)
@@ -164,6 +167,7 @@ class Neo4jClient:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (s:ImprovementSignal) REQUIRE s.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (a:RecoveryAuditEvent) REQUIRE a.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (a:AllocationReservation) REQUIRE a.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (e:FleetControlEvent) REQUIRE e.id IS UNIQUE",
 
             # Helpful indexes
             "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.status)",
@@ -216,6 +220,8 @@ class Neo4jClient:
             "CREATE INDEX IF NOT EXISTS FOR (a:AllocationReservation) ON (a.status)",
             "CREATE INDEX IF NOT EXISTS FOR (a:AllocationReservation) ON (a.expires_at_ts)",
             "CREATE INDEX IF NOT EXISTS FOR (a:AllocationReservation) ON (a.node_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (e:FleetControlEvent) ON (e.node_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (e:FleetControlEvent) ON (e.created_at_ts)",
             # Phase 2 Swarm schema
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SwarmNode) REQUIRE n.node_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (e:ServiceEndpoint) REQUIRE e.endpoint_id IS UNIQUE",
@@ -269,12 +275,12 @@ class Neo4jClient:
         self,
         source: str,
         text: str,
-        idempotency_key: Optional[str] = None,
-        client_ts: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        classification: Optional[str] = None,
-        intent_outcome: Optional[str] = None,
-        intent_confidence: Optional[float] = None,
+        idempotency_key: str | None = None,
+        client_ts: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        classification: str | None = None,
+        intent_outcome: str | None = None,
+        intent_confidence: float | None = None,
         mark_orchestrated: bool = False,
     ) -> str:
         props = {
@@ -324,11 +330,11 @@ class Neo4jClient:
     def create_context_packet(
         self,
         query: str,
-        task_id: Optional[str] = None,
-        session_id: Optional[str] = None,
+        task_id: str | None = None,
+        session_id: str | None = None,
         max_items: int = 20,
-        include_sources: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        include_sources: list[str] | None = None,
+    ) -> dict[str, Any]:
         packet_id = uuid.uuid4().hex
         payload = {
             "id": packet_id,
@@ -412,11 +418,11 @@ class Neo4jClient:
     def create_dispatch_with_paperclip(
         self,
         task_id: str,
-        target: Dict[str, Any],
+        target: dict[str, Any],
         priority: str = "MEDIUM",
-        idempotency_key: Optional[str] = None,
-        paperclip_client: Optional[Any] = None,
-    ) -> Dict[str, Any]:
+        idempotency_key: str | None = None,
+        paperclip_client: Any | None = None,
+    ) -> dict[str, Any]:
         task = self.get_task(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
@@ -495,9 +501,9 @@ class Neo4jClient:
     def create_dispatch(
         self,
         task_id: str,
-        target: Dict[str, Any],
+        target: dict[str, Any],
         priority: str = "MEDIUM",
-        idempotency_key: Optional[str] = None,
+        idempotency_key: str | None = None,
     ) -> str:
         target_device_id = target.get("target_device_id")
         if not target_device_id:
@@ -577,13 +583,13 @@ class Neo4jClient:
         title: str,
         ticket_type: str = "task",
         status: str = "READY",
-        kind: Optional[str] = None,
-        parent_id: Optional[str] = None,
-        required_capabilities: Optional[List[str]] = None,
-        target_agent_id: Optional[str] = None,
-        priority: Optional[str] = None,
-        payload: Optional[Dict[str, Any]] = None,
-        idempotency_key: Optional[str] = None,
+        kind: str | None = None,
+        parent_id: str | None = None,
+        required_capabilities: list[str] | None = None,
+        target_agent_id: str | None = None,
+        priority: str | None = None,
+        payload: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
     ) -> str:
         props = {
             "title": title,
@@ -688,11 +694,11 @@ class Neo4jClient:
     def create_deliverable_from_ask(
         self,
         question: str,
-        answer_id: Optional[str] = None,
+        answer_id: str | None = None,
         mode: str = "auto",
-        user: Optional[str] = None,
-        idempotency_key: Optional[str] = None,
-    ) -> Dict[str, str]:
+        user: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, str]:
         intent_id = self.upsert_intent(
             source="ask",
             text=question,
@@ -753,11 +759,11 @@ class Neo4jClient:
     def complete_deliverable(
         self,
         deliverable_id: str,
-        answer_id: Optional[str] = None,
+        answer_id: str | None = None,
         status: str = "DONE",
-        summary: Optional[str] = None,
-        result: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Dict[str, Any]]:
+        summary: str | None = None,
+        result: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         if status not in TERMINAL_TASK_STATUSES:
             raise ValueError(f"Deliverable completion status must be one of: {sorted(TERMINAL_TASK_STATUSES)}")
         with self._session() as s:
@@ -810,7 +816,7 @@ class Neo4jClient:
             deliverable["event_id"] = rec["event_id"]
             return deliverable
 
-    def get_ticket_tree(self, ticket_id: str, depth: int = 3) -> Optional[Dict[str, Any]]:
+    def get_ticket_tree(self, ticket_id: str, depth: int = 3) -> dict[str, Any] | None:
         with self._session() as s:
             rec = s.run(
                 """
@@ -827,7 +833,7 @@ class Neo4jClient:
                 "children": [dict(child) for child in rec["children"] if child],
             }
 
-    def fleet_status(self, window_minutes: int = 30) -> Dict[str, Any]:
+    def fleet_status(self, window_minutes: int = 30) -> dict[str, Any]:
         """Aggregated live view of fleet work for operator dashboards.
 
         Returns task counts by status, online node count, and recent
@@ -879,10 +885,10 @@ class Neo4jClient:
     def list_agent_tasks(
         self,
         status: str = "READY",
-        capabilities: Optional[List[str]] = None,
-        agent_id: Optional[str] = None,
+        capabilities: list[str] | None = None,
+        agent_id: str | None = None,
         limit: int = 20,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Return graph-trigger tasks an agent can work on.
 
@@ -946,11 +952,11 @@ class Neo4jClient:
         self,
         task_id: str,
         agent_id: str,
-        capabilities: Optional[List[str]] = None,
-        session_id: Optional[str] = None,
-        idempotency_key: Optional[str] = None,
-        lease_seconds: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        capabilities: list[str] | None = None,
+        session_id: str | None = None,
+        idempotency_key: str | None = None,
+        lease_seconds: int | None = None,
+    ) -> dict[str, Any]:
         """Atomically claim a READY task for an agent if capabilities match."""
         caps = capabilities or []
         claim_id = idempotency_key or uuid.uuid4().hex
@@ -1037,11 +1043,11 @@ class Neo4jClient:
         *,
         task_id: str,
         node_id: str,
-        model_id: Optional[str],
+        model_id: str | None,
         snapshot_revision: int,
         actor: str,
         ttl_seconds: int = 120,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         reservation_id = f"allocation-{uuid.uuid4().hex}"
         with self._session() as session:
             row = session.run(
@@ -1083,15 +1089,57 @@ class Neo4jClient:
             ).single()
         return {"reserved": bool(row), "reservation": dict(row["a"]) if row else None}
 
+    def release_task_allocation(
+        self,
+        reservation_id: str,
+        actor: str,
+    ) -> dict[str, Any]:
+        with self._session() as session:
+            row = session.run(
+                """
+                MATCH (t:Task)-[:HAS_ALLOCATION]->(a:AllocationReservation {
+                    id:$reservation_id, status:'ACTIVE'
+                })
+                SET a.status='RELEASED', a.released_by=$actor,
+                    a.released_at_ts=timestamp(), a.updated_at_ts=timestamp(),
+                    t.target_agent_id=null, t.allocation_reservation_id=null,
+                    t.allocation_model_id=null, t.updated_at_ts=timestamp()
+                RETURN a, t.id AS task_id
+                """,
+                {"reservation_id": reservation_id, "actor": actor},
+            ).single()
+        return {
+            "released": bool(row),
+            "reservation": dict(row["a"]) if row else None,
+            "task_id": row["task_id"] if row else None,
+        }
+
+    def list_active_allocation_reservations(self) -> list[dict[str, Any]]:
+        with self._session() as session:
+            session.run(
+                """
+                MATCH (a:AllocationReservation {status:'ACTIVE'})
+                WHERE a.expires_at_ts <= timestamp()
+                SET a.status='EXPIRED', a.updated_at_ts=timestamp()
+                """
+            ).consume()
+            rows = session.run(
+                """
+                MATCH (a:AllocationReservation {status:'ACTIVE'})
+                RETURN a ORDER BY a.expires_at_ts
+                """
+            )
+            return [dict(row["a"]) for row in rows]
+
     def heartbeat_task(
         self,
         task_id: str,
         agent_id: str,
-        status: Optional[str] = None,
-        session_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        lease_seconds: Optional[int] = None,
-    ) -> Optional[Dict[str, Any]]:
+        status: str | None = None,
+        session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        lease_seconds: int | None = None,
+    ) -> dict[str, Any] | None:
         if status and status not in EXECUTABLE_TASK_STATUSES:
             raise ValueError(f"Unsupported task status: {status}")
         props = {
@@ -1099,7 +1147,6 @@ class Neo4jClient:
             "agent_session_id": session_id,
             "heartbeat_metadata_json": json.dumps(metadata or {}),
         }
-        effective_lease = lease_seconds if lease_seconds is not None else 900
         with self._session() as s:
             rec = s.run(
                 """
@@ -1123,11 +1170,11 @@ class Neo4jClient:
         task_id: str,
         agent_id: str,
         status: str,
-        summary: Optional[str] = None,
-        result: Optional[Dict[str, Any]] = None,
-        session_id: Optional[str] = None,
-        idempotency_key: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+        summary: str | None = None,
+        result: dict[str, Any] | None = None,
+        session_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any] | None:
         if status not in TERMINAL_TASK_STATUSES:
             raise ValueError(f"Completion status must be one of: {sorted(TERMINAL_TASK_STATUSES)}")
         with self._session() as s:
@@ -1239,10 +1286,10 @@ class Neo4jClient:
         self,
         event_type: str,
         paperclip_issue_id: str,
-        paperclip_agent_id: Optional[str],
-        paperclip_run_id: Optional[str],
+        paperclip_agent_id: str | None,
+        paperclip_run_id: str | None,
         event_id: str,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
     ) -> str:
         status_map = {
             "issue_created": "OPEN",
@@ -1252,7 +1299,7 @@ class Neo4jClient:
         }
         status = status_map.get(event_type, payload.get("status", "OPEN"))
         issue_status = str((payload.get("issue") or {}).get("status", "")).lower()
-        task_status: Optional[str] = None
+        task_status: str | None = None
         if event_type == "run_completed":
             if issue_status == "cancelled":
                 status = "CANCELLED"
@@ -1306,7 +1353,7 @@ class Neo4jClient:
             )
         return paperclip_issue_id
 
-    def get_context_packet(self, packet_id: str) -> Optional[Dict[str, Any]]:
+    def get_context_packet(self, packet_id: str) -> dict[str, Any] | None:
         with self._session() as s:
             rec = s.run(
                 "MATCH (p:ContextPacket {id:$id}) OPTIONAL MATCH (p)-[r]->(x) "
@@ -1327,7 +1374,7 @@ class Neo4jClient:
             packet["references"] = rec["refs"]
             return packet
 
-    def list_dispatches(self, status: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    def list_dispatches(self, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         q = "MATCH (d:Dispatch)"
         if status:
             q += " WHERE d.status=$status"
@@ -1336,12 +1383,12 @@ class Neo4jClient:
             res = s.run(q, {"status": status, "limit": limit})
             return [dict(r["d"]) for r in res]
 
-    def get_dispatch(self, dispatch_id: str) -> Optional[Dict[str, Any]]:
+    def get_dispatch(self, dispatch_id: str) -> dict[str, Any] | None:
         with self._session() as s:
             rec = s.run("MATCH (d:Dispatch {id:$id}) RETURN d", {"id": dispatch_id}).single()
             return dict(rec["d"]) if rec else None
 
-    def list_agent_sessions(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def list_agent_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
         with self._session() as s:
             res = s.run("MATCH (s:AgentSession) RETURN s ORDER BY s.updated_at_ts DESC LIMIT $limit", {"limit": limit})
             return [dict(r["s"]) for r in res]
@@ -1351,9 +1398,9 @@ class Neo4jClient:
         kind: str,
         text: str,
         source: str,
-        session_id: Optional[str] = None,
-        task_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        session_id: str | None = None,
+        task_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         props = {
             "kind": kind,
@@ -1363,7 +1410,7 @@ class Neo4jClient:
         }
         memory_id = uuid.uuid4().hex
         with self._session() as s:
-            rec = s.run(
+            s.run(
                 "CREATE (m:MemoryItem {id:$id}) "
                 "SET m += $props, m.created_at=datetime(), m.created_at_ts=timestamp(), "
                 "    m.updated_at=datetime(), m.updated_at_ts=timestamp() "
@@ -1400,10 +1447,10 @@ class Neo4jClient:
         device_id: str = "",
         device_fingerprint: str = "",
         activity_context: str = "",
-        client_context: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        intent_classification: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        client_context: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        intent_classification: str | None = None,
+    ) -> dict[str, Any]:
         """Persist a mobile audio/video capture and its graph intake records."""
         transcript_text = " ".join((transcript or "").strip().split())
         context = client_context or {}
@@ -1411,7 +1458,7 @@ class Neo4jClient:
         transcription_id = f"{capture_id}:transcription" if transcript_text else None
         memory_id = f"{capture_id}:memory" if transcript_text else None
         intent_id = f"{capture_id}:intent" if transcript_text else None
-        task_id: Optional[str] = None
+        task_id: str | None = None
         event_id = f"{capture_id}:capture_created"
         props = {
             "user_id": user_id,
@@ -1639,10 +1686,10 @@ class Neo4jClient:
         self,
         event_id: str,
         event_type: str,
-        payload: Dict[str, Any],
-        session_id: Optional[str] = None,
-        paperclip_issue_id: Optional[str] = None,
-        paperclip_run_id: Optional[str] = None,
+        payload: dict[str, Any],
+        session_id: str | None = None,
+        paperclip_issue_id: str | None = None,
+        paperclip_run_id: str | None = None,
     ) -> str:
         props = {
             "event_type": event_type,
@@ -1673,11 +1720,11 @@ class Neo4jClient:
 
     def link_sophia_voice_records(
         self,
-        capture_id: Optional[str] = None,
-        intent_id: Optional[str] = None,
-        memory_id: Optional[str] = None,
-        task_id: Optional[str] = None,
-        meeting_id: Optional[str] = None,
+        capture_id: str | None = None,
+        intent_id: str | None = None,
+        memory_id: str | None = None,
+        task_id: str | None = None,
+        meeting_id: str | None = None,
     ) -> None:
         """Attach Sophia events to canonical AssistX capture and task records."""
         with self._session() as s:
@@ -1718,12 +1765,12 @@ class Neo4jClient:
     def upsert_agent_session(
         self,
         session_id: str,
-        paperclip_agent_id: Optional[str] = None,
-        hermes_session_id: Optional[str] = None,
-        agent_identity: Optional[str] = None,
-        device_id: Optional[str] = None,
-        platform: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        paperclip_agent_id: str | None = None,
+        hermes_session_id: str | None = None,
+        agent_identity: str | None = None,
+        device_id: str | None = None,
+        platform: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         props = {
             "paperclip_agent_id": paperclip_agent_id,
@@ -1764,7 +1811,7 @@ class Neo4jClient:
             rec = s.run(q, {"title": title, "source": source, "id": conv_id}).single()
             return rec["id"]
 
-    def add_utterances(self, conversation_id: str, rows: Iterable[Dict[str, Any]]) -> None:
+    def add_utterances(self, conversation_id: str, rows: Iterable[dict[str, Any]]) -> None:
         """
         Add/merge utterances and attach them to the conversation.
         Each row may contain arbitrary properties; if id is missing, a UUID is generated.
@@ -1787,7 +1834,7 @@ class Neo4jClient:
                 props = {**r, "conversation_id": conversation_id}
                 s.run(q, {"id": r["id"], "props": props, "cid": conversation_id})
 
-    def add_summary_and_tasks(self, conversation_id: str, summary: Dict[str, Any], tasks: Iterable[Dict[str, Any]]):
+    def add_summary_and_tasks(self, conversation_id: str, summary: dict[str, Any], tasks: Iterable[dict[str, Any]]):
         summary_id = uuid.uuid4().hex
         with self._session() as s:
             sr = s.run(
@@ -1810,7 +1857,7 @@ class Neo4jClient:
                 )
             return sid
 
-    def get_ready_tasks(self, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_ready_tasks(self, limit: int = 10) -> list[dict[str, Any]]:
         q = (
             "MATCH (t:Task {status:'READY'}) "
             "RETURN t ORDER BY t.created_at_ts ASC LIMIT $limit"
@@ -1819,7 +1866,7 @@ class Neo4jClient:
             res = s.run(q, {"limit": limit})
             return [dict(r["t"]) for r in res]
 
-    def get_review_tasks(self, limit: int = 25) -> List[Dict[str, Any]]:
+    def get_review_tasks(self, limit: int = 25) -> list[dict[str, Any]]:
         q = (
             "MATCH (t:Task {status:'REVIEW'}) "
             "RETURN t ORDER BY t.created_at_ts ASC LIMIT $limit"
@@ -1832,7 +1879,7 @@ class Neo4jClient:
         with self._session() as s:
             s.run("MATCH (t:Task{id:$id}) SET t.status=$st, t.updated_at_ts = timestamp()", {"id": task_id, "st": status})
 
-    def create_run(self, task_id: str, agent: str, model: str, manifest: Dict[str, Any]):
+    def create_run(self, task_id: str, agent: str, model: str, manifest: dict[str, Any]):
         run_id = uuid.uuid4().hex
         with self._session() as s:
             rec = s.run(
@@ -1846,16 +1893,16 @@ class Neo4jClient:
             ).single()
             return rec["id"]
 
-    def complete_run(self, run_id: str, status: str, result_json: Optional[Dict[str, Any]] = None):
+    def complete_run(self, run_id: str, status: str, result_json: dict[str, Any] | None = None):
         with self._session() as s:
             extra = ""
-            params: Dict[str, Any] = {"id": run_id, "st": status}
+            params: dict[str, Any] = {"id": run_id, "st": status}
             if result_json is not None:
                 extra = ", r.result_json=$rj"
                 params["rj"] = json.dumps(result_json)
             s.run(f"MATCH (r:AgentRun{{id:$id}}) SET r.status=$st, r.ended_at=datetime(), r.ended_at_ts=timestamp(){extra}", params)
 
-    def log_tool_call(self, run_id: str, tool: str, input_json: Dict[str, Any], output_json: Dict[str, Any] | None, ok: bool):
+    def log_tool_call(self, run_id: str, tool: str, input_json: dict[str, Any], output_json: dict[str, Any] | None, ok: bool):
         call_id = uuid.uuid4().hex
         with self._session() as s:
             s.run(
@@ -1877,7 +1924,7 @@ class Neo4jClient:
                 "MERGE (r)-[:PRODUCED]->(a)",
                 {"rid": run_id, "artifact_id": artifact_id, "k": kind, "p": path, "h": sha256},
             )
-    def add_evidence(self, summary_id: str, evidences: Iterable[Dict[str, Any]]) -> None:
+    def add_evidence(self, summary_id: str, evidences: Iterable[dict[str, Any]]) -> None:
         q = (
             "MATCH (s:Summary {id:$sid}), (u:Utterance {id:$uid}) "
             "MERGE (s)-[:EVIDENCE {bullet_index:$bi, quote:$q, char_start:$cs, char_end:$ce, rationale:$ra}] -> (u)"
@@ -1899,7 +1946,7 @@ class Neo4jClient:
 
     # ---------- v2: transcription / segment ----------
 
-    def ingest_transcription(self, t: Dict[str, Any], segments: List[Dict[str, Any]]) -> None:
+    def ingest_transcription(self, t: dict[str, Any], segments: list[dict[str, Any]]) -> None:
         """
         Upsert a Transcription node and its Segment children.
 
@@ -1945,10 +1992,10 @@ class Neo4jClient:
     def upsert_agent_device(
         self,
         device_id: str,
-        hostname: Optional[str] = None,
-        platform: Optional[str] = None,
-        capabilities: Optional[List[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        hostname: str | None = None,
+        platform: str | None = None,
+        capabilities: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         props = {
             "hostname": hostname,
@@ -1971,12 +2018,12 @@ class Neo4jClient:
         self,
         device_id: str,
         hostname: str,
-        platform: Optional[str] = None,
-        capabilities: Optional[List[str]] = None,
-        resources: Optional[Dict[str, Any]] = None,
+        platform: str | None = None,
+        capabilities: list[str] | None = None,
+        resources: dict[str, Any] | None = None,
         max_concurrent_tasks: int = 1,
-        available_agents: Optional[List[str]] = None,
-        tags: Optional[List[str]] = None,
+        available_agents: list[str] | None = None,
+        tags: list[str] | None = None,
     ) -> str:
         props = {
             "hostname": hostname,
@@ -2010,8 +2057,8 @@ class Neo4jClient:
         device_id: str,
         current_load: int = 0,
         queue_depth: int = 0,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Dict[str, Any]]:
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         with self._session() as s:
             rec = s.run(
                 """
@@ -2030,10 +2077,10 @@ class Neo4jClient:
 
     def select_device_for_task(
         self,
-        required_capabilities: Optional[List[str]] = None,
-        exclude_device_id: Optional[str] = None,
+        required_capabilities: list[str] | None = None,
+        exclude_device_id: str | None = None,
         limit: int = 5,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         caps = required_capabilities or []
         with self._session() as s:
             q = """
@@ -2041,7 +2088,7 @@ class Neo4jClient:
                 WHERE d.last_seen_at_ts > (timestamp() - 300000)
                   AND d.current_load < d.max_concurrent_tasks
                 """
-            params: Dict[str, Any] = {"limit": limit, "caps": caps}
+            params: dict[str, Any] = {"limit": limit, "caps": caps}
             if caps:
                 q += " AND all(cap IN $caps WHERE cap IN d.capabilities)"
             if exclude_device_id:
@@ -2058,7 +2105,7 @@ class Neo4jClient:
             res = s.run(q, params)
             return [dict(r["d"]) for r in res]
 
-    def list_agent_devices(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def list_agent_devices(self, limit: int = 50) -> list[dict[str, Any]]:
         with self._session() as s:
             res = s.run(
                 "MATCH (d:AgentDevice) RETURN d ORDER BY d.last_seen_at_ts DESC LIMIT $limit",
@@ -2066,23 +2113,23 @@ class Neo4jClient:
             )
             return [dict(r["d"]) for r in res]
 
-    def get_agent_device(self, device_id: str) -> Optional[Dict[str, Any]]:
+    def get_agent_device(self, device_id: str) -> dict[str, Any] | None:
         with self._session() as s:
             rec = s.run("MATCH (d:AgentDevice {id:$id}) RETURN d", {"id": device_id}).single()
             return dict(rec["d"]) if rec else None
 
-    def export_context_projection(self) -> Dict[str, Any]:
+    def export_context_projection(self) -> dict[str, Any]:
         """Export the graph-backed context snapshot consumed by auto-router."""
 
         generated_at = int(time.time())
-        nodes_by_id: Dict[str, Dict[str, Any]] = {}
-        providers_by_id: Dict[str, Dict[str, Any]] = {}
-        metadata: Dict[str, Any] = {
+        nodes_by_id: dict[str, dict[str, Any]] = {}
+        providers_by_id: dict[str, dict[str, Any]] = {}
+        metadata: dict[str, Any] = {
             "schema_version": "1.0",
             "generated_by": "assistx.neo4j",
         }
 
-        def merge_caps(existing: List[str], extra: List[Any]) -> List[str]:
+        def merge_caps(existing: list[str], extra: list[Any]) -> list[str]:
             merged = {str(item) for item in existing if item}
             for item in extra:
                 if isinstance(item, dict):
@@ -2093,7 +2140,7 @@ class Neo4jClient:
                     merged.add(str(item))
             return sorted(merged)
 
-        def lane_for_node(node: Dict[str, Any]) -> str:
+        def lane_for_node(node: dict[str, Any]) -> str:
             status = str(node.get("status") or node.get("state") or "").lower()
             if node.get("paperclip_agent_id") or node.get("paperclip_issue_id"):
                 return "paperclip"
@@ -2101,7 +2148,7 @@ class Neo4jClient:
                 return "blocked"
             return "local"
 
-        def lane_for_endpoint(endpoint: Dict[str, Any], base_url: str) -> tuple[str, bool, bool]:
+        def lane_for_endpoint(endpoint: dict[str, Any], base_url: str) -> tuple[str, bool, bool]:
             status = str(endpoint.get("status") or "online").lower()
             if status in {"blocked", "offline", "down", "disabled"}:
                 return "blocked", False, True
@@ -2114,7 +2161,7 @@ class Neo4jClient:
                 credits = endpoint.get("quota_remaining")
             if is_local:
                 return "local", True, False
-            if isinstance(credits, (int, float)) and credits > 0:
+            if isinstance(credits, int | float) and credits > 0:
                 return "free_api", False, False
             return "blocked", False, True
 
@@ -2214,7 +2261,7 @@ class Neo4jClient:
             "metadata": metadata,
         }
 
-    def get_tasks_by_status(self, status: str, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_tasks_by_status(self, status: str, limit: int = 50) -> list[dict[str, Any]]:
         with self._session() as s:
             res = s.run(
                 "MATCH (t:Task {status:$st}) RETURN t ORDER BY t.created_at_ts DESC LIMIT $limit",
@@ -2222,7 +2269,7 @@ class Neo4jClient:
             )
             return [dict(r["t"]) for r in res]
 
-    def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+    def get_task(self, task_id: str) -> dict[str, Any] | None:
         with self._session() as s:
             rec = s.run("MATCH (t:Task {id:$id}) RETURN t", {"id": task_id}).single()
             return dict(rec["t"]) if rec else None
@@ -2237,7 +2284,7 @@ class Neo4jClient:
         endpoint: str,
         enabled: bool,
         health_status: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         with self._session() as s:
             rec = s.run(
@@ -2266,7 +2313,7 @@ class Neo4jClient:
             ).single()
             return str(rec["id"])
 
-    def list_data_feed_connectors(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def list_data_feed_connectors(self, limit: int = 100) -> list[dict[str, Any]]:
         with self._session() as s:
             res = s.run(
                 """
@@ -2284,8 +2331,8 @@ class Neo4jClient:
         suite_name: str,
         agent_class: str,
         status: str,
-        score: Optional[float] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        score: float | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         run_id = uuid.uuid4().hex
         suite_id = hashlib.sha1(suite_name.strip().lower().encode("utf-8")).hexdigest()[:16]
@@ -2330,7 +2377,7 @@ class Neo4jClient:
         cadence: str,
         threshold: float,
         description: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         suite_id = hashlib.sha1(name.strip().lower().encode("utf-8")).hexdigest()[:16]
         with self._session() as s:
@@ -2362,10 +2409,10 @@ class Neo4jClient:
             ).single()
             return str(rec["id"])
 
-    def list_evaluation_suites(self, limit: int = 200, enabled: Optional[bool] = None) -> List[Dict[str, Any]]:
+    def list_evaluation_suites(self, limit: int = 200, enabled: bool | None = None) -> list[dict[str, Any]]:
         with self._session() as s:
             q = "MATCH (suite:EvaluationSuite) "
-            params: Dict[str, Any] = {"limit": limit}
+            params: dict[str, Any] = {"limit": limit}
             if enabled is not None:
                 q += "WHERE suite.enabled=$enabled "
                 params["enabled"] = enabled
@@ -2377,12 +2424,12 @@ class Neo4jClient:
             res = s.run(q, params)
             return [dict(r["suite"]) for r in res]
 
-    def list_evaluation_runs(self, limit: int = 100, status: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_evaluation_runs(self, limit: int = 100, status: str | None = None) -> list[dict[str, Any]]:
         with self._session() as s:
             q = (
                 "MATCH (suite:EvaluationSuite)-[:HAS_RUN]->(run:EvaluationRun) "
             )
-            params: Dict[str, Any] = {"limit": limit}
+            params: dict[str, Any] = {"limit": limit}
             if status:
                 q += "WHERE run.status=$status "
                 params["status"] = status
@@ -2392,7 +2439,7 @@ class Neo4jClient:
                 "LIMIT $limit"
             )
             res = s.run(q, params)
-            items: List[Dict[str, Any]] = []
+            items: list[dict[str, Any]] = []
             for row in res:
                 run = dict(row["run"])
                 suite = dict(row["suite"])
@@ -2404,10 +2451,10 @@ class Neo4jClient:
     def upsert_workflow_budget(
         self,
         workflow_id: str,
-        token_budget: Optional[int] = None,
-        time_budget_s: Optional[int] = None,
-        retry_budget: Optional[int] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        token_budget: int | None = None,
+        time_budget_s: int | None = None,
+        retry_budget: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         budget_id = f"budget:{workflow_id}"
         with self._session() as s:
@@ -2445,8 +2492,8 @@ class Neo4jClient:
         workflow_id: str,
         incident_type: str,
         severity: str = "warning",
-        detail: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        detail: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         incident_id = uuid.uuid4().hex
         with self._session() as s:
@@ -2480,7 +2527,7 @@ class Neo4jClient:
             ).single()
             return str(rec["id"])
 
-    def list_workflow_incidents(self, workflow_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    def list_workflow_incidents(self, workflow_id: str, limit: int = 100) -> list[dict[str, Any]]:
         with self._session() as s:
             res = s.run(
                 """
@@ -2498,10 +2545,10 @@ class Neo4jClient:
     def get_unprocessed_intents(
         self,
         limit: int = 5,
-        classifications: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
+        classifications: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         q = "MATCH (i:Intent) WHERE i.orchestrated_at IS NULL"
-        params: Dict[str, Any] = {"limit": limit}
+        params: dict[str, Any] = {"limit": limit}
         if classifications:
             q += " AND coalesce(i.classification, 'unknown') IN $classifications"
             params["classifications"] = classifications
@@ -2523,7 +2570,7 @@ class Neo4jClient:
         self,
         text: str,
         epic_id: str,
-        intent_id: Optional[str] = None,
+        intent_id: str | None = None,
     ) -> str:
         req_id = uuid.uuid4().hex
         with self._session() as s:
@@ -2544,7 +2591,7 @@ class Neo4jClient:
             ).consume()
         return req_id
 
-    def get_epic_progress(self, epic_id: str) -> Dict[str, Any]:
+    def get_epic_progress(self, epic_id: str) -> dict[str, Any]:
         with self._session() as s:
             rec = s.run(
                 """
@@ -2569,19 +2616,19 @@ class Neo4jClient:
         title: str,
         task_type: str = "task",
         status: str = "READY",
-        kind: Optional[str] = None,
-        parent_id: Optional[str] = None,
-        required_capabilities: Optional[List[str]] = None,
-        target_agent_id: Optional[str] = None,
-        priority: Optional[str] = None,
-        payload: Optional[Dict[str, Any]] = None,
-        idempotency_key: Optional[str] = None,
-        context_query: Optional[str] = None,
-        context_sources: Optional[List[str]] = None,
+        kind: str | None = None,
+        parent_id: str | None = None,
+        required_capabilities: list[str] | None = None,
+        target_agent_id: str | None = None,
+        priority: str | None = None,
+        payload: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        context_query: str | None = None,
+        context_sources: list[str] | None = None,
         auto_dispatch: bool = False,
-        paperclip_client: Optional[Any] = None,
-        paperclip_agent_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        paperclip_client: Any | None = None,
+        paperclip_agent_id: str | None = None,
+    ) -> dict[str, Any]:
         task_id = self.upsert_ticket(
             title=title,
             ticket_type=task_type,
@@ -2594,7 +2641,7 @@ class Neo4jClient:
             payload=payload,
             idempotency_key=idempotency_key,
         )
-        result: Dict[str, Any] = {"task_id": task_id, "context_packet_id": None, "dispatch_id": None}
+        result: dict[str, Any] = {"task_id": task_id, "context_packet_id": None, "dispatch_id": None}
 
         # Notify auto-assign about the new task candidate
         correlation_id = (payload or {}).get("correlation_id")
