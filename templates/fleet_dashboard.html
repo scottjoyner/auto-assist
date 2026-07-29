@@ -86,6 +86,11 @@
         <h3>Adaptive Benchmark Queue</h3>
         <p class="kicker">Dry-run requests for loaded models with missing, stale, or low-confidence evidence.</p>
       </div>
+      <div class="actions">
+        <span id="benchmark-controller-status" class="badge warn">controller unknown</span>
+        <button class="btn secondary" id="btn-benchmark-control">Enable</button>
+        <button class="btn secondary" id="btn-benchmark-tick">Create Tasks</button>
+      </div>
     </div>
     <div id="benchmark-queue" class="table-wrap mt-3">Loading…</div>
   </section>
@@ -134,6 +139,7 @@
 
   let autoRefresh = true;
   let refreshTimer = null;
+  let benchmarkControllerEnabled = false;
 
   function row(label, value, cls = '') {
     const div = document.createElement('div');
@@ -301,6 +307,12 @@
 
   function renderBenchmarkQueue(data) {
     const wrap = document.getElementById('benchmark-queue');
+    const controller = data?.benchmark_controller || {};
+    benchmarkControllerEnabled = !!controller.enabled;
+    const status = document.getElementById('benchmark-controller-status');
+    status.textContent = benchmarkControllerEnabled ? 'controller enabled' : 'controller disabled';
+    status.className = 'badge ' + (benchmarkControllerEnabled ? 'ok' : 'warn');
+    document.getElementById('btn-benchmark-control').textContent = benchmarkControllerEnabled ? 'Disable' : 'Enable';
     const requests = data?.benchmark_plan?.requests || [];
     if (!requests.length) {
       wrap.innerHTML = '<div class="muted">No benchmark work currently required</div>';
@@ -420,6 +432,21 @@
   }
 
   document.getElementById('btn-refresh').addEventListener('click', refresh);
+  document.getElementById('btn-benchmark-control').addEventListener('click', async function() {
+    await fetch('/api/fleet/benchmark-controller/control', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: !benchmarkControllerEnabled})
+    });
+    await refresh();
+  });
+  document.getElementById('btn-benchmark-tick').addEventListener('click', async function() {
+    const response = await fetch('/api/fleet/benchmark-controller/tick', {method: 'POST'});
+    const result = await response.json();
+    if (!response.ok || result.blocked) {
+      alert(result.reason || result.detail || 'Benchmark task creation was blocked');
+    }
+    await refresh();
+  });
   document.getElementById('btn-auto').addEventListener('click', function() {
     autoRefresh = !autoRefresh;
     this.textContent = 'Auto: ' + (autoRefresh ? 'ON' : 'OFF');
