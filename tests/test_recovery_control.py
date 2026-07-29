@@ -81,3 +81,20 @@ def test_enabled_recovery_dispatches_guarded_runbook(monkeypatch):
     )
     assert outcome["status"] == "VERIFIED"
     assert outcome["result"]["feeds_improvement_memory"] is True
+
+
+def test_reconciler_delegates_bounded_state_timeouts():
+    class ReconcileStore:
+        def reconcile(self, **kwargs):
+            return {"reconciled": 3, "received": kwargs}
+
+    result = RecoveryControlPlane().reconcile(
+        ReconcileStore(),
+        now=1000,
+        approved_timeout_seconds=10,
+        executing_timeout_seconds=20,
+        dispatched_timeout_seconds=30,
+    )
+
+    assert result["reconciled"] == 3
+    assert result["received"]["now"] == 1000
