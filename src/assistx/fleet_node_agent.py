@@ -19,7 +19,7 @@ Run:
     python -m assistx.fleet_node_agent \
         --assistx-url http://assistx:8000 \
         --router-url http://router:8088 \
-        --auth-user admin --auth-pass fuck-you \
+        --auth-user admin --auth-pass change-me \
         --poll-interval 10 --concurrency 2
 
 Env equivalents: FLEET_ASSISTX_URL, FLEET_ROUTER_URL, FLEET_AUTH_USER,
@@ -34,15 +34,14 @@ import json
 import os
 import platform
 import subprocess
-import sys
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from .recovery_runbooks import RecoveryRunbookExecutor
 
@@ -50,14 +49,15 @@ DEFAULT_CAPS = ["script"]
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _http(
     method: str,
     url: str,
-    auth: Optional[tuple[str, str]] = None,
-    data: Optional[dict] = None,
+    auth: tuple[str, str] | None = None,
+    data: dict | None = None,
+    headers: dict[str, str] | None = None,
     timeout: int = 30,
 ) -> tuple[int, Any]:
     req = urllib.request.Request(url, method=method)
@@ -67,6 +67,8 @@ def _http(
         token = base64.b64encode(f"{auth[0]}:{auth[1]}".encode()).decode()
         req.add_header("Authorization", f"Basic {token}")
     req.add_header("Content-Type", "application/json")
+    for key, value in (headers or {}).items():
+        req.add_header(key, value)
     if data is not None:
         req.data = json.dumps(data).encode()
     try:
@@ -86,7 +88,7 @@ def _http(
         return 0, {"error": str(e)}
 
 
-def detect_capabilities(lmstudio_url: Optional[str]) -> list[str]:
+def detect_capabilities(lmstudio_url: str | None) -> list[str]:
     """Auto-detect what this node can do."""
     caps = list(DEFAULT_CAPS)
     caps.append(platform.system().lower())  # linux / darwin
@@ -122,7 +124,14 @@ def detect_capabilities(lmstudio_url: Optional[str]) -> list[str]:
     return sorted(set(caps))
 
 
-def report_to_router(router_url: str, node_id: str, caps: list[str], lmstudio_url: Optional[str]) -> None:
+def report_to_router(
+    router_url: str,
+    node_id: str,
+    caps: list[str],
+    lmstudio_url: str | None,
+    *,
+    drained: bool = False,
+) -> None:
     if not router_url:
         return
     specs = {
@@ -137,7 +146,11 @@ def report_to_router(router_url: str, node_id: str, caps: list[str], lmstudio_ur
         "library": [lmstudio_url] if lmstudio_url else [],
         "loaded": [],
         "specs": specs,
-        "health": {"status": "healthy", "reported_at": _now()},
+        "health": {
+            "status": "drained" if drained else "healthy",
+            "reported_at": _now(),
+            "control_state": "DRAINED" if drained else "ENABLED",
+        },
         "os": platform.system(),
     }
     _http("POST", f"{router_url}/api/fleet/node-report", data=body, timeout=10)
@@ -145,13 +158,12 @@ def report_to_router(router_url: str, node_id: str, caps: list[str], lmstudio_ur
 
 def execute_task(
     task: dict[str, Any],
-    lmstudio_url: Optional[str],
+    lmstudio_url: str | None,
     workdir: str,
     *,
     node_id: str | None = None,
 ) -> dict[str, Any]:
     """Run a single task locally. Returns {status, summary, result}."""
-    task_id = task.get("id") or task.get("task_id")
     payload = task.get("payload") or {}
     if not payload and task.get("payload_json"):
         try:
@@ -181,6 +193,12 @@ def execute_task(
     # Prefer an explicit command in the payload (script/agent jobs).
     command = payload.get("command") or payload.get("cmd") or task.get("command")
     if command:
+        if os.getenv("FLEET_UNSAFE_SHELL_TASKS_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
+            return {
+                "status": "FAILED",
+                "summary": "legacy shell tasks disabled",
+                "result": {"reason": "unsafe_shell_tasks_disabled"},
+            }
         try:
             proc = subprocess.run(
                 command, shell=True, capture_output=True, text=True,
@@ -256,6 +274,12 @@ def execute_task(
 
     # yolo/vision job: run a detection/inference command if provided.
     if ("yolo" in required or "vision" in required) and payload.get("yolo_command"):
+        if os.getenv("FLEET_UNSAFE_SHELL_TASKS_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
+            return {
+                "status": "FAILED",
+                "summary": "legacy vision shell tasks disabled",
+                "result": {"reason": "unsafe_shell_tasks_disabled"},
+            }
         try:
             proc = subprocess.run(payload["yolo_command"], shell=True, capture_output=True, text=True, cwd=workdir, timeout=1800)
             return {"status": "DONE" if proc.returncode == 0 else "FAILED",
@@ -274,26 +298,36 @@ def execute_task(
 
 def run_node(args: argparse.Namespace) -> None:
     auth = (args.auth_user, args.auth_pass)
+    node_headers = {"X-Fleet-Node-Token": args.node_token} if args.node_token else {}
     node_id = args.node_id or f"{platform.node()}-{platform.machine()}"
     lmstudio_url = args.lmstudio_url or os.getenv("FLEET_LMSTUDIO_URL")
     extra = [c.strip() for c in (args.capabilities or "").split(",") if c.strip()]
     caps = detect_capabilities(lmstudio_url) + extra
     if os.getenv("FLEET_RECOVERY_RUNBOOKS_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
         caps.append("recovery")
+        aliases = os.getenv("FLEET_RECOVERY_SERVICE_ALIASES", "{}")
+        if '"systemd"' in aliases or platform.system().lower() == "linux":
+            caps.append("recovery:systemd")
+        if '"launchd"' in aliases or platform.system().lower() == "darwin":
+            caps.append("recovery:launchd")
+        if os.getenv("FLEET_RECOVERY_COMPOSE_PROJECTS", "{}").strip() not in {"", "{}"}:
+            caps.append("recovery:docker-compose")
+        if lmstudio_url:
+            caps.append("recovery:lmstudio")
     caps = sorted(set(caps))
 
     print(f"[fleet-agent] node={node_id} caps={caps}", flush=True)
     if lmstudio_url:
         print(f"[fleet-agent] lmstudio={lmstudio_url}", flush=True)
 
-    report_to_router(args.router_url, node_id, caps, lmstudio_url)
+    drain_path = Path(args.workdir) / "recovery-state" / "drained.json"
+    report_to_router(args.router_url, node_id, caps, lmstudio_url, drained=drain_path.exists())
     sem = threading.Semaphore(max(1, args.concurrency))
     stop = threading.Event()
 
     def worker_loop() -> None:
         while not stop.is_set():
             try:
-                drain_path = Path(args.workdir) / "recovery-state" / "drained.json"
                 poll_caps = ["recovery"] if drain_path.exists() else caps
                 query = urllib.parse.urlencode(
                     [("status", "READY"), ("limit", str(args.concurrency)), ("agent_id", node_id)]
@@ -302,7 +336,7 @@ def run_node(args: argparse.Namespace) -> None:
                 st, resp = _http(
                     "GET",
                     f"{args.assistx_url}/api/agent/tasks?{query}",
-                    auth=auth, timeout=20,
+                    auth=auth, headers=node_headers, timeout=20,
                 )
                 items = resp.get("items", []) if isinstance(resp, dict) else []
                 if st == 200 and items:
@@ -317,7 +351,13 @@ def run_node(args: argparse.Namespace) -> None:
             except Exception as e:
                 print(f"[fleet-agent] loop err: {e}", flush=True)
             # heartbeat re-report occasionally
-            report_to_router(args.router_url, node_id, caps, lmstudio_url)
+            report_to_router(
+                args.router_url,
+                node_id,
+                caps,
+                lmstudio_url,
+                drained=drain_path.exists(),
+            )
             time.sleep(args.poll_interval)
 
     def handle_one(task: dict[str, Any]) -> None:
@@ -334,6 +374,7 @@ def run_node(args: argparse.Namespace) -> None:
             st, resp = _http(
                 "POST", f"{args.assistx_url}/api/tasks/{task_id}/claim",
                 auth=auth, data={"agent_id": node_id, "capabilities": caps, "lease_seconds": 1800},
+                headers=node_headers,
                 timeout=20,
             )
             if st != 200 or not (isinstance(resp, dict) and resp.get("claimed")):
@@ -344,6 +385,7 @@ def run_node(args: argparse.Namespace) -> None:
                 "POST", f"{args.assistx_url}/api/tasks/{task_id}/complete",
                 auth=auth, data={"agent_id": node_id, "status": outcome["status"],
                                  "summary": outcome.get("summary"), "result": outcome.get("result")},
+                headers=node_headers,
                 timeout=20,
             )
             print(f"[fleet-agent] {task_id} -> {outcome['status']}", flush=True)
@@ -367,8 +409,9 @@ def main() -> None:
     p.add_argument("--assistx-url", default=os.getenv("FLEET_ASSISTX_URL", "http://assistx:8000"))
     p.add_argument("--router-url", default=os.getenv("FLEET_ROUTER_URL", "http://router:8088"))
     p.add_argument("--auth-user", default=os.getenv("FLEET_AUTH_USER", "admin"))
-    p.add_argument("--auth-pass", default=os.getenv("FLEET_AUTH_PASS", "gluhlaf8"))
+    p.add_argument("--auth-pass", default=os.getenv("FLEET_AUTH_PASS", "change-me"))
     p.add_argument("--node-id", default=os.getenv("FLEET_NODE_ID"))
+    p.add_argument("--node-token", default=os.getenv("FLEET_NODE_TOKEN", ""))
     p.add_argument("--lmstudio-url", default=os.getenv("FLEET_LMSTUDIO_URL"))
     p.add_argument("--capabilities", default=os.getenv("FLEET_CAPABILITIES", ""))
     p.add_argument("--poll-interval", type=int, default=int(os.getenv("FLEET_POLL_INTERVAL", "10")))
