@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from assistx.controller_runtime import Neo4jControllerStore
+from assistx.execution_control import ExecutionControlPlane
 from assistx.recovery_control import Neo4jRecoveryStore, RecoveryControlPlane
 from assistx.recovery_runbooks import RecoveryRunbookExecutor, build_runbook, sign_runbook
 from assistx.self_healing import SelfHealingController
@@ -48,6 +49,83 @@ def test_recovery_lifecycle_canary_with_real_neo4j(seeded_neo4j, monkeypatch, tm
     assert replay["started"] is False
     controller_status = controller_store.list_status(now_ms=2101)
     assert controller_status[0]["checkpoint"]["result"]["reconciled"] == 1
+
+    execution = ExecutionControlPlane()
+    with neo._session() as session:
+        session.run(
+            """
+            MERGE (n:SwarmNode {node_id:'node-canary-b'})
+            SET n.status='online', n.weight=1, n.is_blocked=false
+            """
+        ).consume()
+    movable = neo.create_task_with_context(
+        title="Migration canary",
+        status="READY",
+        kind="analysis",
+        required_capabilities=["llm"],
+        preemptible=True,
+        max_migrations=2,
+        idempotency_key="migration-canary",
+    )
+    first_claim = neo.claim_task(
+        movable["task_id"], "node-canary", capabilities=["llm"]
+    )
+    first_claim_id = first_claim["task"]["claim_id"]
+    requested = execution.request_preemption(
+        neo,
+        movable["task_id"],
+        "canary-operator",
+        reason="move to higher-value node",
+        target_agent_id="node-canary-b",
+    )
+    checkpointed = execution.checkpoint(
+        neo,
+        movable["task_id"],
+        "node-canary",
+        first_claim_id,
+        checkpoint={"handler": "benchmark", "next_case_index": 1},
+        progress=0.5,
+        estimated_remaining_seconds=30,
+        pause=True,
+    )
+    stale_checkpoint = execution.checkpoint(
+        neo,
+        movable["task_id"],
+        "node-canary",
+        first_claim_id,
+        checkpoint={"unsafe": True},
+        progress=0.6,
+        estimated_remaining_seconds=20,
+        pause=False,
+    )
+    reconciliation = execution.reconcile(
+        neo,
+        preemption_timeout_seconds=600,
+    )
+    migrated_task = neo.get_task(movable["task_id"])
+    stale_completion = neo.complete_task(
+        movable["task_id"],
+        "node-canary",
+        "DONE",
+        claim_id=first_claim_id,
+    )
+    second_claim = neo.claim_task(
+        movable["task_id"], "node-canary-b", capabilities=["llm"]
+    )
+    completed_after_resume = neo.complete_task(
+        movable["task_id"],
+        "node-canary-b",
+        "DONE",
+        claim_id=second_claim["task"]["claim_id"],
+    )
+    assert requested["requested"] is True
+    assert checkpointed["paused"] is True
+    assert stale_checkpoint["checkpointed"] is False
+    assert reconciliation["migrated"] == 1
+    assert migrated_task["migration_count"] == 1
+    assert stale_completion is None
+    assert second_claim["claimed"] is True
+    assert completed_after_resume["status"] == "DONE"
 
     with neo._session() as session:
         session.run(

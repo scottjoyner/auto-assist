@@ -46,6 +46,8 @@ def test_ensure_schema_declares_migration_constraints_and_indexes():
         "RecoveryAuditEvent",
         "AllocationReservation",
         "FleetControlEvent",
+        "TaskCheckpoint",
+        "TaskMigrationEvent",
     ):
         assert any(
             f":{label})" in statement
@@ -68,4 +70,6 @@ def test_ensure_schema_declares_migration_constraints_and_indexes():
     assert "FOR (a:AllocationReservation) ON (a.expires_at_ts)" in schema
     assert "FOR (e:FleetControlEvent) ON (e.created_at_ts)" in schema
     assert "FOR (c:ControllerLease) ON (c.expires_at_ts)" in schema
+    assert "FOR (c:TaskCheckpoint) ON (c.task_id)" in schema
+    assert "FOR (e:TaskMigrationEvent) ON (e.task_id)" in schema
     assert driver.databases == ["assistx_test"]

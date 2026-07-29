@@ -63,3 +63,54 @@ def test_recovery_task_rejects_wrong_target(tmp_path, monkeypatch):
 
     assert outcome["status"] == "FAILED"
     assert outcome["result"]["reason"] == "runbook_target_mismatch"
+
+
+def test_benchmark_cooperatively_pauses_at_safe_case_boundary(tmp_path):
+    task = {
+        "required_capabilities": ["llm"],
+        "payload": {
+            "benchmark": True,
+            "cases": [{"prompt": "one"}, {"prompt": "two"}],
+        },
+    }
+
+    outcome = fleet_node_agent.execute_task(
+        task,
+        "http://inference",
+        str(tmp_path),
+        should_stop=lambda: True,
+    )
+
+    assert outcome["status"] == "PAUSED"
+    assert outcome["checkpoint"]["handler"] == "benchmark"
+    assert outcome["checkpoint"]["next_case_index"] == 0
+
+
+def test_llm_completed_checkpoint_resumes_without_repeating_inference(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        fleet_node_agent,
+        "_http",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("inference must not repeat")
+        ),
+    )
+    task = {
+        "title": "resume",
+        "required_capabilities": ["llm"],
+        "payload": {},
+        "checkpoint_json": (
+            '{"handler":"llm","phase":"inference_complete",'
+            '"completed_answer":"preserved"}'
+        ),
+    }
+
+    outcome = fleet_node_agent.execute_task(
+        task,
+        "http://inference",
+        str(tmp_path),
+    )
+
+    assert outcome["status"] == "DONE"
+    assert outcome["result"]["answer"] == "preserved"

@@ -6,7 +6,8 @@ import os
 import threading
 import time
 import uuid
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import requests
 
@@ -103,6 +104,8 @@ class BenchmarkController:
             "required_capabilities": ["llm"],
             "target_agent_id": node,
             "priority": "BATCH",
+            "preemptible": True,
+            "max_migrations": 2,
             "idempotency_key": f"adaptive-benchmark:{digest}",
             "payload": {
                 "queue_class": "batch", "benchmark": True,

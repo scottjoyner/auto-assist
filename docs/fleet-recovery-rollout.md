@@ -78,6 +78,37 @@ Controller ownership, lease expiry, fencing token, attempt count, and last tick
 result are available from `GET /api/fleet/controllers` and the Operations
 workspace.
 
+## Checkpoint, preemption, and migration
+
+Tasks are non-preemptible unless their producer explicitly sets
+`preemptible=true`. Preemptible execution uses the claim ID as an execution
+fence:
+
+1. An operator or allocator requests preemption with
+   `POST /api/tasks/{id}/preempt`.
+2. The current node observes `PAUSING` through its fenced heartbeat.
+3. The node writes a versioned checkpoint with
+   `POST /api/tasks/{id}/checkpoint` and releases ownership.
+4. The durable `execution-reconciler` validates the selected destination and
+   returns the task to `READY` with that node as its target.
+5. The destination claims a new execution attempt and resumes from
+   `checkpoint_json`.
+
+Old claim IDs cannot heartbeat, checkpoint, or complete the migrated execution.
+Migration requires a healthy, unblocked `SwarmNode`, and each task has a bounded
+`max_migrations` budget. A `PAUSING` task that is not acknowledged within the
+timeout returns to its prior execution when the lease is still valid, or to
+`READY` after the lease expires.
+
+Benchmark work checkpoints between cases. LLM work can checkpoint before
+inference or preserve a completed response so migration does not repeat a paid
+or expensive generation. Legacy shell handlers remain non-preemptible and
+disabled by default.
+
+Migration history is stored as `TaskMigrationEvent` records and exposed through
+`GET /api/fleet/migrations`. The Operations workspace shows progress,
+checkpoint revision, migration budget, and preempt/migrate controls.
+
 ## Canary sequence
 
 Enable one non-critical node first:

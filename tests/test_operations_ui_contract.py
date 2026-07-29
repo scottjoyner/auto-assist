@@ -24,6 +24,10 @@ def test_operations_workspace_exposes_core_operator_flows():
         "Download evidence",
         "Controller leadership",
         'id="controller-list"',
+        "task-preempt",
+        "task-migrate",
+        "/preempt",
+        "/migrate",
         "refreshFailures",
     ):
         assert contract in template

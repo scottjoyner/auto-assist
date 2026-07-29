@@ -17,7 +17,10 @@ from .auto_assign_client import notify_task_created
 logger = logging.getLogger(__name__)
 
 _UNSET = object()
-EXECUTABLE_TASK_STATUSES = {"READY", "CLAIMED", "RUNNING", "DONE", "FAILED", "CANCELLED"}
+EXECUTABLE_TASK_STATUSES = {
+    "READY", "CLAIMED", "RUNNING", "PAUSING", "PAUSED",
+    "DONE", "FAILED", "CANCELLED",
+}
 TERMINAL_TASK_STATUSES = {"DONE", "FAILED", "CANCELLED"}
 
 
@@ -170,6 +173,8 @@ class Neo4jClient:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (e:FleetControlEvent) REQUIRE e.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (c:ControllerLease) REQUIRE c.controller_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (c:ControllerCheckpoint) REQUIRE c.controller_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (c:TaskCheckpoint) REQUIRE c.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (e:TaskMigrationEvent) REQUIRE e.id IS UNIQUE",
 
             # Helpful indexes
             "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.status)",
@@ -226,6 +231,8 @@ class Neo4jClient:
             "CREATE INDEX IF NOT EXISTS FOR (e:FleetControlEvent) ON (e.created_at_ts)",
             "CREATE INDEX IF NOT EXISTS FOR (c:ControllerLease) ON (c.expires_at_ts)",
             "CREATE INDEX IF NOT EXISTS FOR (c:ControllerCheckpoint) ON (c.updated_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (c:TaskCheckpoint) ON (c.task_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (e:TaskMigrationEvent) ON (e.task_id)",
             # Phase 2 Swarm schema
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SwarmNode) REQUIRE n.node_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (e:ServiceEndpoint) REQUIRE e.endpoint_id IS UNIQUE",
@@ -594,6 +601,8 @@ class Neo4jClient:
         priority: str | None = None,
         payload: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
+        preemptible: bool = False,
+        max_migrations: int = 2,
     ) -> str:
         props = {
             "title": title,
@@ -604,6 +613,8 @@ class Neo4jClient:
             "target_agent_id": target_agent_id,
             "priority": priority,
             "payload_json": json.dumps(payload or {}),
+            "preemptible": bool(preemptible),
+            "max_migrations": max(0, min(int(max_migrations), 10)),
         }
         task_id = uuid.uuid4().hex
         with self._session() as s:
@@ -666,6 +677,10 @@ class Neo4jClient:
                     "target_agent_id": t.get("target_agent_id"),
                     "priority": t.get("priority"),
                     "payload_json": json.dumps(t.get("payload") or {}),
+                    "preemptible": bool(t.get("preemptible", False)),
+                    "max_migrations": max(
+                        0, min(int(t.get("max_migrations", 2)), 10)
+                    ),
                 }
                 if ik:
                     rec = s.run(
@@ -1000,6 +1015,7 @@ class Neo4jClient:
                     t.claim_id=$claim_id,
                     t.claimed_at=datetime(),
                     t.claimed_at_ts=timestamp(),
+                    t.execution_attempt=coalesce(t.execution_attempt, 0) + 1,
                     t.lease_seconds=$lease_seconds,
                     t.lease_expires_at_ts=timestamp() + $lease_seconds * 1000,
                     t.updated_at=datetime(),
@@ -1154,6 +1170,7 @@ class Neo4jClient:
         session_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         lease_seconds: int | None = None,
+        claim_id: str | None = None,
     ) -> dict[str, Any] | None:
         if status and status not in EXECUTABLE_TASK_STATUSES:
             raise ValueError(f"Unsupported task status: {status}")
@@ -1166,8 +1183,17 @@ class Neo4jClient:
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
+                WHERE coalesce(t.execution_attempt, 0)=0
+                   OR (
+                     t.claimed_by=$agent_id
+                     AND ($claim_id IS NULL OR t.claim_id=$claim_id)
+                     AND t.status IN ['CLAIMED','RUNNING','PAUSING']
+                   )
                 SET t += $props,
-                    t.status = coalesce($status, t.status),
+                    t.status = CASE
+                      WHEN t.status='PAUSING' THEN t.status
+                      ELSE coalesce($status, t.status)
+                    END,
                     t.lease_seconds = coalesce($lease_seconds, coalesce(t.lease_seconds, 900)),
                     t.last_heartbeat_at=datetime(),
                     t.last_heartbeat_at_ts=timestamp(),
@@ -1176,7 +1202,14 @@ class Neo4jClient:
                     t.updated_at_ts=timestamp()
                 RETURN t
                 """,
-                {"task_id": task_id, "props": props, "status": status, "lease_seconds": lease_seconds},
+                {
+                    "task_id": task_id,
+                    "agent_id": agent_id,
+                    "claim_id": claim_id,
+                    "props": props,
+                    "status": status,
+                    "lease_seconds": lease_seconds,
+                },
             ).single()
             return dict(rec["t"]) if rec else None
 
@@ -1189,6 +1222,7 @@ class Neo4jClient:
         result: dict[str, Any] | None = None,
         session_id: str | None = None,
         idempotency_key: str | None = None,
+        claim_id: str | None = None,
     ) -> dict[str, Any] | None:
         if status not in TERMINAL_TASK_STATUSES:
             raise ValueError(f"Completion status must be one of: {sorted(TERMINAL_TASK_STATUSES)}")
@@ -1232,6 +1266,12 @@ class Neo4jClient:
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
+                WHERE coalesce(t.execution_attempt, 0)=0
+                   OR (
+                     t.claimed_by=$agent_id
+                     AND ($claim_id IS NULL OR t.claim_id=$claim_id)
+                     AND t.status IN ['CLAIMED','RUNNING']
+                   )
                 SET t.status=$status,
                     t.completed_by=$agent_id,
                     t.agent_session_id=coalesce($session_id, t.agent_session_id),
@@ -1264,6 +1304,7 @@ class Neo4jClient:
                     "result_json": json.dumps(result or {}),
                     "session_id": session_id,
                     "completion_id": idempotency_key,
+                    "claim_id": claim_id,
                 },
             ).single()
             if not rec:
@@ -2638,6 +2679,8 @@ class Neo4jClient:
         priority: str | None = None,
         payload: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
+        preemptible: bool = False,
+        max_migrations: int = 2,
         context_query: str | None = None,
         context_sources: list[str] | None = None,
         auto_dispatch: bool = False,
@@ -2655,6 +2698,8 @@ class Neo4jClient:
             priority=priority,
             payload=payload,
             idempotency_key=idempotency_key,
+            preemptible=preemptible,
+            max_migrations=max_migrations,
         )
         result: dict[str, Any] = {"task_id": task_id, "context_packet_id": None, "dispatch_id": None}
 

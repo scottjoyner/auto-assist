@@ -37,6 +37,7 @@ jobs:
             src/assistx/diagnosis_engine.py \
             src/assistx/diagnostic_probes.py \
             src/assistx/controller_runtime.py \
+            src/assistx/execution_control.py \
             src/assistx/node_identity.py \
             src/assistx/recovery_control.py \
             src/assistx/recovery_runbooks.py \
@@ -47,6 +48,7 @@ jobs:
             tests/test_diagnosis_engine.py \
             tests/test_diagnostic_probes.py \
             tests/test_controller_runtime.py \
+            tests/test_execution_control.py \
             tests/test_node_identity.py \
             tests/test_recovery_control.py \
             tests/test_recovery_runbooks.py \

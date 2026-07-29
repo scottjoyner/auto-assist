@@ -39,6 +39,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -162,6 +163,7 @@ def execute_task(
     workdir: str,
     *,
     node_id: str | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Run a single task locally. Returns {status, summary, result}."""
     payload = task.get("payload") or {}
@@ -171,6 +173,20 @@ def execute_task(
         except (json.JSONDecodeError, TypeError):
             payload = {}
     required = task.get("required_capabilities") or []
+    should_stop = should_stop or (lambda: False)
+    saved_checkpoint = task.get("checkpoint") or task.get("checkpoint_json") or {}
+    if isinstance(saved_checkpoint, str):
+        try:
+            saved_checkpoint = json.loads(saved_checkpoint)
+        except (json.JSONDecodeError, TypeError):
+            saved_checkpoint = {}
+    if saved_checkpoint.get("handler") == "completed_outcome":
+        completed = saved_checkpoint.get("outcome")
+        if isinstance(completed, dict) and completed.get("status") in {
+            "DONE",
+            "FAILED",
+        }:
+            return completed
 
     # Recovery work never enters the generic command path. It is parsed and
     # executed as a typed, allowlisted runbook targeted to this node.
@@ -217,11 +233,27 @@ def execute_task(
     if "llm" in required and lmstudio_url:
         if payload.get("benchmark"):
             cases = payload.get("cases") if isinstance(payload.get("cases"), list) else []
-            scores: list[float] = []
-            token_total = 0
-            elapsed_total = 0.0
-            case_results = []
-            for case in cases[:10]:
+            scores = list(saved_checkpoint.get("scores") or [])
+            token_total = int(saved_checkpoint.get("token_total") or 0)
+            elapsed_total = float(saved_checkpoint.get("elapsed_total") or 0.0)
+            case_results = list(saved_checkpoint.get("case_results") or [])
+            start_index = int(saved_checkpoint.get("next_case_index") or 0)
+            for index, case in enumerate(cases[start_index:10], start=start_index):
+                if should_stop():
+                    progress = index / max(min(len(cases), 10), 1)
+                    return {
+                        "status": "PAUSED",
+                        "summary": f"benchmark paused at case {index}",
+                        "progress": progress,
+                        "checkpoint": {
+                            "handler": "benchmark",
+                            "next_case_index": index,
+                            "scores": scores,
+                            "token_total": token_total,
+                            "elapsed_total": elapsed_total,
+                            "case_results": case_results,
+                        },
+                    }
                 started = time.perf_counter()
                 st, body = _http(
                     "POST", f"{lmstudio_url}/v1/chat/completions",
@@ -262,6 +294,21 @@ def execute_task(
                 },
             }
         prompt = payload.get("prompt") or task.get("title") or ""
+        if saved_checkpoint.get("handler") == "llm" and saved_checkpoint.get(
+            "completed_answer"
+        ):
+            return {
+                "status": "DONE",
+                "summary": "llm response resumed from checkpoint",
+                "result": {"answer": saved_checkpoint["completed_answer"]},
+            }
+        if should_stop():
+            return {
+                "status": "PAUSED",
+                "summary": "llm task paused before inference",
+                "progress": 0.0,
+                "checkpoint": {"handler": "llm", "phase": "before_inference"},
+            }
         st, body = _http(
             "POST", f"{lmstudio_url}/v1/chat/completions",
             data={"model": payload.get("model", "local/model"), "messages": [{"role": "user", "content": prompt}], "max_tokens": 1024},
@@ -269,6 +316,17 @@ def execute_task(
         )
         if st == 200 and isinstance(body, dict):
             text = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if should_stop():
+                return {
+                    "status": "PAUSED",
+                    "summary": "llm task paused after inference",
+                    "progress": 0.95,
+                    "checkpoint": {
+                        "handler": "llm",
+                        "phase": "inference_complete",
+                        "completed_answer": text,
+                    },
+                }
             return {"status": "DONE", "summary": "llm response", "result": {"answer": text}}
         return {"status": "FAILED", "summary": f"lm call {st}", "result": body}
 
@@ -380,14 +438,110 @@ def run_node(args: argparse.Namespace) -> None:
             if st != 200 or not (isinstance(resp, dict) and resp.get("claimed")):
                 print(f"[fleet-agent] claim {task_id} rejected: {st}", flush=True)
                 return
-            outcome = execute_task(task, lmstudio_url, args.workdir, node_id=node_id)
-            _http(
-                "POST", f"{args.assistx_url}/api/tasks/{task_id}/complete",
-                auth=auth, data={"agent_id": node_id, "status": outcome["status"],
-                                 "summary": outcome.get("summary"), "result": outcome.get("result")},
+            claimed_task = resp.get("task") or {}
+            task.update(claimed_task)
+            claim_id = str(claimed_task.get("claim_id") or "")
+            preempt = threading.Event()
+            heartbeat_stop = threading.Event()
+
+            def heartbeat() -> None:
+                interval = max(
+                    5,
+                    int(os.getenv("FLEET_TASK_HEARTBEAT_SECONDS", "15")),
+                )
+                while not heartbeat_stop.wait(interval):
+                    hb_status, hb = _http(
+                        "POST",
+                        f"{args.assistx_url}/api/tasks/{task_id}/heartbeat",
+                        auth=auth,
+                        data={
+                            "agent_id": node_id,
+                            "claim_id": claim_id,
+                            "status": "RUNNING",
+                            "lease_seconds": 1800,
+                        },
+                        headers=node_headers,
+                        timeout=20,
+                    )
+                    current = hb.get("task") if isinstance(hb, dict) else {}
+                    if hb_status == 200 and current.get("status") == "PAUSING":
+                        preempt.set()
+                        return
+                    if hb_status in {404, 409}:
+                        preempt.set()
+                        return
+
+            heartbeat_thread = threading.Thread(
+                target=heartbeat,
+                name=f"task-heartbeat:{task_id}",
+                daemon=True,
+            )
+            heartbeat_thread.start()
+            outcome = execute_task(
+                task,
+                lmstudio_url,
+                args.workdir,
+                node_id=node_id,
+                should_stop=preempt.is_set,
+            )
+            final_hb_status, final_hb = _http(
+                "POST",
+                f"{args.assistx_url}/api/tasks/{task_id}/heartbeat",
+                auth=auth,
+                data={
+                    "agent_id": node_id,
+                    "claim_id": claim_id,
+                    "status": "RUNNING",
+                    "lease_seconds": 1800,
+                },
                 headers=node_headers,
                 timeout=20,
             )
+            final_task = (
+                final_hb.get("task")
+                if final_hb_status == 200 and isinstance(final_hb, dict)
+                else {}
+            )
+            if outcome["status"] != "PAUSED" and final_task.get("status") == "PAUSING":
+                outcome = {
+                    "status": "PAUSED",
+                    "summary": "completed result checkpointed for migration",
+                    "progress": 0.99,
+                    "checkpoint": {
+                        "handler": "completed_outcome",
+                        "outcome": outcome,
+                    },
+                }
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=2)
+            if outcome["status"] == "PAUSED":
+                _http(
+                    "POST",
+                    f"{args.assistx_url}/api/tasks/{task_id}/checkpoint",
+                    auth=auth,
+                    data={
+                        "agent_id": node_id,
+                        "claim_id": claim_id,
+                        "checkpoint": outcome.get("checkpoint") or {},
+                        "progress": outcome.get("progress") or 0.0,
+                        "estimated_remaining_seconds": outcome.get(
+                            "estimated_remaining_seconds"
+                        ),
+                        "pause": True,
+                    },
+                    headers=node_headers,
+                    timeout=20,
+                )
+            else:
+                _http(
+                    "POST", f"{args.assistx_url}/api/tasks/{task_id}/complete",
+                    auth=auth, data={"agent_id": node_id, "claim_id": claim_id,
+                                     "status": outcome["status"],
+                                     "summary": outcome.get("summary"),
+                                     "result": outcome.get("result")},
+                    headers=node_headers,
+                    timeout=20,
+                )
             print(f"[fleet-agent] {task_id} -> {outcome['status']}", flush=True)
         except Exception as e:
             print(f"[fleet-agent] handle {task.get('id')} err: {e}", flush=True)

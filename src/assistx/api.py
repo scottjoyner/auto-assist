@@ -36,6 +36,7 @@ from .capacity_forecast import build_capacity_forecast
 from .allocation_engine import build_allocation_plan
 from .diagnosis_engine import diagnose_incident
 from .diagnostic_probes import execute_diagnostic_probes
+from .execution_control import ExecutionControlPlane, start_execution_reconciler
 from .recovery_control import (
     Neo4jRecoveryStore,
     RecoveryControlPlane,
@@ -166,6 +167,7 @@ class TaskHeartbeatIn(BaseModel):
     session_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     lease_seconds: Optional[int] = None
+    claim_id: Optional[str] = None
 
 class TaskCompleteIn(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -176,6 +178,25 @@ class TaskCompleteIn(BaseModel):
     result: Optional[Dict[str, Any]] = None
     session_id: Optional[str] = None
     idempotency_key: Optional[str] = None
+    claim_id: Optional[str] = None
+
+
+class TaskCheckpointIn(BaseModel):
+    agent_id: str
+    claim_id: str
+    checkpoint: Dict[str, Any] = Field(default_factory=dict)
+    progress: float = Field(default=0.0, ge=0.0, le=1.0)
+    estimated_remaining_seconds: Optional[int] = Field(default=None, ge=0)
+    pause: bool = False
+
+
+class TaskPreemptionIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    target_agent_id: Optional[str] = None
+
+
+class TaskMigrationIn(BaseModel):
+    target_agent_id: str = Field(min_length=1)
 
 
 class BenchmarkControlIn(BaseModel):
@@ -239,6 +260,8 @@ class TaskCreateIn(BaseModel):
     payload: Optional[Dict[str, Any]] = None
     idempotency_key: Optional[str] = None
     correlation_id: Optional[str] = None
+    preemptible: bool = False
+    max_migrations: int = Field(default=2, ge=0, le=10)
 
 
 class PaperclipEventIn(BaseModel):
@@ -475,6 +498,10 @@ async def lifespan(app: FastAPI):
         start_recovery_reconciler(Neo4jClient)
     except Exception as e:
         _lifespan_logger.warning(f"Recovery reconciler not started: {e}")
+    try:
+        start_execution_reconciler(Neo4jClient)
+    except Exception as e:
+        _lifespan_logger.warning(f"Execution reconciler not started: {e}")
     try:
         from .kg_harvester import _start_harvester_loop
         _start_harvester_loop()
@@ -716,6 +743,7 @@ _benchmark_controller = BenchmarkController()
 _loadout_control = LoadoutControlPlane()
 _self_healing = SelfHealingController()
 _recovery_control = RecoveryControlPlane()
+_execution_control = ExecutionControlPlane()
 
 def _neo_fleet() -> Neo4jClient:
     """Dedicated Neo4j client/pool for high-concurrency fleet executor endpoints
@@ -3433,6 +3461,8 @@ def api_create_task(body: TaskCreateIn, user: str = Depends(auth)):
             priority=body.priority,
             payload=payload,
             idempotency_key=body.idempotency_key,
+            preemptible=body.preemptible,
+            max_migrations=body.max_migrations,
         )
         return {"task_id": result.get("task_id"), "dispatch_id": result.get("dispatch_id")}
     finally:
@@ -3611,6 +3641,7 @@ def api_claim_task(
             session_id=body.session_id,
             idempotency_key=body.idempotency_key,
             lease_seconds=body.lease_seconds,
+            claim_id=body.claim_id,
         )
     )
     if result.get("claimed"):
@@ -3640,6 +3671,7 @@ def api_heartbeat_task(
             session_id=body.session_id,
             metadata=body.metadata,
             lease_seconds=body.lease_seconds,
+            claim_id=body.claim_id,
         )
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
@@ -3670,6 +3702,7 @@ def api_complete_task(
             result=body.result,
             session_id=body.session_id,
             idempotency_key=body.idempotency_key,
+            claim_id=body.claim_id,
         )
     )
     if not task:
@@ -3704,6 +3737,88 @@ def api_complete_task(
         "benchmark_outcome": benchmark_outcome,
         "recovery_outcome": recovery_outcome,
     }
+
+
+@app.post("/api/tasks/{task_id}/checkpoint")
+def api_checkpoint_task(
+    task_id: str,
+    body: TaskCheckpointIn,
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        result = _execution_control.checkpoint(
+            neo,
+            task_id,
+            body.agent_id,
+            body.claim_id,
+            checkpoint=body.checkpoint,
+            progress=body.progress,
+            estimated_remaining_seconds=body.estimated_remaining_seconds,
+            pause=body.pause,
+        )
+        if not result["checkpointed"]:
+            return JSONResponse(status_code=409, content=result)
+        return result
+    finally:
+        neo.close()
+
+
+@app.post("/api/tasks/{task_id}/preempt")
+def api_preempt_task(
+    task_id: str,
+    body: TaskPreemptionIn,
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        result = _execution_control.request_preemption(
+            neo,
+            task_id,
+            user,
+            reason=body.reason,
+            target_agent_id=body.target_agent_id,
+        )
+        if not result["requested"]:
+            return JSONResponse(status_code=409, content=result)
+        return result
+    finally:
+        neo.close()
+
+
+@app.post("/api/tasks/{task_id}/migrate")
+def api_migrate_task(
+    task_id: str,
+    body: TaskMigrationIn,
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        result = _execution_control.migrate(
+            neo,
+            task_id,
+            body.target_agent_id,
+            user,
+        )
+        if not result["migrated"]:
+            return JSONResponse(status_code=409, content=result)
+        return result
+    finally:
+        neo.close()
+
+
+@app.get("/api/fleet/migrations")
+def api_task_migrations(
+    task_id: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        events = _execution_control.list_events(neo, task_id=task_id, limit=limit)
+        return {"events": events, "count": len(events)}
+    finally:
+        neo.close()
 
 
 def _record_recovery_task_outcome(
