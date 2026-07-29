@@ -1,115 +1,187 @@
 # Bounded self-improvement cycle
 
-AssistX treats repository improvement as an evidence-gated control loop, not as
+AssistX treats repository improvement as an evidence-gated control loop, not
 an unrestricted agent prompt:
 
-`PROPOSED contract -> approved task -> bounded tools -> verification envelope
--> central acceptance -> skill profile -> routing/repair`
-
-## Work contracts
-
-Create review-first work with
-`POST /api/fleet/improvement-cycle/proposals`. A contract fixes:
-
-- the repository and exact repository-relative files that may change;
-- the model tier and corresponding file/diff budget;
-- the only permitted tool phases: inspect, patch, verify, inspect diff;
-- verification commands expressed as argv arrays, never shell strings;
-- mandatory clean-worktree, review, and iteration limits.
-
-`tool-small` work is capped at two files and 160 changed lines. Larger scopes
-must be deliberately assigned to a stronger tier. Paths containing traversal
-and verification executables outside the allowlist are rejected before a task
-is created.
-
-## Small-agent packet
-
-The Hermes adapter turns the contract into a deterministic four-step packet.
-It restricts the session to terminal, file, and code-execution toolsets and
-requires a machine-readable completion envelope containing:
-
-- exact changed files and total added/deleted lines;
-- the ordered tools used;
-- every required verification argv and its return code;
-- a factual summary and optional next candidate.
-
-Repository names are resolved through
-`ASSISTX_REPOSITORY_ROOTS_JSON`, for example:
-
-```env
-ASSISTX_REPOSITORY_ROOTS_JSON={"auto-assist":"/home/scott/git/auto-assist"}
+```text
+PROPOSED contract -> operator approval -> fenced worker claim
+-> isolated worktree -> bounded tools -> executor verification
+-> signed evidence -> central acceptance -> skill profile
+-> optional repair proposal -> exact operator promotion
 ```
 
-Before the model runs, the adapter creates a detached per-task Git worktree
-under `ASSISTX_IMPROVEMENT_WORKTREE_ROOT`. The operator's base checkout may
-contain unrelated work without contaminating the attempt. After the model
-runs, the adapter independently reads Git status and numstat, validates every
-changed path, executes the contract's allowlisted argv commands with
-`shell=False`, exports a bounded binary-capable patch, signs the full evidence
-envelope, and removes the isolated worktree. Model-reported paths, diff sizes,
-and return codes are discarded in favor of this executor evidence.
+## Work contract
 
-Each code-capable node needs a signing identity:
+`POST /api/fleet/improvement-cycle/proposals` creates a review-first
+`PROPOSED` task. The request fixes the repository alias, exact
+repository-relative paths, model tier, objective, priority, and verification
+commands:
 
-```env
-ASSISTX_IMPROVEMENT_ATTESTATION_KEY_ID=node-id-v1
-ASSISTX_IMPROVEMENT_ATTESTATION_SECRET=replace-with-node-specific-secret
+```json
+{
+  "title": "Harden parser edge case",
+  "repository": "auto-assist",
+  "objective": "Reject an empty parser token and cover it with a unit test.",
+  "allowed_paths": [
+    "src/assistx/parser.py",
+    "tests/test_parser.py"
+  ],
+  "verification_commands": [
+    ["pytest", "-q", "tests/test_parser.py"]
+  ],
+  "recommended_tier": "tool-small",
+  "priority": "MEDIUM"
+}
 ```
 
-The control plane trusts only explicitly registered keys:
+Commands are argv arrays, never shell strings. Supported verification
+executables are defined by `ALLOWED_VERIFICATION_EXECUTABLES` in
+`src/assistx/improvement_cycle.py`; a task cannot broaden that global list.
+Absolute paths, traversal, control characters, unknown tiers, excessive paths,
+and unknown executables are rejected before task creation.
 
-```env
-ASSISTX_IMPROVEMENT_VERIFY_KEYS={"node-id-v1":"replace-with-node-specific-secret"}
+Tier budgets are:
+
+| Tier | Maximum files | Maximum added + deleted lines |
+|---|---:|---:|
+| `tool-small` | 2 | 160 |
+| `reasoning-mid` | 5 | 500 |
+| `reasoning-large` | 10 | 1,200 |
+
+All tiers also have a 512 KiB portable patch limit, two learning iterations,
+required review, an isolated worktree, and signed attestation.
+
+An authenticated operator moves the proposal to `READY`:
+
+```text
+POST /api/tasks/{task_id}/approve-proposal
 ```
 
-The claim ID is preserved through heartbeat and completion so a migrated or
-stale Hermes execution cannot report a result for a newer attempt.
+The agent cannot call this approval from its bounded work packet.
+
+## Small-agent work packet
+
+The Hermes adapter converts the contract into four deterministic phases:
+
+1. inspect only allowed files;
+2. apply one bounded patch;
+3. run the required verification commands;
+4. inspect and summarize the diff.
+
+The packet forbids network access, path expansion, dependency changes unless
+explicitly allowed, commits, pushes, pull requests, and success claims without
+verification.
+
+This structure lets a small model contribute inside a scope it can reliably
+handle. It does not trust the model to police that scope.
+
+## Isolated execution and evidence
+
+Repository aliases resolve only through `ASSISTX_REPOSITORY_ROOTS_JSON`.
+Before invoking the model, the worker:
+
+1. resolves the configured Git repository and captures its base HEAD;
+2. creates a detached per-task worktree under
+   `ASSISTX_IMPROVEMENT_WORKTREE_ROOT`;
+3. gives the model only the bounded packet;
+4. independently reads Git status and numstat;
+5. rejects paths or diff size outside the contract;
+6. runs the allowlisted argv checks with `shell=False`;
+7. exports a binary-capable patch up to 512 KiB;
+8. signs the complete evidence envelope with the node key;
+9. removes the isolated worktree.
+
+The operator's base checkout may contain unrelated work while an attempt runs;
+the detached attempt remains isolated. Promotion later requires that base
+checkout to be clean and still at the captured HEAD.
+
+Model-reported changed files, counts, and return codes are informational only.
+Central acceptance uses the executor's observations. The model subprocess does
+not receive the attestation secret, verification-key registry, repository-root
+registry, or worktree-root configuration.
+
+Evidence includes the repository, original HEAD, isolated workspace ID,
+changed paths, diff counts, ordered tool phases, verification results, patch,
+patch SHA-256, and HMAC attestation. List/status responses omit the raw patch.
 
 ## Central acceptance
 
-AssistX does not accept prose such as "done" as a code change. The completion
-endpoint changes a reported `DONE` to `FAILED` when evidence is missing, its
-node signature is absent or invalid, execution was not isolated, a path escapes
-the contract, the file/diff budget is exceeded, a tool phase is absent, the
-portable patch is missing, or a required verification command was not run
-successfully. Self-reported model evidence is rejected.
+A reported `DONE` becomes `FAILED` when the managed attempt lacks any required
+property, including:
 
-Every managed attempt becomes an `ImprovementAttempt`. It updates an
-`AgentSkillProfile` keyed by agent, model, and task family. The allocation
-engine uses a smoothed verified-success rate for bounded code changes, allowing
-small models that repeatedly pass real checks to earn more work while
-unreliable models lose placement value.
+- valid node signature and known key ID;
+- isolated execution and original HEAD;
+- permitted changed paths and bounded file/diff/patch size;
+- every required tool phase;
+- a portable patch whose digest matches the signed digest;
+- every exact verification command with a successful result.
+
+Accepted attempts become durable `ImprovementAttempt` records. Each updates an
+`AgentSkillProfile` keyed by agent, model, and task family. Allocation can then
+use verified, smoothed performance instead of treating model size or a prose
+claim as quality.
 
 ## Repair and learning
 
-A rejected attempt creates at most one idempotent, narrower, `PROPOSED` repair
-task per iteration. The repair:
+A rejected attempt may create one idempotent `PROPOSED` repair task for the next
+iteration. The repair:
 
-- carries the exact observed failure reasons as learned guidance;
+- carries the observed rejection reasons as learned guidance;
 - narrows the allowed scope to one file;
 - escalates one model tier;
 - remains inert until an operator approves it;
-- stops after two learning iterations.
+- stops after the second learning iteration.
 
-Current state is available from `GET /api/fleet/improvement-cycle` and appears
-in Operations under **Agent learning profiles**.
+This is the self-reinforcing part of the loop: observed execution quality
+changes later routing and produces a bounded follow-up. It does not grant the
+system permission to keep editing indefinitely.
+
+`GET /api/fleet/improvement-cycle?limit=100` returns attempts and learning
+profiles. Operations displays them under agent learning and verified patch
+candidates.
 
 ## Operator promotion
 
-Accepted attempts appear under **Verified patch candidates** without returning
-the raw patch in list responses. Promotion requires an authenticated operator
-to paste the exact signed SHA-256 fingerprint and provide a reason. The
-promotion endpoint:
+Only an accepted attempt can be promoted:
 
-1. verifies the node signature and patch digest again;
-2. requires the configured repository to remain at the attempt's original HEAD;
-3. requires a clean promotion target;
-4. validates every patch path against the original contract;
-5. runs `git apply --check`, applies the patch, and reruns verification;
-6. reverses the patch if verification fails;
-7. durably records the operator, reason, fingerprint, and outcome.
+```text
+POST /api/fleet/improvement-cycle/attempts/{attempt_id}/promote
+```
 
-Promotion deliberately leaves a reviewed, verified change in the configured
-worktree for the normal commit/push/PR release process. The loop still cannot
-commit, push, open pull requests, use the network, approve itself, or promote
-its own work.
+```json
+{
+  "fingerprint": "64-lowercase-hex-characters-from-the-signed-patch",
+  "reason": "Reviewed scope and verification evidence for release preparation."
+}
+```
+
+Promotion is serialized with a durable `PROMOTING` claim. A claim abandoned
+for ten minutes can be reclaimed. The promotion path:
+
+1. revalidates the node signature and patch digest;
+2. compares the pasted fingerprint in constant time;
+3. requires the repository to remain at the original HEAD;
+4. requires a clean promotion target;
+5. rechecks every patch path against the contract;
+6. runs `git apply --check`, applies, and reruns verification;
+7. reverses the patch when verification fails;
+8. records actor, reason, fingerprint, verification, and terminal status.
+
+Terminal promotion state is `PROMOTED` or `REJECTED`. A successful promotion
+leaves the reviewed patch uncommitted in the configured checkout. Commit,
+push, PR creation, merge, and deployment remain normal human-governed release
+steps.
+
+## Non-negotiable invariants
+
+- Proposal approval and patch promotion are operator actions.
+- A worker can mutate only the current claim and its isolated worktree.
+- A model cannot choose its repository root, signing key, executable allowlist,
+  promotion target, or release action.
+- Evidence is executor-observed and node-signed.
+- Learning changes placement value and proposes bounded repairs; it never
+  bypasses review.
+- Failed verification cannot leave a knowingly promoted patch applied.
+
+Deployment and incident procedures are in
+[`self-improvement-rollout.md`](self-improvement-rollout.md).

@@ -3,6 +3,12 @@
 Typed recovery is disabled until both the control plane and each node have an
 identity, signing keys, and explicit mutation allowlists.
 
+This runbook covers service recovery, durable reconciliation, checkpointing,
+and migration. Repository mutation uses a separate trust boundary and is
+documented in
+[`self-improvement-rollout.md`](self-improvement-rollout.md). A node may be
+enabled for one path without being enabled for the other.
+
 ## Identities and signing keys
 
 Generate independent random secrets for the runbook signer and every node.
@@ -154,6 +160,10 @@ FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
 Expired and stuck proposals reconcile automatically. Inspect drained nodes and
 failed rollback evidence before re-enabling automation.
 
+Stopping recovery execution does not disable ordinary task execution or
+bounded repository improvement. Drain or disable those authorities separately
+when an incident crosses trust boundaries.
+
 ## Operator controls and evidence
 
 - `/api/fleet/operations-readiness` reports required gates, key IDs, node
@@ -165,3 +175,8 @@ failed rollback evidence before re-enabling automation.
   task target and records the releasing actor.
 - Recovery evidence bundles are downloadable from Operations and include the
   proposal, execution evidence, and complete audit transition list.
+- `/api/fleet/controllers` exposes reconciler lease owner, expiry, fencing
+  token, checkpoint status, and last tick result.
+- `/api/fleet/migrations` exposes checkpoint/preemption/migration history.
+- The current authority matrix is maintained in
+  [`EXECUTION_AUTHORITY.md`](EXECUTION_AUTHORITY.md).

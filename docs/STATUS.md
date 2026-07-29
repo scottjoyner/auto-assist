@@ -1,4 +1,8 @@
-# AssistX Status - June 8, 2026
+# AssistX Paperclip cutover record - June 8, 2026
+
+> **Historical record:** This page preserves the June 2026 cutover state and
+> machine-specific observations. It is not the current system status. See
+> [`CURRENT_STATUS.md`](CURRENT_STATUS.md) for current capabilities and gaps.
 
 ## Current State
 
