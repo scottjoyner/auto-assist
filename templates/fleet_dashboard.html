@@ -80,6 +80,16 @@
     <div id="routing-map" class="table-wrap mt-3">Loading…</div>
   </section>
 
+  <section class="card half" id="section-benchmarks">
+    <div class="section-header">
+      <div>
+        <h3>Adaptive Benchmark Queue</h3>
+        <p class="kicker">Dry-run requests for loaded models with missing, stale, or low-confidence evidence.</p>
+      </div>
+    </div>
+    <div id="benchmark-queue" class="table-wrap mt-3">Loading…</div>
+  </section>
+
   <section class="card half" id="section-tasks">
     <div class="section-header">
       <div>
@@ -231,6 +241,7 @@
             <th>Node</th>
             <th>Loaded</th>
             <th>TPS</th>
+            <th>Quality</th>
             <th>Success</th>
             <th>Evidence</th>
             <th>Effective RVU/h</th>
@@ -249,6 +260,7 @@
           <td>${esc(item.node_id)}</td>
           <td>${item.loaded ? '<span class="badge ok">yes</span>' : 'no'}</td>
           <td>${item.tokens_per_second?.toFixed(1) ?? '—'}</td>
+          <td title="${esc(item.quality_sample_count + ' evaluated outcomes')}">${item.quality_score == null ? '—' : (item.quality_score * 100).toFixed(0) + '%'}</td>
           <td>${item.success_rate == null ? '—' : (item.success_rate * 100).toFixed(0) + '%'}</td>
           <td title="${esc(item.sample_count + ' samples')}">${(item.confidence * 100).toFixed(0)}%</td>
           <td><strong>${item.effective_rvu_per_hour?.toFixed(1) ?? '—'}</strong></td>
@@ -282,6 +294,30 @@
           <td class="muted">${esc(fallbacks)}</td>
         </tr>
       `;
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  }
+
+  function renderBenchmarkQueue(data) {
+    const wrap = document.getElementById('benchmark-queue');
+    const requests = data?.benchmark_plan?.requests || [];
+    if (!requests.length) {
+      wrap.innerHTML = '<div class="muted">No benchmark work currently required</div>';
+      return;
+    }
+    let html = `<table class="dashboard-table"><thead><tr>
+      <th>Priority</th><th>Node</th><th>Model</th><th>Task Family</th><th>Why</th><th>Safety</th>
+    </tr></thead><tbody>`;
+    for (const item of requests.slice(0, 100)) {
+      html += `<tr>
+        <td><strong>${esc(item.priority)}</strong></td>
+        <td>${esc(item.node_id)}</td>
+        <td><code>${esc(item.model_id)}</code></td>
+        <td>${esc(item.task_family)}</td>
+        <td>${esc((item.reasons || []).join('; '))}</td>
+        <td><span class="badge warn">dry run</span> <span class="badge">loaded only</span></td>
+      </tr>`;
     }
     html += '</tbody></table>';
     wrap.innerHTML = html;
@@ -376,6 +412,7 @@
       renderNodes(data);
       renderModelMatrix(data);
       renderRouting(data);
+      renderBenchmarkQueue(data);
       renderTasks(data);
       renderCompletions(data);
       renderHardware(data);
