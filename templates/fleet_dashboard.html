@@ -90,6 +90,17 @@
     <div id="routing-regret" class="table-wrap mt-3">Loading…</div>
   </section>
 
+  <section class="card half" id="section-loadout-simulation">
+    <div class="section-header">
+      <div>
+        <h3>Proposed Loadout</h3>
+        <p class="kicker">Simulation-only placement diff with RAM, evidence, and redundancy guardrails.</p>
+      </div>
+      <span class="badge warn">not executable</span>
+    </div>
+    <div id="loadout-simulation" class="table-wrap mt-3">Loading…</div>
+  </section>
+
   <section class="card half" id="section-benchmarks">
     <div class="section-header">
       <div>
@@ -347,6 +358,38 @@
     wrap.innerHTML = html;
   }
 
+  function renderLoadoutSimulation(data) {
+    const wrap = document.getElementById('loadout-simulation');
+    const simulation = data?.loadout_simulation || {};
+    const actions = simulation.actions || [];
+    if (!actions.length) {
+      wrap.innerHTML = '<div class="muted">No loadout simulation available</div>';
+      return;
+    }
+    let html = `<div class="summary-line">
+      <span class="badge">Keep: ${esc(simulation.summary?.keep ?? 0)}</span>
+      <span class="badge">Defer: ${esc(simulation.summary?.defer ?? 0)}</span>
+      <span class="badge">Replicate: ${esc(simulation.summary?.replicate_candidates ?? 0)}</span>
+      <span class="badge">Unload candidates: ${esc(simulation.summary?.unload_candidates ?? 0)}</span>
+    </div><table class="dashboard-table mt-2"><thead><tr>
+      <th>Action</th><th>Node</th><th>Model</th><th>Est. RAM</th><th>RVU/h</th><th>Confidence</th><th>Reason</th>
+    </tr></thead><tbody>`;
+    for (const item of actions) {
+      const cls = item.action === 'keep' ? 'ok' : item.action === 'unload_candidate' ? 'err' : 'warn';
+      html += `<tr>
+        <td><span class="badge ${cls}">${esc(item.action)}</span></td>
+        <td>${esc(item.node_id)}</td>
+        <td><code>${esc(item.model_id)}</code></td>
+        <td>${item.estimated_ram_gib?.toFixed(1) ?? '—'} GiB</td>
+        <td>${item.effective_rvu_per_hour?.toFixed(1) ?? '—'}</td>
+        <td>${item.confidence == null ? '—' : (item.confidence * 100).toFixed(0) + '%'}</td>
+        <td>${esc(item.reason)}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  }
+
   function renderBenchmarkQueue(data) {
     const wrap = document.getElementById('benchmark-queue');
     const controller = data?.benchmark_controller || {};
@@ -467,6 +510,7 @@
       renderModelMatrix(data);
       renderRouting(data);
       renderRoutingRegret(data);
+      renderLoadoutSimulation(data);
       renderBenchmarkQueue(data);
       renderTasks(data);
       renderCompletions(data);
