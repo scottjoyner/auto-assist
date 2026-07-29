@@ -154,13 +154,14 @@
 {% block scripts %}
 <script>
 (async () => {
-  const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString().replace(/[&<>"']/g, c => ({'&':'&','<':'<','>':'>','"':'"',"'":'''}[c])));
+  const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])));
   const short = window.UIUtils?.shortId || ((v, n = 8) => (v || "").toString().slice(0, n));
   const relTime = (ts) => ts ? `${((Date.now() - ts) / 1000).toFixed(1)}s ago` : 'never';
 
   let autoRefresh = true;
   let refreshTimer = null;
   let benchmarkControllerEnabled = false;
+  let loadoutActions = [];
 
   function row(label, value, cls = '') {
     const div = document.createElement('div');
@@ -362,6 +363,7 @@
     const wrap = document.getElementById('loadout-simulation');
     const simulation = data?.loadout_simulation || {};
     const actions = simulation.actions || [];
+    loadoutActions = actions;
     if (!actions.length) {
       wrap.innerHTML = '<div class="muted">No loadout simulation available</div>';
       return;
@@ -372,9 +374,9 @@
       <span class="badge">Replicate: ${esc(simulation.summary?.replicate_candidates ?? 0)}</span>
       <span class="badge">Unload candidates: ${esc(simulation.summary?.unload_candidates ?? 0)}</span>
     </div><table class="dashboard-table mt-2"><thead><tr>
-      <th>Action</th><th>Node</th><th>Model</th><th>Est. RAM</th><th>RVU/h</th><th>Confidence</th><th>Reason</th>
+      <th>Action</th><th>Node</th><th>Model</th><th>Est. RAM</th><th>RVU/h</th><th>Confidence</th><th>Reason</th><th>Control</th>
     </tr></thead><tbody>`;
-    for (const item of actions) {
+    for (const [index, item] of actions.entries()) {
       const cls = item.action === 'keep' ? 'ok' : item.action === 'unload_candidate' ? 'err' : 'warn';
       html += `<tr>
         <td><span class="badge ${cls}">${esc(item.action)}</span></td>
@@ -384,10 +386,39 @@
         <td>${item.effective_rvu_per_hour?.toFixed(1) ?? '—'}</td>
         <td>${item.confidence == null ? '—' : (item.confidence * 100).toFixed(0) + '%'}</td>
         <td>${esc(item.reason)}</td>
+        <td>${item.requires_approval && ['replicate_candidate','unload_candidate'].includes(item.action)
+          ? '<button class="btn secondary loadout-propose" data-index="' + index + '">Propose</button>'
+          : '—'}</td>
       </tr>`;
     }
     html += '</tbody></table>';
     wrap.innerHTML = html;
+    wrap.querySelectorAll('.loadout-propose').forEach(button => {
+      button.addEventListener('click', () => proposeLoadoutAction(Number(button.dataset.index)));
+    });
+  }
+
+  async function proposeLoadoutAction(index) {
+    const action = loadoutActions[index];
+    if (!action || !confirm(`Create guarded proposal: ${action.action} ${action.model_id} on ${action.node_id}?`)) return;
+    const proposed = await fetch('/api/fleet/loadout-control/proposals', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action})
+    });
+    const proposal = await proposed.json();
+    if (!proposed.ok) return alert(proposal.detail || 'Proposal failed');
+    const typed = prompt(`Proposal created. To approve the exact immutable action, paste this fingerprint:\n\n${proposal.fingerprint}`);
+    if (typed !== proposal.fingerprint) return alert('Proposal remains unapproved; fingerprint did not match.');
+    const approved = await fetch(`/api/fleet/loadout-control/proposals/${proposal.id}/approve`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({fingerprint: typed})
+    });
+    if (!approved.ok) return alert('Approval failed');
+    if (!confirm('Approved. Execute now? Live state will be revalidated and failures rolled back.')) return;
+    const executed = await fetch(`/api/fleet/loadout-control/proposals/${proposal.id}/execute`, {method: 'POST'});
+    const result = await executed.json();
+    alert(result.blocked ? `Blocked: ${result.reason}` : result.verified ? 'Completed and verified.' : 'Verification failed; rollback attempted.');
+    await refresh();
   }
 
   function renderBenchmarkQueue(data) {
