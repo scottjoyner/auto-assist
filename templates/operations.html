@@ -45,7 +45,10 @@
   </section>
 
   <section id="view-work" class="ops-view">
-    <article class="card"><div class="section-header"><div><h2>Task management</h2><p class="kicker">Live queue across proposed, ready, claimed, and running states.</p></div></div><div id="work-list" class="ops-list mt-4"></div></article>
+    <div class="ops-overview">
+      <article class="card"><div class="section-header"><div><h2>Task management</h2><p class="kicker">Live queue across proposed, ready, claimed, and running states.</p></div></div><div id="work-list" class="ops-list mt-4"></div></article>
+      <aside class="card"><h3>Allocation recommendations</h3><p class="kicker">Best measured placement without automatic dispatch.</p><div id="allocation-list" class="ops-list mt-3"></div></aside>
+    </div>
   </section>
 
   <section id="view-fleet" class="ops-view">
@@ -68,6 +71,7 @@
   const esc = window.UIUtils.escapeHtml;
   let fleet = {};
   let tasks = [];
+  let recovery = {};
   const toast = (message) => { const el = document.getElementById('toast'); el.textContent = message; el.style.display = 'block'; setTimeout(() => el.style.display = 'none', 4500); };
   const api = async (url, options) => { const response = await fetch(url, options); const data = await response.json(); if (!response.ok) throw new Error(data.detail || data.reason || `HTTP ${response.status}`); return data; };
   const statusClass = (status) => ['RUNNING','SUCCESS','COMPLETED'].includes(status) ? 'ok' : ['FAILURE','FAILED','BLOCKED'].includes(status) ? 'err' : 'warn';
@@ -82,11 +86,12 @@
     const incidents = fleet.health_plan?.incidents || [];
     const running = tasks.filter(t => ['CLAIMED','RUNNING'].includes(t.status));
     const proposals = tasks.filter(t => t.status === 'PROPOSED');
+    const recoveryProposals = recovery.proposals || [];
     const slots = fleet.capacity_forecast?.summary?.available_slots;
     document.getElementById('kpi-attention').textContent = incidents.length;
     document.getElementById('kpi-running').textContent = running.length;
     document.getElementById('kpi-capacity').textContent = slots ?? '—';
-    document.getElementById('kpi-approvals').textContent = proposals.length;
+    document.getElementById('kpi-approvals').textContent = proposals.length + recoveryProposals.filter(p => p.status === 'PROPOSED').length;
     const healthy = fleet.summary?.healthy_nodes || 0, total = fleet.summary?.total_nodes || 0;
     const dot = document.getElementById('health-dot');
     dot.className = `ops-health-dot ${total && healthy === total && !incidents.length ? 'ok' : incidents.some(i => i.severity === 'critical') ? 'bad' : ''}`;
@@ -101,14 +106,18 @@
     document.getElementById('recommendation').innerHTML = bottlenecks.length ? bottlenecks.map(x => `<div class="panel">${esc(x)}</div>`).join('') : '<div class="panel">Capacity is stable. Prioritize benchmark gaps and reviewed improvement proposals.</div>';
     const visible = tasks.filter(t => ['READY','CLAIMED','RUNNING','PAUSED','FAILURE'].includes(t.status));
     document.getElementById('work-list').innerHTML = visible.length ? visible.map(t => `<div class="ops-item"><span class="badge ${statusClass(t.status)}">${esc(t.status)}</span><div class="ops-item-main"><div class="ops-item-title">${esc(title(t))}</div><div class="ops-item-meta">${esc(t.kind || t.task_type || 'task')} · ${esc(t.priority || 'MEDIUM')} · ${esc((t.claimed_by || t.target_agent_id || 'unassigned'))}</div></div></div>`).join('') : '<div class="ops-empty">No queued or running work.</div>';
+    const allocations = fleet.allocation_plan?.recommendations || [];
+    document.getElementById('allocation-list').innerHTML = allocations.length ? allocations.slice(0, 20).map(a => `<div class="panel"><strong>${esc(a.title || a.task_id)}</strong><div class="ops-item-meta">${a.recommended ? `${esc(a.recommended.node_id)} · ${esc(a.recommended.model_id || 'runtime default')} · score ${esc(a.recommended.score)}` : esc(a.blocked_reason)}</div></div>`).join('') : '<div class="ops-empty">No ready work needs placement.</div>';
     const nodes = fleet.nodes || [];
     document.getElementById('node-grid').innerHTML = nodes.length ? nodes.map(n => { const used = n.inflight_tasks || 0, cap = n.max_concurrent || 1; return `<div class="ops-node"><div class="ops-node-head"><div><strong>${esc(n.display_name || n.hostname)}</strong><div class="ops-item-meta">${esc(n.role || 'general')} · ${esc(n.ip || '')}</div></div><span class="badge ${n.service_ok ? 'ok' : 'err'}">${n.service_ok ? 'online' : 'offline'}</span></div><div class="ops-meter"><span style="width:${Math.min(100, used / cap * 100)}%"></span></div><div class="ops-item-meta">${used}/${cap} slots · ${n.hardware?.ram_gib ?? '—'} GiB RAM · ${n.hardware?.vram_gib ?? '—'} GiB VRAM</div><div class="ops-models">${(n.loaded_models || []).map(m => `<span class="badge">${esc(m)}</span>`).join('') || '<span class="muted">No model reported</span>'}</div></div>`; }).join('') : '<div class="ops-empty">No nodes reported.</div>';
-    document.getElementById('proposal-list').innerHTML = proposals.length ? proposals.map(t => `<div class="ops-item"><span class="ops-severity info"></span><div class="ops-item-main"><div class="ops-item-title">${esc(title(t))}</div><div class="ops-item-meta">${esc(t.kind || 'improvement')} · review required</div></div><button class="btn approve" data-id="${esc(t.id)}">Approve</button></div>`).join('') : '<div class="ops-empty">No proposals awaiting approval.</div>';
+    const improvementRows = proposals.map(t => `<div class="ops-item"><span class="ops-severity info"></span><div class="ops-item-main"><div class="ops-item-title">${esc(title(t))}</div><div class="ops-item-meta">${esc(t.kind || 'improvement')} · analysis proposal</div></div><button class="btn approve" data-id="${esc(t.id)}">Approve</button></div>`);
+    const recoveryRows = recoveryProposals.filter(p => ['PROPOSED','APPROVED','DISPATCHED'].includes(p.status)).map(p => `<div class="ops-item"><span class="ops-severity ${p.plan?.risk === 'critical' ? 'critical' : ''}"></span><div class="ops-item-main"><div class="ops-item-title">${esc(p.plan?.action)} on ${esc(p.plan?.node_id || 'fleet')}</div><div class="ops-item-meta">recovery · ${esc(p.status)} · ${esc(p.plan?.risk || 'unknown')} risk</div></div><div class="actions">${p.status === 'PROPOSED' ? `<button class="btn recovery-approve" data-id="${esc(p.id)}" data-fingerprint="${esc(p.fingerprint)}">Approve</button>` : p.status === 'APPROVED' ? `<button class="btn recovery-execute" data-id="${esc(p.id)}">Dispatch</button>` : `<button class="btn secondary recovery-outcome" data-id="${esc(p.id)}" data-verified="true">Verified</button><button class="btn secondary recovery-outcome" data-id="${esc(p.id)}" data-verified="false">Failed</button>`}</div></div>`);
+    document.getElementById('proposal-list').innerHTML = improvementRows.concat(recoveryRows).join('') || '<div class="ops-empty">No proposals awaiting approval.</div>';
   }
 
   async function refresh() {
     try {
-      [fleet, tasks] = await Promise.all([api('/api/fleet/dashboard'), api('/api/tasks?limit=200').then(x => x.items || x.tasks || x)]);
+      [fleet, tasks, recovery] = await Promise.all([api('/api/fleet/dashboard'), api('/api/tasks?limit=200').then(x => x.items || x.tasks || x), api('/api/fleet/recovery-control')]);
       if (!Array.isArray(tasks)) tasks = [];
       render();
     } catch (error) { toast(`Refresh failed: ${error.message}`); }
@@ -123,11 +132,14 @@
   });
   document.getElementById('reconcile').addEventListener('click', async () => { try { await api('/api/fleet/self-healing/reconcile', {method:'POST'}); toast('Fleet scan complete.'); await refresh(); } catch (error) { toast(error.message); } });
   document.addEventListener('click', async event => {
-    const diagnose = event.target.closest('.diagnose'), quarantine = event.target.closest('.quarantine'), approve = event.target.closest('.approve');
+    const diagnose = event.target.closest('.diagnose'), quarantine = event.target.closest('.quarantine'), approve = event.target.closest('.approve'), recoveryApprove = event.target.closest('.recovery-approve'), recoveryExecute = event.target.closest('.recovery-execute'), recoveryOutcome = event.target.closest('.recovery-outcome');
     try {
-      if (diagnose) { await api('/api/tasks', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title:`Diagnose fleet incident on ${diagnose.dataset.node || 'fleet'}`, kind:'fleet_incident_diagnosis', priority:'HIGH', required_capabilities:['llm'], idempotency_key:`diagnose:${diagnose.dataset.key}`, payload:{incident_key:diagnose.dataset.key, node_id:diagnose.dataset.node, execution_mode:'analysis_only'}})}); toast('Diagnosis task created.'); await refresh(); }
+      if (diagnose) { const diagnosis = await api(`/api/fleet/diagnoses/${encodeURIComponent(diagnose.dataset.key)}`, {method:'POST'}); await api('/api/fleet/recovery-control/proposals', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({diagnosis})}); toast(`Diagnosis captured at ${Math.round(diagnosis.confidence * 100)}% confidence; recovery proposed.`); switchView('improvements'); await refresh(); }
       if (quarantine && confirm('Quarantine this node from new work?')) { await api(`/api/fleet/self-healing/incidents/${encodeURIComponent(quarantine.dataset.key)}/quarantine`, {method:'POST'}); toast('Node quarantined.'); await refresh(); }
       if (approve && confirm('Approve this analysis-only proposal for scheduling?')) { await api(`/api/tasks/${encodeURIComponent(approve.dataset.id)}/approve-proposal`, {method:'POST'}); toast('Proposal approved and queued.'); await refresh(); }
+      if (recoveryApprove) { const typed = prompt(`Approve the exact recovery plan by pasting its fingerprint:\\n\\n${recoveryApprove.dataset.fingerprint}`); if (typed === recoveryApprove.dataset.fingerprint) { await api(`/api/fleet/recovery-control/proposals/${encodeURIComponent(recoveryApprove.dataset.id)}/approve`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({fingerprint:typed})}); toast('Recovery plan approved.'); await refresh(); } }
+      if (recoveryExecute && confirm('Dispatch this approved guarded recovery runbook?')) { await api(`/api/fleet/recovery-control/proposals/${encodeURIComponent(recoveryExecute.dataset.id)}/execute`, {method:'POST'}); toast('Recovery runbook dispatched.'); await refresh(); }
+      if (recoveryOutcome) { const verified = recoveryOutcome.dataset.verified === 'true'; const note = prompt('Record the verification evidence or operator observation:') || ''; await api(`/api/fleet/recovery-control/proposals/${encodeURIComponent(recoveryOutcome.dataset.id)}/outcome`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({verified, evidence:{operator_note:note, recorded_from:'operations_ui'}})}); toast(verified ? 'Recovery verified and added to improvement memory.' : 'Failed verification recorded for follow-up improvement.'); await refresh(); }
     } catch (error) { toast(error.message); }
   });
   refresh(); setInterval(refresh, 15000);
