@@ -30,6 +30,7 @@ from .deps import load_aioredis_module, load_prometheus_client, load_queue_class
 from .logging_utils import install_logging_middleware, setup_logging
 from .runtime import build_runtime_health, runtime_profile, validate_runtime_configuration
 from .benchmark_controller import BenchmarkController, publish_benchmark_outcome
+from .controller_runtime import Neo4jControllerStore
 from .loadout_control import LoadoutControlPlane, Neo4jLoadoutStore
 from .capacity_forecast import build_capacity_forecast
 from .allocation_engine import build_allocation_plan
@@ -1493,6 +1494,31 @@ def api_benchmark_controller_status(user: str = Depends(auth)):
     return _benchmark_controller.status()
 
 
+@app.get("/api/fleet/controllers")
+def api_fleet_controller_status(user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        controllers = Neo4jControllerStore(neo).list_status()
+        return {
+            "controllers": controllers,
+            "summary": {
+                "registered": len(controllers),
+                "leaders": sum(
+                    1
+                    for controller in controllers
+                    if controller["lease"].get("is_leader")
+                ),
+                "failed": sum(
+                    1
+                    for controller in controllers
+                    if controller["checkpoint"].get("status") == "FAILED"
+                ),
+            },
+        }
+    finally:
+        neo.close()
+
+
 @app.post("/api/fleet/benchmark-controller/control")
 def api_benchmark_controller_control(body: BenchmarkControlIn, user: str = Depends(auth)):
     return _benchmark_controller.set_enabled(body.enabled)
@@ -2075,10 +2101,12 @@ def api_fleet_dashboard(user: str = Depends(auth)):
 
     controls: dict[str, Any] = {"nodes": [], "audit": []}
     active_reservations: list[dict[str, Any]] = []
+    controllers: list[dict[str, Any]] = []
     neo = _neo()
     try:
         controls = _self_healing.list_node_controls(neo)
         active_reservations = neo.list_active_allocation_reservations()
+        controllers = Neo4jControllerStore(neo).list_status()
     except Exception as exc:
         router_errors.append(f"assistx-control-state: {str(exc)[:240]}")
     finally:
@@ -2131,6 +2159,7 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         "value_matrix": value_matrix,
         "benchmark_plan": benchmark_plan,
         "benchmark_controller": _benchmark_controller.status(),
+        "controllers": controllers,
         "routing_regret": routing_regret,
         "loadout_simulation": loadout_simulation,
         "capacity_forecast": capacity_forecast,

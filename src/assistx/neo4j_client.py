@@ -168,6 +168,8 @@ class Neo4jClient:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (a:RecoveryAuditEvent) REQUIRE a.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (a:AllocationReservation) REQUIRE a.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (e:FleetControlEvent) REQUIRE e.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (c:ControllerLease) REQUIRE c.controller_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (c:ControllerCheckpoint) REQUIRE c.controller_id IS UNIQUE",
 
             # Helpful indexes
             "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.status)",
@@ -222,6 +224,8 @@ class Neo4jClient:
             "CREATE INDEX IF NOT EXISTS FOR (a:AllocationReservation) ON (a.node_id)",
             "CREATE INDEX IF NOT EXISTS FOR (e:FleetControlEvent) ON (e.node_id)",
             "CREATE INDEX IF NOT EXISTS FOR (e:FleetControlEvent) ON (e.created_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (c:ControllerLease) ON (c.expires_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (c:ControllerCheckpoint) ON (c.updated_at_ts)",
             # Phase 2 Swarm schema
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SwarmNode) REQUIRE n.node_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (e:ServiceEndpoint) REQUIRE e.endpoint_id IS UNIQUE",

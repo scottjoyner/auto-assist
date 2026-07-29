@@ -58,6 +58,26 @@ Compose services used for deployment must reference an image environment
 variable, such as `image: ${ASSISTX_API_IMAGE}`. Recovery requests must provide
 an immutable image reference containing `@sha256:`.
 
+## Durable controller leadership
+
+Recovery reconciliation uses a Neo4j-backed `ControllerLease` and
+`ControllerCheckpoint`. Every leadership transfer increments a fencing token.
+A controller must still own the unexpired lease with the same token when it
+commits a tick result; work produced by a stale leader is rejected.
+
+Multiple API replicas may run the reconciler. Non-leaders remain in standby,
+completed tick keys are replay-safe, and failed ticks remain retryable with
+their bounded error result recorded in the checkpoint.
+
+The default controller instance identity contains the hostname, process ID, and
+a random boot suffix. Set `ASSISTX_CONTROLLER_INSTANCE_ID` only when the
+deployment platform supplies a unique replica identity. Never configure the
+same fixed identity on multiple live replicas.
+
+Controller ownership, lease expiry, fencing token, attempt count, and last tick
+result are available from `GET /api/fleet/controllers` and the Operations
+workspace.
+
 ## Canary sequence
 
 Enable one non-critical node first:

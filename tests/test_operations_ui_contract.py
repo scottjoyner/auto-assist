@@ -22,6 +22,8 @@ def test_operations_workspace_exposes_core_operator_flows():
         "node-maintenance",
         "node-quarantine",
         "Download evidence",
+        "Controller leadership",
+        'id="controller-list"',
         "refreshFailures",
     ):
         assert contract in template

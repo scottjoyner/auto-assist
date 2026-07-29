@@ -53,6 +53,13 @@ def test_ensure_schema_declares_migration_constraints_and_indexes():
             and ".id IS UNIQUE" in statement
             for statement in driver.statements
         )
+    for label in ("ControllerLease", "ControllerCheckpoint"):
+        assert any(
+            f":{label})" in statement
+            and "REQUIRE" in statement
+            and ".controller_id IS UNIQUE" in statement
+            for statement in driver.statements
+        )
 
     assert "FOR (t:Task)            ON (t.status)" in schema
     assert "FOR (t:Task)            ON (t.kind)" in schema
@@ -60,4 +67,5 @@ def test_ensure_schema_declares_migration_constraints_and_indexes():
     assert "FOR (r:FleetRecovery) ON (r.status)" in schema
     assert "FOR (a:AllocationReservation) ON (a.expires_at_ts)" in schema
     assert "FOR (e:FleetControlEvent) ON (e.created_at_ts)" in schema
+    assert "FOR (c:ControllerLease) ON (c.expires_at_ts)" in schema
     assert driver.databases == ["assistx_test"]

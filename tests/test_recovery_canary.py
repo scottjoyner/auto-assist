@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from assistx.controller_runtime import Neo4jControllerStore
 from assistx.recovery_control import Neo4jRecoveryStore, RecoveryControlPlane
 from assistx.recovery_runbooks import RecoveryRunbookExecutor, build_runbook, sign_runbook
 from assistx.self_healing import SelfHealingController
@@ -7,6 +8,47 @@ from assistx.self_healing import SelfHealingController
 
 def test_recovery_lifecycle_canary_with_real_neo4j(seeded_neo4j, monkeypatch, tmp_path):
     neo = seeded_neo4j
+    controller_store = Neo4jControllerStore(neo)
+    first_lease = controller_store.acquire(
+        "canary-controller", "instance-a", now_ms=1000, ttl_ms=1000
+    )
+    blocked_lease = controller_store.acquire(
+        "canary-controller", "instance-b", now_ms=1500, ttl_ms=1000
+    )
+    failover_lease = controller_store.acquire(
+        "canary-controller", "instance-b", now_ms=2001, ttl_ms=1000
+    )
+    assert first_lease["fencing_token"] == 1
+    assert blocked_lease is None
+    assert failover_lease["fencing_token"] == 2
+    begun = controller_store.begin_tick(
+        "canary-controller",
+        "instance-b",
+        2,
+        "canary-tick-1",
+        now_ms=2001,
+    )
+    assert begun["started"] is True
+    assert controller_store.finish_tick(
+        "canary-controller",
+        "instance-b",
+        2,
+        "canary-tick-1",
+        now_ms=2100,
+        status="SUCCEEDED",
+        result={"reconciled": 1},
+    )
+    replay = controller_store.begin_tick(
+        "canary-controller",
+        "instance-b",
+        2,
+        "canary-tick-1",
+        now_ms=2101,
+    )
+    assert replay["started"] is False
+    controller_status = controller_store.list_status(now_ms=2101)
+    assert controller_status[0]["checkpoint"]["result"]["reconciled"] == 1
+
     with neo._session() as session:
         session.run(
             """
