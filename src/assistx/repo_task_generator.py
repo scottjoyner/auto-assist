@@ -11,6 +11,7 @@ Scans git repositories and creates LLM tasks for:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -38,6 +39,12 @@ REPO_ROOTS = [
 
 REPO_TASK_INTERVAL = int(os.getenv("REPO_TASK_INTERVAL", "300"))  # 5 minutes
 MAX_TASKS_PER_CYCLE = int(os.getenv("REPO_MAX_TASKS_PER_CYCLE", "20"))
+REPO_TASK_GENERATOR_ENABLED = os.getenv(
+    "ASSISTX_REPO_TASK_GENERATOR_ENABLED", "false"
+).lower() in {"1", "true", "yes", "on"}
+REPO_TASK_AUTO_READY = os.getenv(
+    "ASSISTX_REPO_TASK_AUTO_READY", "false"
+).lower() in {"1", "true", "yes", "on"}
 TASK_KINDS = [
     "code_analysis",
     "doc_generation",
@@ -179,7 +186,7 @@ Identify:
 6. **Supply Chain** - Transitive dependency risks
 7. **Modern Alternatives** - Better maintained libraries""",
 
-    "performance_review": """Review": """Performance review of the following code:
+    "performance_review": """Performance review of the following code:
 
 **File:** {rel_path}
 **Repository:** {repo_name}
@@ -319,7 +326,7 @@ def _create_task_payload(kind: str, repo_info: Dict, file_path: Path, code: str)
 
 
 def _create_tasks_for_repo(repo_path: Path, max_per_repo: int = 5) -> List[Dict]:
-    """Generate tasks for a single repository."""
+    """Generate deterministic, review-first improvement proposals."""
     repo_info = _get_repo_info(repo_path)
     if not repo_info:
         return []
@@ -329,8 +336,12 @@ def _create_tasks_for_repo(repo_path: Path, max_per_repo: int = 5) -> List[Dict]
         return []
     
     tasks = []
-    import random
-    random.shuffle(code_files)
+    code_files.sort(
+        key=lambda path: (
+            -path.stat().st_mtime,
+            str(path.relative_to(repo_path)),
+        )
+    )
     
     for file_path in code_files[:max_per_repo]:
         try:
@@ -338,16 +349,29 @@ def _create_tasks_for_repo(repo_path: Path, max_per_repo: int = 5) -> List[Dict]
             if len(code.strip()) < 50:  # Skip tiny files
                 continue
             
-            # Pick a random task kind
-            kind = random.choice(TASK_KINDS)
+            relative_path = str(file_path.relative_to(repo_path))
+            selector = hashlib.sha256(
+                f"{repo_info['name']}:{relative_path}:{repo_info.get('commit')}".encode()
+            ).digest()[0]
+            kind = TASK_KINDS[selector % len(TASK_KINDS)]
             payload = _create_task_payload(kind, repo_info, file_path, code)
+            proposal_key = hashlib.sha256(
+                f"{repo_info['name']}:{relative_path}:{repo_info.get('commit')}:{kind}".encode()
+            ).hexdigest()[:24]
             
             tasks.append({
+                "id": f"repo-proposal-{proposal_key}",
                 "title": f"[{kind}] {repo_info['name']}: {file_path.relative_to(repo_path)}",
                 "kind": f"repo_{kind}",
-                "status": "READY",
+                "status": "READY" if REPO_TASK_AUTO_READY else "PROPOSED",
                 "required_capabilities": ["llm"],
-                "payload": payload,
+                "payload": {
+                    **payload,
+                    "proposal_key": proposal_key,
+                    "source_commit": repo_info.get("commit"),
+                    "requires_approval": not REPO_TASK_AUTO_READY,
+                    "execution_mode": "analysis_only",
+                },
             })
         except Exception as e:
             print(f"Error creating task for {file_path}: {e}")
@@ -418,7 +442,7 @@ def _persist_tasks(tasks: List[Dict]) -> int:
                         "title": task["title"],
                         "kind": task["kind"],
                         "status": task["status"],
-                        "caps": json.dumps(task["required_capabilities"]),
+                        "caps": task["required_capabilities"],
                         "payload": json.dumps(task["payload"]),
                     },
                 )
@@ -470,6 +494,9 @@ def _repo_task_loop() -> None:
 def start_repo_task_generator() -> None:
     """Start the repo task generator daemon thread."""
     global _repo_task_thread
+    if not REPO_TASK_GENERATOR_ENABLED:
+        print("[repo_task_generator] Disabled; set ASSISTX_REPO_TASK_GENERATOR_ENABLED=true to enable proposals")
+        return
     if _repo_task_thread and _repo_task_thread.is_alive():
         return
     
