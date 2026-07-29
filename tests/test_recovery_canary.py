@@ -137,7 +137,7 @@ def test_recovery_lifecycle_canary_with_real_neo4j(seeded_neo4j, monkeypatch, tm
         "canary-operator",
     )
     assert released["released"] is True
-    assert neo.get_task(release_task["task_id"])["target_agent_id"] is None
+    assert neo.get_task(release_task["task_id"]).get("target_agent_id") is None
 
     healing = SelfHealingController()
     controlled = healing.set_node_control(
