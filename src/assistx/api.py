@@ -30,6 +30,7 @@ from .deps import load_aioredis_module, load_prometheus_client, load_queue_class
 from .logging_utils import install_logging_middleware, setup_logging
 from .runtime import build_runtime_health, runtime_profile, validate_runtime_configuration
 from .benchmark_controller import BenchmarkController, publish_benchmark_outcome
+from .loadout_control import LoadoutControlPlane, Neo4jLoadoutStore
 
 CONTENT_TYPE_LATEST, generate_latest = load_prometheus_client()
 redis = load_redis_module()
@@ -159,6 +160,14 @@ class TaskCompleteIn(BaseModel):
 
 class BenchmarkControlIn(BaseModel):
     enabled: bool
+
+
+class LoadoutProposalIn(BaseModel):
+    action: Dict[str, Any]
+
+
+class LoadoutApprovalIn(BaseModel):
+    fingerprint: str
 
 
 class TaskCreateIn(BaseModel):
@@ -651,6 +660,7 @@ def _neo() -> Neo4jClient:
 
 _neo_fleet_instance: Optional[Neo4jClient] = None
 _benchmark_controller = BenchmarkController()
+_loadout_control = LoadoutControlPlane()
 
 def _neo_fleet() -> Neo4jClient:
     """Dedicated Neo4j client/pool for high-concurrency fleet executor endpoints
@@ -1406,6 +1416,62 @@ def api_benchmark_controller_tick(
         neo.close()
 
 
+@app.get("/api/fleet/loadout-control")
+def api_loadout_control_status(user: str = Depends(auth)):
+    return {
+        "execution_enabled": _loadout_control.execution_enabled,
+        "unsafe_direct_enabled": os.getenv("ASSISTX_UNSAFE_DIRECT_LOADOUT_ENABLED", "false").lower() in {"1", "true", "yes"},
+        "flow": ["propose", "approve_fingerprint", "revalidate_live_state", "execute", "verify", "rollback_on_failure"],
+    }
+
+
+@app.post("/api/fleet/loadout-control/proposals")
+def api_loadout_propose(body: LoadoutProposalIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        return _loadout_control.propose(Neo4jLoadoutStore(neo), body.action, user)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/loadout-control/proposals/{proposal_id}/approve")
+def api_loadout_approve(proposal_id: str, body: LoadoutApprovalIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        return _loadout_control.approve(Neo4jLoadoutStore(neo), proposal_id, body.fingerprint, user)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/loadout-control/proposals/{proposal_id}/execute")
+def api_loadout_execute(proposal_id: str, user: str = Depends(auth)):
+    base_url = _auto_router_base_url()
+    if not base_url:
+        raise HTTPException(status_code=503, detail="AUTO_ROUTER_BASE_URL is not configured")
+    from assistx.llm import client as llm_client
+    neo = _neo()
+    try:
+        network_map = _fetch_json(f"{base_url}/api/fleet/network-map")
+        result = _loadout_control.execute(
+            Neo4jLoadoutStore(neo),
+            proposal_id,
+            user,
+            network_map,
+            lambda node_url, model: llm_client.load_model_on_node(node_url, model),
+            lambda node_url, model: llm_client.unload_model_on_node(node_url, model),
+            lambda node_url: _live_probe_node(node_url) or {},
+        )
+        if result.get("blocked"):
+            return JSONResponse(status_code=409, content=result)
+        return result
+    finally:
+        neo.close()
+
+
 @app.get("/api/fleet/dashboard")
 def api_fleet_dashboard(user: str = Depends(auth)):
     """Unified fleet view: live router reports plus AssistX execution state."""
@@ -1681,6 +1747,8 @@ def api_fleet_loader_wishlist(payload: Dict[str, Any], user: str = Depends(auth)
 @app.post("/api/fleet/loader/load")
 def api_fleet_loader_load(payload: Dict[str, Any], user: str = Depends(auth)):
     """Operator loads a specific model on a specific node now and waits for hot."""
+    if os.getenv("ASSISTX_UNSAFE_DIRECT_LOADOUT_ENABLED", "false").lower() not in {"1", "true", "yes"}:
+        raise HTTPException(status_code=403, detail="Direct load is disabled; use the guarded loadout proposal flow")
     from assistx.llm import client as llm_client
     base = payload.get("base_url")
     mid = payload.get("model")
@@ -1692,6 +1760,8 @@ def api_fleet_loader_load(payload: Dict[str, Any], user: str = Depends(auth)):
 @app.post("/api/fleet/loader/unload")
 def api_fleet_loader_unload(payload: Dict[str, Any], user: str = Depends(auth)):
     """Operator unloads a specific model from a specific node."""
+    if os.getenv("ASSISTX_UNSAFE_DIRECT_LOADOUT_ENABLED", "false").lower() not in {"1", "true", "yes"}:
+        raise HTTPException(status_code=403, detail="Direct unload is disabled; use the guarded loadout proposal flow")
     from assistx.llm import client as llm_client
     base = payload.get("base_url")
     mid = payload.get("model")
