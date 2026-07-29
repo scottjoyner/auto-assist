@@ -35,6 +35,7 @@ from .capacity_forecast import build_capacity_forecast
 from .allocation_engine import build_allocation_plan
 from .diagnosis_engine import diagnose_incident
 from .recovery_control import Neo4jRecoveryStore, RecoveryControlPlane
+from .recovery_runbooks import build_runbook
 from .self_healing import SelfHealingController
 
 CONTENT_TYPE_LATEST, generate_latest = load_prometheus_client()
@@ -1669,18 +1670,20 @@ def api_recovery_execute(proposal_id: str, user: str = Depends(auth)):
     neo = _neo()
     try:
         def dispatch(plan: dict[str, Any]) -> dict[str, Any]:
+            runbook = build_runbook(plan, proposal_id)
             result = neo.create_task_with_context(
                 title=f"Recovery: {plan.get('action')} on {plan.get('node_id') or 'fleet'}",
                 task_type="fleet_recovery",
                 status="READY",
                 kind=f"recovery_{plan.get('action')}",
-                required_capabilities=["llm"],
+                required_capabilities=["recovery"],
                 target_agent_id=plan.get("node_id"),
                 priority="HIGH",
                 payload={
                     **plan,
+                    "runbook": runbook,
                     "approved_by": user,
-                    "execution_mode": "guarded_runbook",
+                    "execution_mode": "typed_runbook",
                     "requires_post_verification": True,
                 },
                 idempotency_key=f"recovery:{proposal_id}",
@@ -3375,11 +3378,77 @@ def api_complete_task(task_id: str, body: TaskCompleteIn, user: str = Depends(au
         body.status,
         body.result,
     )
+    recovery_outcome = _record_recovery_task_outcome(
+        neo,
+        task_before,
+        body.agent_id,
+        body.status,
+        body.result or {},
+    )
     return {
         "task": task,
         "dead_letter_incident_id": dead_letter_incident_id,
         "benchmark_outcome": benchmark_outcome,
+        "recovery_outcome": recovery_outcome,
     }
+
+
+def _record_recovery_task_outcome(
+    neo: Any,
+    task: dict[str, Any],
+    actor: str,
+    task_status: str,
+    result: dict[str, Any],
+) -> dict[str, Any] | None:
+    payload = task.get("payload") or task.get("payload_json") or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            return None
+    runbook = payload.get("runbook") if isinstance(payload, dict) else None
+    proposal_id = runbook.get("proposal_id") if isinstance(runbook, dict) else None
+    if not proposal_id:
+        return None
+    verified = task_status == "DONE" and result.get("ok") is True and result.get("status") == "verified"
+    evidence = {
+        "task_status": task_status,
+        "node_id": actor,
+        "runbook_status": result.get("status"),
+        "reason": result.get("reason"),
+        "steps": result.get("steps") or [],
+        "verification": result.get("verification") or {},
+        "rollback_results": result.get("rollback_results") or [],
+        "automatic": True,
+    }
+    try:
+        outcome = _recovery_control.record_outcome(
+            Neo4jRecoveryStore(neo),
+            proposal_id,
+            actor,
+            verified=verified,
+            evidence=evidence,
+        )
+        with neo._session() as session:
+            session.run(
+                """
+                MERGE (s:ImprovementSignal {id:$id})
+                SET s.source='fleet_recovery', s.proposal_id=$proposal_id,
+                    s.verified=$verified, s.evidence_json=$evidence,
+                    s.created_at_ts=coalesce(s.created_at_ts,timestamp()),
+                    s.updated_at_ts=timestamp()
+                """,
+                {
+                    "id": f"recovery-outcome:{proposal_id}",
+                    "proposal_id": proposal_id,
+                    "verified": verified,
+                    "evidence": json.dumps(evidence, sort_keys=True),
+                },
+            ).consume()
+        return outcome
+    except ValueError as exc:
+        _api_logger.warning("Recovery outcome was not recorded for %s: %s", proposal_id, exc)
+        return {"recorded": False, "reason": str(exc), "proposal_id": proposal_id}
 
 
 @app.post("/api/paperclip/events")
