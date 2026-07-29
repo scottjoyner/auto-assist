@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 import uuid
-from typing import Any, Callable
-
+from collections.abc import Callable
+from typing import Any
 
 ALLOWED_ACTIONS = {
     "collect_evidence", "refresh_agent", "reload_model", "drain_and_test",
@@ -102,6 +103,22 @@ class RecoveryControlPlane:
             raise ValueError("proposal changed concurrently")
         return result
 
+    def reconcile(
+        self,
+        store: Any,
+        *,
+        now: int | None = None,
+        approved_timeout_seconds: int = 1800,
+        executing_timeout_seconds: int = 900,
+        dispatched_timeout_seconds: int = 3600,
+    ) -> dict[str, Any]:
+        return store.reconcile(
+            now=int(now if now is not None else time.time()),
+            approved_timeout_seconds=approved_timeout_seconds,
+            executing_timeout_seconds=executing_timeout_seconds,
+            dispatched_timeout_seconds=dispatched_timeout_seconds,
+        )
+
 
 class Neo4jRecoveryStore:
     def __init__(self, neo: Any):
@@ -129,16 +146,24 @@ class Neo4jRecoveryStore:
         return _decode(dict(row["p"])) if row else None
 
     def transition(self, proposal_id: str, expected: str, status: str, actor: str, result: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        audit_id = f"recovery-audit-{uuid.uuid4().hex}"
         with self.neo._session() as session:
             row = session.run(
                 """
                 MATCH (p:FleetRecovery {id:$id, status:$expected})
                 SET p.status=$status, p.last_actor=$actor, p.updated_at_ts=timestamp(),
                     p.result_json=$result
+                CREATE (a:RecoveryAuditEvent {
+                    id:$audit_id, proposal_id:$id, from_status:$expected,
+                    to_status:$status, actor:$actor, result_json:$result,
+                    created_at_ts:timestamp()
+                })
+                MERGE (p)-[:HAS_AUDIT_EVENT]->(a)
                 RETURN p
                 """,
                 {"id": proposal_id, "expected": expected, "status": status,
-                 "actor": actor, "result": json.dumps(result or {}, sort_keys=True)},
+                 "actor": actor, "result": json.dumps(result or {}, sort_keys=True),
+                 "audit_id": audit_id},
             ).single()
         return _decode(dict(row["p"])) if row else None
 
@@ -149,6 +174,91 @@ class Neo4jRecoveryStore:
                 {"limit": limit},
             )
             return [_decode(dict(row["p"])) for row in rows]
+
+    def list_audit(self, limit: int = 200) -> list[dict[str, Any]]:
+        with self.neo._session() as session:
+            rows = session.run(
+                """
+                MATCH (a:RecoveryAuditEvent)
+                RETURN a ORDER BY a.created_at_ts DESC LIMIT $limit
+                """,
+                {"limit": limit},
+            )
+            return [dict(row["a"]) for row in rows]
+
+    def reconcile(
+        self,
+        *,
+        now: int,
+        approved_timeout_seconds: int,
+        executing_timeout_seconds: int,
+        dispatched_timeout_seconds: int,
+    ) -> dict[str, Any]:
+        rules = [
+            ("PROPOSED", "EXPIRED", "expires_at_ts", now, "proposal_expired"),
+            ("APPROVED", "EXPIRED_APPROVAL", "updated_at_ts", now - approved_timeout_seconds, "approval_dispatch_timeout"),
+            ("EXECUTING", "FAILED_STUCK", "updated_at_ts", now - executing_timeout_seconds, "dispatch_stuck"),
+            ("DISPATCHED", "FAILED_TIMEOUT", "updated_at_ts", now - dispatched_timeout_seconds, "runbook_timeout"),
+        ]
+        counts: dict[str, int] = {}
+        with self.neo._session() as session:
+            for source, target, field, cutoff, reason in rules:
+                query = f"""
+                    MATCH (p:FleetRecovery {{status:$source}})
+                    WHERE p.{field} < $cutoff
+                    SET p.status=$target, p.last_actor='recovery-reconciler',
+                        p.updated_at_ts=$now, p.reconcile_reason=$reason
+                    WITH p
+                    CREATE (a:RecoveryAuditEvent {{
+                        id:randomUUID(), proposal_id:p.id, from_status:$source,
+                        to_status:$target, actor:'recovery-reconciler',
+                        result_json:$result, created_at_ts:$now
+                    }})
+                    MERGE (p)-[:HAS_AUDIT_EVENT]->(a)
+                    RETURN count(p) AS count
+                """
+                row = session.run(
+                    query,
+                    {
+                        "source": source,
+                        "target": target,
+                        "cutoff": cutoff,
+                        "now": now,
+                        "reason": reason,
+                        "result": json.dumps({"reason": reason}),
+                    },
+                ).single()
+                counts[target] = int(row["count"] if row else 0)
+        return {"reconciled": sum(counts.values()), "transitions": counts, "at": now}
+
+
+_reconciler_thread: threading.Thread | None = None
+_reconciler_stop = threading.Event()
+
+
+def start_recovery_reconciler(neo_factory: Callable[[], Any]) -> None:
+    global _reconciler_thread
+    if _reconciler_thread and _reconciler_thread.is_alive():
+        return
+    interval = max(30, int(os.getenv("ASSISTX_RECOVERY_RECONCILE_INTERVAL_SECONDS", "60")))
+
+    def loop() -> None:
+        while not _reconciler_stop.wait(interval):
+            neo = neo_factory()
+            try:
+                RecoveryControlPlane().reconcile(Neo4jRecoveryStore(neo))
+            except Exception:
+                pass
+            finally:
+                neo.close()
+
+    _reconciler_stop.clear()
+    _reconciler_thread = threading.Thread(
+        target=loop,
+        name="recovery-reconciler",
+        daemon=True,
+    )
+    _reconciler_thread.start()
 
 
 def _decode(value: dict[str, Any]) -> dict[str, Any]:
