@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  unit:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -41,6 +41,7 @@ jobs:
             src/assistx/recovery_runbooks.py \
             src/assistx/fleet_node_agent.py \
             src/assistx/tools/web_search.py \
+            src/assistx/operations_readiness.py \
             tests/test_allocation_engine.py \
             tests/test_diagnosis_engine.py \
             tests/test_diagnostic_probes.py \
@@ -49,7 +50,8 @@ jobs:
             tests/test_recovery_runbooks.py \
             tests/test_recovery_canary.py \
             tests/test_fleet_node_recovery.py \
-            tests/test_fleet_node_shell_gate.py
+            tests/test_fleet_node_shell_gate.py \
+            tests/test_operations_readiness.py
 
       - name: Type check (mypy)
         run: |
@@ -60,7 +62,27 @@ jobs:
           BASIC_AUTH_USER: neo4j
           BASIC_AUTH_PASS: livelongandprosper
         run: |
-          pytest -q
+          pytest -q --ignore=tests/integration
+
+  recovery-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
       - name: Recovery lifecycle canary
         env:
