@@ -4,6 +4,8 @@ import json
 from collections.abc import Iterable
 from typing import Any
 
+from .kv_cache import cache_match, cache_value
+
 PRIORITY_WEIGHT = {"CRITICAL": 1.0, "HIGH": 0.85, "MEDIUM": 0.55, "LOW": 0.25}
 
 
@@ -12,12 +14,14 @@ def build_allocation_plan(
     nodes: Iterable[dict[str, Any]],
     value_matrix: dict[str, Any],
     skill_profiles: Iterable[dict[str, Any]] = (),
+    cache_manifests: Iterable[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     """Rank task/node/model placements using value, urgency, fit, and displacement."""
     ready = [task for task in tasks if task.get("status") == "READY"]
     online = [node for node in nodes if node.get("online") or node.get("service_ok")]
     values = value_matrix.get("entries") or []
     learned_profiles = list(skill_profiles)
+    cache_catalog = list(cache_manifests)
     recommendations = []
     for task in ready:
         payload = _payload(task)
@@ -82,6 +86,35 @@ def build_allocation_plan(
                     if payload.get("execution_contract")
                     else 0.5
                 )
+                cache_request = (
+                    payload.get("kv_cache")
+                    if isinstance(payload.get("kv_cache"), dict)
+                    else {}
+                )
+                cache = cache_match(
+                    cache_request,
+                    {"node_id": node_id, "model_id": model},
+                    cache_catalog,
+                )
+                cache_economics = cache_value(
+                    cache,
+                    tokens_per_second=float(
+                        value.get("prefill_tokens_per_second")
+                        or value.get("tokens_per_second")
+                        or 1
+                    ),
+                    transfer_mib_per_second=float(
+                        node.get("cache_transfer_mib_per_second") or 100
+                    ),
+                )
+                affinity_node = str(
+                    cache_request.get("affinity_node_id") or ""
+                )
+                affinity_bonus = (
+                    0.04
+                    if affinity_node and affinity_node == str(node_id)
+                    else 0.0
+                )
                 score = (
                     urgency * 0.24
                     + quality * 0.22
@@ -89,6 +122,8 @@ def build_allocation_plan(
                     + confidence * 0.12
                     + (1 - load) * 0.1
                     + learned_reliability * 0.16
+                    + cache_economics["score_bonus"]
+                    + affinity_bonus
                     - displacement
                 )
                 candidates.append({
@@ -106,6 +141,17 @@ def build_allocation_plan(
                             learned_reliability, 3
                         ),
                         "verified_code_attempts": attempts,
+                        "cache_mode": cache_economics["mode"],
+                        "cache_id": cache_economics["cache_id"],
+                        "cache_prefill_seconds": cache_economics[
+                            "prefill_seconds"
+                        ],
+                        "cache_restore_seconds": cache_economics[
+                            "restore_seconds"
+                        ],
+                        "cache_seconds_saved": cache_economics["seconds_saved"],
+                        "cache_locality_bonus": cache_economics["score_bonus"],
+                        "session_affinity_bonus": affinity_bonus,
                     },
                 })
         candidates.sort(key=lambda row: row["score"], reverse=True)
@@ -143,7 +189,8 @@ def build_allocation_plan(
         "policy": {
             "objective": (
                 "urgency + quality + throughput + evidence + verified task "
-                "reliability - load - displacement"
+                "reliability + cache locality + session affinity "
+                "- load - displacement"
             ),
             "automatic_dispatch": False,
             "preserve_interactive_capacity": True,

@@ -9,6 +9,7 @@ from assistx.improvement_cycle import (
     evaluate_completion,
 )
 from assistx.improvement_runtime import sign_executor_evidence
+from assistx.kv_cache import build_manifest
 from assistx.recovery_control import Neo4jRecoveryStore, RecoveryControlPlane
 from assistx.recovery_runbooks import RecoveryRunbookExecutor, build_runbook, sign_runbook
 from assistx.self_healing import SelfHealingController
@@ -349,6 +350,56 @@ def test_recovery_lifecycle_canary_with_real_neo4j(seeded_neo4j, monkeypatch, tm
     assert outcome["status"] == "VERIFIED"
     assert len(store.list_audit()) >= 3
 
+    cache_manifest = build_manifest(
+        {
+            "cache_id": "cache-canary",
+            "prefix_id": "prefix-" + "a" * 64,
+            "node_id": "node-canary",
+            "endpoint_id": "node-canary.lmstudio",
+            "model_id": "model-canary",
+            "runtime": "lmstudio",
+            "compatibility": {
+                "model_artifact_hash": "canary-weights",
+                "model_id": "model-canary",
+                "model_quantization": "Q4_K_M",
+                "kv_k_quantization": "q8_0",
+                "kv_v_quantization": "q8_0",
+                "tokenizer_hash": "canary-tokenizer",
+                "chat_template_hash": "canary-template",
+                "adapter_hash": None,
+                "runtime": "lmstudio",
+                "runtime_version": "canary",
+                "cache_format_version": "resident-v1",
+                "context_length": 32768,
+                "rope_config_hash": "canary-rope",
+            },
+            "privacy_scope": "project",
+            "scope_id": "canary",
+            "token_count": 4096,
+            "bytes": 1024,
+            "storage_tier": "host",
+            "portable": False,
+            "ttl_seconds": 120,
+        }
+    )
+    stored_cache = neo.upsert_kv_cache_manifest(
+        cache_manifest,
+        actor="node:node-canary",
+    )
+    cache_event = neo.record_kv_cache_event(
+        "cache-canary",
+        outcome="HIT",
+        node_id="node-canary",
+        prefix_id=cache_manifest["prefix_id"],
+        tokens_saved=4096,
+        prefill_ms_saved=2500,
+        actor="node:node-canary",
+    )
+    cache_status = neo.kv_cache_status()
+    assert stored_cache["compatibility_fingerprint"]
+    assert cache_event["manifest"]["hit_count"] == 1
+    assert cache_status["summary"]["hits"] >= 1
+
     alloc_task = neo.create_task_with_context(
         title="Allocation canary",
         task_type="swarm_task",
@@ -364,6 +415,7 @@ def test_recovery_lifecycle_canary_with_real_neo4j(seeded_neo4j, monkeypatch, tm
         task_id=alloc_task["task_id"],
         node_id="node-canary",
         model_id="model-canary",
+        cache_id="cache-canary",
         snapshot_revision=1,
         actor="canary-operator",
         ttl_seconds=120,
@@ -380,6 +432,7 @@ def test_recovery_lifecycle_canary_with_real_neo4j(seeded_neo4j, monkeypatch, tm
     )
 
     assert reservation["reserved"] is True
+    assert reservation["reservation"]["cache_id"] == "cache-canary"
     assert wrong["claimed"] is False
     assert correct["claimed"] is True
 

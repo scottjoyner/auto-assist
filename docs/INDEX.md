@@ -14,6 +14,7 @@ operating instructions.
 | [`fleet-recovery-rollout.md`](fleet-recovery-rollout.md) | Recovery keys, adapters, controller fencing, migration, canary, and shutdown |
 | [`self-improvement-cycle.md`](self-improvement-cycle.md) | Design and invariants of evidence-gated repository improvement |
 | [`self-improvement-rollout.md`](self-improvement-rollout.md) | Deployment, canary, key rotation, rollback, and troubleshooting |
+| [`kv-cache-control-plane.md`](kv-cache-control-plane.md) | Opaque prefix identity, model/quant compatibility, cache-aware allocation, node adapters, security, and rollout |
 | [`swarm_contracts/`](swarm_contracts/) | Shared event and worker contract reference |
 
 ## Historical records and plans
@@ -39,6 +40,7 @@ operating instructions.
 | Typed node runbook execution | `src/assistx/recovery_executor.py` |
 | Improvement contracts and learning | `src/assistx/improvement_cycle.py` |
 | Isolated worktrees and promotion | `src/assistx/improvement_runtime.py` |
+| KV-cache identity, compatibility, and economics | `src/assistx/kv_cache.py` |
 | Hermes worker integration | `src/assistx/agents/hermes_agent_adapter.py` |
 | Readiness gates | `src/assistx/operations_readiness.py` |
 

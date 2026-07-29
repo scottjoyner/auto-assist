@@ -70,6 +70,7 @@ records include:
 | Recovery proposal/audit records | Approval, execution, verification, rollback |
 | `ImprovementAttempt` | Signed evidence and promotion state |
 | `AgentSkillProfile` | Verified performance by agent/model/task family |
+| `PromptPrefix` / `KVCacheManifest` | Opaque prefix identity, exact compatibility, residency, expiry, and reuse |
 | `TraceGroup` / `TraceEvent` | Cross-service correlation and provenance |
 
 Historical long-term memory may live in a separate Neo4j database, but control
@@ -89,6 +90,12 @@ A recommendation is advisory until
 node, model, recent snapshot revision, and TTL. Claiming enforces the live
 reservation, preventing another node from taking the task. A reservation can
 be explicitly released before claim.
+
+For tasks with a trusted opaque prefix identity, allocation also compares a
+local compatible KV-cache hit, distributed restore cost, and session affinity.
+The selected cache ID is reserved atomically with the node and model. Raw
+prompts and tensors never enter Neo4j. See
+[`kv-cache-control-plane.md`](kv-cache-control-plane.md).
 
 ### Claim fencing
 

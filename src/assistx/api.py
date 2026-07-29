@@ -43,6 +43,7 @@ from .improvement_cycle import (
     evaluate_completion,
 )
 from .improvement_runtime import promote_patch
+from .kv_cache import build_manifest
 from .recovery_control import (
     Neo4jRecoveryStore,
     RecoveryControlPlane,
@@ -63,6 +64,9 @@ from .metrics import REQUESTS
 from .metrics import (
     ALLOCATION_RESERVATIONS,
     FLEET_DIAGNOSES,
+    KV_CACHE_EVENTS,
+    KV_CACHE_PREFILL_MS_SAVED,
+    KV_CACHE_RESTORE_MS,
     RECOVERY_OUTCOMES,
     RECOVERY_TRANSITIONS,
 )
@@ -249,8 +253,48 @@ class AllocationReservationIn(BaseModel):
     task_id: str
     node_id: str
     model_id: Optional[str] = None
+    cache_id: Optional[str] = Field(default=None, max_length=300)
     snapshot_revision: int
     ttl_seconds: int = Field(default=120, ge=30, le=600)
+
+
+class KVCacheManifestIn(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    cache_id: Optional[str] = None
+    prefix_id: str = Field(pattern=r"^prefix-[0-9a-f]{64}$")
+    node_id: str = Field(min_length=1, max_length=300)
+    endpoint_id: str = Field(min_length=1, max_length=300)
+    model_id: str = Field(min_length=1, max_length=500)
+    runtime: str = Field(min_length=1, max_length=100)
+    compatibility: Dict[str, Any]
+    compatibility_fingerprint: Optional[str] = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    privacy_scope: str = Field(pattern="^(private|project|fleet)$")
+    scope_id: str = Field(min_length=1, max_length=300)
+    token_count: int = Field(gt=0)
+    bytes: int = Field(default=0, ge=0)
+    storage_tier: str = Field(pattern="^(gpu|host|local_disk|distributed)$")
+    artifact_ref: Optional[str] = Field(default=None, max_length=1000)
+    portable: bool = False
+    capabilities: Dict[str, Any] = Field(default_factory=dict)
+    ttl_seconds: int = Field(default=3600, ge=30, le=604_800)
+
+
+class KVCacheEventIn(BaseModel):
+    cache_id: str = Field(min_length=1, max_length=300)
+    node_id: str = Field(min_length=1, max_length=300)
+    outcome: str = Field(pattern="^(HIT|MISS|RESTORE|EVICT)$")
+    task_id: Optional[str] = Field(default=None, max_length=300)
+    prefix_id: Optional[str] = Field(
+        default=None,
+        pattern=r"^prefix-[0-9a-f]{64}$",
+    )
+    tokens_saved: int = Field(default=0, ge=0)
+    prefill_ms_saved: int = Field(default=0, ge=0)
+    restore_ms: int = Field(default=0, ge=0)
 
 
 class NodeControlIn(BaseModel):
@@ -1581,6 +1625,117 @@ def api_improvement_cycle_status(
         neo.close()
 
 
+@app.get("/api/fleet/kv-cache")
+def api_kv_cache_status(
+    active_only: bool = Query(default=False),
+    limit: int = Query(default=500, ge=1, le=2000),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        if active_only:
+            manifests = neo.list_kv_cache_manifests(
+                active_only=True,
+                limit=limit,
+            )
+            hits = sum(int(item.get("hit_count") or 0) for item in manifests)
+            misses = sum(int(item.get("miss_count") or 0) for item in manifests)
+            return {
+                "manifests": manifests,
+                "summary": {
+                    "active": len(manifests),
+                    "bytes": sum(int(item.get("bytes") or 0) for item in manifests),
+                    "tokens": sum(
+                        int(item.get("token_count") or 0) for item in manifests
+                    ),
+                    "hits": hits,
+                    "misses": misses,
+                    "hit_rate": round(hits / max(hits + misses, 1), 4),
+                },
+            }
+        return neo.kv_cache_status(limit=limit)
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/kv-cache/manifests")
+def api_register_kv_cache_manifest(
+    body: KVCacheManifestIn,
+    x_fleet_node_token: Optional[str] = Header(None),
+    user: str = Depends(auth),
+):
+    _verify_fleet_node_identity(body.node_id, x_fleet_node_token)
+    try:
+        manifest = build_manifest(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    neo = _neo()
+    try:
+        stored = neo.upsert_kv_cache_manifest(
+            manifest,
+            actor=f"node:{body.node_id}",
+        )
+        if not stored:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "cache ID already belongs to another node, prefix, "
+                    "or compatibility fingerprint"
+                ),
+            )
+        stored.pop("artifact_ref", None)
+        stored.pop("compatibility_json", None)
+        stored.pop("capabilities_json", None)
+        return {"registered": bool(stored), "manifest": stored}
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/kv-cache/events")
+def api_record_kv_cache_event(
+    body: KVCacheEventIn,
+    x_fleet_node_token: Optional[str] = Header(None),
+    user: str = Depends(auth),
+):
+    _verify_fleet_node_identity(body.node_id, x_fleet_node_token)
+    neo = _neo()
+    try:
+        recorded = neo.record_kv_cache_event(
+            body.cache_id,
+            outcome=body.outcome,
+            node_id=body.node_id,
+            task_id=body.task_id,
+            prefix_id=body.prefix_id,
+            tokens_saved=body.tokens_saved,
+            prefill_ms_saved=body.prefill_ms_saved,
+            restore_ms=body.restore_ms,
+            actor=f"node:{body.node_id}",
+        )
+        if not recorded.get("manifest"):
+            raise HTTPException(
+                status_code=409,
+                detail="cache manifest is missing or belongs to another node",
+            )
+        runtime = str(
+            (recorded.get("manifest") or {}).get("runtime") or "unknown"
+        )
+        KV_CACHE_EVENTS.labels(
+            outcome=body.outcome.lower(),
+            runtime=runtime,
+        ).inc()
+        if body.prefill_ms_saved:
+            KV_CACHE_PREFILL_MS_SAVED.labels(runtime=runtime).inc(
+                body.prefill_ms_saved
+            )
+        if body.restore_ms:
+            KV_CACHE_RESTORE_MS.labels(runtime=runtime).observe(body.restore_ms)
+        return recorded
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        neo.close()
+
+
 @app.post("/api/fleet/improvement-cycle/proposals")
 def api_create_improvement_proposal(
     body: ImprovementProposalIn,
@@ -1993,6 +2148,7 @@ def api_create_allocation_reservation(
             task_id=body.task_id,
             node_id=body.node_id,
             model_id=body.model_id,
+            cache_id=body.cache_id,
             snapshot_revision=body.snapshot_revision,
             actor=user,
             ttl_seconds=body.ttl_seconds,
@@ -2286,12 +2442,14 @@ def api_fleet_dashboard(user: str = Depends(auth)):
     active_reservations: list[dict[str, Any]] = []
     controllers: list[dict[str, Any]] = []
     skill_profiles: list[dict[str, Any]] = []
+    kv_cache: dict[str, Any] = {"manifests": [], "summary": {}}
     neo = _neo()
     try:
         controls = _self_healing.list_node_controls(neo)
         active_reservations = neo.list_active_allocation_reservations()
         controllers = Neo4jControllerStore(neo).list_status()
         skill_profiles = _improvement_cycle.status(neo, limit=500)["profiles"]
+        kv_cache = neo.kv_cache_status(limit=500)
     except Exception as exc:
         router_errors.append(f"assistx-control-state: {str(exc)[:240]}")
     finally:
@@ -2320,6 +2478,7 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         nodes,
         value_matrix,
         skill_profiles=skill_profiles,
+        cache_manifests=kv_cache.get("manifests") or [],
     )
     diagnoses = [
         diagnose_incident(incident, {"nodes": nodes})
@@ -2355,6 +2514,7 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         "capacity_forecast": capacity_forecast,
         "allocation_plan": allocation_plan,
         "allocation_reservations": active_reservations,
+        "kv_cache": kv_cache,
         "health_plan": health_plan,
         "diagnoses": diagnoses,
         "self_healing": {**_self_healing.status(), "controls": controls},
@@ -4112,15 +4272,27 @@ def _verify_recovery_node_identity(
     agent_id: str | None,
     supplied_token: str | None,
 ) -> None:
+    _verify_fleet_node_identity(
+        agent_id,
+        supplied_token,
+        missing_message="target node has no registered recovery identity",
+        invalid_message="invalid recovery node identity",
+    )
+
+
+def _verify_fleet_node_identity(
+    agent_id: str | None,
+    supplied_token: str | None,
+    *,
+    missing_message: str = "node has no registered fleet identity",
+    invalid_message: str = "invalid fleet node identity",
+) -> None:
     tokens = _json_object_env("ASSISTX_FLEET_NODE_TOKENS")
     error = verify_node_token(tokens, agent_id, supplied_token)
     if error == "node_identity_not_registered":
-        raise HTTPException(
-            status_code=403,
-            detail="target node has no registered recovery identity",
-        )
+        raise HTTPException(status_code=403, detail=missing_message)
     if error:
-        raise HTTPException(status_code=403, detail="invalid recovery node identity")
+        raise HTTPException(status_code=403, detail=invalid_message)
 
 
 @app.post("/api/paperclip/events")

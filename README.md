@@ -32,6 +32,9 @@ intake -> task graph -> allocation reservation -> fenced execution
 - Bounded self-improvement contracts for small and large agents.
 - Per-attempt detached Git worktrees, executor-measured diffs and tests, and
   HMAC-signed evidence.
+- A graph catalog for opaque prompt-prefix KV caches with exact
+  model/quant/runtime compatibility, privacy scopes, TTL, telemetry, and
+  cache-aware allocation.
 - Exact-fingerprint operator promotion with base-HEAD fencing, clean-target
   checks, verification, and automatic patch reversal on failure.
 - An authenticated Operations workspace at `/operations` for fleet state,
@@ -87,6 +90,8 @@ one execution backend. See the rollout guides before enabling mutation.
   learning-loop design
 - [`docs/self-improvement-rollout.md`](docs/self-improvement-rollout.md) —
   deployment, canary, key rotation, rollback, and troubleshooting
+- [`docs/kv-cache-control-plane.md`](docs/kv-cache-control-plane.md) —
+  prefix-cache identity, compatibility, routing, runtime adapters, and rollout
 
 The dated [`docs/STATUS.md`](docs/STATUS.md) is retained as a Paperclip cutover
 record. It is not the current capability statement.

@@ -130,3 +130,65 @@ def test_verified_code_reliability_influences_bounded_change_routing():
     assert recommended["model_id"] == "verified"
     assert recommended["components"]["verified_code_reliability"] == 0.9
     assert recommended["components"]["verified_code_attempts"] == 8
+
+
+def test_cache_locality_can_avoid_repeating_large_prefill():
+    prefix_id = "prefix-" + "a" * 64
+    fingerprint = "b" * 64
+    task = {
+        "id": "cached-task",
+        "status": "READY",
+        "payload": {
+            "kv_cache": {
+                "prefix_id": prefix_id,
+                "compatibility_fingerprint": fingerprint,
+                "privacy_scope": "project",
+                "scope_id": "auto-assist",
+            }
+        },
+    }
+    nodes = [
+        {"hostname": "cached", "online": True, "loaded_models": ["model"]},
+        {"hostname": "uncached", "online": True, "loaded_models": ["model"]},
+    ]
+    values = {
+        "entries": [
+            {
+                "node_id": node,
+                "model_id": "model",
+                "quality_score": 0.8,
+                "confidence": 0.8,
+                "tokens_per_second": 50,
+            }
+            for node in ("cached", "uncached")
+        ]
+    }
+    caches = [
+        {
+            "cache_id": "cache-1",
+            "prefix_id": prefix_id,
+            "compatibility_fingerprint": fingerprint,
+            "privacy_scope": "project",
+            "scope_id": "auto-assist",
+            "node_id": "cached",
+            "model_id": "model",
+            "status": "READY",
+            "expires_at_ts": 9_999_999_999_999,
+            "token_count": 20_000,
+            "bytes": 100,
+            "capabilities": {},
+        }
+    ]
+
+    plan = build_allocation_plan(
+        [task],
+        nodes,
+        values,
+        cache_manifests=caches,
+    )
+
+    recommended = plan["recommendations"][0]["recommended"]
+    assert recommended["node_id"] == "cached"
+    assert recommended["components"]["cache_mode"] == "local"
+    assert recommended["components"]["cache_locality_bonus"] == 0.18
+    assert recommended["components"]["cache_seconds_saved"] == 400

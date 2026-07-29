@@ -92,6 +92,28 @@ def build_operations_readiness(env: Mapping[str, str]) -> dict[str, Any]:
             "detail": "A dedicated worktree root is required on code-capable nodes.",
         },
         {
+            "id": "kv_prefix_identity",
+            "label": "Opaque KV prefix identity",
+            "ready": bool(
+                env.get("ASSISTX_KV_PREFIX_HMAC_SECRET", "").strip()
+            ),
+            "optional": True,
+            "detail": (
+                "Trusted prompt producers need keyed digest material; raw "
+                "prompts and token arrays must not be cataloged."
+            ),
+        },
+        {
+            "id": "kv_cache_control",
+            "label": "Node-local KV cache adapter",
+            "ready": bool(env.get("FLEET_KV_CACHE_CONTROL_URL", "").strip()),
+            "optional": True,
+            "detail": (
+                "Required only for runtime-specific export/restore. "
+                "Affinity-only routing works without it."
+            ),
+        },
+        {
             "id": "legacy_shell",
             "label": "Legacy shell disabled",
             "ready": env.get("FLEET_UNSAFE_SHELL_TASKS_ENABLED", "false").lower()

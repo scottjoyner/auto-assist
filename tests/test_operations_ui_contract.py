@@ -36,6 +36,10 @@ def test_operations_workspace_exposes_core_operator_flows():
         "/preempt",
         "/migrate",
         "refreshFailures",
+        "Shared prefix cache",
+        'id="cache-list"',
+        "cache_seconds_saved",
+        "data-cache",
     ):
         assert contract in template
 

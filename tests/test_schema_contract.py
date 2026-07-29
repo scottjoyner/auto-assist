@@ -49,6 +49,7 @@ def test_ensure_schema_declares_migration_constraints_and_indexes():
         "TaskCheckpoint",
         "TaskMigrationEvent",
         "ImprovementAttempt",
+        "KVCacheEvent",
     ):
         assert any(
             f":{label})" in statement
@@ -69,10 +70,24 @@ def test_ensure_schema_declares_migration_constraints_and_indexes():
         and ".profile_key IS UNIQUE" in statement
         for statement in driver.statements
     )
+    assert any(
+        ":PromptPrefix)" in statement
+        and "REQUIRE" in statement
+        and ".prefix_id IS UNIQUE" in statement
+        for statement in driver.statements
+    )
+    assert any(
+        ":KVCacheManifest)" in statement
+        and "REQUIRE" in statement
+        and ".cache_id IS UNIQUE" in statement
+        for statement in driver.statements
+    )
 
     assert "FOR (t:Task)            ON (t.status)" in schema
     assert "FOR (t:Task)            ON (t.kind)" in schema
     assert "FOR (a:ImprovementAttempt) ON (a.promotion_status)" in schema
+    assert "FOR (k:KVCacheManifest) ON (k.compatibility_fingerprint)" in schema
+    assert "FOR (k:KVCacheManifest) ON (k.expires_at_ts)" in schema
     assert "FOR (tr:Transcription)  ON (tr.key)" in schema
     assert "FOR (r:FleetRecovery) ON (r.status)" in schema
     assert "FOR (a:AllocationReservation) ON (a.expires_at_ts)" in schema

@@ -6,9 +6,8 @@ _Last updated: 2026-05-27_
 
 The model endpoint registry lets AssistX discover, benchmark, and route work to local OpenAI-compatible endpoints, LM Studio hosts, Hermes model workers, and future model servers.
 
-For the current Paperclip cutover release, model endpoints are inventory and
-advisory-drafting resources only. They do not select a Hermes worker, claim an
-AssistX task, or replace Paperclip as the non-realtime execution route.
+Model endpoints are inventory and allocation inputs. AssistX reservations and
+claim fencing—not the endpoint registry—authorize task execution.
 
 ## Current active local endpoints
 
@@ -84,6 +83,17 @@ family: qwen | llama | mistral | phi | gemma | unknown
 parameter_size: optional string
 context_length: optional int
 quantization: optional string
+model_artifact_hash: optional string
+tokenizer_hash: optional string
+chat_template_hash: optional string
+runtime: optional string
+runtime_version: optional string
+kv_cache:
+  prefix_affinity: boolean
+  export_restore: boolean
+  distributed_restore: boolean
+  kv_k_quantization: optional string
+  kv_v_quantization: optional string
 loaded: boolean
 supports_json: optional boolean
 supports_tools: optional boolean
@@ -174,11 +184,13 @@ Relationships:
 (:ModelEndpoint)-[:SERVES]->(:Model)
 (:Model)-[:HAS_BENCHMARK]->(:BenchmarkResult)
 (:Capability)-[:CAN_USE_MODEL]->(:Model)
+(:KVCacheManifest)-[:CACHE_OF]->(:Model)
+(:KVCacheManifest)-[:SERVED_BY]->(:ModelEndpoint)
 ```
 
 ---
 
-## Routing algorithm MVP
+## Routing algorithm
 
 1. Filter endpoints by required capability.
 2. Remove offline/degraded endpoints unless fallback needed.
@@ -187,6 +199,9 @@ Relationships:
 5. Prefer faster nodes for voice-interactive tasks.
 6. Prefer data-local nodes when task inputs are large.
 7. Fall back to x1-370 if no better route is available.
+8. For an opaque trusted prefix identity, prefer an exact compatible resident
+   cache or a distributed restore only when estimated prefill savings exceed
+   restore cost.
 
 ---
 
@@ -195,8 +210,11 @@ Relationships:
 - [x] Add model endpoint probe service.
 - [x] Store `/v1/models` results.
 - [x] Add authenticated registration/probe and optional draft-generation APIs.
-- [ ] Add benchmark runner CLI.
-- [ ] Add task-profile benchmark prompts.
-- [ ] Add routing score function.
-- [ ] Add dashboard panel for model endpoints.
+- [x] Add benchmark runner and task-profile measurements.
+- [x] Add opportunity-cost routing score.
+- [x] Add dashboard and Operations model panels.
+- [x] Add strict KV-cache manifest compatibility and cache-aware placement.
 - [ ] Add no-public-API/offline-only mode flag.
+
+KV-cache details and the node-local adapter protocol are maintained in
+[`../kv-cache-control-plane.md`](../kv-cache-control-plane.md).

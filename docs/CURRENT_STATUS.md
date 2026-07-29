@@ -19,6 +19,8 @@ AssistX now has a durable graph-backed control plane for:
   review-first repair proposals;
 - exact-fingerprint operator promotion with safe rollback;
 - authenticated monitoring and controls in `/operations`.
+- opaque prompt-prefix KV-cache manifests, strict model/quant/runtime
+  compatibility, affinity-aware allocation, TTL/eviction, and reuse telemetry;
 
 The real-Neo4j recovery canary exercises the lifecycle across recovery,
 reservation ownership, checkpoint migration, improvement evidence, learning,
@@ -80,6 +82,9 @@ The next high-value work is operational rather than relaxing safety:
    accessible controls, and explicit degraded-state explanations.
 7. Exercise disaster recovery for Neo4j state, controller leadership transfer,
    and partially applied external recovery operations.
+8. Deploy and benchmark runtime-specific llama.cpp slot and SGLang HiCache
+   adapters; LM Studio and vLLM remain affinity-first until their configured
+   runtimes expose an approved portable restore boundary.
 
 These gaps should strengthen observation, calibration, and recoverability. They
 should not grant agents approval, promotion, release, or unrestricted shell
