@@ -97,3 +97,15 @@ FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
 
 Expired and stuck proposals reconcile automatically. Inspect drained nodes and
 failed rollback evidence before re-enabling automation.
+
+## Operator controls and evidence
+
+- `/api/fleet/operations-readiness` reports required gates, key IDs, node
+  identities, and allowlists without returning secret values.
+- Maintenance and quarantine controls require a reason and expiry. Expired
+  controls are released automatically and every transition creates a
+  `FleetControlEvent`.
+- Allocation reservations can be released before claim; release clears the
+  task target and records the releasing actor.
+- Recovery evidence bundles are downloadable from Operations and include the
+  proposal, execution evidence, and complete audit transition list.
