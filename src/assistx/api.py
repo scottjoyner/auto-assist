@@ -31,6 +31,7 @@ from .logging_utils import install_logging_middleware, setup_logging
 from .runtime import build_runtime_health, runtime_profile, validate_runtime_configuration
 from .benchmark_controller import BenchmarkController, publish_benchmark_outcome
 from .loadout_control import LoadoutControlPlane, Neo4jLoadoutStore
+from .capacity_forecast import build_capacity_forecast
 
 CONTENT_TYPE_LATEST, generate_latest = load_prometheus_client()
 redis = load_redis_module()
@@ -842,11 +843,24 @@ def _workflow_runtime_snapshot(neo: Neo4jClient) -> Dict[str, int]:
             MATCH (t:Task)
             WHERE t.status IN ['READY','CLAIMED','RUNNING']
             RETURN
-              sum(CASE WHEN t.status='RUNNING' THEN 1 ELSE 0 END) AS running
+              sum(CASE WHEN t.status='RUNNING' THEN 1 ELSE 0 END) AS running,
+              sum(CASE WHEN t.status='READY'
+                        AND coalesce(t.payload_json,'') CONTAINS 'interactive'
+                       THEN 1 ELSE 0 END) AS interactive_ready,
+              sum(CASE WHEN t.status='READY'
+                        AND coalesce(t.payload_json,'') CONTAINS 'critical'
+                       THEN 1 ELSE 0 END) AS critical_ready
             """
         ).single()
         running = int(rec["running"] if rec and rec["running"] is not None else 0)
-    return {"running": running, "batch_ready_direct": 0}
+        interactive_ready = int(rec["interactive_ready"] if rec and rec["interactive_ready"] is not None else 0)
+        critical_ready = int(rec["critical_ready"] if rec and rec["critical_ready"] is not None else 0)
+    return {
+        "running": running,
+        "interactive_ready": interactive_ready,
+        "critical_ready": critical_ready,
+        "batch_ready_direct": 0,
+    }
 
 
 def _maybe_dead_letter_exhausted_task(
@@ -935,6 +949,7 @@ def _apply_workflow_admission(tasks: List[Dict[str, Any]], runtime: Dict[str, in
     max_batch_backlog = int(control.get("max_batch_backlog") or 200)
     running = int(runtime.get("running") or 0)
     batch_ready = int(runtime.get("batch_ready_direct") or 0)
+    urgent_ready = int(runtime.get("interactive_ready") or 0) + int(runtime.get("critical_ready") or 0)
 
     filtered: List[Dict[str, Any]] = []
     for task in tasks:
@@ -957,6 +972,10 @@ def _apply_workflow_admission(tasks: List[Dict[str, Any]], runtime: Dict[str, in
         if running >= max_running and qclass != "critical" and not is_urgent:
             continue
         if batch_ready > max_batch_backlog and qclass == "batch":
+            continue
+        # Preserve near-term capacity for already-waiting interactive/critical
+        # tasks instead of filling the final slots with new background work.
+        if qclass == "batch" and urgent_ready > 0 and running >= max(0, max_running - urgent_ready):
             continue
         task["queue_class"] = qclass
         filtered.append(task)
@@ -1387,6 +1406,25 @@ def _get_fleet_routing() -> Any:
     return _get_routing()
 
 
+def _capacity_task_rows(limit: int = 1000) -> list[dict[str, Any]]:
+    neo = _neo()
+    try:
+        with neo._session() as session:
+            rows = session.run(
+                """
+                MATCH (t:Task)
+                WHERE t.status IN ['READY','CLAIMED','RUNNING']
+                RETURN t
+                ORDER BY coalesce(t.created_at_ts, 0) ASC
+                LIMIT $limit
+                """,
+                {"limit": limit},
+            )
+            return [dict(row["t"]) for row in rows]
+    finally:
+        neo.close()
+
+
 @app.get("/api/fleet/benchmark-controller")
 def api_benchmark_controller_status(user: str = Depends(auth)):
     return _benchmark_controller.status()
@@ -1569,6 +1607,11 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         models.setdefault(str(entry.get("model_id") or "unknown"), []).append(entry)
     for rows in models.values():
         rows.sort(key=lambda row: -(row.get("effective_rvu_per_hour") or -1))
+    capacity_forecast = build_capacity_forecast(
+        _capacity_task_rows(),
+        nodes,
+        value_matrix,
+    )
 
     task_distribution = dict(executor._node_inflight)
     total_inflight = sum(task_distribution.values())
@@ -1595,6 +1638,7 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         "benchmark_controller": _benchmark_controller.status(),
         "routing_regret": routing_regret,
         "loadout_simulation": loadout_simulation,
+        "capacity_forecast": capacity_forecast,
         "task_distribution": task_distribution,
         "task_summary": {
             "ready_llm": None,
