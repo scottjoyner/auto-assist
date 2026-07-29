@@ -635,6 +635,7 @@ class Neo4jClient:
                     "status": "READY",
                     "kind": t.get("kind", "task"),
                     "required_capabilities": t.get("required_capabilities") or [],
+                    "target_agent_id": t.get("target_agent_id"),
                     "priority": t.get("priority"),
                     "payload_json": json.dumps(t.get("payload") or {}),
                 }
@@ -908,6 +909,8 @@ class Neo4jClient:
                     required = []
                 target_agent = item.get("target_agent_id")
                 if caps and required and not all(cap in caps for cap in required):
+                    continue
+                if agent_id is None and target_agent is not None:
                     continue
                 if agent_id is not None and target_agent is not None and target_agent != agent_id:
                     continue
