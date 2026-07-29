@@ -126,6 +126,7 @@ def test_migration_requires_compatible_target_and_supersedes_reservation():
     assert result["migrated"] is True
     assert "required IN coalesce(target.capabilities, [])" in query
     assert "reservation.status" in query
+    assert "['ACTIVE','CLAIMED']" in query
     assert "'SUPERSEDED'" in query
     assert params["target_agent_id"] == "node-b"
 

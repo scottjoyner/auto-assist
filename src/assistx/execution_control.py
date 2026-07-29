@@ -209,8 +209,9 @@ class ExecutionControlPlane:
                     WHERE required IN coalesce(target.capabilities, [])
                   )
                 OPTIONAL MATCH (t)-[:HAS_ALLOCATION]->(
-                  reservation:AllocationReservation {status:'ACTIVE'}
+                  reservation:AllocationReservation
                 )
+                WHERE reservation.status IN ['ACTIVE','CLAIMED']
                 WITH t, collect(reservation) AS reservations,
                      coalesce(t.migration_count, 0) + 1 AS generation
                 SET t.status='READY',
