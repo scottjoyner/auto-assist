@@ -32,6 +32,7 @@ from .runtime import build_runtime_health, runtime_profile, validate_runtime_con
 from .benchmark_controller import BenchmarkController, publish_benchmark_outcome
 from .loadout_control import LoadoutControlPlane, Neo4jLoadoutStore
 from .capacity_forecast import build_capacity_forecast
+from .self_healing import SelfHealingController
 
 CONTENT_TYPE_LATEST, generate_latest = load_prometheus_client()
 redis = load_redis_module()
@@ -662,6 +663,7 @@ def _neo() -> Neo4jClient:
 _neo_fleet_instance: Optional[Neo4jClient] = None
 _benchmark_controller = BenchmarkController()
 _loadout_control = LoadoutControlPlane()
+_self_healing = SelfHealingController()
 
 def _neo_fleet() -> Neo4jClient:
     """Dedicated Neo4j client/pool for high-concurrency fleet executor endpoints
@@ -1510,6 +1512,56 @@ def api_loadout_execute(proposal_id: str, user: str = Depends(auth)):
         neo.close()
 
 
+@app.get("/api/fleet/self-healing")
+def api_self_healing_status(user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        return {**_self_healing.status(), "incidents": _self_healing.list_incidents(neo)}
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/self-healing/reconcile")
+def api_self_healing_reconcile(user: str = Depends(auth)):
+    base_url = _auto_router_base_url()
+    if not base_url:
+        raise HTTPException(status_code=503, detail="AUTO_ROUTER_BASE_URL is not configured")
+    plan = _fetch_json(f"{base_url}/api/fleet/health-plan")
+    neo = _neo()
+    try:
+        return _self_healing.reconcile(neo, plan)
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/self-healing/incidents/{incident_key}/quarantine")
+def api_self_healing_quarantine(incident_key: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        result = _self_healing.quarantine(neo, incident_key, user)
+        if not result.get("quarantined"):
+            return JSONResponse(status_code=409, content=result)
+        return result
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/self-healing/nodes/{node_id}/rejoin")
+def api_self_healing_rejoin(node_id: str, user: str = Depends(auth)):
+    base_url = _auto_router_base_url()
+    if not base_url:
+        raise HTTPException(status_code=503, detail="AUTO_ROUTER_BASE_URL is not configured")
+    plan = _fetch_json(f"{base_url}/api/fleet/health-plan")
+    neo = _neo()
+    try:
+        result = _self_healing.rejoin(neo, node_id, user, plan)
+        if result.get("blocked"):
+            return JSONResponse(status_code=409, content=result)
+        return result
+    finally:
+        neo.close()
+
+
 @app.get("/api/fleet/dashboard")
 def api_fleet_dashboard(user: str = Depends(auth)):
     """Unified fleet view: live router reports plus AssistX execution state."""
@@ -1522,6 +1574,7 @@ def api_fleet_dashboard(user: str = Depends(auth)):
     benchmark_plan: dict[str, Any] = {}
     routing_regret: dict[str, Any] = {}
     loadout_simulation: dict[str, Any] = {}
+    health_plan: dict[str, Any] = {}
     if base_url:
         for endpoint, target in (
             ("network-map", network_map),
@@ -1529,6 +1582,7 @@ def api_fleet_dashboard(user: str = Depends(auth)):
             ("benchmark-plan", benchmark_plan),
             ("routing-regret", routing_regret),
             ("loadout-simulation", loadout_simulation),
+            ("health-plan", health_plan),
         ):
             try:
                 target.update(_fetch_json(f"{base_url}/api/fleet/{endpoint}"))
@@ -1639,6 +1693,8 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         "routing_regret": routing_regret,
         "loadout_simulation": loadout_simulation,
         "capacity_forecast": capacity_forecast,
+        "health_plan": health_plan,
+        "self_healing": _self_healing.status(),
         "task_distribution": task_distribution,
         "task_summary": {
             "ready_llm": None,
