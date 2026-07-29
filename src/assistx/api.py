@@ -32,6 +32,9 @@ from .runtime import build_runtime_health, runtime_profile, validate_runtime_con
 from .benchmark_controller import BenchmarkController, publish_benchmark_outcome
 from .loadout_control import LoadoutControlPlane, Neo4jLoadoutStore
 from .capacity_forecast import build_capacity_forecast
+from .allocation_engine import build_allocation_plan
+from .diagnosis_engine import diagnose_incident
+from .recovery_control import Neo4jRecoveryStore, RecoveryControlPlane
 from .self_healing import SelfHealingController
 
 CONTENT_TYPE_LATEST, generate_latest = load_prometheus_client()
@@ -170,6 +173,19 @@ class LoadoutProposalIn(BaseModel):
 
 class LoadoutApprovalIn(BaseModel):
     fingerprint: str
+
+
+class RecoveryProposalIn(BaseModel):
+    diagnosis: Dict[str, Any]
+
+
+class RecoveryApprovalIn(BaseModel):
+    fingerprint: str
+
+
+class RecoveryOutcomeIn(BaseModel):
+    verified: bool
+    evidence: Dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskCreateIn(BaseModel):
@@ -664,6 +680,7 @@ _neo_fleet_instance: Optional[Neo4jClient] = None
 _benchmark_controller = BenchmarkController()
 _loadout_control = LoadoutControlPlane()
 _self_healing = SelfHealingController()
+_recovery_control = RecoveryControlPlane()
 
 def _neo_fleet() -> Neo4jClient:
     """Dedicated Neo4j client/pool for high-concurrency fleet executor endpoints
@@ -1567,6 +1584,162 @@ def api_self_healing_rejoin(node_id: str, user: str = Depends(auth)):
         neo.close()
 
 
+@app.post("/api/fleet/diagnoses/{incident_key}")
+def api_diagnose_fleet_incident(incident_key: str, user: str = Depends(auth)):
+    """Capture an evidence-backed diagnosis without mutating fleet state."""
+    snapshot = api_fleet_dashboard(user)
+    incident = next(
+        (
+            row for row in snapshot.get("health_plan", {}).get("incidents", [])
+            if str(row.get("incident_key")) == incident_key
+        ),
+        None,
+    )
+    if not incident:
+        raise HTTPException(status_code=404, detail="active incident not found")
+    diagnosis = diagnose_incident(incident, snapshot)
+    neo = _neo()
+    try:
+        with neo._session() as session:
+            session.run(
+                """
+                MATCH (i:FleetIncident {incident_key:$incident_key})
+                SET i.diagnosis_id=$diagnosis_id,
+                    i.diagnosis_json=$diagnosis,
+                    i.diagnosed_by=$actor,
+                    i.diagnosed_at_ts=timestamp(),
+                    i.updated_at_ts=timestamp()
+                """,
+                {
+                    "incident_key": incident_key,
+                    "diagnosis_id": diagnosis["diagnosis_id"],
+                    "diagnosis": json.dumps(diagnosis, sort_keys=True),
+                    "actor": user,
+                },
+            ).consume()
+        return diagnosis
+    finally:
+        neo.close()
+
+
+@app.get("/api/fleet/recovery-control")
+def api_recovery_control_status(user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        return {
+            "execution_enabled": _recovery_control.execution_enabled,
+            "flow": ["diagnose", "propose", "approve_fingerprint", "dispatch", "verify", "record_outcome"],
+            "proposals": Neo4jRecoveryStore(neo).list(),
+        }
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/recovery-control/proposals")
+def api_recovery_propose(body: RecoveryProposalIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        return _recovery_control.propose(Neo4jRecoveryStore(neo), body.diagnosis, user)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/recovery-control/proposals/{proposal_id}/approve")
+def api_recovery_approve(
+    proposal_id: str,
+    body: RecoveryApprovalIn,
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        return _recovery_control.approve(
+            Neo4jRecoveryStore(neo), proposal_id, body.fingerprint, user
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/recovery-control/proposals/{proposal_id}/execute")
+def api_recovery_execute(proposal_id: str, user: str = Depends(auth)):
+    """Dispatch an approved runbook task; node-side mutation remains separately guarded."""
+    neo = _neo()
+    try:
+        def dispatch(plan: dict[str, Any]) -> dict[str, Any]:
+            result = neo.create_task_with_context(
+                title=f"Recovery: {plan.get('action')} on {plan.get('node_id') or 'fleet'}",
+                task_type="fleet_recovery",
+                status="READY",
+                kind=f"recovery_{plan.get('action')}",
+                required_capabilities=["llm"],
+                target_agent_id=plan.get("node_id"),
+                priority="HIGH",
+                payload={
+                    **plan,
+                    "approved_by": user,
+                    "execution_mode": "guarded_runbook",
+                    "requires_post_verification": True,
+                },
+                idempotency_key=f"recovery:{proposal_id}",
+            )
+            return {
+                "task_id": result.get("task_id"),
+                "dispatch_id": result.get("dispatch_id"),
+            }
+
+        result = _recovery_control.execute(
+            Neo4jRecoveryStore(neo), proposal_id, user, dispatch
+        )
+        if result.get("blocked"):
+            return JSONResponse(status_code=409, content=result)
+        return result
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/recovery-control/proposals/{proposal_id}/outcome")
+def api_recovery_outcome(
+    proposal_id: str,
+    body: RecoveryOutcomeIn,
+    user: str = Depends(auth),
+):
+    """Record verification evidence as future self-improvement feedback."""
+    neo = _neo()
+    try:
+        store = Neo4jRecoveryStore(neo)
+        result = _recovery_control.record_outcome(
+            store,
+            proposal_id,
+            user,
+            verified=body.verified,
+            evidence=body.evidence,
+        )
+        with neo._session() as session:
+            session.run(
+                """
+                MERGE (s:ImprovementSignal {id:$id})
+                SET s.source='fleet_recovery', s.proposal_id=$proposal_id,
+                    s.verified=$verified, s.evidence_json=$evidence,
+                    s.created_at_ts=coalesce(s.created_at_ts,timestamp()),
+                    s.updated_at_ts=timestamp()
+                """,
+                {
+                    "id": f"recovery-outcome:{proposal_id}",
+                    "proposal_id": proposal_id,
+                    "verified": body.verified,
+                    "evidence": json.dumps(body.evidence, sort_keys=True),
+                },
+            ).consume()
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        neo.close()
+
+
 @app.get("/api/fleet/dashboard")
 def api_fleet_dashboard(user: str = Depends(auth)):
     """Unified fleet view: live router reports plus AssistX execution state."""
@@ -1666,11 +1839,13 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         models.setdefault(str(entry.get("model_id") or "unknown"), []).append(entry)
     for rows in models.values():
         rows.sort(key=lambda row: -(row.get("effective_rvu_per_hour") or -1))
-    capacity_forecast = build_capacity_forecast(
-        _capacity_task_rows(),
-        nodes,
-        value_matrix,
-    )
+    task_rows = _capacity_task_rows()
+    capacity_forecast = build_capacity_forecast(task_rows, nodes, value_matrix)
+    allocation_plan = build_allocation_plan(task_rows, nodes, value_matrix)
+    diagnoses = [
+        diagnose_incident(incident, {"nodes": nodes})
+        for incident in health_plan.get("incidents") or []
+    ]
 
     task_distribution = dict(executor._node_inflight)
     total_inflight = sum(task_distribution.values())
@@ -1698,7 +1873,9 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         "routing_regret": routing_regret,
         "loadout_simulation": loadout_simulation,
         "capacity_forecast": capacity_forecast,
+        "allocation_plan": allocation_plan,
         "health_plan": health_plan,
+        "diagnoses": diagnoses,
         "self_healing": _self_healing.status(),
         "task_distribution": task_distribution,
         "task_summary": {
