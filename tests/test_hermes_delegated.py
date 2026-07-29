@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-import src.assistx.agents.hermes_agent_adapter as adapter
+import assistx.agents.hermes_agent_adapter as adapter
 
 
 @pytest.fixture
