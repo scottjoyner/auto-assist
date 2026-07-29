@@ -41,7 +41,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
+
+from .recovery_runbooks import RecoveryRunbookExecutor
 
 DEFAULT_CAPS = ["script"]
 
@@ -140,7 +143,13 @@ def report_to_router(router_url: str, node_id: str, caps: list[str], lmstudio_ur
     _http("POST", f"{router_url}/api/fleet/node-report", data=body, timeout=10)
 
 
-def execute_task(task: dict[str, Any], lmstudio_url: Optional[str], workdir: str) -> dict[str, Any]:
+def execute_task(
+    task: dict[str, Any],
+    lmstudio_url: Optional[str],
+    workdir: str,
+    *,
+    node_id: str | None = None,
+) -> dict[str, Any]:
     """Run a single task locally. Returns {status, summary, result}."""
     task_id = task.get("id") or task.get("task_id")
     payload = task.get("payload") or {}
@@ -150,6 +159,24 @@ def execute_task(task: dict[str, Any], lmstudio_url: Optional[str], workdir: str
         except (json.JSONDecodeError, TypeError):
             payload = {}
     required = task.get("required_capabilities") or []
+
+    # Recovery work never enters the generic command path. It is parsed and
+    # executed as a typed, allowlisted runbook targeted to this node.
+    if payload.get("runbook") or "recovery" in required:
+        if os.getenv("FLEET_RECOVERY_RUNBOOKS_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
+            return {"status": "FAILED", "summary": "recovery runbooks disabled", "result": {"reason": "recovery_runbooks_disabled"}}
+        executor = RecoveryRunbookExecutor(
+            node_id=node_id or f"{platform.node()}-{platform.machine()}",
+            lmstudio_url=lmstudio_url,
+            state_dir=str(Path(workdir) / "recovery-state"),
+            http=_http,
+        )
+        result = executor.execute(payload.get("runbook") or {})
+        return {
+            "status": "DONE" if result.get("ok") else "FAILED",
+            "summary": f"recovery {result.get('status')}",
+            "result": result,
+        }
 
     # Prefer an explicit command in the payload (script/agent jobs).
     command = payload.get("command") or payload.get("cmd") or task.get("command")
@@ -251,6 +278,8 @@ def run_node(args: argparse.Namespace) -> None:
     lmstudio_url = args.lmstudio_url or os.getenv("FLEET_LMSTUDIO_URL")
     extra = [c.strip() for c in (args.capabilities or "").split(",") if c.strip()]
     caps = detect_capabilities(lmstudio_url) + extra
+    if os.getenv("FLEET_RECOVERY_RUNBOOKS_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
+        caps.append("recovery")
     caps = sorted(set(caps))
 
     print(f"[fleet-agent] node={node_id} caps={caps}", flush=True)
@@ -264,9 +293,11 @@ def run_node(args: argparse.Namespace) -> None:
     def worker_loop() -> None:
         while not stop.is_set():
             try:
+                drain_path = Path(args.workdir) / "recovery-state" / "drained.json"
+                poll_caps = ["recovery"] if drain_path.exists() else caps
                 query = urllib.parse.urlencode(
                     [("status", "READY"), ("limit", str(args.concurrency)), ("agent_id", node_id)]
-                    + [("capabilities", c) for c in caps]
+                    + [("capabilities", c) for c in poll_caps]
                 )
                 st, resp = _http(
                     "GET",
@@ -308,7 +339,7 @@ def run_node(args: argparse.Namespace) -> None:
             if st != 200 or not (isinstance(resp, dict) and resp.get("claimed")):
                 print(f"[fleet-agent] claim {task_id} rejected: {st}", flush=True)
                 return
-            outcome = execute_task(task, lmstudio_url, args.workdir)
+            outcome = execute_task(task, lmstudio_url, args.workdir, node_id=node_id)
             _http(
                 "POST", f"{args.assistx_url}/api/tasks/{task_id}/complete",
                 auth=auth, data={"agent_id": node_id, "status": outcome["status"],
