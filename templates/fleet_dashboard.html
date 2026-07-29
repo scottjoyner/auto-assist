@@ -111,6 +111,20 @@
     <div id="capacity-forecast" class="table-wrap mt-3">Loading…</div>
   </section>
 
+  <section class="card" id="section-self-healing">
+    <div class="section-header">
+      <div>
+        <h3>Fleet Incidents & Recovery</h3>
+        <p class="kicker">Automatic detection with guarded quarantine, operator restart, fresh verification, and rejoin.</p>
+      </div>
+      <div class="actions">
+        <span id="self-healing-status" class="badge warn">quarantine unknown</span>
+        <button class="btn secondary" id="btn-healing-reconcile">Reconcile Incidents</button>
+      </div>
+    </div>
+    <div id="health-incidents" class="table-wrap mt-3">Loading…</div>
+  </section>
+
   <section class="card half" id="section-benchmarks">
     <div class="section-header">
       <div>
@@ -437,6 +451,55 @@
     wrap.innerHTML = html;
   }
 
+  function renderHealthIncidents(data) {
+    const wrap = document.getElementById('health-incidents');
+    const plan = data?.health_plan || {};
+    const controller = data?.self_healing || {};
+    const status = document.getElementById('self-healing-status');
+    status.textContent = controller.automatic_quarantine ? 'auto-quarantine enabled' : 'auto-quarantine disabled';
+    status.className = 'badge ' + (controller.automatic_quarantine ? 'warn' : 'ok');
+    const incidents = plan.incidents || [];
+    if (!incidents.length) {
+      wrap.innerHTML = '<div class="badge ok">No active fleet incidents detected</div>';
+      return;
+    }
+    let html = `<div class="summary-line">
+      <span class="badge err">Critical: ${esc(plan.summary?.critical ?? 0)}</span>
+      <span class="badge warn">Warning: ${esc(plan.summary?.warning ?? 0)}</span>
+      <span class="badge">Affected nodes: ${esc(plan.summary?.affected_nodes ?? 0)}</span>
+    </div><table class="dashboard-table mt-2"><thead><tr>
+      <th>Severity</th><th>Node</th><th>Model</th><th>Incident</th><th>Detail</th><th>Recommendation</th><th>Controls</th>
+    </tr></thead><tbody>`;
+    for (const item of incidents) {
+      html += `<tr>
+        <td><span class="badge ${item.severity === 'critical' ? 'err' : 'warn'}">${esc(item.severity)}</span></td>
+        <td>${esc(item.node_id)}</td><td><code>${esc(item.model_id || '—')}</code></td>
+        <td>${esc(item.incident_type)}</td><td>${esc(item.detail)}</td>
+        <td>${esc(item.recommended_action)}</td>
+        <td>${item.recommended_action === 'quarantine'
+          ? '<button class="btn secondary incident-quarantine" data-key="' + esc(item.incident_key) + '">Quarantine</button> '
+            + '<button class="btn secondary node-rejoin" data-node="' + esc(item.node_id) + '">Verify & Rejoin</button>'
+          : '—'}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+    wrap.querySelectorAll('.incident-quarantine').forEach(button => button.addEventListener('click', async () => {
+      if (!confirm(`Quarantine node for incident ${button.dataset.key}?`)) return;
+      const response = await fetch(`/api/fleet/self-healing/incidents/${encodeURIComponent(button.dataset.key)}/quarantine`, {method: 'POST'});
+      const result = await response.json();
+      alert(response.ok ? `Quarantined ${result.node_id}` : result.reason || 'Quarantine blocked');
+      await refresh();
+    }));
+    wrap.querySelectorAll('.node-rejoin').forEach(button => button.addEventListener('click', async () => {
+      if (!confirm(`Verify live health and rejoin ${button.dataset.node}? The node must be restarted separately if needed.`)) return;
+      const response = await fetch(`/api/fleet/self-healing/nodes/${encodeURIComponent(button.dataset.node)}/rejoin`, {method: 'POST'});
+      const result = await response.json();
+      alert(response.ok ? `Rejoined ${result.node_id}` : result.reason || 'Rejoin blocked');
+      await refresh();
+    }));
+  }
+
   async function proposeLoadoutAction(index) {
     const action = loadoutActions[index];
     if (!action || !confirm(`Create guarded proposal: ${action.action} ${action.model_id} on ${action.node_id}?`)) return;
@@ -582,6 +645,7 @@
       renderRoutingRegret(data);
       renderLoadoutSimulation(data);
       renderCapacityForecast(data);
+      renderHealthIncidents(data);
       renderBenchmarkQueue(data);
       renderTasks(data);
       renderCompletions(data);
@@ -603,6 +667,12 @@
     if (!response.ok || result.blocked) {
       alert(result.reason || result.detail || 'Benchmark task creation was blocked');
     }
+    await refresh();
+  });
+  document.getElementById('btn-healing-reconcile').addEventListener('click', async function() {
+    const response = await fetch('/api/fleet/self-healing/reconcile', {method: 'POST'});
+    const result = await response.json();
+    alert(response.ok ? `Reconciled ${result.reconciled} incident(s)` : result.detail || 'Reconcile failed');
     await refresh();
   });
   document.getElementById('btn-auto').addEventListener('click', function() {
