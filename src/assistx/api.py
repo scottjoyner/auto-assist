@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .deps import load_aioredis_module, load_prometheus_client, load_queue_class, load_redis_module, multipart_available
 from .logging_utils import install_logging_middleware, setup_logging
 from .runtime import build_runtime_health, runtime_profile, validate_runtime_configuration
+from .benchmark_controller import BenchmarkController, publish_benchmark_outcome
 
 CONTENT_TYPE_LATEST, generate_latest = load_prometheus_client()
 redis = load_redis_module()
@@ -154,6 +155,10 @@ class TaskCompleteIn(BaseModel):
     result: Optional[Dict[str, Any]] = None
     session_id: Optional[str] = None
     idempotency_key: Optional[str] = None
+
+
+class BenchmarkControlIn(BaseModel):
+    enabled: bool
 
 
 class TaskCreateIn(BaseModel):
@@ -645,6 +650,7 @@ def _neo() -> Neo4jClient:
     return _neo_instance
 
 _neo_fleet_instance: Optional[Neo4jClient] = None
+_benchmark_controller = BenchmarkController()
 
 def _neo_fleet() -> Neo4jClient:
     """Dedicated Neo4j client/pool for high-concurrency fleet executor endpoints
@@ -1371,6 +1377,35 @@ def _get_fleet_routing() -> Any:
     return _get_routing()
 
 
+@app.get("/api/fleet/benchmark-controller")
+def api_benchmark_controller_status(user: str = Depends(auth)):
+    return _benchmark_controller.status()
+
+
+@app.post("/api/fleet/benchmark-controller/control")
+def api_benchmark_controller_control(body: BenchmarkControlIn, user: str = Depends(auth)):
+    return _benchmark_controller.set_enabled(body.enabled)
+
+
+@app.post("/api/fleet/benchmark-controller/tick")
+def api_benchmark_controller_tick(
+    force: bool = Query(False, description="bypass cooldown, but never the disabled state"),
+    user: str = Depends(auth),
+):
+    base_url = _auto_router_base_url()
+    if not base_url:
+        raise HTTPException(status_code=503, detail="AUTO_ROUTER_BASE_URL is not configured")
+    neo = _neo()
+    try:
+        return _benchmark_controller.tick(
+            neo,
+            lambda: _fetch_json(f"{base_url}/api/fleet/benchmark-plan"),
+            force=force,
+        )
+    finally:
+        neo.close()
+
+
 @app.get("/api/fleet/dashboard")
 def api_fleet_dashboard(user: str = Depends(auth)):
     """Unified fleet view: live router reports plus AssistX execution state."""
@@ -1487,6 +1522,7 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         "models": models,
         "value_matrix": value_matrix,
         "benchmark_plan": benchmark_plan,
+        "benchmark_controller": _benchmark_controller.status(),
         "task_distribution": task_distribution,
         "task_summary": {
             "ready_llm": None,
@@ -2920,6 +2956,7 @@ def api_complete_task(task_id: str, body: TaskCompleteIn, user: str = Depends(au
     if body.status not in {"DONE", "FAILED", "CANCELLED"}:
         raise HTTPException(status_code=400, detail="status must be DONE, FAILED, or CANCELLED")
     neo = _neo_fleet()
+    task_before = neo.get_task(task_id) or {}
     task = neo._with_retry(
         lambda: neo.complete_task(
             task_id=task_id,
@@ -2944,7 +2981,17 @@ def api_complete_task(task_id: str, body: TaskCompleteIn, user: str = Depends(au
         if refreshed:
             task = refreshed
     TASK_COMPLETIONS.labels(status=body.status).inc()
-    return {"task": task, "dead_letter_incident_id": dead_letter_incident_id}
+    benchmark_outcome = publish_benchmark_outcome(
+        task_before,
+        body.agent_id,
+        body.status,
+        body.result,
+    )
+    return {
+        "task": task,
+        "dead_letter_incident_id": dead_letter_incident_id,
+        "benchmark_outcome": benchmark_outcome,
+    }
 
 
 @app.post("/api/paperclip/events")
