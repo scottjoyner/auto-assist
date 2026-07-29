@@ -4,7 +4,6 @@ import hashlib
 import json
 from typing import Any
 
-
 PLAYBOOKS = {
     "node_offline": ("restore_service", "critical", ["network_probe", "service_probe", "inventory_probe"]),
     "stale_report": ("refresh_agent", "low", ["agent_heartbeat", "inventory_probe"]),
