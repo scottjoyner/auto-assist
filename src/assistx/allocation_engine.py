@@ -21,9 +21,30 @@ def build_allocation_plan(
         payload = _payload(task)
         required = set(task.get("required_capabilities") or [])
         candidates = []
+        rejected = []
+        for node in nodes:
+            node_id = node.get("hostname") or node.get("id")
+            if node.get("is_blocked") or node.get("control_mode") in {
+                "maintenance",
+                "quarantined",
+            }:
+                rejected.append({"node_id": node_id, "reason": "operator_control"})
+            elif not (node.get("online") or node.get("service_ok")):
+                rejected.append({"node_id": node_id, "reason": "offline_or_stale"})
         for node in online:
             capabilities = set(node.get("capabilities") or [])
+            node_id = node.get("hostname") or node.get("id")
+            if node.get("is_blocked") or node.get("control_mode") in {
+                "maintenance",
+                "quarantined",
+            }:
+                continue
             if required and not required.issubset(capabilities | {"llm"}):
+                rejected.append({
+                    "node_id": node_id,
+                    "reason": "capability_mismatch",
+                    "missing_capabilities": sorted(required - capabilities - {"llm"}),
+                })
                 continue
             capacity = max(1, int(node.get("max_concurrent") or node.get("weight") or 1))
             load = min(1.0, float(node.get("inflight_tasks") or 0) / capacity)
@@ -57,12 +78,27 @@ def build_allocation_plan(
                     },
                 })
         candidates.sort(key=lambda row: row["score"], reverse=True)
+        recommended = candidates[0] if candidates else None
+        opportunity_cost = (
+            round(recommended["score"] - candidates[1]["score"], 4)
+            if recommended and len(candidates) > 1
+            else None
+        )
         recommendations.append({
             "task_id": task.get("id"),
             "title": task.get("title"),
             "queue_class": payload.get("queue_class") or "interactive",
-            "recommended": candidates[0] if candidates else None,
+            "recommended": recommended,
             "alternatives": candidates[1:4],
+            "rejected": rejected,
+            "opportunity_cost": opportunity_cost,
+            "decision_summary": (
+                f"{recommended['node_id']} leads by {opportunity_cost}"
+                if opportunity_cost is not None
+                else "only one eligible placement"
+                if recommended
+                else "no eligible placement"
+            ),
             "blocked_reason": None if candidates else "no online capability-compatible placement",
             "executable": False,
         })
