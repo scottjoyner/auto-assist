@@ -1417,12 +1417,14 @@ def api_fleet_dashboard(user: str = Depends(auth)):
     value_matrix: dict[str, Any] = {}
     benchmark_plan: dict[str, Any] = {}
     routing_regret: dict[str, Any] = {}
+    loadout_simulation: dict[str, Any] = {}
     if base_url:
         for endpoint, target in (
             ("network-map", network_map),
             ("value-matrix", value_matrix),
             ("benchmark-plan", benchmark_plan),
             ("routing-regret", routing_regret),
+            ("loadout-simulation", loadout_simulation),
         ):
             try:
                 target.update(_fetch_json(f"{base_url}/api/fleet/{endpoint}"))
@@ -1526,6 +1528,7 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         "benchmark_plan": benchmark_plan,
         "benchmark_controller": _benchmark_controller.status(),
         "routing_regret": routing_regret,
+        "loadout_simulation": loadout_simulation,
         "task_distribution": task_distribution,
         "task_summary": {
             "ready_llm": None,
