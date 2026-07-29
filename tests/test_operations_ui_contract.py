@@ -15,7 +15,9 @@ def test_operations_workspace_exposes_core_operator_flows():
         "/api/fleet/self-healing/reconcile",
         "/api/tasks",
         "approve-proposal",
-        "execution_mode:'analysis_only'",
+        "/api/fleet/diagnoses/",
+        "/api/fleet/recovery-control/proposals",
+        "allocation-list",
     ):
         assert contract in template
 
