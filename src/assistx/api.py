@@ -1181,6 +1181,11 @@ def fleet_dashboard_ui(request: Request, user: str = Depends(auth)):
     """New comprehensive fleet dashboard with live node/model/task visualization."""
     return templates.TemplateResponse("fleet_dashboard.html", {"request": request})
 
+@app.get("/operations", response_class=HTMLResponse)
+def operations_ui(request: Request, user: str = Depends(auth)):
+    """Unified operator workspace for attention, work, fleet, and improvements."""
+    return templates.TemplateResponse("operations.html", {"request": request})
+
 @app.get("/routing", response_class=HTMLResponse)
 def routing_ui(request: Request, user: str = Depends(auth)):
     # DEPRECATED: fleet/router ownership moves to auto-router.
@@ -3049,6 +3054,36 @@ def api_enqueue_task(task_id: str, dry_run: bool = False, user: str = Depends(au
         job = q.enqueue(execute_task_job, task_id, dry_run)
         EXECUTIONS.labels(status="ENQUEUED").inc()
         return {"enqueued": True, "job_id": job.get_id(), "task_id": task_id}
+    finally:
+        neo.close()
+
+
+@app.post("/api/tasks/{task_id}/approve-proposal")
+def api_approve_task_proposal(task_id: str, user: str = Depends(auth)):
+    """Promote one review-first proposal to READY with an audit trail."""
+    neo = _neo()
+    try:
+        with neo._session() as session:
+            row = session.run(
+                """
+                MATCH (t:Task {id:$task_id})
+                WHERE t.status='PROPOSED'
+                SET t.status='READY',
+                    t.approved_by=$actor,
+                    t.approved_at=datetime(),
+                    t.approved_at_ts=timestamp(),
+                    t.updated_at=datetime(),
+                    t.updated_at_ts=timestamp()
+                RETURN t.id AS id, t.status AS status
+                """,
+                {"task_id": task_id, "actor": user},
+            ).single()
+        if not row:
+            raise HTTPException(
+                status_code=409,
+                detail="task is missing or is no longer a PROPOSED task",
+            )
+        return {"task_id": row["id"], "status": row["status"], "approved_by": user}
     finally:
         neo.close()
 
