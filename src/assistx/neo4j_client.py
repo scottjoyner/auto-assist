@@ -175,6 +175,8 @@ class Neo4jClient:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (c:ControllerCheckpoint) REQUIRE c.controller_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (c:TaskCheckpoint) REQUIRE c.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (e:TaskMigrationEvent) REQUIRE e.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (a:ImprovementAttempt) REQUIRE a.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (p:AgentSkillProfile) REQUIRE p.profile_key IS UNIQUE",
 
             # Helpful indexes
             "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.status)",
@@ -233,6 +235,10 @@ class Neo4jClient:
             "CREATE INDEX IF NOT EXISTS FOR (c:ControllerCheckpoint) ON (c.updated_at_ts)",
             "CREATE INDEX IF NOT EXISTS FOR (c:TaskCheckpoint) ON (c.task_id)",
             "CREATE INDEX IF NOT EXISTS FOR (e:TaskMigrationEvent) ON (e.task_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (a:ImprovementAttempt) ON (a.task_family)",
+            "CREATE INDEX IF NOT EXISTS FOR (a:ImprovementAttempt) ON (a.updated_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (p:AgentSkillProfile) ON (p.agent_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (p:AgentSkillProfile) ON (p.updated_at_ts)",
             # Phase 2 Swarm schema
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SwarmNode) REQUIRE n.node_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (e:ServiceEndpoint) REQUIRE e.endpoint_id IS UNIQUE",

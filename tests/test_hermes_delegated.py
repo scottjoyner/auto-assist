@@ -5,11 +5,13 @@ These verify that a task routed to a configured tier is solved via Hermes's
 path (machine-usable results) rather than a free-form ``hermes chat`` session.
 """
 import importlib
+import json
 import os
 
 import pytest
 
 import assistx.agents.hermes_agent_adapter as adapter
+from assistx.improvement_cycle import build_execution_contract
 
 
 @pytest.fixture
@@ -73,17 +75,54 @@ def test_process_task_routes_configured_tier_to_delegated(reload_with_delegate_t
     """A tool-small task is solved via run_hermes_delegated, not run_hermes."""
     ad = reload_with_delegate_tier
     calls = {}
+    monkeypatch.setattr(ad, "ensure_model_env", lambda _model: "/tmp")
+    monkeypatch.setattr(
+        ad,
+        "select_tier_model",
+        lambda *_args, **_kwargs: "refinedtoolcallv5-3b",
+    )
 
-    def fake_delegated(prompt, timeout=None, model=None, provider=None, return_format=None):
+    def fake_delegated(
+        prompt,
+        timeout=None,
+        model=None,
+        provider=None,
+        return_format=None,
+        toolsets=None,
+    ):
         calls["delegated"] = True
         calls["return_format"] = return_format
+        calls["toolsets"] = toolsets
         return {"success": True, "output": "PONG", "session_id": "s", "elapsed": 1.0}
 
     monkeypatch.setattr(ad, "run_hermes_delegated", fake_delegated)
+    monkeypatch.setattr(
+        ad,
+        "prepare_repository",
+        lambda _contract: {
+            "ok": True,
+            "root": "/tmp/repo",
+            "head": "abc",
+            "clean_before": True,
+        },
+    )
+    monkeypatch.setattr(
+        ad,
+        "collect_executor_evidence",
+        lambda _contract, _prepared, reported: {
+            **reported,
+            "evidence_source": "executor",
+            "worktree_clean_before": True,
+            "scope_validated": True,
+        },
+    )
     monkeypatch.setattr(ad, "run_hermes", lambda *a, **k: calls.setdefault("raw", True))
 
     assistx = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
-    assistx.claim_task.return_value = True
+    assistx.claim_task.return_value = {
+        "claimed": True,
+        "task": {"id": "t1", "claim_id": "claim-t1"},
+    }
     assistx.get_context.return_value = {}
     # task text triggers the tool-small tier (typo/fix keywords)
     task = {"id": "t1", "title": "fix a typo in the readme", "description": "small edit"}
@@ -98,3 +137,170 @@ def test_process_task_routes_configured_tier_to_delegated(reload_with_delegate_t
     _, kwargs = assistx.complete_task.call_args
     assert kwargs["status"] == "DONE"
     assert "PONG" in kwargs["result"]["output"]
+    assert kwargs["claim_id"] == "claim-t1"
+
+
+def test_bounded_change_uses_restricted_tools_and_structured_evidence(
+    reload_with_delegate_tier,
+    monkeypatch,
+):
+    ad = reload_with_delegate_tier
+    monkeypatch.setattr(ad, "ensure_model_env", lambda _model: "/tmp")
+    monkeypatch.setattr(
+        ad,
+        "select_tier_model",
+        lambda *_args, **_kwargs: "refinedtoolcallv5-3b",
+    )
+    envelope = {
+        "changed_files": ["tests/test_small.py"],
+        "diff_lines": 12,
+        "tools_used": [
+            "inspect_file",
+            "apply_patch",
+            "run_verification",
+            "inspect_diff",
+        ],
+        "verification": [
+            {
+                "command": ["pytest", "-q", "tests/test_small.py"],
+                "returncode": 0,
+            }
+        ],
+        "summary": "Added the focused test.",
+    }
+    captured = {}
+
+    def fake_delegated(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "output": json.dumps(envelope),
+            "session_id": "session",
+            "elapsed": 1.0,
+        }
+
+    monkeypatch.setattr(ad, "run_hermes_delegated", fake_delegated)
+    monkeypatch.setattr(
+        ad,
+        "prepare_repository",
+        lambda _contract: {
+            "ok": True,
+            "root": "/tmp/repo",
+            "head": "abc",
+            "clean_before": True,
+        },
+    )
+    monkeypatch.setattr(
+        ad,
+        "collect_executor_evidence",
+        lambda _contract, _prepared, reported: {
+            **reported,
+            "evidence_source": "executor",
+            "worktree_clean_before": True,
+            "scope_validated": True,
+        },
+    )
+    assistx = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    assistx.claim_task.return_value = {
+        "claimed": True,
+        "task": {"id": "bounded-1", "claim_id": "claim-bounded"},
+    }
+    assistx.get_context.return_value = {}
+    task = {
+        "id": "bounded-1",
+        "title": "Add a bounded test",
+        "kind": "bounded_code_change",
+        "payload": {
+            "execution_contract": build_execution_contract(
+                repository="auto-assist",
+                objective="Add one focused test",
+                allowed_paths=["tests/test_small.py"],
+                verification_commands=[
+                    ["pytest", "-q", "tests/test_small.py"]
+                ],
+            )
+        },
+    }
+
+    ad.process_task(assistx, task)
+
+    assert captured["toolsets"] == "terminal,file,code_execution"
+    assert captured["cwd"] == "/tmp/repo"
+    assert "Follow this work packet literally" in captured["prompt"]
+    _, kwargs = assistx.complete_task.call_args
+    assert kwargs["claim_id"] == "claim-bounded"
+    attested = kwargs["result"]["completion_envelope"]
+    assert all(attested[key] == value for key, value in envelope.items())
+    assert attested["evidence_source"] == "executor"
+
+
+def test_bounded_task_reports_failed_when_executor_rejects_evidence(
+    reload_with_delegate_tier,
+    monkeypatch,
+):
+    ad = reload_with_delegate_tier
+    monkeypatch.setattr(ad, "select_tier_model", lambda *_args, **_kwargs: "model")
+    monkeypatch.setattr(ad, "ensure_model_env", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ad, "fleet", None)
+    monkeypatch.setattr(ad, "record_task_eval", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        ad,
+        "run_hermes",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "output": '{"changed_files":["src/outside.py"]}',
+            "elapsed": 1.0,
+            "session_id": None,
+        },
+    )
+    monkeypatch.setattr(
+        ad,
+        "prepare_repository",
+        lambda _contract: {
+            "ok": True,
+            "root": "/tmp/repo",
+            "head": "abc",
+            "clean_before": True,
+        },
+    )
+    monkeypatch.setattr(
+        ad,
+        "collect_executor_evidence",
+        lambda *_args, **_kwargs: {
+            "evidence_source": "executor",
+            "worktree_clean_before": True,
+            "scope_validated": False,
+            "changed_files": ["src/outside.py"],
+            "diff_lines": 4,
+            "tools_used": ["inspect_file", "apply_patch", "inspect_diff"],
+            "verification": [],
+        },
+    )
+    assistx = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    assistx.claim_task.return_value = {
+        "claimed": True,
+        "task": {"id": "bounded-fail", "claim_id": "claim-fail"},
+    }
+    assistx.get_context.return_value = {}
+    task = {
+        "id": "bounded-fail",
+        "title": "Bounded failure",
+        "kind": "bounded_code_change",
+        "payload": {
+            "execution_contract": build_execution_contract(
+                repository="auto-assist",
+                objective="Edit the allowed test",
+                allowed_paths=["tests/test_small.py"],
+                verification_commands=[["pytest", "-q", "tests/test_small.py"]],
+                recommended_tier="reasoning-large",
+            )
+        },
+    }
+
+    ad.process_task(assistx, task)
+
+    _, kwargs = assistx.complete_task.call_args
+    assert kwargs["status"] == "FAILED"
+    assert "scope_not_executor_validated" in kwargs["result"]["error"]
+    assistx.write_memory.assert_not_called()

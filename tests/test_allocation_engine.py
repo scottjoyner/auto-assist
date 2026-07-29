@@ -87,3 +87,46 @@ def test_allocation_explains_opportunity_cost_and_operator_controls():
     assert {"node_id": "maintenance", "reason": "operator_control"} in recommendation[
         "rejected"
     ]
+
+
+def test_verified_code_reliability_influences_bounded_change_routing():
+    task = {
+        "id": "task",
+        "status": "READY",
+        "kind": "bounded_code_change",
+        "payload": {"execution_contract": {"kind": "bounded_code_change"}},
+    }
+    nodes = [
+        {
+            "hostname": "node",
+            "online": True,
+            "loaded_models": ["unproven", "verified"],
+        }
+    ]
+    values = {
+        "entries": [
+            {
+                "node_id": "node",
+                "model_id": model,
+                "quality_score": 0.7,
+                "confidence": 0.8,
+                "tokens_per_second": 20,
+            }
+            for model in ("unproven", "verified")
+        ]
+    }
+    profiles = [
+        {
+            "model_id": "verified",
+            "task_family": "bounded_code_change",
+            "attempts": 8,
+            "verified_successes": 8,
+        }
+    ]
+
+    plan = build_allocation_plan([task], nodes, values, profiles)
+
+    recommended = plan["recommendations"][0]["recommended"]
+    assert recommended["model_id"] == "verified"
+    assert recommended["components"]["verified_code_reliability"] == 0.9
+    assert recommended["components"]["verified_code_attempts"] == 8

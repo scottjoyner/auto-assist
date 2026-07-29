@@ -28,6 +28,8 @@ def test_operations_workspace_exposes_core_operator_flows():
         "task-migrate",
         "migration-history",
         "/api/fleet/migrations",
+        "learning-profiles",
+        "/api/fleet/improvement-cycle",
         "/preempt",
         "/migrate",
         "refreshFailures",

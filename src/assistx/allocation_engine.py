@@ -11,11 +11,13 @@ def build_allocation_plan(
     tasks: Iterable[dict[str, Any]],
     nodes: Iterable[dict[str, Any]],
     value_matrix: dict[str, Any],
+    skill_profiles: Iterable[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     """Rank task/node/model placements using value, urgency, fit, and displacement."""
     ready = [task for task in tasks if task.get("status") == "READY"]
     online = [node for node in nodes if node.get("online") or node.get("service_ok")]
     values = value_matrix.get("entries") or []
+    learned_profiles = list(skill_profiles)
     recommendations = []
     for task in ready:
         payload = _payload(task)
@@ -63,7 +65,32 @@ def build_allocation_plan(
                 urgency = PRIORITY_WEIGHT.get(str(task.get("priority") or "MEDIUM").upper(), 0.55)
                 queue_class = str(payload.get("queue_class") or "interactive")
                 displacement = load * (0.35 if queue_class == "batch" else 0.2)
-                score = urgency * 0.28 + quality * 0.27 + throughput * 0.2 + confidence * 0.15 + (1 - load) * 0.1 - displacement
+                family = str(task.get("kind") or "task")
+                profile = next(
+                    (
+                        item
+                        for item in learned_profiles
+                        if str(item.get("model_id")) == str(model)
+                        and str(item.get("task_family")) == family
+                    ),
+                    {},
+                )
+                attempts = int(profile.get("attempts") or 0)
+                verified = int(profile.get("verified_successes") or 0)
+                learned_reliability = (
+                    (verified + 1) / (attempts + 2)
+                    if payload.get("execution_contract")
+                    else 0.5
+                )
+                score = (
+                    urgency * 0.24
+                    + quality * 0.22
+                    + throughput * 0.16
+                    + confidence * 0.12
+                    + (1 - load) * 0.1
+                    + learned_reliability * 0.16
+                    - displacement
+                )
                 candidates.append({
                     "node_id": node.get("hostname") or node.get("id"),
                     "model_id": model,
@@ -75,6 +102,10 @@ def build_allocation_plan(
                         "evidence_confidence": round(confidence, 3),
                         "current_load": round(load, 3),
                         "displacement_cost": round(displacement, 3),
+                        "verified_code_reliability": round(
+                            learned_reliability, 3
+                        ),
+                        "verified_code_attempts": attempts,
                     },
                 })
         candidates.sort(key=lambda row: row["score"], reverse=True)
@@ -110,7 +141,10 @@ def build_allocation_plan(
             "blocked": sum(1 for row in recommendations if not row["recommended"]),
         },
         "policy": {
-            "objective": "urgency + quality + throughput + evidence - load - displacement",
+            "objective": (
+                "urgency + quality + throughput + evidence + verified task "
+                "reliability - load - displacement"
+            ),
             "automatic_dispatch": False,
             "preserve_interactive_capacity": True,
         },

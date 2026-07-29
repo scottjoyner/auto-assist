@@ -2,6 +2,11 @@ from types import SimpleNamespace
 
 from assistx.controller_runtime import Neo4jControllerStore
 from assistx.execution_control import ExecutionControlPlane
+from assistx.improvement_cycle import (
+    ImprovementCycle,
+    build_execution_contract,
+    evaluate_completion,
+)
 from assistx.recovery_control import Neo4jRecoveryStore, RecoveryControlPlane
 from assistx.recovery_runbooks import RecoveryRunbookExecutor, build_runbook, sign_runbook
 from assistx.self_healing import SelfHealingController
@@ -148,6 +153,49 @@ def test_recovery_lifecycle_canary_with_real_neo4j(seeded_neo4j, monkeypatch, tm
     assert stale_completion is None
     assert second_claim["claimed"] is True
     assert completed_after_resume["status"] == "DONE"
+
+    improvement = ImprovementCycle()
+    improvement_contract = build_execution_contract(
+        repository="auto-assist",
+        objective="Add one bounded canary regression",
+        allowed_paths=["tests/test_canary_generated.py"],
+        verification_commands=[
+            ["pytest", "-q", "tests/test_canary_generated.py"]
+        ],
+        recommended_tier="tool-small",
+    )
+    improvement_task = neo.create_task_with_context(
+        title="Bounded improvement canary",
+        status="READY",
+        kind="bounded_code_change",
+        required_capabilities=["llm", "code_execution"],
+        payload={"execution_contract": improvement_contract},
+        idempotency_key="bounded-improvement-canary",
+    )
+    improvement_task_state = neo.get_task(improvement_task["task_id"])
+    evaluation = evaluate_completion(
+        improvement_task_state,
+        requested_status="DONE",
+        result={"output": "prose without evidence"},
+    )
+    recorded = improvement.record_attempt(
+        neo,
+        improvement_task_state,
+        agent_id="small-agent-canary",
+        model_id="small-model-canary",
+        evaluation=evaluation,
+    )
+    repair_task_id = improvement.propose_repair(
+        neo,
+        improvement_task_state,
+        evaluation,
+    )
+    repair_task = neo.get_task(repair_task_id)
+    assert evaluation["effective_status"] == "FAILED"
+    assert recorded["profile"]["attempts"] == 1
+    assert recorded["profile"]["verified_rate"] == 0.0
+    assert repair_task["status"] == "PROPOSED"
+    assert repair_task["kind"] == "improvement_repair"
 
     with neo._session() as session:
         session.run(
