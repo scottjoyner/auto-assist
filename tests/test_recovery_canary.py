@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from assistx.recovery_control import Neo4jRecoveryStore, RecoveryControlPlane
 from assistx.recovery_runbooks import RecoveryRunbookExecutor, build_runbook, sign_runbook
+from assistx.self_healing import SelfHealingController
 
 
 def test_recovery_lifecycle_canary_with_real_neo4j(seeded_neo4j, monkeypatch, tmp_path):
@@ -111,3 +112,55 @@ def test_recovery_lifecycle_canary_with_real_neo4j(seeded_neo4j, monkeypatch, tm
     assert reservation["reserved"] is True
     assert wrong["claimed"] is False
     assert correct["claimed"] is True
+
+    release_task = neo.create_task_with_context(
+        title="Reservation release canary",
+        task_type="swarm_task",
+        status="READY",
+        kind="analysis",
+        required_capabilities=["llm"],
+        target_agent_id=None,
+        priority="MEDIUM",
+        payload={"queue_class": "interactive"},
+        idempotency_key="allocation-release-canary",
+    )
+    releasable = neo.reserve_task_allocation(
+        task_id=release_task["task_id"],
+        node_id="node-canary",
+        model_id="model-canary",
+        snapshot_revision=2,
+        actor="canary-operator",
+        ttl_seconds=120,
+    )
+    released = neo.release_task_allocation(
+        releasable["reservation"]["id"],
+        "canary-operator",
+    )
+    assert released["released"] is True
+    assert neo.get_task(release_task["task_id"])["target_agent_id"] is None
+
+    healing = SelfHealingController()
+    controlled = healing.set_node_control(
+        neo,
+        "node-canary",
+        "canary-operator",
+        mode="maintenance",
+        reason="canary maintenance",
+        ttl_seconds=60,
+    )
+    assert controlled["updated"] is True
+    with neo._session() as session:
+        session.run(
+            """
+            MATCH (n:SwarmNode {node_id:'node-canary'})
+            SET n.control_expires_at_ts=timestamp()-1
+            """
+        ).consume()
+    controls = healing.list_node_controls(neo)
+    node_control = next(
+        row for row in controls["nodes"] if row["node_id"] == "node-canary"
+    )
+    assert node_control["blocked"] is False
+    assert any(
+        event["action"] == "expire_control" for event in controls["audit"]
+    )
