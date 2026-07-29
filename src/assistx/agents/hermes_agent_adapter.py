@@ -22,6 +22,7 @@ from assistx.improvement_cycle import (
     extract_completion_envelope,
 )
 from assistx.improvement_runtime import (
+    cleanup_worktree,
     collect_executor_evidence,
     prepare_repository,
 )
@@ -651,6 +652,13 @@ def run_hermes(
     if provider:
         cmd += ["--provider", provider]
     env = {**os.environ, "HERMES_ACCEPT_HOOKS": "1"}
+    for protected_name in (
+        "ASSISTX_IMPROVEMENT_ATTESTATION_SECRET",
+        "ASSISTX_IMPROVEMENT_VERIFY_KEYS",
+        "ASSISTX_REPOSITORY_ROOTS_JSON",
+        "ASSISTX_IMPROVEMENT_WORKTREE_ROOT",
+    ):
+        env.pop(protected_name, None)
     if toolsets:
         env["HERMES_TOOLSETS"] = toolsets
     logger.info("Running Hermes model=%s (timeout=%ds)", model or HERMES_MODEL, timeout)
@@ -1182,7 +1190,11 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
         learned_lessons=payload.get("learned_failure_reasons") or [],
     )
     repository_state = (
-        prepare_repository(payload["execution_contract"])
+        prepare_repository(
+            payload["execution_contract"],
+            task_id=str(task_id),
+            execution_attempt=int(task.get("execution_attempt") or 0),
+        )
         if work_packet
         else None
     )
@@ -1292,13 +1304,26 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
 
     output = result.get("output", "")
     reported_envelope = extract_completion_envelope(output) if work_packet else None
-    completion_envelope = (
-        collect_executor_evidence(
-            payload["execution_contract"],
-            repository_state,
-            reported_envelope,
-        )
-        if work_packet
+    completion_envelope = None
+    if work_packet:
+        try:
+            completion_envelope = collect_executor_evidence(
+                payload["execution_contract"],
+                repository_state,
+                reported_envelope,
+                executor_id=AGENT_ID,
+            )
+        finally:
+            cleanup_worktree(repository_state)
+    signer_key_id = os.getenv(
+        "ASSISTX_IMPROVEMENT_ATTESTATION_KEY_ID", ""
+    ).strip()
+    signer_secret = os.getenv(
+        "ASSISTX_IMPROVEMENT_ATTESTATION_SECRET", ""
+    ).strip()
+    local_verify_keys = (
+        {signer_key_id: signer_secret}
+        if signer_key_id and signer_secret
         else None
     )
     local_evaluation = (
@@ -1306,6 +1331,7 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
             task,
             requested_status="DONE" if result["success"] else "FAILED",
             result={"completion_envelope": completion_envelope},
+            verify_keys=local_verify_keys,
         )
         if work_packet
         else None

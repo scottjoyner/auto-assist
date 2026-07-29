@@ -19,6 +19,8 @@ def build_operations_readiness(env: Mapping[str, str]) -> dict[str, Any]:
     node_tokens = _mapping(env, "ASSISTX_FLEET_NODE_TOKENS")
     service_aliases = _mapping(env, "FLEET_RECOVERY_SERVICE_ALIASES")
     compose_projects = _mapping(env, "FLEET_RECOVERY_COMPOSE_PROJECTS")
+    repository_roots = _mapping(env, "ASSISTX_REPOSITORY_ROOTS_JSON")
+    improvement_keys = _mapping(env, "ASSISTX_IMPROVEMENT_VERIFY_KEYS")
     active_key = env.get("ASSISTX_RUNBOOK_ACTIVE_KEY_ID", "").strip()
     checks = [
         {
@@ -65,6 +67,29 @@ def build_operations_readiness(env: Mapping[str, str]) -> dict[str, Any]:
             "ready": bool(compose_projects),
             "optional": True,
             "detail": f"{len(compose_projects)} project(s) configured.",
+        },
+        {
+            "id": "improvement_repositories",
+            "label": "Improvement repository registry",
+            "ready": bool(repository_roots),
+            "optional": True,
+            "detail": f"{len(repository_roots)} repository root(s) configured.",
+        },
+        {
+            "id": "improvement_attestation",
+            "label": "Improvement node verification keys",
+            "ready": bool(improvement_keys),
+            "optional": True,
+            "detail": f"{len(improvement_keys)} node key(s) configured.",
+        },
+        {
+            "id": "improvement_worktrees",
+            "label": "Isolated improvement workspace",
+            "ready": bool(
+                env.get("ASSISTX_IMPROVEMENT_WORKTREE_ROOT", "").strip()
+            ),
+            "optional": True,
+            "detail": "A dedicated worktree root is required on code-capable nodes.",
         },
         {
             "id": "legacy_shell",

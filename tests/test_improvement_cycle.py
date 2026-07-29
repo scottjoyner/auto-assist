@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import pytest
@@ -9,6 +10,7 @@ from assistx.improvement_cycle import (
     evaluate_completion,
     extract_completion_envelope,
 )
+from assistx.improvement_runtime import sign_executor_evidence
 
 
 def contract(**overrides):
@@ -33,9 +35,12 @@ def task_with_contract(value=None):
 
 
 def valid_envelope():
-    return {
+    patch = "diff --git a/tests/test_example.py b/tests/test_example.py\n"
+    return sign_executor_evidence({
         "evidence_source": "executor",
+        "executor_id": "small-agent",
         "worktree_clean_before": True,
+        "isolated_worktree": True,
         "scope_validated": True,
         "changed_files": ["tests/test_example.py"],
         "diff_lines": 20,
@@ -52,7 +57,9 @@ def valid_envelope():
             }
         ],
         "summary": "Added the bounded regression test.",
-    }
+        "patch": patch,
+        "patch_sha256": hashlib.sha256(patch.encode()).hexdigest(),
+    }, key_id="node-v1", secret="node-secret")
 
 
 def test_contract_rejects_scope_escape_and_shell_commands():
@@ -84,6 +91,7 @@ def test_verified_completion_is_accepted():
         task_with_contract(),
         requested_status="DONE",
         result={"completion_envelope": valid_envelope()},
+        verify_keys={"node-v1": "node-secret"},
     )
 
     assert result["managed"] is True
@@ -104,12 +112,28 @@ def test_prose_only_or_scope_escaping_completion_is_rejected():
         task_with_contract(),
         requested_status="DONE",
         result={"completion_envelope": escaped_envelope},
+        verify_keys={"node-v1": "node-secret"},
     )
 
     assert missing["effective_status"] == "FAILED"
     assert "missing_completion_envelope" in missing["reasons"]
     assert escaped["effective_status"] == "FAILED"
     assert "changed_file_outside_contract" in escaped["reasons"]
+
+
+def test_unsigned_executor_evidence_is_rejected():
+    envelope = valid_envelope()
+    envelope.pop("attestation")
+
+    result = evaluate_completion(
+        task_with_contract(),
+        requested_status="DONE",
+        result={"completion_envelope": envelope},
+        verify_keys={"node-v1": "node-secret"},
+    )
+
+    assert result["accepted"] is False
+    assert "missing_executor_attestation" in result["reasons"]
 
 
 def test_completion_envelope_can_be_extracted_from_model_output():
@@ -211,3 +235,68 @@ def test_completion_api_downgrades_unverified_done_to_failed(monkeypatch):
     assert response["task"]["status"] == "FAILED"
     assert response["improvement_outcome"]["accepted"] is False
     assert response["improvement_outcome"]["repair_task_id"] == "repair-1"
+
+
+def test_promotion_api_requires_exact_fingerprint_and_records_operator(monkeypatch):
+    from assistx import api
+
+    fingerprint = "b" * 64
+
+    class PromotionNeo:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    neo = PromotionNeo()
+    record = {
+        "task": task_with_contract(),
+        "attempt": {"id": "attempt-1", "accepted": True},
+        "contract": contract(),
+        "evidence": {"patch_sha256": fingerprint},
+    }
+    captured = {}
+    monkeypatch.setattr(api, "_neo", lambda: neo)
+    monkeypatch.setattr(
+        api._improvement_cycle,
+        "get_attempt",
+        lambda *_args: record,
+    )
+    monkeypatch.setattr(
+        api._improvement_cycle,
+        "claim_promotion",
+        lambda *_args, **_kwargs: {"promotion_status": "PROMOTING"},
+    )
+    monkeypatch.setattr(
+        api,
+        "promote_patch",
+        lambda *_args, **kwargs: {
+            "promoted": kwargs["expected_fingerprint"] == fingerprint,
+            "patch_sha256": fingerprint,
+        },
+    )
+
+    def record_promotion(*_args, **kwargs):
+        captured.update(kwargs)
+        return {"promotion_status": "PROMOTED"}
+
+    monkeypatch.setattr(
+        api._improvement_cycle,
+        "record_promotion",
+        record_promotion,
+    )
+
+    response = api.api_promote_improvement_patch(
+        "attempt-1",
+        api.PatchPromotionIn(
+            fingerprint=fingerprint,
+            reason="Reviewed exact patch and checks.",
+        ),
+        "operator",
+    )
+
+    assert response["promoted"] is True
+    assert response["promotion_status"] == "PROMOTED"
+    assert captured["actor"] == "operator"
+    assert captured["reason"] == "Reviewed exact patch and checks."
+    assert neo.closed is True

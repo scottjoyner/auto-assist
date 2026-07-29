@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import posixpath
 from typing import Any
+
+from .improvement_runtime import verify_executor_evidence
 
 TIER_LIMITS = {
     "tool-small": {"max_files": 2, "max_diff_lines": 160},
@@ -89,7 +93,7 @@ def build_execution_contract(
     if not commands:
         raise ValueError("at least one verification command is required")
     return {
-        "version": 1,
+        "version": 2,
         "kind": "bounded_code_change",
         "repository": repository,
         "objective": objective,
@@ -102,6 +106,9 @@ def build_execution_contract(
         "iteration": max(0, int(iteration)),
         "max_iterations": 2,
         "requires_clean_worktree": True,
+        "requires_isolated_worktree": True,
+        "requires_signed_attestation": True,
+        "max_patch_bytes": 524288,
         "requires_review": True,
     }
 
@@ -198,6 +205,7 @@ def evaluate_completion(
     *,
     requested_status: str,
     result: dict[str, Any] | None,
+    verify_keys: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     contract = task_contract(task)
     if not contract:
@@ -218,10 +226,28 @@ def evaluate_completion(
         evidence = {}
     if evidence.get("evidence_source") != "executor":
         reasons.append("unattested_model_evidence")
+    attested, attestation_reason = verify_executor_evidence(
+        evidence, verify_keys=verify_keys
+    )
+    if not attested:
+        reasons.append(attestation_reason)
     if not evidence.get("worktree_clean_before"):
         reasons.append("worktree_not_clean_before_execution")
+    if evidence.get("isolated_worktree") is not True:
+        reasons.append("execution_not_isolated")
     if evidence.get("scope_validated") is not True:
         reasons.append("scope_not_executor_validated")
+    patch = evidence.get("patch")
+    if not isinstance(patch, str) or not patch:
+        reasons.append("missing_patch_artifact")
+    patch_fingerprint = str(evidence.get("patch_sha256") or "")
+    if not patch_fingerprint:
+        reasons.append("missing_patch_fingerprint")
+    elif isinstance(patch, str) and patch and not hmac.compare_digest(
+        hashlib.sha256(patch.encode()).hexdigest(),
+        patch_fingerprint,
+    ):
+        reasons.append("patch_fingerprint_invalid")
 
     allowed_paths = set(contract.get("allowed_paths") or [])
     changed_files = evidence.get("changed_files")
@@ -427,18 +453,26 @@ class ImprovementCycle:
                     {"limit": max(1, min(limit, 500))},
                 )
             ]
-            attempts = [
-                dict(row["attempt"])
-                for row in session.run(
-                    """
-                    MATCH (attempt:ImprovementAttempt)
-                    RETURN attempt
-                    ORDER BY attempt.updated_at_ts DESC
-                    LIMIT $limit
-                    """,
-                    {"limit": max(1, min(limit, 500))},
-                )
-            ]
+            attempts = []
+            for row in session.run(
+                """
+                MATCH (attempt:ImprovementAttempt)
+                RETURN attempt
+                ORDER BY attempt.updated_at_ts DESC
+                LIMIT $limit
+                """,
+                {"limit": max(1, min(limit, 500))},
+            ):
+                attempt = dict(row["attempt"])
+                try:
+                    evidence = json.loads(attempt.pop("evidence_json", "{}"))
+                except json.JSONDecodeError:
+                    evidence = {}
+                attempt["patch_sha256"] = evidence.get("patch_sha256")
+                attempt["changed_files"] = evidence.get("changed_files") or []
+                attempt["summary"] = evidence.get("summary")
+                attempt["executor_id"] = evidence.get("executor_id")
+                attempts.append(attempt)
         return {
             "profiles": profiles,
             "attempts": attempts,
@@ -448,3 +482,98 @@ class ImprovementCycle:
                 "verified": sum(1 for attempt in attempts if attempt.get("accepted")),
             },
         }
+
+    def get_attempt(self, neo: Any, attempt_id: str) -> dict[str, Any] | None:
+        with neo._session() as session:
+            row = session.run(
+                """
+                MATCH (task:Task)-[:HAS_IMPROVEMENT_ATTEMPT]->(
+                  attempt:ImprovementAttempt {id:$attempt_id}
+                )
+                RETURN task, attempt
+                """,
+                {"attempt_id": attempt_id},
+            ).single()
+        if not row:
+            return None
+        attempt = dict(row["attempt"])
+        try:
+            evidence = json.loads(attempt.get("evidence_json") or "{}")
+            contract = json.loads(attempt.get("contract_json") or "{}")
+        except json.JSONDecodeError:
+            evidence, contract = {}, {}
+        return {
+            "task": dict(row["task"]),
+            "attempt": attempt,
+            "evidence": evidence,
+            "contract": contract,
+        }
+
+    def record_promotion(
+        self,
+        neo: Any,
+        attempt_id: str,
+        *,
+        actor: str,
+        reason: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        with neo._session() as session:
+            row = session.run(
+                """
+                MATCH (attempt:ImprovementAttempt {id:$attempt_id})
+                SET attempt.promotion_status=$status,
+                    attempt.promotion_actor=$actor,
+                    attempt.promotion_reason=$reason,
+                    attempt.promotion_result_json=$result_json,
+                    attempt.promoted_at_ts=CASE
+                      WHEN $promoted THEN timestamp()
+                      ELSE attempt.promoted_at_ts
+                    END,
+                    attempt.updated_at_ts=timestamp()
+                RETURN attempt
+                """,
+                {
+                    "attempt_id": attempt_id,
+                    "status": "PROMOTED" if result.get("promoted") else "REJECTED",
+                    "actor": actor,
+                    "reason": reason,
+                    "result_json": json.dumps(result, default=str, sort_keys=True),
+                    "promoted": bool(result.get("promoted")),
+                },
+            ).single()
+        return dict(row["attempt"]) if row else {}
+
+    def claim_promotion(
+        self,
+        neo: Any,
+        attempt_id: str,
+        *,
+        actor: str,
+        fingerprint: str,
+    ) -> dict[str, Any] | None:
+        with neo._session() as session:
+            row = session.run(
+                """
+                MATCH (attempt:ImprovementAttempt {id:$attempt_id})
+                WHERE attempt.accepted=true
+                  AND coalesce(attempt.promotion_status, '') <> 'PROMOTED'
+                  AND (
+                    coalesce(attempt.promotion_status, '') <> 'PROMOTING'
+                    OR coalesce(attempt.promotion_started_at_ts, 0)
+                      < timestamp() - 600000
+                  )
+                SET attempt.promotion_status='PROMOTING',
+                    attempt.promotion_actor=$actor,
+                    attempt.promotion_fingerprint=$fingerprint,
+                    attempt.promotion_started_at_ts=timestamp(),
+                    attempt.updated_at_ts=timestamp()
+                RETURN attempt
+                """,
+                {
+                    "attempt_id": attempt_id,
+                    "actor": actor,
+                    "fingerprint": fingerprint,
+                },
+            ).single()
+        return dict(row["attempt"]) if row else None

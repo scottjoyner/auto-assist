@@ -1,3 +1,4 @@
+import hashlib
 from types import SimpleNamespace
 
 from assistx.controller_runtime import Neo4jControllerStore
@@ -7,6 +8,7 @@ from assistx.improvement_cycle import (
     build_execution_contract,
     evaluate_completion,
 )
+from assistx.improvement_runtime import sign_executor_evidence
 from assistx.recovery_control import Neo4jRecoveryStore, RecoveryControlPlane
 from assistx.recovery_runbooks import RecoveryRunbookExecutor, build_runbook, sign_runbook
 from assistx.self_healing import SelfHealingController
@@ -191,11 +193,89 @@ def test_recovery_lifecycle_canary_with_real_neo4j(seeded_neo4j, monkeypatch, tm
         evaluation,
     )
     repair_task = neo.get_task(repair_task_id)
+    attempt_id = recorded["attempt"]["id"]
+    loaded_attempt = improvement.get_attempt(neo, attempt_id)
+    promotion_record = improvement.record_promotion(
+        neo,
+        attempt_id,
+        actor="canary-operator",
+        reason="Canary records a rejected promotion safely.",
+        result={"promoted": False, "reason": "canary_rejection"},
+    )
     assert evaluation["effective_status"] == "FAILED"
     assert recorded["profile"]["attempts"] == 1
     assert recorded["profile"]["verified_rate"] == 0.0
+    assert loaded_attempt["task"]["id"] == improvement_task["task_id"]
+    assert promotion_record["promotion_status"] == "REJECTED"
     assert repair_task["status"] == "PROPOSED"
     assert repair_task["kind"] == "improvement_repair"
+
+    patch = (
+        "diff --git a/tests/test_canary_generated.py "
+        "b/tests/test_canary_generated.py\n"
+    )
+    signed_evidence = sign_executor_evidence(
+        {
+            "evidence_source": "executor",
+            "executor_id": "small-agent-canary",
+            "worktree_clean_before": True,
+            "isolated_worktree": True,
+            "scope_validated": True,
+            "changed_files": ["tests/test_canary_generated.py"],
+            "diff_lines": 2,
+            "tools_used": [
+                "inspect_file",
+                "apply_patch",
+                "run_verification",
+                "inspect_diff",
+            ],
+            "verification": [
+                {
+                    "command": [
+                        "pytest",
+                        "-q",
+                        "tests/test_canary_generated.py",
+                    ],
+                    "returncode": 0,
+                }
+            ],
+            "summary": "Signed improvement canary.",
+            "patch": patch,
+            "patch_sha256": hashlib.sha256(patch.encode()).hexdigest(),
+        },
+        key_id="canary-node-v1",
+        secret="canary-node-secret",
+    )
+    accepted_task = neo.create_task_with_context(
+        title="Signed bounded improvement canary",
+        status="READY",
+        kind="bounded_code_change",
+        required_capabilities=["llm", "code_execution"],
+        payload={"execution_contract": improvement_contract},
+        idempotency_key="signed-bounded-improvement-canary",
+    )
+    accepted_task_state = neo.get_task(accepted_task["task_id"])
+    accepted_evaluation = evaluate_completion(
+        accepted_task_state,
+        requested_status="DONE",
+        result={"completion_envelope": signed_evidence},
+        verify_keys={"canary-node-v1": "canary-node-secret"},
+    )
+    accepted_record = improvement.record_attempt(
+        neo,
+        accepted_task_state,
+        agent_id="small-agent-canary",
+        model_id="small-model-canary",
+        evaluation=accepted_evaluation,
+    )
+    claimed_promotion = improvement.claim_promotion(
+        neo,
+        accepted_record["attempt"]["id"],
+        actor="canary-operator",
+        fingerprint=signed_evidence["patch_sha256"],
+    )
+    assert accepted_evaluation["accepted"] is True
+    assert claimed_promotion["promotion_status"] == "PROMOTING"
 
     with neo._session() as session:
         session.run(

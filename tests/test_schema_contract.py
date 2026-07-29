@@ -72,6 +72,7 @@ def test_ensure_schema_declares_migration_constraints_and_indexes():
 
     assert "FOR (t:Task)            ON (t.status)" in schema
     assert "FOR (t:Task)            ON (t.kind)" in schema
+    assert "FOR (a:ImprovementAttempt) ON (a.promotion_status)" in schema
     assert "FOR (tr:Transcription)  ON (tr.key)" in schema
     assert "FOR (r:FleetRecovery) ON (r.status)" in schema
     assert "FOR (a:AllocationReservation) ON (a.expires_at_ts)" in schema

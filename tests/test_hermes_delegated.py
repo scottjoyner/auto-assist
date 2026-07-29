@@ -5,6 +5,7 @@ These verify that a task routed to a configured tier is solved via Hermes's
 path (machine-usable results) rather than a free-form ``hermes chat`` session.
 """
 import importlib
+import hashlib
 import json
 import os
 
@@ -12,6 +13,26 @@ import pytest
 
 import assistx.agents.hermes_agent_adapter as adapter
 from assistx.improvement_cycle import build_execution_contract
+from assistx.improvement_runtime import sign_executor_evidence
+
+
+def executor_evidence(**values):
+    patch = "diff --git a/tests/test_small.py b/tests/test_small.py\n"
+    evidence = {
+        "evidence_source": "executor",
+        "executor_id": "test-agent",
+        "worktree_clean_before": True,
+        "isolated_worktree": True,
+        "scope_validated": True,
+        "patch": patch,
+        "patch_sha256": hashlib.sha256(patch.encode()).hexdigest(),
+        **values,
+    }
+    return sign_executor_evidence(
+        evidence,
+        key_id="node-v1",
+        secret="node-secret",
+    )
 
 
 @pytest.fixture
@@ -24,6 +45,8 @@ def reload_with_delegate_tier(monkeypatch):
     # hitting /root/.hermes or /root/knowledge
     monkeypatch.setenv("HERMES_PROFILES_PATH", "/tmp/auto-assist-test-profiles.yaml")
     monkeypatch.setenv("HERMES_EVAL_PATH", "/tmp/auto-assist-test-model-profiles.json")
+    monkeypatch.setenv("ASSISTX_IMPROVEMENT_ATTESTATION_KEY_ID", "node-v1")
+    monkeypatch.setenv("ASSISTX_IMPROVEMENT_ATTESTATION_SECRET", "node-secret")
     importlib.reload(adapter)
     yield adapter
     # restore defaults so other tests are unaffected
@@ -71,6 +94,33 @@ def test_run_hermes_delegated_default_return_format_is_verbatim(monkeypatch):
     assert 'return_format="verbatim"' in captured["prompt"]
 
 
+def test_hermes_child_cannot_read_executor_signing_secrets(monkeypatch):
+    captured = {}
+    monkeypatch.setenv("ASSISTX_IMPROVEMENT_ATTESTATION_SECRET", "signing-secret")
+    monkeypatch.setenv(
+        "ASSISTX_IMPROVEMENT_VERIFY_KEYS",
+        '{"node-v1":"signing-secret"}',
+    )
+    monkeypatch.setenv("ASSISTX_REPOSITORY_ROOTS_JSON", '{"repo":"/private"}')
+
+    class Result:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(*_args, **kwargs):
+        captured.update(kwargs["env"])
+        return Result()
+
+    monkeypatch.setattr(adapter.subprocess, "run", fake_run)
+
+    adapter.run_hermes("bounded task", model="model")
+
+    assert "ASSISTX_IMPROVEMENT_ATTESTATION_SECRET" not in captured
+    assert "ASSISTX_IMPROVEMENT_VERIFY_KEYS" not in captured
+    assert "ASSISTX_REPOSITORY_ROOTS_JSON" not in captured
+
+
 def test_process_task_routes_configured_tier_to_delegated(reload_with_delegate_tier, monkeypatch):
     """A tool-small task is solved via run_hermes_delegated, not run_hermes."""
     ad = reload_with_delegate_tier
@@ -99,7 +149,7 @@ def test_process_task_routes_configured_tier_to_delegated(reload_with_delegate_t
     monkeypatch.setattr(
         ad,
         "prepare_repository",
-        lambda _contract: {
+        lambda _contract, **_kwargs: {
             "ok": True,
             "root": "/tmp/repo",
             "head": "abc",
@@ -109,12 +159,9 @@ def test_process_task_routes_configured_tier_to_delegated(reload_with_delegate_t
     monkeypatch.setattr(
         ad,
         "collect_executor_evidence",
-        lambda _contract, _prepared, reported: {
-            **reported,
-            "evidence_source": "executor",
-            "worktree_clean_before": True,
-            "scope_validated": True,
-        },
+        lambda _contract, _prepared, reported, **_kwargs: executor_evidence(
+            **reported
+        ),
     )
     monkeypatch.setattr(ad, "run_hermes", lambda *a, **k: calls.setdefault("raw", True))
 
@@ -184,23 +231,23 @@ def test_bounded_change_uses_restricted_tools_and_structured_evidence(
     monkeypatch.setattr(
         ad,
         "prepare_repository",
-        lambda _contract: {
+        lambda _contract, **_kwargs: {
             "ok": True,
             "root": "/tmp/repo",
+            "base_root": "/tmp/base",
             "head": "abc",
             "clean_before": True,
+            "isolated": True,
         },
     )
     monkeypatch.setattr(
         ad,
         "collect_executor_evidence",
-        lambda _contract, _prepared, reported: {
-            **reported,
-            "evidence_source": "executor",
-            "worktree_clean_before": True,
-            "scope_validated": True,
-        },
+        lambda _contract, _prepared, reported, **_kwargs: executor_evidence(
+            **reported
+        ),
     )
+    monkeypatch.setattr(ad, "cleanup_worktree", lambda _prepared: {"cleaned": True})
     assistx = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
     assistx.claim_task.return_value = {
         "claimed": True,
@@ -233,6 +280,7 @@ def test_bounded_change_uses_restricted_tools_and_structured_evidence(
     attested = kwargs["result"]["completion_envelope"]
     assert all(attested[key] == value for key, value in envelope.items())
     assert attested["evidence_source"] == "executor"
+    assert attested["attestation"]["key_id"] == "node-v1"
 
 
 def test_bounded_task_reports_failed_when_executor_rejects_evidence(
@@ -257,26 +305,27 @@ def test_bounded_task_reports_failed_when_executor_rejects_evidence(
     monkeypatch.setattr(
         ad,
         "prepare_repository",
-        lambda _contract: {
+        lambda _contract, **_kwargs: {
             "ok": True,
             "root": "/tmp/repo",
+            "base_root": "/tmp/base",
             "head": "abc",
             "clean_before": True,
+            "isolated": True,
         },
     )
     monkeypatch.setattr(
         ad,
         "collect_executor_evidence",
-        lambda *_args, **_kwargs: {
-            "evidence_source": "executor",
-            "worktree_clean_before": True,
-            "scope_validated": False,
-            "changed_files": ["src/outside.py"],
-            "diff_lines": 4,
-            "tools_used": ["inspect_file", "apply_patch", "inspect_diff"],
-            "verification": [],
-        },
+        lambda *_args, **_kwargs: executor_evidence(
+            scope_validated=False,
+            changed_files=["src/outside.py"],
+            diff_lines=4,
+            tools_used=["inspect_file", "apply_patch", "inspect_diff"],
+            verification=[],
+        ),
     )
+    monkeypatch.setattr(ad, "cleanup_worktree", lambda _prepared: {"cleaned": True})
     assistx = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
     assistx.claim_task.return_value = {
         "claimed": True,

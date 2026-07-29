@@ -42,6 +42,7 @@ from .improvement_cycle import (
     build_execution_contract,
     evaluate_completion,
 )
+from .improvement_runtime import promote_patch
 from .recovery_control import (
     Neo4jRecoveryStore,
     RecoveryControlPlane,
@@ -212,6 +213,11 @@ class ImprovementProposalIn(BaseModel):
     verification_commands: List[List[str]] = Field(min_length=1, max_length=10)
     recommended_tier: str = "tool-small"
     priority: str = "MEDIUM"
+
+
+class PatchPromotionIn(BaseModel):
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reason: str = Field(min_length=3, max_length=1000)
 
 
 class BenchmarkControlIn(BaseModel):
@@ -1616,6 +1622,81 @@ def api_create_improvement_proposal(
             "task_id": task_id,
             "status": "PROPOSED",
             "contract": contract,
+        }
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/improvement-cycle/attempts/{attempt_id}/promote")
+def api_promote_improvement_patch(
+    attempt_id: str,
+    body: PatchPromotionIn,
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        record = _improvement_cycle.get_attempt(neo, attempt_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="improvement attempt not found")
+        attempt = record["attempt"]
+        if not attempt.get("accepted"):
+            raise HTTPException(
+                status_code=409,
+                detail="only a verified improvement attempt can be promoted",
+            )
+        if attempt.get("promotion_status") == "PROMOTED":
+            return {
+                "attempt_id": attempt_id,
+                "promoted": True,
+                "idempotent": True,
+                "patch_sha256": record["evidence"].get("patch_sha256"),
+            }
+        claimed = _improvement_cycle.claim_promotion(
+            neo,
+            attempt_id,
+            actor=user,
+            fingerprint=body.fingerprint,
+        )
+        if not claimed:
+            raise HTTPException(
+                status_code=409,
+                detail="patch promotion is already active or completed",
+            )
+        try:
+            result = promote_patch(
+                record["contract"],
+                record["evidence"],
+                expected_fingerprint=body.fingerprint,
+            )
+        except Exception as exc:
+            _improvement_cycle.record_promotion(
+                neo,
+                attempt_id,
+                actor=user,
+                reason=body.reason,
+                result={
+                    "promoted": False,
+                    "reason": "promotion_internal_error",
+                    "detail": str(exc)[:240],
+                },
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="patch promotion failed safely",
+            ) from exc
+        updated = _improvement_cycle.record_promotion(
+            neo,
+            attempt_id,
+            actor=user,
+            reason=body.reason,
+            result=result,
+        )
+        if not result.get("promoted"):
+            raise HTTPException(status_code=409, detail=result)
+        return {
+            "attempt_id": attempt_id,
+            **result,
+            "promotion_status": updated.get("promotion_status"),
         }
     finally:
         neo.close()
