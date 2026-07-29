@@ -10,7 +10,8 @@ from typing import Any, Callable
 
 ALLOWED_ACTIONS = {
     "collect_evidence", "refresh_agent", "reload_model", "drain_and_test",
-    "drain_and_benchmark", "restore_service",
+    "drain_and_benchmark", "restore_service", "restart_service",
+    "redeploy_service", "drain_node", "resume_node", "health_check",
 }
 
 
@@ -35,7 +36,9 @@ class RecoveryControlPlane:
             "diagnosis_id": diagnosis.get("diagnosis_id"),
             "incident_key": diagnosis.get("incident_key"),
             "node_id": diagnosis.get("node_id"),
+            "model_id": diagnosis.get("model_id"),
             "action": action,
+            "parameters": recovery.get("parameters") or {},
             "risk": recovery.get("risk"),
             "verify_after": recovery.get("verify_after") or [],
             "rollback": recovery.get("rollback"),
