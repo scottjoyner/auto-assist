@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}AssistX – Operations{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', path='css/operations.css') }}">{% endblock %}
+
+{% block content %}
+<div class="ops-shell">
+  <header class="ops-command">
+    <div>
+      <h1>Operations</h1>
+      <p class="kicker">See what needs attention, direct work, and approve system changes.</p>
+    </div>
+    <div class="actions">
+      <div class="ops-health"><span id="health-dot" class="ops-health-dot"></span><span id="health-label">Connecting</span></div>
+      <button id="refresh" class="btn secondary">Refresh</button>
+      <button id="new-task-toggle" class="btn">New task</button>
+    </div>
+  </header>
+
+  <form id="new-task" class="card ops-form" hidden>
+    <label><span class="label">What needs doing?</span><input name="title" type="text" required placeholder="Diagnose recurring timeout on node…"></label>
+    <label><span class="label">Work type</span><select name="kind"><option value="diagnosis">Diagnose</option><option value="recovery">Recover</option><option value="deployment">Deploy</option><option value="analysis">Analyze</option><option value="improvement">Improve</option></select></label>
+    <label><span class="label">Priority</span><select name="priority"><option>HIGH</option><option selected>MEDIUM</option><option>LOW</option></select></label>
+    <button class="btn" type="submit">Create task</button>
+  </form>
+
+  <div class="ops-kpis">
+    <div class="ops-kpi"><span class="metric-label">Needs attention</span><strong id="kpi-attention">—</strong><span class="metric-note">active incidents</span></div>
+    <div class="ops-kpi"><span class="metric-label">Work in progress</span><strong id="kpi-running">—</strong><span class="metric-note">claimed or running</span></div>
+    <div class="ops-kpi"><span class="metric-label">Available slots</span><strong id="kpi-capacity">—</strong><span class="metric-note">for new work</span></div>
+    <div class="ops-kpi"><span class="metric-label">Awaiting approval</span><strong id="kpi-approvals">—</strong><span class="metric-note">review-first proposals</span></div>
+  </div>
+
+  <nav class="ops-tabs" aria-label="Operations views">
+    <button class="ops-tab active" data-view="attention">Attention</button>
+    <button class="ops-tab" data-view="work">Work</button>
+    <button class="ops-tab" data-view="fleet">Fleet</button>
+    <button class="ops-tab" data-view="improvements">Improvements</button>
+  </nav>
+
+  <section id="view-attention" class="ops-view active">
+    <div class="ops-overview">
+      <article class="card"><div class="section-header"><div><h2>Attention queue</h2><p class="kicker">Detected issues ordered by severity, with safe next actions.</p></div><button id="reconcile" class="btn secondary">Scan now</button></div><div id="attention-list" class="ops-list mt-4"></div></article>
+      <aside class="card"><h3>System recommendation</h3><div id="recommendation" class="ops-stack mt-3"></div></aside>
+    </div>
+  </section>
+
+  <section id="view-work" class="ops-view">
+    <article class="card"><div class="section-header"><div><h2>Task management</h2><p class="kicker">Live queue across proposed, ready, claimed, and running states.</p></div></div><div id="work-list" class="ops-list mt-4"></div></article>
+  </section>
+
+  <section id="view-fleet" class="ops-view">
+    <article class="card"><div class="section-header"><div><h2>Nodes and loaded models</h2><p class="kicker">True reported loadouts, utilization, health, and capacity.</p></div><a class="btn secondary" href="/fleet-dashboard">Deep metrics</a></div><div id="node-grid" class="ops-node-grid mt-4"></div></article>
+  </section>
+
+  <section id="view-improvements" class="ops-view">
+    <div class="ops-overview">
+      <article class="card"><h2>Improvement proposals</h2><p class="kicker">Analysis-only proposals stay inert until explicitly approved.</p><div id="proposal-list" class="ops-list mt-4"></div></article>
+      <aside class="card"><h3>Safety envelope</h3><div class="ops-stack mt-3"><span class="badge ok">deterministic + idempotent</span><span class="badge ok">analysis-only first</span><span class="badge warn">approval before execution</span><span class="badge warn">validate before deploy</span><span class="badge warn">rollback on failed verification</span></div></aside>
+    </div>
+  </section>
+</div>
+<div id="toast" class="ops-toast" role="status"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const esc = window.UIUtils.escapeHtml;
+  let fleet = {};
+  let tasks = [];
+  const toast = (message) => { const el = document.getElementById('toast'); el.textContent = message; el.style.display = 'block'; setTimeout(() => el.style.display = 'none', 4500); };
+  const api = async (url, options) => { const response = await fetch(url, options); const data = await response.json(); if (!response.ok) throw new Error(data.detail || data.reason || `HTTP ${response.status}`); return data; };
+  const statusClass = (status) => ['RUNNING','SUCCESS','COMPLETED'].includes(status) ? 'ok' : ['FAILURE','FAILED','BLOCKED'].includes(status) ? 'err' : 'warn';
+  const title = (task) => task.title || task.kind || task.id || 'Untitled task';
+
+  function switchView(name) {
+    document.querySelectorAll('.ops-tab').forEach(el => el.classList.toggle('active', el.dataset.view === name));
+    document.querySelectorAll('.ops-view').forEach(el => el.classList.toggle('active', el.id === `view-${name}`));
+  }
+
+  function render() {
+    const incidents = fleet.health_plan?.incidents || [];
+    const running = tasks.filter(t => ['CLAIMED','RUNNING'].includes(t.status));
+    const proposals = tasks.filter(t => t.status === 'PROPOSED');
+    const slots = fleet.capacity_forecast?.summary?.available_slots;
+    document.getElementById('kpi-attention').textContent = incidents.length;
+    document.getElementById('kpi-running').textContent = running.length;
+    document.getElementById('kpi-capacity').textContent = slots ?? '—';
+    document.getElementById('kpi-approvals').textContent = proposals.length;
+    const healthy = fleet.summary?.healthy_nodes || 0, total = fleet.summary?.total_nodes || 0;
+    const dot = document.getElementById('health-dot');
+    dot.className = `ops-health-dot ${total && healthy === total && !incidents.length ? 'ok' : incidents.some(i => i.severity === 'critical') ? 'bad' : ''}`;
+    document.getElementById('health-label').textContent = `${healthy}/${total} nodes healthy`;
+
+    const attention = document.getElementById('attention-list');
+    attention.innerHTML = incidents.length ? incidents.map(item => `<div class="ops-item">
+      <span class="ops-severity ${esc(item.severity)}"></span><div class="ops-item-main"><div class="ops-item-title">${esc(item.detail || item.incident_type)}</div><div class="ops-item-meta">${esc(item.node_id || 'fleet')} · ${esc(item.incident_type)} · recommends ${esc(item.recommended_action || 'diagnosis')}</div></div>
+      <div class="actions"><button class="btn secondary diagnose" data-key="${esc(item.incident_key)}" data-node="${esc(item.node_id || '')}">Diagnose</button>${item.recommended_action === 'quarantine' ? `<button class="btn danger quarantine" data-key="${esc(item.incident_key)}">Quarantine</button>` : ''}</div></div>`).join('') : '<div class="ops-empty"><span class="badge ok">No active incidents</span><p>The latest fleet evidence is healthy.</p></div>';
+
+    const bottlenecks = fleet.capacity_forecast?.bottlenecks || [];
+    document.getElementById('recommendation').innerHTML = bottlenecks.length ? bottlenecks.map(x => `<div class="panel">${esc(x)}</div>`).join('') : '<div class="panel">Capacity is stable. Prioritize benchmark gaps and reviewed improvement proposals.</div>';
+    const visible = tasks.filter(t => ['READY','CLAIMED','RUNNING','PAUSED','FAILURE'].includes(t.status));
+    document.getElementById('work-list').innerHTML = visible.length ? visible.map(t => `<div class="ops-item"><span class="badge ${statusClass(t.status)}">${esc(t.status)}</span><div class="ops-item-main"><div class="ops-item-title">${esc(title(t))}</div><div class="ops-item-meta">${esc(t.kind || t.task_type || 'task')} · ${esc(t.priority || 'MEDIUM')} · ${esc((t.claimed_by || t.target_agent_id || 'unassigned'))}</div></div></div>`).join('') : '<div class="ops-empty">No queued or running work.</div>';
+    const nodes = fleet.nodes || [];
+    document.getElementById('node-grid').innerHTML = nodes.length ? nodes.map(n => { const used = n.inflight_tasks || 0, cap = n.max_concurrent || 1; return `<div class="ops-node"><div class="ops-node-head"><div><strong>${esc(n.display_name || n.hostname)}</strong><div class="ops-item-meta">${esc(n.role || 'general')} · ${esc(n.ip || '')}</div></div><span class="badge ${n.service_ok ? 'ok' : 'err'}">${n.service_ok ? 'online' : 'offline'}</span></div><div class="ops-meter"><span style="width:${Math.min(100, used / cap * 100)}%"></span></div><div class="ops-item-meta">${used}/${cap} slots · ${n.hardware?.ram_gib ?? '—'} GiB RAM · ${n.hardware?.vram_gib ?? '—'} GiB VRAM</div><div class="ops-models">${(n.loaded_models || []).map(m => `<span class="badge">${esc(m)}</span>`).join('') || '<span class="muted">No model reported</span>'}</div></div>`; }).join('') : '<div class="ops-empty">No nodes reported.</div>';
+    document.getElementById('proposal-list').innerHTML = proposals.length ? proposals.map(t => `<div class="ops-item"><span class="ops-severity info"></span><div class="ops-item-main"><div class="ops-item-title">${esc(title(t))}</div><div class="ops-item-meta">${esc(t.kind || 'improvement')} · review required</div></div><button class="btn approve" data-id="${esc(t.id)}">Approve</button></div>`).join('') : '<div class="ops-empty">No proposals awaiting approval.</div>';
+  }
+
+  async function refresh() {
+    try {
+      [fleet, tasks] = await Promise.all([api('/api/fleet/dashboard'), api('/api/tasks?limit=200').then(x => x.items || x.tasks || x)]);
+      if (!Array.isArray(tasks)) tasks = [];
+      render();
+    } catch (error) { toast(`Refresh failed: ${error.message}`); }
+  }
+
+  document.querySelectorAll('.ops-tab').forEach(el => el.addEventListener('click', () => switchView(el.dataset.view)));
+  document.getElementById('refresh').addEventListener('click', refresh);
+  document.getElementById('new-task-toggle').addEventListener('click', () => { const form = document.getElementById('new-task'); form.hidden = !form.hidden; if (!form.hidden) form.elements.title.focus(); });
+  document.getElementById('new-task').addEventListener('submit', async event => {
+    event.preventDefault(); const form = event.currentTarget; const values = Object.fromEntries(new FormData(form));
+    try { await api('/api/tasks', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title:values.title, kind:values.kind, priority:values.priority, required_capabilities:['llm'], payload:{source:'operations_ui', execution_mode:values.kind === 'deployment' || values.kind === 'recovery' ? 'approval_required' : 'analysis_first'}})}); form.reset(); form.hidden = true; toast('Task created and queued.'); await refresh(); } catch (error) { toast(error.message); }
+  });
+  document.getElementById('reconcile').addEventListener('click', async () => { try { await api('/api/fleet/self-healing/reconcile', {method:'POST'}); toast('Fleet scan complete.'); await refresh(); } catch (error) { toast(error.message); } });
+  document.addEventListener('click', async event => {
+    const diagnose = event.target.closest('.diagnose'), quarantine = event.target.closest('.quarantine'), approve = event.target.closest('.approve');
+    try {
+      if (diagnose) { await api('/api/tasks', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title:`Diagnose fleet incident on ${diagnose.dataset.node || 'fleet'}`, kind:'fleet_incident_diagnosis', priority:'HIGH', required_capabilities:['llm'], idempotency_key:`diagnose:${diagnose.dataset.key}`, payload:{incident_key:diagnose.dataset.key, node_id:diagnose.dataset.node, execution_mode:'analysis_only'}})}); toast('Diagnosis task created.'); await refresh(); }
+      if (quarantine && confirm('Quarantine this node from new work?')) { await api(`/api/fleet/self-healing/incidents/${encodeURIComponent(quarantine.dataset.key)}/quarantine`, {method:'POST'}); toast('Node quarantined.'); await refresh(); }
+      if (approve && confirm('Approve this analysis-only proposal for scheduling?')) { await api(`/api/tasks/${encodeURIComponent(approve.dataset.id)}/approve-proposal`, {method:'POST'}); toast('Proposal approved and queued.'); await refresh(); }
+    } catch (error) { toast(error.message); }
+  });
+  refresh(); setInterval(refresh, 15000);
+})();
+</script>
+{% endblock %}
