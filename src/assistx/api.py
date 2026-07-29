@@ -1380,10 +1380,12 @@ def api_fleet_dashboard(user: str = Depends(auth)):
     router_errors: list[str] = []
     network_map: dict[str, Any] = {}
     value_matrix: dict[str, Any] = {}
+    benchmark_plan: dict[str, Any] = {}
     if base_url:
         for endpoint, target in (
             ("network-map", network_map),
             ("value-matrix", value_matrix),
+            ("benchmark-plan", benchmark_plan),
         ):
             try:
                 target.update(_fetch_json(f"{base_url}/api/fleet/{endpoint}"))
@@ -1484,6 +1486,7 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         "nodes": nodes,
         "models": models,
         "value_matrix": value_matrix,
+        "benchmark_plan": benchmark_plan,
         "task_distribution": task_distribution,
         "task_summary": {
             "ready_llm": None,
