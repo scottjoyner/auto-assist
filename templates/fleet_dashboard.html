@@ -80,6 +80,16 @@
     <div id="routing-map" class="table-wrap mt-3">Loading…</div>
   </section>
 
+  <section class="card half" id="section-routing-regret">
+    <div class="section-header">
+      <div>
+        <h3>Routing Decision Quality</h3>
+        <p class="kicker">Chosen candidates versus predicted alternatives and realized routing regret.</p>
+      </div>
+    </div>
+    <div id="routing-regret" class="table-wrap mt-3">Loading…</div>
+  </section>
+
   <section class="card half" id="section-benchmarks">
     <div class="section-header">
       <div>
@@ -305,6 +315,38 @@
     wrap.innerHTML = html;
   }
 
+  function renderRoutingRegret(data) {
+    const wrap = document.getElementById('routing-regret');
+    const report = data?.routing_regret || {};
+    const items = report.items || [];
+    if (!items.length) {
+      wrap.innerHTML = '<div class="muted">No completed routing decisions yet</div>';
+      return;
+    }
+    const summary = report.summary || {};
+    let html = `<div class="summary-line">
+      <span class="badge">Decisions: ${esc(summary.decisions ?? 0)}</span>
+      <span class="badge">Completed: ${esc(summary.completed ?? 0)}</span>
+      <span class="badge">Zero regret: ${summary.zero_regret_rate == null ? '—' : (summary.zero_regret_rate * 100).toFixed(0) + '%'}</span>
+      <span class="badge">Avg regret: ${summary.avg_realized_regret?.toFixed(1) ?? '—'} RVU/h</span>
+    </div><table class="dashboard-table mt-2"><thead><tr>
+      <th>Request</th><th>Choice</th><th>Status</th><th>Latency</th><th>Realized RVU/h</th><th>Regret</th><th>Alternatives</th>
+    </tr></thead><tbody>`;
+    for (const item of items.slice(0, 50)) {
+      html += `<tr>
+        <td><code>${esc(short(item.request_id, 10))}</code></td>
+        <td>${esc(item.chosen_provider)}/<code>${esc(item.chosen_model)}</code></td>
+        <td><span class="badge ${item.status === 'completed' ? 'ok' : item.status === 'failed' ? 'err' : 'warn'}">${esc(item.status)}</span></td>
+        <td>${item.latency_ms == null ? '—' : esc(item.latency_ms) + ' ms'}</td>
+        <td>${item.realized_value_per_hour?.toFixed(1) ?? '—'}</td>
+        <td>${item.realized_regret?.toFixed(1) ?? '—'}</td>
+        <td>${esc((item.candidates || []).length)}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  }
+
   function renderBenchmarkQueue(data) {
     const wrap = document.getElementById('benchmark-queue');
     const controller = data?.benchmark_controller || {};
@@ -424,6 +466,7 @@
       renderNodes(data);
       renderModelMatrix(data);
       renderRouting(data);
+      renderRoutingRegret(data);
       renderBenchmarkQueue(data);
       renderTasks(data);
       renderCompletions(data);
