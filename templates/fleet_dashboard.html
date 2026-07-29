@@ -101,6 +101,16 @@
     <div id="loadout-simulation" class="table-wrap mt-3">Loading…</div>
   </section>
 
+  <section class="card half" id="section-capacity-forecast">
+    <div class="section-header">
+      <div>
+        <h3>Capacity Forecast</h3>
+        <p class="kicker">Queue completion estimate, reserved interactive capacity, and cooperative preemption candidates.</p>
+      </div>
+    </div>
+    <div id="capacity-forecast" class="table-wrap mt-3">Loading…</div>
+  </section>
+
   <section class="card half" id="section-benchmarks">
     <div class="section-header">
       <div>
@@ -398,6 +408,35 @@
     });
   }
 
+  function renderCapacityForecast(data) {
+    const wrap = document.getElementById('capacity-forecast');
+    const forecast = data?.capacity_forecast || {};
+    const summary = forecast.summary;
+    if (!summary) {
+      wrap.innerHTML = '<div class="muted">No capacity forecast available</div>';
+      return;
+    }
+    let html = `<div class="metric-grid">
+      <div class="metric"><div class="metric-label">Ready</div><div class="metric-value">${esc(summary.ready)}</div></div>
+      <div class="metric"><div class="metric-label">Available Slots</div><div class="metric-value">${esc(summary.available_slots)}</div></div>
+      <div class="metric"><div class="metric-label">Loaded TPS</div><div class="metric-value">${summary.aggregate_loaded_tps?.toFixed(1) ?? '—'}</div></div>
+      <div class="metric"><div class="metric-label">Queue ETA</div><div class="metric-value">${summary.estimated_queue_hours == null ? '—' : summary.estimated_queue_hours.toFixed(2) + 'h'}</div></div>
+    </div>`;
+    const bottlenecks = forecast.bottlenecks || [];
+    if (bottlenecks.length) html += `<div class="mt-2">${bottlenecks.map(item => `<span class="badge err">${esc(item)}</span>`).join(' ')}</div>`;
+    const preemptions = forecast.preemption_plan || [];
+    if (preemptions.length) {
+      html += `<table class="dashboard-table mt-2"><thead><tr><th>Recommendation</th><th>Task</th><th>Node</th><th>Reason</th></tr></thead><tbody>`;
+      for (const item of preemptions) html += `<tr>
+        <td><span class="badge warn">${esc(item.action)}</span></td>
+        <td><code>${esc(short(item.task_id, 10))}</code></td>
+        <td>${esc(item.node_id || '—')}</td><td>${esc(item.reason)}</td>
+      </tr>`;
+      html += '</tbody></table>';
+    }
+    wrap.innerHTML = html;
+  }
+
   async function proposeLoadoutAction(index) {
     const action = loadoutActions[index];
     if (!action || !confirm(`Create guarded proposal: ${action.action} ${action.model_id} on ${action.node_id}?`)) return;
@@ -542,6 +581,7 @@
       renderRouting(data);
       renderRoutingRegret(data);
       renderLoadoutSimulation(data);
+      renderCapacityForecast(data);
       renderBenchmarkQueue(data);
       renderTasks(data);
       renderCompletions(data);
