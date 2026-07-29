@@ -95,10 +95,14 @@ fence:
    `checkpoint_json`.
 
 Old claim IDs cannot heartbeat, checkpoint, or complete the migrated execution.
-Migration requires a healthy, unblocked `SwarmNode`, and each task has a bounded
-`max_migrations` budget. A `PAUSING` task that is not acknowledged within the
-timeout returns to its prior execution when the lease is still valid, or to
-`READY` after the lease expires.
+Migration requires a healthy, unblocked `SwarmNode` that advertises every
+required task capability and differs from the paused source node. Each task has
+a bounded `max_migrations` budget. Any active allocation reservation for the
+source is atomically superseded during handoff so it cannot block the
+destination claim. Checkpoint payloads are bounded by
+`ASSISTX_MAX_CHECKPOINT_BYTES` (1 MiB by default). A `PAUSING` task that is not
+acknowledged within the timeout returns to its prior execution when the lease
+is still valid, or to `READY` after the lease expires.
 
 Benchmark work checkpoints between cases. LLM work can checkpoint before
 inference or preserve a completed response so migration does not repeat a paid
@@ -107,7 +111,8 @@ disabled by default.
 
 Migration history is stored as `TaskMigrationEvent` records and exposed through
 `GET /api/fleet/migrations`. The Operations workspace shows progress,
-checkpoint revision, migration budget, and preempt/migrate controls.
+checkpoint revision, migration budget, preempt/migrate controls, and recent
+migration events.
 
 ## Canary sequence
 

@@ -62,6 +62,7 @@
       <div class="ops-stack">
         <article class="card"><h2>Improvement proposals</h2><p class="kicker">Analysis-only proposals stay inert until explicitly approved.</p><div id="proposal-list" class="ops-list mt-4"></div></article>
         <article class="card"><h3>Recovery execution history</h3><p class="kicker">Node-reported steps, verification, and rollback evidence.</p><div id="recovery-history" class="ops-list mt-3"></div></article>
+        <article class="card"><h3>Task migration history</h3><p class="kicker">Preemption, checkpoint handoff, timeout, and destination scheduling events.</p><div id="migration-history" class="ops-list mt-3"></div></article>
         <article class="card"><h3>Controller leadership</h3><p class="kicker">Durable leases, fencing tokens, and last reconciliation checkpoints.</p><div id="controller-list" class="ops-list mt-3"></div></article>
       </div>
       <aside class="card"><h3>Recovery readiness</h3><p class="kicker">Configuration checks expose presence and state, never secret values.</p><div id="readiness-list" class="ops-stack mt-3"></div></aside>
@@ -79,6 +80,7 @@
   let tasks = [];
   let recovery = {};
   let readiness = {};
+  let migrations = [];
   let refreshFailures = 0;
   const toast = (message) => { const el = document.getElementById('toast'); el.textContent = message; el.style.display = 'block'; setTimeout(() => el.style.display = 'none', 4500); };
   const api = async (url, options) => { const response = await fetch(url, options); const data = await response.json(); if (!response.ok) throw new Error(data.detail || data.reason || `HTTP ${response.status}`); return data; };
@@ -92,7 +94,7 @@
 
   function render() {
     const incidents = fleet.health_plan?.incidents || [];
-    const running = tasks.filter(t => ['CLAIMED','RUNNING'].includes(t.status));
+    const running = tasks.filter(t => ['CLAIMED','RUNNING','PAUSING'].includes(t.status));
     const proposals = tasks.filter(t => t.status === 'PROPOSED');
     const recoveryProposals = recovery.proposals || [];
     const slots = fleet.capacity_forecast?.summary?.available_slots;
@@ -128,6 +130,7 @@
     const history = recoveryProposals.filter(p => ['VERIFIED','FAILED_VERIFICATION','FAILED','FAILED_TIMEOUT','FAILED_STUCK'].includes(p.status));
     const audit = recovery.audit || [];
     document.getElementById('recovery-history').innerHTML = history.length ? history.slice(0, 20).map(p => { const evidence = p.result?.evidence || {}, steps = evidence.steps || []; const events = audit.filter(a => a.proposal_id === p.id); return `<details class="panel"><summary><span class="badge ${p.status === 'VERIFIED' ? 'ok' : 'err'}">${esc(p.status)}</span> ${esc(p.plan?.action)} on ${esc(p.plan?.node_id || 'fleet')}</summary><div class="ops-item-meta mt-3">${esc(evidence.reason || p.reconcile_reason || 'No failure reason')} · ${steps.length} step(s) · ${evidence.rollback_results?.length || 0} rollback step(s)</div>${steps.map(step => `<div class="summary-line mt-2"><span class="badge ${step.ok ? 'ok' : 'err'}">${esc(step.action)}</span><span class="muted">${esc(step.reason || 'ok')}</span></div>`).join('')}<div class="ops-item-meta mt-3">${events.map(event => `${esc(event.from_status)} → ${esc(event.to_status)} by ${esc(event.actor)}`).join('<br>')}</div><a class="btn secondary mt-3" href="/api/fleet/recovery-control/proposals/${encodeURIComponent(p.id)}/evidence" download>Download evidence</a></details>`; }).join('') : '<div class="ops-empty">No completed recovery runs yet.</div>';
+    document.getElementById('migration-history').innerHTML = migrations.length ? migrations.slice(0, 30).map(event => `<div class="panel"><span class="badge ${event.action === 'preemption_timed_out' ? 'err' : event.action === 'migration_scheduled' ? 'ok' : 'warn'}">${esc(event.action)}</span><strong> ${esc(event.task_id)}</strong><div class="ops-item-meta mt-2">${esc(event.from_agent_id || 'unassigned')} → ${esc(event.target_agent_id || 'checkpoint pending')} · ${esc(event.actor || 'system')}${event.generation ? ` · generation ${esc(event.generation)}` : ''}${event.reason ? ` · ${esc(event.reason)}` : ''}</div></div>`).join('') : '<div class="ops-empty">No task migrations recorded.</div>';
     const checks = readiness.checks || [];
     document.getElementById('readiness-list').innerHTML = checks.length ? checks.map(check => `<div class="panel"><span class="badge ${check.ready ? 'ok' : check.optional ? 'warn' : 'err'}">${check.ready ? 'ready' : check.optional ? 'optional' : 'blocked'}</span><strong> ${esc(check.label)}</strong><div class="ops-item-meta mt-2">${esc(check.detail)}</div></div>`).join('') : '<div class="ops-empty">Readiness data unavailable.</div>';
     const controllers = fleet.controllers || [];
@@ -140,6 +143,7 @@
       ['tasks', api('/api/tasks?limit=200').then(x => x.items || x.tasks || x)],
       ['recovery', api('/api/fleet/recovery-control')],
       ['readiness', api('/api/fleet/operations-readiness')],
+      ['migrations', api('/api/fleet/migrations?limit=100').then(x => x.events || [])],
     ];
     const results = await Promise.allSettled(requests.map(item => item[1]));
     const failures = [];
@@ -150,6 +154,7 @@
         if (name === 'tasks') tasks = Array.isArray(result.value) ? result.value : [];
         if (name === 'recovery') recovery = result.value;
         if (name === 'readiness') readiness = result.value;
+        if (name === 'migrations') migrations = Array.isArray(result.value) ? result.value : [];
       } else failures.push(`${name}: ${result.reason.message}`);
     });
     const errors = document.getElementById('source-errors');

@@ -31,6 +31,19 @@ class ExecutionControlPlane:
     ) -> dict[str, Any]:
         checkpoint_id = f"checkpoint-{uuid.uuid4().hex}"
         now_ms = int(time.time() * 1000)
+        checkpoint_json = json.dumps(checkpoint, default=str, sort_keys=True)
+        max_checkpoint_bytes = max(
+            1024,
+            int(os.getenv("ASSISTX_MAX_CHECKPOINT_BYTES", str(1024 * 1024))),
+        )
+        checkpoint_bytes = len(checkpoint_json.encode("utf-8"))
+        if checkpoint_bytes > max_checkpoint_bytes:
+            return {
+                "checkpointed": False,
+                "reason": "checkpoint_too_large",
+                "checkpoint_bytes": checkpoint_bytes,
+                "max_checkpoint_bytes": max_checkpoint_bytes,
+            }
         with neo._session() as session:
             row = session.run(
                 """
@@ -62,6 +75,8 @@ class ExecutionControlPlane:
                     t.pause_reason=CASE
                       WHEN $pause THEN coalesce(t.preemption_reason, 'checkpoint_pause')
                       ELSE t.pause_reason END,
+                    t.paused_from_agent_id=CASE
+                      WHEN $pause THEN t.claimed_by ELSE t.paused_from_agent_id END,
                     t.claimed_by=CASE WHEN $pause THEN null ELSE t.claimed_by END,
                     t.claim_id=CASE WHEN $pause THEN null ELSE t.claim_id END,
                     t.lease_expires_at_ts=CASE
@@ -73,9 +88,7 @@ class ExecutionControlPlane:
                     "agent_id": agent_id,
                     "claim_id": claim_id,
                     "checkpoint_id": checkpoint_id,
-                    "checkpoint_json": json.dumps(
-                        checkpoint, default=str, sort_keys=True
-                    ),
+                    "checkpoint_json": checkpoint_json,
                     "progress": max(0.0, min(float(progress), 1.0)),
                     "estimated_remaining_seconds": estimated_remaining_seconds,
                     "pause": pause,
@@ -110,6 +123,26 @@ class ExecutionControlPlane:
                 MATCH (t:Task {id:$task_id})
                 WHERE t.status IN ['CLAIMED','RUNNING']
                   AND coalesce(t.preemptible, false)=true
+                OPTIONAL MATCH (target:SwarmNode {node_id:$target_agent_id})
+                WITH t, target
+                WHERE (
+                    $target_agent_id IS NULL
+                    OR (
+                      target IS NOT NULL
+                      AND target.node_id <> t.claimed_by
+                      AND coalesce(target.is_blocked, false)=false
+                      AND toLower(coalesce(target.status, 'online')) IN
+                          ['online','healthy','ready']
+                      AND all(
+                        required IN coalesce(
+                          t.required_capabilities,
+                          t.capabilities,
+                          []
+                        )
+                        WHERE required IN coalesce(target.capabilities, [])
+                      )
+                    )
+                  )
                 SET t.status='PAUSING',
                     t.preemption_requested_at_ts=$now_ms,
                     t.preemption_requested_by=$actor,
@@ -141,7 +174,9 @@ class ExecutionControlPlane:
         if not row:
             return {
                 "requested": False,
-                "reason": "task_not_running_or_not_preemptible",
+                "reason": (
+                    "task_not_preemptible_running_or_target_ineligible"
+                ),
             }
         return {"requested": True, "task": self._decode_task(dict(row["t"]))}
 
@@ -161,10 +196,23 @@ class ExecutionControlPlane:
                 WHERE t.checkpoint_id IS NOT NULL
                   AND coalesce(t.migration_count, 0) <
                       coalesce(t.max_migrations, 2)
+                  AND coalesce(t.paused_from_agent_id, '') <> $target_agent_id
                   AND coalesce(target.is_blocked, false)=false
                   AND toLower(coalesce(target.status, 'online')) IN
                       ['online','healthy','ready']
-                WITH t, coalesce(t.migration_count, 0) + 1 AS generation
+                  AND all(
+                    required IN coalesce(
+                      t.required_capabilities,
+                      t.capabilities,
+                      []
+                    )
+                    WHERE required IN coalesce(target.capabilities, [])
+                  )
+                OPTIONAL MATCH (t)-[:HAS_ALLOCATION]->(
+                  reservation:AllocationReservation {status:'ACTIVE'}
+                )
+                WITH t, collect(reservation) AS reservations,
+                     coalesce(t.migration_count, 0) + 1 AS generation
                 SET t.status='READY',
                     t.target_agent_id=$target_agent_id,
                     t.migration_target_agent_id=$target_agent_id,
@@ -174,6 +222,12 @@ class ExecutionControlPlane:
                     t.preemption_requested_at_ts=null,
                     t.preemption_requested_by=null,
                     t.updated_at_ts=$now_ms
+                FOREACH (reservation IN reservations |
+                  SET reservation.status='SUPERSEDED',
+                      reservation.superseded_at_ts=$now_ms,
+                      reservation.superseded_by_agent_id=$target_agent_id,
+                      reservation.updated_at_ts=$now_ms
+                )
                 CREATE (event:TaskMigrationEvent {
                   id:$event_id,
                   task_id:$task_id,
@@ -198,7 +252,9 @@ class ExecutionControlPlane:
         if not row:
             return {
                 "migrated": False,
-                "reason": "not_paused_checkpointed_or_budget_exhausted",
+                "reason": (
+                    "migration_ineligible_target_checkpoint_or_budget"
+                ),
             }
         return {"migrated": True, "task": self._decode_task(dict(row["t"]))}
 

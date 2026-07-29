@@ -88,7 +88,46 @@ def test_stale_checkpoint_and_invalid_migration_are_blocked():
     )
 
     assert checkpoint["reason"] == "stale_or_non_owner_execution"
-    assert migration["reason"] == "not_paused_checkpointed_or_budget_exhausted"
+    assert migration["reason"] == "migration_ineligible_target_checkpoint_or_budget"
+
+
+def test_checkpoint_size_is_bounded_before_database_write(monkeypatch):
+    monkeypatch.setenv("ASSISTX_MAX_CHECKPOINT_BYTES", "1024")
+    neo = Neo()
+
+    result = ExecutionControlPlane().checkpoint(
+        neo,
+        "task-1",
+        "node-a",
+        "claim-1",
+        checkpoint={"payload": "x" * 2048},
+        progress=0.5,
+        estimated_remaining_seconds=None,
+        pause=True,
+    )
+
+    assert result["checkpointed"] is False
+    assert result["reason"] == "checkpoint_too_large"
+    assert result["checkpoint_bytes"] > result["max_checkpoint_bytes"]
+    assert neo.session.calls == []
+
+
+def test_migration_requires_compatible_target_and_supersedes_reservation():
+    neo = Neo({"t": {"id": "task-1", "status": "READY"}})
+
+    result = ExecutionControlPlane().migrate(
+        neo,
+        "task-1",
+        "node-b",
+        "operator",
+    )
+
+    query, params = neo.session.calls[0]
+    assert result["migrated"] is True
+    assert "required IN coalesce(target.capabilities, [])" in query
+    assert "reservation.status" in query
+    assert "'SUPERSEDED'" in query
+    assert params["target_agent_id"] == "node-b"
 
 
 def test_preemption_requires_running_preemptible_task():
@@ -102,5 +141,43 @@ def test_preemption_requires_running_preemptible_task():
 
     assert result == {
         "requested": False,
-        "reason": "task_not_running_or_not_preemptible",
+        "reason": "task_not_preemptible_running_or_target_ineligible",
     }
+
+
+def test_claim_endpoint_does_not_forward_an_unsupported_claim_token(monkeypatch):
+    from assistx import api
+
+    class ClaimNeo:
+        def __init__(self):
+            self.kwargs = {}
+
+        def get_task(self, _task_id):
+            return {"id": "task-1", "status": "READY", "kind": "analysis"}
+
+        def claim_task(self, **kwargs):
+            self.kwargs = kwargs
+            return {"claimed": True, "task": {"id": "task-1", "status": "CLAIMED"}}
+
+        @staticmethod
+        def _with_retry(operation):
+            return operation()
+
+    neo = ClaimNeo()
+    monkeypatch.setattr(api, "_neo_fleet", lambda: neo)
+    monkeypatch.setattr(
+        api,
+        "_is_claim_allowed_for_workflow_control",
+        lambda _task: (True, ""),
+    )
+
+    result = api.api_claim_task(
+        "task-1",
+        api.TaskClaimIn(agent_id="node-a", capabilities=["llm"]),
+        None,
+        "operator",
+    )
+
+    assert result["claimed"] is True
+    assert neo.kwargs["agent_id"] == "node-a"
+    assert "claim_id" not in neo.kwargs

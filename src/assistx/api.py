@@ -3641,7 +3641,6 @@ def api_claim_task(
             session_id=body.session_id,
             idempotency_key=body.idempotency_key,
             lease_seconds=body.lease_seconds,
-            claim_id=body.claim_id,
         )
     )
     if result.get("claimed"):

@@ -54,8 +54,12 @@ def test_recovery_lifecycle_canary_with_real_neo4j(seeded_neo4j, monkeypatch, tm
     with neo._session() as session:
         session.run(
             """
-            MERGE (n:SwarmNode {node_id:'node-canary-b'})
-            SET n.status='online', n.weight=1, n.is_blocked=false
+            MERGE (source:SwarmNode {node_id:'node-canary'})
+            SET source.status='online', source.weight=1, source.is_blocked=false,
+                source.capabilities=['llm','recovery']
+            MERGE (target:SwarmNode {node_id:'node-canary-b'})
+            SET target.status='online', target.weight=1, target.is_blocked=false,
+                target.capabilities=['llm']
             """
         ).consume()
     movable = neo.create_task_with_context(
@@ -66,6 +70,14 @@ def test_recovery_lifecycle_canary_with_real_neo4j(seeded_neo4j, monkeypatch, tm
         preemptible=True,
         max_migrations=2,
         idempotency_key="migration-canary",
+    )
+    reservation = neo.reserve_task_allocation(
+        task_id=movable["task_id"],
+        node_id="node-canary",
+        model_id="model-canary",
+        snapshot_revision=1,
+        actor="canary-operator",
+        ttl_seconds=120,
     )
     first_claim = neo.claim_task(
         movable["task_id"], "node-canary", capabilities=["llm"]
@@ -118,11 +130,21 @@ def test_recovery_lifecycle_canary_with_real_neo4j(seeded_neo4j, monkeypatch, tm
         "DONE",
         claim_id=second_claim["task"]["claim_id"],
     )
+    with neo._session() as session:
+        old_reservation = session.run(
+            """
+            MATCH (a:AllocationReservation {id:$reservation_id})
+            RETURN a.status AS status
+            """,
+            {"reservation_id": reservation["reservation"]["id"]},
+        ).single()
+    assert reservation["reserved"] is True
     assert requested["requested"] is True
     assert checkpointed["paused"] is True
     assert stale_checkpoint["checkpointed"] is False
     assert reconciliation["migrated"] == 1
     assert migrated_task["migration_count"] == 1
+    assert old_reservation["status"] == "SUPERSEDED"
     assert stale_completion is None
     assert second_claim["claimed"] is True
     assert completed_after_resume["status"] == "DONE"

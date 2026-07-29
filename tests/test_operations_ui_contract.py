@@ -26,6 +26,8 @@ def test_operations_workspace_exposes_core_operator_flows():
         'id="controller-list"',
         "task-preempt",
         "task-migrate",
+        "migration-history",
+        "/api/fleet/migrations",
         "/preempt",
         "/migrate",
         "refreshFailures",
