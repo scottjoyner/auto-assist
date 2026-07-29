@@ -177,7 +177,7 @@
   }
 
   if (ops) {
-    const queueDepth = ops.queue_depth ?? 0;
+    const queueDepth = ops.queue_depth ?? ops.queue?.depth ?? 0;
     queueMetric.textContent = String(queueDepth);
     queueNote.textContent = `READY ${ops.queue?.ready ?? '—'} · REVIEW ${ops.queue?.review ?? '—'} · RUNNING ${ops.queue?.running ?? '—'} · FAILED ${ops.queue?.failed ?? '—'}`;
   }
@@ -205,7 +205,7 @@
     badges.push(`<span class="badge ${health.ok ? 'ok' : 'err'}">${esc(health.status || 'unknown')}</span>`);
     if (health.timestamp) badges.push(`<span class="badge">health ${esc(fmtTs(health.timestamp) || String(health.timestamp))}</span>`);
     if (health.overlay) badges.push(`<span class="badge">overlay: ${esc(health.overlay.mode || 'direct')}</span>`);
-    if (ops) badges.push(`<span class="badge">queue: ${esc(String(ops.queue_depth ?? 0))}</span>`);
+    if (ops) badges.push(`<span class="badge">queue: ${esc(String(ops.queue_depth ?? ops.queue?.depth ?? 0))}</span>`);
     if (fleet) badges.push(`<span class="badge">loadouts: ${esc(String(fleet.report?.loadouts?.length ?? fleet.loadouts?.length ?? 0))}</span>`);
     if (fleet?.captured_at) badges.push(`<span class="badge">fleet ${esc(fmtTs(fleet.captured_at) || String(fleet.captured_at))}</span>`);
     heroBadges.innerHTML = badges.join(' ');

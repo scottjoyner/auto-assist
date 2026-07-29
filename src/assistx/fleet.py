@@ -925,9 +925,38 @@ def select_any(models, task: Optional[dict] = None,
     background work. When ``selftask`` is True, nodes already running their per-
     node cap of background self-tasks are skipped (the overload backstop that
     keeps small laptops from crashing).
+
+    RESERVATION: a node reserved via fleet_reserve.py (e.g. dedicated to an
+    interactive Hermes ornith-35b session) is skipped for all other callers, so
+    background fleet work never clobbers a dedicated interactive session. A task
+    may override with ``task["reservation_token"]`` matching the reservation's
+    ``by`` field.
     """
     _ensure_refresh_thread()  # also kicks off the metrics server + probing
     discover()
+    reservations = _load_reservations()
+    now = time.time()
+
+    def _is_reserved(node: str) -> bool:
+        # Match bare node ("x1-370") or node:port ("x1-370:1234").
+        for key, info in reservations.items():
+            if info.get("until", 0) < now:
+                continue
+            if key == node or key.startswith(f"{node}:") or node.startswith(key.split(":")[0]):
+                return True
+        return False
+
+    def _token_ok(node: str) -> bool:
+        tok = (task or {}).get("reservation_token")
+        if not tok:
+            return False
+        for key, info in reservations.items():
+            if info.get("until", 0) < now:
+                continue
+            if key == node or key.startswith(f"{node}:") or node.startswith(key.split(":")[0]):
+                return info.get("by") == tok
+        return False
+
     if task is None:
         for m in models:
             full = select(m, task=None, prefer_nodes=prefer_nodes)
@@ -941,6 +970,9 @@ def select_any(models, task: Optional[dict] = None,
                 continue
             if selftask and _node_selftask_inflight.get(node, 0) >= _node_cap(node):
                 continue
+            # RESERVATION: skip dedicated nodes unless this task owns the reservation
+            if _is_reserved(node) and not _token_ok(node):
+                continue
             comp = _score(full, model, task)
             if comp is None:
                 continue
@@ -952,6 +984,15 @@ def select_any(models, task: Optional[dict] = None,
     _mark_dispatched(full)
     _record_choice(full, task, sc)
     return m, full
+
+
+def _load_reservations() -> dict:
+    """Read fleet_reservations.json (written by fleet_reserve.py)."""
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "fleet_reservations.json")) as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 
 def list_models() -> list:

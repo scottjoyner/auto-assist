@@ -427,7 +427,9 @@ class FleetExecutor:
 
     def __init__(self) -> None:
         self._nodes: list[dict] = []
-        self._node_lock = threading.Lock()
+        # Re-entrant so node selection and reservation can be one atomic
+        # operation while _pick_node also takes the same lock.
+        self._node_lock = threading.RLock()
         self._llm_sem = threading.Semaphore(MAX_CONCURRENT_LLM)
         self._script_sem = threading.Semaphore(MAX_CONCURRENT_SCRIPT)
         # Process-wide set of task ids already dispatched to a worker thread.
@@ -440,6 +442,7 @@ class FleetExecutor:
         self._pick_count: dict[str, int] = {}
         self._node_inflight: dict[str, int] = {}
         self._node_semaphores: dict[str, threading.Semaphore] = {}
+        self._node_semaphore_limits: dict[str, int] = {}
         self._node_latency: dict[str, float] = {}
         # Cache the last successfully-resolved IP per hostname across refresh
         # cycles.  The router sometimes advertises a docker-internal IP and
@@ -623,11 +626,15 @@ class FleetExecutor:
             caps = set(n.get("capabilities") or [])
             caps.add("linux")
             models = self._probe_models(ip)
+            service_capacity = self._probe_service_capacity(ip) if models is not None else None
             known = hostname in set(h.strip() for h in KNOWN_HOSTS)
             if models is not None:
                 caps.add("llm")
                 n["loaded_models"] = models
                 n["lmstudio_ok"] = True
+                n["service_ok"] = True
+                n["service_protocol"] = "openai-compatible"
+                n["service_capacity"] = service_capacity
             else:
                 # Probe failed this cycle. If we previously knew this node had
                 # LM Studio, or it's an explicitly-configured known host, keep
@@ -640,6 +647,9 @@ class FleetExecutor:
                     caps.add("llm")
                     n["loaded_models"] = (prev or {}).get("loaded_models", [])
                     n["lmstudio_ok"] = bool(had_llm)
+                    n["service_ok"] = bool(had_llm)
+                    n["service_protocol"] = (prev or {}).get("service_protocol", "openai-compatible")
+                    n["service_capacity"] = (prev or {}).get("service_capacity")
                     if had_llm:
                         logger.warning(
                             "fleet executor: %s LM Studio probe flaky, retaining capability",
@@ -648,18 +658,28 @@ class FleetExecutor:
                 else:
                     n["loaded_models"] = []
                     n["lmstudio_ok"] = False
+                    n["service_ok"] = False
+                    n["service_protocol"] = "openai-compatible"
+                    n["service_capacity"] = None
             if self._probe_script():
                 caps.add("script")
             n["capabilities"] = list(caps)
             n["ip"] = ip
             n["hostname"] = hostname
-            # Preserve a previously-derived weight across refreshes so a node's
-            # delegated capacity doesn't reset to the floor on every 2s probe.
+            # Preserve a previously-derived weight only when the service does
+            # not advertise live capacity. Explicit config wins; llama.cpp's
+            # /slots count is otherwise authoritative and tracks --parallel.
             prev_weight = (prev_by_host.get(hostname) or {}).get("weight")
-            if prev_weight:
-                n["weight"] = prev_weight
-            else:
-                n["weight"] = NODE_CONCURRENCY.get(hostname, _auto_weight(n.get("specs") or {}, n.get("loaded_models") or []))
+            configured_weight = next(
+                (value for key, value in NODE_CONCURRENCY.items() if key.lower() == hostname.lower()),
+                None,
+            )
+            n["weight"] = (
+                configured_weight
+                or service_capacity
+                or prev_weight
+                or _auto_weight(n.get("specs") or {}, n.get("loaded_models") or [])
+            )
             n["last_seen"] = now
             enriched.append(n)
 
@@ -668,8 +688,12 @@ class FleetExecutor:
             if n.get("lmstudio_ok"):
                 weight = max(1, n.get("weight", 1))
                 with self._node_lock:
-                    if hostname not in self._node_semaphores:
+                    current_limit = self._node_semaphore_limits.get(hostname)
+                    if hostname not in self._node_semaphores or (
+                        current_limit != weight and self._node_inflight.get(hostname, 0) == 0
+                    ):
                         self._node_semaphores[hostname] = threading.Semaphore(weight)
+                        self._node_semaphore_limits[hostname] = weight
 
         with self._node_lock:
             self._nodes = enriched
@@ -715,6 +739,22 @@ class FleetExecutor:
             return None
 
     @staticmethod
+    def _probe_service_capacity(ip: str) -> Optional[int]:
+        """Return live llama.cpp slot capacity, or None for other services."""
+        try:
+            req = urllib.request.Request(
+                f"http://{ip}:{LMSTUDIO_PORT}/slots",
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=3) as r:
+                slots = json.loads(r.read().decode())
+                if isinstance(slots, list) and slots:
+                    return len(slots)
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
     def _probe_script() -> bool:
         try:
             subprocess.run("true", shell=True, capture_output=True, timeout=5)
@@ -747,6 +787,11 @@ class FleetExecutor:
             n for n in candidates
             if (now - n.get("last_seen", 0)) < NODE_HEALTH_TTL
             and n.get("hostname", n.get("ip", "")) not in exclude
+            and (
+                "llm" not in required
+                or self._node_inflight.get(n.get("hostname", n.get("ip", "?")), 0)
+                < max(1, int(n.get("weight", 1)))
+            )
         ]
         matched = []
         for n in alive:
@@ -1100,13 +1145,12 @@ class FleetExecutor:
         """Atomically pick a node and increment its inflight counter.
         Returns the node dict or None if no suitable node available.
 
-        NOTE: _pick_node() acquires _node_lock itself, so we must NOT hold
-        the lock here — doing so would deadlock on the non-reentrant lock.
-        We only take the lock around the inflight counter mutation.
+        Selection and increment share the re-entrant node lock so parallel
+        dispatchers cannot overbook the last advertised service slot.
         """
-        node = self._pick_node(required, preferred_model, exclude, complexity)
-        if node:
-            with self._node_lock:
+        with self._node_lock:
+            node = self._pick_node(required, preferred_model, exclude, complexity)
+            if node:
                 hn = node.get("hostname", node.get("ip", "?"))
                 self._node_inflight[hn] = self._node_inflight.get(hn, 0) + 1
         return node
@@ -1236,96 +1280,102 @@ class FleetExecutor:
     def _process_tasks(self) -> None:
         self._refresh_nodes()
 
-        # Fetch a full page of LLM tasks at once (the API returns distinct
-        # READY tasks sorted by created_at). Spawn one worker thread per task
-        # up to the LLM semaphore cap. Repeats the fetch until the semaphore
-        # is saturated or no READY tasks remain, so the fleet stays busy
-        # instead of dispatching one fixed page per poll.
+        # Fetch a full page of LLM tasks at once. A semaphore permit belongs to
+        # exactly one launched worker: acquire per row here, then release once
+        # in _handle_one. Never acquire once per page and release once per row;
+        # that inflates the semaphore and eventually creates unbounded threads.
         seen_ids: set[str] = set()
         while True:
-            if self._llm_sem.acquire(blocking=False):
-                st, body = _http(
-                    "GET",
-                    f"{ASSISTX_URL}/api/agent/tasks?status=READY&capabilities=llm&limit={MAX_CONCURRENT_LLM}",
-                    timeout=15,
-                )
-                if st != 200:
-                    self._llm_sem.release()
-                    break
-                rows = (body.get("items") if isinstance(body, dict) else body) or []
-                if not isinstance(rows, list):
-                    rows = []
-                fresh = [r for r in rows if r.get("id") not in seen_ids]
-                if not fresh:
-                    self._llm_sem.release()
-                    break
-                for row in fresh:
-                    seen_ids.add(row.get("id"))
-                    tid = row.get("id")
-                    if not self._mark_inflight(tid):
-                        continue
-                    # Atomically pick and reserve a node for this LLM task
-                    payload_raw = row.get("payload_json") or row.get("payload") or "{}"
-                    try:
-                        payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
-                    except Exception:
-                        payload = {}
-                    model_hint = payload.get("model", "")
-                    complexity_hint = str(payload.get("complexity") or payload.get("quality") or "").strip().lower()
-                    raw_caps = row.get("required_capabilities") or []
-                    if isinstance(raw_caps, str):
-                        try:
-                            req_caps = json.loads(raw_caps)
-                        except Exception:
-                            req_caps = ["llm"]
-                    else:
-                        req_caps = list(raw_caps) if raw_caps else ["llm"]
-                    reserved_node = self._pick_and_reserve_node(req_caps, preferred_model=model_hint, complexity=complexity_hint)
-                    if not reserved_node:
-                        # No node available; release semaphore and re-queue task implicitly
-                        self._llm_sem.release()
-                        logger.warning("fleet executor: no node available for task %s, releasing semaphore", row.get("id"))
-                        break
-                    t = threading.Thread(
-                        target=self._handle_one,
-                        args=(row, "llm", reserved_node),
-                        daemon=True,
-                    )
-                    t.start()
-            else:
+            st, body = _http(
+                "GET",
+                f"{ASSISTX_URL}/api/agent/tasks?status=READY&capabilities=llm&limit={MAX_CONCURRENT_LLM}",
+                timeout=15,
+            )
+            if st != 200:
+                break
+            rows = (body.get("items") if isinstance(body, dict) else body) or []
+            if not isinstance(rows, list):
+                rows = []
+            fresh = [r for r in rows if r.get("id") not in seen_ids]
+            if not fresh:
                 break
 
-        # Launch script tasks — they use the script semaphore pool.
+            capacity_exhausted = False
+            for row in fresh:
+                tid = row.get("id")
+                seen_ids.add(tid)
+                if not self._llm_sem.acquire(blocking=False):
+                    capacity_exhausted = True
+                    break
+                if not self._mark_inflight(tid):
+                    self._llm_sem.release()
+                    continue
+
+                payload_raw = row.get("payload_json") or row.get("payload") or "{}"
+                try:
+                    payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+                except Exception:
+                    payload = {}
+                model_hint = payload.get("model", "")
+                complexity_hint = str(payload.get("complexity") or payload.get("quality") or "").strip().lower()
+                raw_caps = row.get("required_capabilities") or []
+                if isinstance(raw_caps, str):
+                    try:
+                        req_caps = json.loads(raw_caps)
+                    except Exception:
+                        req_caps = ["llm"]
+                else:
+                    req_caps = list(raw_caps) if raw_caps else ["llm"]
+                reserved_node = self._pick_and_reserve_node(
+                    req_caps, preferred_model=model_hint, complexity=complexity_hint
+                )
+                if not reserved_node:
+                    self._clear_inflight(tid)
+                    self._llm_sem.release()
+                    logger.warning("fleet executor: no node available for task %s", tid)
+                    continue
+                threading.Thread(
+                    target=self._handle_one,
+                    args=(row, "llm", reserved_node),
+                    daemon=True,
+                ).start()
+            if capacity_exhausted:
+                break
+
+        # Launch script tasks through a strictly server-filtered lane. Without
+        # capabilities=script, LLM tasks can bypass the global LLM bound here.
         script_seen: set[str] = set()
         while True:
-            if self._script_sem.acquire(blocking=False):
-                st, body = _http(
-                    "GET",
-                    f"{ASSISTX_URL}/api/agent/tasks?status=READY&limit={MAX_CONCURRENT_SCRIPT}",
-                    timeout=15,
-                )
-                if st != 200:
-                    self._script_sem.release()
+            st, body = _http(
+                "GET",
+                f"{ASSISTX_URL}/api/agent/tasks?status=READY&capabilities=script&limit={MAX_CONCURRENT_SCRIPT}",
+                timeout=15,
+            )
+            if st != 200:
+                break
+            rows = (body.get("items") if isinstance(body, dict) else body) or []
+            if not isinstance(rows, list):
+                rows = []
+            fresh = [r for r in rows if r.get("id") not in script_seen]
+            if not fresh:
+                break
+
+            capacity_exhausted = False
+            for row in fresh:
+                tid = row.get("id")
+                script_seen.add(tid)
+                if not self._script_sem.acquire(blocking=False):
+                    capacity_exhausted = True
                     break
-                rows = (body.get("items") if isinstance(body, dict) else body) or []
-                if not isinstance(rows, list):
-                    rows = []
-                fresh = [r for r in rows if r.get("id") not in script_seen]
-                if not fresh:
+                if not self._mark_inflight(tid):
                     self._script_sem.release()
-                    break
-                for row in fresh:
-                    script_seen.add(row.get("id"))
-                    tid = row.get("id")
-                    if not self._mark_inflight(tid):
-                        continue
-                    t = threading.Thread(
-                        target=self._handle_one,
-                        args=(row, "script"),
-                        daemon=True,
-                    )
-                    t.start()
-            else:
+                    continue
+                threading.Thread(
+                    target=self._handle_one,
+                    args=(row, "script"),
+                    daemon=True,
+                ).start()
+            if capacity_exhausted:
                 break
 
     def _handle_one(self, row: dict, kind: str = "script", reserved_node: dict | None = None) -> None:

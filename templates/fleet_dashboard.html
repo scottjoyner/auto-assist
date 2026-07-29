@@ -20,7 +20,7 @@
       <div class="metric">
         <div class="metric-label">Nodes Online</div>
         <div id="nodes-online" class="metric-value">—</div>
-        <div class="metric-note">LM Studio responsive</div>
+        <div class="metric-note">OpenAI-compatible service responsive</div>
       </div>
       <div class="metric">
         <div class="metric-label">Total Models</div>
@@ -145,7 +145,7 @@
 
   function renderSummary(data) {
     if (!data) return;
-    document.getElementById('nodes-online').textContent = data.nodes?.filter(n => n.lmstudio_ok).length ?? '—';
+    document.getElementById('nodes-online').textContent = data.nodes?.filter(n => n.service_ok ?? n.lmstudio_ok).length ?? '—';
     document.getElementById('total-models').textContent = data.nodes?.reduce((a, n) => a + (n.loaded_models?.length || 0), 0) ?? '—';
     document.getElementById('ready-llm').textContent = data.task_summary?.ready_llm ?? '—';
     const running = data.task_summary?.running_by_node?.reduce((a, r) => a + (r.cnt || 0), 0) ?? 0;
@@ -162,8 +162,9 @@
     }
     grid.innerHTML = '';
     data.nodes.forEach(n => {
-      const healthy = n.lmstudio_ok && n.last_seen_ago_sec !== null && n.last_seen_ago_sec < 120;
-      const stale = n.lmstudio_ok && n.last_seen_ago_sec !== null && n.last_seen_ago_sec >= 120;
+      const serviceOk = n.service_ok ?? n.lmstudio_ok;
+      const healthy = serviceOk && n.last_seen_ago_sec !== null && n.last_seen_ago_sec < 120;
+      const stale = serviceOk && n.last_seen_ago_sec !== null && n.last_seen_ago_sec >= 120;
       const statusCls = healthy ? 'ok' : (stale ? 'warn' : 'err');
       const statusText = healthy ? 'online' : (stale ? 'stale' : 'offline');
       const utilPct = n.max_concurrent > 0 ? Math.round((n.inflight_tasks / n.max_concurrent) * 100) : 0;
@@ -342,7 +343,7 @@
         <tbody>
     `;
     for (const n of data.nodes) {
-      const healthy = n.lmstudio_ok;
+      const healthy = n.service_ok ?? n.lmstudio_ok;
       html += `
         <tr>
           <td><code>${esc(n.hostname)}</code></td>
@@ -377,12 +378,19 @@
     autoRefresh = !autoRefresh;
     this.textContent = 'Auto: ' + (autoRefresh ? 'ON' : 'OFF');
     this.classList.toggle('secondary', !autoRefresh);
+    if (autoRefresh && !refreshTimer) startAuto();
+    if (!autoRefresh && refreshTimer) {
+      clearTimeout(refreshTimer);
+      refreshTimer = null;
+    }
   });
 
   async function startAuto() {
     await refresh();
     if (autoRefresh) {
       refreshTimer = setTimeout(startAuto, 10000);
+    } else {
+      refreshTimer = null;
     }
   }
 

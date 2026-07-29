@@ -923,9 +923,22 @@ def _apply_workflow_admission(tasks: List[Dict[str, Any]], runtime: Dict[str, in
     filtered: List[Dict[str, Any]] = []
     for task in tasks:
         qclass = _queue_class_for_task(task)
-        if mode == "drain" and qclass != "critical":
+        # HIGH/CRITICAL priority tasks jump the concurrency cap — urgent
+        # requests (e.g. Scott's Signal Note-to-Self) must not wait behind a
+        # saturated backlog of background/low-priority work.
+        prio = str(task.get("priority") or task.get("payload_json") or "").upper()
+        if isinstance(task.get("payload_json"), str):
+            try:
+                _pj = json.loads(task["payload_json"]) if task.get("payload_json") else {}
+                prio = str(_pj.get("priority", task.get("priority") or "")).upper()
+            except Exception:
+                pass
+        else:
+            prio = str((task.get("payload_json") or {}).get("priority", task.get("priority") or "")).upper()
+        is_urgent = prio in ("CRITICAL", "HIGH")
+        if mode == "drain" and qclass != "critical" and not is_urgent:
             continue
-        if running >= max_running and qclass != "critical":
+        if running >= max_running and qclass != "critical" and not is_urgent:
             continue
         if batch_ready > max_batch_backlog and qclass == "batch":
             continue
@@ -1338,12 +1351,18 @@ def api_fleet_status(
 _fleet_executor_instance: Optional[Any] = None
 
 def _get_fleet_executor() -> Any:
-    """Get or create the fleet executor instance to access its state."""
+    """Return the running executor; use a refreshed fallback during startup."""
     global _fleet_executor_instance
+    from .fleet_executor import FleetExecutor, get_fleet_executor
+
+    running = get_fleet_executor()
+    if running is not None:
+        return running
     if _fleet_executor_instance is None:
-        from .fleet_executor import FleetExecutor
         _fleet_executor_instance = FleetExecutor()
-        _fleet_executor_instance._refresh_nodes()
+    # The fallback exists only before the background singleton is published.
+    # Refresh it on every request so this temporary path cannot freeze UI data.
+    _fleet_executor_instance._refresh_nodes()
     return _fleet_executor_instance
 
 def _get_fleet_routing() -> Any:
@@ -1670,7 +1689,7 @@ def _now_ts() -> int:
 
 
 def _live_probe_node(url: str, timeout: float = 5.0) -> Optional[dict]:
-    """Probe a node by reading LM Studio's native /api/v1/models loaded_instances.
+    """Probe LM Studio-native or generic OpenAI-compatible model services.
 
     This is the authoritative source of truth for what is physically resident
     in VRAM. We do NOT probe each model with a chat completion (which is slow,
@@ -1685,22 +1704,39 @@ def _live_probe_node(url: str, timeout: float = 5.0) -> Optional[dict]:
             native = native[: -len("/v1")]
         r = requests.get(f"{native}/api/v1/models", timeout=timeout)
         ms = int((_time.time() - t0) * 1000)
-        if r.status_code != 200:
-            return {"online": False, "response_ms": ms, "error": f"HTTP {r.status_code}"}
-        payload = r.json()
-        models = []
-        loaded_set = set()
-        for m in payload.get("models", []):
-            key = m.get("key") or m.get("id") or m.get("name") or m.get("model")
-            if not key:
-                continue
-            models.append(key)
-            if m.get("loaded_instances"):
-                loaded_set.add(key)
+        if r.status_code == 200:
+            payload = r.json()
+            models = []
+            loaded_set = set()
+            for m in payload.get("models", []):
+                key = m.get("key") or m.get("id") or m.get("name") or m.get("model")
+                if not key:
+                    continue
+                models.append(key)
+                if m.get("loaded_instances"):
+                    loaded_set.add(key)
+            return {
+                "online": True, "protocol": "lmstudio-native", "response_ms": ms,
+                "models": models, "model_count": len(models),
+                "loaded_models": list(loaded_set), "loaded_count": len(loaded_set),
+            }
+
+        # Fixed llama.cpp/vLLM/etc. services implement the standard inference
+        # API but not LM Studio's private lifecycle API. For such endpoints the
+        # advertised models are the models ready to serve.
+        standard = requests.get(f"{native}/v1/models", timeout=timeout)
+        ms = int((_time.time() - t0) * 1000)
+        if standard.status_code != 200:
+            return {"online": False, "response_ms": ms, "error": f"HTTP {standard.status_code}"}
+        payload = standard.json()
+        models = [
+            m.get("id") for m in payload.get("data", [])
+            if isinstance(m, dict) and m.get("id")
+        ]
         return {
-            "online": True, "response_ms": ms,
+            "online": True, "protocol": "openai-compatible", "response_ms": ms,
             "models": models, "model_count": len(models),
-            "loaded_models": list(loaded_set), "loaded_count": len(loaded_set),
+            "loaded_models": models, "loaded_count": len(models),
         }
     except requests.RequestException as e:
         ms = int((_time.time() - t0) * 1000)
@@ -1776,6 +1812,9 @@ def api_live_dashboard(user: str = Depends(auth)):
         probe = live_results.get(n["base_url"], {})
         n["status"] = "online" if probe.get("online") else "offline"
         n["response_ms"] = probe.get("response_ms")
+        n["probe_protocol"] = probe.get("protocol")
+        n["inventory_source"] = "live-probe" if probe.get("models") else "catalog-cache"
+        n["inventory_stale"] = not bool(probe.get("online"))
         loaded_set = set(probe.get("loaded_models", []))
         if probe.get("models"):
             n["models"] = [{"served_name": m, "loaded": m in loaded_set} for m in probe.get("models", [])]

@@ -883,13 +883,21 @@ class Neo4jClient:
                 query = (
                     "MATCH (t:Task {status:$status}) "
                     "WHERE $caps IN coalesce(t.required_capabilities, []) "
-                    "RETURN t ORDER BY coalesce(t.created_at_ts, 0) ASC LIMIT $limit"
+                    "RETURN t ORDER BY "
+                    "CASE coalesce(t.priority,'UNSET') "
+                    "WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 "
+                    "WHEN 'LOW' THEN 3 WHEN 'BACKGROUND' THEN 4 WHEN 'BATCH' THEN 5 "
+                    "ELSE 9 END, coalesce(t.created_at_ts, 0) ASC LIMIT $limit"
                 )
                 res = s.run(query, {"status": status, "caps": caps[0], "limit": limit})
             else:
                 query = (
                     "MATCH (t:Task {status:$status}) "
-                    "RETURN t ORDER BY coalesce(t.created_at_ts, 0) ASC LIMIT $limit"
+                    "RETURN t ORDER BY "
+                    "CASE coalesce(t.priority,'UNSET') "
+                    "WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 "
+                    "WHEN 'LOW' THEN 3 WHEN 'BACKGROUND' THEN 4 WHEN 'BATCH' THEN 5 "
+                    "ELSE 9 END, coalesce(t.created_at_ts, 0) ASC LIMIT $limit"
                 )
                 res = s.run(query, {"status": status, "limit": max(limit * 10, limit)})
             items = []
@@ -907,7 +915,10 @@ class Neo4jClient:
                 items.append(item)
                 if len(items) >= limit:
                     break
-            items.sort(key=lambda t: (t.get("priority_rank", 999), t.get("created_at_ts", 0) or 0))
+            _PRIO_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3,
+                          "BACKGROUND": 4, "BATCH": 5, "UNSET": 9}
+            items.sort(key=lambda t: (_PRIO_RANK.get((t.get("priority") or "UNSET").upper(), 9),
+                                      t.get("created_at_ts", 0) or 0))
             return items
 
     def claim_task(
