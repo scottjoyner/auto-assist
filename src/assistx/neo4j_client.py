@@ -159,6 +159,11 @@ class Neo4jClient:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (f:DataFeedConnector) REQUIRE f.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (b:WorkflowBudget) REQUIRE b.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (w:WorkflowIncident) REQUIRE w.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (i:FleetIncident) REQUIRE i.incident_key IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (r:FleetRecovery) REQUIRE r.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (s:ImprovementSignal) REQUIRE s.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (a:RecoveryAuditEvent) REQUIRE a.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (a:AllocationReservation) REQUIRE a.id IS UNIQUE",
 
             # Helpful indexes
             "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.status)",
@@ -166,6 +171,7 @@ class Neo4jClient:
             "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.ticket_type)",
             "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.claimed_by)",
             "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.created_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.idempotency_key)",
             "CREATE INDEX IF NOT EXISTS FOR (tr:Transcription)  ON (tr.key)",
             "CREATE INDEX IF NOT EXISTS FOR (tr:Transcription)  ON (tr.created_at_ts)",
             "CREATE INDEX IF NOT EXISTS FOR (r:AgentRun)        ON (r.started_at_ts)",
@@ -198,6 +204,18 @@ class Neo4jClient:
             "CREATE INDEX IF NOT EXISTS FOR (b:WorkflowBudget) ON (b.workflow_id)",
             "CREATE INDEX IF NOT EXISTS FOR (w:WorkflowIncident) ON (w.workflow_id)",
             "CREATE INDEX IF NOT EXISTS FOR (w:WorkflowIncident) ON (w.created_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (i:FleetIncident) ON (i.status)",
+            "CREATE INDEX IF NOT EXISTS FOR (i:FleetIncident) ON (i.updated_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (r:FleetRecovery) ON (r.status)",
+            "CREATE INDEX IF NOT EXISTS FOR (r:FleetRecovery) ON (r.expires_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (r:FleetRecovery) ON (r.updated_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (s:ImprovementSignal) ON (s.source)",
+            "CREATE INDEX IF NOT EXISTS FOR (s:ImprovementSignal) ON (s.updated_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (a:RecoveryAuditEvent) ON (a.proposal_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (a:RecoveryAuditEvent) ON (a.created_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (a:AllocationReservation) ON (a.status)",
+            "CREATE INDEX IF NOT EXISTS FOR (a:AllocationReservation) ON (a.expires_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (a:AllocationReservation) ON (a.node_id)",
             # Phase 2 Swarm schema
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SwarmNode) REQUIRE n.node_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (e:ServiceEndpoint) REQUIRE e.endpoint_id IS UNIQUE",
@@ -949,7 +967,9 @@ class Neo4jClient:
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
+                OPTIONAL MATCH (t)-[:HAS_ALLOCATION]->(ar:AllocationReservation {status:'ACTIVE'})
                 WHERE t.status='READY'
+                  AND (ar IS NULL OR (ar.node_id=$agent_id AND ar.expires_at_ts > timestamp()))
                   AND NOT EXISTS {
                     MATCH (t)-[:DISPATCHED_AS]->(pc:Dispatch)
                     WHERE pc.paperclip_issue_id IS NOT NULL
@@ -963,7 +983,9 @@ class Neo4jClient:
                     t.lease_seconds=$lease_seconds,
                     t.lease_expires_at_ts=timestamp() + $lease_seconds * 1000,
                     t.updated_at=datetime(),
-                    t.updated_at_ts=timestamp()
+                    t.updated_at_ts=timestamp(),
+                    ar.status=CASE WHEN ar IS NULL THEN null ELSE 'CLAIMED' END,
+                    ar.claimed_at_ts=CASE WHEN ar IS NULL THEN null ELSE timestamp() END
                 RETURN t
                 """,
                 {
@@ -1009,6 +1031,57 @@ class Neo4jClient:
             if existing["target_agent_id"] and existing["target_agent_id"] != agent_id:
                 return {"claimed": False, "reason": "target_agent_mismatch"}
             return {"claimed": False, "reason": "not_claimed"}
+
+    def reserve_task_allocation(
+        self,
+        *,
+        task_id: str,
+        node_id: str,
+        model_id: Optional[str],
+        snapshot_revision: int,
+        actor: str,
+        ttl_seconds: int = 120,
+    ) -> Dict[str, Any]:
+        reservation_id = f"allocation-{uuid.uuid4().hex}"
+        with self._session() as session:
+            row = session.run(
+                """
+                MATCH (t:Task {id:$task_id, status:'READY'})
+                MATCH (n:SwarmNode {node_id:$node_id})
+                WHERE coalesce(n.is_blocked,false)=false
+                OPTIONAL MATCH (n)<-[:RESERVED_ON]-(active:AllocationReservation {status:'ACTIVE'})
+                WHERE active.expires_at_ts > timestamp()
+                WITH t, n, count(active) AS reserved,
+                     CASE
+                       WHEN coalesce(n.weight, n.max_concurrent, 1) < 1 THEN 1
+                       ELSE coalesce(n.weight, n.max_concurrent, 1)
+                     END AS capacity
+                WHERE reserved < capacity
+                OPTIONAL MATCH (t)-[:HAS_ALLOCATION]->(old:AllocationReservation {status:'ACTIVE'})
+                SET old.status='SUPERSEDED', old.updated_at_ts=timestamp()
+                CREATE (a:AllocationReservation {
+                    id:$id, task_id:$task_id, node_id:$node_id, model_id:$model_id,
+                    snapshot_revision:$snapshot_revision, status:'ACTIVE',
+                    actor:$actor, created_at_ts:timestamp(), updated_at_ts:timestamp(),
+                    expires_at_ts:timestamp() + $ttl_seconds * 1000
+                })
+                MERGE (t)-[:HAS_ALLOCATION]->(a)
+                MERGE (a)-[:RESERVED_ON]->(n)
+                SET t.target_agent_id=$node_id, t.allocation_reservation_id=$id,
+                    t.allocation_model_id=$model_id, t.updated_at_ts=timestamp()
+                RETURN a
+                """,
+                {
+                    "id": reservation_id,
+                    "task_id": task_id,
+                    "node_id": node_id,
+                    "model_id": model_id,
+                    "snapshot_revision": snapshot_revision,
+                    "actor": actor,
+                    "ttl_seconds": max(30, min(ttl_seconds, 600)),
+                },
+            ).single()
+        return {"reserved": bool(row), "reservation": dict(row["a"]) if row else None}
 
     def heartbeat_task(
         self,
