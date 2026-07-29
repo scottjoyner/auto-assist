@@ -49,6 +49,7 @@ def diagnose_incident(incident: dict[str, Any], snapshot: dict[str, Any]) -> dic
         "diagnosis_id": f"diag-{hashlib.sha256(identity.encode()).hexdigest()[:20]}",
         "incident_key": incident.get("incident_key"),
         "node_id": node_id,
+        "model_id": incident.get("model_id"),
         "incident_type": incident_type,
         "severity": incident.get("severity") or "warning",
         "hypothesis": _hypothesis(incident_type, node),
@@ -58,6 +59,10 @@ def diagnose_incident(incident: dict[str, Any], snapshot: dict[str, Any]) -> dic
         "bounded_probes": probes,
         "recommended_recovery": {
             "action": action,
+            "parameters": {
+                "model_id": incident.get("model_id"),
+                "service_alias": "inference" if action == "restore_service" else None,
+            },
             "risk": risk,
             "requires_approval": action not in {"collect_evidence"},
             "verify_after": ["service_online", "report_fresh"],
