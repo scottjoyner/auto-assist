@@ -29,6 +29,21 @@ from pydantic import BaseModel, ConfigDict, Field
 from .deps import load_aioredis_module, load_prometheus_client, load_queue_class, load_redis_module, multipart_available
 from .logging_utils import install_logging_middleware, setup_logging
 from .runtime import build_runtime_health, runtime_profile, validate_runtime_configuration
+from .benchmark_controller import BenchmarkController, publish_benchmark_outcome
+from .loadout_control import LoadoutControlPlane, Neo4jLoadoutStore
+from .capacity_forecast import build_capacity_forecast
+from .allocation_engine import build_allocation_plan
+from .diagnosis_engine import diagnose_incident
+from .diagnostic_probes import execute_diagnostic_probes
+from .recovery_control import (
+    Neo4jRecoveryStore,
+    RecoveryControlPlane,
+    start_recovery_reconciler,
+)
+from .recovery_runbooks import build_runbook, sign_runbook
+from .node_identity import verify_node_token
+from .operations_readiness import build_operations_readiness
+from .self_healing import SelfHealingController
 
 CONTENT_TYPE_LATEST, generate_latest = load_prometheus_client()
 redis = load_redis_module()
@@ -37,6 +52,12 @@ Queue = load_queue_class()
 from .metrics import QA_REQUESTS, JOBS_ENQUEUED, TASK_CLAIMS, TASK_COMPLETIONS, TASK_HEARTBEATS, CONTEXT_PACKETS
 from .metrics import RQ_JOBS_IN_QUEUE, RQ_JOBS_RUNNING, RQ_JOBS_FAILED
 from .metrics import REQUESTS
+from .metrics import (
+    ALLOCATION_RESERVATIONS,
+    FLEET_DIAGNOSES,
+    RECOVERY_OUTCOMES,
+    RECOVERY_TRANSITIONS,
+)
 from .idempotency_store import save as idemp_save, load as idemp_load
 from .neo4j_client import Neo4jClient  # unified client
 from .paperclip_client import PaperclipClient
@@ -154,6 +175,45 @@ class TaskCompleteIn(BaseModel):
     result: Optional[Dict[str, Any]] = None
     session_id: Optional[str] = None
     idempotency_key: Optional[str] = None
+
+
+class BenchmarkControlIn(BaseModel):
+    enabled: bool
+
+
+class LoadoutProposalIn(BaseModel):
+    action: Dict[str, Any]
+
+
+class LoadoutApprovalIn(BaseModel):
+    fingerprint: str
+
+
+class RecoveryProposalIn(BaseModel):
+    diagnosis: Dict[str, Any]
+
+
+class RecoveryApprovalIn(BaseModel):
+    fingerprint: str
+
+
+class RecoveryOutcomeIn(BaseModel):
+    verified: bool
+    evidence: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AllocationReservationIn(BaseModel):
+    task_id: str
+    node_id: str
+    model_id: Optional[str] = None
+    snapshot_revision: int
+    ttl_seconds: int = Field(default=120, ge=30, le=600)
+
+
+class NodeControlIn(BaseModel):
+    mode: str = Field(pattern="^(maintenance|quarantined)$")
+    reason: str = Field(min_length=1, max_length=500)
+    ttl_seconds: int = Field(default=3600, ge=60, le=86_400)
 
 
 class TaskCreateIn(BaseModel):
@@ -411,6 +471,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         _lifespan_logger.warning(f"Fleet executor not started: {e}")
     try:
+        start_recovery_reconciler(Neo4jClient)
+    except Exception as e:
+        _lifespan_logger.warning(f"Recovery reconciler not started: {e}")
+    try:
         from .kg_harvester import _start_harvester_loop
         _start_harvester_loop()
     except Exception as e:
@@ -615,6 +679,8 @@ def _auth_user_from_credentials(
             return trusted_user
     if credentials is None:
         return None
+    if USER is None or PASS is None:
+        return None
     username_ok = hmac.compare_digest(credentials.username, USER)
     password_ok = hmac.compare_digest(credentials.password, PASS)
     if username_ok and password_ok:
@@ -645,6 +711,10 @@ def _neo() -> Neo4jClient:
     return _neo_instance
 
 _neo_fleet_instance: Optional[Neo4jClient] = None
+_benchmark_controller = BenchmarkController()
+_loadout_control = LoadoutControlPlane()
+_self_healing = SelfHealingController()
+_recovery_control = RecoveryControlPlane()
 
 def _neo_fleet() -> Neo4jClient:
     """Dedicated Neo4j client/pool for high-concurrency fleet executor endpoints
@@ -826,11 +896,24 @@ def _workflow_runtime_snapshot(neo: Neo4jClient) -> Dict[str, int]:
             MATCH (t:Task)
             WHERE t.status IN ['READY','CLAIMED','RUNNING']
             RETURN
-              sum(CASE WHEN t.status='RUNNING' THEN 1 ELSE 0 END) AS running
+              sum(CASE WHEN t.status='RUNNING' THEN 1 ELSE 0 END) AS running,
+              sum(CASE WHEN t.status='READY'
+                        AND coalesce(t.payload_json,'') CONTAINS 'interactive'
+                       THEN 1 ELSE 0 END) AS interactive_ready,
+              sum(CASE WHEN t.status='READY'
+                        AND coalesce(t.payload_json,'') CONTAINS 'critical'
+                       THEN 1 ELSE 0 END) AS critical_ready
             """
         ).single()
         running = int(rec["running"] if rec and rec["running"] is not None else 0)
-    return {"running": running, "batch_ready_direct": 0}
+        interactive_ready = int(rec["interactive_ready"] if rec and rec["interactive_ready"] is not None else 0)
+        critical_ready = int(rec["critical_ready"] if rec and rec["critical_ready"] is not None else 0)
+    return {
+        "running": running,
+        "interactive_ready": interactive_ready,
+        "critical_ready": critical_ready,
+        "batch_ready_direct": 0,
+    }
 
 
 def _maybe_dead_letter_exhausted_task(
@@ -919,6 +1002,7 @@ def _apply_workflow_admission(tasks: List[Dict[str, Any]], runtime: Dict[str, in
     max_batch_backlog = int(control.get("max_batch_backlog") or 200)
     running = int(runtime.get("running") or 0)
     batch_ready = int(runtime.get("batch_ready_direct") or 0)
+    urgent_ready = int(runtime.get("interactive_ready") or 0) + int(runtime.get("critical_ready") or 0)
 
     filtered: List[Dict[str, Any]] = []
     for task in tasks:
@@ -941,6 +1025,10 @@ def _apply_workflow_admission(tasks: List[Dict[str, Any]], runtime: Dict[str, in
         if running >= max_running and qclass != "critical" and not is_urgent:
             continue
         if batch_ready > max_batch_backlog and qclass == "batch":
+            continue
+        # Preserve near-term capacity for already-waiting interactive/critical
+        # tasks instead of filling the final slots with new background work.
+        if qclass == "batch" and urgent_ready > 0 and running >= max(0, max_running - urgent_ready):
             continue
         task["queue_class"] = qclass
         filtered.append(task)
@@ -1137,12 +1225,22 @@ def command_center(request: Request, user: str = Depends(auth)):
 def fleet_ui(request: Request, user: str = Depends(auth)):
     # DEPRECATED: fleet/router ownership moves to auto-router.
     _api_logger.warning("DEPRECATED route /fleet accessed — fleet/router ownership moves to auto-router")
-    return templates.TemplateResponse("fleet.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="fleet.html")
 
 @app.get("/fleet-dashboard", response_class=HTMLResponse)
 def fleet_dashboard_ui(request: Request, user: str = Depends(auth)):
     """New comprehensive fleet dashboard with live node/model/task visualization."""
     return templates.TemplateResponse("fleet_dashboard.html", {"request": request})
+
+@app.get("/operations", response_class=HTMLResponse)
+def operations_ui(request: Request, user: str = Depends(auth)):
+    """Unified operator workspace for attention, work, fleet, and improvements."""
+    return templates.TemplateResponse(request=request, name="operations.html")
+
+
+@app.get("/trading", response_class=HTMLResponse)
+def trading_ui(request: Request, user: str = Depends(auth)):
+    return templates.TemplateResponse(request=request, name="trading.html")
 
 @app.get("/routing", response_class=HTMLResponse)
 def routing_ui(request: Request, user: str = Depends(auth)):
@@ -1371,89 +1469,693 @@ def _get_fleet_routing() -> Any:
     return _get_routing()
 
 
+def _capacity_task_rows(limit: int = 1000) -> list[dict[str, Any]]:
+    neo = _neo()
+    try:
+        with neo._session() as session:
+            rows = session.run(
+                """
+                MATCH (t:Task)
+                WHERE t.status IN ['READY','CLAIMED','RUNNING']
+                RETURN t
+                ORDER BY coalesce(t.created_at_ts, 0) ASC
+                LIMIT $limit
+                """,
+                {"limit": limit},
+            )
+            return [dict(row["t"]) for row in rows]
+    finally:
+        neo.close()
+
+
+@app.get("/api/fleet/benchmark-controller")
+def api_benchmark_controller_status(user: str = Depends(auth)):
+    return _benchmark_controller.status()
+
+
+@app.post("/api/fleet/benchmark-controller/control")
+def api_benchmark_controller_control(body: BenchmarkControlIn, user: str = Depends(auth)):
+    return _benchmark_controller.set_enabled(body.enabled)
+
+
+@app.post("/api/fleet/benchmark-controller/tick")
+def api_benchmark_controller_tick(
+    force: bool = Query(False, description="bypass cooldown, but never the disabled state"),
+    user: str = Depends(auth),
+):
+    base_url = _auto_router_base_url()
+    if not base_url:
+        raise HTTPException(status_code=503, detail="AUTO_ROUTER_BASE_URL is not configured")
+    neo = _neo()
+    try:
+        return _benchmark_controller.tick(
+            neo,
+            lambda: _fetch_json(f"{base_url}/api/fleet/benchmark-plan"),
+            force=force,
+        )
+    finally:
+        neo.close()
+
+
+@app.get("/api/fleet/loadout-control")
+def api_loadout_control_status(user: str = Depends(auth)):
+    return {
+        "execution_enabled": _loadout_control.execution_enabled,
+        "unsafe_direct_enabled": os.getenv("ASSISTX_UNSAFE_DIRECT_LOADOUT_ENABLED", "false").lower() in {"1", "true", "yes"},
+        "flow": ["propose", "approve_fingerprint", "revalidate_live_state", "execute", "verify", "rollback_on_failure"],
+    }
+
+
+@app.post("/api/fleet/loadout-control/proposals")
+def api_loadout_propose(body: LoadoutProposalIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        return _loadout_control.propose(Neo4jLoadoutStore(neo), body.action, user)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/loadout-control/proposals/{proposal_id}/approve")
+def api_loadout_approve(proposal_id: str, body: LoadoutApprovalIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        return _loadout_control.approve(Neo4jLoadoutStore(neo), proposal_id, body.fingerprint, user)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/loadout-control/proposals/{proposal_id}/execute")
+def api_loadout_execute(proposal_id: str, user: str = Depends(auth)):
+    base_url = _auto_router_base_url()
+    if not base_url:
+        raise HTTPException(status_code=503, detail="AUTO_ROUTER_BASE_URL is not configured")
+    from assistx.llm import client as llm_client
+    neo = _neo()
+    try:
+        network_map = _fetch_json(f"{base_url}/api/fleet/network-map")
+        result = _loadout_control.execute(
+            Neo4jLoadoutStore(neo),
+            proposal_id,
+            user,
+            network_map,
+            lambda node_url, model: llm_client.load_model_on_node(node_url, model),
+            lambda node_url, model: llm_client.unload_model_on_node(node_url, model),
+            lambda node_url: _live_probe_node(node_url) or {},
+        )
+        if result.get("blocked"):
+            return JSONResponse(status_code=409, content=result)
+        return result
+    finally:
+        neo.close()
+
+
+@app.get("/api/fleet/self-healing")
+def api_self_healing_status(user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        return {
+            **_self_healing.status(),
+            "incidents": _self_healing.list_incidents(neo),
+            "controls": _self_healing.list_node_controls(neo),
+        }
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/self-healing/reconcile")
+def api_self_healing_reconcile(user: str = Depends(auth)):
+    base_url = _auto_router_base_url()
+    if not base_url:
+        raise HTTPException(status_code=503, detail="AUTO_ROUTER_BASE_URL is not configured")
+    plan = _fetch_json(f"{base_url}/api/fleet/health-plan")
+    neo = _neo()
+    try:
+        return _self_healing.reconcile(neo, plan)
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/self-healing/incidents/{incident_key}/quarantine")
+def api_self_healing_quarantine(incident_key: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        result = _self_healing.quarantine(neo, incident_key, user)
+        if not result.get("quarantined"):
+            return JSONResponse(status_code=409, content=result)
+        return result
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/self-healing/nodes/{node_id}/rejoin")
+def api_self_healing_rejoin(node_id: str, user: str = Depends(auth)):
+    base_url = _auto_router_base_url()
+    if not base_url:
+        raise HTTPException(status_code=503, detail="AUTO_ROUTER_BASE_URL is not configured")
+    plan = _fetch_json(f"{base_url}/api/fleet/health-plan")
+    neo = _neo()
+    try:
+        result = _self_healing.rejoin(neo, node_id, user, plan)
+        if result.get("blocked"):
+            return JSONResponse(status_code=409, content=result)
+        return result
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/self-healing/nodes/{node_id}/control")
+def api_set_node_control(
+    node_id: str,
+    body: NodeControlIn,
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        result = _self_healing.set_node_control(
+            neo,
+            node_id,
+            user,
+            mode=body.mode,
+            reason=body.reason,
+            ttl_seconds=body.ttl_seconds,
+        )
+        if not result.get("updated"):
+            raise HTTPException(status_code=404, detail="fleet node not found")
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/self-healing/nodes/{node_id}/control/release")
+def api_release_node_control(node_id: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        result = _self_healing.clear_node_control(neo, node_id, user)
+        if not result.get("cleared"):
+            raise HTTPException(status_code=404, detail="fleet node not found")
+        return result
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/diagnoses/{incident_key}")
+def api_diagnose_fleet_incident(incident_key: str, user: str = Depends(auth)):
+    """Capture an evidence-backed diagnosis without mutating fleet state."""
+    snapshot = api_fleet_dashboard(user)
+    incident = next(
+        (
+            row for row in snapshot.get("health_plan", {}).get("incidents", [])
+            if str(row.get("incident_key")) == incident_key
+        ),
+        None,
+    )
+    if not incident:
+        raise HTTPException(status_code=404, detail="active incident not found")
+    diagnosis = diagnose_incident(incident, snapshot)
+
+    def service_probe(node: dict[str, Any]) -> dict[str, Any]:
+        ip = str(node.get("ip") or "")
+        if not ip:
+            return {"ok": False, "reason": "node_ip_missing"}
+        observed = _live_probe_node(f"http://{ip}:1234", timeout=5.0) or {}
+        return {
+            "ok": bool(observed.get("online")),
+            "response_ms": observed.get("response_ms"),
+            "protocol": observed.get("protocol"),
+            "reason": "" if observed.get("online") else "service_probe_failed",
+        }
+
+    def canary_probe(node: dict[str, Any], model_id: str | None) -> dict[str, Any]:
+        ip = str(node.get("ip") or "")
+        model = model_id or next(iter(node.get("loaded_models") or []), None)
+        if not ip or not model:
+            return {"ok": False, "reason": "canary_target_missing"}
+        started = _time.time()
+        try:
+            response = requests.post(
+                f"http://{ip}:1234/v1/chat/completions",
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "Reply OK"}],
+                    "temperature": 0,
+                    "max_tokens": 2,
+                },
+                timeout=10,
+            )
+            return {
+                "ok": response.status_code == 200,
+                "status_code": response.status_code,
+                "latency_ms": int((_time.time() - started) * 1000),
+                "reason": "" if response.status_code == 200 else "canary_inference_failed",
+            }
+        except Exception as exc:
+            return {"ok": False, "reason": "canary_inference_failed", "detail": str(exc)[:240]}
+
+    diagnosis = execute_diagnostic_probes(
+        diagnosis,
+        snapshot,
+        service_probe=service_probe,
+        canary_probe=canary_probe,
+    )
+    FLEET_DIAGNOSES.labels(
+        incident_type=str(diagnosis.get("incident_type") or "unknown"),
+        severity=str(diagnosis.get("severity") or "unknown"),
+    ).inc()
+    neo = _neo()
+    try:
+        with neo._session() as session:
+            session.run(
+                """
+                MATCH (i:FleetIncident {incident_key:$incident_key})
+                SET i.diagnosis_id=$diagnosis_id,
+                    i.diagnosis_json=$diagnosis,
+                    i.diagnosed_by=$actor,
+                    i.diagnosed_at_ts=timestamp(),
+                    i.updated_at_ts=timestamp()
+                """,
+                {
+                    "incident_key": incident_key,
+                    "diagnosis_id": diagnosis["diagnosis_id"],
+                    "diagnosis": json.dumps(diagnosis, sort_keys=True),
+                    "actor": user,
+                },
+            ).consume()
+        return diagnosis
+    finally:
+        neo.close()
+
+
+@app.get("/api/fleet/recovery-control")
+def api_recovery_control_status(user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        return {
+            "execution_enabled": _recovery_control.execution_enabled,
+            "flow": ["diagnose", "propose", "approve_fingerprint", "dispatch", "verify", "record_outcome"],
+            "proposals": Neo4jRecoveryStore(neo).list(),
+            "audit": Neo4jRecoveryStore(neo).list_audit(),
+        }
+    finally:
+        neo.close()
+
+
+@app.get("/api/fleet/operations-readiness")
+def api_operations_readiness(user: str = Depends(auth)):
+    return build_operations_readiness(os.environ)
+
+
+@app.post("/api/fleet/allocation/reservations")
+def api_create_allocation_reservation(
+    body: AllocationReservationIn,
+    user: str = Depends(auth),
+):
+    now_ms = _now_ts()
+    if body.snapshot_revision > now_ms + 5_000 or now_ms - body.snapshot_revision > 30_000:
+        raise HTTPException(status_code=409, detail="allocation snapshot is stale")
+    neo = _neo()
+    try:
+        result = neo.reserve_task_allocation(
+            task_id=body.task_id,
+            node_id=body.node_id,
+            model_id=body.model_id,
+            snapshot_revision=body.snapshot_revision,
+            actor=user,
+            ttl_seconds=body.ttl_seconds,
+        )
+        if not result.get("reserved"):
+            ALLOCATION_RESERVATIONS.labels(result="conflict").inc()
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "reserved": False,
+                    "reason": "task, node, or capacity changed; refresh allocation plan",
+                },
+            )
+        ALLOCATION_RESERVATIONS.labels(result="reserved").inc()
+        return result
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/allocation/reservations/{reservation_id}/release")
+def api_release_allocation_reservation(
+    reservation_id: str,
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        result = neo.release_task_allocation(reservation_id, user)
+        if not result.get("released"):
+            return JSONResponse(
+                status_code=409,
+                content={"released": False, "reason": "reservation is not active"},
+            )
+        ALLOCATION_RESERVATIONS.labels(result="released").inc()
+        return result
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/recovery-control/proposals")
+def api_recovery_propose(body: RecoveryProposalIn, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        result = _recovery_control.propose(Neo4jRecoveryStore(neo), body.diagnosis, user)
+        RECOVERY_TRANSITIONS.labels(status="PROPOSED").inc()
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/recovery-control/proposals/{proposal_id}/approve")
+def api_recovery_approve(
+    proposal_id: str,
+    body: RecoveryApprovalIn,
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        result = _recovery_control.approve(
+            Neo4jRecoveryStore(neo), proposal_id, body.fingerprint, user
+        )
+        RECOVERY_TRANSITIONS.labels(status="APPROVED").inc()
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/recovery-control/proposals/{proposal_id}/execute")
+def api_recovery_execute(proposal_id: str, user: str = Depends(auth)):
+    """Dispatch an approved runbook task; node-side mutation remains separately guarded."""
+    neo = _neo()
+    try:
+        def dispatch(plan: dict[str, Any]) -> dict[str, Any]:
+            runbook = build_runbook(plan, proposal_id)
+            signing_keys = _json_object_env("ASSISTX_RUNBOOK_SIGNING_KEYS")
+            key_id = os.getenv("ASSISTX_RUNBOOK_ACTIVE_KEY_ID", "").strip()
+            secret = str(signing_keys.get(key_id) or "")
+            if not key_id or not secret:
+                raise HTTPException(
+                    status_code=503,
+                    detail="runbook signing key is not configured",
+                )
+            runbook = sign_runbook(
+                runbook,
+                key_id=key_id,
+                secret=secret,
+                ttl_seconds=int(os.getenv("ASSISTX_RUNBOOK_TTL_SECONDS", "900")),
+            )
+            result = neo.create_task_with_context(
+                title=f"Recovery: {plan.get('action')} on {plan.get('node_id') or 'fleet'}",
+                task_type="fleet_recovery",
+                status="READY",
+                kind=f"recovery_{plan.get('action')}",
+                required_capabilities=["recovery"],
+                target_agent_id=plan.get("node_id"),
+                priority="HIGH",
+                payload={
+                    **plan,
+                    "runbook": runbook,
+                    "approved_by": user,
+                    "execution_mode": "typed_runbook",
+                    "requires_post_verification": True,
+                },
+                idempotency_key=f"recovery:{proposal_id}",
+            )
+            return {
+                "task_id": result.get("task_id"),
+                "dispatch_id": result.get("dispatch_id"),
+            }
+
+        result = _recovery_control.execute(
+            Neo4jRecoveryStore(neo), proposal_id, user, dispatch
+        )
+        if result.get("blocked"):
+            return JSONResponse(status_code=409, content=result)
+        RECOVERY_TRANSITIONS.labels(status="DISPATCHED").inc()
+        return result
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/recovery-control/proposals/{proposal_id}/outcome")
+def api_recovery_outcome(
+    proposal_id: str,
+    body: RecoveryOutcomeIn,
+    user: str = Depends(auth),
+):
+    """Record verification evidence as future self-improvement feedback."""
+    neo = _neo()
+    try:
+        store = Neo4jRecoveryStore(neo)
+        result = _recovery_control.record_outcome(
+            store,
+            proposal_id,
+            user,
+            verified=body.verified,
+            evidence=body.evidence,
+        )
+        RECOVERY_OUTCOMES.labels(verified=str(body.verified).lower()).inc()
+        with neo._session() as session:
+            session.run(
+                """
+                MERGE (s:ImprovementSignal {id:$id})
+                SET s.source='fleet_recovery', s.proposal_id=$proposal_id,
+                    s.verified=$verified, s.evidence_json=$evidence,
+                    s.created_at_ts=coalesce(s.created_at_ts,timestamp()),
+                    s.updated_at_ts=timestamp()
+                """,
+                {
+                    "id": f"recovery-outcome:{proposal_id}",
+                    "proposal_id": proposal_id,
+                    "verified": body.verified,
+                    "evidence": json.dumps(body.evidence, sort_keys=True),
+                },
+            ).consume()
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        neo.close()
+
+
+@app.get("/api/fleet/recovery-control/proposals/{proposal_id}/evidence")
+def api_recovery_evidence_bundle(proposal_id: str, user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        store = Neo4jRecoveryStore(neo)
+        proposal = store.get(proposal_id)
+        if not proposal:
+            raise HTTPException(status_code=404, detail="recovery proposal not found")
+        bundle = {
+            "schema_version": 1,
+            "exported_at_ts": _now_ts(),
+            "exported_by": user,
+            "proposal": proposal,
+            "audit": [
+                event
+                for event in store.list_audit()
+                if event.get("proposal_id") == proposal_id
+            ],
+        }
+        return JSONResponse(
+            content=bundle,
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="recovery-evidence-{proposal_id}.json"'
+                )
+            },
+        )
+    finally:
+        neo.close()
+
+
 @app.get("/api/fleet/dashboard")
 def api_fleet_dashboard(user: str = Depends(auth)):
-    """Comprehensive fleet dashboard: nodes, models, tasks, performance."""
+    """Unified fleet view: live router reports plus AssistX execution state."""
     executor = _get_fleet_executor()
     routing = _get_fleet_routing()
-    
+    base_url = _auto_router_base_url()
+    router_errors: list[str] = []
+    network_map: dict[str, Any] = {}
+    value_matrix: dict[str, Any] = {}
+    benchmark_plan: dict[str, Any] = {}
+    routing_regret: dict[str, Any] = {}
+    loadout_simulation: dict[str, Any] = {}
+    health_plan: dict[str, Any] = {}
+    if base_url:
+        for endpoint, target in (
+            ("network-map", network_map),
+            ("value-matrix", value_matrix),
+            ("benchmark-plan", benchmark_plan),
+            ("routing-regret", routing_regret),
+            ("loadout-simulation", loadout_simulation),
+            ("health-plan", health_plan),
+        ):
+            try:
+                target.update(_fetch_json(f"{base_url}/api/fleet/{endpoint}"))
+            except Exception as exc:
+                router_errors.append(f"{endpoint}: {str(exc)[:240]}")
+
+    executor_by_host = {
+        str(n.get("hostname", n.get("ip", "?"))).lower(): n
+        for n in executor._nodes
+    }
+    projected_nodes = network_map.get("nodes") or []
+    node_ids = {
+        str(item.get("id") or item.get("hostname") or item.get("ip"))
+        for item in projected_nodes
+    } | {
+        str(n.get("hostname", n.get("ip", "?"))) for n in executor._nodes
+    }
+
     nodes = []
-    for n in executor._nodes:
-        hn = n.get("hostname", n.get("ip", "?"))
+    for node_id in sorted(node_ids):
+        projected = next(
+            (item for item in projected_nodes
+             if str(item.get("id") or item.get("hostname") or item.get("ip")) == node_id),
+            {},
+        )
+        n = executor_by_host.get(node_id.lower(), {})
+        hn = node_id
         inflight = executor._node_inflight.get(hn, 0)
         latency = executor._node_latency.get(hn, 0)
-        pick_count = executor._pick_count.get(hn, 0)
         weight = n.get("weight", 1)
-        sem = executor._node_semaphores.get(hn)
-        sem_available = sem._value if sem else 0
-        
-        # Get benchmark performance for models on this node
+        specs = projected or routing._node_specs.get(hn, {})
+        loaded_models = projected.get("loaded_models") if projected.get("report_fresh") else n.get("loaded_models", [])
+        available_models = projected.get("all_models") if projected.get("report_fresh") else []
+        service_ok = bool(projected.get("online", n.get("lmstudio_ok", False)))
+        received_at = projected.get("report_received_at")
         model_perf = {}
-        for model in n.get("loaded_models", []):
+        for model in loaded_models or []:
             perf = routing.get_model_perf(hn, model)
             if perf:
-                model_perf[model] = {
-                    "tps_med": perf.get("tps_med", 0),
-                    "eval_score": perf.get("eval_score", 0),
-                    "composite": perf.get("composite_score", 0),
-                    "ttft_med": perf.get("ttft_med", 0),
-                    "load_s": perf.get("load_s", 0),
-                    "ok": perf.get("ok", True),
-                    "concurrency_tier": perf.get("concurrency_tier", 1),
-                }
-        
-        # Get hardware specs
-        specs = routing._node_specs.get(hn, {})
-        
+                model_perf[model] = perf
         nodes.append({
             "hostname": hn,
-            "ip": n.get("ip", ""),
+            "display_name": projected.get("display_name", hn),
+            "ip": projected.get("ip") or n.get("ip", ""),
+            "role": projected.get("role"),
             "weight": weight,
-            "capabilities": n.get("capabilities", []),
-            "loaded_models": n.get("loaded_models", []),
+            "capabilities": projected.get("capabilities") or n.get("capabilities", []),
+            "loaded_models": loaded_models or [],
+            "available_models": available_models or [],
             "model_perf": model_perf,
+            "service_ok": service_ok,
+            "lmstudio_ok": service_ok,
+            "online": service_ok,
+            "report_fresh": bool(projected.get("report_fresh")),
+            "last_seen": received_at or n.get("last_seen"),
+            "last_seen_ago_sec": max(0, _now_ts() - received_at) if received_at else None,
+            "inflight_tasks": inflight,
+            "max_concurrent": weight,
+            "latency_ema_sec": round(latency, 3),
+            "pick_count": executor._pick_count.get(hn, 0),
             "hardware": {
                 "ram_gib": specs.get("ram_gib"),
                 "vram_gib": specs.get("vram_gib"),
                 "cpu": specs.get("cpu"),
             },
-            "health": {
-                "last_seen": n.get("last_seen"),
-                "lmstudio_ok": n.get("lmstudio_ok", False),
-                "inflight_tasks": inflight,
-                "max_concurrent": weight,
-                "latency_ema_s": round(latency, 2),
-                "pick_count": pick_count,
-                "semaphore_available": sem_available,
-            },
-            "routing": {
-                "best_models": routing._node_models.get(hn.lower(), []),
+            "provenance": {
+                "topology": "assistx-projection" if projected else "legacy-executor",
+                "inventory": "node-self-report" if projected.get("report_fresh") else "legacy-executor",
+                "performance": "auto-router-runtime-ledger",
             },
         })
-    
-    # Task distribution by node
-    task_distribution = {}
-    for hn, count in executor._node_inflight.items():
-        task_distribution[hn] = count
-    
-    # Overall stats
-    total_inflight = sum(executor._node_inflight.values())
-    total_weight = sum(n.get("weight", 1) for n in executor._nodes)
-    healthy_nodes = sum(1 for n in executor._nodes if n.get("lmstudio_ok", False))
-    
+
+    controls: dict[str, Any] = {"nodes": [], "audit": []}
+    active_reservations: list[dict[str, Any]] = []
+    neo = _neo()
+    try:
+        controls = _self_healing.list_node_controls(neo)
+        active_reservations = neo.list_active_allocation_reservations()
+    except Exception as exc:
+        router_errors.append(f"assistx-control-state: {str(exc)[:240]}")
+    finally:
+        neo.close()
+    control_by_node = {
+        str(row.get("node_id")): row for row in controls.get("nodes") or []
+    }
+    for node in nodes:
+        control = control_by_node.get(str(node.get("hostname")), {})
+        node["is_blocked"] = bool(control.get("blocked"))
+        node["control_mode"] = control.get("mode") or "enabled"
+        node["control_reason"] = control.get("reason")
+        node["control_actor"] = control.get("actor")
+        node["control_expires_at_ts"] = control.get("expires_at_ts")
+
+    entries = value_matrix.get("entries") or []
+    models: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        models.setdefault(str(entry.get("model_id") or "unknown"), []).append(entry)
+    for rows in models.values():
+        rows.sort(key=lambda row: -(row.get("effective_rvu_per_hour") or -1))
+    task_rows = _capacity_task_rows()
+    capacity_forecast = build_capacity_forecast(task_rows, nodes, value_matrix)
+    allocation_plan = build_allocation_plan(task_rows, nodes, value_matrix)
+    diagnoses = [
+        diagnose_incident(incident, {"nodes": nodes})
+        for incident in health_plan.get("incidents") or []
+    ]
+
+    task_distribution = dict(executor._node_inflight)
+    total_inflight = sum(task_distribution.values())
     return {
         "timestamp": _now_ts(),
+        "source_status": {
+            "router_configured": bool(base_url),
+            "router_ok": bool(network_map),
+            "projection_status": network_map.get("projection_status", "missing"),
+            "errors": router_errors,
+        },
         "summary": {
-            "total_nodes": len(executor._nodes),
-            "healthy_nodes": healthy_nodes,
-            "total_weight": total_weight,
+            "total_nodes": len(nodes),
+            "healthy_nodes": sum(1 for n in nodes if n["service_ok"]),
+            "total_models_loaded": sum(len(n["loaded_models"]) for n in nodes),
+            "total_models_available": sum(len(n["available_models"]) for n in nodes),
+            "total_weight": sum(n["weight"] for n in nodes),
             "total_inflight": total_inflight,
-            "llm_semaphore_available": executor._llm_sem._value,
-            "script_semaphore_available": executor._script_sem._value,
         },
         "nodes": nodes,
+        "models": models,
+        "value_matrix": value_matrix,
+        "benchmark_plan": benchmark_plan,
+        "benchmark_controller": _benchmark_controller.status(),
+        "routing_regret": routing_regret,
+        "loadout_simulation": loadout_simulation,
+        "capacity_forecast": capacity_forecast,
+        "allocation_plan": allocation_plan,
+        "allocation_reservations": active_reservations,
+        "health_plan": health_plan,
+        "diagnoses": diagnoses,
+        "self_healing": {**_self_healing.status(), "controls": controls},
         "task_distribution": task_distribution,
+        "task_summary": {
+            "ready_llm": None,
+            "ready_script": None,
+            "running_by_node": [
+                {"node": node, "cnt": count} for node, count in task_distribution.items()
+            ],
+            "recent_completions": [],
+        },
         "routing": {
+            "best_node_per_model": {
+                model: rows[0].get("node_id") for model, rows in models.items() if rows
+            },
+            "fallbacks": {
+                model: [row.get("node_id") for row in rows[1:]]
+                for model, rows in models.items()
+            },
             "model_to_best_node": routing._model_to_node,
             "model_routing": routing._routing,
         },
@@ -1589,6 +2291,8 @@ def api_fleet_loader_wishlist(payload: Dict[str, Any], user: str = Depends(auth)
 @app.post("/api/fleet/loader/load")
 def api_fleet_loader_load(payload: Dict[str, Any], user: str = Depends(auth)):
     """Operator loads a specific model on a specific node now and waits for hot."""
+    if os.getenv("ASSISTX_UNSAFE_DIRECT_LOADOUT_ENABLED", "false").lower() not in {"1", "true", "yes"}:
+        raise HTTPException(status_code=403, detail="Direct load is disabled; use the guarded loadout proposal flow")
     from assistx.llm import client as llm_client
     base = payload.get("base_url")
     mid = payload.get("model")
@@ -1600,6 +2304,8 @@ def api_fleet_loader_load(payload: Dict[str, Any], user: str = Depends(auth)):
 @app.post("/api/fleet/loader/unload")
 def api_fleet_loader_unload(payload: Dict[str, Any], user: str = Depends(auth)):
     """Operator unloads a specific model from a specific node."""
+    if os.getenv("ASSISTX_UNSAFE_DIRECT_LOADOUT_ENABLED", "false").lower() not in {"1", "true", "yes"}:
+        raise HTTPException(status_code=403, detail="Direct unload is disabled; use the guarded loadout proposal flow")
     from assistx.llm import client as llm_client
     base = payload.get("base_url")
     mid = payload.get("model")
@@ -2791,14 +3497,47 @@ def api_enqueue_task(task_id: str, dry_run: bool = False, user: str = Depends(au
         neo.close()
 
 
+@app.post("/api/tasks/{task_id}/approve-proposal")
+def api_approve_task_proposal(task_id: str, user: str = Depends(auth)):
+    """Promote one review-first proposal to READY with an audit trail."""
+    neo = _neo()
+    try:
+        with neo._session() as session:
+            row = session.run(
+                """
+                MATCH (t:Task {id:$task_id})
+                WHERE t.status='PROPOSED'
+                SET t.status='READY',
+                    t.approved_by=$actor,
+                    t.approved_at=datetime(),
+                    t.approved_at_ts=timestamp(),
+                    t.updated_at=datetime(),
+                    t.updated_at_ts=timestamp()
+                RETURN t.id AS id, t.status AS status
+                """,
+                {"task_id": task_id, "actor": user},
+            ).single()
+        if not row:
+            raise HTTPException(
+                status_code=409,
+                detail="task is missing or is no longer a PROPOSED task",
+            )
+        return {"task_id": row["id"], "status": row["status"], "approved_by": user}
+    finally:
+        neo.close()
+
+
 @app.get("/api/agent/tasks")
 def api_agent_tasks(
     status: str = Query("READY", description="task status to poll"),
     capabilities: Optional[List[str]] = Query(None, description="agent capabilities"),
     agent_id: Optional[str] = Query(None, description="optional agent id for targeted tasks"),
     limit: int = Query(20, ge=1, le=100),
+    x_fleet_node_token: Optional[str] = Header(None),
     user: str = Depends(auth),
 ):
+    if capabilities and "recovery" in capabilities:
+        _verify_recovery_node_identity(agent_id, x_fleet_node_token)
     neo = _neo_fleet()
     items = neo.list_agent_tasks(
         status=status,
@@ -2819,11 +3558,18 @@ def api_agent_tasks(
     }
 
 @app.post("/api/tasks/{task_id}/claim")
-def api_claim_task(task_id: str, body: TaskClaimIn, user: str = Depends(auth)):
+def api_claim_task(
+    task_id: str,
+    body: TaskClaimIn,
+    x_fleet_node_token: Optional[str] = Header(None),
+    user: str = Depends(auth),
+):
     neo = _neo_fleet()
     task_obj = neo.get_task(task_id)
     if not task_obj:
         raise HTTPException(status_code=404, detail="Task not found")
+    if _is_recovery_task(task_obj):
+        _verify_recovery_node_identity(body.agent_id, x_fleet_node_token)
     allowed, reason = _is_claim_allowed_for_workflow_control(task_obj)
     if not allowed:
         TASK_CLAIMS.labels(result="drain_blocked").inc()
@@ -2847,9 +3593,17 @@ def api_claim_task(task_id: str, body: TaskClaimIn, user: str = Depends(auth)):
     raise HTTPException(status_code=409, detail=result)
 
 @app.post("/api/tasks/{task_id}/heartbeat")
-def api_heartbeat_task(task_id: str, body: TaskHeartbeatIn, user: str = Depends(auth)):
+def api_heartbeat_task(
+    task_id: str,
+    body: TaskHeartbeatIn,
+    x_fleet_node_token: Optional[str] = Header(None),
+    user: str = Depends(auth),
+):
     neo = _neo()
     try:
+        task_before = neo.get_task(task_id)
+        if task_before and _is_recovery_task(task_before):
+            _verify_recovery_node_identity(body.agent_id, x_fleet_node_token)
         task = neo.heartbeat_task(
             task_id=task_id,
             agent_id=body.agent_id,
@@ -2866,10 +3620,18 @@ def api_heartbeat_task(task_id: str, body: TaskHeartbeatIn, user: str = Depends(
         neo.close()
 
 @app.post("/api/tasks/{task_id}/complete")
-def api_complete_task(task_id: str, body: TaskCompleteIn, user: str = Depends(auth)):
+def api_complete_task(
+    task_id: str,
+    body: TaskCompleteIn,
+    x_fleet_node_token: Optional[str] = Header(None),
+    user: str = Depends(auth),
+):
     if body.status not in {"DONE", "FAILED", "CANCELLED"}:
         raise HTTPException(status_code=400, detail="status must be DONE, FAILED, or CANCELLED")
     neo = _neo_fleet()
+    task_before = neo.get_task(task_id) or {}
+    if _is_recovery_task(task_before):
+        _verify_recovery_node_identity(body.agent_id, x_fleet_node_token)
     task = neo._with_retry(
         lambda: neo.complete_task(
             task_id=task_id,
@@ -2894,7 +3656,119 @@ def api_complete_task(task_id: str, body: TaskCompleteIn, user: str = Depends(au
         if refreshed:
             task = refreshed
     TASK_COMPLETIONS.labels(status=body.status).inc()
-    return {"task": task, "dead_letter_incident_id": dead_letter_incident_id}
+    benchmark_outcome = publish_benchmark_outcome(
+        task_before,
+        body.agent_id,
+        body.status,
+        body.result,
+    )
+    recovery_outcome = _record_recovery_task_outcome(
+        neo,
+        task_before,
+        body.agent_id,
+        body.status,
+        body.result or {},
+    )
+    return {
+        "task": task,
+        "dead_letter_incident_id": dead_letter_incident_id,
+        "benchmark_outcome": benchmark_outcome,
+        "recovery_outcome": recovery_outcome,
+    }
+
+
+def _record_recovery_task_outcome(
+    neo: Any,
+    task: dict[str, Any],
+    actor: str,
+    task_status: str,
+    result: dict[str, Any],
+) -> dict[str, Any] | None:
+    payload = task.get("payload") or task.get("payload_json") or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            return None
+    runbook = payload.get("runbook") if isinstance(payload, dict) else None
+    proposal_id = runbook.get("proposal_id") if isinstance(runbook, dict) else None
+    if not proposal_id:
+        return None
+    verified = task_status == "DONE" and result.get("ok") is True and result.get("status") == "verified"
+    evidence = {
+        "task_status": task_status,
+        "node_id": actor,
+        "runbook_status": result.get("status"),
+        "reason": result.get("reason"),
+        "steps": result.get("steps") or [],
+        "verification": result.get("verification") or {},
+        "rollback_results": result.get("rollback_results") or [],
+        "automatic": True,
+    }
+    try:
+        outcome = _recovery_control.record_outcome(
+            Neo4jRecoveryStore(neo),
+            proposal_id,
+            actor,
+            verified=verified,
+            evidence=evidence,
+        )
+        with neo._session() as session:
+            session.run(
+                """
+                MERGE (s:ImprovementSignal {id:$id})
+                SET s.source='fleet_recovery', s.proposal_id=$proposal_id,
+                    s.verified=$verified, s.evidence_json=$evidence,
+                    s.created_at_ts=coalesce(s.created_at_ts,timestamp()),
+                    s.updated_at_ts=timestamp()
+                """,
+                {
+                    "id": f"recovery-outcome:{proposal_id}",
+                    "proposal_id": proposal_id,
+                    "verified": verified,
+                    "evidence": json.dumps(evidence, sort_keys=True),
+                },
+            ).consume()
+        return outcome
+    except ValueError as exc:
+        _api_logger.warning("Recovery outcome was not recorded for %s: %s", proposal_id, exc)
+        return {"recorded": False, "reason": str(exc), "proposal_id": proposal_id}
+
+
+def _json_object_env(name: str) -> dict[str, Any]:
+    try:
+        value = json.loads(os.getenv(name, "{}"))
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _is_recovery_task(task: dict[str, Any]) -> bool:
+    required = task.get("required_capabilities") or []
+    payload = task.get("payload") or task.get("payload_json") or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+    return "recovery" in required or bool(
+        isinstance(payload, dict) and payload.get("runbook")
+    )
+
+
+def _verify_recovery_node_identity(
+    agent_id: str | None,
+    supplied_token: str | None,
+) -> None:
+    tokens = _json_object_env("ASSISTX_FLEET_NODE_TOKENS")
+    error = verify_node_token(tokens, agent_id, supplied_token)
+    if error == "node_identity_not_registered":
+        raise HTTPException(
+            status_code=403,
+            detail="target node has no registered recovery identity",
+        )
+    if error:
+        raise HTTPException(status_code=403, detail="invalid recovery node identity")
 
 
 @app.post("/api/paperclip/events")

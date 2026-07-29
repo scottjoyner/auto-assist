@@ -375,7 +375,8 @@
       <div class="nav-list">
         {{ nav_link("Live", "/live", match="/live", note="operational HQ") }}
         {{ nav_link("Strategy", "/strategy", match="/strategy", note="overseer view") }}
-        {{ nav_link("Overview", "/command-center", match="/command-center", note="main dashboard") }}
+        {{ nav_link("Operations", "/operations", match="/operations", note="attention + work") }}
+        {{ nav_link("Overview", "/command-center", match="/command-center", note="legacy dashboard") }}
         {{ nav_link("Workspace", "/", match="/", note="query + live answers") }}
       </div>
     </div>
@@ -383,7 +384,7 @@
     <div class="sidebar-section">
       <div class="sidebar-section-title">Fleet & routing</div>
       <div class="nav-list">
-        {{ nav_link("Fleet", "/fleet", match="/fleet", note="loadouts + history") }}
+        {{ nav_link("Fleet", "/fleet-dashboard", match="/fleet-dashboard", note="operations workspace") }}
         {{ nav_link("Routing", "/routing", match="/routing", note="overlay + graph") }}
       </div>
     </div>
@@ -422,7 +423,7 @@
         <span class="badge">AssistX UI</span>
       </div>
       <div class="muted" style="font-size:0.84rem; line-height:1.45;">
-        Keep the left rail as the primary navigation. Every major workflow has its own page.
+        Start in Operations for incidents, work, capacity, approvals, and fleet state.
       </div>
     </div>
   </aside>

@@ -25,6 +25,15 @@ from assistx.neo4j_client import Neo4jClient
 NEO4J_IMAGE = os.getenv("TEST_NEO4J_IMAGE", "neo4j:5.23.0")
 NEO4J_USER = os.getenv("TEST_NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("TEST_NEO4J_PASSWORD", "livelongandprosper")
+NEO4J_FIXTURES = {"neo4j_container", "neo4j_client", "seeded_neo4j"}
+
+
+def pytest_collection_modifyitems(items):
+    """Classify tests that require the ephemeral Neo4j container as integration."""
+    integration = pytest.mark.integration
+    for item in items:
+        if NEO4J_FIXTURES.intersection(item.fixturenames):
+            item.add_marker(integration)
 
 
 def _find_free_port() -> int:

@@ -97,7 +97,7 @@ services:
       # assistx-api — which silently starved the executor of all tasks.)
       - FLEET_ASSISTX_URL=${FLEET_ASSISTX_URL:-http://localhost:8000}
       - FLEET_BASIC_AUTH_USER=${FLEET_BASIC_AUTH_USER:-admin}
-      - FLEET_BASIC_AUTH_PASS=${FLEET_BASIC_AUTH_PASS:-gluhlaf8}
+      - FLEET_BASIC_AUTH_PASS=${FLEET_BASIC_AUTH_PASS:-change-me}
       - FLEET_ROUTER_URL=${FLEET_ROUTER_URL:-http://router:8088}
       # Nodes that don't register with the router (git-router-1 only learns
       # about hosts that send node-report). Seed them directly so the executor
@@ -315,4 +315,3 @@ networks:
   git_default:
     external: true
     name: git_default
-

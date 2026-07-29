@@ -7,7 +7,7 @@
     <div class="section-header">
       <div>
         <h1>Fleet Dashboard</h1>
-        <p class="kicker">Live node state, model inventory, task distribution, and performance metrics.</p>
+        <p class="kicker">Truthful node inventory, runtime economics, and opportunity-cost guidance.</p>
       </div>
       <div class="actions">
         <button class="btn" id="btn-refresh">Refresh</button>
@@ -23,9 +23,9 @@
         <div class="metric-note">OpenAI-compatible service responsive</div>
       </div>
       <div class="metric">
-        <div class="metric-label">Total Models</div>
+        <div class="metric-label">Models Loaded</div>
         <div id="total-models" class="metric-value">—</div>
-        <div class="metric-note">Across all nodes</div>
+        <div class="metric-note">Actual self-reported loadouts</div>
       </div>
       <div class="metric">
         <div class="metric-label">LLM Tasks Ready</div>
@@ -63,8 +63,8 @@
   <section class="card half" id="section-model-matrix">
     <div class="section-header">
       <div>
-        <h3>Model Performance Matrix</h3>
-        <p class="kicker">TPS × Eval Score composite per model per node. Higher = better routing target.</p>
+        <h3>Model Opportunity Matrix</h3>
+        <p class="kicker">Quality-adjusted RVU/hour, evidence confidence, and cost versus the best measured option.</p>
       </div>
     </div>
     <div id="model-matrix" class="table-wrap mt-3">Loading…</div>
@@ -73,11 +73,71 @@
   <section class="card half" id="section-routing">
     <div class="section-header">
       <div>
-        <h3>Routing Map</h3>
-        <p class="kicker">Best node for each model (from benchmark composite scores).</p>
+        <h3>Recommended Placement</h3>
+        <p class="kicker">Primary and fallback nodes ranked from measured effective value.</p>
       </div>
     </div>
     <div id="routing-map" class="table-wrap mt-3">Loading…</div>
+  </section>
+
+  <section class="card half" id="section-routing-regret">
+    <div class="section-header">
+      <div>
+        <h3>Routing Decision Quality</h3>
+        <p class="kicker">Chosen candidates versus predicted alternatives and realized routing regret.</p>
+      </div>
+    </div>
+    <div id="routing-regret" class="table-wrap mt-3">Loading…</div>
+  </section>
+
+  <section class="card half" id="section-loadout-simulation">
+    <div class="section-header">
+      <div>
+        <h3>Proposed Loadout</h3>
+        <p class="kicker">Simulation-only placement diff with RAM, evidence, and redundancy guardrails.</p>
+      </div>
+      <span class="badge warn">not executable</span>
+    </div>
+    <div id="loadout-simulation" class="table-wrap mt-3">Loading…</div>
+  </section>
+
+  <section class="card half" id="section-capacity-forecast">
+    <div class="section-header">
+      <div>
+        <h3>Capacity Forecast</h3>
+        <p class="kicker">Queue completion estimate, reserved interactive capacity, and cooperative preemption candidates.</p>
+      </div>
+    </div>
+    <div id="capacity-forecast" class="table-wrap mt-3">Loading…</div>
+  </section>
+
+  <section class="card" id="section-self-healing">
+    <div class="section-header">
+      <div>
+        <h3>Fleet Incidents & Recovery</h3>
+        <p class="kicker">Automatic detection with guarded quarantine, operator restart, fresh verification, and rejoin.</p>
+      </div>
+      <div class="actions">
+        <span id="self-healing-status" class="badge warn">quarantine unknown</span>
+        <button class="btn secondary" id="btn-healing-reconcile">Reconcile Incidents</button>
+      </div>
+    </div>
+    <div id="health-incidents" class="table-wrap mt-3">Loading…</div>
+  </section>
+
+  <section class="card half" id="section-benchmarks">
+    <div class="section-header">
+      <div>
+        <h3>Adaptive Benchmark Queue</h3>
+        <p class="kicker">Dry-run requests for loaded models with missing, stale, or low-confidence evidence.</p>
+      </div>
+      <div class="actions">
+        <span id="benchmark-controller-status" class="badge warn">controller unknown</span>
+        <button class="btn secondary" id="btn-benchmark-control">Enable</button>
+        <button class="btn secondary" id="btn-benchmark-tick">Create Tasks</button>
+      </div>
+    </div>
+    <div id="benchmark-queue" class="table-wrap mt-3">Loading…</div>
   </section>
 
   <section class="card half" id="section-tasks">
@@ -107,7 +167,7 @@
     <div class="section-header">
       <div>
         <h3>Hardware Inventory</h3>
-        <p class="kicker">Aggregate fleet resources from fleet_state.json benchmarks.</p>
+        <p class="kicker">Live self-reported resources, with projected data used only when reports are unavailable.</p>
       </div>
     </div>
     <div id="hardware-table" class="table-wrap mt-3">Loading…</div>
@@ -118,12 +178,14 @@
 {% block scripts %}
 <script>
 (async () => {
-  const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString().replace(/[&<>"']/g, c => ({'&':'&','<':'<','>':'>','"':'"',"'":'''}[c])));
+  const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])));
   const short = window.UIUtils?.shortId || ((v, n = 8) => (v || "").toString().slice(0, n));
   const relTime = (ts) => ts ? `${((Date.now() - ts) / 1000).toFixed(1)}s ago` : 'never';
 
   let autoRefresh = true;
   let refreshTimer = null;
+  let benchmarkControllerEnabled = false;
+  let loadoutActions = [];
 
   function row(label, value, cls = '') {
     const div = document.createElement('div');
@@ -146,7 +208,7 @@
   function renderSummary(data) {
     if (!data) return;
     document.getElementById('nodes-online').textContent = data.nodes?.filter(n => n.service_ok ?? n.lmstudio_ok).length ?? '—';
-    document.getElementById('total-models').textContent = data.nodes?.reduce((a, n) => a + (n.loaded_models?.length || 0), 0) ?? '—';
+    document.getElementById('total-models').textContent = data.summary?.total_models_loaded ?? '—';
     document.getElementById('ready-llm').textContent = data.task_summary?.ready_llm ?? '—';
     const running = data.task_summary?.running_by_node?.reduce((a, r) => a + (r.cnt || 0), 0) ?? 0;
     document.getElementById('running-tasks').textContent = running;
@@ -201,7 +263,12 @@
             <span class="badge">VRAM: ${esc(n.hardware?.vram_gib ? n.hardware.vram_gib.toFixed(1) + ' GiB' : '—')}</span>
             <span class="badge">CPU: ${esc(n.hardware?.cpu || '—')}</span>
           </div>
-          <div class="muted">Models: ${esc((n.loaded_models || []).slice(0, 8).join(', '))}${n.loaded_models?.length > 8 ? ' …' : ''}</div>
+          <div class="muted"><strong>Loaded:</strong> ${esc((n.loaded_models || []).join(', ') || 'none reported')}</div>
+          <div class="muted"><strong>Available:</strong> ${esc((n.available_models || []).slice(0, 12).join(', ') || 'not reported')}${n.available_models?.length > 12 ? ' …' : ''}</div>
+          <div class="summary-line mt-1">
+            <span class="badge ${n.report_fresh ? 'ok' : 'warn'}">${n.report_fresh ? 'live self-report' : 'projected / legacy'}</span>
+            <span class="badge">${esc(n.role || 'unassigned')}</span>
+          </div>
         </div>
       `;
       grid.appendChild(card);
@@ -214,37 +281,43 @@
       wrap.innerHTML = '<div class="muted">No benchmark data loaded</div>';
       return;
     }
-    const models = Object.entries(data.models).sort((a, b) => (b[1][0]?.composite_score || 0) - (a[1][0]?.composite_score || 0));
+    const entries = data.value_matrix?.entries || [];
+    const rank = {keep_hot: 0, benchmark: 1, opportunistic: 2, unload_candidate: 3};
+    entries.sort((a, b) => (rank[a.recommendation] ?? 9) - (rank[b.recommendation] ?? 9)
+      || (b.effective_rvu_per_hour || -1) - (a.effective_rvu_per_hour || -1));
     let html = `
       <table class="dashboard-table">
         <thead>
           <tr>
             <th>Model</th>
-            <th>Best Node</th>
-            <th>Best TPS</th>
-            <th>Best Eval</th>
-            <th>Composite</th>
-            <th>Tier</th>
-            <th>All Nodes</th>
+            <th>Node</th>
+            <th>Loaded</th>
+            <th>TPS</th>
+            <th>Quality</th>
+            <th>Success</th>
+            <th>Evidence</th>
+            <th>Effective RVU/h</th>
+            <th>Opportunity Cost</th>
+            <th>Decision</th>
           </tr>
         </thead>
         <tbody>
     `;
-    for (const [model, nodes] of models) {
-      const best = nodes[0];
-      const bestNode = data.routing?.best_node_per_model?.[model] || best?.node || '—';
-      const nodeBadges = nodes.map(n => 
-        `<span class="badge" title="${esc(n.node)}: ${n.tps_med.toFixed(1)} TPS, eval ${n.eval_score.toFixed(2)}">${esc(n.node)}: ${n.composite_score.toFixed(1)}</span>`
-      ).join(' ');
+    for (const item of entries) {
+      const decisionCls = item.recommendation === 'keep_hot' ? 'ok'
+        : item.recommendation === 'unload_candidate' ? 'err' : 'warn';
       html += `
         <tr>
-          <td><code>${esc(model)}</code></td>
-          <td>${esc(bestNode)}</td>
-          <td>${best?.tps_med?.toFixed(1) ?? '—'}</td>
-          <td>${best?.eval_score?.toFixed(2) ?? '—'}</td>
-          <td><strong>${best?.composite_score?.toFixed(1) ?? '—'}</strong></td>
-          <td>${best?.concurrency_tier ?? '—'}</td>
-          <td>${nodeBadges}</td>
+          <td><code>${esc(item.model_id)}</code></td>
+          <td>${esc(item.node_id)}</td>
+          <td>${item.loaded ? '<span class="badge ok">yes</span>' : 'no'}</td>
+          <td>${item.tokens_per_second?.toFixed(1) ?? '—'}</td>
+          <td title="${esc(item.quality_sample_count + ' evaluated outcomes')}">${item.quality_score == null ? '—' : (item.quality_score * 100).toFixed(0) + '%'}</td>
+          <td>${item.success_rate == null ? '—' : (item.success_rate * 100).toFixed(0) + '%'}</td>
+          <td title="${esc(item.sample_count + ' samples')}">${(item.confidence * 100).toFixed(0)}%</td>
+          <td><strong>${item.effective_rvu_per_hour?.toFixed(1) ?? '—'}</strong></td>
+          <td>${item.opportunity_cost_rvu_per_hour?.toFixed(1) ?? '—'}</td>
+          <td><span class="badge ${decisionCls}" title="${esc(item.reason)}">${esc(item.recommendation)}</span></td>
         </tr>
       `;
     }
@@ -273,6 +346,208 @@
           <td class="muted">${esc(fallbacks)}</td>
         </tr>
       `;
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  }
+
+  function renderRoutingRegret(data) {
+    const wrap = document.getElementById('routing-regret');
+    const report = data?.routing_regret || {};
+    const items = report.items || [];
+    if (!items.length) {
+      wrap.innerHTML = '<div class="muted">No completed routing decisions yet</div>';
+      return;
+    }
+    const summary = report.summary || {};
+    let html = `<div class="summary-line">
+      <span class="badge">Decisions: ${esc(summary.decisions ?? 0)}</span>
+      <span class="badge">Completed: ${esc(summary.completed ?? 0)}</span>
+      <span class="badge">Zero regret: ${summary.zero_regret_rate == null ? '—' : (summary.zero_regret_rate * 100).toFixed(0) + '%'}</span>
+      <span class="badge">Avg regret: ${summary.avg_realized_regret?.toFixed(1) ?? '—'} RVU/h</span>
+    </div><table class="dashboard-table mt-2"><thead><tr>
+      <th>Request</th><th>Choice</th><th>Status</th><th>Latency</th><th>Realized RVU/h</th><th>Regret</th><th>Alternatives</th>
+    </tr></thead><tbody>`;
+    for (const item of items.slice(0, 50)) {
+      html += `<tr>
+        <td><code>${esc(short(item.request_id, 10))}</code></td>
+        <td>${esc(item.chosen_provider)}/<code>${esc(item.chosen_model)}</code></td>
+        <td><span class="badge ${item.status === 'completed' ? 'ok' : item.status === 'failed' ? 'err' : 'warn'}">${esc(item.status)}</span></td>
+        <td>${item.latency_ms == null ? '—' : esc(item.latency_ms) + ' ms'}</td>
+        <td>${item.realized_value_per_hour?.toFixed(1) ?? '—'}</td>
+        <td>${item.realized_regret?.toFixed(1) ?? '—'}</td>
+        <td>${esc((item.candidates || []).length)}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  }
+
+  function renderLoadoutSimulation(data) {
+    const wrap = document.getElementById('loadout-simulation');
+    const simulation = data?.loadout_simulation || {};
+    const actions = simulation.actions || [];
+    loadoutActions = actions;
+    if (!actions.length) {
+      wrap.innerHTML = '<div class="muted">No loadout simulation available</div>';
+      return;
+    }
+    let html = `<div class="summary-line">
+      <span class="badge">Keep: ${esc(simulation.summary?.keep ?? 0)}</span>
+      <span class="badge">Defer: ${esc(simulation.summary?.defer ?? 0)}</span>
+      <span class="badge">Replicate: ${esc(simulation.summary?.replicate_candidates ?? 0)}</span>
+      <span class="badge">Unload candidates: ${esc(simulation.summary?.unload_candidates ?? 0)}</span>
+    </div><table class="dashboard-table mt-2"><thead><tr>
+      <th>Action</th><th>Node</th><th>Model</th><th>Est. RAM</th><th>RVU/h</th><th>Confidence</th><th>Reason</th><th>Control</th>
+    </tr></thead><tbody>`;
+    for (const [index, item] of actions.entries()) {
+      const cls = item.action === 'keep' ? 'ok' : item.action === 'unload_candidate' ? 'err' : 'warn';
+      html += `<tr>
+        <td><span class="badge ${cls}">${esc(item.action)}</span></td>
+        <td>${esc(item.node_id)}</td>
+        <td><code>${esc(item.model_id)}</code></td>
+        <td>${item.estimated_ram_gib?.toFixed(1) ?? '—'} GiB</td>
+        <td>${item.effective_rvu_per_hour?.toFixed(1) ?? '—'}</td>
+        <td>${item.confidence == null ? '—' : (item.confidence * 100).toFixed(0) + '%'}</td>
+        <td>${esc(item.reason)}</td>
+        <td>${item.requires_approval && ['replicate_candidate','unload_candidate'].includes(item.action)
+          ? '<button class="btn secondary loadout-propose" data-index="' + index + '">Propose</button>'
+          : '—'}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+    wrap.querySelectorAll('.loadout-propose').forEach(button => {
+      button.addEventListener('click', () => proposeLoadoutAction(Number(button.dataset.index)));
+    });
+  }
+
+  function renderCapacityForecast(data) {
+    const wrap = document.getElementById('capacity-forecast');
+    const forecast = data?.capacity_forecast || {};
+    const summary = forecast.summary;
+    if (!summary) {
+      wrap.innerHTML = '<div class="muted">No capacity forecast available</div>';
+      return;
+    }
+    let html = `<div class="metric-grid">
+      <div class="metric"><div class="metric-label">Ready</div><div class="metric-value">${esc(summary.ready)}</div></div>
+      <div class="metric"><div class="metric-label">Available Slots</div><div class="metric-value">${esc(summary.available_slots)}</div></div>
+      <div class="metric"><div class="metric-label">Loaded TPS</div><div class="metric-value">${summary.aggregate_loaded_tps?.toFixed(1) ?? '—'}</div></div>
+      <div class="metric"><div class="metric-label">Queue ETA</div><div class="metric-value">${summary.estimated_queue_hours == null ? '—' : summary.estimated_queue_hours.toFixed(2) + 'h'}</div></div>
+    </div>`;
+    const bottlenecks = forecast.bottlenecks || [];
+    if (bottlenecks.length) html += `<div class="mt-2">${bottlenecks.map(item => `<span class="badge err">${esc(item)}</span>`).join(' ')}</div>`;
+    const preemptions = forecast.preemption_plan || [];
+    if (preemptions.length) {
+      html += `<table class="dashboard-table mt-2"><thead><tr><th>Recommendation</th><th>Task</th><th>Node</th><th>Reason</th></tr></thead><tbody>`;
+      for (const item of preemptions) html += `<tr>
+        <td><span class="badge warn">${esc(item.action)}</span></td>
+        <td><code>${esc(short(item.task_id, 10))}</code></td>
+        <td>${esc(item.node_id || '—')}</td><td>${esc(item.reason)}</td>
+      </tr>`;
+      html += '</tbody></table>';
+    }
+    wrap.innerHTML = html;
+  }
+
+  function renderHealthIncidents(data) {
+    const wrap = document.getElementById('health-incidents');
+    const plan = data?.health_plan || {};
+    const controller = data?.self_healing || {};
+    const status = document.getElementById('self-healing-status');
+    status.textContent = controller.automatic_quarantine ? 'auto-quarantine enabled' : 'auto-quarantine disabled';
+    status.className = 'badge ' + (controller.automatic_quarantine ? 'warn' : 'ok');
+    const incidents = plan.incidents || [];
+    if (!incidents.length) {
+      wrap.innerHTML = '<div class="badge ok">No active fleet incidents detected</div>';
+      return;
+    }
+    let html = `<div class="summary-line">
+      <span class="badge err">Critical: ${esc(plan.summary?.critical ?? 0)}</span>
+      <span class="badge warn">Warning: ${esc(plan.summary?.warning ?? 0)}</span>
+      <span class="badge">Affected nodes: ${esc(plan.summary?.affected_nodes ?? 0)}</span>
+    </div><table class="dashboard-table mt-2"><thead><tr>
+      <th>Severity</th><th>Node</th><th>Model</th><th>Incident</th><th>Detail</th><th>Recommendation</th><th>Controls</th>
+    </tr></thead><tbody>`;
+    for (const item of incidents) {
+      html += `<tr>
+        <td><span class="badge ${item.severity === 'critical' ? 'err' : 'warn'}">${esc(item.severity)}</span></td>
+        <td>${esc(item.node_id)}</td><td><code>${esc(item.model_id || '—')}</code></td>
+        <td>${esc(item.incident_type)}</td><td>${esc(item.detail)}</td>
+        <td>${esc(item.recommended_action)}</td>
+        <td>${item.recommended_action === 'quarantine'
+          ? '<button class="btn secondary incident-quarantine" data-key="' + esc(item.incident_key) + '">Quarantine</button> '
+            + '<button class="btn secondary node-rejoin" data-node="' + esc(item.node_id) + '">Verify & Rejoin</button>'
+          : '—'}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+    wrap.querySelectorAll('.incident-quarantine').forEach(button => button.addEventListener('click', async () => {
+      if (!confirm(`Quarantine node for incident ${button.dataset.key}?`)) return;
+      const response = await fetch(`/api/fleet/self-healing/incidents/${encodeURIComponent(button.dataset.key)}/quarantine`, {method: 'POST'});
+      const result = await response.json();
+      alert(response.ok ? `Quarantined ${result.node_id}` : result.reason || 'Quarantine blocked');
+      await refresh();
+    }));
+    wrap.querySelectorAll('.node-rejoin').forEach(button => button.addEventListener('click', async () => {
+      if (!confirm(`Verify live health and rejoin ${button.dataset.node}? The node must be restarted separately if needed.`)) return;
+      const response = await fetch(`/api/fleet/self-healing/nodes/${encodeURIComponent(button.dataset.node)}/rejoin`, {method: 'POST'});
+      const result = await response.json();
+      alert(response.ok ? `Rejoined ${result.node_id}` : result.reason || 'Rejoin blocked');
+      await refresh();
+    }));
+  }
+
+  async function proposeLoadoutAction(index) {
+    const action = loadoutActions[index];
+    if (!action || !confirm(`Create guarded proposal: ${action.action} ${action.model_id} on ${action.node_id}?`)) return;
+    const proposed = await fetch('/api/fleet/loadout-control/proposals', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action})
+    });
+    const proposal = await proposed.json();
+    if (!proposed.ok) return alert(proposal.detail || 'Proposal failed');
+    const typed = prompt(`Proposal created. To approve the exact immutable action, paste this fingerprint:\n\n${proposal.fingerprint}`);
+    if (typed !== proposal.fingerprint) return alert('Proposal remains unapproved; fingerprint did not match.');
+    const approved = await fetch(`/api/fleet/loadout-control/proposals/${proposal.id}/approve`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({fingerprint: typed})
+    });
+    if (!approved.ok) return alert('Approval failed');
+    if (!confirm('Approved. Execute now? Live state will be revalidated and failures rolled back.')) return;
+    const executed = await fetch(`/api/fleet/loadout-control/proposals/${proposal.id}/execute`, {method: 'POST'});
+    const result = await executed.json();
+    alert(result.blocked ? `Blocked: ${result.reason}` : result.verified ? 'Completed and verified.' : 'Verification failed; rollback attempted.');
+    await refresh();
+  }
+
+  function renderBenchmarkQueue(data) {
+    const wrap = document.getElementById('benchmark-queue');
+    const controller = data?.benchmark_controller || {};
+    benchmarkControllerEnabled = !!controller.enabled;
+    const status = document.getElementById('benchmark-controller-status');
+    status.textContent = benchmarkControllerEnabled ? 'controller enabled' : 'controller disabled';
+    status.className = 'badge ' + (benchmarkControllerEnabled ? 'ok' : 'warn');
+    document.getElementById('btn-benchmark-control').textContent = benchmarkControllerEnabled ? 'Disable' : 'Enable';
+    const requests = data?.benchmark_plan?.requests || [];
+    if (!requests.length) {
+      wrap.innerHTML = '<div class="muted">No benchmark work currently required</div>';
+      return;
+    }
+    let html = `<table class="dashboard-table"><thead><tr>
+      <th>Priority</th><th>Node</th><th>Model</th><th>Task Family</th><th>Why</th><th>Safety</th>
+    </tr></thead><tbody>`;
+    for (const item of requests.slice(0, 100)) {
+      html += `<tr>
+        <td><strong>${esc(item.priority)}</strong></td>
+        <td>${esc(item.node_id)}</td>
+        <td><code>${esc(item.model_id)}</code></td>
+        <td>${esc(item.task_family)}</td>
+        <td>${esc((item.reasons || []).join('; '))}</td>
+        <td><span class="badge warn">dry run</span> <span class="badge">loaded only</span></td>
+      </tr>`;
     }
     html += '</tbody></table>';
     wrap.innerHTML = html;
@@ -367,6 +642,11 @@
       renderNodes(data);
       renderModelMatrix(data);
       renderRouting(data);
+      renderRoutingRegret(data);
+      renderLoadoutSimulation(data);
+      renderCapacityForecast(data);
+      renderHealthIncidents(data);
+      renderBenchmarkQueue(data);
       renderTasks(data);
       renderCompletions(data);
       renderHardware(data);
@@ -374,6 +654,27 @@
   }
 
   document.getElementById('btn-refresh').addEventListener('click', refresh);
+  document.getElementById('btn-benchmark-control').addEventListener('click', async function() {
+    await fetch('/api/fleet/benchmark-controller/control', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: !benchmarkControllerEnabled})
+    });
+    await refresh();
+  });
+  document.getElementById('btn-benchmark-tick').addEventListener('click', async function() {
+    const response = await fetch('/api/fleet/benchmark-controller/tick', {method: 'POST'});
+    const result = await response.json();
+    if (!response.ok || result.blocked) {
+      alert(result.reason || result.detail || 'Benchmark task creation was blocked');
+    }
+    await refresh();
+  });
+  document.getElementById('btn-healing-reconcile').addEventListener('click', async function() {
+    const response = await fetch('/api/fleet/self-healing/reconcile', {method: 'POST'});
+    const result = await response.json();
+    alert(response.ok ? `Reconciled ${result.reconciled} incident(s)` : result.detail || 'Reconcile failed');
+    await refresh();
+  });
   document.getElementById('btn-auto').addEventListener('click', function() {
     autoRefresh = !autoRefresh;
     this.textContent = 'Auto: ' + (autoRefresh ? 'ON' : 'OFF');

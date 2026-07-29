@@ -27,6 +27,7 @@ docker compose -f docker-compose.yml -f compose.overlay.yml up -d
 
 ## Key Docs
 
+- [`docs/fleet-recovery-rollout.md`](docs/fleet-recovery-rollout.md) - Signed recovery setup, adapter allowlists, canary rollout, and emergency shutdown
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - Release architecture, data flow, API, schema
 - [`docs/STATUS.md`](docs/STATUS.md) - Verified status, blocker, and remediation order
 - [`docs/swarm_contracts/`](docs/swarm_contracts/) - Future swarm/event contracts, gated from cutover

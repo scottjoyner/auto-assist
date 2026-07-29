@@ -1,11 +1,10 @@
 
 from __future__ import annotations
+
 import os
-import time
 import threading
-from typing import Dict, Any
-from duckduckgo_search import DDGS
-from tavily import TavilyClient
+from typing import Any
+
 from ..config import settings
 
 # duckduckgo_search performs its HTTP requests with NO socket timeout, so a
@@ -16,7 +15,7 @@ SEARCH_TIMEOUT_S = float(os.getenv("WEB_SEARCH_TIMEOUT_S", getattr(settings, "we
 
 
 def _run_with_timeout(fn, timeout: float):
-    box: Dict[str, Any] = {}
+    box: dict[str, Any] = {}
 
     def _target():
         try:
@@ -35,9 +34,12 @@ def _run_with_timeout(fn, timeout: float):
     return box.get("result"), None
 
 
-def web_search(query: str, max_results: int = 5) -> Dict[str, Any]:
+def web_search(query: str, max_results: int = 5) -> dict[str, Any]:
     if settings.tavily_api_key:
+
         def _tavily():
+            from tavily import TavilyClient
+
             tv = TavilyClient(api_key=settings.tavily_api_key)
             return tv.search(query=query, max_results=max_results)
 
@@ -51,6 +53,8 @@ def web_search(query: str, max_results: int = 5) -> Dict[str, Any]:
     # set so the agent loop can still complete the task without wasting minutes
     # per call. (No Tavily key is configured in this deployment.)
     def _ddg():
+        from duckduckgo_search import DDGS
+
         with DDGS() as ddgs:
             return list(ddgs.text(query, max_results=max_results))
 

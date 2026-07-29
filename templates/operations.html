@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% block title %}AssistX – Operations{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', path='css/operations.css') }}">{% endblock %}
+
+{% block content %}
+<div class="ops-shell">
+  <header class="ops-command">
+    <div>
+      <h1>Operations</h1>
+      <p class="kicker">See what needs attention, direct work, and approve system changes.</p>
+    </div>
+    <div class="actions">
+      <div class="ops-health"><span id="health-dot" class="ops-health-dot"></span><span id="health-label">Connecting</span></div>
+      <button id="refresh" class="btn secondary">Refresh</button>
+      <button id="new-task-toggle" class="btn">New task</button>
+    </div>
+  </header>
+  <div id="source-errors" class="panel" hidden></div>
+
+  <form id="new-task" class="card ops-form" hidden>
+    <label><span class="label">What needs doing?</span><input name="title" type="text" required placeholder="Diagnose recurring timeout on node…"></label>
+    <label><span class="label">Work type</span><select name="kind"><option value="diagnosis">Diagnose</option><option value="recovery">Recover</option><option value="deployment">Deploy</option><option value="analysis">Analyze</option><option value="improvement">Improve</option></select></label>
+    <label><span class="label">Priority</span><select name="priority"><option>HIGH</option><option selected>MEDIUM</option><option>LOW</option></select></label>
+    <button class="btn" type="submit">Create task</button>
+  </form>
+
+  <div class="ops-kpis">
+    <div class="ops-kpi"><span class="metric-label">Needs attention</span><strong id="kpi-attention">—</strong><span class="metric-note">active incidents</span></div>
+    <div class="ops-kpi"><span class="metric-label">Work in progress</span><strong id="kpi-running">—</strong><span class="metric-note">claimed or running</span></div>
+    <div class="ops-kpi"><span class="metric-label">Available slots</span><strong id="kpi-capacity">—</strong><span class="metric-note">for new work</span></div>
+    <div class="ops-kpi"><span class="metric-label">Awaiting approval</span><strong id="kpi-approvals">—</strong><span class="metric-note">review-first proposals</span></div>
+  </div>
+
+  <nav class="ops-tabs" aria-label="Operations views">
+    <button class="ops-tab active" data-view="attention">Attention</button>
+    <button class="ops-tab" data-view="work">Work</button>
+    <button class="ops-tab" data-view="fleet">Fleet</button>
+    <button class="ops-tab" data-view="improvements">Improvements</button>
+  </nav>
+
+  <section id="view-attention" class="ops-view active">
+    <div class="ops-overview">
+      <article class="card"><div class="section-header"><div><h2>Attention queue</h2><p class="kicker">Detected issues ordered by severity, with safe next actions.</p></div><button id="reconcile" class="btn secondary">Scan now</button></div><div id="attention-list" class="ops-list mt-4"></div></article>
+      <aside class="card"><h3>System recommendation</h3><div id="recommendation" class="ops-stack mt-3"></div></aside>
+    </div>
+  </section>
+
+  <section id="view-work" class="ops-view">
+    <div class="ops-overview">
+      <article class="card"><div class="section-header"><div><h2>Task management</h2><p class="kicker">Live queue across proposed, ready, claimed, and running states.</p></div></div><div id="work-list" class="ops-list mt-4"></div></article>
+      <aside class="card"><h3>Allocation recommendations</h3><p class="kicker">Best measured placement without automatic dispatch.</p><div id="allocation-list" class="ops-list mt-3"></div></aside>
+    </div>
+  </section>
+
+  <section id="view-fleet" class="ops-view">
+    <article class="card"><div class="section-header"><div><h2>Nodes and loaded models</h2><p class="kicker">True reported loadouts, utilization, health, and capacity.</p></div><a class="btn secondary" href="/fleet-dashboard">Deep metrics</a></div><div id="node-grid" class="ops-node-grid mt-4"></div></article>
+  </section>
+
+  <section id="view-improvements" class="ops-view">
+    <div class="ops-overview">
+      <div class="ops-stack">
+        <article class="card"><h2>Improvement proposals</h2><p class="kicker">Analysis-only proposals stay inert until explicitly approved.</p><div id="proposal-list" class="ops-list mt-4"></div></article>
+        <article class="card"><h3>Recovery execution history</h3><p class="kicker">Node-reported steps, verification, and rollback evidence.</p><div id="recovery-history" class="ops-list mt-3"></div></article>
+      </div>
+      <aside class="card"><h3>Recovery readiness</h3><p class="kicker">Configuration checks expose presence and state, never secret values.</p><div id="readiness-list" class="ops-stack mt-3"></div></aside>
+    </div>
+  </section>
+</div>
+<div id="toast" class="ops-toast" role="status"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const esc = window.UIUtils.escapeHtml;
+  let fleet = {};
+  let tasks = [];
+  let recovery = {};
+  let readiness = {};
+  let refreshFailures = 0;
+  const toast = (message) => { const el = document.getElementById('toast'); el.textContent = message; el.style.display = 'block'; setTimeout(() => el.style.display = 'none', 4500); };
+  const api = async (url, options) => { const response = await fetch(url, options); const data = await response.json(); if (!response.ok) throw new Error(data.detail || data.reason || `HTTP ${response.status}`); return data; };
+  const statusClass = (status) => ['RUNNING','SUCCESS','COMPLETED'].includes(status) ? 'ok' : ['FAILURE','FAILED','BLOCKED'].includes(status) ? 'err' : 'warn';
+  const title = (task) => task.title || task.kind || task.id || 'Untitled task';
+
+  function switchView(name) {
+    document.querySelectorAll('.ops-tab').forEach(el => el.classList.toggle('active', el.dataset.view === name));
+    document.querySelectorAll('.ops-view').forEach(el => el.classList.toggle('active', el.id === `view-${name}`));
+  }
+
+  function render() {
+    const incidents = fleet.health_plan?.incidents || [];
+    const running = tasks.filter(t => ['CLAIMED','RUNNING'].includes(t.status));
+    const proposals = tasks.filter(t => t.status === 'PROPOSED');
+    const recoveryProposals = recovery.proposals || [];
+    const slots = fleet.capacity_forecast?.summary?.available_slots;
+    document.getElementById('kpi-attention').textContent = incidents.length;
+    document.getElementById('kpi-running').textContent = running.length;
+    document.getElementById('kpi-capacity').textContent = slots ?? '—';
+    document.getElementById('kpi-approvals').textContent = proposals.length + recoveryProposals.filter(p => p.status === 'PROPOSED').length;
+    const healthy = fleet.summary?.healthy_nodes || 0, total = fleet.summary?.total_nodes || 0;
+    const dot = document.getElementById('health-dot');
+    dot.className = `ops-health-dot ${total && healthy === total && !incidents.length ? 'ok' : incidents.some(i => i.severity === 'critical') ? 'bad' : ''}`;
+    const age = fleet.timestamp ? Math.max(0, Math.round((Date.now() - fleet.timestamp) / 1000)) : null;
+    document.getElementById('health-label').textContent = `${healthy}/${total} nodes healthy${age == null ? '' : ` · ${age}s old`}`;
+
+    const attention = document.getElementById('attention-list');
+    attention.innerHTML = incidents.length ? incidents.map(item => `<div class="ops-item">
+      <span class="ops-severity ${esc(item.severity)}"></span><div class="ops-item-main"><div class="ops-item-title">${esc(item.detail || item.incident_type)}</div><div class="ops-item-meta">${esc(item.node_id || 'fleet')} · ${esc(item.incident_type)} · recommends ${esc(item.recommended_action || 'diagnosis')}</div></div>
+      <div class="actions"><button class="btn secondary diagnose" data-key="${esc(item.incident_key)}" data-node="${esc(item.node_id || '')}">Diagnose</button>${item.recommended_action === 'quarantine' ? `<button class="btn danger quarantine" data-key="${esc(item.incident_key)}">Quarantine</button>` : ''}</div></div>`).join('') : '<div class="ops-empty"><span class="badge ok">No active incidents</span><p>The latest fleet evidence is healthy.</p></div>';
+
+    const bottlenecks = fleet.capacity_forecast?.bottlenecks || [];
+    document.getElementById('recommendation').innerHTML = bottlenecks.length ? bottlenecks.map(x => `<div class="panel">${esc(x)}</div>`).join('') : '<div class="panel">Capacity is stable. Prioritize benchmark gaps and reviewed improvement proposals.</div>';
+    const visible = tasks.filter(t => ['READY','CLAIMED','RUNNING','PAUSED','FAILURE'].includes(t.status));
+    document.getElementById('work-list').innerHTML = visible.length ? visible.map(t => `<div class="ops-item"><span class="badge ${statusClass(t.status)}">${esc(t.status)}</span><div class="ops-item-main"><div class="ops-item-title">${esc(title(t))}</div><div class="ops-item-meta">${esc(t.kind || t.task_type || 'task')} · ${esc(t.priority || 'MEDIUM')} · ${esc((t.claimed_by || t.target_agent_id || 'unassigned'))}</div></div></div>`).join('') : '<div class="ops-empty">No queued or running work.</div>';
+    const allocations = fleet.allocation_plan?.recommendations || [];
+    const reservations = fleet.allocation_reservations || [];
+    const reservationRows = reservations.map(r => `<div class="panel"><strong>Reserved: ${esc(r.task_id)}</strong><div class="ops-item-meta">${esc(r.node_id)} · ${esc(r.model_id || 'runtime default')} · expires ${new Date(r.expires_at_ts).toLocaleTimeString()}</div><button class="btn secondary allocation-release mt-2" data-id="${esc(r.id)}">Release</button></div>`);
+    const allocationRows = allocations.slice(0, 20).map(a => `<details class="panel"><summary><strong>${esc(a.title || a.task_id)}</strong></summary><div class="ops-item-meta mt-2">${a.recommended ? `${esc(a.recommended.node_id)} · ${esc(a.recommended.model_id || 'runtime default')} · score ${esc(a.recommended.score)} · ${esc(a.decision_summary || '')}` : esc(a.blocked_reason)}</div>${a.recommended ? `<div class="ops-item-meta mt-2">quality ${esc(a.recommended.components?.quality)} · throughput ${esc(a.recommended.components?.throughput)} · load ${esc(a.recommended.components?.current_load)} · displacement ${esc(a.recommended.components?.displacement_cost)}</div><button class="btn secondary allocation-reserve mt-2" data-task="${esc(a.task_id)}" data-node="${esc(a.recommended.node_id)}" data-model="${esc(a.recommended.model_id || '')}">Reserve best placement</button>` : ''}${(a.alternatives || []).length ? `<div class="ops-item-meta mt-2">Alternatives: ${a.alternatives.map(x => `${esc(x.node_id)} (${esc(x.score)})`).join(' · ')}</div>` : ''}${(a.rejected || []).length ? `<div class="ops-item-meta mt-2">Rejected: ${a.rejected.map(x => `${esc(x.node_id)}—${esc(x.reason)}`).join(' · ')}</div>` : ''}</details>`);
+    document.getElementById('allocation-list').innerHTML = reservationRows.concat(allocationRows).join('') || '<div class="ops-empty">No ready work needs placement.</div>';
+    const nodes = fleet.nodes || [];
+    document.getElementById('node-grid').innerHTML = nodes.length ? nodes.map(n => { const used = n.inflight_tasks || 0, cap = n.max_concurrent || 1, recoveryReady = (n.capabilities || []).includes('recovery'), blocked = n.is_blocked; return `<div class="ops-node"><div class="ops-node-head"><div><strong>${esc(n.display_name || n.hostname)}</strong><div class="ops-item-meta">${esc(n.role || 'general')} · ${esc(n.ip || '')}</div></div><div class="actions"><span class="badge ${n.service_ok ? 'ok' : 'err'}">${n.service_ok ? 'online' : 'offline'}</span><span class="badge ${blocked ? 'err' : recoveryReady ? 'ok' : 'warn'}">${blocked ? esc(n.control_mode) : recoveryReady ? 'recovery ready' : 'recovery off'}</span></div></div><div class="ops-meter"><span style="width:${Math.min(100, used / cap * 100)}%"></span></div><div class="ops-item-meta">${used}/${cap} slots · ${n.hardware?.ram_gib ?? '—'} GiB RAM · ${n.hardware?.vram_gib ?? '—'} GiB VRAM${blocked ? ` · ${esc(n.control_reason || 'operator control')}` : ''}</div><div class="ops-models">${(n.loaded_models || []).map(m => `<span class="badge">${esc(m)}</span>`).join('') || '<span class="muted">No model reported</span>'}</div><div class="actions mt-2">${blocked ? `<button class="btn secondary node-control-release" data-node="${esc(n.hostname)}">Release control</button>` : `<button class="btn secondary node-maintenance" data-node="${esc(n.hostname)}">Maintenance</button><button class="btn danger node-quarantine" data-node="${esc(n.hostname)}">Quarantine</button>`}</div></div>`; }).join('') : '<div class="ops-empty">No nodes reported.</div>';
+    const improvementRows = proposals.map(t => `<div class="ops-item"><span class="ops-severity info"></span><div class="ops-item-main"><div class="ops-item-title">${esc(title(t))}</div><div class="ops-item-meta">${esc(t.kind || 'improvement')} · analysis proposal</div></div><button class="btn approve" data-id="${esc(t.id)}">Approve</button></div>`);
+    const recoveryRows = recoveryProposals.filter(p => ['PROPOSED','APPROVED','DISPATCHED'].includes(p.status)).map(p => `<div class="ops-item"><span class="ops-severity ${p.plan?.risk === 'critical' ? 'critical' : ''}"></span><div class="ops-item-main"><div class="ops-item-title">${esc(p.plan?.action)} on ${esc(p.plan?.node_id || 'fleet')}</div><div class="ops-item-meta">recovery · ${esc(p.status)} · ${esc(p.plan?.risk || 'unknown')} risk</div></div><div class="actions">${p.status === 'PROPOSED' ? `<button class="btn recovery-approve" data-id="${esc(p.id)}" data-fingerprint="${esc(p.fingerprint)}">Approve</button>` : p.status === 'APPROVED' ? `<button class="btn recovery-execute" data-id="${esc(p.id)}">Dispatch</button>` : `<button class="btn secondary recovery-outcome" data-id="${esc(p.id)}" data-verified="true">Verified</button><button class="btn secondary recovery-outcome" data-id="${esc(p.id)}" data-verified="false">Failed</button>`}</div></div>`);
+    document.getElementById('proposal-list').innerHTML = improvementRows.concat(recoveryRows).join('') || '<div class="ops-empty">No proposals awaiting approval.</div>';
+    const history = recoveryProposals.filter(p => ['VERIFIED','FAILED_VERIFICATION','FAILED','FAILED_TIMEOUT','FAILED_STUCK'].includes(p.status));
+    const audit = recovery.audit || [];
+    document.getElementById('recovery-history').innerHTML = history.length ? history.slice(0, 20).map(p => { const evidence = p.result?.evidence || {}, steps = evidence.steps || []; const events = audit.filter(a => a.proposal_id === p.id); return `<details class="panel"><summary><span class="badge ${p.status === 'VERIFIED' ? 'ok' : 'err'}">${esc(p.status)}</span> ${esc(p.plan?.action)} on ${esc(p.plan?.node_id || 'fleet')}</summary><div class="ops-item-meta mt-3">${esc(evidence.reason || p.reconcile_reason || 'No failure reason')} · ${steps.length} step(s) · ${evidence.rollback_results?.length || 0} rollback step(s)</div>${steps.map(step => `<div class="summary-line mt-2"><span class="badge ${step.ok ? 'ok' : 'err'}">${esc(step.action)}</span><span class="muted">${esc(step.reason || 'ok')}</span></div>`).join('')}<div class="ops-item-meta mt-3">${events.map(event => `${esc(event.from_status)} → ${esc(event.to_status)} by ${esc(event.actor)}`).join('<br>')}</div><a class="btn secondary mt-3" href="/api/fleet/recovery-control/proposals/${encodeURIComponent(p.id)}/evidence" download>Download evidence</a></details>`; }).join('') : '<div class="ops-empty">No completed recovery runs yet.</div>';
+    const checks = readiness.checks || [];
+    document.getElementById('readiness-list').innerHTML = checks.length ? checks.map(check => `<div class="panel"><span class="badge ${check.ready ? 'ok' : check.optional ? 'warn' : 'err'}">${check.ready ? 'ready' : check.optional ? 'optional' : 'blocked'}</span><strong> ${esc(check.label)}</strong><div class="ops-item-meta mt-2">${esc(check.detail)}</div></div>`).join('') : '<div class="ops-empty">Readiness data unavailable.</div>';
+  }
+
+  async function refresh() {
+    const requests = [
+      ['fleet', api('/api/fleet/dashboard')],
+      ['tasks', api('/api/tasks?limit=200').then(x => x.items || x.tasks || x)],
+      ['recovery', api('/api/fleet/recovery-control')],
+      ['readiness', api('/api/fleet/operations-readiness')],
+    ];
+    const results = await Promise.allSettled(requests.map(item => item[1]));
+    const failures = [];
+    results.forEach((result, index) => {
+      const name = requests[index][0];
+      if (result.status === 'fulfilled') {
+        if (name === 'fleet') fleet = result.value;
+        if (name === 'tasks') tasks = Array.isArray(result.value) ? result.value : [];
+        if (name === 'recovery') recovery = result.value;
+        if (name === 'readiness') readiness = result.value;
+      } else failures.push(`${name}: ${result.reason.message}`);
+    });
+    const errors = document.getElementById('source-errors');
+    errors.hidden = !failures.length;
+    errors.innerHTML = failures.length ? `<span class="badge err">partial data</span> ${failures.map(esc).join(' · ')}` : '';
+    render();
+    refreshFailures = failures.length ? Math.min(refreshFailures + 1, 4) : 0;
+    window.clearTimeout(refresh.timer);
+    refresh.timer = window.setTimeout(refresh, Math.min(120000, 15000 * (2 ** refreshFailures)));
+  }
+
+  document.querySelectorAll('.ops-tab').forEach(el => el.addEventListener('click', () => switchView(el.dataset.view)));
+  document.getElementById('refresh').addEventListener('click', refresh);
+  document.getElementById('new-task-toggle').addEventListener('click', () => { const form = document.getElementById('new-task'); form.hidden = !form.hidden; if (!form.hidden) form.elements.title.focus(); });
+  document.getElementById('new-task').addEventListener('submit', async event => {
+    event.preventDefault(); const form = event.currentTarget; const values = Object.fromEntries(new FormData(form));
+    try { await api('/api/tasks', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title:values.title, kind:values.kind, priority:values.priority, required_capabilities:['llm'], payload:{source:'operations_ui', execution_mode:values.kind === 'deployment' || values.kind === 'recovery' ? 'approval_required' : 'analysis_first'}})}); form.reset(); form.hidden = true; toast('Task created and queued.'); await refresh(); } catch (error) { toast(error.message); }
+  });
+  document.getElementById('reconcile').addEventListener('click', async () => { try { await api('/api/fleet/self-healing/reconcile', {method:'POST'}); toast('Fleet scan complete.'); await refresh(); } catch (error) { toast(error.message); } });
+  document.addEventListener('click', async event => {
+    const diagnose = event.target.closest('.diagnose'), quarantine = event.target.closest('.quarantine'), approve = event.target.closest('.approve'), recoveryApprove = event.target.closest('.recovery-approve'), recoveryExecute = event.target.closest('.recovery-execute'), recoveryOutcome = event.target.closest('.recovery-outcome'), allocation = event.target.closest('.allocation-reserve'), allocationRelease = event.target.closest('.allocation-release'), maintenance = event.target.closest('.node-maintenance'), nodeQuarantine = event.target.closest('.node-quarantine'), controlRelease = event.target.closest('.node-control-release');
+    try {
+      if (diagnose) { const diagnosis = await api(`/api/fleet/diagnoses/${encodeURIComponent(diagnose.dataset.key)}`, {method:'POST'}); await api('/api/fleet/recovery-control/proposals', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({diagnosis})}); toast(`Diagnosis captured at ${Math.round(diagnosis.confidence * 100)}% confidence; recovery proposed.`); switchView('improvements'); await refresh(); }
+      if (quarantine && confirm('Quarantine this node from new work?')) { await api(`/api/fleet/self-healing/incidents/${encodeURIComponent(quarantine.dataset.key)}/quarantine`, {method:'POST'}); toast('Node quarantined.'); await refresh(); }
+      if (approve && confirm('Approve this analysis-only proposal for scheduling?')) { await api(`/api/tasks/${encodeURIComponent(approve.dataset.id)}/approve-proposal`, {method:'POST'}); toast('Proposal approved and queued.'); await refresh(); }
+      if (recoveryApprove) { const typed = prompt(`Approve the exact recovery plan by pasting its fingerprint:\\n\\n${recoveryApprove.dataset.fingerprint}`); if (typed === recoveryApprove.dataset.fingerprint) { await api(`/api/fleet/recovery-control/proposals/${encodeURIComponent(recoveryApprove.dataset.id)}/approve`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({fingerprint:typed})}); toast('Recovery plan approved.'); await refresh(); } }
+      if (recoveryExecute && confirm('Dispatch this approved guarded recovery runbook?')) { await api(`/api/fleet/recovery-control/proposals/${encodeURIComponent(recoveryExecute.dataset.id)}/execute`, {method:'POST'}); toast('Recovery runbook dispatched.'); await refresh(); }
+      if (recoveryOutcome) { const verified = recoveryOutcome.dataset.verified === 'true'; const note = prompt('Record the verification evidence or operator observation:') || ''; await api(`/api/fleet/recovery-control/proposals/${encodeURIComponent(recoveryOutcome.dataset.id)}/outcome`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({verified, evidence:{operator_note:note, recorded_from:'operations_ui'}})}); toast(verified ? 'Recovery verified and added to improvement memory.' : 'Failed verification recorded for follow-up improvement.'); await refresh(); }
+      if (allocation) { await api('/api/fleet/allocation/reservations', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({task_id:allocation.dataset.task, node_id:allocation.dataset.node, model_id:allocation.dataset.model || null, snapshot_revision:fleet.timestamp, ttl_seconds:120})}); toast('Placement reserved atomically for 120 seconds.'); await refresh(); }
+      if (allocationRelease && confirm('Release this active placement reservation?')) { await api(`/api/fleet/allocation/reservations/${encodeURIComponent(allocationRelease.dataset.id)}/release`, {method:'POST'}); toast('Placement reservation released.'); await refresh(); }
+      if (maintenance || nodeQuarantine) { const target = maintenance || nodeQuarantine, mode = maintenance ? 'maintenance' : 'quarantined'; const reason = prompt(`Reason for placing ${target.dataset.node} in ${mode}:`); if (reason) { await api(`/api/fleet/self-healing/nodes/${encodeURIComponent(target.dataset.node)}/control`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({mode, reason, ttl_seconds:3600})}); toast(`${target.dataset.node} placed in ${mode} for one hour.`); await refresh(); } }
+      if (controlRelease && confirm(`Release operator control for ${controlRelease.dataset.node}?`)) { await api(`/api/fleet/self-healing/nodes/${encodeURIComponent(controlRelease.dataset.node)}/control/release`, {method:'POST'}); toast('Node control released.'); await refresh(); }
+    } catch (error) { toast(error.message); }
+  });
+  refresh();
+})();
+</script>
+{% endblock %}

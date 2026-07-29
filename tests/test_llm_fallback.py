@@ -1,6 +1,6 @@
 import pytest
 
-from assistx import llm_client
+from assistx.llm import client as llm_client
 
 
 class _Resp:
@@ -18,6 +18,16 @@ class _Resp:
 
 def test_chat_falls_back_when_primary_fails(monkeypatch):
     monkeypatch.setattr(llm_client, "FALLBACK_MODELS", ["fallback-a"])
+    monkeypatch.setattr(
+        llm_client,
+        "fleet_base_urls_for",
+        lambda _model: ["http://fleet-node"],
+    )
+    monkeypatch.setattr(
+        llm_client,
+        "_candidate_models",
+        lambda _model=None: ["primary", "fallback-a"],
+    )
     llm_client._CB_STATE.clear()
 
     calls = []
@@ -40,6 +50,16 @@ def test_circuit_breaker_opens_after_threshold(monkeypatch):
     monkeypatch.setattr(llm_client, "CB_FAIL_THRESHOLD", 2)
     monkeypatch.setattr(llm_client, "CB_OPEN_S", 60)
     monkeypatch.setattr(llm_client, "FALLBACK_MODELS", [])
+    monkeypatch.setattr(
+        llm_client,
+        "fleet_base_urls_for",
+        lambda _model: ["http://fleet-node"],
+    )
+    monkeypatch.setattr(
+        llm_client,
+        "_candidate_models",
+        lambda _model=None: ["m1"],
+    )
     llm_client._CB_STATE.clear()
 
     def always_fail(url, json, timeout):
