@@ -78,3 +78,23 @@ TASK_CLAIMS = _safe_counter("assistx_task_claims_total", "Task trigger claims", 
 TASK_HEARTBEATS = _safe_counter("assistx_task_heartbeats_total", "Task trigger heartbeats", ["status"])
 TASK_COMPLETIONS = _safe_counter("assistx_task_completions_total", "Task trigger completions", ["status"])
 CONTEXT_PACKETS = _safe_counter("assistx_context_packets_total", "Context packets created")
+FLEET_DIAGNOSES = _safe_counter(
+    "assistx_fleet_diagnoses_total",
+    "Fleet diagnoses captured",
+    ["incident_type", "severity"],
+)
+RECOVERY_TRANSITIONS = _safe_counter(
+    "assistx_recovery_transitions_total",
+    "Recovery state transitions",
+    ["status"],
+)
+RECOVERY_OUTCOMES = _safe_counter(
+    "assistx_recovery_outcomes_total",
+    "Verified and failed recovery outcomes",
+    ["verified"],
+)
+ALLOCATION_RESERVATIONS = _safe_counter(
+    "assistx_allocation_reservations_total",
+    "Allocation reservation attempts",
+    ["result"],
+)
