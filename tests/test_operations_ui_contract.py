@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -18,6 +17,12 @@ def test_operations_workspace_exposes_core_operator_flows():
         "/api/fleet/diagnoses/",
         "/api/fleet/recovery-control/proposals",
         "allocation-list",
+        "operations-readiness",
+        "allocation-release",
+        "node-maintenance",
+        "node-quarantine",
+        "Download evidence",
+        "refreshFailures",
     ):
         assert contract in template
 
