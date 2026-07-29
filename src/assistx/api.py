@@ -1373,87 +1373,134 @@ def _get_fleet_routing() -> Any:
 
 @app.get("/api/fleet/dashboard")
 def api_fleet_dashboard(user: str = Depends(auth)):
-    """Comprehensive fleet dashboard: nodes, models, tasks, performance."""
+    """Unified fleet view: live router reports plus AssistX execution state."""
     executor = _get_fleet_executor()
     routing = _get_fleet_routing()
-    
+    base_url = _auto_router_base_url()
+    router_errors: list[str] = []
+    network_map: dict[str, Any] = {}
+    value_matrix: dict[str, Any] = {}
+    if base_url:
+        for endpoint, target in (
+            ("network-map", network_map),
+            ("value-matrix", value_matrix),
+        ):
+            try:
+                target.update(_fetch_json(f"{base_url}/api/fleet/{endpoint}"))
+            except Exception as exc:
+                router_errors.append(f"{endpoint}: {str(exc)[:240]}")
+
+    executor_by_host = {
+        str(n.get("hostname", n.get("ip", "?"))).lower(): n
+        for n in executor._nodes
+    }
+    projected_nodes = network_map.get("nodes") or []
+    node_ids = {
+        str(item.get("id") or item.get("hostname") or item.get("ip"))
+        for item in projected_nodes
+    } | {
+        str(n.get("hostname", n.get("ip", "?"))) for n in executor._nodes
+    }
+
     nodes = []
-    for n in executor._nodes:
-        hn = n.get("hostname", n.get("ip", "?"))
+    for node_id in sorted(node_ids):
+        projected = next(
+            (item for item in projected_nodes
+             if str(item.get("id") or item.get("hostname") or item.get("ip")) == node_id),
+            {},
+        )
+        n = executor_by_host.get(node_id.lower(), {})
+        hn = node_id
         inflight = executor._node_inflight.get(hn, 0)
         latency = executor._node_latency.get(hn, 0)
-        pick_count = executor._pick_count.get(hn, 0)
         weight = n.get("weight", 1)
-        sem = executor._node_semaphores.get(hn)
-        sem_available = sem._value if sem else 0
-        
-        # Get benchmark performance for models on this node
+        specs = projected or routing._node_specs.get(hn, {})
+        loaded_models = projected.get("loaded_models") if projected.get("report_fresh") else n.get("loaded_models", [])
+        available_models = projected.get("all_models") if projected.get("report_fresh") else []
+        service_ok = bool(projected.get("online", n.get("lmstudio_ok", False)))
+        received_at = projected.get("report_received_at")
         model_perf = {}
-        for model in n.get("loaded_models", []):
+        for model in loaded_models or []:
             perf = routing.get_model_perf(hn, model)
             if perf:
-                model_perf[model] = {
-                    "tps_med": perf.get("tps_med", 0),
-                    "eval_score": perf.get("eval_score", 0),
-                    "composite": perf.get("composite_score", 0),
-                    "ttft_med": perf.get("ttft_med", 0),
-                    "load_s": perf.get("load_s", 0),
-                    "ok": perf.get("ok", True),
-                    "concurrency_tier": perf.get("concurrency_tier", 1),
-                }
-        
-        # Get hardware specs
-        specs = routing._node_specs.get(hn, {})
-        
+                model_perf[model] = perf
         nodes.append({
             "hostname": hn,
-            "ip": n.get("ip", ""),
+            "display_name": projected.get("display_name", hn),
+            "ip": projected.get("ip") or n.get("ip", ""),
+            "role": projected.get("role"),
             "weight": weight,
-            "capabilities": n.get("capabilities", []),
-            "loaded_models": n.get("loaded_models", []),
+            "capabilities": projected.get("capabilities") or n.get("capabilities", []),
+            "loaded_models": loaded_models or [],
+            "available_models": available_models or [],
             "model_perf": model_perf,
+            "service_ok": service_ok,
+            "lmstudio_ok": service_ok,
+            "online": service_ok,
+            "report_fresh": bool(projected.get("report_fresh")),
+            "last_seen": received_at or n.get("last_seen"),
+            "last_seen_ago_sec": max(0, _now_ts() - received_at) if received_at else None,
+            "inflight_tasks": inflight,
+            "max_concurrent": weight,
+            "latency_ema_sec": round(latency, 3),
+            "pick_count": executor._pick_count.get(hn, 0),
             "hardware": {
                 "ram_gib": specs.get("ram_gib"),
                 "vram_gib": specs.get("vram_gib"),
                 "cpu": specs.get("cpu"),
             },
-            "health": {
-                "last_seen": n.get("last_seen"),
-                "lmstudio_ok": n.get("lmstudio_ok", False),
-                "inflight_tasks": inflight,
-                "max_concurrent": weight,
-                "latency_ema_s": round(latency, 2),
-                "pick_count": pick_count,
-                "semaphore_available": sem_available,
-            },
-            "routing": {
-                "best_models": routing._node_models.get(hn.lower(), []),
+            "provenance": {
+                "topology": "assistx-projection" if projected else "legacy-executor",
+                "inventory": "node-self-report" if projected.get("report_fresh") else "legacy-executor",
+                "performance": "auto-router-runtime-ledger",
             },
         })
-    
-    # Task distribution by node
-    task_distribution = {}
-    for hn, count in executor._node_inflight.items():
-        task_distribution[hn] = count
-    
-    # Overall stats
-    total_inflight = sum(executor._node_inflight.values())
-    total_weight = sum(n.get("weight", 1) for n in executor._nodes)
-    healthy_nodes = sum(1 for n in executor._nodes if n.get("lmstudio_ok", False))
-    
+
+    entries = value_matrix.get("entries") or []
+    models: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        models.setdefault(str(entry.get("model_id") or "unknown"), []).append(entry)
+    for rows in models.values():
+        rows.sort(key=lambda row: -(row.get("effective_rvu_per_hour") or -1))
+
+    task_distribution = dict(executor._node_inflight)
+    total_inflight = sum(task_distribution.values())
     return {
         "timestamp": _now_ts(),
+        "source_status": {
+            "router_configured": bool(base_url),
+            "router_ok": bool(network_map),
+            "projection_status": network_map.get("projection_status", "missing"),
+            "errors": router_errors,
+        },
         "summary": {
-            "total_nodes": len(executor._nodes),
-            "healthy_nodes": healthy_nodes,
-            "total_weight": total_weight,
+            "total_nodes": len(nodes),
+            "healthy_nodes": sum(1 for n in nodes if n["service_ok"]),
+            "total_models_loaded": sum(len(n["loaded_models"]) for n in nodes),
+            "total_models_available": sum(len(n["available_models"]) for n in nodes),
+            "total_weight": sum(n["weight"] for n in nodes),
             "total_inflight": total_inflight,
-            "llm_semaphore_available": executor._llm_sem._value,
-            "script_semaphore_available": executor._script_sem._value,
         },
         "nodes": nodes,
+        "models": models,
+        "value_matrix": value_matrix,
         "task_distribution": task_distribution,
+        "task_summary": {
+            "ready_llm": None,
+            "ready_script": None,
+            "running_by_node": [
+                {"node": node, "cnt": count} for node, count in task_distribution.items()
+            ],
+            "recent_completions": [],
+        },
         "routing": {
+            "best_node_per_model": {
+                model: rows[0].get("node_id") for model, rows in models.items() if rows
+            },
+            "fallbacks": {
+                model: [row.get("node_id") for row in rows[1:]]
+                for model, rows in models.items()
+            },
             "model_to_best_node": routing._model_to_node,
             "model_routing": routing._routing,
         },
