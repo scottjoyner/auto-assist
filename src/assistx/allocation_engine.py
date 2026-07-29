@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Iterable
-
+from collections.abc import Iterable
+from typing import Any
 
 PRIORITY_WEIGHT = {"CRITICAL": 1.0, "HIGH": 0.85, "MEDIUM": 0.55, "LOW": 0.25}
 
