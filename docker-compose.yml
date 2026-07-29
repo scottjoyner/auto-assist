@@ -9,7 +9,7 @@ services:
       - NEO4J_dbms_memory_pagecache_size=${NEO4J_CACHE_SIZE:-512M}
       - NEO4J_dbms_memory_heap_max__size=${NEO4J_HEAP_SIZE:-1G}
     ports:
-      - "7687:7687"
+      - "${ASSISTX_NEO4J_BIND:-0.0.0.0}:${ASSISTX_NEO4J_BOLT_PORT:-7687}:7687"
     volumes:
       - neo4j_data:/data
     healthcheck:
@@ -37,7 +37,7 @@ services:
 
   api:
     env_file:
-      - .env
+      - ${ASSISTX_ENV_FILE:-.env}
     build:
       context: .
       dockerfile: Dockerfile
@@ -114,7 +114,7 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "${ASSISTX_API_BIND:-0.0.0.0}:${ASSISTX_API_PORT:-8000}:8000"
     deploy:
       resources:
         limits:
@@ -146,7 +146,7 @@ services:
 
   worker:
     env_file:
-      - .env
+      - ${ASSISTX_ENV_FILE:-.env}
     build:
       context: .
     container_name: assistx-worker
@@ -224,7 +224,7 @@ services:
 
   hermes-adapter:
     env_file:
-      - .env
+      - ${ASSISTX_ENV_FILE:-.env}
     build:
       context: .
     container_name: assistx-hermes-adapter

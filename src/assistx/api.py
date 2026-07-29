@@ -217,6 +217,11 @@ class ImprovementProposalIn(BaseModel):
     verification_commands: List[List[str]] = Field(min_length=1, max_length=10)
     recommended_tier: str = "tool-small"
     priority: str = "MEDIUM"
+    target_agent_id: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=300,
+    )
 
 
 class PatchPromotionIn(BaseModel):
@@ -1759,6 +1764,7 @@ def api_create_improvement_proposal(
             status="PROPOSED",
             kind="bounded_code_change",
             required_capabilities=["llm", "code_execution"],
+            target_agent_id=body.target_agent_id,
             priority=body.priority,
             payload={
                 "execution_contract": contract,

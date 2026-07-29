@@ -92,6 +92,9 @@ one execution backend. See the rollout guides before enabling mutation.
   deployment, canary, key rotation, rollback, and troubleshooting
 - [`docs/kv-cache-control-plane.md`](docs/kv-cache-control-plane.md) —
   prefix-cache identity, compatibility, routing, runtime adapters, and rollout
+- [`docs/end-to-end-deployment.md`](docs/end-to-end-deployment.md) — one
+  isolated deployment with staged task, cache, migration, improvement, recovery,
+  evidence, and rollback gates
 
 The dated [`docs/STATUS.md`](docs/STATUS.md) is retained as a Paperclip cutover
 record. It is not the current capability statement.

@@ -59,6 +59,11 @@ self-improvement prerequisites without returning secret values. Readiness is a
 configuration gate, not proof that a live recovery or code-change canary has
 passed.
 
+The isolated [`end-to-end deployment`](end-to-end-deployment.md) bundle now
+packages production-profile health, fenced task completion, cache telemetry,
+cross-node migration, targeted bounded improvement, signed recovery health
+checks, evidence capture, and state-preserving rollback into explicit stages.
+
 Paperclip remains a supported execution backend. Direct Hermes execution is
 also implemented. A deployment must select its intended execution authority
 and must not run two consumers against the same eligible task population
@@ -68,7 +73,7 @@ without explicit reservation and idempotency controls.
 
 The next high-value work is operational rather than relaxing safety:
 
-1. Add end-to-end deployment canaries on every code-capable node, including
+1. Run the end-to-end deployment stages on every code-capable node, including
    crash cleanup and signing-key rotation.
 2. Export controller, reservation, migration, recovery, and improvement metrics
    to the production alerting stack.
