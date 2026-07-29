@@ -883,14 +883,14 @@ class Neo4jClient:
                 # relationship scan per poll and saturated Neo4j.
                 query = (
                     "MATCH (t:Task {status:$status}) "
-                    "WHERE $caps IN coalesce(t.required_capabilities, []) "
+                    "WHERE any(cap IN $caps WHERE cap IN coalesce(t.required_capabilities, [])) "
                     "RETURN t ORDER BY "
                     "CASE coalesce(t.priority,'UNSET') "
                     "WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'MEDIUM' THEN 2 "
                     "WHEN 'LOW' THEN 3 WHEN 'BACKGROUND' THEN 4 WHEN 'BATCH' THEN 5 "
                     "ELSE 9 END, coalesce(t.created_at_ts, 0) ASC LIMIT $limit"
                 )
-                res = s.run(query, {"status": status, "caps": caps[0], "limit": limit})
+                res = s.run(query, {"status": status, "caps": caps, "limit": max(limit * 10, limit)})
             else:
                 query = (
                     "MATCH (t:Task {status:$status}) "
