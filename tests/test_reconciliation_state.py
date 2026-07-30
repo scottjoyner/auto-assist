@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import subprocess
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -10,15 +11,25 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR_PATH = ROOT / "scripts" / "validate-reconciliation-state.py"
+REPORT_PATH = ROOT / "scripts" / "render-reconciliation-report.py"
+BOOTSTRAP_PATH = ROOT / "scripts" / "bootstrap-reconciliation-worktrees.sh"
 EXAMPLE_PATH = ROOT / "deploy" / "reconciliation" / "migration-state.example.yaml"
 
 
-def _load_validator() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("validate_reconciliation_state", VALIDATOR_PATH)
+def _load_module(name: str, path: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_validator() -> ModuleType:
+    return _load_module("validate_reconciliation_state", VALIDATOR_PATH)
+
+
+def _load_reporter() -> ModuleType:
+    return _load_module("render_reconciliation_report", REPORT_PATH)
 
 
 def _load_example() -> dict[str, Any]:
@@ -160,3 +171,27 @@ def test_cutover_state_passes_when_all_operator_gates_are_recorded() -> None:
     errors = validator.validate(data, require_cutover=True)
 
     assert errors == []
+
+
+def test_report_renderer_includes_checksum_gates_and_runtime(tmp_path: Path) -> None:
+    reporter = _load_reporter()
+    state_path = tmp_path / "migration-state.yaml"
+    state_path.write_text(yaml.safe_dump(_passing_shadow_state()), encoding="utf-8")
+
+    report = reporter.render(_passing_shadow_state(), state_path)
+
+    assert "Ledger SHA-256" in report
+    assert "RUNTIME_IDENTITY_GATE: pass" in report
+    assert "lmstudio:x1-370:1234" in report
+    assert "This report is derived from the operator-owned ledger" in report
+
+
+def test_worktree_bootstrap_script_has_valid_bash_syntax() -> None:
+    result = subprocess.run(
+        ["bash", "-n", str(BOOTSTRAP_PATH)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
