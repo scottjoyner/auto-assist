@@ -8,6 +8,7 @@ operating instructions.
 
 | Document | Purpose |
 |---|---|
+| [`FULL_AUTO_RECONCILIATION_20260730.md`](FULL_AUTO_RECONCILIATION_20260730.md) | Authoritative offline-only repository reconciliation, runtime identity contract, containment sequence, and migration gates |
 | [`CURRENT_STATUS.md`](CURRENT_STATUS.md) | Implemented capabilities, verified boundaries, and remaining gaps |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | System components, graph authority, control loops, and state flows |
 | [`EXECUTION_AUTHORITY.md`](EXECUTION_AUTHORITY.md) | Which actor may claim, execute, recover, approve, and promote |
