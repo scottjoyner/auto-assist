@@ -1,0 +1,15 @@
+# Optional operator-approved layer for one bounded repository task.
+# Use only after the default synthetic executor and containment gates pass.
+# ASSISTX_EXECUTOR_WORKTREE must identify one dedicated reconciliation worktree;
+# never point it at /home/scott/git, a repository parent, the SSD root, or the NAS.
+services:
+  hermes-adapter:
+    working_dir: /workspace
+    environment:
+      - HERMES_WORKSPACE=/workspace
+      - HERMES_ALLOWED_ROOT=/workspace
+      - ASSISTX_EXECUTOR_SCOPE=single-worktree
+    volumes: !override
+      - ${RECONCILIATION_HERMES_HOME:-./artifacts/reconciliation-hermes-home}:/app/hermes-home:rw
+      - ./artifacts:/app/artifacts:rw
+      - ${ASSISTX_EXECUTOR_WORKTREE:?set one dedicated reconciliation worktree}:/workspace:rw
