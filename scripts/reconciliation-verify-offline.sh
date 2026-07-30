@@ -5,6 +5,7 @@ set -euo pipefail
 
 ROUTER_URL="${RECONCILIATION_NEW_ROUTER_URL:-http://127.0.0.1:18088}"
 ASSISTX_URL="${RECONCILIATION_NEW_ASSISTX_URL:-http://127.0.0.1:18000}"
+ENV_FILE="${RECONCILIATION_ENV_FILE:-}"
 if [ "$#" -gt 0 ]; then
   SCAN_PATHS=("$@")
 else
@@ -12,14 +13,16 @@ else
 fi
 
 # Empty credential declarations are allowed and verified separately below. What is
-# forbidden in configuration is a public URL, hosted provider record, hosted quota
-# class, broker gateway, duplicate assignment path, or autonomous mutation flag.
+# forbidden in rendered configuration is a public URL, hosted provider record,
+# hosted quota class, broker gateway, duplicate assignment path, or autonomous
+# mutation flag.
 config_forbidden_regex='api\.openrouter\.ai|api\.cerebras\.ai|api\.groq\.com|api\.x\.ai|api\.anthropic\.com|generativelanguage\.googleapis\.com|api\.mistral\.ai|workers\.ai|name:[[:space:]]*(openrouter|cerebras|groq|grok|xai)([[:space:]]|$)|provider:[[:space:]]*(openrouter|cerebras|groq|grok|xai)([[:space:]]|$)|quota_class:[[:space:]]*(premium_free|fast_free|edge_free|brokered_free)([[:space:]]|$)|gateway_mode:[[:space:]]*(sidecar|brokered)([[:space:]]|$)|AUTO_ROUTER_(AUTOLOAD_ENABLED|PLACEMENT_UNLOAD|FLEET_DISPATCHER_ENABLED|AGENTGATEWAY_ENABLED)[^:=]*[:=][[:space:]]*[^[:alnum:]]*true([[:space:]]|$)|ASSISTX_OVERLAY_MODE[^:=]*[:=][[:space:]]*[^[:alnum:]]*router_plus_assign|AUTO_ASSIGN_BASE_URL[^:=]*[:=][[:space:]]*[^[:alnum:]]*https?://|HERMES_SELFTASK_ENABLED[^:=]*[:=][[:space:]]*[^[:alnum:]]*true([[:space:]]|$)|ASSISTX_RECOVERY_EXECUTION_ENABLED[^:=]*[:=][[:space:]]*[^[:alnum:]]*true([[:space:]]|$)|FLEET_UNSAFE_SHELL_TASKS_ENABLED[^:=]*[:=][[:space:]]*[^[:alnum:]]*true([[:space:]]|$)'
 runtime_forbidden_regex='openrouter|cerebras|groq|grok|xai|anthropic|gemini|mistral|cloudflare'
 allowed_doc_regex='docs/|README|archive/|FULL_AUTO_RECONCILIATION|SYSTEM_INVENTORY|system-inventory'
+hosted_keys=(OPENROUTER_API_KEY GROQ_API_KEY CEREBRAS_API_KEY XAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY MISTRAL_API_KEY CLOUDFLARE_API_TOKEN)
 
 failures=0
-printf '[offline-verify] scanning configuration and compose files\n'
+printf '[offline-verify] scanning rendered configuration\n'
 for path in "${SCAN_PATHS[@]}"; do
   [ -e "$path" ] || { printf 'missing scan path: %s\n' "$path" >&2; failures=$((failures + 1)); continue; }
   while IFS= read -r match; do
@@ -33,13 +36,32 @@ for path in "${SCAN_PATHS[@]}"; do
   done < <(grep -RInE --exclude-dir=.git --exclude='*.md' --exclude='*.jsonl' --exclude='*.log' "$config_forbidden_regex" "$path" 2>/dev/null || true)
 done
 
-# Report non-empty hosted-provider variables by NAME only. Never print values.
-for name in OPENROUTER_API_KEY GROQ_API_KEY CEREBRAS_API_KEY XAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY MISTRAL_API_KEY CLOUDFLARE_API_TOKEN; do
+# Report non-empty hosted-provider variables from the current process by NAME only.
+for name in "${hosted_keys[@]}"; do
   if [ -n "${!name:-}" ]; then
-    printf 'hosted-provider variable is non-empty: %s\n' "$name" >&2
+    printf 'hosted-provider variable is non-empty in process environment: %s\n' "$name" >&2
     failures=$((failures + 1))
   fi
 done
+
+# Inspect the shadow env file without sourcing it and without printing values.
+if [ -n "$ENV_FILE" ]; then
+  if [ ! -f "$ENV_FILE" ]; then
+    printf 'reconciliation env file not found: %s\n' "$ENV_FILE" >&2
+    failures=$((failures + 1))
+  else
+    for name in "${hosted_keys[@]}"; do
+      line="$(grep -E "^[[:space:]]*${name}=" "$ENV_FILE" | tail -n 1 || true)"
+      [ -n "$line" ] || continue
+      value="${line#*=}"
+      value="$(printf '%s' "$value" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/^"(.*)"$/\1/; s/^'"'"'(.*)'"'"'$/\1/')"
+      if [ -n "$value" ]; then
+        printf 'hosted-provider variable is non-empty in reconciliation env file: %s\n' "$name" >&2
+        failures=$((failures + 1))
+      fi
+    done
+  fi
+fi
 
 printf '[offline-verify] probing reconciliation services\n'
 router_health="$(mktemp)"
