@@ -46,6 +46,7 @@ canary-rollback:
 # Live reconciliation shadow deployment. These targets use a separate Compose
 # project, network, ports, database, and state. They never stop the old stack.
 RECON_ENV_FILE ?= deploy/reconciliation.env
+RECON_ROUTER_ROOT ?= ../auto-router
 RECON_DIRECT = docker compose --profile neo4j --env-file $(RECON_ENV_FILE) \
 	-f docker-compose.yml -f compose.prod.yml -f compose.canary.yml
 RECON_ROUTER = $(RECON_DIRECT) -f compose.reconciliation.yml
@@ -86,10 +87,14 @@ reconciliation-executor-up:
 		-f compose.reconciliation.yml up -d --build hermes-adapter
 
 reconciliation-verify:
-	@RECONCILIATION_NEW_ASSISTX_URL=http://127.0.0.1:18000 \
+	@RECONCILIATION_ENV_FILE=$(RECON_ENV_FILE) \
+	 RECONCILIATION_NEW_ASSISTX_URL=http://127.0.0.1:18000 \
 	 RECONCILIATION_NEW_ROUTER_URL=http://127.0.0.1:18088 \
 	 ./scripts/reconciliation-verify-offline.sh \
-	 compose.reconciliation.yml deploy/reconciliation.env.example
+	 artifacts/reconciliation-render/assistx-router.yaml \
+	 $(RECON_ROUTER_ROOT)/artifacts-reconciliation/router-rendered.yaml \
+	 $(RECON_ROUTER_ROOT)/config/providers.reconciliation.yaml \
+	 $(RECON_ROUTER_ROOT)/config/policies.yaml
 
 reconciliation-status:
 	@$(RECON_ROUTER) ps
