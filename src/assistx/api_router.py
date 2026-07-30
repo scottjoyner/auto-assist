@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from . import control_room as control_room_module
+from . import router_integration as router_integration_module
 from .api import _neo, app, auth, templates
 from .control_room import LEGACY_UI_PATHS, build_control_room_router
 from .control_room_runtime import install_control_room_runtime
@@ -20,6 +21,7 @@ from .routers.memory import build_memory_router
 from .routers.review import build_review_router
 from .routers.tickets import build_tickets_router
 from .routers.transcriptions import build_transcriptions_router
+from .strict_offline_projection import install_strict_offline_projection
 
 
 def _remove_superseded_operator_routes() -> None:
@@ -36,6 +38,7 @@ def _remove_superseded_operator_routes() -> None:
 
 
 install_control_room_runtime(control_room_module)
+install_strict_offline_projection(router_integration_module)
 _remove_superseded_operator_routes()
 app.include_router(build_control_room_router(_neo, auth, templates))
 app.include_router(build_router_integration_router(_neo))
