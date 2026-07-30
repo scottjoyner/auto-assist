@@ -36,6 +36,7 @@ services:
       - "127.0.0.1:${ASSISTX_API_PORT:-18000}:8000"
     networks: !override
       - default
+    extra_hosts: !override []
     volumes: !override
       - assistx_cache:/app/.cache
       - assistx_state:/app/state
@@ -69,6 +70,7 @@ services:
       - CACHE_PATH=/app/state/assistx_cache.sqlite
     networks: !override
       - default
+    extra_hosts: !override []
     volumes: !override
       - assistx_cache:/app/.cache
       - assistx_state:/app/state
@@ -80,6 +82,8 @@ services:
     # after identity, capacity, dependency, containment, and synthetic-task gates pass.
     profiles:
       - executor
+    restart: "no"
+    user: "${RECONCILIATION_EXECUTOR_UID:-1000}:${RECONCILIATION_EXECUTOR_GID:-1000}"
     environment:
       - ASSISTX_URL=http://api:8000
       - AUTO_ASSIGN_BASE_URL=
@@ -103,13 +107,14 @@ services:
       - CLOUDFLARE_API_TOKEN=
     networks: !override
       - default
+    extra_hosts: !override []
     volumes: !override
       - ${RECONCILIATION_HERMES_HOME:-./artifacts/reconciliation-hermes-home}:/app/hermes-home:rw
       - ./artifacts:/app/artifacts:rw
     read_only: true
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=256m
-      - /app/.cache:rw,noexec,nosuid,size=512m
+      - /tmp:rw,noexec,nosuid,size=256m,uid=${RECONCILIATION_EXECUTOR_UID:-1000},gid=${RECONCILIATION_EXECUTOR_GID:-1000}
+      - /app/.cache:rw,noexec,nosuid,size=512m,uid=${RECONCILIATION_EXECUTOR_UID:-1000},gid=${RECONCILIATION_EXECUTOR_GID:-1000}
     cap_drop:
       - ALL
     security_opt:
