@@ -67,12 +67,24 @@ def _passing_shadow_state() -> dict[str, Any]:
             "listening_ports_reviewed": True,
             "tailscale_snapshot_reviewed": True,
             "runtime_process_inventory_reviewed": True,
+            "tailnet_candidate_inventory_path": (
+                "artifacts/reconciliation-tailnet-candidates.json"
+            ),
+            "tailnet_candidate_inventory_sha256_path": (
+                "artifacts/reconciliation-tailnet-candidates.json.sha256"
+            ),
+            "lan_runtime_map_path": "deploy/reconciliation/lan-runtime-map.json",
+            "lan_runtime_map_sha256_path": (
+                "artifacts/reconciliation-lan-runtime-map.sha256"
+            ),
         }
     )
     data["shadow"].update(
         {
             "compose_render_assistx": "artifacts/reconciliation-render/assistx-router.yaml",
-            "compose_render_router": "../auto-router/artifacts-reconciliation/router-rendered.yaml",
+            "compose_render_router": (
+                "../auto-router/artifacts-reconciliation/router-rendered.yaml"
+            ),
             "compose_checksums_recorded": True,
             "isolated_project": True,
             "isolated_network": True,
@@ -88,6 +100,9 @@ def _passing_shadow_state() -> dict[str, Any]:
         "router_ci",
         "compose_render",
         "strict_offline_verifier",
+        "tailnet_discovery",
+        "container_network_paths",
+        "lan_tailscale_failover",
         "direct_completion",
         "routed_completion",
         "runtime_identity",
@@ -101,14 +116,12 @@ def _passing_shadow_state() -> dict[str, Any]:
 
     data["runtimes"] = [
         {
-            "runtime_node_id": "x1-370",
-            "observer_node_id": "x1-370",
-            "access_url": "http://host.docker.internal:1234/v1",
-            "transport": "direct",
-            "runtime_instance_id": "lmstudio:x1-370:1234",
+            "runtime_node_id": "xwing",
+            "observer_node_id": "control-host",
+            "runtime_instance_id": "lmstudio:xwing:1234",
             "runtime_kind": "lmstudio",
             "runtime_version": "test",
-            "model_instance_id": "lmstudio:x1-370:1234:model:test",
+            "model_instance_id": "lmstudio:xwing:1234:model:test",
             "model_key": "test-model",
             "artifact_fingerprint": "sha256:test",
             "quantization": "test",
@@ -117,6 +130,27 @@ def _passing_shadow_state() -> dict[str, Any]:
             "load_owner": "operator",
             "parallel_slots": 1,
             "active_requests_observed": 0,
+            "access_paths": [
+                {
+                    "base_url": "http://192.168.1.51:1234/v1",
+                    "transport": "lan",
+                    "priority": 10,
+                    "reachability_probe": "pass",
+                    "evidence_path": "artifacts/runtime-paths/xwing-lan.txt",
+                },
+                {
+                    "base_url": "http://100.90.80.70:1234/v1",
+                    "transport": "tailscale",
+                    "priority": 100,
+                    "reachability_probe": "pass",
+                    "evidence_path": "artifacts/runtime-paths/xwing-tailscale.txt",
+                },
+            ],
+            "selected_access_url": "http://192.168.1.51:1234/v1",
+            "selected_transport": "lan",
+            "lan_preference_probe": "pass",
+            "tailscale_fallback_probe": "pass",
+            "shared_admission_probe": "pass",
             "completion_probe": "pass",
             "sequential_stability_probe": "pass",
             "concurrency_probe": "pass",
@@ -191,6 +225,30 @@ def test_complete_shadow_state_passes() -> None:
     assert errors == []
 
 
+def test_missing_tailscale_path_blocks_shadow_readiness() -> None:
+    validator = _load_validator()
+    data = _passing_shadow_state()
+    runtime = data["runtimes"][0]
+    runtime["access_paths"] = [runtime["access_paths"][0]]
+
+    errors = validator.validate(data, require_cutover=False)
+
+    assert (
+        "at least one admitted runtime must prove LAN and Tailscale access paths"
+        in errors
+    )
+
+
+def test_failed_container_path_probe_blocks_shadow_readiness() -> None:
+    validator = _load_validator()
+    data = _passing_shadow_state()
+    data["checks"]["container_network_paths"] = "fail"
+
+    errors = validator.validate(data, require_cutover=False)
+
+    assert "checks.container_network_paths must be pass" in errors
+
+
 def test_cutover_requires_approval_backup_and_hermes_gate() -> None:
     validator = _load_validator()
     data = _passing_shadow_state()
@@ -234,7 +292,9 @@ def test_report_renderer_includes_checksum_gates_and_runtime(tmp_path: Path) -> 
 
     assert "Ledger SHA-256" in report
     assert "RUNTIME_IDENTITY_GATE: pass" in report
-    assert "lmstudio:x1-370:1234" in report
+    assert "LAN_TAILSCALE_FAILOVER_GATE: pass" in report
+    assert "lmstudio:xwing:1234" in report
+    assert "http://192.168.1.51:1234/v1" in report
     assert "This report is derived from the operator-owned ledger" in report
 
 
