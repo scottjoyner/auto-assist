@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,14 @@ from typing import Any
 import yaml
 
 PASS = "pass"
+BRANCH = "full-auto-reconciliation-20260730"
+REQUIRED_REPOSITORIES = (
+    "auto-assist",
+    "auto-router",
+    "hermes-agent",
+    "fleet-llm-profiles",
+    "lms",
+)
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -40,6 +49,33 @@ def _require(errors: list[str], condition: bool, message: str) -> None:
         errors.append(message)
 
 
+def _valid_commit_sha(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{40}", value) is not None
+
+
+def _repository_errors(data: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    repositories = data.get("repositories")
+    if not isinstance(repositories, dict):
+        return ["repositories must be an object"]
+
+    for name in REQUIRED_REPOSITORIES:
+        record = repositories.get(name)
+        prefix = f"repositories.{name}"
+        if not isinstance(record, dict):
+            errors.append(f"{prefix} is required")
+            continue
+        _require(errors, _present(record.get("path")), f"{prefix}.path is required")
+        _require(
+            errors,
+            _valid_commit_sha(record.get("commit_sha")),
+            f"{prefix}.commit_sha must be a full 40-character Git SHA",
+        )
+        _require(errors, record.get("branch") == BRANCH, f"{prefix}.branch must equal {BRANCH}")
+        _require(errors, record.get("clean") is True, f"{prefix}.clean must be true")
+    return errors
+
+
 def _runtime_errors(runtime: Any, index: int, *, require_cutover: bool) -> list[str]:
     errors: list[str] = []
     prefix = f"runtimes[{index}]"
@@ -61,15 +97,27 @@ def _runtime_errors(runtime: Any, index: int, *, require_cutover: bool) -> list[
         "transport",
         "runtime_instance_id",
         "runtime_kind",
+        "runtime_version",
         "model_instance_id",
         "model_key",
+        "artifact_fingerprint",
+        "quantization",
         "load_owner",
         "source_kind",
+        "benchmark_run_id",
         "observed_at",
         "expires_at",
     ):
         _require(errors, _present(runtime.get(field)), f"{prefix}.{field} is required")
 
+    context_length = runtime.get("context_length")
+    _require(
+        errors,
+        isinstance(context_length, int)
+        and not isinstance(context_length, bool)
+        and context_length >= 1,
+        f"{prefix}.context_length must be an integer >= 1",
+    )
     slots = runtime.get("parallel_slots")
     _require(
         errors,
@@ -77,26 +125,13 @@ def _runtime_errors(runtime: Any, index: int, *, require_cutover: bool) -> list[
         f"{prefix}.parallel_slots must be an integer >= 1",
     )
     _require(errors, runtime.get("loaded") is True, f"{prefix}.loaded must be true")
-    _require(
-        errors,
-        runtime.get("completion_probe") == PASS,
-        f"{prefix}.completion_probe must be pass",
-    )
-    _require(
-        errors,
-        runtime.get("sequential_stability_probe") == PASS,
-        f"{prefix}.sequential_stability_probe must be pass",
-    )
-    _require(
-        errors,
-        runtime.get("concurrency_probe") == PASS,
-        f"{prefix}.concurrency_probe must be pass",
-    )
-    _require(
-        errors,
-        runtime.get("cancellation_probe") == PASS,
-        f"{prefix}.cancellation_probe must be pass",
-    )
+    for probe in (
+        "completion_probe",
+        "sequential_stability_probe",
+        "concurrency_probe",
+        "cancellation_probe",
+    ):
+        _require(errors, runtime.get(probe) == PASS, f"{prefix}.{probe} must be pass")
     _require(
         errors,
         not _present(runtime.get("quarantine_reason")),
@@ -107,6 +142,8 @@ def _runtime_errors(runtime: Any, index: int, *, require_cutover: bool) -> list[
     if isinstance(expires, str) and expires:
         try:
             parsed = dt.datetime.fromisoformat(expires.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=dt.timezone.utc)
             now = dt.datetime.now(tz=dt.timezone.utc)
             _require(errors, parsed > now, f"{prefix}.expires_at is stale")
         except ValueError:
@@ -119,16 +156,40 @@ def validate(data: dict[str, Any], *, require_cutover: bool) -> list[str]:
 
     _require(errors, data.get("schema_version") == 1, "schema_version must equal 1")
     _require(errors, _present(data.get("migration_id")), "migration_id is required")
-    _require(errors, data.get("production_changed") is False, "production_changed must remain false before cutover")
-    _require(errors, data.get("public_inference_found") is False, "public_inference_found must be false")
+    _require(
+        errors,
+        data.get("production_changed") is False,
+        "production_changed must remain false before cutover",
+    )
+    _require(
+        errors,
+        data.get("public_inference_found") is False,
+        "public_inference_found must be false",
+    )
+    errors.extend(_repository_errors(data))
 
     _require(errors, _get(data, "baseline.captured") is True, "baseline.captured must be true")
-    _require(errors, _present(_get(data, "baseline.evidence_path")), "baseline.evidence_path is required")
+    _require(
+        errors,
+        _present(_get(data, "baseline.evidence_path")),
+        "baseline.evidence_path is required",
+    )
+    _require(
+        errors,
+        _present(_get(data, "baseline.evidence_sha256_path")),
+        "baseline.evidence_sha256_path is required",
+    )
     _require(
         errors,
         _get(data, "baseline.production_restart_commands_recorded") is True,
         "production restart commands must be recorded",
     )
+    for field in (
+        "listening_ports_reviewed",
+        "tailscale_snapshot_reviewed",
+        "runtime_process_inventory_reviewed",
+    ):
+        _require(errors, _get(data, f"baseline.{field}") is True, f"baseline.{field} must be true")
 
     for path in (
         "shadow.isolated_project",
@@ -136,8 +197,14 @@ def validate(data: dict[str, Any], *, require_cutover: bool) -> list[str]:
         "shadow.isolated_neo4j",
         "shadow.isolated_redis",
         "shadow.loopback_only",
+        "shadow.compose_checksums_recorded",
     ):
         _require(errors, _get(data, path) is True, f"{path} must be true")
+    for path in (
+        "shadow.compose_render_assistx",
+        "shadow.compose_render_router",
+    ):
+        _require(errors, _present(_get(data, path)), f"{path} is required")
     _require(errors, _get(data, "shadow.assistx_health") == PASS, "shadow AssistX health must pass")
     _require(errors, _get(data, "shadow.router_health") == PASS, "shadow router health must pass")
 
@@ -175,28 +242,59 @@ def validate(data: dict[str, Any], *, require_cutover: bool) -> list[str]:
     _require(errors, isinstance(blockers, list) and not blockers, "blockers must be an empty list")
 
     if require_cutover:
+        for approval in (
+            "hermes_shadow_executor",
+            "production_backup",
+            "production_cutover",
+        ):
+            _require(
+                errors,
+                _present(_get(data, f"approvals.{approval}.approved_by")),
+                f"{approval} approval is required",
+            )
+            _require(
+                errors,
+                _present(_get(data, f"approvals.{approval}.approved_at")),
+                f"{approval} approval timestamp is required",
+            )
+
+        for path in (
+            "production_state.neo4j.version",
+            "production_state.neo4j.database",
+            "production_state.neo4j.backup_method",
+            "production_state.neo4j.backup_path",
+            "production_state.neo4j.backup_checksum",
+            "production_state.neo4j.backup_created_at",
+        ):
+            _require(errors, _present(_get(data, path)), f"{path} is required")
         _require(
             errors,
-            _get(data, "approvals.production_cutover.approved_by") not in (None, ""),
-            "production cutover approval is required",
+            _get(data, "production_state.neo4j.restore_command_recorded") is True,
+            "production Neo4j restore command must be recorded",
         )
         _require(errors, _get(data, "cutover.recommended") is True, "cutover.recommended must be true")
+        for path, message in (
+            ("cutover.client_switch_plan_recorded", "client switch plan must be recorded"),
+            ("cutover.old_stack_restart_plan_recorded", "old-stack restart plan must be recorded"),
+            ("cutover.rollback_thresholds_recorded", "rollback thresholds must be recorded"),
+        ):
+            _require(errors, _get(data, path) is True, message)
         _require(
             errors,
-            _get(data, "cutover.client_switch_plan_recorded") is True,
-            "client switch plan must be recorded",
-        )
-        _require(
-            errors,
-            _get(data, "cutover.old_stack_restart_plan_recorded") is True,
-            "old-stack restart plan must be recorded",
-        )
-        _require(
-            errors,
-            _get(data, "cutover.rollback_thresholds_recorded") is True,
-            "rollback thresholds must be recorded",
+            _present(_get(data, "cutover.exact_commands_evidence_path")),
+            "cutover exact command evidence path is required",
         )
         _require(errors, _get(data, "rollback.rehearsed") is True, "rollback must be rehearsed")
+        _require(
+            errors,
+            _present(_get(data, "rollback.exact_commands_evidence_path")),
+            "rollback exact command evidence path is required",
+        )
+        _require(
+            errors,
+            _get(data, "rollback.old_stack_health_after_rehearsal") == PASS,
+            "old-stack health after rollback rehearsal must pass",
+        )
 
     return errors
 
