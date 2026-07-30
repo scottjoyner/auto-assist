@@ -9,6 +9,8 @@ services:
       - ASSISTX_OVERLAY_MODE=router
       - ASSISTX_STRICT_OFFLINE=true
       - ASSISTX_TOOL_EGRESS_MODE=disabled
+      - ASSISTX_RUNTIME_PROJECTION_HMAC_SECRET=${ASSISTX_RUNTIME_PROJECTION_HMAC_SECRET:?set the shared runtime projection HMAC secret}
+      - ASSISTX_RUNTIME_PROJECTION_TTL_SECONDS=${ASSISTX_RUNTIME_PROJECTION_TTL_SECONDS:-60}
       - AUTO_ROUTER_BASE_URL=http://auto-router-reconciliation:8088
       - AUTO_ROUTER_ADMIN_TOKEN=${AUTO_ROUTER_ADMIN_TOKEN:?set a unique reconciliation router admin token}
       - AUTO_ASSIGN_BASE_URL=
@@ -79,7 +81,7 @@ services:
 
   hermes-adapter:
     # The executor never starts during the initial shadow deployment. Enable only
-    # after identity, capacity, dependency, containment, and synthetic-task gates pass.
+    # after identity, capacity, projection, dependency, containment, and synthetic-task gates pass.
     profiles:
       - executor
     restart: "no"
@@ -87,8 +89,12 @@ services:
     environment:
       - ASSISTX_URL=http://api:8000
       - AUTO_ASSIGN_BASE_URL=
+      - AUTO_ROUTER_ADMIN_TOKEN=${AUTO_ROUTER_ADMIN_TOKEN:?set a unique reconciliation router admin token}
       - HERMES_PROVIDER=assistx-router
       - HERMES_LM_BASE_URL=http://auto-router-reconciliation:8088/v1
+      - HERMES_MODEL=auto/code
+      - HERMES_SMOKE_MODEL=auto/code
+      - HERMES_FLEET_MODE=external
       - HERMES_SELFTASK_ENABLED=false
       - HERMES_MAX_TASKS_PER_LOOP=1
       - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
