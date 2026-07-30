@@ -26,11 +26,22 @@ FORBIDDEN_TARGETS = {
 ALLOWED_BIND_TARGETS = {"/app/hermes-home", "/app/artifacts", "/workspace"}
 REQUIRED_ENV = {
     "AUTO_ASSIGN_BASE_URL": "",
+    "HERMES_FLEET_MODE": "external",
+    "HERMES_MODEL": "auto/code",
+    "HERMES_SMOKE_MODEL": "auto/code",
+    "HERMES_LM_BASE_URL": "http://auto-router-reconciliation:8088/v1",
     "HERMES_SELFTASK_ENABLED": "false",
     "FLEET_UNSAFE_SHELL_TASKS_ENABLED": "false",
     "ASSISTX_TOOL_EGRESS_MODE": "disabled",
 }
-FORBIDDEN_CAPABILITY_TOKENS = {"web", "search", "browser", "mcp", "cronjob", "delegation"}
+FORBIDDEN_CAPABILITY_TOKENS = {
+    "web",
+    "search",
+    "browser",
+    "mcp",
+    "cronjob",
+    "delegation",
+}
 PUBLIC_KEY_NAMES = {
     "OPENROUTER_API_KEY",
     "GROQ_API_KEY",
@@ -41,12 +52,21 @@ PUBLIC_KEY_NAMES = {
     "ANTHROPIC_API_KEY",
     "CLOUDFLARE_API_TOKEN",
 }
+FORBIDDEN_FLEET_ENV = {
+    "HERMES_FLEET_NODES",
+    "HERMES_FLEET_DISCOVERY",
+    "HERMES_FLEET_LISTEN_HOST",
+    "HERMES_FLEET_LISTEN_PORT",
+}
 
 
 def _environment(service: dict[str, Any]) -> dict[str, str]:
     raw = service.get("environment") or {}
     if isinstance(raw, dict):
-        return {str(key): "" if value is None else str(value) for key, value in raw.items()}
+        return {
+            str(key): "" if value is None else str(value)
+            for key, value in raw.items()
+        }
     result: dict[str, str] = {}
     for item in raw if isinstance(raw, list) else []:
         key, separator, value = str(item).partition("=")
@@ -65,7 +85,11 @@ def _volume_parts(volume: Any) -> tuple[str | None, str | None, bool]:
         source = volume.get("source")
         target = volume.get("target")
         read_only = bool(volume.get("read_only"))
-        return str(source) if source else None, str(target) if target else None, read_only
+        return (
+            str(source) if source else None,
+            str(target) if target else None,
+            read_only,
+        )
     return None, None, False
 
 
@@ -77,6 +101,8 @@ def validate(payload: dict[str, Any]) -> list[str]:
 
     if "executor" not in (service.get("profiles") or []):
         failures.append("hermes-adapter must remain behind the executor profile")
+    if str(service.get("restart") or "").lower() not in {"no", "none", "false"}:
+        failures.append("hermes-adapter restart policy must remain disabled")
     if bool(service.get("privileged")):
         failures.append("privileged mode is forbidden")
     if not bool(service.get("read_only")):
@@ -90,7 +116,9 @@ def validate(payload: dict[str, Any]) -> list[str]:
     if service.get("devices"):
         failures.append("direct device mappings are forbidden for the default executor")
     if service.get("extra_hosts"):
-        failures.append("extra_hosts must be empty; use the approved reconciliation network")
+        failures.append(
+            "extra_hosts must be empty; use the approved reconciliation network"
+        )
 
     user = str(service.get("user") or "").strip()
     if not user or user.split(":", 1)[0] in {"0", "root"}:
@@ -99,7 +127,9 @@ def validate(payload: dict[str, Any]) -> list[str]:
     cap_drop = {str(item).upper() for item in service.get("cap_drop") or []}
     if "ALL" not in cap_drop:
         failures.append("cap_drop must include ALL")
-    security_opt = {str(item).lower() for item in service.get("security_opt") or []}
+    security_opt = {
+        str(item).lower() for item in service.get("security_opt") or []
+    }
     if not any(item.startswith("no-new-privileges") for item in security_opt):
         failures.append("no-new-privileges security option is required")
 
@@ -108,20 +138,39 @@ def validate(payload: dict[str, Any]) -> list[str]:
         actual = environment.get(key)
         if actual is None or actual.strip().lower() != expected:
             failures.append(f"{key} must equal {expected!r}")
+    if not environment.get("AUTO_ROUTER_ADMIN_TOKEN", "").strip():
+        failures.append("AUTO_ROUTER_ADMIN_TOKEN must be present for read-only status")
     for key in PUBLIC_KEY_NAMES:
         if environment.get(key, "").strip():
             failures.append(f"public provider credential {key} must be empty")
+    for key in FORBIDDEN_FLEET_ENV:
+        if environment.get(key, "").strip():
+            failures.append(f"standalone fleet setting {key} is forbidden")
     for key in ("HERMES_AGENT_CAPABILITIES", "HERMES_TOOLSETS"):
-        tokens = {token.strip().lower() for token in environment.get(key, "").split(",") if token.strip()}
+        tokens = {
+            token.strip().lower()
+            for token in environment.get(key, "").split(",")
+            if token.strip()
+        }
         forbidden = sorted(tokens & FORBIDDEN_CAPABILITY_TOKENS)
         if forbidden:
-            failures.append(f"{key} contains forbidden capability tokens: {', '.join(forbidden)}")
+            failures.append(
+                f"{key} contains forbidden capability tokens: "
+                f"{', '.join(forbidden)}"
+            )
 
     expected_home = pathlib.Path(
-        os.getenv("RECONCILIATION_HERMES_HOME", "artifacts/reconciliation-hermes-home")
+        os.getenv(
+            "RECONCILIATION_HERMES_HOME",
+            "artifacts/reconciliation-hermes-home",
+        )
     ).resolve()
     expected_workspace_raw = os.getenv("ASSISTX_EXECUTOR_WORKTREE", "").strip()
-    expected_workspace = pathlib.Path(expected_workspace_raw).resolve() if expected_workspace_raw else None
+    expected_workspace = (
+        pathlib.Path(expected_workspace_raw).resolve()
+        if expected_workspace_raw
+        else None
+    )
 
     seen_targets: set[str] = set()
     for volume in service.get("volumes") or []:
@@ -138,7 +187,11 @@ def validate(payload: dict[str, Any]) -> list[str]:
             allowed = True
         elif target == "/app/artifacts" and resolved.name == "artifacts":
             allowed = True
-        elif target == "/workspace" and expected_workspace is not None and resolved == expected_workspace:
+        elif (
+            target == "/workspace"
+            and expected_workspace is not None
+            and resolved == expected_workspace
+        ):
             allowed = True
         if target not in ALLOWED_BIND_TARGETS or not allowed:
             failures.append(f"unapproved bind mount: {resolved} -> {target}")
@@ -148,8 +201,14 @@ def validate(payload: dict[str, Any]) -> list[str]:
                 resolved.relative_to(forbidden)
             except ValueError:
                 continue
-            if not (target == "/workspace" and expected_workspace is not None and resolved == expected_workspace):
-                failures.append(f"broad or sensitive host source is forbidden: {resolved}")
+            if not (
+                target == "/workspace"
+                and expected_workspace is not None
+                and resolved == expected_workspace
+            ):
+                failures.append(
+                    f"broad or sensitive host source is forbidden: {resolved}"
+                )
 
     if "/app/hermes-home" not in seen_targets:
         failures.append("scoped Hermes home mount is required")
@@ -160,13 +219,20 @@ def validate(payload: dict[str, Any]) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate the rendered Hermes executor containment contract.")
+    parser = argparse.ArgumentParser(
+        description="Validate the rendered Hermes executor containment contract."
+    )
     parser.add_argument("rendered_compose", type=pathlib.Path)
     args = parser.parse_args()
     try:
-        payload = json.loads(args.rendered_compose.read_text(encoding="utf-8"))
+        payload = json.loads(
+            args.rendered_compose.read_text(encoding="utf-8")
+        )
     except (OSError, json.JSONDecodeError) as exc:
-        print(f"BLOCKED: cannot read rendered Compose JSON: {exc}", file=sys.stderr)
+        print(
+            f"BLOCKED: cannot read rendered Compose JSON: {exc}",
+            file=sys.stderr,
+        )
         return 2
 
     failures = validate(payload)
