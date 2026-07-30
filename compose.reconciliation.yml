@@ -3,6 +3,8 @@
 # the current stack without reusing its ports, containers, network, or assignment service.
 services:
   api:
+    extra_hosts:
+      - host.docker.internal:host-gateway
     environment:
       - ASSISTX_OVERLAY_MODE=router
       - AUTO_ROUTER_BASE_URL=http://host.docker.internal:18088
@@ -18,7 +20,7 @@ services:
       - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
       - HERMES_SELFTASK_ENABLED=false
     ports: !override
-      - "127.0.0.1:${ASSISTX_API_PORT:-18000}:8000"
+      - "0.0.0.0:${ASSISTX_API_PORT:-18000}:8000"
 
   worker:
     environment:
