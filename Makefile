@@ -59,6 +59,8 @@ RECON_EXECUTOR_SCOPED_RENDER ?= artifacts/reconciliation-render/assistx-executor
 RECON_IMAGE_DIR ?= artifacts/reconciliation-images
 RECON_IMAGE_MANIFEST ?= $(RECON_IMAGE_DIR)/reconciliation-images.manifest.json
 RECON_HERMES_HOME ?= $(CURDIR)/artifacts/reconciliation-hermes-home
+RECON_HERMES_CONFIG ?= $(RECON_HERMES_HOME)/config.yaml
+RECON_PROJECTION_EVIDENCE ?= artifacts/runtime-projection-evidence.json
 RECON_DIRECT = docker compose --profile neo4j --env-file $(RECON_ENV_FILE) \
 	-f docker-compose.yml -f compose.prod.yml -f compose.canary.yml
 RECON_ROUTER = $(RECON_DIRECT) -f compose.reconciliation.yml
@@ -69,7 +71,8 @@ RECON_EXECUTOR_SCOPED = $(RECON_EXECUTOR) -f compose.executor-scope.yml
 
 .PHONY: reconciliation-worktrees-plan reconciliation-worktrees-apply \
 	reconciliation-init reconciliation-state-init reconciliation-state-validate \
-	reconciliation-dependencies-validate reconciliation-cutover-gate \
+	reconciliation-dependencies-validate reconciliation-hermes-config-validate \
+	reconciliation-runtime-projection-verify reconciliation-cutover-gate \
 	reconciliation-report reconciliation-preflight reconciliation-discover-tailnet \
 	reconciliation-render-direct reconciliation-up-direct reconciliation-render-router \
 	reconciliation-up-router reconciliation-render-executor \
@@ -90,16 +93,20 @@ reconciliation-worktrees-apply:
 reconciliation-init:
 	@test -f $(RECON_ENV_FILE) || cp deploy/reconciliation.env.example $(RECON_ENV_FILE)
 	@test -f $(RECON_DEPENDENCY_FILE) || cp deploy/reconciliation/external-dependencies.example.yaml $(RECON_DEPENDENCY_FILE)
-	@mkdir -p artifacts/reconciliation-render $(RECON_IMAGE_DIR) artifacts/reconciliation-hermes-home
-	@chmod 700 artifacts/reconciliation-hermes-home
-	@chmod 600 $(RECON_ENV_FILE) $(RECON_DEPENDENCY_FILE)
+	@mkdir -p artifacts/reconciliation-render $(RECON_IMAGE_DIR) $(RECON_HERMES_HOME)
+	@test -f $(RECON_HERMES_CONFIG) || cp deploy/reconciliation/hermes-config.yaml.example $(RECON_HERMES_CONFIG)
+	@chmod 700 $(RECON_HERMES_HOME)
+	@chmod 600 $(RECON_ENV_FILE) $(RECON_DEPENDENCY_FILE) $(RECON_HERMES_CONFIG)
 	@chmod +x scripts/reconciliation-preflight.sh scripts/reconciliation-verify-offline.sh
 	@chmod +x scripts/reconciliation-discover-tailnet.py scripts/validate-external-dependencies.py
 	@chmod +x scripts/validate-reconciliation-state.py scripts/render-reconciliation-report.py
-	@chmod +x scripts/validate-executor-containment.py scripts/reconciliation-image-bundle.py
+	@chmod +x scripts/validate-executor-containment.py scripts/validate-hermes-external-config.py
+	@chmod +x scripts/reconciliation-image-bundle.py scripts/verify-runtime-projection.py
 	@$(MAKE) reconciliation-state-init
+	@$(MAKE) reconciliation-hermes-config-validate
 	@echo "Review and replace every change-me value in $(RECON_ENV_FILE) before startup."
 	@echo "Populate $(RECON_DEPENDENCY_FILE) with current evidence before the cutover gate."
+	@echo "Hermes external config: $(RECON_HERMES_CONFIG)"
 	@echo "Optionally copy deploy/reconciliation/lan-runtime-map.example.json to $(RECON_LAN_MAP) and replace every sample address."
 
 reconciliation-state-init:
@@ -113,7 +120,19 @@ reconciliation-state-validate:
 reconciliation-dependencies-validate:
 	@python scripts/validate-external-dependencies.py $(RECON_DEPENDENCY_FILE)
 
-reconciliation-cutover-gate: reconciliation-dependencies-validate reconciliation-executor-containment-validate reconciliation-images-verify-offline
+reconciliation-hermes-config-validate:
+	@test -f $(RECON_HERMES_CONFIG) || (echo "Missing $(RECON_HERMES_CONFIG); run make reconciliation-init" >&2; exit 2)
+	@python scripts/validate-hermes-external-config.py $(RECON_HERMES_CONFIG)
+
+reconciliation-runtime-projection-verify:
+	@test -f $(RECON_ENV_FILE) || (echo "Missing $(RECON_ENV_FILE); run make reconciliation-init" >&2; exit 2)
+	@set -a; . $(RECON_ENV_FILE); set +a; \
+		python scripts/verify-runtime-projection.py \
+			--assistx-url "$${RECONCILIATION_NEW_ASSISTX_URL:-http://127.0.0.1:18000}" \
+			--router-url "$${RECONCILIATION_NEW_ROUTER_URL:-http://127.0.0.1:18088}" \
+			--output $(RECON_PROJECTION_EVIDENCE)
+
+reconciliation-cutover-gate: reconciliation-dependencies-validate reconciliation-hermes-config-validate reconciliation-executor-containment-validate reconciliation-images-verify-offline reconciliation-runtime-projection-verify
 	@python scripts/validate-reconciliation-state.py --require-cutover $(RECON_STATE_FILE)
 
 reconciliation-report:
@@ -146,21 +165,21 @@ reconciliation-up-router:
 	@$(RECON_ROUTER) up -d --build --force-recreate api worker
 
 reconciliation-render-executor:
-	@mkdir -p artifacts/reconciliation-render artifacts/reconciliation-hermes-home
+	@mkdir -p artifacts/reconciliation-render $(RECON_HERMES_HOME)
 	@RECONCILIATION_HERMES_HOME=$(RECON_HERMES_HOME) $(RECON_EXECUTOR) config --format json > $(RECON_EXECUTOR_RENDER)
 	@echo "Rendered $(RECON_EXECUTOR_RENDER)"
 
 reconciliation-render-executor-scoped:
 	@test -n "$$ASSISTX_EXECUTOR_WORKTREE" || (echo "ASSISTX_EXECUTOR_WORKTREE is required" >&2; exit 2)
-	@mkdir -p artifacts/reconciliation-render artifacts/reconciliation-hermes-home
+	@mkdir -p artifacts/reconciliation-render $(RECON_HERMES_HOME)
 	@RECONCILIATION_HERMES_HOME=$(RECON_HERMES_HOME) $(RECON_EXECUTOR_SCOPED) config --format json > $(RECON_EXECUTOR_SCOPED_RENDER)
 	@echo "Rendered $(RECON_EXECUTOR_SCOPED_RENDER)"
 
-reconciliation-executor-containment-validate: reconciliation-render-executor
+reconciliation-executor-containment-validate: reconciliation-hermes-config-validate reconciliation-render-executor
 	@RECONCILIATION_HERMES_HOME=$(RECON_HERMES_HOME) \
 		python scripts/validate-executor-containment.py $(RECON_EXECUTOR_RENDER)
 
-reconciliation-executor-containment-scoped: reconciliation-render-executor-scoped
+reconciliation-executor-containment-scoped: reconciliation-hermes-config-validate reconciliation-render-executor-scoped
 	@RECONCILIATION_HERMES_HOME=$(RECON_HERMES_HOME) \
 		ASSISTX_EXECUTOR_WORKTREE="$$ASSISTX_EXECUTOR_WORKTREE" \
 		python scripts/validate-executor-containment.py $(RECON_EXECUTOR_SCOPED_RENDER)
@@ -185,8 +204,8 @@ reconciliation-images-verify-offline:
 	@test -f $(RECON_IMAGE_MANIFEST) || (echo "Missing $(RECON_IMAGE_MANIFEST); run make reconciliation-images-capture" >&2; exit 2)
 	@python scripts/reconciliation-image-bundle.py verify --manifest $(RECON_IMAGE_MANIFEST)
 
-reconciliation-airgap-gate: reconciliation-executor-containment-validate reconciliation-images-verify-offline
-	@echo "AIRGAP_AND_CONTAINMENT: PASS"
+reconciliation-airgap-gate: reconciliation-hermes-config-validate reconciliation-executor-containment-validate reconciliation-images-verify-offline
+	@echo "AIRGAP_CONTAINMENT_AND_AUTHORITY: PASS"
 
 reconciliation-verify:
 	@RECONCILIATION_ENV_FILE=$(RECON_ENV_FILE) \
@@ -200,10 +219,13 @@ reconciliation-verify:
 
 reconciliation-status:
 	@$(RECON_ROUTER) ps
-	@curl -fsS http://127.0.0.1:18000/health | jq
-	@curl -fsS http://127.0.0.1:18088/health | jq
-	@curl -fsS -u "$${BASIC_AUTH_USER:-admin}:$${BASIC_AUTH_PASS:-change-me}" \
-		http://127.0.0.1:18000/api/control-room/overview | jq '.overall_status, .summary'
+	@set -a; . $(RECON_ENV_FILE); set +a; \
+		curl -fsS "$${RECONCILIATION_NEW_ASSISTX_URL:-http://127.0.0.1:18000}/health" | jq; \
+		curl -fsS "$${RECONCILIATION_NEW_ROUTER_URL:-http://127.0.0.1:18088}/health" | jq; \
+		curl -fsS -u "$${BASIC_AUTH_USER}:$${BASIC_AUTH_PASS}" \
+			"$${RECONCILIATION_NEW_ASSISTX_URL:-http://127.0.0.1:18000}/api/control-room/overview" | jq '.overall_status, .summary'; \
+		curl -fsS -H "X-Admin-Token: $${AUTO_ROUTER_ADMIN_TOKEN}" \
+			"$${RECONCILIATION_NEW_ROUTER_URL:-http://127.0.0.1:18088}/admin/runtime-projection" | jq '.configured, .current.generation, .current.checksum, .last_error'
 
 reconciliation-down:
 	@$(RECON_ROUTER) down
