@@ -12,6 +12,7 @@ operating instructions.
 | [`LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md`](LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md) | Detailed side-by-side migration, shadow validation, cutover, and rollback instructions while the old stack remains live |
 | [`LOCAL_AGENT_HANDOFF_20260730.md`](LOCAL_AGENT_HANDOFF_20260730.md) | Local-agent permissions, prohibitions, workflow, evidence standard, ledger discipline, and completion contract |
 | [`MIGRATION_STATE_LEDGER_20260730.md`](MIGRATION_STATE_LEDGER_20260730.md) | Operator-owned evidence ledger, runtime admission records, shadow readiness validation, and production cutover gate |
+| [`TAILSCALE_RUNTIME_ACCESS_20260730.md`](TAILSCALE_RUNTIME_ACCESS_20260730.md) | Candidate-only Tailscale discovery, LAN-first path ordering, Docker reachability, movement failover, and cutover evidence |
 | [`../deploy/reconciliation/system-inventory.yaml`](../deploy/reconciliation/system-inventory.yaml) | Machine-readable repository, service, port, state, runtime, evidence, gate, and rollback inventory |
 | [`../deploy/reconciliation/migration-state.example.yaml`](../deploy/reconciliation/migration-state.example.yaml) | Working migration-state template for revisions, evidence, runtime identities, checks, approvals, blockers, and rollback |
 | [`../deploy/reconciliation/README.md`](../deploy/reconciliation/README.md) | Reconciliation deployment package entry point |
@@ -52,9 +53,11 @@ operating instructions.
 | Hermes worker integration | `src/assistx/agents/hermes_agent_adapter.py` |
 | Readiness gates | `src/assistx/operations_readiness.py` |
 | Live migration scripts | `scripts/reconciliation-preflight.sh`, `scripts/reconciliation-verify-offline.sh` |
+| Tailscale candidate discovery | `scripts/reconciliation-discover-tailnet.py` |
 | Migration ledger validator | `scripts/validate-reconciliation-state.py` |
 | Live migration Compose | `compose.canary.yml`, `compose.reconciliation.yml` |
 | Migration state and desired inventory | `deploy/reconciliation/migration-state.example.yaml`, `deploy/reconciliation/system-inventory.yaml` |
+| LAN path hints | `deploy/reconciliation/lan-runtime-map.example.json` |
 
 ## Verification
 
@@ -65,9 +68,10 @@ PYTHONPATH=src .venv/bin/pytest -q tests/test_recovery_canary.py
 ```
 
 The second command requires the real Neo4j integration environment used by CI.
-The reconciliation deployment adds separate shadow verification and ledger gates:
+The reconciliation deployment adds separate discovery, shadow verification, and ledger gates:
 
 ```bash
+make reconciliation-discover-tailnet
 make reconciliation-state-validate
 make reconciliation-cutover-gate
 ```
