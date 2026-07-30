@@ -47,22 +47,32 @@ canary-rollback:
 # project, network, ports, database, and state. They never stop the old stack.
 RECON_ENV_FILE ?= deploy/reconciliation.env
 RECON_STATE_FILE ?= deploy/reconciliation/migration-state.yaml
+RECON_REPORT_FILE ?= artifacts/reconciliation-report.md
 RECON_ROUTER_ROOT ?= ../auto-router
 RECON_DIRECT = docker compose --profile neo4j --env-file $(RECON_ENV_FILE) \
 	-f docker-compose.yml -f compose.prod.yml -f compose.canary.yml
 RECON_ROUTER = $(RECON_DIRECT) -f compose.reconciliation.yml
 
-.PHONY: reconciliation-init reconciliation-state-init reconciliation-state-validate \
-	reconciliation-cutover-gate reconciliation-preflight reconciliation-render-direct \
-	reconciliation-up-direct reconciliation-render-router reconciliation-up-router \
-	reconciliation-executor-up reconciliation-verify reconciliation-status \
-	reconciliation-down
+.PHONY: reconciliation-worktrees-plan reconciliation-worktrees-apply \
+	reconciliation-init reconciliation-state-init reconciliation-state-validate \
+	reconciliation-cutover-gate reconciliation-report reconciliation-preflight \
+	reconciliation-render-direct reconciliation-up-direct reconciliation-render-router \
+	reconciliation-up-router reconciliation-executor-up reconciliation-verify \
+	reconciliation-status reconciliation-down
+
+reconciliation-worktrees-plan:
+	@chmod +x scripts/bootstrap-reconciliation-worktrees.sh
+	@./scripts/bootstrap-reconciliation-worktrees.sh
+
+reconciliation-worktrees-apply:
+	@chmod +x scripts/bootstrap-reconciliation-worktrees.sh
+	@./scripts/bootstrap-reconciliation-worktrees.sh --apply
 
 reconciliation-init:
 	@test -f $(RECON_ENV_FILE) || cp deploy/reconciliation.env.example $(RECON_ENV_FILE)
 	@chmod 600 $(RECON_ENV_FILE)
 	@chmod +x scripts/reconciliation-preflight.sh scripts/reconciliation-verify-offline.sh
-	@chmod +x scripts/validate-reconciliation-state.py
+	@chmod +x scripts/validate-reconciliation-state.py scripts/render-reconciliation-report.py
 	@$(MAKE) reconciliation-state-init
 	@echo "Review and replace every change-me value in $(RECON_ENV_FILE) before startup."
 
@@ -76,6 +86,10 @@ reconciliation-state-validate:
 
 reconciliation-cutover-gate:
 	@python scripts/validate-reconciliation-state.py --require-cutover $(RECON_STATE_FILE)
+
+reconciliation-report:
+	@python scripts/render-reconciliation-report.py $(RECON_STATE_FILE) --output $(RECON_REPORT_FILE)
+	@echo "Rendered $(RECON_REPORT_FILE)"
 
 reconciliation-preflight:
 	@./scripts/reconciliation-preflight.sh
