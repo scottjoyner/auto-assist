@@ -1,42 +1,83 @@
 # Layer after docker-compose.yml, compose.prod.yml, and compose.canary.yml.
-# This override is intentionally loopback-only and router-only so it can run beside
-# the current stack without reusing its ports, containers, network, or assignment service.
+# This override is intentionally loopback-only, router-only, and deny-by-default.
+# It may run beside the current stack without reusing production ports, containers,
+# networks, databases, assignment services, host repositories, SSH identities, or
+# broad storage mounts.
 services:
   api:
     environment:
       - ASSISTX_OVERLAY_MODE=router
+      - ASSISTX_STRICT_OFFLINE=true
+      - ASSISTX_TOOL_EGRESS_MODE=disabled
       - AUTO_ROUTER_BASE_URL=http://auto-router-reconciliation:8088
+      - AUTO_ROUTER_ADMIN_TOKEN=${AUTO_ROUTER_ADMIN_TOKEN:?set a unique reconciliation router admin token}
       - AUTO_ASSIGN_BASE_URL=
       - FLEET_ROUTER_URL=http://auto-router-reconciliation:8088
       - OPENAI_BASE_URL=http://auto-router-reconciliation:8088/v1
       - OPENAI_API_KEY=local-offline-only
       - FLEET_KNOWN_HOSTS=
+      - PAPERCLIP_API_URL=
+      - PAPERCLIP_API_TOKEN=
       - OPENROUTER_API_KEY=
+      - GROQ_API_KEY=
+      - CEREBRAS_API_KEY=
+      - GEMINI_API_KEY=
+      - MISTRAL_API_KEY=
+      - XAI_API_KEY=
+      - ANTHROPIC_API_KEY=
+      - CLOUDFLARE_API_TOKEN=
       - ASSISTX_RECOVERY_EXECUTION_ENABLED=false
       - ASSISTX_REPO_TASK_GENERATOR_ENABLED=false
       - ASSISTX_REPO_TASK_AUTO_READY=false
       - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
       - HERMES_SELFTASK_ENABLED=false
+      - CACHE_PATH=/app/state/assistx_cache.sqlite
     ports: !override
       - "127.0.0.1:${ASSISTX_API_PORT:-18000}:8000"
+    networks: !override
+      - default
+    volumes: !override
+      - assistx_cache:/app/.cache
+      - assistx_state:/app/state
+      - ./artifacts:/app/artifacts:rw
+      - transcriptions:/app/transcriptions
 
   worker:
     environment:
       - ASSISTX_OVERLAY_MODE=router
+      - ASSISTX_STRICT_OFFLINE=true
+      - ASSISTX_TOOL_EGRESS_MODE=disabled
       - AUTO_ROUTER_BASE_URL=http://auto-router-reconciliation:8088
       - AUTO_ASSIGN_BASE_URL=
       - OPENAI_BASE_URL=http://auto-router-reconciliation:8088/v1
       - OPENAI_API_KEY=local-offline-only
+      - PAPERCLIP_API_URL=
+      - PAPERCLIP_API_TOKEN=
       - OPENROUTER_API_KEY=
+      - GROQ_API_KEY=
+      - CEREBRAS_API_KEY=
+      - GEMINI_API_KEY=
+      - MISTRAL_API_KEY=
+      - XAI_API_KEY=
+      - ANTHROPIC_API_KEY=
+      - CLOUDFLARE_API_TOKEN=
       - WORKER_CONCURRENCY=1
       - ASSISTX_REPO_TASK_GENERATOR_ENABLED=false
       - ASSISTX_REPO_TASK_AUTO_READY=false
       - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
       - HERMES_SELFTASK_ENABLED=false
+      - CACHE_PATH=/app/state/assistx_cache.sqlite
+    networks: !override
+      - default
+    volumes: !override
+      - assistx_cache:/app/.cache
+      - assistx_state:/app/state
+      - ./artifacts:/app/artifacts:rw
+      - transcriptions:/app/transcriptions
 
   hermes-adapter:
     # The executor never starts during the initial shadow deployment. Enable only
-    # with `--profile executor` after synthetic task, identity, and capacity gates pass.
+    # after identity, capacity, dependency, containment, and synthetic-task gates pass.
     profiles:
       - executor
     environment:
@@ -47,6 +88,32 @@ services:
       - HERMES_SELFTASK_ENABLED=false
       - HERMES_MAX_TASKS_PER_LOOP=1
       - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
+      - ASSISTX_TOOL_EGRESS_MODE=disabled
+      - HERMES_AGENT_CAPABILITIES=terminal,file,code_execution,skills,memory,todo
+      - HERMES_TOOLSETS=terminal,file,code_execution,skills,memory,todo
+      - HERMES_HOME=/app/hermes-home
+      - HERMES_PROFILES_PATH=/app/hermes-home/profiles.yaml
+      - OPENROUTER_API_KEY=
+      - GROQ_API_KEY=
+      - CEREBRAS_API_KEY=
+      - GEMINI_API_KEY=
+      - MISTRAL_API_KEY=
+      - XAI_API_KEY=
+      - ANTHROPIC_API_KEY=
+      - CLOUDFLARE_API_TOKEN=
+    networks: !override
+      - default
+    volumes: !override
+      - ${RECONCILIATION_HERMES_HOME:-./artifacts/reconciliation-hermes-home}:/app/hermes-home:rw
+      - ./artifacts:/app/artifacts:rw
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+      - /app/.cache:rw,noexec,nosuid,size=512m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
   neo4j:
     ports: !override
@@ -56,3 +123,6 @@ services:
 networks:
   default:
     name: ${RECONCILIATION_ASSISTX_NETWORK:-assistx_reconciliation_shared}
+
+volumes:
+  assistx_state: {}
