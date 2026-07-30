@@ -51,7 +51,10 @@ def main() -> int:
 
     with mock.patch.object(adapter, "run_hermes", fake_run_hermes):
         assistx = mock.MagicMock()
-        assistx.claim_task.return_value = True
+        assistx.claim_task.return_value = {
+            "claimed": True,
+            "task": {"id": task["id"], "claim_id": "demo-claim"},
+        }
         assistx.get_context.return_value = {}
 
         adapter.process_task(assistx, task)
@@ -63,6 +66,7 @@ def main() -> int:
     print(f"result.output   : {out!r}")
     print(f"tier            : {kwargs['result'].get('tier')}")
     assert kwargs["status"] == "DONE"
+    assert kwargs["claim_id"] == "demo-claim"
     assert expected in out, f"expected verbatim token {expected!r} in {out!r}"
     print("\nOK: auto-ingest task -> delegate_task(opencode-cli, verbatim) -> auto-assign/auto-router consume result.output")
     return 0

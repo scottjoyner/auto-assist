@@ -17,7 +17,10 @@ from .auto_assign_client import notify_task_created
 logger = logging.getLogger(__name__)
 
 _UNSET = object()
-EXECUTABLE_TASK_STATUSES = {"READY", "CLAIMED", "RUNNING", "DONE", "FAILED", "CANCELLED"}
+EXECUTABLE_TASK_STATUSES = {
+    "READY", "CLAIMED", "RUNNING", "PAUSING", "PAUSED",
+    "DONE", "FAILED", "CANCELLED",
+}
 TERMINAL_TASK_STATUSES = {"DONE", "FAILED", "CANCELLED"}
 
 
@@ -168,6 +171,15 @@ class Neo4jClient:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (a:RecoveryAuditEvent) REQUIRE a.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (a:AllocationReservation) REQUIRE a.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (e:FleetControlEvent) REQUIRE e.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (c:ControllerLease) REQUIRE c.controller_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (c:ControllerCheckpoint) REQUIRE c.controller_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (c:TaskCheckpoint) REQUIRE c.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (e:TaskMigrationEvent) REQUIRE e.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (a:ImprovementAttempt) REQUIRE a.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (p:AgentSkillProfile) REQUIRE p.profile_key IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (p:PromptPrefix) REQUIRE p.prefix_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (k:KVCacheManifest) REQUIRE k.cache_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (e:KVCacheEvent) REQUIRE e.id IS UNIQUE",
 
             # Helpful indexes
             "CREATE INDEX IF NOT EXISTS FOR (t:Task)            ON (t.status)",
@@ -222,6 +234,21 @@ class Neo4jClient:
             "CREATE INDEX IF NOT EXISTS FOR (a:AllocationReservation) ON (a.node_id)",
             "CREATE INDEX IF NOT EXISTS FOR (e:FleetControlEvent) ON (e.node_id)",
             "CREATE INDEX IF NOT EXISTS FOR (e:FleetControlEvent) ON (e.created_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (c:ControllerLease) ON (c.expires_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (c:ControllerCheckpoint) ON (c.updated_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (c:TaskCheckpoint) ON (c.task_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (e:TaskMigrationEvent) ON (e.task_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (a:ImprovementAttempt) ON (a.task_family)",
+            "CREATE INDEX IF NOT EXISTS FOR (a:ImprovementAttempt) ON (a.updated_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (p:AgentSkillProfile) ON (p.agent_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (p:AgentSkillProfile) ON (p.updated_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (a:ImprovementAttempt) ON (a.promotion_status)",
+            "CREATE INDEX IF NOT EXISTS FOR (p:PromptPrefix) ON (p.last_used_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (k:KVCacheManifest) ON (k.status)",
+            "CREATE INDEX IF NOT EXISTS FOR (k:KVCacheManifest) ON (k.expires_at_ts)",
+            "CREATE INDEX IF NOT EXISTS FOR (k:KVCacheManifest) ON (k.compatibility_fingerprint)",
+            "CREATE INDEX IF NOT EXISTS FOR (k:KVCacheManifest) ON (k.node_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (e:KVCacheEvent) ON (e.created_at_ts)",
             # Phase 2 Swarm schema
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SwarmNode) REQUIRE n.node_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (e:ServiceEndpoint) REQUIRE e.endpoint_id IS UNIQUE",
@@ -590,6 +617,8 @@ class Neo4jClient:
         priority: str | None = None,
         payload: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
+        preemptible: bool = False,
+        max_migrations: int = 2,
     ) -> str:
         props = {
             "title": title,
@@ -600,6 +629,8 @@ class Neo4jClient:
             "target_agent_id": target_agent_id,
             "priority": priority,
             "payload_json": json.dumps(payload or {}),
+            "preemptible": bool(preemptible),
+            "max_migrations": max(0, min(int(max_migrations), 10)),
         }
         task_id = uuid.uuid4().hex
         with self._session() as s:
@@ -662,6 +693,10 @@ class Neo4jClient:
                     "target_agent_id": t.get("target_agent_id"),
                     "priority": t.get("priority"),
                     "payload_json": json.dumps(t.get("payload") or {}),
+                    "preemptible": bool(t.get("preemptible", False)),
+                    "max_migrations": max(
+                        0, min(int(t.get("max_migrations", 2)), 10)
+                    ),
                 }
                 if ik:
                     rec = s.run(
@@ -996,6 +1031,7 @@ class Neo4jClient:
                     t.claim_id=$claim_id,
                     t.claimed_at=datetime(),
                     t.claimed_at_ts=timestamp(),
+                    t.execution_attempt=coalesce(t.execution_attempt, 0) + 1,
                     t.lease_seconds=$lease_seconds,
                     t.lease_expires_at_ts=timestamp() + $lease_seconds * 1000,
                     t.updated_at=datetime(),
@@ -1055,6 +1091,7 @@ class Neo4jClient:
         task_id: str,
         node_id: str,
         model_id: str | None,
+        cache_id: str | None = None,
         snapshot_revision: int,
         actor: str,
         ttl_seconds: int = 120,
@@ -1078,6 +1115,7 @@ class Neo4jClient:
                 SET old.status='SUPERSEDED', old.updated_at_ts=timestamp()
                 CREATE (a:AllocationReservation {
                     id:$id, task_id:$task_id, node_id:$node_id, model_id:$model_id,
+                    cache_id:$cache_id,
                     snapshot_revision:$snapshot_revision, status:'ACTIVE',
                     actor:$actor, created_at_ts:timestamp(), updated_at_ts:timestamp(),
                     expires_at_ts:timestamp() + $ttl_seconds * 1000
@@ -1085,7 +1123,9 @@ class Neo4jClient:
                 MERGE (t)-[:HAS_ALLOCATION]->(a)
                 MERGE (a)-[:RESERVED_ON]->(n)
                 SET t.target_agent_id=$node_id, t.allocation_reservation_id=$id,
-                    t.allocation_model_id=$model_id, t.updated_at_ts=timestamp()
+                    t.allocation_model_id=$model_id,
+                    t.allocation_cache_id=$cache_id,
+                    t.updated_at_ts=timestamp()
                 RETURN a
                 """,
                 {
@@ -1093,6 +1133,7 @@ class Neo4jClient:
                     "task_id": task_id,
                     "node_id": node_id,
                     "model_id": model_id,
+                    "cache_id": cache_id,
                     "snapshot_revision": snapshot_revision,
                     "actor": actor,
                     "ttl_seconds": max(30, min(ttl_seconds, 600)),
@@ -1114,7 +1155,8 @@ class Neo4jClient:
                 SET a.status='RELEASED', a.released_by=$actor,
                     a.released_at_ts=timestamp(), a.updated_at_ts=timestamp(),
                     t.target_agent_id=null, t.allocation_reservation_id=null,
-                    t.allocation_model_id=null, t.updated_at_ts=timestamp()
+                    t.allocation_model_id=null, t.allocation_cache_id=null,
+                    t.updated_at_ts=timestamp()
                 RETURN a, t.id AS task_id
                 """,
                 {"reservation_id": reservation_id, "actor": actor},
@@ -1142,6 +1184,210 @@ class Neo4jClient:
             )
             return [dict(row["a"]) for row in rows]
 
+    def upsert_kv_cache_manifest(
+        self,
+        manifest: dict[str, Any],
+        *,
+        actor: str,
+    ) -> dict[str, Any]:
+        """Catalog cache metadata only; raw prompts and KV tensors stay external."""
+        with self._session() as session:
+            row = session.run(
+                """
+                MERGE (p:PromptPrefix {prefix_id:$prefix_id})
+                ON CREATE SET p.created_at_ts=$created_at_ts
+                SET p.token_count=$token_count,
+                    p.privacy_scope=$privacy_scope,
+                    p.scope_id=$scope_id,
+                    p.last_used_at_ts=$last_used_at_ts,
+                    p.updated_at_ts=$updated_at_ts
+                MERGE (k:KVCacheManifest {cache_id:$cache_id})
+                ON CREATE SET k.created_at_ts=$created_at_ts,
+                              k.hit_count=0, k.miss_count=0
+                WITH p, k
+                WHERE (k.node_id IS NULL OR k.node_id=$node_id)
+                  AND (k.prefix_id IS NULL OR k.prefix_id=$prefix_id)
+                  AND (k.compatibility_fingerprint IS NULL
+                    OR k.compatibility_fingerprint=$compatibility_fingerprint)
+                SET k.schema_version=$schema_version,
+                    k.prefix_id=$prefix_id,
+                    k.node_id=$node_id,
+                    k.endpoint_id=$endpoint_id,
+                    k.model_id=$model_id,
+                    k.model_quantization=$model_quantization,
+                    k.kv_k_quantization=$kv_k_quantization,
+                    k.kv_v_quantization=$kv_v_quantization,
+                    k.runtime=$runtime,
+                    k.runtime_version=$runtime_version,
+                    k.compatibility_fingerprint=$compatibility_fingerprint,
+                    k.compatibility_json=$compatibility_json,
+                    k.capabilities_json=$capabilities_json,
+                    k.privacy_scope=$privacy_scope,
+                    k.scope_id=$scope_id,
+                    k.token_count=$token_count,
+                    k.bytes=$bytes,
+                    k.storage_tier=$storage_tier,
+                    k.artifact_ref=$artifact_ref,
+                    k.portable=$portable,
+                    k.status='READY',
+                    k.expires_at_ts=$expires_at_ts,
+                    k.last_used_at_ts=$last_used_at_ts,
+                    k.updated_at_ts=$updated_at_ts,
+                    k.registered_by=$actor
+                MERGE (k)-[:CACHE_FOR]->(p)
+                MERGE (n:SwarmNode {node_id:$node_id})
+                MERGE (k)-[:RESIDENT_ON]->(n)
+                MERGE (e:ModelEndpoint {model_endpoint_id:$endpoint_id})
+                MERGE (k)-[:SERVED_BY]->(e)
+                MERGE (m:Model {model_id:$model_id})
+                MERGE (k)-[:CACHE_OF]->(m)
+                RETURN k
+                """,
+                {
+                    **manifest,
+                    "compatibility_json": json.dumps(
+                        manifest.get("compatibility") or {},
+                        sort_keys=True,
+                    ),
+                    "capabilities_json": json.dumps(
+                        manifest.get("capabilities") or {},
+                        sort_keys=True,
+                    ),
+                    "actor": actor,
+                },
+            ).single()
+        return dict(row["k"]) if row else {}
+
+    def record_kv_cache_event(
+        self,
+        cache_id: str,
+        *,
+        outcome: str,
+        node_id: str,
+        task_id: str | None = None,
+        prefix_id: str | None = None,
+        tokens_saved: int = 0,
+        prefill_ms_saved: int = 0,
+        restore_ms: int = 0,
+        actor: str,
+    ) -> dict[str, Any]:
+        normalized = str(outcome or "").upper()
+        if normalized not in {"HIT", "MISS", "RESTORE", "EVICT"}:
+            raise ValueError(f"unsupported KV-cache outcome: {outcome}")
+        event_id = f"kvc-event-{uuid.uuid4().hex}"
+        with self._session() as session:
+            row = session.run(
+                """
+                MATCH (k:KVCacheManifest {
+                    cache_id:$cache_id, node_id:$node_id
+                })
+                CREATE (e:KVCacheEvent {
+                    id:$event_id, cache_id:$cache_id, outcome:$outcome,
+                    node_id:$node_id, task_id:$task_id, prefix_id:$prefix_id,
+                    tokens_saved:$tokens_saved,
+                    prefill_ms_saved:$prefill_ms_saved,
+                    restore_ms:$restore_ms, actor:$actor,
+                    created_at_ts:timestamp()
+                })
+                SET k.hit_count=coalesce(k.hit_count,0)
+                      + CASE WHEN $outcome IN ['HIT','RESTORE'] THEN 1 ELSE 0 END,
+                    k.miss_count=coalesce(k.miss_count,0)
+                      + CASE WHEN $outcome='MISS' THEN 1 ELSE 0 END,
+                    k.last_used_at_ts=CASE
+                      WHEN $outcome IN ['HIT','RESTORE'] THEN timestamp()
+                      ELSE k.last_used_at_ts END,
+                    k.status=CASE WHEN $outcome='EVICT' THEN 'EVICTED'
+                      ELSE k.status END,
+                    k.updated_at_ts=timestamp()
+                MERGE (k)-[:HAS_EVENT]->(e)
+                RETURN e, k
+                """,
+                {
+                    "event_id": event_id,
+                    "cache_id": cache_id,
+                    "outcome": normalized,
+                    "node_id": node_id,
+                    "task_id": task_id,
+                    "prefix_id": prefix_id,
+                    "tokens_saved": max(0, int(tokens_saved)),
+                    "prefill_ms_saved": max(0, int(prefill_ms_saved)),
+                    "restore_ms": max(0, int(restore_ms)),
+                    "actor": actor,
+                },
+            ).single()
+        return {
+            "event": dict(row["e"]) if row else {},
+            "manifest": dict(row["k"]) if row and row["k"] else None,
+        }
+
+    def list_kv_cache_manifests(
+        self,
+        *,
+        active_only: bool = True,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        with self._session() as session:
+            session.run(
+                """
+                MATCH (k:KVCacheManifest)
+                WHERE k.status IN ['READY','RESTORING']
+                  AND k.expires_at_ts <= timestamp()
+                SET k.status='EXPIRED', k.updated_at_ts=timestamp()
+                """
+            ).consume()
+            rows = session.run(
+                """
+                MATCH (k:KVCacheManifest)
+                WHERE $active_only=false OR k.status IN ['READY','RESTORING']
+                RETURN k ORDER BY coalesce(k.last_used_at_ts,k.updated_at_ts,0) DESC
+                LIMIT $limit
+                """,
+                {
+                    "active_only": bool(active_only),
+                    "limit": max(1, min(int(limit), 2000)),
+                },
+            )
+            result = []
+            for row in rows:
+                item = dict(row["k"])
+                for source, target in (
+                    ("compatibility_json", "compatibility"),
+                    ("capabilities_json", "capabilities"),
+                ):
+                    try:
+                        item[target] = json.loads(item.get(source) or "{}")
+                    except (TypeError, json.JSONDecodeError):
+                        item[target] = {}
+                    item.pop(source, None)
+                # Storage locators are intentionally excluded from catalog reads.
+                item.pop("artifact_ref", None)
+                result.append(item)
+            return result
+
+    def kv_cache_status(self, *, limit: int = 500) -> dict[str, Any]:
+        manifests = self.list_kv_cache_manifests(active_only=False, limit=limit)
+        active = [
+            item
+            for item in manifests
+            if item.get("status") in {"READY", "RESTORING"}
+        ]
+        hits = sum(int(item.get("hit_count") or 0) for item in manifests)
+        misses = sum(int(item.get("miss_count") or 0) for item in manifests)
+        return {
+            "manifests": manifests,
+            "summary": {
+                "active": len(active),
+                "bytes": sum(int(item.get("bytes") or 0) for item in active),
+                "tokens": sum(int(item.get("token_count") or 0) for item in active),
+                "hits": hits,
+                "misses": misses,
+                "hit_rate": round(hits / max(hits + misses, 1), 4),
+                "nodes": len(
+                    {str(item.get("node_id")) for item in active if item.get("node_id")}
+                ),
+            },
+        }
+
     def heartbeat_task(
         self,
         task_id: str,
@@ -1150,6 +1396,7 @@ class Neo4jClient:
         session_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         lease_seconds: int | None = None,
+        claim_id: str | None = None,
     ) -> dict[str, Any] | None:
         if status and status not in EXECUTABLE_TASK_STATUSES:
             raise ValueError(f"Unsupported task status: {status}")
@@ -1162,8 +1409,17 @@ class Neo4jClient:
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
+                WHERE coalesce(t.execution_attempt, 0)=0
+                   OR (
+                     t.claimed_by=$agent_id
+                     AND ($claim_id IS NULL OR t.claim_id=$claim_id)
+                     AND t.status IN ['CLAIMED','RUNNING','PAUSING']
+                   )
                 SET t += $props,
-                    t.status = coalesce($status, t.status),
+                    t.status = CASE
+                      WHEN t.status='PAUSING' THEN t.status
+                      ELSE coalesce($status, t.status)
+                    END,
                     t.lease_seconds = coalesce($lease_seconds, coalesce(t.lease_seconds, 900)),
                     t.last_heartbeat_at=datetime(),
                     t.last_heartbeat_at_ts=timestamp(),
@@ -1172,7 +1428,14 @@ class Neo4jClient:
                     t.updated_at_ts=timestamp()
                 RETURN t
                 """,
-                {"task_id": task_id, "props": props, "status": status, "lease_seconds": lease_seconds},
+                {
+                    "task_id": task_id,
+                    "agent_id": agent_id,
+                    "claim_id": claim_id,
+                    "props": props,
+                    "status": status,
+                    "lease_seconds": lease_seconds,
+                },
             ).single()
             return dict(rec["t"]) if rec else None
 
@@ -1185,6 +1448,7 @@ class Neo4jClient:
         result: dict[str, Any] | None = None,
         session_id: str | None = None,
         idempotency_key: str | None = None,
+        claim_id: str | None = None,
     ) -> dict[str, Any] | None:
         if status not in TERMINAL_TASK_STATUSES:
             raise ValueError(f"Completion status must be one of: {sorted(TERMINAL_TASK_STATUSES)}")
@@ -1228,6 +1492,12 @@ class Neo4jClient:
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
+                WHERE coalesce(t.execution_attempt, 0)=0
+                   OR (
+                     t.claimed_by=$agent_id
+                     AND ($claim_id IS NULL OR t.claim_id=$claim_id)
+                     AND t.status IN ['CLAIMED','RUNNING']
+                   )
                 SET t.status=$status,
                     t.completed_by=$agent_id,
                     t.agent_session_id=coalesce($session_id, t.agent_session_id),
@@ -1260,6 +1530,7 @@ class Neo4jClient:
                     "result_json": json.dumps(result or {}),
                     "session_id": session_id,
                     "completion_id": idempotency_key,
+                    "claim_id": claim_id,
                 },
             ).single()
             if not rec:
@@ -2634,6 +2905,8 @@ class Neo4jClient:
         priority: str | None = None,
         payload: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
+        preemptible: bool = False,
+        max_migrations: int = 2,
         context_query: str | None = None,
         context_sources: list[str] | None = None,
         auto_dispatch: bool = False,
@@ -2651,6 +2924,8 @@ class Neo4jClient:
             priority=priority,
             payload=payload,
             idempotency_key=idempotency_key,
+            preemptible=preemptible,
+            max_migrations=max_migrations,
         )
         result: dict[str, Any] = {"task_id": task_id, "context_packet_id": None, "dispatch_id": None}
 

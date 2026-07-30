@@ -36,6 +36,13 @@ jobs:
             src/assistx/allocation_engine.py \
             src/assistx/diagnosis_engine.py \
             src/assistx/diagnostic_probes.py \
+            src/assistx/deployment_canary.py \
+            scripts/init-canary-env.py \
+            src/assistx/controller_runtime.py \
+            src/assistx/execution_control.py \
+            src/assistx/improvement_cycle.py \
+            src/assistx/improvement_runtime.py \
+            src/assistx/kv_cache.py \
             src/assistx/node_identity.py \
             src/assistx/recovery_control.py \
             src/assistx/recovery_runbooks.py \
@@ -45,10 +52,17 @@ jobs:
             tests/test_allocation_engine.py \
             tests/test_diagnosis_engine.py \
             tests/test_diagnostic_probes.py \
+            tests/test_deployment_canary.py \
+            tests/test_controller_runtime.py \
+            tests/test_execution_control.py \
+            tests/test_improvement_cycle.py \
+            tests/test_improvement_runtime.py \
+            tests/test_kv_cache.py \
             tests/test_node_identity.py \
             tests/test_recovery_control.py \
             tests/test_recovery_runbooks.py \
             tests/test_recovery_canary.py \
+            tests/test_fleet_node_kv_cache.py \
             tests/test_fleet_node_recovery.py \
             tests/test_fleet_node_shell_gate.py \
             tests/test_operations_readiness.py

@@ -16,6 +16,16 @@ from typing import Any, Dict, List, Optional
 
 import requests
 import yaml
+from assistx.improvement_cycle import (
+    build_work_packet,
+    evaluate_completion,
+    extract_completion_envelope,
+)
+from assistx.improvement_runtime import (
+    cleanup_worktree,
+    collect_executor_evidence,
+    prepare_repository,
+)
 
 # Optional semantic-memory helper (assistx.swarm_memory). Imported lazily and
 # guarded so the adapter still runs if it is absent or the embed model is down.
@@ -500,9 +510,9 @@ class AssistXClient:
         )
         return result.get("items", [])
 
-    def claim_task(self, task_id: str, session_id: str) -> bool:
+    def claim_task(self, task_id: str, session_id: str) -> Dict[str, Any] | None:
         try:
-            self._request(
+            result = self._request(
                 "POST",
                 f"/api/tasks/{task_id}/claim",
                 json={
@@ -511,11 +521,11 @@ class AssistXClient:
                     "session_id": session_id,
                 },
             )
-            return True
+            return result if result.get("claimed") else None
         except requests.HTTPError as e:
             if e.response is not None and e.response.status_code == 409:
                 logger.info("Task %s already claimed by another agent", task_id)
-                return False
+                return None
             raise
 
     def get_context(self, task_id: str, query: str) -> Dict[str, Any]:
@@ -535,7 +545,13 @@ class AssistXClient:
             logger.warning("Context lookup failed for task %s: %s", task_id, e)
             return {}
 
-    def heartbeat(self, task_id: str, session_id: str, status: str = "RUNNING") -> None:
+    def heartbeat(
+        self,
+        task_id: str,
+        session_id: str,
+        claim_id: str,
+        status: str = "RUNNING",
+    ) -> None:
         try:
             self._request(
                 "POST",
@@ -544,6 +560,7 @@ class AssistXClient:
                     "agent_id": AGENT_ID,
                     "status": status,
                     "session_id": session_id,
+                    "claim_id": claim_id,
                 },
             )
         except requests.RequestException as e:
@@ -556,6 +573,7 @@ class AssistXClient:
         status: str,
         summary: Optional[str] = None,
         result: Optional[Dict[str, Any]] = None,
+        claim_id: Optional[str] = None,
     ) -> None:
         self._request(
             "POST",
@@ -566,6 +584,7 @@ class AssistXClient:
                 "summary": summary or "",
                 "result": result or {},
                 "session_id": session_id,
+                "claim_id": claim_id,
             },
         )
 
@@ -618,6 +637,7 @@ def run_hermes(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: Optional[str] = None,
+    cwd: Optional[str] = None,
 ) -> Dict[str, Any]:
     cmd = [
         HERMES_BIN,
@@ -632,6 +652,13 @@ def run_hermes(
     if provider:
         cmd += ["--provider", provider]
     env = {**os.environ, "HERMES_ACCEPT_HOOKS": "1"}
+    for protected_name in (
+        "ASSISTX_IMPROVEMENT_ATTESTATION_SECRET",
+        "ASSISTX_IMPROVEMENT_VERIFY_KEYS",
+        "ASSISTX_REPOSITORY_ROOTS_JSON",
+        "ASSISTX_IMPROVEMENT_WORKTREE_ROOT",
+    ):
+        env.pop(protected_name, None)
     if toolsets:
         env["HERMES_TOOLSETS"] = toolsets
     logger.info("Running Hermes model=%s (timeout=%ds)", model or HERMES_MODEL, timeout)
@@ -644,6 +671,7 @@ def run_hermes(
             text=True,
             timeout=timeout,
             env=env,
+            cwd=cwd,
         )
     except subprocess.TimeoutExpired:
         logger.warning("Hermes timed out after %ds", timeout)
@@ -692,6 +720,7 @@ def run_hermes_delegated(
     provider: Optional[str] = None,
     return_format: str = HERMES_DELEGATE_RETURN_FORMAT,
     toolsets: Optional[str] = None,
+    cwd: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Solve a task by delegating to a real opencode-cli session via Hermes's
     ``delegate_task`` tool, returning a *machine-usable* result.
@@ -735,12 +764,14 @@ def run_hermes_delegated(
     full_prompt = f"{directive}\n\nTASK:\n{prompt}"
 
     logger.info("Delegating task to opencode-cli (return_format=%s)", return_format)
+    run_kwargs = {"cwd": cwd} if cwd else {}
     return run_hermes(
         full_prompt,
         timeout=timeout,
         model=model,
         provider=provider,
         toolsets=delegation_toolsets,
+        **run_kwargs,
     )
 
 
@@ -1117,13 +1148,30 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
 def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
     task_id = task.get("id")
     title = task.get("title", task.get("kind", f"Task {task_id}"))
-    description = task.get("description", task.get("text", ""))
+    payload = task.get("payload") or task.get("payload_json") or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    description = (
+        task.get("description")
+        or task.get("text")
+        or payload.get("prompt")
+        or ""
+    )
 
     session_id = uuid.uuid4().hex
     logger.info("Processing task %s: %s", task_id, title)
 
-    if not assistx.claim_task(task_id, session_id):
+    claim = assistx.claim_task(task_id, session_id)
+    if not claim:
         return
+    claimed_task = claim.get("task") or {}
+    task.update(claimed_task)
+    claim_id = str(claimed_task.get("claim_id") or claim.get("claim_id") or "")
 
     context = assistx.get_context(task_id, title)
     context_refs = context.get("references", []) if isinstance(context, dict) else []
@@ -1137,12 +1185,39 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
         if snippets:
             context_text = "Relevant context:\n" + "\n".join(snippets)
 
-    tier = classify_model_tier(task)
+    work_packet = build_work_packet(
+        task,
+        learned_lessons=payload.get("learned_failure_reasons") or [],
+    )
+    repository_state = (
+        prepare_repository(
+            payload["execution_contract"],
+            task_id=str(task_id),
+            execution_attempt=int(task.get("execution_attempt") or 0),
+        )
+        if work_packet
+        else None
+    )
+    tier = (
+        str(payload["execution_contract"].get("recommended_tier"))
+        if work_packet
+        else classify_model_tier(task)
+    )
     model = select_tier_model(tier, seed=task_id)
     category = task_category(task)
     ensure_model_env(model)
 
-    if tier == "compress-tiny":
+    if work_packet:
+        prompt = (
+            f"{get_model_prompt(model)}\n\n"
+            "You are executing a bounded repository improvement. Follow this work "
+            "packet literally and do not expand its scope:\n"
+            f"{json.dumps(work_packet, ensure_ascii=False, indent=2)}\n\n"
+            "Use the tool recipe in order. Your final response MUST be only one JSON "
+            "object matching completion_envelope. If a step fails, still return the "
+            "envelope with the real non-zero return code; never claim success."
+        )
+    elif tier == "compress-tiny":
         prompt = (
             f"Task: {title}\n\n"
             f"Description: {description}\n\n"
@@ -1164,10 +1239,23 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
             "3. The final result or output"
         )
 
-    assistx.heartbeat(task_id, session_id)
+    assistx.heartbeat(task_id, session_id, claim_id)
 
     start = time.monotonic()
-    if tier in ("compress-tiny", "cpu-micro"):
+    execution_kwargs = (
+        {"cwd": repository_state["root"]}
+        if work_packet and repository_state.get("ok")
+        else {}
+    )
+    if work_packet and not repository_state.get("ok"):
+        result = {
+            "success": False,
+            "error": repository_state.get("reason"),
+            "output": "",
+            "session_id": None,
+            "elapsed": 0.0,
+        }
+    elif tier in ("compress-tiny", "cpu-micro"):
         # Tiny models must NOT run interactive Hermes sessions (they can't drive
         # tools reliably, and burn leases looping). They still do summarize /
         # compress / review work, but via a direct bounded router call (no Hermes)
@@ -1188,6 +1276,12 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
             model=model,
             provider=HERMES_PROVIDER,
             return_format=HERMES_DELEGATE_RETURN_FORMAT,
+            toolsets=(
+                "terminal,file,code_execution"
+                if work_packet
+                else HERMES_TOOLSETS
+            ),
+            **execution_kwargs,
         )
     else:
         result = run_hermes(
@@ -1195,7 +1289,12 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
             timeout=HERMES_TIMEOUT,
             model=model,
             provider=HERMES_PROVIDER,
-            toolsets=HERMES_TOOLSETS,
+            toolsets=(
+                "terminal,file,code_execution"
+                if work_packet
+                else HERMES_TOOLSETS
+            ),
+            **execution_kwargs,
         )
     elapsed = result.get("elapsed", time.monotonic() - start)
 
@@ -1203,14 +1302,52 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
     if hermes_session_id:
         assistx.register_session(session_id, hermes_session_id)
 
-    trivial = is_trivial_output(result.get("output", ""))
-    actual_success = bool(result["success"]) and not trivial
+    output = result.get("output", "")
+    reported_envelope = extract_completion_envelope(output) if work_packet else None
+    completion_envelope = None
+    if work_packet:
+        try:
+            completion_envelope = collect_executor_evidence(
+                payload["execution_contract"],
+                repository_state,
+                reported_envelope,
+                executor_id=AGENT_ID,
+            )
+        finally:
+            cleanup_worktree(repository_state)
+    signer_key_id = os.getenv(
+        "ASSISTX_IMPROVEMENT_ATTESTATION_KEY_ID", ""
+    ).strip()
+    signer_secret = os.getenv(
+        "ASSISTX_IMPROVEMENT_ATTESTATION_SECRET", ""
+    ).strip()
+    local_verify_keys = (
+        {signer_key_id: signer_secret}
+        if signer_key_id and signer_secret
+        else None
+    )
+    local_evaluation = (
+        evaluate_completion(
+            task,
+            requested_status="DONE" if result["success"] else "FAILED",
+            result={"completion_envelope": completion_envelope},
+            verify_keys=local_verify_keys,
+        )
+        if work_packet
+        else None
+    )
+    trivial = is_trivial_output(output)
+    actual_success = (
+        bool(result["success"])
+        and not trivial
+        and (not local_evaluation or local_evaluation["accepted"])
+    )
+    completion_success = actual_success if work_packet else bool(result["success"])
     if fleet is not None:
         fleet.record_outcome(model, elapsed, max(0, len(result.get("output", "")) // 4), actual_success, tier=tier)
     record_task_eval(model, category, actual_success, elapsed, error=result.get("error"), trivial=trivial)
 
-    if result["success"]:
-        output = result["output"]
+    if completion_success:
         assistx.write_memory(
             kind="task_result",
             text=output[:2000],
@@ -1229,11 +1366,17 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
                 "model": model,
                 "tier": tier,
                 "hermes_session_id": hermes_session_id,
+                "completion_envelope": completion_envelope,
             },
+            claim_id=claim_id,
         )
         logger.info("Task %s completed successfully on %s/%s", task_id, tier, model)
     else:
-        error = result.get("error", "unknown")
+        error = result.get("error") or (
+            ", ".join(local_evaluation["reasons"])
+            if local_evaluation and local_evaluation["reasons"]
+            else "trivial or unverifiable output"
+        )
         output = result.get("output", "")
         assistx.complete_task(
             task_id=task_id,
@@ -1247,7 +1390,9 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
                 "elapsed": elapsed,
                 "model": model,
                 "tier": tier,
+                "completion_envelope": completion_envelope,
             },
+            claim_id=claim_id,
         )
         logger.info("Task %s failed on %s/%s: %s", task_id, tier, model, error)
 

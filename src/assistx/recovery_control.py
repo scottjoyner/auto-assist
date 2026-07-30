@@ -3,11 +3,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import threading
 import time
 import uuid
 from collections.abc import Callable
 from typing import Any
+
+from .controller_runtime import (
+    DurableController,
+    Neo4jControllerStore,
+    start_durable_controller_loop,
+)
 
 ALLOWED_ACTIONS = {
     "collect_evidence", "refresh_agent", "reload_model", "drain_and_test",
@@ -232,33 +237,31 @@ class Neo4jRecoveryStore:
         return {"reconciled": sum(counts.values()), "transitions": counts, "at": now}
 
 
-_reconciler_thread: threading.Thread | None = None
-_reconciler_stop = threading.Event()
-
-
 def start_recovery_reconciler(neo_factory: Callable[[], Any]) -> None:
-    global _reconciler_thread
-    if _reconciler_thread and _reconciler_thread.is_alive():
-        return
     interval = max(30, int(os.getenv("ASSISTX_RECOVERY_RECONCILE_INTERVAL_SECONDS", "60")))
 
-    def loop() -> None:
-        while not _reconciler_stop.wait(interval):
-            neo = neo_factory()
-            try:
-                RecoveryControlPlane().reconcile(Neo4jRecoveryStore(neo))
-            except Exception:
-                pass
-            finally:
-                neo.close()
+    def store_factory() -> tuple[Neo4jControllerStore, Callable[[], None]]:
+        neo = neo_factory()
+        return Neo4jControllerStore(neo), neo.close
 
-    _reconciler_stop.clear()
-    _reconciler_thread = threading.Thread(
-        target=loop,
-        name="recovery-reconciler",
-        daemon=True,
+    controller = DurableController(
+        "recovery-reconciler",
+        store_factory,
+        lease_seconds=max(90, interval * 3),
     )
-    _reconciler_thread.start()
+
+    def reconcile() -> dict[str, Any]:
+        neo = neo_factory()
+        try:
+            return RecoveryControlPlane().reconcile(Neo4jRecoveryStore(neo))
+        finally:
+            neo.close()
+
+    start_durable_controller_loop(
+        controller,
+        reconcile,
+        interval_seconds=interval,
+    )
 
 
 def _decode(value: dict[str, Any]) -> dict[str, Any]:

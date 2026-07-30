@@ -98,3 +98,18 @@ ALLOCATION_RESERVATIONS = _safe_counter(
     "Allocation reservation attempts",
     ["result"],
 )
+KV_CACHE_EVENTS = _safe_counter(
+    "assistx_kv_cache_events_total",
+    "KV-cache lookup and lifecycle outcomes",
+    ["outcome", "runtime"],
+)
+KV_CACHE_PREFILL_MS_SAVED = _safe_counter(
+    "assistx_kv_cache_prefill_milliseconds_saved_total",
+    "Estimated prompt prefill milliseconds avoided by compatible KV reuse",
+    ["runtime"],
+)
+KV_CACHE_RESTORE_MS = _safe_histogram(
+    "assistx_kv_cache_restore_milliseconds",
+    "KV-cache restore latency in milliseconds",
+    ["runtime"],
+)

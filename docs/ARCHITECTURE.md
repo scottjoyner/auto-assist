@@ -1,296 +1,251 @@
-# AssistX Release Architecture
+# AssistX architecture
 
-## Overview
+## Purpose
 
-AssistX is the authoritative owner of task state and the ingestion bridge from
-Sophia into non-realtime execution. For the current cutover release, AssistX
-dispatches executable work to the deployed Paperclip service, which invokes
-the registered `hermes_local` adapter.
+AssistX is the durable control plane between work intake and a heterogeneous
+fleet of local or brokered agents. It keeps scheduling, execution, recovery,
+and learning decisions observable and fenced even when nodes are slow, models
+vary in quality, or a controller restarts.
 
-Direct worker claiming and fleet/model-endpoint routing are retained as
-follow-up development surfaces. They are not enabled as a substitute for the
-Paperclip cutover path. The production runtime now makes that boundary explicit
-through `ASSISTX_RUNTIME_PROFILE` / `ASSISTX_DEPENDENCY_MODE` and structured
-health reporting.
+The system separates four kinds of authority:
 
-## Neo4j Context Fabric
+1. **State authority** — Neo4j owns durable task and control-plane state.
+2. **Scheduling authority** — the allocator proposes and reserves a specific
+   node/model against a recent snapshot.
+3. **Execution authority** — a worker must own the current claim ID to mutate
+   execution state.
+4. **Mutation authority** — recovery and repository changes require typed,
+   signed evidence and explicit operator gates.
 
-Neo4j is the canonical context store for the agents and the release control plane. It should hold the facts that make routing and execution decisions predictable:
+## System shape
 
-- task lifecycle and dispatch state;
-- agent identities and node capabilities;
-- model endpoint inventory and availability;
-- policy decisions and approval state;
-- artifact references and execution provenance;
-- memory/context records used by agent planning.
-
-This does not replace the Paperclip cutover path. It makes that path and any future direct-worker path read from the same graph-backed context so local execution and free-API execution are chosen from one shared source of truth.
-
-Execution lanes should be explicit graph facts:
-
-- `local` for local-only or privacy-restricted work;
-- `free_api` for legitimate free cloud credits or brokered free lanes;
-- `paperclip` for the current cutover execution path;
-- `blocked` when a task cannot be routed yet.
-
-Agents should be able to ask the graph who is running locally, what can use free API credits, and which lane a task is allowed to use.
-
----
-
-## Data Flow
-
-```
-Sophia (voice/auth edge)
-    | signed POST /api/voice/events
-    v
-AssistX (FastAPI + Neo4j, database=assistx)
-    | canonical capture / intent / task / dispatch state
-    | creates assigned issue and polls result
-    v
-Paperclip (local user service)
-    | adapterType=hermes_local
-    v
-Hermes execution
-    | issue/run/status/output synchronization
-    v
-AssistX task and artifact outcome
+```text
+              voice / API / plans / operator
+                           |
+                           v
+                FastAPI control plane
+                 |        |        |
+                 v        v        v
+              Neo4j   Operations  outbox
+                 |
+       +---------+----------+------------------+
+       |                    |                  |
+       v                    v                  v
+  allocation          reconciliation      diagnosis
+  reservation         controller leases   recovery proposal
+       |                    |                  |
+       +----------+---------+                  |
+                  v                            v
+          Paperclip or direct Hermes       signed runbook
+                  |                            |
+                  v                            v
+       fenced claim / checkpoint       allowlisted node adapter
+                  |
+         +--------+----------------+
+         |                         |
+         v                         v
+  ordinary task result     bounded code-change evidence
+                                   |
+                            central acceptance
+                                   |
+                      profile update / repair proposal
+                                   |
+                         exact operator promotion
 ```
 
----
+## Durable graph
 
-## Database Split
+The `assistx` Neo4j database is the control-plane source of truth. Important
+records include:
 
-| Database | Purpose | Contents |
-|----------|---------|---------|
-| `assistx` | Release integration/control-plane | Sophia captures, tasks, dispatches, events, agent runs, artifacts, policy decisions |
-| `neo4j` (legacy/main) | Unified Scott historical memory | Transcripts, summaries, entities, embeddings, long-term facts, preferences, speaker history |
-| `memory` | Historical staging only | Not a target for new Sophia cutover data |
+| Record | Responsibility |
+|---|---|
+| `Task` | Lifecycle, target, claim, lease, checkpoint, migration budget |
+| `SwarmNode` | Identity, health, capabilities, block/drain state |
+| `ModelEndpoint` / `Model` | Endpoint inventory and actually served models |
+| `AllocationReservation` | Atomic node/model choice with snapshot and expiry |
+| `ControllerLease` | Current reconciler leader and fencing token |
+| `ControllerCheckpoint` | Replay-safe tick state and result |
+| `TaskMigrationEvent` | Preemption and migration audit history |
+| Recovery proposal/audit records | Approval, execution, verification, rollback |
+| `ImprovementAttempt` | Signed evidence and promotion state |
+| `AgentSkillProfile` | Verified performance by agent/model/task family |
+| `PromptPrefix` / `KVCacheManifest` | Opaque prefix identity, exact compatibility, residency, expiry, and reuse |
+| `TraceGroup` / `TraceEvent` | Cross-service correlation and provenance |
 
-Sophia and AssistX must write cutover records to `assistx`; historical memory
-lookups may continue to use the legacy memory graph where explicitly required.
+Historical long-term memory may live in a separate Neo4j database, but control
+decisions must not silently depend on an unversioned external memory record.
 
----
+## Task execution
 
-## Core Node Types (`assistx` database)
+### Allocation and reservation
 
-### Task Lifecycle
-```
-status: READY -> CLAIMED -> RUNNING -> DONE
-                  \-> FAILED (retryable -> READY)
-                  \-> FAILED (non-retryable -> FAILED)
-                  \-> CANCELLED
-```
+The allocator filters for capability, node health, block/drain state, model
+availability, capacity, and policy. It then compares expected quality,
+latency, reliability, energy/cost, queue pressure, and the opportunity cost of
+occupying a stronger model.
 
-Tasks carry:
-- `lease_expires_at_ts` — claim lease, heartbeat extends it
-- `approval_required` — set by voice policy for non-Scott speakers
-- `risk_level` — low tasks auto-approved for Scott, high always requires approval
-- `failure_count`, `error_summary` — for retry tracking
+A recommendation is advisory until
+`POST /api/fleet/allocation/reservations` atomically reserves the task,
+node, model, recent snapshot revision, and TTL. Claiming enforces the live
+reservation, preventing another node from taking the task. A reservation can
+be explicitly released before claim.
 
-### Event Envelope
-All external input arrives via the unified event envelope:
-```
-event_id, event_type, source_repo, source_service, node_id,
-occurred_at, idempotency_key, schema_version, subject, payload,
-artifact_refs, privacy, correlation_id, actor, links
-```
-Schema version `2026-06-08.v1` adds `correlation_id`, `actor`, and `links` fields.
-Schema version `1.0` remains supported for backward compatibility.
+For tasks with a trusted opaque prefix identity, allocation also compares a
+local compatible KV-cache hit, distributed restore cost, and session affinity.
+The selected cache ID is reserved atomically with the node and model. Raw
+prompts and tensors never enter Neo4j. See
+[`kv-cache-control-plane.md`](kv-cache-control-plane.md).
 
-AssistX also derives optional `metadata.request` and `metadata.task` blocks for shared router/assign consumers. The blocks are persisted alongside the event so overlay services can consume the same request/task metadata shape without reading prompt or response bodies from provenance records.
+### Claim fencing
 
-### TraceEvent / TraceGroup (2026-06-08)
-Cross-repo trace events are persisted as `TraceEvent` nodes linked to `TraceGroup` nodes:
-```
-TraceGroup   - correlation_id UNIQUE
-TraceEvent   - event_id UNIQUE
-```
-TraceEvent fields: `correlation_id`, `event_type`, `source`, `ts`, `event_id`, `actor_json`, `links_json`, `payload_json`.
-TraceGroup fields: `correlation_id`, `current_state`, `created_at`, `updated_at`.
+The successful claimant receives a unique claim ID. Heartbeat, checkpoint, and
+completion operations must present that current ID. Reclaims and migrations
+therefore invalidate delayed messages from an earlier worker.
 
-Relationships:
-```
-TraceGroup -[:HAS_EVENT]-> TraceEvent
-TraceEvent -[:RELATED_TO_TASK]-> Task (optional)
-TraceEvent -[:RELATED_TO_ASSIGNMENT]-> Assignment (optional)
-```
+Typical lifecycle:
 
-### Supported Event Types
-```
-voice.quick_input.created    - Sophia voice command
-voice.auth.decision          - Voice auth result
-swarm.node.registered        - Node registration
-swarm.node.heartbeat         - Node heartbeat
-model.endpoint.discovered    - Model endpoint probe result
-ingest.batch.started         - auto-ingest batch start
-ingest.memory_candidate.created - auto-ingest candidate
-ingest.batch.review_ready    - auto-ingest batch done
+```text
+PROPOSED --operator approval--> READY --claim--> CLAIMED/RUNNING
+                                      |              |
+                                      |              +--> DONE
+                                      |              +--> FAILED
+                                      |              +--> PAUSING
+                                      |                       |
+                                      +<--reconcile/migrate---+
 ```
 
----
+Paperclip and direct Hermes are both execution integrations. They must consume
+the canonical task lifecycle rather than introduce an independent task state
+authority. Deployment selection is documented in
+[`EXECUTION_AUTHORITY.md`](EXECUTION_AUTHORITY.md).
 
-## Voice Authorization Model
+## Durable reconciliation
 
-| Speaker State | Low-Risk Actions | High-Risk Actions |
-|---|---|---|
-| `authenticated_scott` | Auto-approve | Requires confirmation |
-| `admin_override` | Auto-approve | Requires confirmation |
-| `registered_user_authenticated` | Requires Scott approval | Requires Scott approval |
-| `unknown_speaker` | Requires Scott approval | Requires Scott approval |
+Reconcilers use a `ControllerLease` rather than assuming one permanent API
+process. Acquiring a new lease increments a fencing token. A tick result can be
+committed only if the process still owns the unexpired lease with the same
+token. Completed tick keys are replay-safe; failed or stale `RUNNING` ticks can
+be retried within their bounded policy.
 
-Low-risk actions: create_note, draft_text, search_memory, summarize_context, list_tasks, create_draft_task, classify_file, local_model_analysis
+This prevents an old leader from committing a recovery or migration decision
+after another replica takes over.
 
----
+## Preemption and migration
 
-## API Endpoints
+Only tasks explicitly created with `preemptible=true` can be paused.
 
-### Events & Intake
-```
-POST /api/events                — Receive unified event envelope
-POST /api/voice/events          — Canonical signed Sophia ingestion endpoint
-POST /api/sophia/events         — Compatibility route pending convergence
-POST /api/paperclip/events      — Signed Paperclip event callback
-```
+1. The operator or allocator requests preemption.
+2. The owner observes `PAUSING` on a fenced heartbeat.
+3. The owner writes a versioned, size-bounded checkpoint and releases the
+   claim.
+4. The execution reconciler validates a healthy destination with all required
+   capabilities.
+5. The task returns to `READY`, targeted to that destination.
+6. A new claim resumes from `checkpoint_json`.
 
-### Traces
-```
-GET  /api/traces/{correlation_id}              — Get full trace for a correlation_id
-POST /api/traces/{correlation_id}/events       — Append a trace event
-```
+Migration is bounded by `max_migrations`. Active source reservations are
+superseded atomically. A pause that is not acknowledged resumes the valid
+source execution or returns to `READY` after lease expiry.
 
-### Tasks
-```
-GET  /api/tasks                 — List tasks (filtered)
-GET  /api/tasks/{id}            — Get task detail
-POST /api/tasks/{id}/claim      — Claim task with optional lease_seconds
-POST /api/tasks/{id}/heartbeat  — Extend lease on claimed task
-POST /api/tasks/{id}/complete   — Complete task with result
-POST /api/tasks/{id}/fail       — Fail task (retryable or terminal)
-POST /api/tasks/{id}/cancel     — Cancel task
-POST /api/tasks/leases/release-expired — Release all expired leases
-GET  /api/tasks/ready           — List READY tasks
-```
+## Recovery loop
 
-### Swarm Node Registry
-```
-POST   /api/swarm/nodes/register           — Register a node
-POST   /api/swarm/nodes/{id}/heartbeat     — Node heartbeat
-GET    /api/swarm/nodes                    — List nodes
-GET    /api/swarm/capabilities             — List all capabilities
+Diagnosis maps observed incidents to typed recovery recommendations. Recovery
+does not execute arbitrary model-generated shell:
+
+```text
+observation -> diagnosis -> proposal -> fingerprint approval
+            -> signed typed runbook -> node allowlist adapter
+            -> verification -> outcome/audit -> rollback or release
 ```
 
-### Policy
-```
-GET    /api/policy/voice-action            — Check if action needs approval
-```
+Runbooks have a key ID, bounded lifetime, explicit steps, verification
+requirements, and rollback plan. Each node verifies the signature and exposes
+only configured systemd, launchd, observation, or Compose aliases. Immutable
+Compose deployments require image digests.
 
-### Memory
-```
-GET    /api/memory                         — Memory search
-POST   /api/memory/items                   — Store memory item
-POST   /api/brain/context                  — Context retrieval
-POST   /api/brain/signals                  — Signal processing
-```
+See [`fleet-recovery-rollout.md`](fleet-recovery-rollout.md).
 
-### Q&A Pipeline
-```
-POST /api/ask                  — Ask question (sync/async/auto)
-GET  /api/answers/{id}         — Get answer
-GET  /api/answers/events       — SSE answer stream
-WS   /api/answers/{id}/events  — WebSocket answer stream
+## Self-improvement loop
+
+Repository work uses a distinct evidence boundary:
+
+```text
+operator proposal -> approved bounded contract -> isolated detached worktree
+-> agent tool packet -> executor-measured diff and verification
+-> signed evidence -> central acceptance -> skill-profile update
+-> optional narrower repair proposal -> operator fingerprint promotion
 ```
 
----
+The model cannot expand paths, tools, commands, file count, diff size, or
+iteration budget. The executor, not the model, reads Git state and runs
+verification. Raw patches are stored in the attempt evidence but omitted from
+list responses.
 
-## Paperclip Execution
+Promotion revalidates the signature and patch digest, requires the original
+base HEAD and a clean target, checks paths, applies the patch, reruns tests, and
+reverses the patch on failed verification. Successful promotion intentionally
+stops before commit or release.
 
-For an automatically dispatchable Sophia task:
+See [`self-improvement-cycle.md`](self-improvement-cycle.md) and
+[`self-improvement-rollout.md`](self-improvement-rollout.md).
 
-1. AssistX creates the graph task and dispatch record.
-2. AssistX creates an assigned Paperclip issue through its initialized Paperclip client.
-3. Paperclip starts the registered `hermes_local` adapter.
-4. AssistX polls/captures issue status, active run ID, completion output, and artifacts.
-5. A completed run updates the corresponding AssistX task outcome.
+## Operations workspace
 
-The direct task claim endpoints exist for future swarm work; they are not the
-supported execution path for this release.
+`GET /operations` serves the authenticated fleet workspace. Its APIs expose:
 
----
+- real node and loaded-model inventory;
+- allocation recommendations and reservations;
+- controller lease/checkpoint health;
+- readiness gates without secret values;
+- incident, diagnosis, recovery, maintenance, and quarantine state;
+- checkpoint and migration progress;
+- learning profiles, accepted attempts, and patch promotion controls.
 
-## Neo4j Schema (`assistx` database)
+The UI is an operator surface, not a second source of truth. Every mutating
+control goes through an authenticated API and durable audit state.
 
-Key constraints:
-```
-SwarmNode       - node_id UNIQUE
-Capability      - capability_id UNIQUE
-ModelEndpoint   - model_endpoint_id UNIQUE
-Model           - model_id UNIQUE
-EventEnvelope   - event_id UNIQUE
-Task            - id UNIQUE (legacy)
-AgentRun        - id UNIQUE
-ToolCall        - id UNIQUE
-Artifact        - id UNIQUE
-Intent          - id UNIQUE
-VoiceAuthDecision - decision_id UNIQUE
-PolicyDecision  - decision_id UNIQUE
-TraceGroup      - correlation_id UNIQUE
-TraceEvent      - event_id UNIQUE
-```
+## Primary API groups
 
-Indexes:
-```
-TraceEvent      - correlation_id INDEX
-TraceEvent      - event_type INDEX
-TraceEvent      - task_id INDEX
-TraceEvent      - assignment_id INDEX
-```
+| Area | Routes |
+|---|---|
+| Intake and traces | `/api/events`, `/api/voice/events`, `/api/traces/*` |
+| Tasks and workers | `/api/tasks/*`, `/api/agent/tasks` |
+| Fleet inventory | `/api/swarm/nodes`, `/api/fleet/*` |
+| Allocation | `/api/fleet/allocation/*` |
+| Controllers | `/api/fleet/controllers` |
+| Recovery | `/api/fleet/recovery-control*` |
+| Migration | `/api/tasks/{id}/checkpoint`, `/preempt`, `/migrate`, `/api/fleet/migrations` |
+| Improvement | `/api/fleet/improvement-cycle*` |
+| Readiness | `/api/fleet/operations-readiness` |
 
-Key relationships:
-```
-EventEnvelope -[:CREATED_INTENT]-> Intent
-EventEnvelope -[:CREATED_TASK]-> Task
-EventEnvelope -[:RECORDED_DECISION]-> VoiceAuthDecision
-Intent -[:TRIGGERED_TASK]-> Task
-Intent -[:AUTHORIZED_BY]-> PolicyDecision
-SwarmNode -[:CAN_RUN]-> Capability
-SwarmNode -[:EXPOSES]-> ModelEndpoint
-ModelEndpoint -[:SERVES]-> Model
-Task -[:HAS_RUN]-> AgentRun
-AgentRun -[:HAS_TOOL_CALL]-> ToolCall
-AgentRun -[:PRODUCED]-> Artifact
-```
+Route schemas in `src/assistx/api.py` are authoritative when this summary and
+the running API differ.
 
----
+## Trust boundaries
 
-## Deployment
+- Basic or trusted-header authentication protects operator endpoints.
+- Node tokens identify recovery-capable fleet agents.
+- Runbook HMAC keys authorize typed recovery instructions.
+- Separate node-specific improvement HMAC keys attest executor evidence.
+- Signing secrets are removed from the model subprocess environment.
+- Verification commands are argv arrays executed with `shell=False`.
+- Repository aliases resolve only through `ASSISTX_REPOSITORY_ROOTS_JSON`.
+- Unsafe legacy command payloads remain an explicit opt-in and should stay off.
+- Secrets, raw patches, and unrestricted process environments do not belong in
+  list/status responses.
 
-### Docker Compose
-```bash
-docker compose -f docker-compose.yml -f compose.override.yml up -d
-```
+## Failure behavior
 
-Overlay mode for `auto-router` and `auto-assign`:
+The design prefers a visible stop over an ambiguous mutation:
 
-```bash
-docker compose -f docker-compose.yml -f compose.overlay.yml up -d
-```
-
-See `compose.host.yml` for host-mode Neo4j plus an OpenAI-compatible LM Studio endpoint, `compose.override.gpu.yml` for GPU support. The production compose overlay requires `OPENAI_BASE_URL` explicitly so the deploy fails fast if the LM Studio endpoint is not configured.
-
-AssistX also exposes an overlay health contract for `auto-router` and `auto-assign`. In overlay mode, the app reports those services separately from the core runtime so operators can see whether the routing layer is present, healthy, or degraded.
-
-### Environment
-Key vars: `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `NEO4J_DATABASE=assistx`, `REDIS_URL`, `BASIC_AUTH_USER`, `BASIC_AUTH_PASS`, `ASSISTX_RUNTIME_PROFILE`, `ASSISTX_DEPENDENCY_MODE`
-
-### Init
-```bash
-docker exec -it assistx-api bash -lc "python -m assistx.cli init"
-```
-
-### Runtime Contract
-
-- `ASSISTX_RUNTIME_PROFILE=production` is the default cutover mode.
-- `ASSISTX_DEPENDENCY_MODE=compat` is reserved for stripped test/dev environments that need the in-memory shims.
-- `GET /health` now returns structured dependency status for Redis, Neo4j, and the configured LLM backend, and returns `503` when the core runtime dependencies are unavailable.
-- `GET /api/ops/status` includes the same runtime snapshot alongside queue, review, and dispatch counters.
-- `src/scripts/phase6_cutover_canary.py` runs the operator canary: signed ingest, dispatch creation on the selected worker target, and polling for the expected terminal disposition.
+- stale reservation snapshot: reject and replan;
+- wrong node claim: reject;
+- stale claim or controller token: reject;
+- missing checkpoint acknowledgment: bounded resume/requeue;
+- invalid runbook signature or alias: reject;
+- failed recovery verification: rollback or retain drain for inspection;
+- missing/invalid improvement evidence: mark attempt failed;
+- repository HEAD drift or dirty promotion target: reject;
+- failed post-apply verification: reverse the patch;
+- uncertain release state: leave the change uncommitted for an operator.

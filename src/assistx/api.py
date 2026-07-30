@@ -30,11 +30,20 @@ from .deps import load_aioredis_module, load_prometheus_client, load_queue_class
 from .logging_utils import install_logging_middleware, setup_logging
 from .runtime import build_runtime_health, runtime_profile, validate_runtime_configuration
 from .benchmark_controller import BenchmarkController, publish_benchmark_outcome
+from .controller_runtime import Neo4jControllerStore
 from .loadout_control import LoadoutControlPlane, Neo4jLoadoutStore
 from .capacity_forecast import build_capacity_forecast
 from .allocation_engine import build_allocation_plan
 from .diagnosis_engine import diagnose_incident
 from .diagnostic_probes import execute_diagnostic_probes
+from .execution_control import ExecutionControlPlane, start_execution_reconciler
+from .improvement_cycle import (
+    ImprovementCycle,
+    build_execution_contract,
+    evaluate_completion,
+)
+from .improvement_runtime import promote_patch
+from .kv_cache import build_manifest
 from .recovery_control import (
     Neo4jRecoveryStore,
     RecoveryControlPlane,
@@ -55,6 +64,9 @@ from .metrics import REQUESTS
 from .metrics import (
     ALLOCATION_RESERVATIONS,
     FLEET_DIAGNOSES,
+    KV_CACHE_EVENTS,
+    KV_CACHE_PREFILL_MS_SAVED,
+    KV_CACHE_RESTORE_MS,
     RECOVERY_OUTCOMES,
     RECOVERY_TRANSITIONS,
 )
@@ -165,6 +177,7 @@ class TaskHeartbeatIn(BaseModel):
     session_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     lease_seconds: Optional[int] = None
+    claim_id: Optional[str] = None
 
 class TaskCompleteIn(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -175,6 +188,45 @@ class TaskCompleteIn(BaseModel):
     result: Optional[Dict[str, Any]] = None
     session_id: Optional[str] = None
     idempotency_key: Optional[str] = None
+    claim_id: Optional[str] = None
+
+
+class TaskCheckpointIn(BaseModel):
+    agent_id: str
+    claim_id: str
+    checkpoint: Dict[str, Any] = Field(default_factory=dict)
+    progress: float = Field(default=0.0, ge=0.0, le=1.0)
+    estimated_remaining_seconds: Optional[int] = Field(default=None, ge=0)
+    pause: bool = False
+
+
+class TaskPreemptionIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    target_agent_id: Optional[str] = None
+
+
+class TaskMigrationIn(BaseModel):
+    target_agent_id: str = Field(min_length=1)
+
+
+class ImprovementProposalIn(BaseModel):
+    title: str = Field(min_length=3, max_length=300)
+    repository: str = Field(min_length=1, max_length=300)
+    objective: str = Field(min_length=3, max_length=2000)
+    allowed_paths: List[str] = Field(min_length=1, max_length=10)
+    verification_commands: List[List[str]] = Field(min_length=1, max_length=10)
+    recommended_tier: str = "tool-small"
+    priority: str = "MEDIUM"
+    target_agent_id: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=300,
+    )
+
+
+class PatchPromotionIn(BaseModel):
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reason: str = Field(min_length=3, max_length=1000)
 
 
 class BenchmarkControlIn(BaseModel):
@@ -206,8 +258,48 @@ class AllocationReservationIn(BaseModel):
     task_id: str
     node_id: str
     model_id: Optional[str] = None
+    cache_id: Optional[str] = Field(default=None, max_length=300)
     snapshot_revision: int
     ttl_seconds: int = Field(default=120, ge=30, le=600)
+
+
+class KVCacheManifestIn(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    cache_id: Optional[str] = None
+    prefix_id: str = Field(pattern=r"^prefix-[0-9a-f]{64}$")
+    node_id: str = Field(min_length=1, max_length=300)
+    endpoint_id: str = Field(min_length=1, max_length=300)
+    model_id: str = Field(min_length=1, max_length=500)
+    runtime: str = Field(min_length=1, max_length=100)
+    compatibility: Dict[str, Any]
+    compatibility_fingerprint: Optional[str] = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    privacy_scope: str = Field(pattern="^(private|project|fleet)$")
+    scope_id: str = Field(min_length=1, max_length=300)
+    token_count: int = Field(gt=0)
+    bytes: int = Field(default=0, ge=0)
+    storage_tier: str = Field(pattern="^(gpu|host|local_disk|distributed)$")
+    artifact_ref: Optional[str] = Field(default=None, max_length=1000)
+    portable: bool = False
+    capabilities: Dict[str, Any] = Field(default_factory=dict)
+    ttl_seconds: int = Field(default=3600, ge=30, le=604_800)
+
+
+class KVCacheEventIn(BaseModel):
+    cache_id: str = Field(min_length=1, max_length=300)
+    node_id: str = Field(min_length=1, max_length=300)
+    outcome: str = Field(pattern="^(HIT|MISS|RESTORE|EVICT)$")
+    task_id: Optional[str] = Field(default=None, max_length=300)
+    prefix_id: Optional[str] = Field(
+        default=None,
+        pattern=r"^prefix-[0-9a-f]{64}$",
+    )
+    tokens_saved: int = Field(default=0, ge=0)
+    prefill_ms_saved: int = Field(default=0, ge=0)
+    restore_ms: int = Field(default=0, ge=0)
 
 
 class NodeControlIn(BaseModel):
@@ -238,6 +330,8 @@ class TaskCreateIn(BaseModel):
     payload: Optional[Dict[str, Any]] = None
     idempotency_key: Optional[str] = None
     correlation_id: Optional[str] = None
+    preemptible: bool = False
+    max_migrations: int = Field(default=2, ge=0, le=10)
 
 
 class PaperclipEventIn(BaseModel):
@@ -474,6 +568,10 @@ async def lifespan(app: FastAPI):
         start_recovery_reconciler(Neo4jClient)
     except Exception as e:
         _lifespan_logger.warning(f"Recovery reconciler not started: {e}")
+    try:
+        start_execution_reconciler(Neo4jClient)
+    except Exception as e:
+        _lifespan_logger.warning(f"Execution reconciler not started: {e}")
     try:
         from .kg_harvester import _start_harvester_loop
         _start_harvester_loop()
@@ -715,6 +813,8 @@ _benchmark_controller = BenchmarkController()
 _loadout_control = LoadoutControlPlane()
 _self_healing = SelfHealingController()
 _recovery_control = RecoveryControlPlane()
+_execution_control = ExecutionControlPlane()
+_improvement_cycle = ImprovementCycle()
 
 def _neo_fleet() -> Neo4jClient:
     """Dedicated Neo4j client/pool for high-concurrency fleet executor endpoints
@@ -1493,6 +1593,276 @@ def api_benchmark_controller_status(user: str = Depends(auth)):
     return _benchmark_controller.status()
 
 
+@app.get("/api/fleet/controllers")
+def api_fleet_controller_status(user: str = Depends(auth)):
+    neo = _neo()
+    try:
+        controllers = Neo4jControllerStore(neo).list_status()
+        return {
+            "controllers": controllers,
+            "summary": {
+                "registered": len(controllers),
+                "leaders": sum(
+                    1
+                    for controller in controllers
+                    if controller["lease"].get("is_leader")
+                ),
+                "failed": sum(
+                    1
+                    for controller in controllers
+                    if controller["checkpoint"].get("status") == "FAILED"
+                ),
+            },
+        }
+    finally:
+        neo.close()
+
+
+@app.get("/api/fleet/improvement-cycle")
+def api_improvement_cycle_status(
+    limit: int = Query(100, ge=1, le=500),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        return _improvement_cycle.status(neo, limit=limit)
+    finally:
+        neo.close()
+
+
+@app.get("/api/fleet/kv-cache")
+def api_kv_cache_status(
+    active_only: bool = Query(default=False),
+    limit: int = Query(default=500, ge=1, le=2000),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        if active_only:
+            manifests = neo.list_kv_cache_manifests(
+                active_only=True,
+                limit=limit,
+            )
+            hits = sum(int(item.get("hit_count") or 0) for item in manifests)
+            misses = sum(int(item.get("miss_count") or 0) for item in manifests)
+            return {
+                "manifests": manifests,
+                "summary": {
+                    "active": len(manifests),
+                    "bytes": sum(int(item.get("bytes") or 0) for item in manifests),
+                    "tokens": sum(
+                        int(item.get("token_count") or 0) for item in manifests
+                    ),
+                    "hits": hits,
+                    "misses": misses,
+                    "hit_rate": round(hits / max(hits + misses, 1), 4),
+                },
+            }
+        return neo.kv_cache_status(limit=limit)
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/kv-cache/manifests")
+def api_register_kv_cache_manifest(
+    body: KVCacheManifestIn,
+    x_fleet_node_token: Optional[str] = Header(None),
+    user: str = Depends(auth),
+):
+    _verify_fleet_node_identity(body.node_id, x_fleet_node_token)
+    try:
+        manifest = build_manifest(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    neo = _neo()
+    try:
+        stored = neo.upsert_kv_cache_manifest(
+            manifest,
+            actor=f"node:{body.node_id}",
+        )
+        if not stored:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "cache ID already belongs to another node, prefix, "
+                    "or compatibility fingerprint"
+                ),
+            )
+        stored.pop("artifact_ref", None)
+        stored.pop("compatibility_json", None)
+        stored.pop("capabilities_json", None)
+        return {"registered": bool(stored), "manifest": stored}
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/kv-cache/events")
+def api_record_kv_cache_event(
+    body: KVCacheEventIn,
+    x_fleet_node_token: Optional[str] = Header(None),
+    user: str = Depends(auth),
+):
+    _verify_fleet_node_identity(body.node_id, x_fleet_node_token)
+    neo = _neo()
+    try:
+        recorded = neo.record_kv_cache_event(
+            body.cache_id,
+            outcome=body.outcome,
+            node_id=body.node_id,
+            task_id=body.task_id,
+            prefix_id=body.prefix_id,
+            tokens_saved=body.tokens_saved,
+            prefill_ms_saved=body.prefill_ms_saved,
+            restore_ms=body.restore_ms,
+            actor=f"node:{body.node_id}",
+        )
+        if not recorded.get("manifest"):
+            raise HTTPException(
+                status_code=409,
+                detail="cache manifest is missing or belongs to another node",
+            )
+        runtime = str(
+            (recorded.get("manifest") or {}).get("runtime") or "unknown"
+        )
+        KV_CACHE_EVENTS.labels(
+            outcome=body.outcome.lower(),
+            runtime=runtime,
+        ).inc()
+        if body.prefill_ms_saved:
+            KV_CACHE_PREFILL_MS_SAVED.labels(runtime=runtime).inc(
+                body.prefill_ms_saved
+            )
+        if body.restore_ms:
+            KV_CACHE_RESTORE_MS.labels(runtime=runtime).observe(body.restore_ms)
+        return recorded
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/improvement-cycle/proposals")
+def api_create_improvement_proposal(
+    body: ImprovementProposalIn,
+    user: str = Depends(auth),
+):
+    try:
+        contract = build_execution_contract(
+            repository=body.repository,
+            objective=body.objective,
+            allowed_paths=body.allowed_paths,
+            verification_commands=body.verification_commands,
+            recommended_tier=body.recommended_tier,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    neo = _neo()
+    try:
+        task_id = neo.upsert_ticket(
+            title=body.title,
+            ticket_type="bounded_code_change",
+            status="PROPOSED",
+            kind="bounded_code_change",
+            required_capabilities=["llm", "code_execution"],
+            target_agent_id=body.target_agent_id,
+            priority=body.priority,
+            payload={
+                "execution_contract": contract,
+                "created_by": user,
+                "requires_approval": True,
+                "execution_mode": "bounded_change",
+            },
+            idempotency_key=(
+                f"bounded-improvement:{body.repository}:"
+                f"{hashlib.sha256(json.dumps(contract, sort_keys=True).encode()).hexdigest()}"
+            ),
+            preemptible=True,
+            max_migrations=2,
+        )
+        return {
+            "task_id": task_id,
+            "status": "PROPOSED",
+            "contract": contract,
+        }
+    finally:
+        neo.close()
+
+
+@app.post("/api/fleet/improvement-cycle/attempts/{attempt_id}/promote")
+def api_promote_improvement_patch(
+    attempt_id: str,
+    body: PatchPromotionIn,
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        record = _improvement_cycle.get_attempt(neo, attempt_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="improvement attempt not found")
+        attempt = record["attempt"]
+        if not attempt.get("accepted"):
+            raise HTTPException(
+                status_code=409,
+                detail="only a verified improvement attempt can be promoted",
+            )
+        if attempt.get("promotion_status") == "PROMOTED":
+            return {
+                "attempt_id": attempt_id,
+                "promoted": True,
+                "idempotent": True,
+                "patch_sha256": record["evidence"].get("patch_sha256"),
+            }
+        claimed = _improvement_cycle.claim_promotion(
+            neo,
+            attempt_id,
+            actor=user,
+            fingerprint=body.fingerprint,
+        )
+        if not claimed:
+            raise HTTPException(
+                status_code=409,
+                detail="patch promotion is already active or completed",
+            )
+        try:
+            result = promote_patch(
+                record["contract"],
+                record["evidence"],
+                expected_fingerprint=body.fingerprint,
+            )
+        except Exception as exc:
+            _improvement_cycle.record_promotion(
+                neo,
+                attempt_id,
+                actor=user,
+                reason=body.reason,
+                result={
+                    "promoted": False,
+                    "reason": "promotion_internal_error",
+                    "detail": str(exc)[:240],
+                },
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="patch promotion failed safely",
+            ) from exc
+        updated = _improvement_cycle.record_promotion(
+            neo,
+            attempt_id,
+            actor=user,
+            reason=body.reason,
+            result=result,
+        )
+        if not result.get("promoted"):
+            raise HTTPException(status_code=409, detail=result)
+        return {
+            "attempt_id": attempt_id,
+            **result,
+            "promotion_status": updated.get("promotion_status"),
+        }
+    finally:
+        neo.close()
+
+
 @app.post("/api/fleet/benchmark-controller/control")
 def api_benchmark_controller_control(body: BenchmarkControlIn, user: str = Depends(auth)):
     return _benchmark_controller.set_enabled(body.enabled)
@@ -1784,6 +2154,7 @@ def api_create_allocation_reservation(
             task_id=body.task_id,
             node_id=body.node_id,
             model_id=body.model_id,
+            cache_id=body.cache_id,
             snapshot_revision=body.snapshot_revision,
             actor=user,
             ttl_seconds=body.ttl_seconds,
@@ -2075,10 +2446,16 @@ def api_fleet_dashboard(user: str = Depends(auth)):
 
     controls: dict[str, Any] = {"nodes": [], "audit": []}
     active_reservations: list[dict[str, Any]] = []
+    controllers: list[dict[str, Any]] = []
+    skill_profiles: list[dict[str, Any]] = []
+    kv_cache: dict[str, Any] = {"manifests": [], "summary": {}}
     neo = _neo()
     try:
         controls = _self_healing.list_node_controls(neo)
         active_reservations = neo.list_active_allocation_reservations()
+        controllers = Neo4jControllerStore(neo).list_status()
+        skill_profiles = _improvement_cycle.status(neo, limit=500)["profiles"]
+        kv_cache = neo.kv_cache_status(limit=500)
     except Exception as exc:
         router_errors.append(f"assistx-control-state: {str(exc)[:240]}")
     finally:
@@ -2102,7 +2479,13 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         rows.sort(key=lambda row: -(row.get("effective_rvu_per_hour") or -1))
     task_rows = _capacity_task_rows()
     capacity_forecast = build_capacity_forecast(task_rows, nodes, value_matrix)
-    allocation_plan = build_allocation_plan(task_rows, nodes, value_matrix)
+    allocation_plan = build_allocation_plan(
+        task_rows,
+        nodes,
+        value_matrix,
+        skill_profiles=skill_profiles,
+        cache_manifests=kv_cache.get("manifests") or [],
+    )
     diagnoses = [
         diagnose_incident(incident, {"nodes": nodes})
         for incident in health_plan.get("incidents") or []
@@ -2131,11 +2514,13 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         "value_matrix": value_matrix,
         "benchmark_plan": benchmark_plan,
         "benchmark_controller": _benchmark_controller.status(),
+        "controllers": controllers,
         "routing_regret": routing_regret,
         "loadout_simulation": loadout_simulation,
         "capacity_forecast": capacity_forecast,
         "allocation_plan": allocation_plan,
         "allocation_reservations": active_reservations,
+        "kv_cache": kv_cache,
         "health_plan": health_plan,
         "diagnoses": diagnoses,
         "self_healing": {**_self_healing.status(), "controls": controls},
@@ -3404,6 +3789,8 @@ def api_create_task(body: TaskCreateIn, user: str = Depends(auth)):
             priority=body.priority,
             payload=payload,
             idempotency_key=body.idempotency_key,
+            preemptible=body.preemptible,
+            max_migrations=body.max_migrations,
         )
         return {"task_id": result.get("task_id"), "dispatch_id": result.get("dispatch_id")}
     finally:
@@ -3611,6 +3998,7 @@ def api_heartbeat_task(
             session_id=body.session_id,
             metadata=body.metadata,
             lease_seconds=body.lease_seconds,
+            claim_id=body.claim_id,
         )
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
@@ -3632,15 +4020,28 @@ def api_complete_task(
     task_before = neo.get_task(task_id) or {}
     if _is_recovery_task(task_before):
         _verify_recovery_node_identity(body.agent_id, x_fleet_node_token)
+    improvement_evaluation = evaluate_completion(
+        task_before,
+        requested_status=body.status,
+        result=body.result,
+    )
+    effective_status = improvement_evaluation["effective_status"]
+    completion_result = dict(body.result or {})
+    if improvement_evaluation["managed"]:
+        completion_result["improvement_evaluation"] = {
+            "accepted": improvement_evaluation["accepted"],
+            "reasons": improvement_evaluation["reasons"],
+        }
     task = neo._with_retry(
         lambda: neo.complete_task(
             task_id=task_id,
             agent_id=body.agent_id,
-            status=body.status,
+            status=effective_status,
             summary=body.summary,
-            result=body.result,
+            result=completion_result,
             session_id=body.session_id,
             idempotency_key=body.idempotency_key,
+            claim_id=body.claim_id,
         )
     )
     if not task:
@@ -3648,33 +4049,150 @@ def api_complete_task(
     dead_letter_incident_id = _maybe_dead_letter_exhausted_task(
         neo=neo,
         task_id=task_id,
-        completed_status=body.status,
+        completed_status=effective_status,
         actor=user,
     )
     if dead_letter_incident_id:
         refreshed = neo.get_task(task_id)
         if refreshed:
             task = refreshed
-    TASK_COMPLETIONS.labels(status=body.status).inc()
+    TASK_COMPLETIONS.labels(status=effective_status).inc()
+    improvement_outcome = None
+    if improvement_evaluation["managed"]:
+        try:
+            recorded = _improvement_cycle.record_attempt(
+                neo,
+                task_before,
+                agent_id=body.agent_id,
+                model_id=str(completion_result.get("model") or "") or None,
+                evaluation=improvement_evaluation,
+            )
+            repair_task_id = _improvement_cycle.propose_repair(
+                neo,
+                task_before,
+                improvement_evaluation,
+            )
+            improvement_outcome = {
+                "accepted": improvement_evaluation["accepted"],
+                "effective_status": effective_status,
+                "reasons": improvement_evaluation["reasons"],
+                "profile": recorded["profile"],
+                "repair_task_id": repair_task_id,
+            }
+        except Exception as exc:
+            _lifespan_logger.warning(
+                "Improvement outcome recording failed for %s: %s",
+                task_id,
+                exc,
+            )
+            improvement_outcome = {
+                "accepted": improvement_evaluation["accepted"],
+                "effective_status": effective_status,
+                "reasons": improvement_evaluation["reasons"],
+                "recording_error": str(exc)[:240],
+            }
     benchmark_outcome = publish_benchmark_outcome(
         task_before,
         body.agent_id,
-        body.status,
-        body.result,
+        effective_status,
+        completion_result,
     )
     recovery_outcome = _record_recovery_task_outcome(
         neo,
         task_before,
         body.agent_id,
-        body.status,
-        body.result or {},
+        effective_status,
+        completion_result,
     )
     return {
         "task": task,
         "dead_letter_incident_id": dead_letter_incident_id,
         "benchmark_outcome": benchmark_outcome,
         "recovery_outcome": recovery_outcome,
+        "improvement_outcome": improvement_outcome,
     }
+
+
+@app.post("/api/tasks/{task_id}/checkpoint")
+def api_checkpoint_task(
+    task_id: str,
+    body: TaskCheckpointIn,
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        result = _execution_control.checkpoint(
+            neo,
+            task_id,
+            body.agent_id,
+            body.claim_id,
+            checkpoint=body.checkpoint,
+            progress=body.progress,
+            estimated_remaining_seconds=body.estimated_remaining_seconds,
+            pause=body.pause,
+        )
+        if not result["checkpointed"]:
+            return JSONResponse(status_code=409, content=result)
+        return result
+    finally:
+        neo.close()
+
+
+@app.post("/api/tasks/{task_id}/preempt")
+def api_preempt_task(
+    task_id: str,
+    body: TaskPreemptionIn,
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        result = _execution_control.request_preemption(
+            neo,
+            task_id,
+            user,
+            reason=body.reason,
+            target_agent_id=body.target_agent_id,
+        )
+        if not result["requested"]:
+            return JSONResponse(status_code=409, content=result)
+        return result
+    finally:
+        neo.close()
+
+
+@app.post("/api/tasks/{task_id}/migrate")
+def api_migrate_task(
+    task_id: str,
+    body: TaskMigrationIn,
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        result = _execution_control.migrate(
+            neo,
+            task_id,
+            body.target_agent_id,
+            user,
+        )
+        if not result["migrated"]:
+            return JSONResponse(status_code=409, content=result)
+        return result
+    finally:
+        neo.close()
+
+
+@app.get("/api/fleet/migrations")
+def api_task_migrations(
+    task_id: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    user: str = Depends(auth),
+):
+    neo = _neo()
+    try:
+        events = _execution_control.list_events(neo, task_id=task_id, limit=limit)
+        return {"events": events, "count": len(events)}
+    finally:
+        neo.close()
 
 
 def _record_recovery_task_outcome(
@@ -3760,15 +4278,27 @@ def _verify_recovery_node_identity(
     agent_id: str | None,
     supplied_token: str | None,
 ) -> None:
+    _verify_fleet_node_identity(
+        agent_id,
+        supplied_token,
+        missing_message="target node has no registered recovery identity",
+        invalid_message="invalid recovery node identity",
+    )
+
+
+def _verify_fleet_node_identity(
+    agent_id: str | None,
+    supplied_token: str | None,
+    *,
+    missing_message: str = "node has no registered fleet identity",
+    invalid_message: str = "invalid fleet node identity",
+) -> None:
     tokens = _json_object_env("ASSISTX_FLEET_NODE_TOKENS")
     error = verify_node_token(tokens, agent_id, supplied_token)
     if error == "node_identity_not_registered":
-        raise HTTPException(
-            status_code=403,
-            detail="target node has no registered recovery identity",
-        )
+        raise HTTPException(status_code=403, detail=missing_message)
     if error:
-        raise HTTPException(status_code=403, detail="invalid recovery node identity")
+        raise HTTPException(status_code=403, detail=invalid_message)
 
 
 @app.post("/api/paperclip/events")

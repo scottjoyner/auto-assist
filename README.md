@@ -1,59 +1,121 @@
-# AssistX - Paperclip Cutover Control Plane
+# AssistX
 
-AssistX owns task state and Sophia ingestion in Neo4j. For the current release,
-non-realtime task execution is being stabilized through the existing Paperclip
-service and its registered `hermes_local` adapter. Direct worker-claim/swarm
-routing is development work and is not the cutover execution path.
+AssistX is a graph-backed control plane for heterogeneous agent fleets. It
+captures work, evaluates node and model capability, allocates tasks, fences
+execution, coordinates recovery and migration, and turns bounded code changes
+into signed, operator-reviewed improvement candidates.
 
+Neo4j is the durable source of truth. Paperclip remains a supported execution
+backend, while direct Hermes workers use the same task, lease, checkpoint, and
+evidence contracts. The selected execution backend must be explicit in each
+deployment.
+
+```text
+intake -> task graph -> allocation reservation -> fenced execution
+                                      |                 |
+                                      v                 v
+                              model/node scoring   checkpoint/evidence
+                                      |                 |
+                                      +---- reconciliation
+                                                   |
+                           recover / migrate / learn / operator promote
 ```
-Sophia (voice) -> POST /api/voice/events -> AssistX -> Paperclip issue
-                                                    -> hermes_local run
-                                                    -> synchronized outcome
-```
 
-## Quick Start
+## What is implemented
+
+- Canonical task, event, trace, node, model, and artifact state in Neo4j.
+- Capability-, health-, load-, latency-, quality-, and cost-aware allocation.
+- Reservation and claim fencing so only the selected node can execute work.
+- Durable controller leases and checkpoints with stale-leader rejection.
+- Typed, signed recovery runbooks with allowlisted node adapters and rollback.
+- Preemptible task checkpoints and bounded cross-node migration.
+- Bounded self-improvement contracts for small and large agents.
+- Per-attempt detached Git worktrees, executor-measured diffs and tests, and
+  HMAC-signed evidence.
+- A graph catalog for opaque prompt-prefix KV caches with exact
+  model/quant/runtime compatibility, privacy scopes, TTL, telemetry, and
+  cache-aware allocation.
+- Exact-fingerprint operator promotion with base-HEAD fencing, clean-target
+  checks, verification, and automatic patch reversal on failure.
+- An authenticated Operations workspace at `/operations` for fleet state,
+  readiness, allocation, recovery, migration, learning, and promotion.
+
+The self-improvement loop cannot approve itself, promote its own patch, commit,
+push, open a pull request, or use unrestricted shell payloads.
+
+## Quick start
+
+Copy `.env.example` to `.env`, replace every placeholder secret, then start the
+development stack:
 
 ```bash
-set -a; source .env; set +a
+set -a
+source .env
+set +a
 docker compose -f docker-compose.yml -f compose.override.yml up -d
 docker exec -it assistx-api bash -lc "python -m assistx.cli init"
 ```
 
-Optional overlay mode:
+Optional router and assignment overlay:
 
 ```bash
 docker compose -f docker-compose.yml -f compose.overlay.yml up -d
 ```
 
-## Key Docs
-
-- [`docs/fleet-recovery-rollout.md`](docs/fleet-recovery-rollout.md) - Signed recovery setup, adapter allowlists, canary rollout, and emergency shutdown
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - Release architecture, data flow, API, schema
-- [`docs/STATUS.md`](docs/STATUS.md) - Verified status, blocker, and remediation order
-- [`docs/swarm_contracts/`](docs/swarm_contracts/) - Future swarm/event contracts, gated from cutover
-- `auto-router/docs/DEPLOYMENT.md` - Aligned deployment runbook for AssistX plus auto-router
-
-## Core Concept
-
-Task state and Sophia-linked graph records live in the `assistx` Neo4j
-database. During Paperclip cutover, actionable Sophia input enters through
-`POST /api/voice/events`, creates/link tasks in AssistX, and dispatches through
-Paperclip. The direct worker claim endpoints are retained for development and
-must not replace Paperclip until a separately approved release.
-
-The main LLM path is LM Studio exposing OpenAI-compatible endpoints via
-`OPENAI_BASE_URL`. The production Compose stack now requires that endpoint
-to be set explicitly, so a missing or mispointed LM Studio configuration
-fails fast instead of silently falling back. Ollama is not part of the
-deployment stack.
-
-AssistX can also run with an overlay topology where `auto-router` and
-`auto-assign` sit alongside the core control plane. In that mode,
-`ASSISTX_OVERLAY_MODE` and the `AUTO_ROUTER_*` / `AUTO_ASSIGN_*` URLs make
-the overlay explicit instead of implicit.
-
-## Run Tests
+Verify the API and open the operator workspace:
 
 ```bash
-PYTHONPATH=src .venv/bin/pytest tests/test_swarm_phase2.py tests/test_migration_api.py -v
+curl -u "$BASIC_AUTH_USER:$BASIC_AUTH_PASS" \
+  http://localhost:8000/api/fleet/operations-readiness
 ```
+
+Then visit `http://localhost:8000/operations`.
+
+Production deployments must explicitly configure repository bind mounts,
+worktree storage, node identities, attestation keys, recovery allowlists, and
+one execution backend. See the rollout guides before enabling mutation.
+
+## Documentation
+
+- [`docs/INDEX.md`](docs/INDEX.md) — authoritative documentation map
+- [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) — current capabilities,
+  safety boundaries, and remaining gaps
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — components, authority, and
+  state flows
+- [`docs/EXECUTION_AUTHORITY.md`](docs/EXECUTION_AUTHORITY.md) — execution and
+  promotion authority boundaries
+- [`docs/fleet-recovery-rollout.md`](docs/fleet-recovery-rollout.md) — recovery,
+  reconciliation, checkpoint, and migration rollout
+- [`docs/self-improvement-cycle.md`](docs/self-improvement-cycle.md) — bounded
+  learning-loop design
+- [`docs/self-improvement-rollout.md`](docs/self-improvement-rollout.md) —
+  deployment, canary, key rotation, rollback, and troubleshooting
+- [`docs/kv-cache-control-plane.md`](docs/kv-cache-control-plane.md) —
+  prefix-cache identity, compatibility, routing, runtime adapters, and rollout
+- [`docs/end-to-end-deployment.md`](docs/end-to-end-deployment.md) — one
+  isolated deployment with staged task, cache, migration, improvement, recovery,
+  evidence, and rollback gates
+
+The dated [`docs/STATUS.md`](docs/STATUS.md) is retained as a Paperclip cutover
+record. It is not the current capability statement.
+
+## Test
+
+Run the full unit suite:
+
+```bash
+PYTHONPATH=src .venv/bin/pytest -q -m "not integration" \
+  --ignore=tests/integration
+```
+
+Run the real-Neo4j lifecycle canary when the integration service is available:
+
+```bash
+PYTHONPATH=src .venv/bin/pytest -q tests/test_recovery_canary.py
+```
+
+The canary covers signed recovery, allocation fencing, migration fencing,
+bounded improvement, repair proposal creation, and promotion serialization.
+
+Tests under `tests/integration/` expect live AssistX, router, and assignment
+services and are intentionally excluded from the unit command.

@@ -3,6 +3,12 @@
 Typed recovery is disabled until both the control plane and each node have an
 identity, signing keys, and explicit mutation allowlists.
 
+This runbook covers service recovery, durable reconciliation, checkpointing,
+and migration. Repository mutation uses a separate trust boundary and is
+documented in
+[`self-improvement-rollout.md`](self-improvement-rollout.md). A node may be
+enabled for one path without being enabled for the other.
+
 ## Identities and signing keys
 
 Generate independent random secrets for the runbook signer and every node.
@@ -58,6 +64,62 @@ Compose services used for deployment must reference an image environment
 variable, such as `image: ${ASSISTX_API_IMAGE}`. Recovery requests must provide
 an immutable image reference containing `@sha256:`.
 
+## Durable controller leadership
+
+Recovery reconciliation uses a Neo4j-backed `ControllerLease` and
+`ControllerCheckpoint`. Every leadership transfer increments a fencing token.
+A controller must still own the unexpired lease with the same token when it
+commits a tick result; work produced by a stale leader is rejected.
+
+Multiple API replicas may run the reconciler. Non-leaders remain in standby,
+completed tick keys are replay-safe, and failed ticks remain retryable with
+their bounded error result recorded in the checkpoint.
+
+The default controller instance identity contains the hostname, process ID, and
+a random boot suffix. Set `ASSISTX_CONTROLLER_INSTANCE_ID` only when the
+deployment platform supplies a unique replica identity. Never configure the
+same fixed identity on multiple live replicas.
+
+Controller ownership, lease expiry, fencing token, attempt count, and last tick
+result are available from `GET /api/fleet/controllers` and the Operations
+workspace.
+
+## Checkpoint, preemption, and migration
+
+Tasks are non-preemptible unless their producer explicitly sets
+`preemptible=true`. Preemptible execution uses the claim ID as an execution
+fence:
+
+1. An operator or allocator requests preemption with
+   `POST /api/tasks/{id}/preempt`.
+2. The current node observes `PAUSING` through its fenced heartbeat.
+3. The node writes a versioned checkpoint with
+   `POST /api/tasks/{id}/checkpoint` and releases ownership.
+4. The durable `execution-reconciler` validates the selected destination and
+   returns the task to `READY` with that node as its target.
+5. The destination claims a new execution attempt and resumes from
+   `checkpoint_json`.
+
+Old claim IDs cannot heartbeat, checkpoint, or complete the migrated execution.
+Migration requires a healthy, unblocked `SwarmNode` that advertises every
+required task capability and differs from the paused source node. Each task has
+a bounded `max_migrations` budget. Any active allocation reservation for the
+source is atomically superseded during handoff so it cannot block the
+destination claim. Checkpoint payloads are bounded by
+`ASSISTX_MAX_CHECKPOINT_BYTES` (1 MiB by default). A `PAUSING` task that is not
+acknowledged within the timeout returns to its prior execution when the lease
+is still valid, or to `READY` after the lease expires.
+
+Benchmark work checkpoints between cases. LLM work can checkpoint before
+inference or preserve a completed response so migration does not repeat a paid
+or expensive generation. Legacy shell handlers remain non-preemptible and
+disabled by default.
+
+Migration history is stored as `TaskMigrationEvent` records and exposed through
+`GET /api/fleet/migrations`. The Operations workspace shows progress,
+checkpoint revision, migration budget, preempt/migrate controls, and recent
+migration events.
+
 ## Canary sequence
 
 Enable one non-critical node first:
@@ -98,6 +160,10 @@ FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
 Expired and stuck proposals reconcile automatically. Inspect drained nodes and
 failed rollback evidence before re-enabling automation.
 
+Stopping recovery execution does not disable ordinary task execution or
+bounded repository improvement. Drain or disable those authorities separately
+when an incident crosses trust boundaries.
+
 ## Operator controls and evidence
 
 - `/api/fleet/operations-readiness` reports required gates, key IDs, node
@@ -109,3 +175,8 @@ failed rollback evidence before re-enabling automation.
   task target and records the releasing actor.
 - Recovery evidence bundles are downloadable from Operations and include the
   proposal, execution evidence, and complete audit transition list.
+- `/api/fleet/controllers` exposes reconciler lease owner, expiry, fencing
+  token, checkpoint status, and last tick result.
+- `/api/fleet/migrations` exposes checkpoint/preemption/migration history.
+- The current authority matrix is maintained in
+  [`EXECUTION_AUTHORITY.md`](EXECUTION_AUTHORITY.md).

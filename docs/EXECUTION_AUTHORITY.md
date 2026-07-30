@@ -1,47 +1,70 @@
-# Execution Authority Reconciliation (W-22)
+# Execution and mutation authority
 
-auto-assist historically ran **two** execution authorities in parallel:
+AssistX previously had Paperclip and a direct Hermes poller consuming work in
+parallel. Both integrations remain available, but they must share the canonical
+Neo4j task lifecycle and a deployment must make its execution choice explicit.
 
-1. **Paperclip cutover** — `src/assistx/paperclip_poller.py` polls Paperclip
-   for issue/run state and reconciles it into AssistX task state.
-2. **Direct `hermes_agent_adapter` poller** — `src/assistx/agents/hermes_agent_adapter.py`
-   (`run_loop`) polls AssistX directly for available tasks and executes them via
-   the local hermes binary.
+## Runtime backend
 
-Running both at once risks double-execution and divergent task state. This doc
-records the reconciliation plan and the implemented single config-gated switch.
+`EXECUTION_BACKEND` controls worker pollers:
 
-## Implemented switch
+| Value | Paperclip poller | Direct Hermes poller | Guidance |
+|---|---:|---:|---|
+| `paperclip` | yes | no | Paperclip owns non-realtime execution |
+| `direct` | no | yes | Fenced Hermes workers claim tasks directly |
+| `auto` | yes | yes | Compatibility only; avoid for overlapping task populations |
 
-`config.py` exposes `settings.execution_backend`, sourced from the
-`EXECUTION_BACKEND` env var (default `auto`). `worker.py:_start_execution_pollers()`
-branches on it and starts the matching poller(s); `worker.main()` emits a single
-startup log line stating the active backend and which pollers are live:
+`auto` preserves legacy behavior and is not a safe substitute for deciding
+which backend owns production work. If both integrations run, task eligibility,
+reservation, and idempotency policy must prove that they cannot execute the
+same work.
 
-```
-execution authority active backend=auto (paperclip=True, direct=True) pollers=2
-```
+## Authority matrix
 
-The switch matrix:
+| Action | Allocator | Worker/node | Controller | Authenticated operator |
+|---|---:|---:|---:|---:|
+| Recommend node/model | yes | no | no | view |
+| Reserve allocation | yes/API | no | reconcile expiry | release |
+| Claim and execute task | no | current target only | reconcile stale state | no |
+| Heartbeat/complete | no | current claim ID only | no | no |
+| Request preemption | policy | observe/acknowledge | reconcile | yes |
+| Write checkpoint | no | current claim ID only | validate/handoff | no |
+| Diagnose incident | advisory | report observations | yes | view |
+| Approve recovery fingerprint | no | no | no | yes |
+| Execute recovery | dispatch only | signed typed runbook only | reconcile | enable/disable |
+| Propose code change | proposal only | no | no | yes |
+| Approve improvement proposal | no | no | no | yes |
+| Produce code evidence | no | bounded worker | verify/record | review |
+| Promote exact patch | no | no | no | yes |
+| Commit, push, open PR | no | no | no | normal release workflow |
 
-| `EXECUTION_BACKEND` | Paperclip poller | Direct hermes poller |
-|----------------------|------------------|----------------------|
-| `paperclip`          | yes              | no                   |
-| `direct`             | no               | yes                  |
-| `auto` (default)    | yes              | yes                  |
+## Required fences
 
-Default is `auto` to preserve existing behavior (both were previously started
-out-of-band). To converge, pick one:
+- Allocation must be reserved against a recent snapshot before it constrains a
+  claim.
+- Worker state changes must carry the current claim ID.
+- Controller writes must carry the current lease fencing token.
+- Recovery instructions must have a valid signature, TTL, typed action, and
+  configured node alias.
+- Improvement acceptance must use executor-measured, signed evidence.
+- Promotion must use the exact patch SHA-256, accepted attempt, original base
+  HEAD, clean target, and successful post-apply verification.
 
-- **Paperclip as permanent authority** → set `EXECUTION_BACKEND=paperclip` once
-  the hermes adapter routes through Paperclip (see hermes-agent W-80).
-- **Direct authority** → set `EXECUTION_BACKEND=direct` if the hermes adapter
-  remains the execution host.
+These fences are independent. A healthy node is not automatically authorized
+to recover a service, and a verified code attempt is not automatically
+authorized for promotion or release.
 
-## Required follow-up
+## Deployment rule
 
-- Remove the `auto` fallback once a single authority is chosen in production.
-- Ensure idempotency (`idempotency_store`) prevents double-execution if both are
-  ever enabled.
-- hermes-agent: finish Paperclip registration (W-80) so `paperclip` mode is the
-  coherent long-term path.
+Before enabling a backend or mutation path, record:
+
+1. the owning process and unique node/controller identity;
+2. the eligible task population;
+3. the secrets and allowlists it receives;
+4. its idempotency and fencing boundary;
+5. its disable and rollback procedure;
+6. the canary that proves the boundary.
+
+Use [`fleet-recovery-rollout.md`](fleet-recovery-rollout.md) and
+[`self-improvement-rollout.md`](self-improvement-rollout.md) for the two
+mutation-capable paths.

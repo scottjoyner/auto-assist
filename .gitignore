@@ -1,4 +1,7 @@
 .env
+deploy/canary.env
+deploy/canary-*.env
+artifacts/deployment-canary/
 .venv/
 env/
 venv/

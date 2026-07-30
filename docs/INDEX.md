@@ -1,50 +1,56 @@
-# AssistX — Docs Index
+# AssistX documentation
 
-## Current Docs
+Start with the current documents below. Files under `archive/`, dated plans,
+and the legacy `STATUS.md` are design or deployment records rather than current
+operating instructions.
 
-| Doc | What it covers |
-|-----|---------------|
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Paperclip cutover architecture, data flow, API reference, Neo4j schema |
-| [`STATUS.md`](STATUS.md) | Verified cutover state, blocker, and remediation order |
-| [`swarm_contracts/`](swarm_contracts/) | Deferred direct-worker contracts and event schema |
-| [`plans/2026-06-08-xwing-agent-development-handoff.md`](plans/2026-06-08-xwing-agent-development-handoff.md) | Verified xwing-first worker readiness, endpoint inventory, and agent kickoff sequence |
+## Current system
 
-## Archived Docs
+| Document | Purpose |
+|---|---|
+| [`CURRENT_STATUS.md`](CURRENT_STATUS.md) | Implemented capabilities, verified boundaries, and remaining gaps |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | System components, graph authority, control loops, and state flows |
+| [`EXECUTION_AUTHORITY.md`](EXECUTION_AUTHORITY.md) | Which actor may claim, execute, recover, approve, and promote |
+| [`fleet-recovery-rollout.md`](fleet-recovery-rollout.md) | Recovery keys, adapters, controller fencing, migration, canary, and shutdown |
+| [`self-improvement-cycle.md`](self-improvement-cycle.md) | Design and invariants of evidence-gated repository improvement |
+| [`self-improvement-rollout.md`](self-improvement-rollout.md) | Deployment, canary, key rotation, rollback, and troubleshooting |
+| [`kv-cache-control-plane.md`](kv-cache-control-plane.md) | Opaque prefix identity, model/quant compatibility, cache-aware allocation, node adapters, security, and rollout |
+| [`end-to-end-deployment.md`](end-to-end-deployment.md) | Isolated branch-image deployment, staged canaries, evidence capture, and rollback |
+| [`swarm_contracts/`](swarm_contracts/) | Shared event and worker contract reference |
 
-Superseded or historical documents moved to [`archive/`](archive/):
+## Historical records and plans
 
-| Doc | Why archived |
-|-----|-------------|
-| `UNIFICATION.md` | Concepts absorbed into ARCHITECTURE.md |
-| `MIGRATION.md` | Original migration plan, superseded by swarm architecture |
-| `HANDOFF_PHASE_2_SWARM_MVP.md` | Handoff doc, implementation complete |
-| `HANDOFF_CURRENT_STATE.md` | Session handoff, done |
-| `PHASE_2_HARDENING_PLAN.md` | Superseded by STATUS.md |
-| `IMPLEMENTATION_GUIDE.md` | Superseded by ARCHITECTURE.md |
-| `EXECUTION_SUMMARY.md` | Historical build summary |
-| `PHASE_*.md` (0, 2, 3, 6-10) | Phase-specific plans, superseded |
-| `OFFLINE_SWARM_INTEGRATION_PLAN.md` | Superseded by simpler Neo4j-centric vision |
-| `SOPHIA_TO_ASSISTX_INTEGRATION_PLAN.md` | Historical draft; current release path is in ARCHITECTURE.md and STATUS.md |
-| `CANARY_ACCEPTANCE_2026-05-24.md` | Historical acceptance record |
-| `SPRINT_PLAN.md` | Archived, superseded |
-| `WORK_ASSESSMENT.md` | Session assessment, done |
-| `todo.md` | Items absorbed into STATUS.md |
+- [`STATUS.md`](STATUS.md) is the June 2026 Paperclip cutover record. It is
+  preserved for incident and migration context, not as the current status.
+- [`plans/`](plans/) contains dated proposals and handoffs. A plan is not an
+  enabled runtime feature unless a current document and code path say so.
+- [`archive/`](archive/) contains superseded phase plans, handoffs, and build
+  summaries.
 
-## Key Source Files
+## Primary implementation map
 
-| File | Purpose |
-|------|---------|
-| `src/assistx/api.py` | Main FastAPI app, all routes |
-| `src/assistx/swarm_core.py` | Event envelope, task authority, policy helpers |
-| `src/assistx/swarm_routes.py` | Swarm API endpoints |
-| `src/assistx/neo4j_client.py` | Unified Neo4j driver |
-| `src/assistx/paperclip_client.py` | Cutover execution client for Paperclip |
-| `tests/test_swarm_phase2.py` | Swarm tests |
-| `tests/test_migration_api.py` | Legacy migration tests |
-| `deploy/swarm_nodes.example.json` | Seed node config |
+| Area | Source |
+|---|---|
+| API and authenticated Operations routes | `src/assistx/api.py` |
+| Operations UI | `templates/operations.html`, `static/operations.js` |
+| Neo4j schema, task state, reservations | `src/assistx/neo4j_client.py` |
+| Allocation scoring and opportunity cost | `src/assistx/allocation_engine.py` |
+| Durable controller leases and fencing | `src/assistx/controller_runtime.py` |
+| Checkpoint, preemption, migration | `src/assistx/execution_control.py` |
+| Diagnosis and recovery policy | `src/assistx/diagnosis_engine.py`, `src/assistx/recovery_control.py` |
+| Typed node runbook execution | `src/assistx/recovery_executor.py` |
+| Improvement contracts and learning | `src/assistx/improvement_cycle.py` |
+| Isolated worktrees and promotion | `src/assistx/improvement_runtime.py` |
+| KV-cache identity, compatibility, and economics | `src/assistx/kv_cache.py` |
+| Hermes worker integration | `src/assistx/agents/hermes_agent_adapter.py` |
+| Readiness gates | `src/assistx/operations_readiness.py` |
 
-## Run Tests
+## Verification
 
 ```bash
-PYTHONPATH=src .venv/bin/pytest tests/test_swarm_phase2.py tests/test_migration_api.py -v
+PYTHONPATH=src .venv/bin/pytest -q -m "not integration" \
+  --ignore=tests/integration
+PYTHONPATH=src .venv/bin/pytest -q tests/test_recovery_canary.py
 ```
+
+The second command requires the real Neo4j integration environment used by CI.

@@ -1,0 +1,69 @@
+services:
+  neo4j:
+    container_name: assistx-canary-neo4j
+
+  redis:
+    container_name: assistx-canary-redis
+
+  api:
+    container_name: assistx-canary-api
+    restart: "no"
+    environment:
+      - ASSISTX_RUNTIME_PROFILE=production
+      - ASSISTX_DEPENDENCY_MODE=production
+      - WORKER_CONCURRENCY=1
+      - ASSISTX_REPO_TASK_GENERATOR_ENABLED=false
+      - ASSISTX_REPO_TASK_AUTO_READY=false
+      - ASSISTX_RECOVERY_EXECUTION_ENABLED=${ASSISTX_RECOVERY_EXECUTION_ENABLED:-false}
+      - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
+      - HERMES_SELFTASK_ENABLED=false
+      - ASSISTX_OVERLAY_MODE=direct
+      - AUTO_ROUTER_BASE_URL=
+      - AUTO_ASSIGN_BASE_URL=
+      - FLEET_ROUTER_URL=
+    labels:
+      assistx.deployment: canary
+      assistx.source-revision: ${CANARY_SOURCE_REVISION:-unknown}
+    # Compose 2.24.4+ reset tag: do not attach the branch-image canary to the
+    # shared router network or publish the duplicate "api" service alias.
+    networks: !override
+      - default
+
+  worker:
+    container_name: assistx-canary-worker
+    restart: "no"
+    environment:
+      - ASSISTX_RUNTIME_PROFILE=production
+      - ASSISTX_DEPENDENCY_MODE=production
+      - WORKER_CONCURRENCY=1
+      - ASSISTX_REPO_TASK_GENERATOR_ENABLED=false
+      - ASSISTX_REPO_TASK_AUTO_READY=false
+      - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
+      - HERMES_SELFTASK_ENABLED=false
+      - ASSISTX_URL=http://api:8000
+      - FLEET_ASSISTX_URL=http://api:8000
+      - ASSISTX_OVERLAY_MODE=direct
+      - AUTO_ROUTER_BASE_URL=
+      - AUTO_ASSIGN_BASE_URL=
+    labels:
+      assistx.deployment: canary
+      assistx.source-revision: ${CANARY_SOURCE_REVISION:-unknown}
+
+  hermes-adapter:
+    container_name: assistx-canary-hermes-adapter
+    restart: "no"
+    environment:
+      - HERMES_SELFTASK_ENABLED=false
+      - HERMES_MAX_TASKS_PER_LOOP=1
+      - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
+      - ASSISTX_URL=http://api:8000
+      - ASSISTX_USER=${BASIC_AUTH_USER}
+      - ASSISTX_PASS=${BASIC_AUTH_PASS}
+      - HERMES_AGENT_ID=${CANARY_NODE_ID}
+    labels:
+      assistx.deployment: canary
+      assistx.source-revision: ${CANARY_SOURCE_REVISION:-unknown}
+
+networks:
+  default:
+    name: ${CANARY_NETWORK_NAME:-assistx_canary_default}

@@ -9,6 +9,10 @@ def test_readiness_reports_missing_requirements_without_secret_values():
     assert "node_identity" in result["missing"]
     assert result["checks"][-1]["id"] == "legacy_shell"
     assert result["checks"][-1]["ready"] is True
+    assert any(
+        check["id"] == "improvement_attestation" and check["optional"]
+        for check in result["checks"]
+    )
     assert "secret" not in str(result)
 
 
