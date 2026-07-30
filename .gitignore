@@ -3,10 +3,13 @@ deploy/canary.env
 deploy/canary-*.env
 deploy/reconciliation.env
 deploy/reconciliation/migration-state.yaml
+deploy/reconciliation/lan-runtime-map.json
 deploy/local/
 artifacts/deployment-canary/
 artifacts/reconciliation-preflight/
 artifacts/reconciliation-render/
+artifacts/reconciliation-tailnet-candidates.json
+artifacts/reconciliation-tailnet-candidates.json.sha256
 artifacts/reconciliation-report*.md
 .venv/
 env/
