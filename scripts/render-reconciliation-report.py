@@ -48,6 +48,19 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _runtime_path_summary(item: dict[str, Any]) -> str:
+    selected_url = item.get("selected_access_url") or "unknown"
+    selected_transport = item.get("selected_transport") or "unknown"
+    access_paths = item.get("access_paths") if isinstance(item.get("access_paths"), list) else []
+    transports = [
+        str(path.get("transport"))
+        for path in access_paths
+        if isinstance(path, dict) and path.get("transport")
+    ]
+    available = ",".join(dict.fromkeys(transports)) or "unknown"
+    return f"selected `{selected_transport}` `{selected_url}`; approved `{available}`"
+
+
 def render(data: dict[str, Any], path: Path) -> str:
     checks = data.get("checks") if isinstance(data.get("checks"), dict) else {}
     runtimes = data.get("runtimes") if isinstance(data.get("runtimes"), list) else []
@@ -85,6 +98,9 @@ def render(data: dict[str, Any], path: Path) -> str:
         f"SHADOW_STACK_HEALTHY: {_yes_no(shadow_healthy)}",
         f"RUNTIME_IDENTITY_GATE: {_gate(checks.get('runtime_identity'))}",
         f"CAPACITY_GATE: {_gate(checks.get('slot_capacity'))}",
+        f"TAILNET_DISCOVERY_GATE: {_gate(checks.get('tailnet_discovery'))}",
+        f"NETWORK_PATH_GATE: {_gate(checks.get('container_network_paths'))}",
+        f"LAN_TAILSCALE_FAILOVER_GATE: {_gate(checks.get('lan_tailscale_failover'))}",
         f"STATE_AUTHORITY_GATE: {_gate(checks.get('state_authority'))}",
         f"HERMES_SYNTHETIC_GATE: {_gate(checks.get('hermes_synthetic_task'))}",
         f"ROLLBACK_REHEARSAL: {_gate(checks.get('rollback_rehearsal'))}",
@@ -107,6 +123,18 @@ def render(data: dict[str, Any], path: Path) -> str:
     else:
         lines.append("- No repository revisions recorded.")
 
+    lines.extend(["", "## Private network evidence", ""])
+    for label, dotted in (
+        ("Tailscale candidate inventory", "baseline.tailnet_candidate_inventory_path"),
+        (
+            "Tailscale candidate inventory checksum",
+            "baseline.tailnet_candidate_inventory_sha256_path",
+        ),
+        ("LAN runtime map", "baseline.lan_runtime_map_path"),
+        ("LAN runtime map checksum", "baseline.lan_runtime_map_sha256_path"),
+    ):
+        lines.append(f"- **{label}:** `{_get(data, dotted) or 'not recorded'}`")
+
     lines.extend(["", "## Runtime disposition", ""])
     if admitted:
         lines.append("### Admitted")
@@ -115,7 +143,7 @@ def render(data: dict[str, Any], path: Path) -> str:
                 f"- `{item.get('runtime_instance_id') or 'unknown'}` / "
                 f"`{item.get('model_key') or 'unknown'}` — slots "
                 f"`{item.get('parallel_slots', 'unknown')}`, expires "
-                f"`{item.get('expires_at') or 'unknown'}`"
+                f"`{item.get('expires_at') or 'unknown'}`; {_runtime_path_summary(item)}"
             )
     else:
         lines.append("- No runtime is admitted.")
