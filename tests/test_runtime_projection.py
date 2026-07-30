@@ -165,7 +165,7 @@ def test_projection_requires_shared_hmac_secret(monkeypatch):
 
     with pytest.raises(
         runtime_projection.RuntimeProjectionBlocked,
-        match="HMAC secret",
+        match="ASSISTX_RUNTIME_PROJECTION_HMAC_SECRET is required",
     ):
         runtime_projection.build_runtime_projection(
             lambda: None,
