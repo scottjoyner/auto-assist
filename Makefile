@@ -46,12 +46,14 @@ canary-rollback:
 # Live reconciliation shadow deployment. These targets use a separate Compose
 # project, network, ports, database, and state. They never stop the old stack.
 RECON_ENV_FILE ?= deploy/reconciliation.env
+RECON_STATE_FILE ?= deploy/reconciliation/migration-state.yaml
 RECON_ROUTER_ROOT ?= ../auto-router
 RECON_DIRECT = docker compose --profile neo4j --env-file $(RECON_ENV_FILE) \
 	-f docker-compose.yml -f compose.prod.yml -f compose.canary.yml
 RECON_ROUTER = $(RECON_DIRECT) -f compose.reconciliation.yml
 
-.PHONY: reconciliation-init reconciliation-preflight reconciliation-render-direct \
+.PHONY: reconciliation-init reconciliation-state-init reconciliation-state-validate \
+	reconciliation-cutover-gate reconciliation-preflight reconciliation-render-direct \
 	reconciliation-up-direct reconciliation-render-router reconciliation-up-router \
 	reconciliation-executor-up reconciliation-verify reconciliation-status \
 	reconciliation-down
@@ -60,7 +62,20 @@ reconciliation-init:
 	@test -f $(RECON_ENV_FILE) || cp deploy/reconciliation.env.example $(RECON_ENV_FILE)
 	@chmod 600 $(RECON_ENV_FILE)
 	@chmod +x scripts/reconciliation-preflight.sh scripts/reconciliation-verify-offline.sh
+	@chmod +x scripts/validate-reconciliation-state.py
+	@$(MAKE) reconciliation-state-init
 	@echo "Review and replace every change-me value in $(RECON_ENV_FILE) before startup."
+
+reconciliation-state-init:
+	@test -f $(RECON_STATE_FILE) || cp deploy/reconciliation/migration-state.example.yaml $(RECON_STATE_FILE)
+	@chmod 600 $(RECON_STATE_FILE)
+	@echo "Migration state ledger: $(RECON_STATE_FILE)"
+
+reconciliation-state-validate:
+	@python scripts/validate-reconciliation-state.py $(RECON_STATE_FILE)
+
+reconciliation-cutover-gate:
+	@python scripts/validate-reconciliation-state.py --require-cutover $(RECON_STATE_FILE)
 
 reconciliation-preflight:
 	@./scripts/reconciliation-preflight.sh
