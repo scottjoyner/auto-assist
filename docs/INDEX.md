@@ -10,11 +10,13 @@ operating instructions.
 |---|---|
 | [`FULL_AUTO_RECONCILIATION_20260730.md`](FULL_AUTO_RECONCILIATION_20260730.md) | Authoritative offline-only repository reconciliation, runtime identity contract, containment sequence, and migration gates |
 | [`LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md`](LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md) | Detailed side-by-side migration, shadow validation, cutover, and rollback instructions while the old stack remains live |
-| [`LOCAL_AGENT_HANDOFF_20260730.md`](LOCAL_AGENT_HANDOFF_20260730.md) | Local-agent permissions, prohibitions, workflow, evidence standard, and completion contract |
+| [`LOCAL_AGENT_HANDOFF_20260730.md`](LOCAL_AGENT_HANDOFF_20260730.md) | Local-agent permissions, prohibitions, workflow, evidence standard, ledger discipline, and completion contract |
+| [`MIGRATION_STATE_LEDGER_20260730.md`](MIGRATION_STATE_LEDGER_20260730.md) | Operator-owned evidence ledger, runtime admission records, shadow readiness validation, and production cutover gate |
 | [`../deploy/reconciliation/system-inventory.yaml`](../deploy/reconciliation/system-inventory.yaml) | Machine-readable repository, service, port, state, runtime, evidence, gate, and rollback inventory |
+| [`../deploy/reconciliation/migration-state.example.yaml`](../deploy/reconciliation/migration-state.example.yaml) | Working migration-state template for revisions, evidence, runtime identities, checks, approvals, blockers, and rollback |
 | [`../deploy/reconciliation/README.md`](../deploy/reconciliation/README.md) | Reconciliation deployment package entry point |
 | [`CURRENT_STATUS.md`](CURRENT_STATUS.md) | Implemented capabilities, verified boundaries, and remaining gaps |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | System components, graph authority, control loops, and state flows |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | System components, authority, control loops, and state flows |
 | [`EXECUTION_AUTHORITY.md`](EXECUTION_AUTHORITY.md) | Which actor may claim, execute, recover, approve, and promote |
 | [`fleet-recovery-rollout.md`](fleet-recovery-rollout.md) | Recovery keys, adapters, controller fencing, migration, canary, and shutdown |
 | [`self-improvement-cycle.md`](self-improvement-cycle.md) | Design and invariants of evidence-gated repository improvement |
@@ -50,7 +52,9 @@ operating instructions.
 | Hermes worker integration | `src/assistx/agents/hermes_agent_adapter.py` |
 | Readiness gates | `src/assistx/operations_readiness.py` |
 | Live migration scripts | `scripts/reconciliation-preflight.sh`, `scripts/reconciliation-verify-offline.sh` |
+| Migration ledger validator | `scripts/validate-reconciliation-state.py` |
 | Live migration Compose | `compose.canary.yml`, `compose.reconciliation.yml` |
+| Migration state and desired inventory | `deploy/reconciliation/migration-state.example.yaml`, `deploy/reconciliation/system-inventory.yaml` |
 
 ## Verification
 
@@ -61,5 +65,12 @@ PYTHONPATH=src .venv/bin/pytest -q tests/test_recovery_canary.py
 ```
 
 The second command requires the real Neo4j integration environment used by CI.
-The reconciliation deployment adds a separate shadow verification sequence in
-`LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md`.
+The reconciliation deployment adds separate shadow verification and ledger gates:
+
+```bash
+make reconciliation-state-validate
+make reconciliation-cutover-gate
+```
+
+A passing cutover ledger is evidence for operator review, not authorization for a
+local agent to modify production.
