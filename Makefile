@@ -49,6 +49,9 @@ RECON_ENV_FILE ?= deploy/reconciliation.env
 RECON_STATE_FILE ?= deploy/reconciliation/migration-state.yaml
 RECON_REPORT_FILE ?= artifacts/reconciliation-report.md
 RECON_ROUTER_ROOT ?= ../auto-router
+RECON_TAILSCALE_OUTPUT ?= artifacts/reconciliation-tailnet-candidates.json
+RECON_TAILSCALE_STATUS ?=
+RECON_LAN_MAP ?= deploy/reconciliation/lan-runtime-map.json
 RECON_DIRECT = docker compose --profile neo4j --env-file $(RECON_ENV_FILE) \
 	-f docker-compose.yml -f compose.prod.yml -f compose.canary.yml
 RECON_ROUTER = $(RECON_DIRECT) -f compose.reconciliation.yml
@@ -56,9 +59,9 @@ RECON_ROUTER = $(RECON_DIRECT) -f compose.reconciliation.yml
 .PHONY: reconciliation-worktrees-plan reconciliation-worktrees-apply \
 	reconciliation-init reconciliation-state-init reconciliation-state-validate \
 	reconciliation-cutover-gate reconciliation-report reconciliation-preflight \
-	reconciliation-render-direct reconciliation-up-direct reconciliation-render-router \
-	reconciliation-up-router reconciliation-executor-up reconciliation-verify \
-	reconciliation-status reconciliation-down
+	reconciliation-discover-tailnet reconciliation-render-direct reconciliation-up-direct \
+	reconciliation-render-router reconciliation-up-router reconciliation-executor-up \
+	reconciliation-verify reconciliation-status reconciliation-down
 
 reconciliation-worktrees-plan:
 	@chmod +x scripts/bootstrap-reconciliation-worktrees.sh
@@ -72,9 +75,11 @@ reconciliation-init:
 	@test -f $(RECON_ENV_FILE) || cp deploy/reconciliation.env.example $(RECON_ENV_FILE)
 	@chmod 600 $(RECON_ENV_FILE)
 	@chmod +x scripts/reconciliation-preflight.sh scripts/reconciliation-verify-offline.sh
+	@chmod +x scripts/reconciliation-discover-tailnet.py
 	@chmod +x scripts/validate-reconciliation-state.py scripts/render-reconciliation-report.py
 	@$(MAKE) reconciliation-state-init
 	@echo "Review and replace every change-me value in $(RECON_ENV_FILE) before startup."
+	@echo "Optionally copy deploy/reconciliation/lan-runtime-map.example.json to $(RECON_LAN_MAP) and replace every sample address."
 
 reconciliation-state-init:
 	@test -f $(RECON_STATE_FILE) || cp deploy/reconciliation/migration-state.example.yaml $(RECON_STATE_FILE)
@@ -93,6 +98,12 @@ reconciliation-report:
 
 reconciliation-preflight:
 	@./scripts/reconciliation-preflight.sh
+
+reconciliation-discover-tailnet:
+	@args=""; \
+	if [ -n "$(RECON_TAILSCALE_STATUS)" ]; then args="$$args --input $(RECON_TAILSCALE_STATUS)"; fi; \
+	if [ -f "$(RECON_LAN_MAP)" ]; then args="$$args --lan-map $(RECON_LAN_MAP)"; fi; \
+	python scripts/reconciliation-discover-tailnet.py $$args --output "$(RECON_TAILSCALE_OUTPUT)"
 
 reconciliation-render-direct:
 	@mkdir -p artifacts/reconciliation-render
