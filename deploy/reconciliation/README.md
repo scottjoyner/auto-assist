@@ -15,13 +15,18 @@ agent permission to alter production implicitly.
 - `../reconciliation.env.example` — shadow environment template with isolated
   ports, database, secrets, and disabled mutation authority.
 - `../../compose.reconciliation.yml` — AssistX router-only shadow override.
+- `../../scripts/bootstrap-reconciliation-worktrees.sh` — dry-run-first worktree
+  bootstrap across all nine repositories; it never changes production services.
 - `../../scripts/reconciliation-preflight.sh` — read-only live baseline collector.
 - `../../scripts/reconciliation-verify-offline.sh` — fail-closed offline verifier.
 - `../../scripts/validate-reconciliation-state.py` — validates the ledger for
   shadow readiness or the stronger operator-approved production cutover gate.
+- `../../scripts/render-reconciliation-report.py` — produces a checksum-bearing,
+  non-secret Markdown status report from the ledger.
 - `../../docs/LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md` — complete execution
   sequence.
 - `../../docs/LOCAL_AGENT_HANDOFF_20260730.md` — operating contract for a local agent.
+- `../../docs/MIGRATION_STATE_LEDGER_20260730.md` — ledger update and validation rules.
 
 The matching `auto-router` branch provides:
 
@@ -31,7 +36,26 @@ The matching `auto-router` branch provides:
 - a mounted-runtime test suite and isolated Docker smoke test;
 - mandatory strict-offline startup validation.
 
-## First commands
+## Worktree preparation
+
+From any checkout of the reconciliation `auto-assist` branch, inspect the plan:
+
+```bash
+make reconciliation-worktrees-plan
+```
+
+The dry run reports missing repositories, dirty tracked files, existing
+worktrees, and branch mismatches. After review:
+
+```bash
+make reconciliation-worktrees-apply
+```
+
+Missing repositories remain blockers by default. The underlying script supports
+`--allow-clone`, but cloning should be an explicit operator/local-agent decision
+because private repositories require working GitHub authentication.
+
+## First migration commands
 
 From the reconciliation `auto-assist` worktree:
 
@@ -86,6 +110,19 @@ backup, explicit operator approval, recorded client/old-stack/rollback plans, an
 The validator does not perform cutover. A passing ledger is evidence that the
 operator may review the exact commands; it is not permission for the agent to
 execute them.
+
+## Status report
+
+Generate the handoff report from the current ledger:
+
+```bash
+make reconciliation-report
+```
+
+The report is written to `artifacts/reconciliation-report.md` by default and
+includes the ledger checksum, gate results, repository revisions, admitted and
+quarantined runtimes, blockers, and approval state. Generated reports and the
+working ledger are ignored by Git.
 
 Do not run the base Compose file alone for this migration. Use the exact file
 sequence and approval boundaries in the live migration runbook.
