@@ -43,6 +43,63 @@ canary-deploy:
 canary-rollback:
 	@CANARY_ENV_FILE=$(CANARY_ENV_FILE) scripts/rollback-e2e-canary.sh
 
+# Live reconciliation shadow deployment. These targets use a separate Compose
+# project, network, ports, database, and state. They never stop the old stack.
+RECON_ENV_FILE ?= deploy/reconciliation.env
+RECON_DIRECT = docker compose --profile neo4j --env-file $(RECON_ENV_FILE) \
+	-f docker-compose.yml -f compose.prod.yml -f compose.canary.yml
+RECON_ROUTER = $(RECON_DIRECT) -f compose.reconciliation.yml
+
+.PHONY: reconciliation-init reconciliation-preflight reconciliation-render-direct \
+	reconciliation-up-direct reconciliation-render-router reconciliation-up-router \
+	reconciliation-executor-up reconciliation-verify reconciliation-status \
+	reconciliation-down
+
+reconciliation-init:
+	@test -f $(RECON_ENV_FILE) || cp deploy/reconciliation.env.example $(RECON_ENV_FILE)
+	@chmod 600 $(RECON_ENV_FILE)
+	@chmod +x scripts/reconciliation-preflight.sh scripts/reconciliation-verify-offline.sh
+	@echo "Review and replace every change-me value in $(RECON_ENV_FILE) before startup."
+
+reconciliation-preflight:
+	@./scripts/reconciliation-preflight.sh
+
+reconciliation-render-direct:
+	@mkdir -p artifacts/reconciliation-render
+	@$(RECON_DIRECT) config > artifacts/reconciliation-render/assistx-direct.yaml
+	@echo "Rendered artifacts/reconciliation-render/assistx-direct.yaml"
+
+reconciliation-up-direct:
+	@$(RECON_DIRECT) up -d --build neo4j redis api worker
+
+reconciliation-render-router:
+	@mkdir -p artifacts/reconciliation-render
+	@$(RECON_ROUTER) config > artifacts/reconciliation-render/assistx-router.yaml
+	@echo "Rendered artifacts/reconciliation-render/assistx-router.yaml"
+
+reconciliation-up-router:
+	@$(RECON_ROUTER) up -d --build --force-recreate api worker
+
+reconciliation-executor-up:
+	@docker compose --profile neo4j --profile executor --env-file $(RECON_ENV_FILE) \
+		-f docker-compose.yml -f compose.prod.yml -f compose.canary.yml \
+		-f compose.reconciliation.yml up -d --build hermes-adapter
+
+reconciliation-verify:
+	@RECONCILIATION_NEW_ASSISTX_URL=http://127.0.0.1:18000 \
+	 RECONCILIATION_NEW_ROUTER_URL=http://127.0.0.1:18088 \
+	 ./scripts/reconciliation-verify-offline.sh \
+	 compose.reconciliation.yml deploy/reconciliation.env.example
+
+reconciliation-status:
+	@$(RECON_ROUTER) ps
+	@curl -fsS http://127.0.0.1:18000/health | jq
+	@curl -fsS http://127.0.0.1:18088/health | jq
+
+reconciliation-down:
+	@$(RECON_ROUTER) down
+	@echo "Stopped only the assistx_reconciliation Compose project; evidence and named volumes are preserved."
+
 # Go-live checks (original targets preserved)
 .PHONY: go-live-check go-live-preflight go-live-smoke go-live-gate
 BASE_URL ?= http://localhost:8000
