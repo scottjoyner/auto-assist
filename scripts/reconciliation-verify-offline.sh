@@ -7,7 +7,11 @@ ROUTER_URL="${RECONCILIATION_NEW_ROUTER_URL:-http://127.0.0.1:18088}"
 ASSISTX_URL="${RECONCILIATION_NEW_ASSISTX_URL:-http://127.0.0.1:18000}"
 SCAN_PATHS=("${@:-.}")
 
-forbidden_regex='api\.openrouter\.ai|api\.cerebras\.ai|api\.groq\.com|api\.x\.ai|api\.anthropic\.com|generativelanguage\.googleapis\.com|api\.mistral\.ai|workers\.ai|openrouter|cerebras|groq|grok|xai'
+# Empty credential declarations are allowed and verified separately below. What is
+# forbidden in configuration is a public URL, hosted provider record, hosted quota
+# class, or broker gateway mode.
+config_forbidden_regex='api\.openrouter\.ai|api\.cerebras\.ai|api\.groq\.com|api\.x\.ai|api\.anthropic\.com|generativelanguage\.googleapis\.com|api\.mistral\.ai|workers\.ai|name:[[:space:]]*(openrouter|cerebras|groq|grok|xai)([[:space:]]|$)|provider:[[:space:]]*(openrouter|cerebras|groq|grok|xai)([[:space:]]|$)|quota_class:[[:space:]]*(premium_free|fast_free|edge_free|brokered_free)([[:space:]]|$)|gateway_mode:[[:space:]]*(sidecar|brokered)([[:space:]]|$)'
+runtime_forbidden_regex='openrouter|cerebras|groq|grok|xai|anthropic|gemini|mistral|cloudflare'
 allowed_doc_regex='docs/|README|archive/|FULL_AUTO_RECONCILIATION|SYSTEM_INVENTORY|system-inventory'
 
 failures=0
@@ -20,9 +24,9 @@ for path in "${SCAN_PATHS[@]}"; do
     if printf '%s' "$file" | grep -Eiq "$allowed_doc_regex"; then
       continue
     fi
-    printf 'forbidden public-provider reference: %s\n' "$match" >&2
+    printf 'forbidden public-provider path or provider record: %s\n' "$match" >&2
     failures=$((failures + 1))
-  done < <(grep -RInE --exclude-dir=.git --exclude='*.md' --exclude='*.jsonl' --exclude='*.log' "$forbidden_regex" "$path" 2>/dev/null || true)
+  done < <(grep -RInE --exclude-dir=.git --exclude='*.md' --exclude='*.jsonl' --exclude='*.log' "$config_forbidden_regex" "$path" 2>/dev/null || true)
 done
 
 # Report non-empty hosted-provider variables by NAME only. Never print values.
@@ -46,7 +50,7 @@ fi
 if ! curl -fsS --max-time 10 "${ROUTER_URL%/}/v1/models" >"$router_models"; then
   printf 'router model listing failed: %s\n' "$ROUTER_URL" >&2
   failures=$((failures + 1))
-elif grep -Eiq "$forbidden_regex" "$router_models"; then
+elif grep -Eiq "$runtime_forbidden_regex" "$router_models"; then
   printf 'router model listing exposes a forbidden provider or model namespace\n' >&2
   failures=$((failures + 1))
 fi
