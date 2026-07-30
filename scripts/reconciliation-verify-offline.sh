@@ -6,6 +6,9 @@ set -euo pipefail
 ROUTER_URL="${RECONCILIATION_NEW_ROUTER_URL:-http://127.0.0.1:18088}"
 ASSISTX_URL="${RECONCILIATION_NEW_ASSISTX_URL:-http://127.0.0.1:18000}"
 ENV_FILE="${RECONCILIATION_ENV_FILE:-}"
+if [ -z "$ENV_FILE" ] && [ -f deploy/reconciliation.env ]; then
+  ENV_FILE=deploy/reconciliation.env
+fi
 if [ "$#" -gt 0 ]; then
   RAW_SCAN_PATHS=("$@")
 else
