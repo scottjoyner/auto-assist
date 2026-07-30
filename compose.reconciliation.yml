@@ -50,4 +50,5 @@ services:
 
   neo4j:
     ports: !override
+      - "127.0.0.1:${ASSISTX_NEO4J_HTTP_PORT:-17474}:7474"
       - "127.0.0.1:${ASSISTX_NEO4J_BOLT_PORT:-17687}:7687"
