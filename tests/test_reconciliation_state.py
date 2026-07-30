@@ -47,6 +47,17 @@ def _passing_shadow_state() -> dict[str, Any]:
             "public_inference_found": False,
         }
     )
+    for index, name in enumerate(
+        ("auto-assist", "auto-router", "hermes-agent", "fleet-llm-profiles", "lms"),
+        start=1,
+    ):
+        data["repositories"][name].update(
+            {
+                "commit_sha": f"{index:040x}",
+                "branch": "full-auto-reconciliation-20260730",
+                "clean": True,
+            }
+        )
     data["baseline"].update(
         {
             "captured": True,
@@ -60,6 +71,9 @@ def _passing_shadow_state() -> dict[str, Any]:
     )
     data["shadow"].update(
         {
+            "compose_render_assistx": "artifacts/reconciliation-render/assistx-router.yaml",
+            "compose_render_router": "../auto-router/artifacts-reconciliation/router-rendered.yaml",
+            "compose_checksums_recorded": True,
             "isolated_project": True,
             "isolated_network": True,
             "isolated_neo4j": True,
@@ -120,6 +134,44 @@ def _passing_shadow_state() -> dict[str, Any]:
     return data
 
 
+def _complete_cutover_state() -> dict[str, Any]:
+    data = _passing_shadow_state()
+    data["checks"]["hermes_synthetic_task"] = "pass"
+    data["checks"]["neo4j_backup"] = "pass"
+    for approval in ("hermes_shadow_executor", "production_backup", "production_cutover"):
+        data["approvals"][approval].update(
+            {"approved_by": "operator", "approved_at": "2099-01-01T00:00:00Z"}
+        )
+    data["production_state"]["neo4j"].update(
+        {
+            "version": "5-test",
+            "database": "assistx",
+            "backup_method": "test-snapshot",
+            "backup_path": "artifacts/backups/neo4j-test",
+            "backup_checksum": "sha256:test",
+            "backup_created_at": "2099-01-01T00:00:00Z",
+            "restore_command_recorded": True,
+        }
+    )
+    data["cutover"].update(
+        {
+            "recommended": True,
+            "client_switch_plan_recorded": True,
+            "old_stack_restart_plan_recorded": True,
+            "rollback_thresholds_recorded": True,
+            "exact_commands_evidence_path": "artifacts/cutover/commands.txt",
+        }
+    )
+    data["rollback"].update(
+        {
+            "rehearsed": True,
+            "exact_commands_evidence_path": "artifacts/rollback/commands.txt",
+            "old_stack_health_after_rehearsal": "pass",
+        }
+    )
+    return data
+
+
 def test_example_state_is_blocked() -> None:
     validator = _load_validator()
 
@@ -128,6 +180,7 @@ def test_example_state_is_blocked() -> None:
     assert errors
     assert "public_inference_found must be false" in errors
     assert "baseline.captured must be true" in errors
+    assert "repositories.auto-assist.commit_sha must be a full 40-character Git SHA" in errors
 
 
 def test_complete_shadow_state_passes() -> None:
@@ -146,39 +199,38 @@ def test_cutover_requires_approval_backup_and_hermes_gate() -> None:
 
     assert "checks.hermes_synthetic_task must be pass" in errors
     assert "checks.neo4j_backup must be pass" in errors
-    assert "production cutover approval is required" in errors
+    assert "production_cutover approval is required" in errors
+    assert "production_state.neo4j.backup_checksum is required" in errors
     assert "cutover.recommended must be true" in errors
 
 
 def test_cutover_state_passes_when_all_operator_gates_are_recorded() -> None:
     validator = _load_validator()
-    data = _passing_shadow_state()
-    data["checks"]["hermes_synthetic_task"] = "pass"
-    data["checks"]["neo4j_backup"] = "pass"
-    data["approvals"]["production_cutover"].update(
-        {"approved_by": "operator", "approved_at": "2099-01-01T00:00:00Z"}
-    )
-    data["cutover"].update(
-        {
-            "recommended": True,
-            "client_switch_plan_recorded": True,
-            "old_stack_restart_plan_recorded": True,
-            "rollback_thresholds_recorded": True,
-        }
-    )
-    data["rollback"]["rehearsed"] = True
 
-    errors = validator.validate(data, require_cutover=True)
+    errors = validator.validate(_complete_cutover_state(), require_cutover=True)
 
     assert errors == []
+
+
+def test_dirty_or_unpinned_repository_blocks_shadow_readiness() -> None:
+    validator = _load_validator()
+    data = _passing_shadow_state()
+    data["repositories"]["auto-router"]["commit_sha"] = "short"
+    data["repositories"]["auto-router"]["clean"] = False
+
+    errors = validator.validate(data, require_cutover=False)
+
+    assert "repositories.auto-router.commit_sha must be a full 40-character Git SHA" in errors
+    assert "repositories.auto-router.clean must be true" in errors
 
 
 def test_report_renderer_includes_checksum_gates_and_runtime(tmp_path: Path) -> None:
     reporter = _load_reporter()
     state_path = tmp_path / "migration-state.yaml"
-    state_path.write_text(yaml.safe_dump(_passing_shadow_state()), encoding="utf-8")
+    state = _passing_shadow_state()
+    state_path.write_text(yaml.safe_dump(state), encoding="utf-8")
 
-    report = reporter.render(_passing_shadow_state(), state_path)
+    report = reporter.render(state, state_path)
 
     assert "Ledger SHA-256" in report
     assert "RUNTIME_IDENTITY_GATE: pass" in report
