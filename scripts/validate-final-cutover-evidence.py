@@ -12,6 +12,7 @@ import yaml
 
 PASS = "pass"
 _TRUE_FIELDS = {
+    "ci.hermes_agent.external_mode_synchronized": True,
     "hermes_external_gateway.fleet_nodes_present": False,
     "hermes_external_gateway.serve_route_disabled": True,
     "hermes_external_gateway.discover_route_disabled": True,
@@ -121,11 +122,17 @@ def _present(value: Any) -> bool:
 
 
 def _sha256(value: Any) -> bool:
-    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+    )
 
 
 def _git_sha(value: Any) -> bool:
-    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) is not None
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"[0-9a-f]{40}", value) is not None
+    )
 
 
 def validate(data: dict[str, Any]) -> list[str]:
@@ -139,7 +146,9 @@ def validate(data: dict[str, Any]) -> list[str]:
     if not _present(data.get("operator")):
         errors.append("operator is required")
     if data.get("production_changed") is not False:
-        errors.append("production_changed must remain false before authorized cutover")
+        errors.append(
+            "production_changed must remain false before authorized cutover"
+        )
     if data.get("public_inference_found") is not False:
         errors.append("public_inference_found must be false")
 
@@ -159,9 +168,22 @@ def validate(data: dict[str, Any]) -> list[str]:
         errors.append("hermes_external_gateway.mode must be external")
     default_model = _get(data, "hermes_external_gateway.default_model")
     if not isinstance(default_model, str) or not default_model.startswith("auto/"):
-        errors.append("hermes_external_gateway.default_model must be an auto/* alias")
+        errors.append(
+            "hermes_external_gateway.default_model must be an auto/* alias"
+        )
+
+    if _get(data, "ci.hermes_agent.deployment_pull_request") != 11:
+        errors.append("ci.hermes_agent.deployment_pull_request must be 11")
+    if _get(data, "ci.hermes_agent.source_pull_request") != 10:
+        errors.append("ci.hermes_agent.source_pull_request must be 10")
+    if not _git_sha(_get(data, "ci.hermes_agent.source_commit_sha")):
+        errors.append(
+            "ci.hermes_agent.source_commit_sha must be the full tested PR #10 SHA"
+        )
     if _get(data, "ci.hermes_agent.draft") is not True:
-        errors.append("Hermes PR #10 must remain draft until the final operator review")
+        errors.append(
+            "Hermes source and deployment PRs must remain draft until final review"
+        )
 
     for repository in ("auto_assist", "auto_router", "hermes_agent"):
         sha = _get(data, f"ci.{repository}.commit_sha")
@@ -171,7 +193,11 @@ def validate(data: dict[str, Any]) -> list[str]:
             errors.append(f"ci.{repository}.workflow_run_id is required")
 
     generation = _get(data, "runtime_projection.generation")
-    if not isinstance(generation, int) or isinstance(generation, bool) or generation <= 0:
+    if (
+        not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation <= 0
+    ):
         errors.append("runtime_projection.generation must be a positive integer")
     if not _present(_get(data, "runtime_projection.revision")):
         errors.append("runtime_projection.revision is required")
@@ -207,7 +233,10 @@ def main() -> int:
         print(f"FINAL_CUTOVER_EVIDENCE: BLOCKED {exc}", file=sys.stderr)
         return 2
     if not isinstance(payload, dict):
-        print("FINAL_CUTOVER_EVIDENCE: BLOCKED root must be a mapping", file=sys.stderr)
+        print(
+            "FINAL_CUTOVER_EVIDENCE: BLOCKED root must be a mapping",
+            file=sys.stderr,
+        )
         return 2
     errors = validate(payload)
     if errors:
