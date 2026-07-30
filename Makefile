@@ -51,6 +51,7 @@ RECON_STATE_FILE ?= deploy/reconciliation/migration-state.yaml
 RECON_DEPENDENCY_FILE ?= deploy/reconciliation/external-dependencies.yaml
 RECON_FINAL_EVIDENCE_FILE ?= deploy/reconciliation/final-cutover-evidence.yaml
 RECON_PROJECTION_MANIFEST ?= deploy/reconciliation/runtime-projection.yaml
+RECON_RUNTIME_EVIDENCE ?= artifacts/runtime-projection-artifact-evidence.json
 RECON_PROJECTION_APPROVAL_EVIDENCE ?= artifacts/runtime-projection-approval-evidence.json
 RECON_REPORT_FILE ?= artifacts/reconciliation-report.md
 RECON_ROUTER_ROOT ?= ../auto-router
@@ -75,11 +76,12 @@ RECON_EXECUTOR_SCOPED = $(RECON_EXECUTOR) -f compose.executor-scope.yml
 .PHONY: reconciliation-worktrees-plan reconciliation-worktrees-apply \
 	reconciliation-init reconciliation-state-init reconciliation-state-validate \
 	reconciliation-dependencies-validate reconciliation-final-evidence-validate \
-	reconciliation-hermes-config-validate reconciliation-runtime-projection-plan \
-	reconciliation-runtime-projection-approve reconciliation-runtime-projection-verify \
-	reconciliation-cutover-gate reconciliation-report reconciliation-preflight \
-	reconciliation-discover-tailnet reconciliation-render-direct reconciliation-up-direct \
-	reconciliation-render-router reconciliation-up-router reconciliation-render-executor \
+	reconciliation-hermes-config-validate reconciliation-runtime-evidence-validate \
+	reconciliation-runtime-projection-plan reconciliation-runtime-projection-approve \
+	reconciliation-runtime-projection-verify reconciliation-cutover-gate \
+	reconciliation-report reconciliation-preflight reconciliation-discover-tailnet \
+	reconciliation-render-direct reconciliation-up-direct reconciliation-render-router \
+	reconciliation-up-router reconciliation-render-executor \
 	reconciliation-render-executor-scoped reconciliation-executor-containment-validate \
 	reconciliation-executor-containment-scoped reconciliation-executor-up \
 	reconciliation-executor-up-scoped reconciliation-images-capture \
@@ -107,13 +109,15 @@ reconciliation-init:
 	@chmod +x scripts/reconciliation-discover-tailnet.py scripts/validate-external-dependencies.py
 	@chmod +x scripts/validate-reconciliation-state.py scripts/validate-final-cutover-evidence.py
 	@chmod +x scripts/render-reconciliation-report.py scripts/approve-runtime-projection.py
-	@chmod +x scripts/validate-executor-containment.py scripts/validate-hermes-external-config.py
-	@chmod +x scripts/reconciliation-image-bundle.py scripts/verify-runtime-projection.py
+	@chmod +x scripts/validate-runtime-evidence.py scripts/validate-executor-containment.py
+	@chmod +x scripts/validate-hermes-external-config.py scripts/reconciliation-image-bundle.py
+	@chmod +x scripts/verify-runtime-projection.py
 	@$(MAKE) reconciliation-state-init
 	@$(MAKE) reconciliation-hermes-config-validate
 	@echo "Review and replace every change-me value in $(RECON_ENV_FILE) before startup."
 	@echo "Populate $(RECON_DEPENDENCY_FILE) and $(RECON_FINAL_EVIDENCE_FILE) with current evidence."
 	@echo "Review $(RECON_PROJECTION_MANIFEST); approval is dry-run unless APPLY_RUNTIME_PROJECTION=YES."
+	@echo "Every runtime evidence_ref must exist under artifacts/ and match evidence_sha256."
 	@echo "Hermes external config: $(RECON_HERMES_CONFIG)"
 	@echo "Optionally copy deploy/reconciliation/lan-runtime-map.example.json to $(RECON_LAN_MAP) and replace every sample address."
 
@@ -135,12 +139,16 @@ reconciliation-hermes-config-validate:
 	@test -f $(RECON_HERMES_CONFIG) || (echo "Missing $(RECON_HERMES_CONFIG); run make reconciliation-init" >&2; exit 2)
 	@python scripts/validate-hermes-external-config.py $(RECON_HERMES_CONFIG)
 
-reconciliation-runtime-projection-plan:
+reconciliation-runtime-evidence-validate:
 	@test -f $(RECON_PROJECTION_MANIFEST) || (echo "Missing $(RECON_PROJECTION_MANIFEST); run make reconciliation-init" >&2; exit 2)
+	@python scripts/validate-runtime-evidence.py $(RECON_PROJECTION_MANIFEST) \
+		--root $(CURDIR) --output $(RECON_RUNTIME_EVIDENCE)
+
+reconciliation-runtime-projection-plan: reconciliation-runtime-evidence-validate
 	@python scripts/approve-runtime-projection.py $(RECON_PROJECTION_MANIFEST) \
 		--evidence-output $(RECON_PROJECTION_APPROVAL_EVIDENCE)
 
-reconciliation-runtime-projection-approve:
+reconciliation-runtime-projection-approve: reconciliation-runtime-evidence-validate
 	@test "$(APPLY_RUNTIME_PROJECTION)" = "YES" || (echo "Set APPLY_RUNTIME_PROJECTION=YES after reviewing the dry run" >&2; exit 2)
 	@test -f $(RECON_ENV_FILE) || (echo "Missing $(RECON_ENV_FILE); run make reconciliation-init" >&2; exit 2)
 	@set -a; . $(RECON_ENV_FILE); set +a; \
@@ -155,7 +163,7 @@ reconciliation-runtime-projection-verify:
 			--router-url "$${RECONCILIATION_NEW_ROUTER_URL:-http://127.0.0.1:18088}" \
 			--output $(RECON_PROJECTION_EVIDENCE)
 
-reconciliation-cutover-gate: reconciliation-dependencies-validate reconciliation-hermes-config-validate reconciliation-executor-containment-validate reconciliation-images-verify-offline reconciliation-runtime-projection-verify reconciliation-final-evidence-validate
+reconciliation-cutover-gate: reconciliation-dependencies-validate reconciliation-hermes-config-validate reconciliation-runtime-evidence-validate reconciliation-executor-containment-validate reconciliation-images-verify-offline reconciliation-runtime-projection-verify reconciliation-final-evidence-validate
 	@python scripts/validate-reconciliation-state.py --require-cutover $(RECON_STATE_FILE)
 
 reconciliation-report:
@@ -218,7 +226,11 @@ reconciliation-executor-up-scoped: reconciliation-executor-containment-scoped
 
 reconciliation-images-capture:
 	@mkdir -p $(RECON_IMAGE_DIR)
-	@$(RECON_EXECUTOR) images -q | sed '/^[[:space:]]*$$/d' | sort -u > $(RECON_IMAGE_DIR)/image-ids.txt
+	@set -a; . $(RECON_ENV_FILE); set +a; \
+		{ $(RECON_EXECUTOR) images -q; \
+		  $(MAKE) --no-print-directory -s -C $(RECON_ROUTER_ROOT) reconciliation-image-ids; \
+		} | sed '/^[[:space:]]*$$/d' | sort -u > $(RECON_IMAGE_DIR)/image-ids.txt
+	@test -s $(RECON_IMAGE_DIR)/image-ids.txt || (echo "No AssistX or auto-router image IDs were resolved" >&2; exit 2)
 	@python scripts/reconciliation-image-bundle.py capture \
 		--image-id-file $(RECON_IMAGE_DIR)/image-ids.txt \
 		--output-dir $(RECON_IMAGE_DIR)
@@ -248,7 +260,7 @@ reconciliation-status:
 		curl -fsS -u "$${BASIC_AUTH_USER}:$${BASIC_AUTH_PASS}" \
 			"$${RECONCILIATION_NEW_ASSISTX_URL:-http://127.0.0.1:18000}/api/control-room/overview" | jq '.overall_status, .summary'; \
 		curl -fsS -H "X-Admin-Token: $${AUTO_ROUTER_ADMIN_TOKEN}" \
-			"$${RECONCILIATION_NEW_ROUTER_URL:-http://127.0.0.1:18088}/admin/runtime-projection" | jq '.configured, .current.generation, .current.checksum, .last_error'
+			"$${RECONCILIATION_NEW_ROUTER_URL:-http://127.0.0.1:18088}/admin/runtime-projection" | jq '.configured, .fresh, .current.generation, .current.checksum, .current.expires_in_ms, .last_error'
 
 reconciliation-down:
 	@$(RECON_ROUTER) down
