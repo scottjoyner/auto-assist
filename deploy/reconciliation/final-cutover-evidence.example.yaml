@@ -18,7 +18,10 @@ ci:
     status: not_run
     commit_sha: null
     workflow_run_id: null
-    pull_request: 10
+    deployment_pull_request: 11
+    source_pull_request: 10
+    source_commit_sha: null
+    external_mode_synchronized: unknown
     draft: true
 
 hermes_external_gateway:
