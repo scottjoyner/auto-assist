@@ -1,0 +1,53 @@
+# Layer after docker-compose.yml, compose.prod.yml, and compose.canary.yml.
+# This override is intentionally loopback-only and router-only so it can run beside
+# the current stack without reusing its ports, containers, network, or assignment service.
+services:
+  api:
+    environment:
+      - ASSISTX_OVERLAY_MODE=router
+      - AUTO_ROUTER_BASE_URL=http://host.docker.internal:18088
+      - AUTO_ASSIGN_BASE_URL=
+      - FLEET_ROUTER_URL=http://host.docker.internal:18088
+      - OPENAI_BASE_URL=http://host.docker.internal:18088/v1
+      - OPENAI_API_KEY=local-offline-only
+      - FLEET_KNOWN_HOSTS=
+      - OPENROUTER_API_KEY=
+      - ASSISTX_RECOVERY_EXECUTION_ENABLED=false
+      - ASSISTX_REPO_TASK_GENERATOR_ENABLED=false
+      - ASSISTX_REPO_TASK_AUTO_READY=false
+      - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
+      - HERMES_SELFTASK_ENABLED=false
+    ports: !override
+      - "127.0.0.1:${ASSISTX_API_PORT:-18000}:8000"
+
+  worker:
+    environment:
+      - ASSISTX_OVERLAY_MODE=router
+      - AUTO_ROUTER_BASE_URL=http://host.docker.internal:18088
+      - AUTO_ASSIGN_BASE_URL=
+      - OPENAI_BASE_URL=http://host.docker.internal:18088/v1
+      - OPENAI_API_KEY=local-offline-only
+      - OPENROUTER_API_KEY=
+      - WORKER_CONCURRENCY=1
+      - ASSISTX_REPO_TASK_GENERATOR_ENABLED=false
+      - ASSISTX_REPO_TASK_AUTO_READY=false
+      - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
+      - HERMES_SELFTASK_ENABLED=false
+
+  hermes-adapter:
+    # The executor never starts during the initial shadow deployment. Enable only
+    # with `--profile executor` after synthetic task, identity, and capacity gates pass.
+    profiles:
+      - executor
+    environment:
+      - ASSISTX_URL=http://api:8000
+      - AUTO_ASSIGN_BASE_URL=
+      - HERMES_PROVIDER=assistx-router
+      - HERMES_LM_BASE_URL=http://host.docker.internal:18088/v1
+      - HERMES_SELFTASK_ENABLED=false
+      - HERMES_MAX_TASKS_PER_LOOP=1
+      - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
+
+  neo4j:
+    ports: !override
+      - "127.0.0.1:${ASSISTX_NEO4J_BOLT_PORT:-17687}:7687"
