@@ -44,6 +44,10 @@ baseline:
   listening_ports_reviewed: false
   tailscale_snapshot_reviewed: false
   runtime_process_inventory_reviewed: false
+  tailnet_candidate_inventory_path: null
+  tailnet_candidate_inventory_sha256_path: null
+  lan_runtime_map_path: null
+  lan_runtime_map_sha256_path: null
 
 production_state:
   neo4j:
@@ -89,11 +93,9 @@ shadow:
 
 runtimes: []
 # Example runtime record:
-# - runtime_node_id: x1-370
-#   observer_node_id: x1-370
-#   access_url: http://host.docker.internal:1234/v1
-#   transport: direct
-#   runtime_instance_id: lmstudio:x1-370:1234
+# - runtime_node_id: xwing
+#   observer_node_id: control-host
+#   runtime_instance_id: lmstudio:xwing:1234
 #   runtime_kind: lmstudio
 #   runtime_version: null
 #   model_instance_id: null
@@ -105,6 +107,22 @@ runtimes: []
 #   load_owner: operator
 #   parallel_slots: 1
 #   active_requests_observed: 0
+#   access_paths:
+#     - base_url: http://192.168.1.51:1234/v1
+#       transport: lan
+#       priority: 10
+#       reachability_probe: pass
+#       evidence_path: artifacts/runtime-paths/xwing-lan.txt
+#     - base_url: http://100.90.80.70:1234/v1
+#       transport: tailscale
+#       priority: 100
+#       reachability_probe: pass
+#       evidence_path: artifacts/runtime-paths/xwing-tailscale.txt
+#   selected_access_url: http://192.168.1.51:1234/v1
+#   selected_transport: lan
+#   lan_preference_probe: pass
+#   tailscale_fallback_probe: pass
+#   shared_admission_probe: pass
 #   completion_probe: pass
 #   sequential_stability_probe: pass
 #   concurrency_probe: not_run
@@ -123,6 +141,9 @@ checks:
   router_ci: pass
   compose_render: not_run
   strict_offline_verifier: not_run
+  tailnet_discovery: not_run
+  container_network_paths: not_run
+  lan_tailscale_failover: not_run
   direct_completion: not_run
   routed_completion: not_run
   runtime_identity: not_run
