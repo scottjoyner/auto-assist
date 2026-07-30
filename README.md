@@ -29,6 +29,20 @@ Branch `full-auto-reconciliation-20260730` establishes the hard repository and r
 
 Read [`docs/FULL_AUTO_RECONCILIATION_20260730.md`](docs/FULL_AUTO_RECONCILIATION_20260730.md) before deploying this branch.
 
+## Live migration while the old stack is running
+
+Do not use the normal quick-start commands to replace a running deployment. The reconciliation branch includes a side-by-side package that uses isolated container names, loopback ports, network, Redis, Neo4j state, artifacts, and shadow secrets:
+
+- [`docs/LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md`](docs/LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md)
+- [`docs/LOCAL_AGENT_HANDOFF_20260730.md`](docs/LOCAL_AGENT_HANDOFF_20260730.md)
+- [`deploy/reconciliation/system-inventory.yaml`](deploy/reconciliation/system-inventory.yaml)
+- [`deploy/reconciliation.env.example`](deploy/reconciliation.env.example)
+- [`compose.reconciliation.yml`](compose.reconciliation.yml)
+- [`scripts/reconciliation-preflight.sh`](scripts/reconciliation-preflight.sh)
+- [`scripts/reconciliation-verify-offline.sh`](scripts/reconciliation-verify-offline.sh)
+
+The local agent must capture and review the production baseline before starting shadow services. Production cutover remains an explicit operator-gated maintenance action.
+
 ## What is implemented
 
 - Canonical task, event, trace, node, model, and artifact state in Neo4j.
@@ -45,7 +59,7 @@ Read [`docs/FULL_AUTO_RECONCILIATION_20260730.md`](docs/FULL_AUTO_RECONCILIATION
 
 The self-improvement loop cannot approve itself, promote its own patch, commit, push, open a pull request, or use unrestricted shell payloads.
 
-## Quick start
+## Normal development quick start
 
 Copy `.env.example` to `.env`, replace every placeholder secret, then start the development stack:
 
@@ -80,6 +94,8 @@ Production deployments must explicitly configure repository bind mounts, worktre
 
 - [`docs/INDEX.md`](docs/INDEX.md) — authoritative documentation map
 - [`docs/FULL_AUTO_RECONCILIATION_20260730.md`](docs/FULL_AUTO_RECONCILIATION_20260730.md) — repository decisions, strict-offline policy, LM Studio Link identity, containment, migration, and gates
+- [`docs/LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md`](docs/LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md) — side-by-side live migration, validation, cutover, and rollback
+- [`docs/LOCAL_AGENT_HANDOFF_20260730.md`](docs/LOCAL_AGENT_HANDOFF_20260730.md) — local-agent authority and evidence contract
 - [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) — current capabilities, safety boundaries, and remaining gaps
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — components, authority, and state flows
 - [`docs/EXECUTION_AUTHORITY.md`](docs/EXECUTION_AUTHORITY.md) — execution and promotion authority boundaries
