@@ -1,0 +1,198 @@
+# Final production safety overlay. Apply after docker-compose.yml and compose.prod.yml.
+# It deliberately removes legacy networks, source-code mounts, SSH credentials,
+# Paperclip, auto-assign, public inference, and unrestricted Hermes capabilities.
+# Every persistent volume and image must be named explicitly by the operator.
+services:
+  neo4j:
+    image: ${ASSISTX_NEO4J_IMAGE:?set a locally cached Neo4j image tag or digest}
+    pull_policy: never
+    container_name: assistx-production-neo4j
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:${ASSISTX_NEO4J_HTTP_PORT:-7474}:7474"
+      - "127.0.0.1:${ASSISTX_NEO4J_BOLT_PORT:-7687}:7687"
+    volumes: !override
+      - production_neo4j_data:/data
+    networks: !override
+      - control
+
+  redis:
+    image: ${ASSISTX_REDIS_IMAGE:?set a locally cached Redis image tag or digest}
+    pull_policy: never
+    container_name: assistx-production-redis
+    restart: unless-stopped
+    volumes: !override
+      - production_redis_data:/data
+    networks: !override
+      - control
+
+  api:
+    image: ${ASSISTX_API_IMAGE:?set the locally built AssistX image tag or digest}
+    pull_policy: never
+    container_name: assistx-production-api
+    restart: unless-stopped
+    environment:
+      - ASSISTX_RUNTIME_PROFILE=production
+      - ASSISTX_DEPENDENCY_MODE=production
+      - ASSISTX_OVERLAY_MODE=router
+      - BASIC_AUTH_USER=${BASIC_AUTH_USER:?set BASIC_AUTH_USER}
+      - BASIC_AUTH_PASS=${BASIC_AUTH_PASS:?set a non-placeholder BASIC_AUTH_PASS}
+      - WS_AUTH_REQUIRED=1
+      - WS_AUTH_TOKEN=${WS_AUTH_TOKEN:?set WS_AUTH_TOKEN}
+      - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS:?set explicit private UI origins}
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=${NEO4J_USER:?set NEO4J_USER}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:?set NEO4J_PASSWORD}
+      - NEO4J_DATABASE=${NEO4J_DATABASE:-assistx}
+      - REDIS_URL=redis://redis:6379/0
+      - AUTO_ROUTER_BASE_URL=http://auto-router-production:8088
+      - AUTO_ROUTER_ADMIN_TOKEN=${AUTO_ROUTER_ADMIN_TOKEN:?set AUTO_ROUTER_ADMIN_TOKEN}
+      - OPENAI_BASE_URL=http://auto-router-production:8088/v1
+      - OPENAI_API_KEY=local-offline-only
+      - AUTO_ASSIGN_BASE_URL=
+      - PAPERCLIP_API_URL=
+      - PAPERCLIP_API_TOKEN=
+      - PAPERCLIP_WEBHOOK_SECRET=
+      - OPENROUTER_API_KEY=
+      - GROQ_API_KEY=
+      - CEREBRAS_API_KEY=
+      - GEMINI_API_KEY=
+      - MISTRAL_API_KEY=
+      - XAI_API_KEY=
+      - ANTHROPIC_API_KEY=
+      - CLOUDFLARE_API_TOKEN=
+      - ASSISTX_TOOL_EGRESS_MODE=disabled
+      - ASSISTX_RECOVERY_EXECUTION_ENABLED=false
+      - ASSISTX_REPO_TASK_GENERATOR_ENABLED=false
+      - ASSISTX_REPO_TASK_AUTO_READY=false
+      - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
+      - HERMES_SELFTASK_ENABLED=false
+      - FLEET_KNOWN_HOSTS=
+      - ASSISTX_MONITORED_PATHS=artifacts:/app/artifacts:required,cache:/app/.cache:required,transcriptions:/app/transcriptions:optional,hermes-home:/app/hermes-home:optional
+      - ASSISTX_TAILNET_EVIDENCE_PATH=/app/artifacts/reconciliation-tailnet-candidates.json
+    ports: !override
+      - "127.0.0.1:${ASSISTX_API_PORT:-8000}:8000"
+    extra_hosts: !override []
+    networks: !override
+      - control
+    volumes: !override
+      - production_artifacts:/app/artifacts
+      - production_cache:/app/.cache
+      - production_transcriptions:/app/transcriptions
+    security_opt:
+      - no-new-privileges:true
+
+  worker:
+    image: ${ASSISTX_API_IMAGE:?set the locally built AssistX image tag or digest}
+    pull_policy: never
+    container_name: assistx-production-worker
+    restart: unless-stopped
+    environment:
+      - ASSISTX_RUNTIME_PROFILE=production
+      - ASSISTX_DEPENDENCY_MODE=production
+      - ASSISTX_OVERLAY_MODE=router
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=${NEO4J_USER:?set NEO4J_USER}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:?set NEO4J_PASSWORD}
+      - NEO4J_DATABASE=${NEO4J_DATABASE:-assistx}
+      - REDIS_URL=redis://redis:6379/0
+      - ASSISTX_URL=http://api:8000
+      - FLEET_ASSISTX_URL=http://api:8000
+      - AUTO_ROUTER_BASE_URL=http://auto-router-production:8088
+      - AUTO_ROUTER_ADMIN_TOKEN=${AUTO_ROUTER_ADMIN_TOKEN:?set AUTO_ROUTER_ADMIN_TOKEN}
+      - OPENAI_BASE_URL=http://auto-router-production:8088/v1
+      - OPENAI_API_KEY=local-offline-only
+      - AUTO_ASSIGN_BASE_URL=
+      - PAPERCLIP_API_URL=
+      - PAPERCLIP_API_TOKEN=
+      - OPENROUTER_API_KEY=
+      - GROQ_API_KEY=
+      - CEREBRAS_API_KEY=
+      - GEMINI_API_KEY=
+      - MISTRAL_API_KEY=
+      - XAI_API_KEY=
+      - ANTHROPIC_API_KEY=
+      - CLOUDFLARE_API_TOKEN=
+      - ASSISTX_TOOL_EGRESS_MODE=disabled
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-1}
+      - ASSISTX_RECOVERY_EXECUTION_ENABLED=false
+      - ASSISTX_REPO_TASK_GENERATOR_ENABLED=false
+      - ASSISTX_REPO_TASK_AUTO_READY=false
+      - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
+      - HERMES_SELFTASK_ENABLED=false
+    extra_hosts: !override []
+    networks: !override
+      - control
+    volumes: !override
+      - production_artifacts:/app/artifacts
+      - production_cache:/app/.cache
+      - production_transcriptions:/app/transcriptions
+    security_opt:
+      - no-new-privileges:true
+
+  hermes-adapter:
+    image: ${ASSISTX_API_IMAGE:?set the locally built AssistX image tag or digest}
+    pull_policy: never
+    container_name: assistx-production-hermes
+    profiles:
+      - executor
+    restart: "no"
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    environment:
+      - ASSISTX_URL=http://api:8000
+      - ASSISTX_USER=${BASIC_AUTH_USER:?set BASIC_AUTH_USER}
+      - ASSISTX_PASS=${BASIC_AUTH_PASS:?set BASIC_AUTH_PASS}
+      - AUTO_ASSIGN_BASE_URL=
+      - HERMES_PROVIDER=assistx-router
+      - HERMES_LM_BASE_URL=http://auto-router-production:8088/v1
+      - HERMES_SELFTASK_ENABLED=false
+      - HERMES_MAX_TASKS_PER_LOOP=1
+      - HERMES_AGENT_CAPABILITIES=terminal,file,code_execution,skills,memory,session_search,clarify,todo
+      - HERMES_TOOLSETS=terminal,file,code_execution,skills,memory,session_search,clarify,todo,kg
+      - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
+      - ASSISTX_TOOL_EGRESS_MODE=disabled
+      - OPENROUTER_API_KEY=
+      - GROQ_API_KEY=
+      - CEREBRAS_API_KEY=
+      - GEMINI_API_KEY=
+      - MISTRAL_API_KEY=
+      - XAI_API_KEY=
+      - ANTHROPIC_API_KEY=
+    extra_hosts: !override []
+    networks: !override
+      - control
+    volumes: !override
+      - production_hermes_home:/app/hermes-home
+      - production_artifacts:/app/artifacts:ro
+
+networks:
+  control:
+    external: true
+    name: ${ASSISTX_PRODUCTION_NETWORK:?set the shared private AssistX/router network}
+
+volumes:
+  production_neo4j_data:
+    external: true
+    name: ${ASSISTX_NEO4J_DATA_VOLUME:?set the verified production Neo4j volume}
+  production_redis_data:
+    external: true
+    name: ${ASSISTX_REDIS_DATA_VOLUME:?set the verified production Redis volume}
+  production_artifacts:
+    external: true
+    name: ${ASSISTX_ARTIFACTS_VOLUME:?set the production artifacts volume}
+  production_cache:
+    external: true
+    name: ${ASSISTX_CACHE_VOLUME:?set the production cache volume}
+  production_transcriptions:
+    external: true
+    name: ${ASSISTX_TRANSCRIPTIONS_VOLUME:?set the production transcriptions volume}
+  production_hermes_home:
+    external: true
+    name: ${ASSISTX_HERMES_HOME_VOLUME:?set the production Hermes home volume}
