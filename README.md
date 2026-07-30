@@ -31,17 +31,46 @@ Read [`docs/FULL_AUTO_RECONCILIATION_20260730.md`](docs/FULL_AUTO_RECONCILIATION
 
 ## Live migration while the old stack is running
 
-Do not use the normal quick-start commands to replace a running deployment. The reconciliation branch includes a side-by-side package that uses isolated container names, loopback ports, network, Redis, Neo4j state, artifacts, and shadow secrets:
+Do not use the normal quick-start commands to replace a running deployment. The reconciliation branch includes a side-by-side package that uses isolated container names, loopback ports, network, Redis, Neo4j state, artifacts, shadow secrets, and an operator-owned evidence ledger:
 
 - [`docs/LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md`](docs/LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md)
 - [`docs/LOCAL_AGENT_HANDOFF_20260730.md`](docs/LOCAL_AGENT_HANDOFF_20260730.md)
+- [`docs/MIGRATION_STATE_LEDGER_20260730.md`](docs/MIGRATION_STATE_LEDGER_20260730.md)
 - [`deploy/reconciliation/system-inventory.yaml`](deploy/reconciliation/system-inventory.yaml)
+- [`deploy/reconciliation/migration-state.example.yaml`](deploy/reconciliation/migration-state.example.yaml)
 - [`deploy/reconciliation.env.example`](deploy/reconciliation.env.example)
 - [`compose.reconciliation.yml`](compose.reconciliation.yml)
+- [`scripts/bootstrap-reconciliation-worktrees.sh`](scripts/bootstrap-reconciliation-worktrees.sh)
 - [`scripts/reconciliation-preflight.sh`](scripts/reconciliation-preflight.sh)
 - [`scripts/reconciliation-verify-offline.sh`](scripts/reconciliation-verify-offline.sh)
+- [`scripts/validate-reconciliation-state.py`](scripts/validate-reconciliation-state.py)
+- [`scripts/render-reconciliation-report.py`](scripts/render-reconciliation-report.py)
 
-The local agent must capture and review the production baseline before starting shadow services. Production cutover remains an explicit operator-gated maintenance action.
+The safe starting sequence is:
+
+```bash
+make reconciliation-worktrees-plan
+make reconciliation-worktrees-apply
+make reconciliation-init
+make reconciliation-preflight
+```
+
+The worktree command is dry-run-first. The preflight is read-only. Review the baseline before starting any shadow service.
+
+The local agent must maintain `deploy/reconciliation/migration-state.yaml` from captured evidence. Validate shadow readiness with:
+
+```bash
+make reconciliation-state-validate
+```
+
+Before presenting a production cutover proposal:
+
+```bash
+make reconciliation-cutover-gate
+make reconciliation-report
+```
+
+A passing ledger is evidence for operator review; it does not authorize the local agent to execute cutover. Production cutover remains an explicit operator-gated maintenance action.
 
 ## What is implemented
 
@@ -96,6 +125,7 @@ Production deployments must explicitly configure repository bind mounts, worktre
 - [`docs/FULL_AUTO_RECONCILIATION_20260730.md`](docs/FULL_AUTO_RECONCILIATION_20260730.md) — repository decisions, strict-offline policy, LM Studio Link identity, containment, migration, and gates
 - [`docs/LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md`](docs/LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md) — side-by-side live migration, validation, cutover, and rollback
 - [`docs/LOCAL_AGENT_HANDOFF_20260730.md`](docs/LOCAL_AGENT_HANDOFF_20260730.md) — local-agent authority and evidence contract
+- [`docs/MIGRATION_STATE_LEDGER_20260730.md`](docs/MIGRATION_STATE_LEDGER_20260730.md) — evidence ledger and readiness/cutover validation rules
 - [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) — current capabilities, safety boundaries, and remaining gaps
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — components, authority, and state flows
 - [`docs/EXECUTION_AUTHORITY.md`](docs/EXECUTION_AUTHORITY.md) — execution and promotion authority boundaries
