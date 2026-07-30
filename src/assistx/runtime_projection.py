@@ -71,11 +71,24 @@ def _slug(value: Any) -> str:
     return text.strip("-") or "runtime"
 
 
-def _canonical_unsigned(document: dict[str, Any]) -> bytes:
+def _canonical_configuration(document: dict[str, Any]) -> bytes:
+    """Canonicalize the immutable generation configuration.
+
+    Issuance and expiry timestamps are signed separately so AssistX can refresh a
+    short-lived authorization lease for the same approved generation without
+    changing its configuration checksum or rebuilding router admission state.
+    """
+
     payload = {
         key: value
         for key, value in document.items()
-        if key not in {"checksum", "signature"}
+        if key
+        not in {
+            "checksum",
+            "signature",
+            "generated_at_ms",
+            "expires_at_ms",
+        }
     }
     return json.dumps(
         payload,
@@ -86,18 +99,36 @@ def _canonical_unsigned(document: dict[str, Any]) -> bytes:
 
 
 def projection_checksum(document: dict[str, Any]) -> str:
-    return hashlib.sha256(_canonical_unsigned(document)).hexdigest()
+    return hashlib.sha256(_canonical_configuration(document)).hexdigest()
 
 
-def projection_signature(generation: int, checksum: str, secret: str) -> str:
-    return hmac.new(
-        secret.encode("utf-8"),
-        f"{generation}:{checksum}".encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
+def projection_signature(
+    generation: int,
+    checksum: str,
+    generated_at_ms: int,
+    expires_at_ms: int,
+    secret: str,
+) -> str:
+    message = (
+        f"{generation}:{checksum}:{generated_at_ms}:{expires_at_ms}"
+    ).encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
-def _projection_state(neo_factory: Callable[[], Any]) -> dict[str, Any]:
+def _required_expiry(value: Any, label: str, now_ms: int) -> int:
+    try:
+        expiry = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeProjectionBlocked(f"{label} expiry is missing or invalid") from exc
+    if expiry <= now_ms:
+        raise RuntimeProjectionBlocked(f"{label} evidence is expired")
+    return expiry
+
+
+def _projection_state(
+    neo_factory: Callable[[], Any],
+    now_ms: int,
+) -> dict[str, Any]:
     rows = _query_rows(
         neo_factory,
         """
@@ -106,8 +137,10 @@ def _projection_state(neo_factory: Callable[[], Any]) -> dict[str, Any]:
                s.revision AS revision,
                s.status AS status,
                s.updated_at_ts AS updated_at_ts,
+               s.expires_at_ts AS expires_at_ts,
                s.approved_by AS approved_by,
-               s.approval_id AS approval_id
+               s.approval_id AS approval_id,
+               s.manifest_checksum AS manifest_checksum
         LIMIT 1
         """,
     )
@@ -132,17 +165,29 @@ def _projection_state(neo_factory: Callable[[], Any]) -> dict[str, Any]:
         raise RuntimeProjectionBlocked(
             "projection requires approved_by and approval_id evidence"
         )
-    return {**state, "generation": generation}
+    expires_at_ts = _required_expiry(
+        state.get("expires_at_ts"),
+        "canonical projection approval",
+        now_ms,
+    )
+    return {
+        **state,
+        "generation": generation,
+        "expires_at_ts": expires_at_ts,
+    }
 
 
-def _runtime_rows(neo_factory: Callable[[], Any], now_ms: int) -> list[dict[str, Any]]:
+def _runtime_rows(
+    neo_factory: Callable[[], Any],
+    now_ms: int,
+) -> list[dict[str, Any]]:
     return _query_rows(
         neo_factory,
         """
         MATCH (r:RuntimeInstance)
         WHERE coalesce(r.admitted, false) = true
           AND toLower(coalesce(r.status, 'unknown')) IN ['online','healthy','ready']
-          AND coalesce(r.expires_at_ts, $now_ms + 1) > $now_ms
+          AND coalesce(r.expires_at_ts, 0) > $now_ms
         OPTIONAL MATCH (r)-[:SERVES]->(m:LoadedModelInstance)
         OPTIONAL MATCH (m)-[:INSTANCE_OF]->(a:ModelArtifact)
         RETURN r.runtime_instance_id AS runtime_instance_id,
@@ -152,6 +197,7 @@ def _runtime_rows(neo_factory: Callable[[], Any], now_ms: int) -> list[dict[str,
                r.headless AS headless,
                r.process_id AS process_id,
                r.updated_at_ts AS updated_at_ts,
+               r.expires_at_ts AS expires_at_ts,
                collect(DISTINCT {
                    admitted: m.admitted,
                    expires_at_ts: m.expires_at_ts,
@@ -170,7 +216,10 @@ def _runtime_rows(neo_factory: Callable[[], Any], now_ms: int) -> list[dict[str,
     )
 
 
-def _access_rows(neo_factory: Callable[[], Any], now_ms: int) -> list[dict[str, Any]]:
+def _access_rows(
+    neo_factory: Callable[[], Any],
+    now_ms: int,
+) -> list[dict[str, Any]]:
     return _query_rows(
         neo_factory,
         """
@@ -193,7 +242,10 @@ def _access_rows(neo_factory: Callable[[], Any], now_ms: int) -> list[dict[str, 
     )
 
 
-def _capacity_rows(neo_factory: Callable[[], Any], now_ms: int) -> list[dict[str, Any]]:
+def _capacity_rows(
+    neo_factory: Callable[[], Any],
+    now_ms: int,
+) -> list[dict[str, Any]]:
     return _query_rows(
         neo_factory,
         """
@@ -226,7 +278,7 @@ def build_runtime_projection(
             "ASSISTX_RUNTIME_PROJECTION_HMAC_SECRET is required"
         )
     now = int(now_ms if now_ms is not None else time.time() * 1000)
-    state = _projection_state(neo_factory)
+    state = _projection_state(neo_factory, now)
     runtimes = _runtime_rows(neo_factory, now)
     access_rows = _access_rows(neo_factory, now)
     capacity_rows = _capacity_rows(neo_factory, now)
@@ -241,8 +293,21 @@ def build_runtime_projection(
             row.get("approval_id")
         ):
             continue
-        if url not in [item["base_url"] for item in access_by_runtime[runtime_id]]:
-            access_by_runtime[runtime_id].append({**row, "base_url": url})
+        try:
+            expiry = _required_expiry(
+                row.get("expires_at_ts"),
+                f"access path {url}",
+                now,
+            )
+        except RuntimeProjectionBlocked:
+            continue
+        existing_urls = {
+            item["base_url"] for item in access_by_runtime[runtime_id]
+        }
+        if url not in existing_urls:
+            access_by_runtime[runtime_id].append(
+                {**row, "base_url": url, "expires_at_ts": expiry}
+            )
 
     capacity_by_runtime: dict[str, dict[str, Any]] = {}
     for row in capacity_rows:
@@ -257,7 +322,12 @@ def build_runtime_projection(
             slots = int(row.get("parallel_slots") or 0)
             queue_limit = int(row.get("queue_limit") or 0)
             queue_timeout = float(row.get("queue_timeout_seconds") or 0)
-        except (TypeError, ValueError):
+            expiry = _required_expiry(
+                row.get("expires_at_ts"),
+                f"capacity observation for {runtime_id}",
+                now,
+            )
+        except (TypeError, ValueError, RuntimeProjectionBlocked):
             continue
         if slots <= 0 or queue_limit < 0 or queue_timeout < 0:
             continue
@@ -266,9 +336,11 @@ def build_runtime_projection(
             "parallel_slots": slots,
             "queue_limit": queue_limit,
             "queue_timeout_seconds": queue_timeout,
+            "expires_at_ts": expiry,
         }
 
     providers: list[dict[str, Any]] = []
+    evidence_expiries = [int(state["expires_at_ts"])]
     for runtime in runtimes:
         runtime_id = str(runtime.get("runtime_instance_id") or "").strip()
         node_id = str(runtime.get("node_id") or "").strip()
@@ -277,6 +349,14 @@ def build_runtime_projection(
         provider_type = _provider_type(runtime_kind)
         paths = access_by_runtime.get(runtime_id) or []
         capacity = capacity_by_runtime.get(runtime_id)
+        try:
+            runtime_expiry = _required_expiry(
+                runtime.get("expires_at_ts"),
+                f"runtime {runtime_id or '<unknown>'}",
+                now,
+            )
+        except RuntimeProjectionBlocked:
+            continue
         if not all(
             (
                 _known(runtime_id),
@@ -290,19 +370,19 @@ def build_runtime_projection(
         ):
             continue
 
-        models = []
+        models: list[dict[str, Any]] = []
+        model_expiries: list[int] = []
         for model in runtime.get("loaded_models") or []:
-            if not isinstance(model, dict):
+            if not isinstance(model, dict) or model.get("admitted") is not True:
                 continue
-            if model.get("admitted") is not True:
+            try:
+                model_expiry = _required_expiry(
+                    model.get("expires_at_ts"),
+                    f"loaded model on {runtime_id}",
+                    now,
+                )
+            except RuntimeProjectionBlocked:
                 continue
-            expires_at = model.get("expires_at_ts")
-            if expires_at is not None:
-                try:
-                    if int(expires_at) <= now:
-                        continue
-                except (TypeError, ValueError):
-                    continue
             required = (
                 model.get("model_instance_id"),
                 model.get("model_key"),
@@ -341,6 +421,7 @@ def build_runtime_projection(
                     "context_window": context_length,
                 }
             )
+            model_expiries.append(model_expiry)
         if not models:
             continue
 
@@ -366,6 +447,14 @@ def build_runtime_projection(
                 "models": models,
             }
         )
+        evidence_expiries.extend(
+            [
+                runtime_expiry,
+                int(capacity["expires_at_ts"]),
+                *[int(item["expires_at_ts"]) for item in paths],
+                *model_expiries,
+            ]
+        )
 
     if not providers:
         raise RuntimeProjectionBlocked(
@@ -373,19 +462,26 @@ def build_runtime_projection(
         )
 
     ttl = max(5, min(int(ttl_seconds), 900))
+    expires_at_ms = min(now + ttl * 1000, *evidence_expiries)
+    if expires_at_ms <= now:
+        raise RuntimeProjectionBlocked(
+            "runtime projection evidence expired before issuance"
+        )
     document: dict[str, Any] = {
         "schema_version": "1",
         "source": "assistx",
         "generation": state["generation"],
         "revision": str(state["revision"]),
         "generated_at_ms": now,
-        "expires_at_ms": now + ttl * 1000,
+        "expires_at_ms": expires_at_ms,
         "providers": providers,
     }
     document["checksum"] = projection_checksum(document)
     document["signature"] = projection_signature(
         document["generation"],
         document["checksum"],
+        document["generated_at_ms"],
+        document["expires_at_ms"],
         secret,
     )
     return document
