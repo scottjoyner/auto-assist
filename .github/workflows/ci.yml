@@ -39,13 +39,16 @@ jobs:
             src/assistx/control_room.py \
             src/assistx/control_room_runtime.py \
             src/assistx/runtime_projection.py \
+            src/assistx/strict_offline_projection.py \
             src/assistx/diagnosis_engine.py \
             src/assistx/diagnostic_probes.py \
             src/assistx/deployment_canary.py \
             scripts/init-canary-env.py \
+            scripts/approve-runtime-projection.py \
             scripts/reconciliation-image-bundle.py \
             scripts/validate-executor-containment.py \
             scripts/validate-external-dependencies.py \
+            scripts/validate-final-cutover-evidence.py \
             scripts/validate-hermes-external-config.py \
             scripts/verify-runtime-projection.py \
             src/assistx/controller_runtime.py \
@@ -63,7 +66,10 @@ jobs:
             tests/test_control_room.py \
             tests/test_control_room_runtime.py \
             tests/test_runtime_projection.py \
+            tests/test_runtime_projection_approval.py \
             tests/test_hermes_external_config.py \
+            tests/test_final_cutover_evidence.py \
+            tests/test_strict_offline_projection.py \
             tests/test_reconciliation_containment.py \
             tests/test_reconciliation_image_bundle.py \
             tests/test_diagnosis_engine.py \
@@ -90,13 +96,19 @@ jobs:
             src/assistx/control_room.py \
             src/assistx/control_room_runtime.py \
             src/assistx/runtime_projection.py \
+            src/assistx/strict_offline_projection.py \
+            scripts/approve-runtime-projection.py \
             scripts/reconciliation-image-bundle.py \
             scripts/validate-executor-containment.py \
+            scripts/validate-final-cutover-evidence.py \
             scripts/validate-hermes-external-config.py \
             scripts/verify-runtime-projection.py \
             tests/test_control_room_runtime.py \
             tests/test_runtime_projection.py \
+            tests/test_runtime_projection_approval.py \
             tests/test_hermes_external_config.py \
+            tests/test_final_cutover_evidence.py \
+            tests/test_strict_offline_projection.py \
             tests/test_reconciliation_containment.py \
             tests/test_reconciliation_image_bundle.py
 
