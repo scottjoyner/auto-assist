@@ -28,16 +28,35 @@ def safe_payload(home: pathlib.Path, artifacts: pathlib.Path) -> dict:
                 "security_opt": ["no-new-privileges:true"],
                 "environment": {
                     "AUTO_ASSIGN_BASE_URL": "",
+                    "AUTO_ROUTER_ADMIN_TOKEN": "test-admin-token",
+                    "HERMES_FLEET_MODE": "external",
+                    "HERMES_MODEL": "auto/code",
+                    "HERMES_SMOKE_MODEL": "auto/code",
+                    "HERMES_LM_BASE_URL": (
+                        "http://auto-router-reconciliation:8088/v1"
+                    ),
                     "HERMES_SELFTASK_ENABLED": "false",
                     "FLEET_UNSAFE_SHELL_TASKS_ENABLED": "false",
                     "ASSISTX_TOOL_EGRESS_MODE": "disabled",
-                    "HERMES_AGENT_CAPABILITIES": "terminal,file,code_execution,skills,memory,todo",
-                    "HERMES_TOOLSETS": "terminal,file,code_execution,skills,memory,todo",
+                    "HERMES_AGENT_CAPABILITIES": (
+                        "terminal,file,code_execution,skills,memory,todo"
+                    ),
+                    "HERMES_TOOLSETS": (
+                        "terminal,file,code_execution,skills,memory,todo"
+                    ),
                     "OPENROUTER_API_KEY": "",
                 },
                 "volumes": [
-                    {"type": "bind", "source": str(home), "target": "/app/hermes-home"},
-                    {"type": "bind", "source": str(artifacts), "target": "/app/artifacts"},
+                    {
+                        "type": "bind",
+                        "source": str(home),
+                        "target": "/app/hermes-home",
+                    },
+                    {
+                        "type": "bind",
+                        "source": str(artifacts),
+                        "target": "/app/artifacts",
+                    },
                 ],
             }
         }
@@ -54,7 +73,10 @@ def test_containment_accepts_scoped_non_root_executor(tmp_path, monkeypatch) -> 
     assert module.validate(safe_payload(home, artifacts)) == []
 
 
-def test_containment_rejects_broad_mount_root_and_web_tools(tmp_path, monkeypatch) -> None:
+def test_containment_rejects_broad_mount_root_and_web_tools(
+    tmp_path,
+    monkeypatch,
+) -> None:
     home = tmp_path / "hermes-home"
     artifacts = tmp_path / "artifacts"
     home.mkdir()
@@ -65,11 +87,18 @@ def test_containment_rejects_broad_mount_root_and_web_tools(tmp_path, monkeypatc
     service["user"] = "0:1000"
     service["environment"]["HERMES_TOOLSETS"] += ",web,browser,mcp"
     service["volumes"].append(
-        {"type": "bind", "source": "/home/scott/git", "target": "/workspace"}
+        {
+            "type": "bind",
+            "source": "/home/scott/git",
+            "target": "/workspace",
+        }
     )
 
     failures = module.validate(payload)
 
     assert any("non-root" in item for item in failures)
     assert any("forbidden capability" in item for item in failures)
-    assert any("broad or sensitive" in item or "unapproved bind" in item for item in failures)
+    assert any(
+        "broad or sensitive" in item or "unapproved bind" in item
+        for item in failures
+    )
