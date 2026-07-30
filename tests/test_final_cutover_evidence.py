@@ -16,9 +16,27 @@ SPEC.loader.exec_module(module)
 
 SHA = "a" * 64
 GIT_SHA = "b" * 40
+SOURCE_SHA = "c" * 40
 
 
 def complete() -> dict:
+    ci = {
+        name: {
+            "status": "pass",
+            "commit_sha": GIT_SHA,
+            "workflow_run_id": "123",
+        }
+        for name in ("auto_assist", "auto_router", "hermes_agent")
+    }
+    ci["hermes_agent"].update(
+        {
+            "deployment_pull_request": 11,
+            "source_pull_request": 10,
+            "source_commit_sha": SOURCE_SHA,
+            "external_mode_synchronized": True,
+            "draft": True,
+        }
+    )
     return {
         "schema_version": 1,
         "migration_id": "full-auto-reconciliation-20260730",
@@ -26,19 +44,7 @@ def complete() -> dict:
         "operator": "operator",
         "production_changed": False,
         "public_inference_found": False,
-        "ci": {
-            name: {
-                "status": "pass",
-                "commit_sha": GIT_SHA,
-                "workflow_run_id": "123",
-                **(
-                    {"pull_request": 10, "draft": True}
-                    if name == "hermes_agent"
-                    else {}
-                ),
-            }
-            for name in ("auto_assist", "auto_router", "hermes_agent")
-        },
+        "ci": ci,
         "hermes_external_gateway": {
             "status": "pass",
             "config_path": "artifacts/hermes/config.yaml",
@@ -128,6 +134,7 @@ def test_complete_contract_passes() -> None:
 
 def test_contract_fails_on_authority_leak_or_missing_evidence() -> None:
     payload = complete()
+    payload["ci"]["hermes_agent"]["external_mode_synchronized"] = False
     payload["hermes_external_gateway"]["fleet_nodes_present"] = True
     payload["runtime_projection"]["convergence_status"] = "not_run"
     payload["image_restore"]["bundle_sha256"] = None
@@ -135,6 +142,7 @@ def test_contract_fails_on_authority_leak_or_missing_evidence() -> None:
 
     errors = module.validate(payload)
 
+    assert any("external_mode_synchronized must be true" in item for item in errors)
     assert any("fleet_nodes_present must be false" in item for item in errors)
     assert any("convergence_status must be pass" in item for item in errors)
     assert any("bundle_sha256 must be SHA-256" in item for item in errors)
