@@ -10,6 +10,7 @@ operating instructions.
 |---|---|
 | [`FULL_AUTO_RECONCILIATION_20260730.md`](FULL_AUTO_RECONCILIATION_20260730.md) | Authoritative offline-only repository reconciliation, runtime identity contract, containment sequence, and migration gates |
 | [`LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md`](LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md) | Detailed side-by-side migration, shadow validation, cutover, and rollback instructions while the old stack remains live |
+| [`FINAL_CUTOVER_OPERATOR_PACKET_20260730.md`](FINAL_CUTOVER_OPERATOR_PACKET_20260730.md) | Final machine-side evidence sequence, LAN/Tailscale gates, approval stop, production order, and rollback triggers |
 | [`LOCAL_AGENT_HANDOFF_20260730.md`](LOCAL_AGENT_HANDOFF_20260730.md) | Local-agent permissions, prohibitions, workflow, evidence standard, ledger discipline, and completion contract |
 | [`MIGRATION_STATE_LEDGER_20260730.md`](MIGRATION_STATE_LEDGER_20260730.md) | Operator-owned evidence ledger, runtime admission records, shadow readiness validation, and production cutover gate |
 | [`TAILSCALE_RUNTIME_ACCESS_20260730.md`](TAILSCALE_RUNTIME_ACCESS_20260730.md) | Candidate-only Tailscale discovery, LAN-first path ordering, Docker reachability, movement failover, and cutover evidence |
