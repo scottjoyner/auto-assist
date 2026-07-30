@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# Fail closed when rendered migration configuration contains a public inference path
-# or when the reconciliation router does not answer locally.
+# Fail closed when rendered migration configuration contains a public inference path,
+# duplicate authority, or runtime mutation flag, or when shadow services are unavailable.
 set -euo pipefail
 
 ROUTER_URL="${RECONCILIATION_NEW_ROUTER_URL:-http://127.0.0.1:18088}"
 ASSISTX_URL="${RECONCILIATION_NEW_ASSISTX_URL:-http://127.0.0.1:18000}"
-SCAN_PATHS=("${@:-.}")
+if [ "$#" -gt 0 ]; then
+  SCAN_PATHS=("$@")
+else
+  SCAN_PATHS=(.)
+fi
 
 # Empty credential declarations are allowed and verified separately below. What is
 # forbidden in configuration is a public URL, hosted provider record, hosted quota
-# class, or broker gateway mode.
-config_forbidden_regex='api\.openrouter\.ai|api\.cerebras\.ai|api\.groq\.com|api\.x\.ai|api\.anthropic\.com|generativelanguage\.googleapis\.com|api\.mistral\.ai|workers\.ai|name:[[:space:]]*(openrouter|cerebras|groq|grok|xai)([[:space:]]|$)|provider:[[:space:]]*(openrouter|cerebras|groq|grok|xai)([[:space:]]|$)|quota_class:[[:space:]]*(premium_free|fast_free|edge_free|brokered_free)([[:space:]]|$)|gateway_mode:[[:space:]]*(sidecar|brokered)([[:space:]]|$)'
+# class, broker gateway, duplicate assignment path, or autonomous mutation flag.
+config_forbidden_regex='api\.openrouter\.ai|api\.cerebras\.ai|api\.groq\.com|api\.x\.ai|api\.anthropic\.com|generativelanguage\.googleapis\.com|api\.mistral\.ai|workers\.ai|name:[[:space:]]*(openrouter|cerebras|groq|grok|xai)([[:space:]]|$)|provider:[[:space:]]*(openrouter|cerebras|groq|grok|xai)([[:space:]]|$)|quota_class:[[:space:]]*(premium_free|fast_free|edge_free|brokered_free)([[:space:]]|$)|gateway_mode:[[:space:]]*(sidecar|brokered)([[:space:]]|$)|AUTO_ROUTER_(AUTOLOAD_ENABLED|PLACEMENT_UNLOAD|FLEET_DISPATCHER_ENABLED|AGENTGATEWAY_ENABLED)[^:=]*[:=][[:space:]]*["'"']?true|ASSISTX_OVERLAY_MODE[^:=]*[:=][[:space:]]*["'"']?router_plus_assign|AUTO_ASSIGN_BASE_URL[^:=]*[:=][[:space:]]*["'"']?https?://|HERMES_SELFTASK_ENABLED[^:=]*[:=][[:space:]]*["'"']?true|ASSISTX_RECOVERY_EXECUTION_ENABLED[^:=]*[:=][[:space:]]*["'"']?true|FLEET_UNSAFE_SHELL_TASKS_ENABLED[^:=]*[:=][[:space:]]*["'"']?true'
 runtime_forbidden_regex='openrouter|cerebras|groq|grok|xai|anthropic|gemini|mistral|cloudflare'
 allowed_doc_regex='docs/|README|archive/|FULL_AUTO_RECONCILIATION|SYSTEM_INVENTORY|system-inventory'
 
@@ -24,7 +28,7 @@ for path in "${SCAN_PATHS[@]}"; do
     if printf '%s' "$file" | grep -Eiq "$allowed_doc_regex"; then
       continue
     fi
-    printf 'forbidden public-provider path or provider record: %s\n' "$match" >&2
+    printf 'forbidden provider, authority, or mutation configuration: %s\n' "$match" >&2
     failures=$((failures + 1))
   done < <(grep -RInE --exclude-dir=.git --exclude='*.md' --exclude='*.jsonl' --exclude='*.log' "$config_forbidden_regex" "$path" 2>/dev/null || true)
 done
