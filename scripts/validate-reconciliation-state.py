@@ -9,6 +9,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -21,6 +22,14 @@ REQUIRED_REPOSITORIES = (
     "fleet-llm-profiles",
     "lms",
 )
+ALLOWED_ACCESS_TRANSPORTS = {
+    "lan",
+    "tailscale",
+    "host_gateway",
+    "loopback",
+    "local_dns",
+    "direct",
+}
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -53,6 +62,13 @@ def _valid_commit_sha(value: Any) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{40}", value) is not None
 
 
+def _valid_private_url(value: Any) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+
+
 def _repository_errors(data: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     repositories = data.get("repositories")
@@ -76,25 +92,103 @@ def _repository_errors(data: dict[str, Any]) -> list[str]:
     return errors
 
 
-def _runtime_errors(runtime: Any, index: int, *, require_cutover: bool) -> list[str]:
+def _access_path_errors(runtime: dict[str, Any], index: int) -> tuple[list[str], bool]:
+    errors: list[str] = []
+    prefix = f"runtimes[{index}]"
+    paths = runtime.get("access_paths")
+    if not isinstance(paths, list) or not paths:
+        return [f"{prefix}.access_paths must be a non-empty list"], False
+
+    normalized: list[tuple[str, str]] = []
+    transports: set[str] = set()
+    priorities: set[int] = set()
+    for path_index, path in enumerate(paths):
+        path_prefix = f"{prefix}.access_paths[{path_index}]"
+        if not isinstance(path, dict):
+            errors.append(f"{path_prefix} must be an object")
+            continue
+        base_url = path.get("base_url")
+        transport = str(path.get("transport") or "").strip()
+        priority = path.get("priority")
+        _require(errors, _valid_private_url(base_url), f"{path_prefix}.base_url is required")
+        _require(
+            errors,
+            transport in ALLOWED_ACCESS_TRANSPORTS,
+            f"{path_prefix}.transport must be an approved private transport",
+        )
+        _require(
+            errors,
+            isinstance(priority, int) and not isinstance(priority, bool),
+            f"{path_prefix}.priority must be an integer",
+        )
+        if isinstance(priority, int) and not isinstance(priority, bool):
+            _require(
+                errors,
+                priority not in priorities,
+                f"{prefix}.access_paths priorities must be unique",
+            )
+            priorities.add(priority)
+        _require(
+            errors,
+            path.get("reachability_probe") == PASS,
+            f"{path_prefix}.reachability_probe must be pass",
+        )
+        if _valid_private_url(base_url) and transport in ALLOWED_ACCESS_TRANSPORTS:
+            normalized.append((str(base_url).rstrip("/"), transport))
+            transports.add(transport)
+
+    selected_url = runtime.get("selected_access_url")
+    selected_transport = str(runtime.get("selected_transport") or "").strip()
+    _require(
+        errors,
+        _valid_private_url(selected_url),
+        f"{prefix}.selected_access_url is required",
+    )
+    _require(
+        errors,
+        selected_transport in ALLOWED_ACCESS_TRANSPORTS,
+        f"{prefix}.selected_transport is required",
+    )
+    selected_pair = (str(selected_url or "").rstrip("/"), selected_transport)
+    _require(
+        errors,
+        selected_pair in normalized,
+        f"{prefix} selected access path must match an approved access_paths entry",
+    )
+
+    has_lan_and_tailnet = "lan" in transports and "tailscale" in transports
+    if has_lan_and_tailnet:
+        for probe in (
+            "lan_preference_probe",
+            "tailscale_fallback_probe",
+            "shared_admission_probe",
+        ):
+            _require(errors, runtime.get(probe) == PASS, f"{prefix}.{probe} must be pass")
+    return errors, has_lan_and_tailnet
+
+
+def _runtime_errors(
+    runtime: Any,
+    index: int,
+    *,
+    require_cutover: bool,
+) -> tuple[list[str], bool]:
     errors: list[str] = []
     prefix = f"runtimes[{index}]"
     if not isinstance(runtime, dict):
-        return [f"{prefix} must be an object"]
+        return [f"{prefix} must be an object"], False
 
     admitted = bool(runtime.get("admitted"))
     if not admitted and not require_cutover:
-        return errors
+        return errors, False
     if require_cutover and runtime.get("disposition") == "production_candidate":
         admitted = True
     if not admitted:
-        return errors
+        return errors, False
 
     for field in (
         "runtime_node_id",
         "observer_node_id",
-        "access_url",
-        "transport",
         "runtime_instance_id",
         "runtime_kind",
         "runtime_version",
@@ -109,6 +203,9 @@ def _runtime_errors(runtime: Any, index: int, *, require_cutover: bool) -> list[
         "expires_at",
     ):
         _require(errors, _present(runtime.get(field)), f"{prefix}.{field} is required")
+
+    path_errors, has_lan_and_tailnet = _access_path_errors(runtime, index)
+    errors.extend(path_errors)
 
     context_length = runtime.get("context_length")
     _require(
@@ -148,7 +245,7 @@ def _runtime_errors(runtime: Any, index: int, *, require_cutover: bool) -> list[
             _require(errors, parsed > now, f"{prefix}.expires_at is stale")
         except ValueError:
             errors.append(f"{prefix}.expires_at must be ISO-8601")
-    return errors
+    return errors, has_lan_and_tailnet
 
 
 def validate(data: dict[str, Any], *, require_cutover: bool) -> list[str]:
@@ -169,16 +266,15 @@ def validate(data: dict[str, Any], *, require_cutover: bool) -> list[str]:
     errors.extend(_repository_errors(data))
 
     _require(errors, _get(data, "baseline.captured") is True, "baseline.captured must be true")
-    _require(
-        errors,
-        _present(_get(data, "baseline.evidence_path")),
-        "baseline.evidence_path is required",
-    )
-    _require(
-        errors,
-        _present(_get(data, "baseline.evidence_sha256_path")),
-        "baseline.evidence_sha256_path is required",
-    )
+    for path in (
+        "baseline.evidence_path",
+        "baseline.evidence_sha256_path",
+        "baseline.tailnet_candidate_inventory_path",
+        "baseline.tailnet_candidate_inventory_sha256_path",
+        "baseline.lan_runtime_map_path",
+        "baseline.lan_runtime_map_sha256_path",
+    ):
+        _require(errors, _present(_get(data, path)), f"{path} is required")
     _require(
         errors,
         _get(data, "baseline.production_restart_commands_recorded") is True,
@@ -213,6 +309,9 @@ def validate(data: dict[str, Any], *, require_cutover: bool) -> list[str]:
         "router_ci",
         "compose_render",
         "strict_offline_verifier",
+        "tailnet_discovery",
+        "container_network_paths",
+        "lan_tailscale_failover",
         "direct_completion",
         "routed_completion",
         "runtime_identity",
@@ -229,13 +328,26 @@ def validate(data: dict[str, Any], *, require_cutover: bool) -> list[str]:
 
     runtimes = data.get("runtimes", [])
     _require(errors, isinstance(runtimes, list), "runtimes must be a list")
+    has_multipath_runtime = False
     if isinstance(runtimes, list):
         for index, runtime in enumerate(runtimes):
-            errors.extend(_runtime_errors(runtime, index, require_cutover=require_cutover))
+            runtime_errors, runtime_has_multipath = _runtime_errors(
+                runtime,
+                index,
+                require_cutover=require_cutover,
+            )
+            errors.extend(runtime_errors)
+            if isinstance(runtime, dict) and runtime.get("admitted") is True:
+                has_multipath_runtime = has_multipath_runtime or runtime_has_multipath
         _require(
             errors,
             any(isinstance(runtime, dict) and runtime.get("admitted") is True for runtime in runtimes),
             "at least one runtime must be admitted",
+        )
+        _require(
+            errors,
+            has_multipath_runtime,
+            "at least one admitted runtime must prove LAN and Tailscale access paths",
         )
 
     blockers = data.get("blockers", [])
