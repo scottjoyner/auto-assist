@@ -1,7 +1,12 @@
 .env
 deploy/canary.env
 deploy/canary-*.env
+deploy/reconciliation.env
+deploy/reconciliation/migration-state.yaml
+deploy/local/
 artifacts/deployment-canary/
+artifacts/reconciliation-preflight/
+artifacts/reconciliation-render/
 .venv/
 env/
 venv/
