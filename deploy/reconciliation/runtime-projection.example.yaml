@@ -20,16 +20,19 @@ runtimes:
       queue_limit: 4
       queue_timeout_seconds: 30
       evidence_ref: artifacts/runtime/xwing-capacity.json
+      evidence_sha256: replace-with-64-lowercase-hex-sha256
 
     access_paths:
       - base_url: http://192.168.1.9:1234/v1
         transport: lan
         preference: 10
         evidence_ref: artifacts/runtime/xwing-lan-path.json
+        evidence_sha256: replace-with-64-lowercase-hex-sha256
       - base_url: http://100.64.0.9:1234/v1
         transport: tailscale
         preference: 20
         evidence_ref: artifacts/runtime/xwing-tailscale-path.json
+        evidence_sha256: replace-with-64-lowercase-hex-sha256
 
     models:
       - model_instance_id: model-xwing-qwen-1
@@ -47,3 +50,4 @@ runtimes:
           - local_only
           - hermes_worker
         evidence_ref: artifacts/runtime/xwing-model-identity.json
+        evidence_sha256: replace-with-64-lowercase-hex-sha256
