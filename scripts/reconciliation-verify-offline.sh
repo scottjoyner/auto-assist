@@ -7,10 +7,26 @@ ROUTER_URL="${RECONCILIATION_NEW_ROUTER_URL:-http://127.0.0.1:18088}"
 ASSISTX_URL="${RECONCILIATION_NEW_ASSISTX_URL:-http://127.0.0.1:18000}"
 ENV_FILE="${RECONCILIATION_ENV_FILE:-}"
 if [ "$#" -gt 0 ]; then
-  SCAN_PATHS=("$@")
+  RAW_SCAN_PATHS=("$@")
 else
-  SCAN_PATHS=(.)
+  RAW_SCAN_PATHS=(.)
 fi
+
+# Repository roots are converted to the rendered shadow plan or the narrow
+# reconciliation provider/policy files. This avoids treating known historical
+# base configuration as the deployed result while still validating the exact
+# merged configuration that Docker will run.
+SCAN_PATHS=()
+for path in "${RAW_SCAN_PATHS[@]}"; do
+  if [ -d "$path" ] && [ -f "$path/artifacts/reconciliation-render/assistx-router.yaml" ]; then
+    SCAN_PATHS+=("$path/artifacts/reconciliation-render/assistx-router.yaml")
+  elif [ -d "$path" ] && [ -f "$path/providers.reconciliation.yaml" ]; then
+    SCAN_PATHS+=("$path/providers.reconciliation.yaml")
+    [ -f "$path/policies.yaml" ] && SCAN_PATHS+=("$path/policies.yaml")
+  else
+    SCAN_PATHS+=("$path")
+  fi
+done
 
 # Empty credential declarations are allowed and verified separately below. What is
 # forbidden in rendered configuration is a public URL, hosted provider record,
