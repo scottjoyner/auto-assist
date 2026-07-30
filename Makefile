@@ -47,6 +47,7 @@ canary-rollback:
 # project, network, ports, database, and state. They never stop the old stack.
 RECON_ENV_FILE ?= deploy/reconciliation.env
 RECON_STATE_FILE ?= deploy/reconciliation/migration-state.yaml
+RECON_DEPENDENCY_FILE ?= deploy/reconciliation/external-dependencies.yaml
 RECON_REPORT_FILE ?= artifacts/reconciliation-report.md
 RECON_ROUTER_ROOT ?= ../auto-router
 RECON_TAILSCALE_OUTPUT ?= artifacts/reconciliation-tailnet-candidates.json
@@ -58,10 +59,11 @@ RECON_ROUTER = $(RECON_DIRECT) -f compose.reconciliation.yml
 
 .PHONY: reconciliation-worktrees-plan reconciliation-worktrees-apply \
 	reconciliation-init reconciliation-state-init reconciliation-state-validate \
-	reconciliation-cutover-gate reconciliation-report reconciliation-preflight \
-	reconciliation-discover-tailnet reconciliation-render-direct reconciliation-up-direct \
-	reconciliation-render-router reconciliation-up-router reconciliation-executor-up \
-	reconciliation-verify reconciliation-status reconciliation-down
+	reconciliation-dependencies-validate reconciliation-cutover-gate \
+	reconciliation-report reconciliation-preflight reconciliation-discover-tailnet \
+	reconciliation-render-direct reconciliation-up-direct reconciliation-render-router \
+	reconciliation-up-router reconciliation-executor-up reconciliation-verify \
+	reconciliation-status reconciliation-down
 
 reconciliation-worktrees-plan:
 	@chmod +x scripts/bootstrap-reconciliation-worktrees.sh
@@ -73,12 +75,14 @@ reconciliation-worktrees-apply:
 
 reconciliation-init:
 	@test -f $(RECON_ENV_FILE) || cp deploy/reconciliation.env.example $(RECON_ENV_FILE)
-	@chmod 600 $(RECON_ENV_FILE)
+	@test -f $(RECON_DEPENDENCY_FILE) || cp deploy/reconciliation/external-dependencies.example.yaml $(RECON_DEPENDENCY_FILE)
+	@chmod 600 $(RECON_ENV_FILE) $(RECON_DEPENDENCY_FILE)
 	@chmod +x scripts/reconciliation-preflight.sh scripts/reconciliation-verify-offline.sh
-	@chmod +x scripts/reconciliation-discover-tailnet.py
+	@chmod +x scripts/reconciliation-discover-tailnet.py scripts/validate-external-dependencies.py
 	@chmod +x scripts/validate-reconciliation-state.py scripts/render-reconciliation-report.py
 	@$(MAKE) reconciliation-state-init
 	@echo "Review and replace every change-me value in $(RECON_ENV_FILE) before startup."
+	@echo "Populate $(RECON_DEPENDENCY_FILE) with current evidence before the cutover gate."
 	@echo "Optionally copy deploy/reconciliation/lan-runtime-map.example.json to $(RECON_LAN_MAP) and replace every sample address."
 
 reconciliation-state-init:
@@ -89,7 +93,10 @@ reconciliation-state-init:
 reconciliation-state-validate:
 	@python scripts/validate-reconciliation-state.py $(RECON_STATE_FILE)
 
-reconciliation-cutover-gate:
+reconciliation-dependencies-validate:
+	@python scripts/validate-external-dependencies.py $(RECON_DEPENDENCY_FILE)
+
+reconciliation-cutover-gate: reconciliation-dependencies-validate
 	@python scripts/validate-reconciliation-state.py --require-cutover $(RECON_STATE_FILE)
 
 reconciliation-report:
@@ -140,6 +147,8 @@ reconciliation-status:
 	@$(RECON_ROUTER) ps
 	@curl -fsS http://127.0.0.1:18000/health | jq
 	@curl -fsS http://127.0.0.1:18088/health | jq
+	@curl -fsS -u "$${BASIC_AUTH_USER:-admin}:$${BASIC_AUTH_PASS:-change-me}" \
+		http://127.0.0.1:18000/api/control-room/overview | jq '.overall_status, .summary'
 
 reconciliation-down:
 	@$(RECON_ROUTER) down
