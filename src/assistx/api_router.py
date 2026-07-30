@@ -11,6 +11,7 @@ from .passive_control import build_passive_control_router
 from .passive_events import build_passive_event_router
 from .passive_status import build_passive_status_router
 from .router_integration import build_router_integration_router
+from .runtime_projection import build_runtime_projection_router
 from .routers.devices import build_devices_router
 from .routers.dispatch import build_dispatch_router
 from .routers.feeds import build_feeds_router
@@ -38,6 +39,7 @@ install_control_room_runtime(control_room_module)
 _remove_superseded_operator_routes()
 app.include_router(build_control_room_router(_neo, auth, templates))
 app.include_router(build_router_integration_router(_neo))
+app.include_router(build_runtime_projection_router(_neo, auth_dependency=auth))
 app.include_router(build_overlay_router())
 app.include_router(build_passive_agent_router(_neo, auth_dependency=auth))
 app.include_router(build_passive_claim_router(_neo, auth_dependency=auth))
