@@ -1,40 +1,47 @@
 # Final cutover operator packet — 2026-07-30
 
-This packet is the final operator-facing sequence for moving from the old local fleet stack to the reconciled AssistX/auto-router/Hermes stack.
+This is the final machine-side sequence for moving from the existing local fleet stack to the reconciled AssistX/auto-router/Hermes stack.
 
-It does not authorize production changes. The machine-side agent must stop before the production mutation section and present the completed ledger, report, exact commands, backup evidence, and rollback thresholds for approval.
+This packet does **not** authorize production changes. Complete every shadow, backup, rollback, evidence, and CI gate first. Stop before section 18 and present the completed evidence for explicit operator approval.
 
-## 1. Required repository heads
-
-All reconciliation worktrees must be clean and pinned to branch:
+## 1. Non-negotiable authority model
 
 ```text
-full-auto-reconciliation-20260730
-```
+AssistX / Neo4j
+  = durable physical-node, runtime, model, access-path, capacity,
+    assignment, claim, lease, health, approval, and recovery authority
 
-Record the current full 40-character SHA for every repository in:
-
-```text
-deploy/reconciliation/migration-state.yaml
-```
-
-At minimum, pin:
-
-```text
-auto-assist
 auto-router
-hermes-agent
-fleet-llm-profiles
-lms
+  = strict-offline OpenAI-compatible gateway, semantic auto/* policy,
+    per-runtime admission, bounded queueing, and approved path selection
+
+Hermes
+  = claimed-task executor in fleet.mode=external
 ```
 
-Also record the companion repositories used or retired by the deployment.
+The reconciled deployment must not contain:
 
-Do not rely on a SHA printed in this document. Fetch the branch and record the actual current head on the machine.
+- `auto-assign`;
+- a Hermes `fleet.nodes` registry;
+- `hermes fleet serve` or independent endpoint discovery;
+- router-created agent jobs or Paperclip inference routing;
+- public providers or hosted credentials;
+- autonomous model load, unload, restart, migration, or recovery;
+- duplicate slot, health, or access-path authorities.
 
-## 2. Update the reconciliation worktrees
+## 2. Required repository branches and green CI
 
-From each clean reconciliation worktree:
+All production candidates must be clean and pinned to full 40-character SHAs.
+
+```text
+auto-assist:  full-auto-reconciliation-20260730
+auto-router:  full-auto-reconciliation-20260730
+hermes-agent: full-auto-reconciliation-20260730
+```
+
+The Hermes reconciliation branch contains the tested external/standalone/disabled fleet split from PR #10 plus the reconciliation contract from PR #11. PRs remain draft until operator review.
+
+For each worktree:
 
 ```bash
 git fetch origin
@@ -44,103 +51,115 @@ git status --short
 git rev-parse HEAD
 ```
 
-A dirty worktree, non-fast-forward update, missing branch, or unexpected commit blocks cutover.
-
-## 3. Recreate local configuration from the current examples
-
-Do not overwrite working secret files blindly. Diff the current local files against the examples and merge the new fields.
-
-AssistX:
+Record the exact heads and successful workflow run IDs in:
 
 ```text
-deploy/reconciliation.env.example
-deploy/reconciliation/migration-state.example.yaml
-deploy/reconciliation/lan-runtime-map.example.json
+deploy/reconciliation/migration-state.yaml
+deploy/reconciliation/final-cutover-evidence.yaml
 ```
 
-Router:
+A dirty worktree, non-fast-forward update, stale CI head, failed required job, or different tested/deployed SHA blocks cutover.
 
-```text
-.env.example
-config/providers.reconciliation.yaml
-compose.reconciliation.yml
-```
+## 3. Initialize the operator-owned files
 
-The router reconciliation environment must include unique, non-production values and real runtime details:
-
-```env
-AUTO_ROUTER_ADMIN_TOKEN=<unique-shadow-token>
-RECONCILIATION_ASSISTX_NETWORK=assistx_reconciliation_shared
-RECONCILIATION_RUNTIME_NODE_ID=<physical-node-id>
-RECONCILIATION_RUNTIME_INSTANCE_ID=<stable-runtime-instance-id>
-RECONCILIATION_PARALLEL_SLOTS=<verified-integer>
-RECONCILIATION_QUEUE_LIMIT=<bounded-integer>
-RECONCILIATION_QUEUE_TIMEOUT_SECONDS=<bounded-seconds>
-RECONCILIATION_LAN_BASE_URL=http://<rfc1918-address>:1234/v1
-RECONCILIATION_LMSTUDIO_BASE_URL=http://<existing-approved-path>:1234/v1
-RECONCILIATION_TAILSCALE_BASE_URL=http://<100.64.0.0/10-address>:1234/v1
-RECONCILIATION_MODEL_ID=<exact-loaded-model-id>
-RECONCILIATION_CONTEXT_WINDOW=<verified-context>
-```
-
-Do not use the example IP addresses as real configuration.
-
-## 4. Capture current production state again
-
-The baseline must be current enough for the maintenance window:
+From the reconciliation `auto-assist` worktree:
 
 ```bash
-cd /home/scott/git/reconciliation-20260730/auto-assist
+make reconciliation-init
+```
+
+This creates ignored, mode-0600 working files when missing:
+
+```text
+deploy/reconciliation.env
+deploy/reconciliation/migration-state.yaml
+deploy/reconciliation/external-dependencies.yaml
+deploy/reconciliation/final-cutover-evidence.yaml
+deploy/reconciliation/runtime-projection.yaml
+artifacts/reconciliation-hermes-home/config.yaml
+```
+
+Diff existing files against the current examples. Never overwrite real secrets blindly. Replace every `change-me`, `replace-*`, sample address, placeholder identity, and sample evidence path.
+
+Generate unique, shadow-only values for at least:
+
+```text
+BASIC_AUTH_PASS
+NEO4J_PASSWORD
+AUTO_ROUTER_ADMIN_TOKEN
+ASSISTX_RUNTIME_PROJECTION_HMAC_SECRET
+AUTO_ROUTER_RUNTIME_PROJECTION_HMAC_SECRET
+runbook, node-token, attestation, and KV HMAC secrets
+```
+
+The AssistX and router runtime-projection HMAC values must match each other but must not reuse a production secret.
+
+## 4. Validate the Hermes authority boundary before Docker
+
+The generated Hermes config must contain only the auto-router gateway:
+
+```bash
+make reconciliation-hermes-config-validate
+```
+
+Required result:
+
+```text
+HERMES_EXTERNAL_CONFIG: PASS
+```
+
+Manually confirm:
+
+```yaml
+model:
+  default: auto/code
+  base_url: http://auto-router-reconciliation:8088/v1
+
+fleet:
+  mode: external
+```
+
+There must be no `fleet.nodes` section. The standalone proxy is not part of this deployment.
+
+## 5. Capture a current read-only production baseline
+
+```bash
 make reconciliation-preflight
 ```
 
-Review and checksum:
+Review and checksum the evidence for:
 
-- Compose projects and containers;
-- images and restart policies;
-- ports and networks;
-- volumes and bind mounts;
-- systemd, cron, tmux, screen, and unmanaged processes;
-- production Neo4j and Redis locations;
-- old router, AssistX, auto-assign, and executor health;
-- Tailscale state;
-- exact old-stack stop and restart commands.
+- all Compose projects, containers, images, networks, volumes, ports, mounts, and restart policies;
+- systemd, cron, tmux, screen, nohup, sockets, and unmanaged processes;
+- current AssistX, router, auto-assign, Hermes, OpenCode, Neo4j, Redis, LM Studio, llama.cpp, and related services;
+- current repository branches and SHAs;
+- Tailscale status, DNS, LAN addresses, and firewall/routing state;
+- exact old-stack stop, start, enable, disable, and rollback commands;
+- production state, backup, and restore locations.
 
-The old stack must remain unchanged during this step.
+Do not stop, restart, reconfigure, or write to the production stack during baseline capture.
 
-## 5. Discover LAN and Tailscale candidates
+## 6. Discover candidate LAN and Tailscale paths
 
-Create the local LAN map from real machine addresses:
-
-```bash
-cp deploy/reconciliation/lan-runtime-map.example.json \
-  deploy/reconciliation/lan-runtime-map.json
-chmod 600 deploy/reconciliation/lan-runtime-map.json
-$EDITOR deploy/reconciliation/lan-runtime-map.json
-sha256sum deploy/reconciliation/lan-runtime-map.json \
-  > artifacts/reconciliation-lan-runtime-map.sha256
-```
-
-Then collect candidate private paths:
+Create the local LAN map using real current addresses, then run:
 
 ```bash
 make reconciliation-discover-tailnet
 ```
 
-Record these files and checksums in the migration ledger:
+Record and checksum:
 
 ```text
+deploy/reconciliation/lan-runtime-map.json
 artifacts/reconciliation-tailnet-candidates.json
 artifacts/reconciliation-tailnet-candidates.json.sha256
-deploy/reconciliation/lan-runtime-map.json
-artifacts/reconciliation-lan-runtime-map.sha256
 ```
 
-Discovery is candidate-only. A peer is not admitted merely because it is online or has port 1234 reachable.
+Discovery is candidate-only. Reachability and `/v1/models` visibility do not prove physical ownership and do not admit a runtime.
 
-## 6. Resolve physical runtime and model ownership
+## 7. Resolve physical runtime and loaded-model identity
 
-For every candidate that may be admitted, record evidence from the physical host. For LM Studio, use the official CLI where available:
+For every runtime proposed for admission, collect evidence from the physical host. For LM Studio, prefer:
 
 ```bash
 lms ps --json --host <physical-host>
@@ -150,74 +169,114 @@ Record separately:
 
 ```text
 observer_node_id
-runtime_node_id
+runtime node/physical owner
 runtime_instance_id
-runtime_kind and version
+runtime kind and version
+process identity
 model_instance_id
-model key and artifact fingerprint
+exact server model ID
+artifact fingerprint/content address
 quantization
 context length
+capabilities
 load owner
 parallel slots
-LAN access path
-Tailscale access path
+queue limit and timeout
+LAN access URL
+Tailscale access URL
 observation and expiry timestamps
 ```
 
-The LAN and Tailscale paths must point to the same physical runtime and share one slot pool.
+Rules:
 
-## 7. Render and inspect the shadow deployment
+- LAN and Tailscale URLs for one process share one `runtime_instance_id` and one admission counter.
+- Unknown ownership is not admitted.
+- Unknown capacity is zero.
+- Unknown runtime version, model instance, artifact, quantization, or context blocks projection.
+- Discovery never loads a model.
+
+## 8. Populate and dry-run the canonical runtime projection
+
+Edit:
+
+```text
+deploy/reconciliation/runtime-projection.yaml
+```
+
+It must contain one-step generation compare-and-swap data, named approval, expiring evidence, LAN-first ordering, Tailscale fallback, capacity, and complete model identity.
+
+Validate without writing Neo4j:
+
+```bash
+make reconciliation-runtime-projection-plan
+```
+
+Required result:
+
+```text
+RUNTIME_PROJECTION_APPROVAL: DRY_RUN_PASS
+```
+
+Review and checksum both the manifest and dry-run evidence. Do not use `--apply` yet.
+
+## 9. Render every shadow topology and executor profile
 
 AssistX:
 
 ```bash
-cd /home/scott/git/reconciliation-20260730/auto-assist
 make reconciliation-render-direct
 make reconciliation-render-router
+make reconciliation-render-executor
+make reconciliation-executor-containment-validate
 ```
 
 Router:
 
 ```bash
-cd /home/scott/git/reconciliation-20260730/auto-router
+cd ../auto-router
 make reconciliation-init
 make reconciliation-render
+cd ../auto-assist
 ```
 
-Inspect the rendered files for:
+The rendered plans must prove:
 
-- host publications bound only to `127.0.0.1`;
-- the shared `assistx_reconciliation_shared` Docker network;
-- no production volume, network, container, or database reuse;
-- no hosted provider or public endpoint;
-- no `auto-assign` service;
-- no autoload, unload, dispatcher, gateway, or self-task behavior;
-- explicit runtime identity, slots, queue limit, and ordered access paths;
-- a required router admin token.
+- loopback-only host publication;
+- isolated Compose projects, databases, volumes, and state;
+- the dedicated `assistx_reconciliation_shared` network;
+- no production resource reuse;
+- no `auto-assign`;
+- no public provider, broker, gateway, Paperclip inference lane, or hosted credential;
+- no autoload, placement, unload, self-tasking, or recovery execution;
+- the executor remains behind the `executor` profile and restart is disabled;
+- non-root executor, read-only root, `cap_drop: ALL`, and `no-new-privileges`;
+- no SSH, Docker socket, broad repository, NAS, or SSD mount;
+- no web/browser/MCP tool capability;
+- only the scoped Hermes home, evidence directory, and optionally one approved worktree.
 
-Checksum every reviewed render and record it in the ledger.
+Checksum every reviewed render.
 
-## 8. Start or rebuild the isolated shadow stack
+## 10. Start the isolated shadow control plane
 
 Start AssistX direct mode first:
 
 ```bash
-cd /home/scott/git/reconciliation-20260730/auto-assist
 make reconciliation-up-direct
 ```
 
-Start the router:
+Start the strict-offline router from its worktree:
 
 ```bash
-cd /home/scott/git/reconciliation-20260730/auto-router
+cd ../auto-router
 make reconciliation-up
+cd ../auto-assist
 ```
 
-Transition AssistX to the router overlay:
+Transition only the shadow AssistX API and worker to the router overlay:
 
 ```bash
-cd /home/scott/git/reconciliation-20260730/auto-assist
 make reconciliation-up-router
+make reconciliation-status
 ```
 
 Verify:
@@ -228,273 +287,311 @@ curl -fsS http://127.0.0.1:18088/health | jq
 curl -fsS http://127.0.0.1:18088/v1/models | jq
 ```
 
-Confirm the old production services were not recreated, stopped, renamed, or attached to the shadow networks.
+Confirm the old production stack is still running and unchanged.
 
-## 9. Prove container LAN and Tailscale reachability
+## 11. Atomically approve the shadow runtime generation
 
-From the router worktree, export the configured shadow admin token and run:
+Only after the dry run and shadow Neo4j target are verified, apply the operator-reviewed manifest:
 
 ```bash
-export AUTO_ROUTER_ADMIN_TOKEN='<unique-shadow-token>'
+APPLY_RUNTIME_PROJECTION=YES make reconciliation-runtime-projection-approve
+```
+
+The transaction must:
+
+- compare the expected current generation;
+- refuse generation skips or replay conflicts;
+- retire prior admissions in the same transaction;
+- write runtime, model, artifact, path, capacity, approval, and expiry data;
+- update `FleetProjectionState{name:'canonical'}` last;
+- roll back all writes on any failure.
+
+Then prove AssistX and auto-router converge on the exact generation, revision, and checksum:
+
+```bash
+make reconciliation-runtime-projection-verify
+```
+
+Required result:
+
+```text
+RUNTIME_PROJECTION_GATE: PASS
+```
+
+Record:
+
+```text
+artifacts/runtime-projection-approval-evidence.json
+artifacts/runtime-projection-evidence.json
+```
+
+Also test in shadow that an active request on generation N can finish and release its original gate after generation N+1 is accepted, while new requests use N+1.
+
+## 12. Prove container-level LAN preference and Tailscale fallback
+
+From the router worktree:
+
+```bash
+export AUTO_ROUTER_ADMIN_TOKEN='<shadow-token>'
 make reconciliation-network-verify
 ```
 
-This writes:
+The evidence must prove from inside `auto-router-reconciliation`:
 
-```text
-artifacts-reconciliation/network-path-evidence.json
-artifacts-reconciliation/network-path-evidence.json.sha256
-```
+- the approved LAN path is reachable;
+- the approved Tailscale path is reachable;
+- both resolve to the same physical runtime/model identity;
+- `/admin/admission` exposes one shared slot pool;
+- LAN is selected when both paths work;
+- Tailscale is selected when only the approved LAN test path is unavailable;
+- selection returns to LAN after restoration and cache expiry;
+- no model process is stopped or reloaded during failover testing.
 
-The check must prove from inside `auto-router-reconciliation` that both configured URLs are reachable and that `/admin/admission` reports the expected runtime and approved path list.
+Do not use host networking, alter production firewall rules, block the host Tailscale interface, or stop the physical runtime to manufacture the test.
 
-If the Tailscale IP is not reachable from the container, stop. Inspect host forwarding/firewall policy. Do not switch the stack to host networking merely to bypass the gate.
-
-## 10. Prove LAN preference and Tailscale fallback
-
-Perform this only against the shadow router.
-
-### LAN preference
-
-With both real paths configured and reachable:
-
-1. restart only the shadow router;
-2. send one routed completion;
-3. query `/admin/admission`;
-4. verify `selected_transport` is `lan` and the selected URL is the expected RFC1918 path.
-
-### Tailscale fallback
-
-Without changing the physical model process:
-
-1. set the shadow `RECONCILIATION_LAN_BASE_URL` to a deliberately unreachable RFC1918 address reserved for this test;
-2. keep the real Tailscale path configured;
-3. render and review the shadow router configuration;
-4. recreate only `auto-router-reconciliation`;
-5. send one routed completion;
-6. verify `/admin/admission` selects `tailscale`;
-7. verify the same `runtime_instance_id` and admission counters remain in use;
-8. restore the real LAN URL;
-9. recreate only the shadow router;
-10. verify selection returns to `lan` after the path cache refresh.
-
-Do not block the host's Tailscale interface, modify production firewall rules, or stop the physical runtime to simulate this test.
-
-Record all commands, timestamps, selected paths, runtime IDs, and admission snapshots.
-
-## 11. Re-run functional gates
-
-At the current branch heads, repeat and record:
-
-- direct completion;
-- routed completion;
-- sequential stability;
-- one-slot overlap behavior;
-- bounded queue or explicit rejection;
-- cancellation safety;
-- router restart and state rebuild;
-- AssistX restart and state rebuild;
-- deletion/rebuild of non-authoritative router cache;
-- confirmation that AssistX/Neo4j remains canonical;
-- confirmation that no model load occurred.
-
-Run the strict offline verifier:
+## 13. Run strict-offline and authority tests
 
 ```bash
-cd /home/scott/git/reconciliation-20260730/auto-assist
 make reconciliation-verify
 ```
 
-## 12. Run the Hermes synthetic lifecycle gate
+Additionally inspect the OpenAPI and context projection to prove:
 
-Only after every previous gate passes and the operator approves the shadow executor:
+- `/jobs/agent` and retired scheduler/discovery/mutation routes are absent;
+- `/api/routes/request` blocks tool-capable agent-job creation;
+- nonlocal lanes are rejected;
+- AssistX context projection contains no Cerebras, OpenRouter, Groq, hosted provider, Paperclip inference provider, or public service;
+- all public-provider environment variables are empty or absent;
+- `auto-assign` is stopped/disabled in the proposed production plan;
+- router cache deletion/rebuild does not change canonical AssistX authority.
+
+Capture OpenAPI, context, environment-redaction, and process evidence with checksums.
+
+## 14. Prove functional admission behavior
+
+At the exact proposed SHAs and projection generation, record:
+
+- direct completion against the physical runtime;
+- routed completion through `127.0.0.1:18088` using an `auto/*` alias;
+- sequential stability;
+- one-slot overlap behavior;
+- bounded queue or explicit 429/503 overflow;
+- queue timeout behavior;
+- cancellation and streaming-close permit release;
+- router restart without model autoload or duplicate identity;
+- AssistX restart and projection reconvergence;
+- removal/rebuild of non-authoritative router SQLite/cache;
+- trace events containing projection generation, runtime/model identity, transport, TPS, TTFT, tokens, latency, and errors.
+
+A successful request alone is not sufficient evidence for capacity or identity.
+
+## 15. Capture and verify the offline image rollback bundle
+
+After the final images are built:
 
 ```bash
-cd /home/scott/git/reconciliation-20260730/auto-assist
+make reconciliation-images-capture
+make reconciliation-images-verify-offline
+```
+
+Required evidence:
+
+```text
+artifacts/reconciliation-images/reconciliation-images.tar
+artifacts/reconciliation-images/reconciliation-images.tar.sha256
+artifacts/reconciliation-images/reconciliation-images.manifest.json
+artifacts/reconciliation-images/reconciliation-images.restore-evidence.json
+```
+
+The verification must execute `docker load` from the local bundle, require no pull or internet access, and prove every recorded image ID is available.
+
+## 16. Run one contained Hermes synthetic lifecycle
+
+Only after sections 1–15 pass and the operator approves enabling the shadow executor:
+
+```bash
 make reconciliation-executor-up
 ```
 
-Run one synthetic, non-sensitive task and prove:
+Inside the executor, verify:
 
-- allocation and reservation;
-- fenced claim;
-- heartbeat;
+```text
+fleet.mode = external
+fleet.nodes absent
+hermes fleet status reads auto-router admission
+hermes fleet serve rejected
+hermes fleet discover rejected
+model intent = auto/code
+```
+
+Run one non-sensitive synthetic task and prove:
+
+- AssistX allocation and reservation;
+- fenced claim and stale-claim rejection;
+- heartbeat and checkpoint;
+- semantic `auto/*` request with task/run/claim/capability/workflow/session metadata;
 - routed local inference;
-- checkpoint/evidence;
-- completion;
-- stale-claim rejection;
-- no self-created follow-up task;
-- no repository mutation;
-- no model load/unload/restart.
+- evidence and completion;
+- no self-created follow-up;
+- no second fleet router or slot authority;
+- no repository mutation unless one dedicated test worktree was explicitly mounted;
+- no model load, unload, restart, public call, or recovery action.
 
-Stop the shadow Hermes adapter after the gate unless continued shadow operation is separately approved.
+Stop the Hermes adapter after the test unless continued shadow operation is separately approved.
 
-## 13. Create and verify the production Neo4j backup
+## 17. Backup and rollback rehearsal
 
-Use the backup mechanism supported by the actual production Neo4j edition and deployment. Record:
+Before recommending cutover:
 
-- version and database name;
-- backup method;
-- path;
-- SHA-256 checksum;
-- creation timestamp;
-- exact restore command;
-- isolated restore-test result when practical.
+- identify the exact production Neo4j edition, version, database, and deployment form;
+- create a real production backup using its supported mechanism;
+- checksum the backup;
+- record the exact restore command;
+- perform an isolated restore rehearsal where practical;
+- back up required Redis/SQLite/config/state artifacts;
+- prove old-stack restart commands;
+- rehearse stopping and recreating **only** the shadow stack;
+- prove the old production stack continues throughout the rehearsal;
+- record rollback time, commands, dependencies, and manual steps.
 
-Do not overwrite or restore the production database during preparation.
+Never restore over production during preparation.
 
-## 14. Populate the final ledger
+## 18. Complete the two evidence contracts
 
-Update:
+Populate:
 
 ```text
 deploy/reconciliation/migration-state.yaml
+deploy/reconciliation/final-cutover-evidence.yaml
 ```
 
-Every required gate must be backed by an artifact or command output. In particular, record:
+The final evidence contract must include exact green CI SHAs/run IDs and checksummed proof for:
 
-```text
-checks.tailnet_discovery: pass
-checks.container_network_paths: pass
-checks.lan_tailscale_failover: pass
-```
+- Hermes external mode and disabled standalone commands;
+- runtime projection approval and convergence;
+- old-generation lease preservation and evidence expiry;
+- executor containment;
+- offline image restoration;
+- strict-offline authority boundaries;
+- control-room visibility and shared snapshot cache;
+- no blockers.
 
-Each admitted runtime must contain both `lan` and `tailscale` access-path records, per-path reachability evidence, the selected path, and:
-
-```text
-lan_preference_probe: pass
-tailscale_fallback_probe: pass
-shared_admission_probe: pass
-```
-
-Unknown or unverified values remain blockers.
-
-## 15. Validate and render the operator report
+Then run:
 
 ```bash
-cd /home/scott/git/reconciliation-20260730/auto-assist
 make reconciliation-state-validate
+make reconciliation-dependencies-validate
+make reconciliation-hermes-config-validate
+make reconciliation-executor-containment-validate
+make reconciliation-images-verify-offline
+make reconciliation-runtime-projection-verify
+make reconciliation-final-evidence-validate
 make reconciliation-cutover-gate
 make reconciliation-report
 ```
 
-All three commands must succeed at the exact repository SHAs proposed for production.
+Every command must pass at the exact deployment SHAs. A passing gate is evidence for review; it is not permission to mutate production.
 
-The generated report must say:
+## 19. Mandatory approval stop
 
-```text
-PRODUCTION_CHANGED: no
-PUBLIC_INFERENCE_FOUND: no
-SHADOW_STACK_HEALTHY: yes
-RUNTIME_IDENTITY_GATE: pass
-CAPACITY_GATE: pass
-TAILNET_DISCOVERY_GATE: pass
-NETWORK_PATH_GATE: pass
-LAN_TAILSCALE_FAILOVER_GATE: pass
-STATE_AUTHORITY_GATE: pass
-HERMES_SYNTHETIC_GATE: pass
-ROLLBACK_REHEARSAL: pass
-CUTOVER_RECOMMENDED: yes
-```
+Present the operator with:
 
-A passing report is still not authorization.
+- repository SHAs and green CI run IDs;
+- current production baseline and checksums;
+- rendered shadow and proposed production Compose plans;
+- runtime/model identity and signed projection evidence;
+- LAN/Tailscale failover evidence;
+- admission/cancellation/restart evidence;
+- Hermes synthetic lifecycle evidence;
+- containment and image-restore proof;
+- Neo4j backup and restore proof;
+- exact production cutover commands;
+- exact rollback commands and trigger thresholds;
+- generated reconciliation report;
+- remaining risks and required maintenance window.
 
-## 16. Exact command evidence
+Do not continue without explicit production-cutover approval.
 
-Create an untracked, mode-0600 command record containing the real machine-specific commands for:
+## 20. Controlled production cutover after approval only
 
-- pause external intake;
-- drain/checkpoint active work;
-- stop old executors;
-- stop old worker;
-- stop and disable old `auto-assign` restart;
-- stop old router;
-- stop old AssistX API;
-- create/verify the production backup;
-- render the final production Compose plan;
-- start the new AssistX API and worker with Hermes disabled;
-- start the new router;
-- run production health and synthetic gates;
-- switch one client;
-- enable Hermes at concurrency one;
-- gradually reopen intake;
-- reverse every step for rollback.
+Use the exact, previously reviewed machine-specific command record. The intended order is:
 
-Reference the command record from:
-
-```text
-cutover.exact_commands_evidence_path
-rollback.exact_commands_evidence_path
-```
-
-Do not use generic commands copied from this document in place of the machine's real project names, files, and services.
-
-## 17. Mandatory stop before production mutation
-
-The machine-side agent must now return the report, checksums, exact command record, backup evidence, rollback thresholds, and unresolved risks to the operator.
-
-The following require explicit approval with operator name and timestamp in the ledger:
-
-```text
-approvals.hermes_shadow_executor
-approvals.production_backup
-approvals.production_cutover
-```
-
-Do not execute the production mutation sequence before the final approval.
-
-## 18. Approved production sequence
-
-After approval, execute only the recorded commands in this order:
-
-1. announce maintenance;
-2. pause intake;
-3. drain or checkpoint active tasks;
-4. capture queue, claim, lease, and process state;
+1. pause external intake;
+2. drain or checkpoint active work;
+3. confirm no active claims will be orphaned;
+4. verify backup and rollback artifacts again;
 5. stop old executors;
 6. stop old worker;
-7. stop/disable old `auto-assign`;
+7. stop and disable old `auto-assign` restart;
 8. stop old router;
 9. stop old AssistX API;
-10. verify the production backup and checksum;
-11. render and checksum the final production configuration;
-12. start new state dependencies as required;
-13. start new AssistX API and worker with Hermes disabled;
-14. start strict-offline router;
-15. verify API, graph, runtime identity, capacity, LAN/Tailscale paths, and offline policy;
-16. run a production synthetic completion;
-17. run a production synthetic AssistX task;
-18. switch one internal client;
-19. observe the approved canary interval;
-20. enable Hermes at concurrency one;
-21. reopen intake gradually;
-22. retain all old rollback assets until the rollback window closes.
+10. start new AssistX/Neo4j/Redis authority with Hermes disabled;
+11. verify health, canonical generation, and state;
+12. start new strict-offline auto-router;
+13. verify projection convergence, models, admission, and path selection;
+14. run one production-safe routed canary;
+15. switch one client to auto-router;
+16. observe errors, queueing, TPS, TTFT, and traces;
+17. enable Hermes external-mode executor at concurrency one;
+18. run one fenced production-safe task;
+19. gradually reopen intake;
+20. keep old rollback artifacts and commands immediately available.
 
-## 19. Immediate rollback triggers
+Do not enable autonomous recovery, model mutation, additional runtimes, multiple Hermes sessions, OpenCode execution, or broad repository mounts during the initial cutover window.
 
-Rollback immediately when any of these occurs:
+## 21. Immediate rollback triggers
 
-- public inference appears or receives traffic;
-- physical runtime ownership is ambiguous;
-- LAN and Tailscale paths produce duplicate runtime/capacity records;
-- a one-slot runtime receives concurrent generations;
-- the Tailscale fallback selects a different physical process than the LAN path;
-- claims or leases are duplicated or lost;
-- new state cannot rebuild after restart;
-- errors, latency, or queue age cross the approved threshold;
-- any load, unload, restart, recovery, or repository action targets the wrong object;
-- Neo4j consistency is uncertain.
+Rollback immediately on any of these conditions:
 
-Execute only the recorded rollback commands. Preserve the failed new-stack state for diagnosis. Database restoration remains a separate operator decision.
+- AssistX/Neo4j unavailable or state divergence;
+- projection generation/checksum mismatch or repeated signature/expiry failures;
+- unknown or duplicated runtime/model identity;
+- admission leak, stuck permit, unbounded queue, or persistent cancellation failure;
+- public-provider attempt or hosted credential detection;
+- `auto-assign`, Paperclip inference, or Hermes standalone fleet authority appears;
+- LAN/Tailscale paths resolve to different physical processes;
+- unexpected model load/unload/restart;
+- Hermes self-tasking, stale-claim acceptance, or unfenced execution;
+- missing trace/task visibility in the control room;
+- sustained error, latency, throughput, memory, disk, or queue threshold breach;
+- inability to restore the old stack with the recorded local artifacts.
 
-## 20. Completion standard
+Rollback order:
 
-The cutover is complete only when:
+1. pause new intake;
+2. disable the new Hermes executor;
+3. drain/checkpoint new work where safe;
+4. revert the switched client endpoint;
+5. stop only the new router and AssistX services;
+6. restart the old AssistX, router, worker, and executors using recorded commands;
+7. verify old health and one canary;
+8. preserve all new-stack logs, projection documents, databases, and evidence;
+9. mark the migration `ROLLED_BACK` and document the trigger.
 
-- all final production health and task gates pass;
-- the selected runtime path and capacity are correct;
-- one mobile/off-site Tailscale fallback case has been proven in shadow or controlled production canary;
-- old-stack restart remains possible throughout the rollback window;
-- the final report and checksums are archived;
-- no hosted inference provider was configured or called;
-- no old volume, database, image, or configuration was destructively removed.
+Do not delete the failed new stack or its evidence until diagnosis is complete.
+
+## Required final report fields
+
+```text
+STATUS: PASS | BLOCKED | ROLLED_BACK
+PRODUCTION_CHANGED: yes | no
+PUBLIC_INFERENCE_FOUND: yes | no
+SHADOW_STACK_HEALTHY: yes | no
+CI_GATE: pass | blocked
+HERMES_AUTHORITY_GATE: pass | blocked
+RUNTIME_IDENTITY_GATE: pass | blocked
+RUNTIME_PROJECTION_GATE: pass | blocked
+CAPACITY_GATE: pass | blocked
+NETWORK_PATH_GATE: pass | blocked
+LAN_TAILSCALE_FAILOVER_GATE: pass | blocked
+STATE_AUTHORITY_GATE: pass | blocked
+EXECUTOR_CONTAINMENT_GATE: pass | blocked
+AIRGAP_IMAGE_RESTORE_GATE: pass | blocked
+CONTROL_ROOM_GATE: pass | blocked
+HERMES_SYNTHETIC_GATE: pass | blocked
+NEO4J_BACKUP_GATE: pass | blocked
+ROLLBACK_REHEARSAL: pass | blocked
+CUTOVER_RECOMMENDED: yes | no
+```
+
+The system is ready for operator review only when all required gates pass, all artifacts are checksummed, all deployed SHAs match green CI, the blocker list is empty, and production remains unchanged.
