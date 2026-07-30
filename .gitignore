@@ -7,6 +7,7 @@ deploy/local/
 artifacts/deployment-canary/
 artifacts/reconciliation-preflight/
 artifacts/reconciliation-render/
+artifacts/reconciliation-report*.md
 .venv/
 env/
 venv/
