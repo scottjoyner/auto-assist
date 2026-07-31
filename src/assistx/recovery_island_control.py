@@ -6,6 +6,7 @@ import os
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from .controller_runtime import Neo4jControllerStore, controller_instance_id
@@ -29,6 +30,24 @@ def _json_mapping(value: str) -> dict[str, Any]:
     except (TypeError, json.JSONDecodeError):
         return {}
     return decoded if isinstance(decoded, dict) else {}
+
+
+def _json_mapping_from_sources(
+    env: dict[str, str],
+    *,
+    value_name: str,
+    file_name: str,
+) -> dict[str, Any]:
+    file_value = str(env.get(file_name) or "").strip()
+    if file_value:
+        path = Path(file_value).expanduser().resolve()
+        if not path.is_file():
+            raise ValueError(f"configured signing-key file is missing: {path}")
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError(f"signing-key file must contain a JSON object: {path}")
+        return value
+    return _json_mapping(str(env.get(value_name) or "{}"))
 
 
 def _island_request(plan: dict[str, Any]) -> dict[str, Any] | None:
@@ -63,9 +82,9 @@ def _next_epoch(neo: Any, *, node_id: str, deployment: str) -> int:
     return int(row["value"] if row else 0)
 
 
-def _approved_island_proposals(neo: Any, limit: int = 20) -> list[dict[str, Any]]:
+def _approved_island_proposals(neo: Any, limit: int = 100) -> list[dict[str, Any]]:
     store = Neo4jRecoveryStore(neo)
-    proposals = store.list(limit=max(1, min(limit, 100)))
+    proposals = store.list(limit=max(1, min(limit, 500)))
     return [
         proposal
         for proposal in proposals
@@ -138,7 +157,11 @@ class RecoveryIslandDispatcher:
         plan = proposal.get("plan") or {}
         request = _island_request(plan)
         if not request:
-            return {"proposal_id": proposal_id, "dispatched": False, "reason": "not_recovery_island"}
+            return {
+                "proposal_id": proposal_id,
+                "dispatched": False,
+                "reason": "not_recovery_island",
+            }
         node_id = str(plan.get("node_id") or request.get("node_id") or "").strip()
         if not node_id:
             return self._fail_before_dispatch(
@@ -185,19 +208,27 @@ class RecoveryIslandDispatcher:
                 parameters=parameters,
                 proposal_id=proposal_id,
             )
-            runbook_keys = _json_mapping(
-                self.env.get("ASSISTX_RUNBOOK_SIGNING_KEYS", "{}")
+            runbook_keys = _json_mapping_from_sources(
+                self.env,
+                value_name="ASSISTX_RECOVERY_ISLAND_RUNBOOK_SIGNING_KEYS",
+                file_name="ASSISTX_RECOVERY_ISLAND_RUNBOOK_SIGNING_KEYS_FILE",
             )
-            key_id = self.env.get("ASSISTX_RUNBOOK_ACTIVE_KEY_ID", "").strip()
+            key_id = self.env.get(
+                "ASSISTX_RECOVERY_ISLAND_RUNBOOK_ACTIVE_KEY_ID",
+                "",
+            ).strip()
             secret = str(runbook_keys.get(key_id) or "")
             if not key_id or not secret:
-                raise ValueError("runbook_signing_key_not_configured")
+                raise ValueError("recovery_island_runbook_signing_key_not_configured")
             signed = sign_recovery_island_runbook(
                 runbook,
                 key_id=key_id,
                 secret=secret,
                 ttl_seconds=int(
-                    self.env.get("ASSISTX_RUNBOOK_TTL_SECONDS", "900")
+                    self.env.get(
+                        "ASSISTX_RECOVERY_ISLAND_RUNBOOK_TTL_SECONDS",
+                        "900",
+                    )
                 ),
             )
             result = neo.create_task_with_context(
@@ -242,6 +273,7 @@ class RecoveryIslandDispatcher:
                 "task_id": task_id,
                 "dispatch_id": result.get("dispatch_id"),
                 "action": request["action"],
+                "deployment": request["deployment"],
                 "node_id": node_id,
             }
         except Exception as exc:
@@ -274,16 +306,28 @@ class RecoveryIslandDispatcher:
         ).lower() in {"1", "true", "yes", "on"}
         if not enabled:
             raise ValueError("recovery_island_activation_envelope_required")
-        keys = _json_mapping(
-            self.env.get("ASSISTX_RECOVERY_ACTIVATION_SIGNING_KEYS", "{}")
+        allowed_deployments = {
+            value.strip()
+            for value in self.env.get(
+                "ASSISTX_RECOVERY_ISLAND_AUTO_ACTIVATION_DEPLOYMENTS",
+                "assistx-shadow",
+            ).split(",")
+            if value.strip()
+        }
+        if deployment not in allowed_deployments:
+            raise ValueError("recovery_island_auto_activation_deployment_not_allowed")
+        keys = _json_mapping_from_sources(
+            self.env,
+            value_name="ASSISTX_RECOVERY_ISLAND_ACTIVATION_SIGNING_KEYS",
+            file_name="ASSISTX_RECOVERY_ISLAND_ACTIVATION_SIGNING_KEYS_FILE",
         )
         key_id = self.env.get(
-            "ASSISTX_RECOVERY_ACTIVATION_ACTIVE_KEY_ID",
+            "ASSISTX_RECOVERY_ISLAND_ACTIVATION_ACTIVE_KEY_ID",
             "",
         ).strip()
         secret = str(keys.get(key_id) or "")
         if not key_id or not secret:
-            raise ValueError("recovery_activation_signing_key_not_configured")
+            raise ValueError("recovery_island_activation_signing_key_not_configured")
         if len(bundle_sha256) != 64:
             raise ValueError("recovery_island_bundle_sha256_required")
         epoch = _next_epoch(neo, node_id=node_id, deployment=deployment)
@@ -302,7 +346,7 @@ class RecoveryIslandDispatcher:
             secret=secret,
             ttl_seconds=int(
                 self.env.get(
-                    "ASSISTX_RECOVERY_ACTIVATION_TTL_SECONDS",
+                    "ASSISTX_RECOVERY_ISLAND_ACTIVATION_TTL_SECONDS",
                     "300",
                 )
             ),
