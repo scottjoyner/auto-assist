@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, Callable
+
 from . import api as api_module
 from . import control_room as control_room_module
 from . import router_integration as router_integration_module
@@ -26,6 +28,10 @@ from .routers.tickets import build_tickets_router
 from .routers.transcriptions import build_transcriptions_router
 from .strict_offline_projection import install_strict_offline_projection
 
+_LEGACY_RECOVERY_EXECUTE_PATH = (
+    "/api/fleet/recovery-control/proposals/{proposal_id}/execute"
+)
+
 
 def _remove_superseded_operator_routes() -> None:
     """Keep legacy APIs but replace overlapping dashboard pages with one control room."""
@@ -40,6 +46,24 @@ def _remove_superseded_operator_routes() -> None:
     ]
 
 
+def _extract_legacy_recovery_execute() -> Callable[..., Any] | None:
+    """Replace one overlapping route while preserving non-island behavior."""
+
+    endpoint: Callable[..., Any] | None = None
+    retained = []
+    for route in app.router.routes:
+        is_target = (
+            getattr(route, "path", None) == _LEGACY_RECOVERY_EXECUTE_PATH
+            and "POST" in (getattr(route, "methods", None) or set())
+        )
+        if is_target and endpoint is None:
+            endpoint = getattr(route, "endpoint", None)
+            continue
+        retained.append(route)
+    app.router.routes = retained
+    return endpoint
+
+
 # Must run during module import, before the ASGI server enters the app lifespan.
 # In recovery-shadow mode this replaces the normal mutation/execution startup
 # loops with a schema-only lifespan.
@@ -47,8 +71,15 @@ install_recovery_shadow_mode(api_module)
 install_control_room_runtime(control_room_module)
 install_strict_offline_projection(router_integration_module)
 _remove_superseded_operator_routes()
+_legacy_recovery_execute = _extract_legacy_recovery_execute()
 app.include_router(build_recovery_mode_router(auth))
-app.include_router(build_recovery_island_router(_neo, auth_dependency=auth))
+app.include_router(
+    build_recovery_island_router(
+        _neo,
+        auth_dependency=auth,
+        legacy_recovery_execute=_legacy_recovery_execute,
+    )
+)
 app.include_router(build_control_room_router(_neo, auth, templates))
 app.include_router(build_router_integration_router(_neo))
 app.include_router(build_runtime_projection_router(_neo, auth_dependency=auth))
