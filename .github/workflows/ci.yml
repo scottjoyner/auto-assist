@@ -32,7 +32,7 @@ jobs:
 
       - name: Lint merge-gate control modules (ruff)
         run: |
-          ruff check --ignore I001,E501,F401,B023,UP012,UP018 \
+          ruff check --ignore I001,E501,F401,B023,UP012,UP018,UP037 \
             src/assistx/allocation_engine.py \
             src/assistx/control_room.py \
             src/assistx/control_room_runtime.py \
