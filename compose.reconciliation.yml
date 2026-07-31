@@ -12,6 +12,7 @@ services:
       - ASSISTX_RUNTIME_PROJECTION_HMAC_SECRET=${ASSISTX_RUNTIME_PROJECTION_HMAC_SECRET:?set the shared runtime projection HMAC secret}
       - ASSISTX_RUNTIME_PROJECTION_TTL_SECONDS=${ASSISTX_RUNTIME_PROJECTION_TTL_SECONDS:-60}
       - ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN=${ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN:?set a dedicated executor bootstrap token}
+      - ASSISTX_EXECUTOR_SERVICE_TOKEN=${ASSISTX_EXECUTOR_SERVICE_TOKEN:?set a dedicated router-to-AssistX executor service token}
       - ASSISTX_EXECUTOR_SIGNING_KEY_FILE=/run/secrets/assistx_executor_private_key.pem
       - ASSISTX_EXECUTOR_KEY_ID=${ASSISTX_EXECUTOR_KEY_ID:-assistx-executor-v1}
       - AUTO_ROUTER_BASE_URL=http://auto-router-reconciliation:8088
