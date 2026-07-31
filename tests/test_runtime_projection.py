@@ -212,7 +212,7 @@ def test_projection_fails_closed_without_capacity_model_or_fresh_evidence(
     install_fixtures(monkeypatch, state_expiry=999_999)
     with pytest.raises(
         runtime_projection.RuntimeProjectionBlocked,
-        match="approval evidence is expired",
+        match="runtime projection evidence expired before issuance",
     ):
         runtime_projection.build_runtime_projection(
             lambda: None,
