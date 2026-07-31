@@ -46,6 +46,7 @@ services:
       - NEO4J_DATABASE=${NEO4J_DATABASE:-assistx}
       - REDIS_URL=redis://redis:6379/0
       - ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN=${ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN:?set a dedicated executor bootstrap token}
+      - ASSISTX_EXECUTOR_SERVICE_TOKEN=${ASSISTX_EXECUTOR_SERVICE_TOKEN:?set a dedicated router-to-AssistX executor service token}
       - ASSISTX_EXECUTOR_SIGNING_KEY_FILE=/run/secrets/assistx_executor_private_key.pem
       - ASSISTX_EXECUTOR_KEY_ID=${ASSISTX_EXECUTOR_KEY_ID:-assistx-executor-v1}
       - AUTO_ROUTER_BASE_URL=http://auto-router-production:8088
