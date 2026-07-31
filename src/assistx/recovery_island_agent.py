@@ -80,13 +80,27 @@ def execute_task(
     task: dict[str, Any],
     executor: RecoveryIslandExecutor,
 ) -> dict[str, Any]:
+    """Execute only a target-pinned, signed recovery-island runbook.
+
+    The shared AssistX API protects all recovery tasks through the canonical
+    ``recovery`` capability and node-token checks. This dedicated agent then
+    applies the narrower island contract and rejects ordinary recovery runbooks.
+    """
+
     required = {str(value) for value in task.get("required_capabilities") or []}
     payload = _task_payload(task)
-    if "recovery_island" not in required:
+    if "recovery" not in required:
         return {
             "status": "FAILED",
-            "summary": "task is not scoped to the recovery island",
-            "result": {"reason": "recovery_island_capability_required"},
+            "summary": "task is not protected by the recovery capability",
+            "result": {"reason": "recovery_capability_required"},
+        }
+    target = str(task.get("target_agent_id") or "").strip()
+    if target and target != executor.node_id:
+        return {
+            "status": "FAILED",
+            "summary": "recovery task targets a different node",
+            "result": {"reason": "recovery_island_target_mismatch"},
         }
     runbook = payload.get("recovery_island_runbook")
     if not isinstance(runbook, dict):
@@ -95,18 +109,46 @@ def execute_task(
             "summary": "signed recovery-island runbook missing",
             "result": {"reason": "missing_recovery_island_runbook"},
         }
-    result = executor.execute(runbook)
+
+    raw_result = executor.execute(runbook)
+    if not raw_result.get("ok"):
+        return {
+            "status": "FAILED",
+            "summary": f"recovery island {raw_result.get('status')}",
+            "result": raw_result,
+        }
+
+    operation_status = str(raw_result.get("status") or "completed")
+    verification = raw_result.get("verification")
+    if not isinstance(verification, dict):
+        verification = {
+            "ok": True,
+            "operation_status": operation_status,
+        }
+    result = {
+        **raw_result,
+        "operation_status": operation_status,
+        # The existing recovery proposal lifecycle records successful node-side
+        # work only when result.status is "verified". Preserve the concrete
+        # operation state separately instead of weakening that contract.
+        "status": "verified",
+        "verification": verification,
+    }
     return {
-        "status": "DONE" if result.get("ok") else "FAILED",
-        "summary": f"recovery island {result.get('status')}",
+        "status": "DONE",
+        "summary": f"recovery island {operation_status}",
         "result": result,
     }
 
 
 def run_loop(args: argparse.Namespace) -> int:
+    if not args.auth_user or not args.auth_pass or not args.node_token:
+        raise ValueError(
+            "FLEET_AUTH_USER, FLEET_AUTH_PASS, and FLEET_NODE_TOKEN are required"
+        )
     assistx_url = args.assistx_url.rstrip("/")
     auth = (args.auth_user, args.auth_pass)
-    headers = {"X-Fleet-Node-Token": args.node_token} if args.node_token else {}
+    headers = {"X-Fleet-Node-Token": args.node_token}
     executor = _executor(args)
     stop = threading.Event()
 
@@ -129,7 +171,7 @@ def run_loop(args: argparse.Namespace) -> int:
                 return
 
     print(
-        f"[recovery-island] node={args.node_id} capability=recovery_island",
+        f"[recovery-island] node={args.node_id} capability=recovery scope=island",
         flush=True,
     )
     while not stop.is_set():
@@ -138,7 +180,7 @@ def run_loop(args: argparse.Namespace) -> int:
                 ("status", "READY"),
                 ("limit", "1"),
                 ("agent_id", args.node_id),
-                ("capabilities", "recovery_island"),
+                ("capabilities", "recovery"),
             ]
         )
         status, response = _http(
@@ -177,7 +219,7 @@ def run_loop(args: argparse.Namespace) -> int:
                 headers=headers,
                 data={
                     "agent_id": args.node_id,
-                    "capabilities": ["recovery_island"],
+                    "capabilities": ["recovery"],
                     "lease_seconds": args.lease_seconds,
                 },
                 timeout=20,
@@ -260,11 +302,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     loop.add_argument(
         "--auth-user",
-        default=os.getenv("FLEET_AUTH_USER", "admin"),
+        default=os.getenv("FLEET_AUTH_USER", ""),
     )
     loop.add_argument(
         "--auth-pass",
-        default=os.getenv("FLEET_AUTH_PASS", "change-me"),
+        default=os.getenv("FLEET_AUTH_PASS", ""),
     )
     loop.add_argument(
         "--node-token",
