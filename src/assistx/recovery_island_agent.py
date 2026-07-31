@@ -5,6 +5,8 @@ import base64
 import json
 import os
 import platform
+import stat
+import subprocess
 import threading
 import time
 import urllib.error
@@ -68,11 +70,123 @@ def _task_payload(task: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _load_json(path: str | Path) -> dict[str, Any]:
+    value = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("JSON root must be an object")
+    return value
+
+
+def _require_private_file(path: Path) -> None:
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode & 0o077:
+        raise ValueError(f"secret file must be mode 0600 or stricter: {path}")
+
+
+def _json_mapping_from_sources(
+    env: dict[str, str],
+    *,
+    value_name: str,
+    file_name: str,
+    secret: bool = False,
+) -> dict[str, Any]:
+    file_value = str(env.get(file_name) or "").strip()
+    if file_value:
+        path = Path(file_value).expanduser().resolve()
+        if not path.is_file():
+            raise ValueError(f"configured JSON file is missing: {path}")
+        if secret:
+            _require_private_file(path)
+        return _load_json(path)
+    raw = str(env.get(value_name) or "").strip()
+    if not raw:
+        return {}
+    decoded = json.loads(raw)
+    if not isinstance(decoded, dict):
+        raise ValueError(f"{value_name} must be a JSON object")
+    return decoded
+
+
+def _unquote_env_value(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _read_compose_env_file(path_value: str) -> dict[str, str]:
+    path = Path(path_value).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"recovery Compose environment file is missing: {path}")
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            raise ValueError(f"invalid environment line in {path}: {raw_line}")
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or not key.replace("_", "").isalnum() or key[0].isdigit():
+            raise ValueError(f"invalid environment key in {path}: {key}")
+        values[key] = _unquote_env_value(value)
+    return values
+
+
+def _subprocess_runner(env: dict[str, str]):
+    compose_env_path = str(
+        env.get("FLEET_RECOVERY_ISLAND_COMPOSE_ENV_FILE") or ""
+    ).strip()
+    compose_env = (
+        _read_compose_env_file(compose_env_path) if compose_env_path else {}
+    )
+
+    def run(command, **kwargs):
+        process_env = dict(env)
+        process_env.update(compose_env)
+        explicit_env = kwargs.pop("env", None)
+        if isinstance(explicit_env, dict):
+            process_env.update({str(k): str(v) for k, v in explicit_env.items()})
+        kwargs["env"] = process_env
+        return subprocess.run(command, **kwargs)
+
+    return run
+
+
 def _executor(args: argparse.Namespace) -> RecoveryIslandExecutor:
+    env = {str(key): str(value) for key, value in os.environ.items()}
+    deployments = _json_mapping_from_sources(
+        env,
+        value_name="FLEET_RECOVERY_ISLAND_DEPLOYMENTS",
+        file_name="FLEET_RECOVERY_ISLAND_DEPLOYMENTS_FILE",
+    )
+    if deployments:
+        env["FLEET_RECOVERY_ISLAND_DEPLOYMENTS"] = json.dumps(
+            deployments,
+            sort_keys=True,
+        )
+    runbook_keys = _json_mapping_from_sources(
+        env,
+        value_name="FLEET_RECOVERY_ISLAND_RUNBOOK_VERIFY_KEYS",
+        file_name="FLEET_RECOVERY_ISLAND_RUNBOOK_VERIFY_KEYS_FILE",
+        secret=True,
+    )
+    activation_keys = _json_mapping_from_sources(
+        env,
+        value_name="FLEET_RECOVERY_ISLAND_ACTIVATION_VERIFY_KEYS",
+        file_name="FLEET_RECOVERY_ISLAND_ACTIVATION_VERIFY_KEYS_FILE",
+        secret=True,
+    )
     return RecoveryIslandExecutor(
         node_id=args.node_id,
         state_dir=args.state_dir,
         http=_http,
+        runner=_subprocess_runner(env),
+        env=env,
+        runbook_keys={str(k): str(v) for k, v in runbook_keys.items()},
+        activation_keys={str(k): str(v) for k, v in activation_keys.items()},
     )
 
 
@@ -150,6 +264,11 @@ def run_loop(args: argparse.Namespace) -> int:
     auth = (args.auth_user, args.auth_pass)
     headers = {"X-Fleet-Node-Token": args.node_token}
     executor = _executor(args)
+    if not executor.runbook_keys or not executor.activation_keys:
+        raise ValueError(
+            "separate recovery-island runbook and activation verification keys "
+            "are required"
+        )
     stop = threading.Event()
 
     def heartbeat(task_id: str, claim_id: str, finished: threading.Event) -> None:
@@ -270,13 +389,6 @@ def run_loop(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_json(path: str) -> dict[str, Any]:
-    value = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError("JSON root must be an object")
-    return value
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Dedicated AssistX recovery-island executor",
@@ -343,9 +455,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    executor = _executor(args)
     if args.command == "loop":
         raise SystemExit(run_loop(args))
+    executor = _executor(args)
     if args.command == "status":
         print(json.dumps(executor.status(args.deployment), indent=2, sort_keys=True))
         return
