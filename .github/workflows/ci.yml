@@ -31,8 +31,6 @@ jobs:
           python -m py_compile $(find src tests scripts -name "*.py" -type f)
 
       - name: Lint merge-gate control modules (ruff)
-        # Import ordering/line formatting are audited separately; this blocking gate
-        # focuses on correctness and unsafe constructs in the cutover paths.
         run: |
           ruff check --ignore I001,E501,F401,B023,UP012,UP018 \
             src/assistx/allocation_engine.py \
@@ -43,14 +41,6 @@ jobs:
             src/assistx/diagnosis_engine.py \
             src/assistx/diagnostic_probes.py \
             src/assistx/deployment_canary.py \
-            scripts/init-canary-env.py \
-            scripts/approve-runtime-projection.py \
-            scripts/reconciliation-image-bundle.py \
-            scripts/validate-executor-containment.py \
-            scripts/validate-external-dependencies.py \
-            scripts/validate-final-cutover-evidence.py \
-            scripts/validate-hermes-external-config.py \
-            scripts/verify-runtime-projection.py \
             src/assistx/controller_runtime.py \
             src/assistx/execution_control.py \
             src/assistx/improvement_cycle.py \
@@ -66,9 +56,29 @@ jobs:
             src/assistx/recovery_island_hardening.py \
             src/assistx/recovery_island_routes.py \
             src/assistx/recovery_mode.py \
+            src/assistx/operational_state.py \
+            src/assistx/operational_journal.py \
+            src/assistx/degraded_control_plane.py \
+            src/assistx/degraded_activation.py \
+            src/assistx/degraded_control_hardening.py \
+            src/assistx/degraded_router_gate.py \
+            src/assistx/recovery_snapshot.py \
+            src/assistx/recovery_memory_guard.py \
+            src/assistx/neo4j_backup_verification.py \
             src/assistx/fleet_node_agent.py \
             src/assistx/tools/web_search.py \
             src/assistx/operations_readiness.py \
+            scripts/init-canary-env.py \
+            scripts/approve-runtime-projection.py \
+            scripts/reconciliation-image-bundle.py \
+            scripts/validate-executor-containment.py \
+            scripts/validate-external-dependencies.py \
+            scripts/validate-final-cutover-evidence.py \
+            scripts/validate-hermes-external-config.py \
+            scripts/verify-runtime-projection.py \
+            scripts/verify-neo4j-backup.py \
+            scripts/replicate-recovery-snapshot.py \
+            scripts/recovery-memory-guard.py \
             tests/test_allocation_engine.py \
             tests/test_control_room.py \
             tests/test_control_room_runtime.py \
@@ -97,6 +107,14 @@ jobs:
             tests/test_recovery_island_route_fence.py \
             tests/test_recovery_island_routes.py \
             tests/test_recovery_mode.py \
+            tests/test_operational_state.py \
+            tests/test_operational_journal.py \
+            tests/test_degraded_control_plane.py \
+            tests/test_degraded_activation.py \
+            tests/test_degraded_disaster_canary.py \
+            tests/test_recovery_snapshot.py \
+            tests/test_recovery_memory_guard.py \
+            tests/test_neo4j_backup_verification.py \
             tests/test_fleet_node_kv_cache.py \
             tests/test_fleet_node_recovery.py \
             tests/test_fleet_node_shell_gate.py \
@@ -110,20 +128,23 @@ jobs:
             src/assistx/control_room_runtime.py \
             src/assistx/runtime_projection.py \
             src/assistx/strict_offline_projection.py \
+            src/assistx/operational_state.py \
+            src/assistx/operational_journal.py \
+            src/assistx/degraded_control_plane.py \
+            src/assistx/degraded_activation.py \
+            src/assistx/degraded_control_hardening.py \
+            src/assistx/recovery_snapshot.py \
+            src/assistx/recovery_memory_guard.py \
+            src/assistx/neo4j_backup_verification.py \
             scripts/approve-runtime-projection.py \
             scripts/reconciliation-image-bundle.py \
             scripts/validate-executor-containment.py \
             scripts/validate-final-cutover-evidence.py \
             scripts/validate-hermes-external-config.py \
             scripts/verify-runtime-projection.py \
-            tests/test_control_room_runtime.py \
-            tests/test_runtime_projection.py \
-            tests/test_runtime_projection_approval.py \
-            tests/test_hermes_external_config.py \
-            tests/test_final_cutover_evidence.py \
-            tests/test_strict_offline_projection.py \
-            tests/test_reconciliation_containment.py \
-            tests/test_reconciliation_image_bundle.py
+            scripts/verify-neo4j-backup.py \
+            scripts/replicate-recovery-snapshot.py \
+            scripts/recovery-memory-guard.py
 
       - name: Type check (mypy)
         run: |
@@ -162,3 +183,38 @@ jobs:
           BASIC_AUTH_PASS: livelongandprosper
         run: |
           pytest -q tests/test_recovery_canary.py tests/test_recovery_island.py tests/test_recovery_island_hardening.py
+
+  degraded-disaster-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Degraded control-plane disaster canary
+        env:
+          BASIC_AUTH_USER: neo4j
+          BASIC_AUTH_PASS: livelongandprosper
+        run: |
+          pytest -q \
+            tests/test_operational_state.py \
+            tests/test_operational_journal.py \
+            tests/test_degraded_control_plane.py \
+            tests/test_degraded_activation.py \
+            tests/test_degraded_disaster_canary.py \
+            tests/test_recovery_snapshot.py \
+            tests/test_recovery_memory_guard.py \
+            tests/test_neo4j_backup_verification.py
