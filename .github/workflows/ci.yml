@@ -94,6 +94,7 @@ jobs:
             tests/test_recovery_island.py \
             tests/test_recovery_island_configuration.py \
             tests/test_recovery_island_hardening.py \
+            tests/test_recovery_island_route_fence.py \
             tests/test_recovery_island_routes.py \
             tests/test_recovery_mode.py \
             tests/test_fleet_node_kv_cache.py \
