@@ -7,7 +7,7 @@ import subprocess
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +45,7 @@ def _timestamp_ms(value: Any) -> int:
     except ValueError:
         return 0
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return int(parsed.timestamp() * 1000)
 
 
