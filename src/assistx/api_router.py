@@ -12,6 +12,7 @@ from .degraded_activation import (
     build_degraded_activation_router,
     install_degraded_activation_fence,
 )
+from .degraded_control_hardening import install_degraded_control_hardening
 from .degraded_control_plane import (
     build_default_runtime,
     build_degraded_control_router,
@@ -85,6 +86,7 @@ install_recovery_shadow_mode(api_module)
 install_control_room_runtime(control_room_module)
 install_strict_offline_projection(router_integration_module)
 install_executor_security(app, _neo, api_module)
+install_degraded_control_hardening()
 install_degraded_router_activation_requirements()
 install_degraded_route_fence(app)
 install_degraded_activation_fence(
