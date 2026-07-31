@@ -6,35 +6,61 @@ The Beelink is a physically separate recovery deployment for the reconciled Assi
 
 ```text
 Normal operation
-  AssistX/Neo4j authority on primary deployment
-    -> signed recovery-island task
-    -> Beelink recovery-island agent
-    -> local, allowlisted deployment only
+  primary AssistX/Neo4j authority
+    -> authenticated recovery-island request
+    -> fingerprinted proposal and approval policy
+    -> Neo4j-fenced recovery-island dispatcher
+    -> target-pinned canonical recovery task
+    -> dedicated Beelink host agent
+    -> local allowlisted deployment only
 
 Total primary loss
   pre-staged Beelink deployment
-    -> witness-signed or manual break-glass activation envelope
-    -> local activation
+    -> independent witness or manual break-glass activation envelope
+    -> local shadow activation
 ```
 
-The Beelink is not a second scheduler, router, model registry, health authority, or recovery brain. It does not reconstruct authority from probes and does not maintain a competing SQLite fleet database.
+The Beelink is not a second scheduler, router registry, model registry, health authority, or recovery brain. It does not reconstruct authority from probes and does not maintain a competing fleet database.
+
+## Three recovery tiers
+
+```text
+assistx-shadow
+  neo4j-restore, neo4j, redis, assistx-api, auto-router
+
+assistx-executor
+  assistx-worker
+
+executor profile
+  hermes-adapter
+```
+
+`assistx-shadow` is the only tier recommended for automatic activation. Its API runs with `ASSISTX_RECOVERY_SHADOW_MODE=true`; schema and read/health endpoints are available, while normal startup loops that could mutate restored state or execute restored work are disabled.
+
+`assistx-executor` requires a separate promotion action after shadow health and runtime projection convergence. Hermes remains a third explicit activation after a fenced synthetic task succeeds.
 
 ## Recovery-island states
 
 - `empty`: no verified offline deployment bundle is staged;
-- `prepared`: the exact checksum-pinned image bundle was loaded and the local Compose plan rendered successfully;
+- `prepared`: the exact checksum-pinned image bundle was loaded, every manifest image ID was inspected, and the local Compose plan rendered successfully;
 - `active`: a separately signed activation envelope with a fresh epoch and fence proof started the allowlisted services;
 - `unhealthy`: activation completed but one or more private health checks failed, causing immediate automatic deactivation;
-- `inactive`: the deployment was stopped while local volumes and evidence were preserved.
+- `inactive`: the deployment was stopped while local volumes, nonce evidence, and the highest accepted activation epoch were preserved.
+
+Activation epochs survive deactivation. A failed or rolled-back activation consumes its epoch and cannot be replayed.
 
 ## Separate privileges
 
-Two signatures are required for activation:
+The system uses four distinct credentials:
 
-1. **Recovery runbook signature** — authorizes a typed operation such as `stage`, `verify`, `activate`, or `deactivate`.
-2. **Recovery activation signature** — authorizes the Beelink to advertise a recovery deployment as active.
+1. **Recovery request token** — allows an authenticated agent to request narrow policy evaluation; it cannot sign a runbook.
+2. **Recovery-island runbook key** — authorizes only `stage`, `verify`, `activate`, or `deactivate` against a static deployment allowlist.
+3. **Recovery-island activation key** — separately authorizes a deployment to become active.
+4. **Beelink node token** — protects polling, claim, heartbeat, and completion through the canonical AssistX `recovery` lane.
 
-The activation envelope must contain:
+Ordinary recovery runbook keys are not accepted by the Beelink island agent. Signing keys remain in the fenced primary worker; the API can create proposals but cannot sign a Beelink runbook.
+
+The activation envelope contains:
 
 ```text
 version
@@ -49,118 +75,118 @@ attestation key, issuance, expiry, nonce, and signature
 
 Accepted fence-proof classes are:
 
-- `assistx-lease:<id>` when the healthy authoritative control plane orders recovery;
-- `witness:<id>` when an independent subnet witness grants exclusive takeover;
-- `manual-break-glass:<id>` for an operator-approved disaster recovery event.
+- `assistx-lease:<controller>:<fencing-token>:<proposal-id>`;
+- `witness:<exclusive-lease-id>`;
+- `manual-break-glass:<operator-change-id>`.
 
-A new activation epoch must be greater than the last locally accepted epoch. Replayed signatures and stale epochs are rejected.
+Replayed signatures, stale epochs, wrong nodes, wrong deployments, wrong bundle checksums, expired envelopes, and missing fence proofs are rejected.
 
-## Automatic and disaster recovery
+## Agent request and approval policy
 
-### Routine automatic healing
+Agents request recovery through:
 
-When AssistX is healthy enough to diagnose and dispatch work, it may send a signed recovery-island task to the Beelink. This path can be completely automatic because the canonical control plane remains alive and can issue an exclusive recovery lease.
+```text
+POST /api/fleet/recovery-island/requests
+X-Recovery-Island-Request-Token: <request token>
+```
 
-Typical sequence:
+The request is deduplicated by its canonical proposal fingerprint. Auto-approval requires all of:
 
-1. stage the latest image and backup bundle;
-2. verify checksum, manifest, image load, and Compose render;
-3. issue an `assistx-lease:*` activation envelope;
-4. activate the recovery services;
-5. verify AssistX and auto-router health;
-6. verify runtime-projection convergence;
-7. switch one test client;
-8. enable Hermes only after the synthetic lifecycle gate;
-9. either promote under operator policy or deactivate and repair the primary.
+- request token match;
+- authenticated actor in `ASSISTX_RECOVERY_ISLAND_AUTO_APPROVE_ACTORS`;
+- action in `ASSISTX_RECOVERY_ISLAND_AUTO_APPROVE_ACTIONS`;
+- for activation, `ASSISTX_RECOVERY_ISLAND_AUTO_ACTIVATION_ENABLED=true`;
+- deployment in `ASSISTX_RECOVERY_ISLAND_AUTO_ACTIVATION_DEPLOYMENTS`.
 
-### Total control-plane loss
+The recommended automatic activation allowlist contains only `assistx-shadow`.
 
-If the authoritative AssistX API is unavailable, the Beelink cannot obtain a new normal runbook. It may still activate a previously staged deployment through the local `activate-file` command, but only with a fresh witness or manual break-glass envelope.
+The existing generic recovery execution endpoint is fenced. For an island proposal it returns queued dispatcher state and cannot convert the proposal into an ordinary recovery runbook. Non-island recovery retains its existing behavior.
 
-Unattended total-loss takeover requires a separate witness capable of proving exclusivity. Without a witness, automatic activation remains blocked to prevent split brain.
+## Routine automatic healing
+
+A safe sequence is:
+
+1. request and approve `stage assistx-shadow`;
+2. verify bundle checksum, manifest, loaded image IDs, and Compose render;
+3. request and approve `activate assistx-shadow`;
+4. issue an `assistx-lease:*` activation envelope from the fenced dispatcher;
+5. verify AssistX health and `/api/fleet/recovery-island/shadow-status`;
+6. verify auto-router health and runtime-projection convergence;
+7. separately stage and activate `assistx-executor`;
+8. execute one fenced synthetic task;
+9. start the Hermes `executor` profile only after the synthetic lifecycle gate;
+10. promote under operator policy or deactivate the island and repair the primary.
+
+## Total control-plane loss
+
+If the primary AssistX API is unavailable, the Beelink cannot obtain a new normal runbook. It may activate a previously staged shadow through the local hardened entrypoint, but only with a fresh witness or manual break-glass envelope.
+
+```bash
+sudo -u assistx-recovery \
+  /srv/assistx-recovery/venv/bin/python \
+  -m assistx.recovery_island_agent_hardened \
+  activate-file assistx-shadow \
+  /var/lib/assistx-recovery/inbox/activation.json
+```
+
+Unattended total-loss takeover requires an independent witness capable of proving exclusivity. Without a witness, automatic activation remains blocked to prevent split brain. Executor and Hermes promotion remain separate even after shadow activation.
 
 ## Isolation requirements
 
-The recovery node should use:
+The recovery node uses:
 
 - its own physical disk for deployment, state, images, and database backups;
-- its own Docker/Podman project and named volumes;
+- its own Compose project and local volumes;
 - a dedicated non-login service account;
 - rootless containers when practical;
 - no SSH private key capable of logging into the primary fleet;
-- one-way artifact delivery from the primary to the Beelink;
-- subnet/Tailscale ACLs limited to the authoritative AssistX API, optional witness, approved inference paths, and operator access;
-- no ordinary Hermes, code, shell, benchmark, or model-work capabilities;
-- no router registration or physical-runtime admission authority.
+- one-way artifact delivery from the primary or operator workstation;
+- subnet/Tailscale ACLs limited to the primary AssistX API, optional witness, approved inference paths, DNS/NTP, and operator access;
+- no ordinary shell, model, browser, benchmark, repository, or routing capability in the host agent;
+- key files mode `0600` or stricter;
+- no credentials in systemd process arguments;
+- read-only deployment/config/package trees and a writable state tree only.
 
-The recovery agent polls only tasks requiring `recovery_island`. A task containing a generic command, model prompt, repository mutation, or ordinary fleet capability is rejected.
+The host agent polls the canonical `recovery` capability so existing AssistX node-token enforcement applies. It then applies a narrower second filter and rejects every task that lacks a valid `recovery_island_runbook` targeted to the exact Beelink identity.
 
-## Local paths
-
-Recommended layout:
+## File-backed host configuration
 
 ```text
-/srv/assistx-recovery/deployment/         immutable reviewed Compose/config
-/srv/assistx-recovery/packages/           offline Python wheel/source
-/var/lib/assistx-recovery/bundles/        image and backup bundles
-/var/lib/assistx-recovery/state/          nonce, epoch, prepared, active evidence
-/var/lib/assistx-recovery/neo4j/           recovery Neo4j data
-/var/lib/assistx-recovery/redis/           optional recovery Redis state
+/etc/assistx-recovery/recovery-island.env
+/etc/assistx-recovery/deployments.json
+/etc/assistx-recovery/runbook-verify-keys.json
+/etc/assistx-recovery/activation-verify-keys.json
+/srv/assistx-recovery/deployment/recovery-island.env
+/srv/assistx-recovery/deployment/recovery-stack.env
 ```
 
-## Agent commands
+The production systemd entrypoint is:
 
-Run the dedicated executor:
-
-```bash
-python -m assistx.recovery_island_agent \
-  --node-id beelink-recovery \
-  --state-dir /var/lib/assistx-recovery/state \
-  loop \
-  --assistx-url http://<primary-assistx>:8000
+```text
+python -m assistx.recovery_island_agent_hardened loop
 ```
 
-Inspect local state:
+The Compose interpolation file is loaded into every `config`, `up`, and `stop` subprocess. Activation uses `--no-build --pull never`.
 
-```bash
-python -m assistx.recovery_island_agent \
-  --node-id beelink-recovery \
-  --state-dir /var/lib/assistx-recovery/state \
-  status assistx
-```
+## Required evidence before production reliance
 
-Execute an operator-reviewed signed runbook file:
-
-```bash
-python -m assistx.recovery_island_agent \
-  --node-id beelink-recovery \
-  --state-dir /var/lib/assistx-recovery/state \
-  execute-file /var/lib/assistx-recovery/inbox/runbook.json
-```
-
-Break-glass activation after complete primary loss:
-
-```bash
-python -m assistx.recovery_island_agent \
-  --node-id beelink-recovery \
-  --state-dir /var/lib/assistx-recovery/state \
-  activate-file assistx /var/lib/assistx-recovery/inbox/activation.json
-```
-
-## Required evidence before relying on the island
-
-- Beelink physical node identity and node-token registration;
-- reviewed recovery deployment configuration checksum;
-- image bundle and manifest checksums;
+- Beelink physical identity and node-token registration;
+- separate request, runbook, and activation credentials;
+- key-file permission evidence and process-argument inspection;
+- reviewed shadow/executor deployment checksums;
+- image bundle, manifest, and every loaded image-ID verification;
 - current Neo4j backup checksum and isolated restore result;
-- successful offline `docker load` and Compose render;
-- successful prepared-state inspection;
-- signed activation with an `assistx-lease:*` proof;
+- successful offline stage for both shadow and executor entries;
+- proof restored READY work remains inert in shadow mode;
+- signed shadow activation with an AssistX lease;
 - private health checks and runtime-projection convergence;
 - automatic rollback after an intentionally failed health check;
-- stale epoch and replay rejection;
-- deactivation preserving volumes and evidence;
-- witness or manual break-glass rehearsal for total control-plane loss;
-- proof that ordinary tasks cannot be claimed or executed by the Beelink agent.
+- stale epoch rejection after deactivation;
+- nonce replay, tamper, wrong target, and wrong bundle rejection;
+- separate executor activation and worker health;
+- fenced synthetic task before Hermes starts;
+- deactivation preserving data and activation epoch evidence;
+- witness or manual break-glass shadow rehearsal for total primary loss;
+- proof that ordinary tasks and ordinary recovery runbooks cannot execute on the host agent.
 
-The Beelink should not be considered a production recovery target until all evidence is recorded in the final cutover contract.
+The Beelink is not a production recovery target until this evidence is recorded in the final cutover contract.
