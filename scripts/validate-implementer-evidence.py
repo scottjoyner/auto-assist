@@ -49,8 +49,16 @@ def _text(value: Any, field: str) -> str:
     return result
 
 
-def _validate_sha(value: Any, field: str, pattern: re.Pattern[str]) -> str:
+def _validate_sha(
+    value: Any,
+    field: str,
+    pattern: re.Pattern[str],
+    *,
+    allow_placeholder: bool = False,
+) -> str:
     result = _text(value, field)
+    if allow_placeholder and PLACEHOLDER.search(result):
+        return result
     if not pattern.fullmatch(result):
         raise EvidenceError(f"{field} is not a valid lowercase hexadecimal digest")
     return result
@@ -64,7 +72,11 @@ def _validate_evidence_path(value: Any, gate_id: str) -> str:
     return path
 
 
-def validate(document: dict[str, Any], stage: str, allow_template: bool = False) -> dict[str, Any]:
+def validate(
+    document: dict[str, Any],
+    stage: str,
+    allow_template: bool = False,
+) -> dict[str, Any]:
     if document.get("schema_version") != 1:
         raise EvidenceError("schema_version must equal 1")
     if document.get("production_changed") is not False:
@@ -77,8 +89,18 @@ def validate(document: dict[str, Any], stage: str, allow_template: bool = False)
         raise EvidenceError("auto_assist_attested_sha does not match the frozen handoff")
     if source.get("fleet_resilience_attested_sha") != FLEET_RESILIENCE_ATTESTED_SHA:
         raise EvidenceError("fleet_resilience_attested_sha does not match the frozen handoff")
-    _validate_sha(source.get("auto_assist_integration_sha"), "auto_assist_integration_sha", SHA40)
-    _validate_sha(source.get("fleet_resilience_integration_sha"), "fleet_resilience_integration_sha", SHA40)
+    _validate_sha(
+        source.get("auto_assist_integration_sha"),
+        "auto_assist_integration_sha",
+        SHA40,
+        allow_placeholder=allow_template,
+    )
+    _validate_sha(
+        source.get("fleet_resilience_integration_sha"),
+        "fleet_resilience_integration_sha",
+        SHA40,
+        allow_placeholder=allow_template,
+    )
 
     operators = document.get("operators")
     if not isinstance(operators, dict):
@@ -132,7 +154,10 @@ def validate(document: dict[str, Any], stage: str, allow_template: bool = False)
     if stage == "rehearsal" and (not isinstance(epoch, int) or epoch <= 0):
         raise EvidenceError("rehearsal activation_epoch must be a positive integer")
 
-    manifest_sha = _text(document.get("evidence_manifest_sha256"), "evidence_manifest_sha256")
+    manifest_sha = _text(
+        document.get("evidence_manifest_sha256"),
+        "evidence_manifest_sha256",
+    )
     if not allow_template:
         if PLACEHOLDER.search(json.dumps(document, sort_keys=True)):
             raise EvidenceError("manifest still contains placeholder text")
@@ -142,7 +167,9 @@ def validate(document: dict[str, Any], stage: str, allow_template: bool = False)
     review = document.get("review")
     if not isinstance(review, dict):
         raise EvidenceError("review must be an object")
-    expected_decision = "GO_TO_REHEARSAL" if stage == "integration" else "REHEARSAL_COMPLETE"
+    expected_decision = (
+        "GO_TO_REHEARSAL" if stage == "integration" else "REHEARSAL_COMPLETE"
+    )
     if not allow_template and review.get("decision") != expected_decision:
         raise EvidenceError(
             f"review.decision must equal {expected_decision} for stage {stage}"
@@ -163,7 +190,9 @@ def validate(document: dict[str, Any], stage: str, allow_template: bool = False)
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Validate the July 31 degraded recovery implementer evidence manifest."
+        description=(
+            "Validate the July 31 degraded recovery implementer evidence manifest."
+        )
     )
     parser.add_argument("manifest", type=Path)
     parser.add_argument(
