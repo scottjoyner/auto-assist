@@ -1,5 +1,5 @@
 schema_version: 1
-updated_at: '2026-07-31T02:32:08Z'
+updated_at: '2026-07-31T06:40:00Z'
 updated_by: opencode-local-agent
 status: ready
 policy:
@@ -67,14 +67,15 @@ dependencies:
   category: observability
   required: true
   expected_state: healthy
-  status: degraded
+  status: healthy
   owner: auto-router
   failure_impact: operator cannot verify runtime slots, queues, or selected access
     path
   probe: authenticated /admin/admission
   evidence:
-  - authenticated /admin/admission present; needs verification with new projection
-    architecture
+  - authenticated /admin/admission verified 2026-07-31 for runtime lmstudio-xwing-1234
+    with 1 slot, queue_limit 4, 2 approved access paths, and probe failure
+    counters 0/0
   rollback: keep task intake paused until admission visibility is restored
 - id: tailscale-host-daemon
   category: private_network
@@ -91,12 +92,15 @@ dependencies:
   category: private_network
   required: true
   expected_state: healthy
-  status: unknown
+  status: degraded
   owner: docker-host
   failure_impact: router container cannot reach off-site runtimes
   probe: reconciliation-network-verify from auto-router-reconciliation
   evidence:
-  - container-level path verification pending verify_reconciliation_network.py
+  - container probe executed 2026-07-31; xwing LM Studio currently bound to
+    127.0.0.1 only (GUI instance), so LAN/Tailscale paths are unreachable from
+    host and router container; requires LM Studio listening on 0.0.0.0 (headless
+    launcher default)
   rollback: quarantine affected runtime; do not switch to host networking
 - id: docker-engine
   category: platform
