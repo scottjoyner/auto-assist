@@ -38,6 +38,10 @@ jobs:
             src/assistx/allocation_engine.py \
             src/assistx/control_room.py \
             src/assistx/control_room_runtime.py \
+            src/assistx/executor_claims.py \
+            src/assistx/executor_security.py \
+            src/assistx/strict_executor_adapter.py \
+            src/assistx/strict_executor_main.py \
             src/assistx/runtime_projection.py \
             src/assistx/strict_offline_projection.py \
             src/assistx/diagnosis_engine.py \
@@ -72,6 +76,9 @@ jobs:
             tests/test_allocation_engine.py \
             tests/test_control_room.py \
             tests/test_control_room_runtime.py \
+            tests/test_executor_claims.py \
+            tests/test_executor_security.py \
+            tests/test_strict_executor_adapter.py \
             tests/test_runtime_projection.py \
             tests/test_runtime_projection_approval.py \
             tests/test_hermes_external_config.py \
@@ -108,6 +115,9 @@ jobs:
           ruff check --select I,E501,F401,B023,UP012,UP018 \
             src/assistx/control_room.py \
             src/assistx/control_room_runtime.py \
+            src/assistx/executor_claims.py \
+            src/assistx/executor_security.py \
+            src/assistx/strict_executor_adapter.py \
             src/assistx/runtime_projection.py \
             src/assistx/strict_offline_projection.py \
             scripts/approve-runtime-projection.py \
@@ -117,6 +127,9 @@ jobs:
             scripts/validate-hermes-external-config.py \
             scripts/verify-runtime-projection.py \
             tests/test_control_room_runtime.py \
+            tests/test_executor_claims.py \
+            tests/test_executor_security.py \
+            tests/test_strict_executor_adapter.py \
             tests/test_runtime_projection.py \
             tests/test_runtime_projection_approval.py \
             tests/test_hermes_external_config.py \
