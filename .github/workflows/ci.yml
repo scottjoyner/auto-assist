@@ -162,3 +162,69 @@ jobs:
           BASIC_AUTH_PASS: livelongandprosper
         run: |
           pytest -q tests/test_recovery_canary.py tests/test_recovery_island.py tests/test_recovery_island_hardening.py
+
+  continuity-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Compile continuity plane
+        run: |
+          python -m py_compile \
+            src/assistx/continuity_types.py \
+            src/assistx/continuity_memory.py \
+            src/assistx/continuity_falkor.py \
+            src/assistx/continuity_state.py \
+            src/assistx/continuity_budget.py \
+            src/assistx/continuity_coordinator.py \
+            src/assistx/continuity_reconciler.py \
+            src/assistx/continuity_api.py \
+            tests/test_continuity_state.py \
+            tests/test_continuity_budget.py \
+            tests/test_continuity_coordinator.py \
+            tests/test_continuity_reconciler.py \
+            tests/test_continuity_api.py
+
+      - name: Lint continuity plane
+        run: |
+          ruff check --ignore I001,E501,F401,B023,UP012,UP018 \
+            src/assistx/continuity_types.py \
+            src/assistx/continuity_memory.py \
+            src/assistx/continuity_falkor.py \
+            src/assistx/continuity_state.py \
+            src/assistx/continuity_budget.py \
+            src/assistx/continuity_coordinator.py \
+            src/assistx/continuity_reconciler.py \
+            src/assistx/continuity_api.py \
+            tests/test_continuity_state.py \
+            tests/test_continuity_budget.py \
+            tests/test_continuity_coordinator.py \
+            tests/test_continuity_reconciler.py \
+            tests/test_continuity_api.py
+
+      - name: Continuity contract tests
+        env:
+          BASIC_AUTH_USER: neo4j
+          BASIC_AUTH_PASS: livelongandprosper
+        run: |
+          pytest -q \
+            tests/test_continuity_state.py \
+            tests/test_continuity_budget.py \
+            tests/test_continuity_coordinator.py \
+            tests/test_continuity_reconciler.py \
+            tests/test_continuity_api.py
