@@ -151,22 +151,25 @@ def build_degraded_activation_router(
             raise HTTPException(status_code=409, detail=error)
         nonce = str((envelope.get("attestation") or {}).get("nonce") or "")
         try:
-            _claim_nonce(nonce)
             expires_at = int((envelope.get("attestation") or {})["expires_at"])
             now = int(time.time())
-            ttl_seconds = max(30, min(expires_at - now, 3600))
+            remaining = expires_at - now
+            if remaining < 5:
+                raise ValueError("degraded activation is too close to expiry")
+            _claim_nonce(nonce)
             record = runtime().store.upsert_fenced(
                 kind="control_mode",
                 logical_id="fleet",
                 state="DEGRADED_ACTIVE",
                 owner=str(envelope.get("fence_proof") or ""),
                 epoch=int(envelope.get("epoch") or 0),
-                ttl_seconds=ttl_seconds,
+                ttl_seconds=min(remaining, 3600),
                 payload={
                     "activation_key_id": str(
                         (envelope.get("attestation") or {}).get("key_id") or ""
                     ),
                     "bundle_sha256": bundle_sha256,
+                    "activation_expires_at": expires_at,
                     "activated_at_ms": int(time.time() * 1000),
                 },
             )
