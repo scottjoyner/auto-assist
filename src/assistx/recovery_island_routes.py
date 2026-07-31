@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import hmac
 import os
 import time
@@ -82,7 +81,10 @@ def _island_plan(body: RecoveryIslandRequestIn) -> dict[str, Any]:
     }
 
 
-def _find_active_duplicate(store: Neo4jRecoveryStore, fingerprint: str) -> dict[str, Any] | None:
+def _find_active_duplicate(
+    store: Neo4jRecoveryStore,
+    fingerprint: str,
+) -> dict[str, Any] | None:
     with store.neo._session() as session:
         row = session.run(
             """
@@ -136,7 +138,7 @@ def build_recovery_island_router(
     router = APIRouter(tags=["recovery-island"])
 
     @router.get("/api/fleet/recovery-island")
-    def recovery_island_status(user: str = Depends(auth_dependency)):
+    def recovery_island_status(_user: str = Depends(auth_dependency)):
         neo = neo_factory()
         try:
             proposals = [
