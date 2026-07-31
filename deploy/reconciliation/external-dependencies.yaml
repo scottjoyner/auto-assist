@@ -1,5 +1,5 @@
 schema_version: 1
-updated_at: '2026-07-31T06:40:00Z'
+updated_at: '2026-07-31T23:55:00Z'
 updated_by: opencode-local-agent
 status: ready
 policy:
@@ -91,16 +91,16 @@ dependencies:
 - id: tailscale-container-path
   category: private_network
   required: true
-  expected_state: not_applicable
-  status: not_applicable
+  expected_state: healthy
+  status: healthy
   owner: docker-host
   failure_impact: router container cannot reach off-site runtimes
   probe: reconciliation-network-verify from auto-router-reconciliation
   evidence:
   - container probe executed 2026-07-31; shadow auto-router-reconciliation passes
     verify_reconciliation_network.py — router container reaches approved LAN and
-    Tailscale paths; production xwing LM Studio still bound to 127.0.0.1 only
-    (GUI instance) but shadow launcher uses 0.0.0.0 host binding
+    Tailscale paths; xwing LM Studio now bound to 0.0.0.0:1234 (headless launcher);
+    both LAN (192.168.1.134) and Tailscale (100.108.99.47) paths return 200 OK
   rollback: quarantine affected runtime; do not switch to host networking
 - id: docker-engine
   category: platform

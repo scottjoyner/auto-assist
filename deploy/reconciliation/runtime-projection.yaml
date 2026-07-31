@@ -1,30 +1,30 @@
-approval_id: replace-with-change-record-or-ticket
-approved_by: replace-with-operator-name
-expected_current_generation: 0
+approval_id: reconciliation-runtime-approval-002
+approved_by: scott
+expected_current_generation: 2
 generation: 2
 require_lan_and_tailscale: true
 revision: reconciliation-generation-2
 runtimes:
 - access_paths:
-  - base_url: http://192.168.1.9:1234/v1
+  - base_url: http://192.168.1.134:1234/v1
     evidence_ref: artifacts/runtime/xwing-lan-path.json
-    evidence_sha256: replace-with-64-lowercase-hex-sha256
+    evidence_sha256: 2c32e236c93c43e77ce2164e4a2d5b3e54f01871dc7880dc748b8c60fbe04cb0
     preference: 10
     transport: lan
-  - base_url: http://100.64.0.9:1234/v1
+  - base_url: http://100.108.99.47:1234/v1
     evidence_ref: artifacts/runtime/xwing-tailscale-path.json
-    evidence_sha256: replace-with-64-lowercase-hex-sha256
+    evidence_sha256: aa97306521d9a7b5abc189c914f0b5e7c50d1283a7d7842c2428ed814c37fa3e
     preference: 20
     transport: tailscale
   capacity:
     evidence_ref: artifacts/runtime/xwing-capacity.json
-    evidence_sha256: replace-with-64-lowercase-hex-sha256
+    evidence_sha256: 730f6fd3c31ffd0f64a9028f7ffaed17e5abc1d166358bf716263e1a7e9a7eab
     parallel_slots: 1
     queue_limit: 4
     queue_timeout_seconds: 30
   headless: false
   models:
-  - artifact_fingerprint: replace-with-sha256-or-content-address
+  - artifact_fingerprint: 3a0c8464fe35674a2eb3ec9b2ce8668a72c4fe3d62367a6ca2ec258cb4c7520c
     capabilities:
     - chat
     - streaming
@@ -33,17 +33,17 @@ runtimes:
     - tool_use
     - local_only
     - hermes_worker
-    context_length: 32768
+    context_length: 128000
     evidence_ref: artifacts/runtime/xwing-model-identity.json
-    evidence_sha256: replace-with-64-lowercase-hex-sha256
+    evidence_sha256: f9fcfb7ffcb9ee869972e64882e821575044967f152133fd27bb3ffd5c7bf577
     model_instance_id: model-xwing-qwen-1
     model_key: local/qwen-code
-    provider_model: replace-with-exact-server-model-id
-    quantization: replace-with-exact-quantization
+    provider_model: headless
+    quantization: Q8_0
   node_id: xwing
-  process_id: replace-from-official-lms-ps
+  process_id: 25914
   runtime_instance_id: lmstudio-xwing-1234
   runtime_kind: lmstudio
-  runtime_version: replace-from-official-lms-ps
+  runtime_version: llama.cpp/llama-server (headless)
 schema_version: 1
 ttl_seconds: 300
