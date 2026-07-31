@@ -11,12 +11,15 @@ services:
       - ASSISTX_TOOL_EGRESS_MODE=disabled
       - ASSISTX_RUNTIME_PROJECTION_HMAC_SECRET=${ASSISTX_RUNTIME_PROJECTION_HMAC_SECRET:?set the shared runtime projection HMAC secret}
       - ASSISTX_RUNTIME_PROJECTION_TTL_SECONDS=${ASSISTX_RUNTIME_PROJECTION_TTL_SECONDS:-60}
+      - ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN=${ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN:?set a dedicated executor bootstrap token}
+      - ASSISTX_EXECUTOR_SIGNING_KEY_FILE=/run/secrets/assistx_executor_private_key.pem
+      - ASSISTX_EXECUTOR_KEY_ID=${ASSISTX_EXECUTOR_KEY_ID:-assistx-executor-v1}
       - AUTO_ROUTER_BASE_URL=http://auto-router-reconciliation:8088
       - AUTO_ROUTER_ADMIN_TOKEN=${AUTO_ROUTER_ADMIN_TOKEN:?set a unique reconciliation router admin token}
       - AUTO_ASSIGN_BASE_URL=
       - FLEET_ROUTER_URL=http://auto-router-reconciliation:8088
       - OPENAI_BASE_URL=http://auto-router-reconciliation:8088/v1
-      - OPENAI_API_KEY=local-offline-only
+      - OPENAI_API_KEY=${AUTO_ROUTER_INTERNAL_SERVICE_TOKEN:?set the AssistX-only router inference token}
       - FLEET_KNOWN_HOSTS=
       - PAPERCLIP_API_URL=
       - PAPERCLIP_API_TOKEN=
@@ -44,16 +47,19 @@ services:
       - assistx_state:/app/state
       - ./artifacts:/app/artifacts:rw
       - transcriptions:/app/transcriptions
+      - ${ASSISTX_EXECUTOR_PRIVATE_KEY_FILE:?set ASSISTX_EXECUTOR_PRIVATE_KEY_FILE}:/run/secrets/assistx_executor_private_key.pem:ro
 
   worker:
     environment:
       - ASSISTX_OVERLAY_MODE=router
       - ASSISTX_STRICT_OFFLINE=true
       - ASSISTX_TOOL_EGRESS_MODE=disabled
+      - ASSISTX_STRICT_EXECUTOR_AUTH=true
+      - ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN=${ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN:?set a dedicated executor bootstrap token}
       - AUTO_ROUTER_BASE_URL=http://auto-router-reconciliation:8088
       - AUTO_ASSIGN_BASE_URL=
       - OPENAI_BASE_URL=http://auto-router-reconciliation:8088/v1
-      - OPENAI_API_KEY=local-offline-only
+      - OPENAI_API_KEY=${AUTO_ROUTER_INTERNAL_SERVICE_TOKEN:?set the AssistX-only router inference token}
       - PAPERCLIP_API_URL=
       - PAPERCLIP_API_TOKEN=
       - OPENROUTER_API_KEY=
@@ -84,12 +90,14 @@ services:
     # after identity, capacity, projection, dependency, containment, and synthetic-task gates pass.
     profiles:
       - executor
+    command: python -m assistx.strict_executor_main
     restart: "no"
     user: "${RECONCILIATION_EXECUTOR_UID:-1000}:${RECONCILIATION_EXECUTOR_GID:-1000}"
     environment:
       - ASSISTX_URL=http://api:8000
+      - ASSISTX_STRICT_EXECUTOR_AUTH=true
+      - ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN=${ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN:?set a dedicated executor bootstrap token}
       - AUTO_ASSIGN_BASE_URL=
-      - AUTO_ROUTER_ADMIN_TOKEN=${AUTO_ROUTER_ADMIN_TOKEN:?set a unique reconciliation router admin token}
       - HERMES_PROVIDER=assistx-router
       - HERMES_LM_BASE_URL=http://auto-router-reconciliation:8088/v1
       - HERMES_MODEL=auto/code
@@ -97,12 +105,14 @@ services:
       - HERMES_FLEET_MODE=external
       - HERMES_SELFTASK_ENABLED=false
       - HERMES_MAX_TASKS_PER_LOOP=1
+      - HERMES_HEARTBEAT_MAX_FAILURES=${HERMES_HEARTBEAT_MAX_FAILURES:-3}
       - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
       - ASSISTX_TOOL_EGRESS_MODE=disabled
       - HERMES_AGENT_CAPABILITIES=terminal,file,code_execution,skills,memory,todo
       - HERMES_TOOLSETS=terminal,file,code_execution,skills,memory,todo
       - HERMES_HOME=/app/hermes-home
       - HERMES_PROFILES_PATH=/app/hermes-home/profiles.yaml
+      - OPENAI_API_KEY=
       - OPENROUTER_API_KEY=
       - GROQ_API_KEY=
       - CEREBRAS_API_KEY=
