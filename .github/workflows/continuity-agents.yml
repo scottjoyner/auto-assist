@@ -33,6 +33,7 @@ jobs:
             src/assistx/continuity_replicator.py \
             tests/test_continuity_node_agent.py \
             tests/test_continuity_replicator.py
+          bash -n scripts/install-continuity-agent.sh
 
       - name: Lint failover agents
         run: |
@@ -55,6 +56,7 @@ jobs:
 
           node_code = Path("src/assistx/continuity_node_agent.py").read_text()
           replicator_code = Path("src/assistx/continuity_replicator.py").read_text()
+          installer = Path("scripts/install-continuity-agent.sh").read_text()
           node_env = Path(
               "deploy/reconciliation/continuity-node.env.example"
           ).read_text()
@@ -128,4 +130,17 @@ jobs:
           assert "ReadWritePaths=/var/lib/assistx-continuity" in node_unit
           assert "MemoryMax=192M" in node_unit
           assert "MemoryMax=128M" in replicator_unit
+
+          # The installer is offline-oriented and refuses to enable placeholders.
+          assert "--no-deps" in installer
+          assert "--no-build-isolation" in installer
+          assert "continuity-token" in installer
+          assert "source-basic-password" in installer
+          assert "systemctl enable --now" in installer
+          assert "curl " not in installer
+          assert "wget " not in installer
+          assert "git clone" not in installer
+          assert "apt " not in installer
+          assert "dnf " not in installer
+          assert "yum " not in installer
           PY
