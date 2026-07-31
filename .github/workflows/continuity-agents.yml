@@ -47,3 +47,85 @@ jobs:
           pytest -q \
             tests/test_continuity_node_agent.py \
             tests/test_continuity_replicator.py
+
+      - name: Enforce agent deployment boundaries
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          node_code = Path("src/assistx/continuity_node_agent.py").read_text()
+          replicator_code = Path("src/assistx/continuity_replicator.py").read_text()
+          node_env = Path(
+              "deploy/reconciliation/continuity-node.env.example"
+          ).read_text()
+          replicator_env = Path(
+              "deploy/reconciliation/continuity-replicator.env.example"
+          ).read_text()
+          node_unit = Path(
+              "deploy/reconciliation/systemd/assistx-continuity-node.service"
+          ).read_text()
+          replicator_unit = Path(
+              "deploy/reconciliation/systemd/assistx-continuity-replicator.service"
+          ).read_text()
+
+          # The bounded worker exposes no generic execution handler.
+          assert '"runtime_probe"' in node_code
+          assert '"http_probe"' in node_code
+          assert '"artifact_checksum"' in node_code
+          assert '"backup_verify"' in node_code
+          assert "subprocess" not in node_code
+          assert "paramiko" not in node_code
+          assert "fabric" not in node_code
+          assert "asyncssh" not in node_code
+          assert "os.system" not in node_code
+          assert "shell=True" not in node_code
+          assert "urllib.request" in node_code
+          assert "ContinuityEpochRollback" in node_code
+          assert "artifact is outside every allowlisted root" in node_code
+
+          allowed_line = next(
+              line
+              for line in node_env.splitlines()
+              if line.startswith("FLEET_CONTINUITY_ALLOWED_TASK_KINDS=")
+          )
+          allowed = set(allowed_line.split("=", 1)[1].split(","))
+          assert allowed == {
+              "runtime_probe",
+              "http_probe",
+              "artifact_checksum",
+              "backup_verify",
+          }
+          for forbidden in ("script", "shell", "ssh", "deploy", "repository"):
+              assert forbidden not in allowed
+
+          # Projection replication is bounded to short-lived validated documents.
+          assert "validate_runtime_projection" in replicator_code
+          assert "validate_context_projection" in replicator_code
+          assert "continuity target cluster mismatch" in replicator_code
+          assert "raw context material" in replicator_code
+          assert "source-basic-password" in replicator_env
+          assert "continuity-token" in replicator_env
+          assert "127.0.0.1:8000" in replicator_env
+
+          # Secrets are file/environment backed and absent from process arguments.
+          for unit in (node_unit, replicator_unit):
+              exec_start = next(
+                  line for line in unit.splitlines() if line.startswith("ExecStart=")
+              )
+              assert "TOKEN" not in exec_start
+              assert "PASS" not in exec_start
+              assert "KEY" not in exec_start
+              assert "EnvironmentFile=/etc/assistx-continuity/" in unit
+              assert "NoNewPrivileges=true" in unit
+              assert "ProtectSystem=strict" in unit
+              assert "ProtectHome=true" in unit
+              assert "CapabilityBoundingSet=" in unit
+              assert "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6" in unit
+              assert "MemoryMax=" in unit
+              assert "CPUQuota=" in unit
+              assert "TasksMax=" in unit
+
+          assert "ReadWritePaths=/var/lib/assistx-continuity" in node_unit
+          assert "MemoryMax=192M" in node_unit
+          assert "MemoryMax=128M" in replicator_unit
+          PY
