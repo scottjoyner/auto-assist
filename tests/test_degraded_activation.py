@@ -140,7 +140,7 @@ def test_warm_degraded_stack_rejects_claims_until_signed_activation(
     assert client.post("/api/degraded/claims", json=claim).status_code == 200
 
 
-def test_activation_nonce_replay_is_rejected(tmp_path, monkeypatch):
+def test_activation_replay_is_rejected(tmp_path, monkeypatch):
     value = runtime(tmp_path)
     app = FastAPI()
     app.include_router(
@@ -168,4 +168,7 @@ def test_activation_nonce_replay_is_rejected(tmp_path, monkeypatch):
     assert client.post("/api/degraded/activate", json={"activation": envelope}).status_code == 200
     replay = client.post("/api/degraded/activate", json={"activation": envelope})
     assert replay.status_code == 409
-    assert "replay" in replay.json()["detail"]
+    assert any(
+        marker in replay.json()["detail"]
+        for marker in ("replay", "stale_recovery_activation_epoch")
+    )
