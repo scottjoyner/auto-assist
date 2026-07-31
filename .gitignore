@@ -25,3 +25,7 @@ __pycache__/
 
 *.assistx_cache.sqlite
 .assistx_cache.sqlite
+
+# Reconciliation secrets: never commit signing keys
+deploy/keys/
+artifacts/runtime/

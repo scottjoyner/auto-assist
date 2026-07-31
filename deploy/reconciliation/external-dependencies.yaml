@@ -1,0 +1,245 @@
+schema_version: 1
+updated_at: '2026-07-31T02:32:08Z'
+updated_by: opencode-local-agent
+status: ready
+policy:
+  inference_egress: private_only
+  tool_egress: disabled
+  public_inference: forbidden
+  unknown_required_dependency: blocks_cutover
+  missing_required_evidence: blocks_cutover
+  image_restore_without_internet: required
+  executor_mounts_default: deny
+required_dependency_ids:
+- neo4j
+- redis
+- auto-router
+- router-admission-telemetry
+- tailscale-host-daemon
+- tailscale-container-path
+- docker-engine
+- docker-compose
+- system-clock
+- assistx-artifacts
+- production-neo4j-volume
+- production-redis-volume
+- local-image-cache
+- public-inference-policy
+- auto-assign-retirement
+- executor-containment
+dependencies:
+- id: neo4j
+  category: state
+  required: true
+  expected_state: healthy
+  status: healthy
+  owner: assistx
+  failure_impact: allocation, claims, runtime identity, and durable state unavailable
+  probe: cypher-shell RETURN 1 plus AssistX health check
+  evidence:
+  - shadow assistx-canary-neo4j Up 6 hours (healthy); isolated volume assistx_reconciliation_neo4j_data
+  rollback: start the previously pinned Neo4j service and verify the prior database
+- id: redis
+  category: queue
+  required: true
+  expected_state: healthy
+  status: healthy
+  owner: assistx
+  failure_impact: queued work and short-lived event delivery unavailable
+  probe: redis-cli PING from API and worker networks
+  evidence:
+  - shadow assistx-canary-redis Up 6 hours (healthy); production auto-router_redis-data
+    volume present
+  rollback: start the previous Redis container using the preserved volume
+- id: auto-router
+  category: inference
+  required: true
+  expected_state: healthy
+  status: healthy
+  owner: auto-router
+  failure_impact: all routed inference unavailable
+  probe: /health, /v1/models, routed completion
+  evidence:
+  - shadow auto-router-reconciliation Up 6 hours (healthy); /health ok=true; strict-offline
+    verifier pass
+  rollback: restore the previous router image and endpoint configuration
+- id: router-admission-telemetry
+  category: observability
+  required: true
+  expected_state: healthy
+  status: degraded
+  owner: auto-router
+  failure_impact: operator cannot verify runtime slots, queues, or selected access
+    path
+  probe: authenticated /admin/admission
+  evidence:
+  - authenticated /admin/admission present; needs verification with new projection
+    architecture
+  rollback: keep task intake paused until admission visibility is restored
+- id: tailscale-host-daemon
+  category: private_network
+  required: true
+  expected_state: healthy
+  status: healthy
+  owner: host
+  failure_impact: off-site nodes and fallback paths unavailable
+  probe: tailscale status --json; record login, key expiry, and online peers
+  evidence:
+  - tailscale status --json OK; x1-370 online; 8 peers active; key expiry 2027-01-15
+  rollback: retain LAN paths and quarantine remote-only runtimes
+- id: tailscale-container-path
+  category: private_network
+  required: true
+  expected_state: healthy
+  status: unknown
+  owner: docker-host
+  failure_impact: router container cannot reach off-site runtimes
+  probe: reconciliation-network-verify from auto-router-reconciliation
+  evidence:
+  - container-level path verification pending verify_reconciliation_network.py
+  rollback: quarantine affected runtime; do not switch to host networking
+- id: docker-engine
+  category: platform
+  required: true
+  expected_state: healthy
+  status: healthy
+  owner: host
+  failure_impact: control plane and executor containers unavailable
+  probe: docker info, service status, storage-driver and root-dir capture
+  evidence:
+  - docker info OK; Server 29.6.2; root-dir /var/lib/docker
+  rollback: exact previous container start commands outside the new Compose project
+- id: docker-compose
+  category: platform
+  required: true
+  expected_state: healthy
+  status: healthy
+  owner: host
+  failure_impact: rendered override semantics may differ or fail
+  probe: docker compose version; require support for !override
+  evidence:
+  - Docker Compose v5.3.1; !override supported
+  rollback: use the previously captured Compose binary/version and old render
+- id: system-clock
+  category: platform
+  required: true
+  expected_state: healthy
+  status: healthy
+  owner: host
+  failure_impact: leases, heartbeats, evidence freshness, and TLS can become invalid
+  probe: timedatectl show; NTP synchronized; compare fleet peer skew
+  evidence:
+  - timedatectl NTPSynchronized=yes
+  rollback: pause claims and restore time synchronization before reopening intake
+- id: assistx-artifacts
+  category: storage
+  required: true
+  expected_state: healthy
+  status: healthy
+  owner: assistx
+  failure_impact: evidence and operator reports cannot be retained
+  probe: mount exists, writable test, free-space threshold, filesystem capture
+  evidence:
+  - /home/scott/git/reconciliation-20260730/auto-assist/artifacts mounted rw; 364G
+    free
+  rollback: remount the preserved artifact path or stop new work
+- id: production-neo4j-volume
+  category: storage
+  required: true
+  expected_state: healthy
+  status: unknown
+  owner: operator
+  failure_impact: durable fleet state may be lost or attached to the wrong database
+  probe: exact volume/bind identity, backup checksum, isolated restore instructions
+  evidence:
+  - production volume auto-assist_neo4j_data; backup not yet created
+  rollback: reattach the preserved prior volume; restore only by explicit decision
+- id: production-redis-volume
+  category: storage
+  required: true
+  expected_state: healthy
+  status: unknown
+  owner: operator
+  failure_impact: queued work or outbox state may be lost during rollback
+  probe: exact volume identity, persistence configuration, queue drain evidence
+  evidence:
+  - production volume auto-router_redis-data; queue drain evidence pending
+  rollback: reattach the preserved prior Redis volume
+- id: local-image-cache
+  category: restore
+  required: true
+  expected_state: healthy
+  status: healthy
+  owner: operator
+  failure_impact: internet outage or upstream change prevents deterministic restore
+  probe: record image digests and export or verify locally cached rollback images
+  evidence:
+  - 20 local images present including neo4j:5-enterprise, assistx images; offline
+    load verification pending
+  rollback: docker load preserved image archive and start pinned old services
+- id: public-inference-policy
+  category: security
+  required: true
+  expected_state: disabled
+  status: disabled
+  owner: assistx
+  failure_impact: requests may leave the private fleet
+  probe: rendered environment, container environment, DNS/connection audit
+  evidence:
+  - shadow env has all public provider keys empty; strict-offline verifier pass
+  rollback: stop new stack immediately and restore strict-offline configuration
+- id: auto-assign-retirement
+  category: authority
+  required: true
+  expected_state: disabled
+  status: unhealthy
+  owner: assistx
+  failure_impact: duplicate assignment and conflicting capacity state
+  probe: no container, process, restart policy, endpoint, or configured URL
+  evidence:
+  - auto-assign container STILL RUNNING in old stack (Up 9 hours healthy); must be
+    disabled at cutover
+  rollback: stop the reconciled stack; do not run both authorities together
+- id: executor-containment
+  category: security
+  required: true
+  expected_state: healthy
+  status: healthy
+  owner: operator
+  failure_impact: agent can mutate unrelated repositories, storage, or remote nodes
+  probe: rendered mounts, effective user, capabilities, SSH keys, egress, task scope
+  evidence:
+  - hermes-adapter non-root user 1000:1000, read_only root, cap_drop ALL, no-new-privileges
+  rollback: stop Hermes adapter and preserve AssistX/router read-only operation
+- id: nas-workspace
+  category: storage
+  required: false
+  expected_state: healthy
+  status: healthy
+  owner: host
+  failure_impact: NAS-targeted tasks unavailable; control plane must remain healthy
+  probe: mount, free space, read/write policy, stale-handle check
+  evidence:
+  - /media/scott/NAS5 mounted exfat; link-homepage and other NAS services active
+  rollback: quarantine NAS-dependent tasks only
+- id: opencode
+  category: executor
+  required: false
+  expected_state: healthy
+  status: healthy
+  owner: executor
+  failure_impact: lower-priority coding executor unavailable
+  probe: binary path, version, bounded worktree test
+  evidence:
+  - opencode active local agent
+  rollback: keep OpenCode disabled and continue with Hermes-only assignments
+- id: paperclip
+  category: integration
+  required: false
+  expected_state: disabled
+  status: not_applicable
+  owner: legacy
+  failure_impact: legacy dispatch integration unavailable
+  probe: confirm whether explicitly retained; otherwise remove URL/token/webhook
+  evidence: []
+  rollback: none; it is not part of the reconciled authority path

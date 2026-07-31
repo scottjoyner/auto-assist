@@ -1,0 +1,35 @@
+{
+  "evidence_sha256": "03587240f858dd260146fa3e5911dfa83a9544c9d9afe2eea23ea166f4c2c5ea",
+  "failures": [],
+  "manifest": "deploy/reconciliation/runtime-projection.yaml",
+  "repository_root": "/home/scott/git/reconciliation-20260730/auto-assist",
+  "schema_version": 1,
+  "status": "pass",
+  "verified": [
+    {
+      "bytes": 307,
+      "label": "runtimes[0].capacity",
+      "path": "artifacts/runtime/xwing-capacity.json",
+      "sha256": "5e37910ab8647fb6a925bec8c20e150fa10b95ce91be81faaaf77df7d861aa17"
+    },
+    {
+      "bytes": 310,
+      "label": "runtimes[0].access_paths[0]",
+      "path": "artifacts/runtime/xwing-lan-path.json",
+      "sha256": "bba111735bf46061de2721abb287ddea309546e2e37b19c7d9048a41c28f0d2a"
+    },
+    {
+      "bytes": 297,
+      "label": "runtimes[0].access_paths[1]",
+      "path": "artifacts/runtime/xwing-tailscale-path.json",
+      "sha256": "3014284e0437f1c87480ea373f301ad4a313bd04153ce50cb07523eba61b6763"
+    },
+    {
+      "bytes": 468,
+      "label": "runtimes[0].models[0]",
+      "path": "artifacts/runtime/xwing-model-identity.json",
+      "sha256": "8ff52aa9a295657847f3593f4e1af827a8e75a350580e93dce5e50f1a4e1e2f8"
+    }
+  ],
+  "verified_count": 4
+}
