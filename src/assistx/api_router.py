@@ -19,7 +19,7 @@ from .passive_status import build_passive_status_router
 from .recovery_island_routes import build_recovery_island_router
 from .recovery_mode import build_recovery_mode_router, install_recovery_shadow_mode
 from .router_integration import build_router_integration_router
-from .runtime_projection import build_runtime_projection_router
+from .runtime_projection_v2 import build_runtime_projection_router
 from .routers.devices import build_devices_router
 from .routers.dispatch import build_dispatch_router
 from .routers.feeds import build_feeds_router
