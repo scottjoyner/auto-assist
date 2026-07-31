@@ -1,6 +1,5 @@
 # src/assistx/worker.py
 import faulthandler
-import json
 import logging
 import multiprocessing as mp
 import os
@@ -13,9 +12,11 @@ import time
 faulthandler.enable()
 try:
     import sys
+
     def _dump_threads(*_):
         with open("/tmp/faulthandler_dump.txt", "w") as _fh:
             faulthandler.dump_traceback(all_threads=True, file=_fh)
+
     signal.signal(signal.SIGUSR1, _dump_threads)
 except (ValueError, OSError):
     pass
@@ -29,13 +30,13 @@ logger = logging.getLogger(__name__)
 redis = load_redis_module()
 if use_compat_shims():
     try:
-        from rq import Worker, Queue, Connection
+        from rq import Connection, Queue, Worker
     except ModuleNotFoundError:
         from .compat import InMemoryQueue as Queue
+
         Worker = Connection = None
 else:
-    from rq import Worker, Queue, Connection
-    from rq import SimpleWorker
+    from rq import Connection, Queue, SimpleWorker, Worker
 
 HEALTH_PORT = int(os.getenv("WORKER_HEALTH_PORT", "8100"))
 
@@ -127,7 +128,11 @@ def _start_execution_pollers() -> list[threading.Thread]:
                         logger.warning("paperclip poller error: %s", exc)
                     time.sleep(int(os.getenv("PAPERCLIP_POLL_INTERVAL", "30")))
 
-            t = threading.Thread(target=_paperclip_loop, name="paperclip-poller", daemon=True)
+            t = threading.Thread(
+                target=_paperclip_loop,
+                name="paperclip-poller",
+                daemon=True,
+            )
             t.start()
             threads.append(t)
             logger.info("execution backend=%s: paperclip poller started", backend)
@@ -138,10 +143,17 @@ def _start_execution_pollers() -> list[threading.Thread]:
         try:
             from .agents.hermes_agent_adapter import run_loop as hermes_run_loop
 
-            t = threading.Thread(target=hermes_run_loop, name="hermes-adapter-poller", daemon=True)
+            t = threading.Thread(
+                target=hermes_run_loop,
+                name="hermes-adapter-poller",
+                daemon=True,
+            )
             t.start()
             threads.append(t)
-            logger.info("execution backend=%s: direct hermes_agent_adapter poller started", backend)
+            logger.info(
+                "execution backend=%s: direct hermes_agent_adapter poller started",
+                backend,
+            )
         except Exception as exc:  # pragma: no cover
             logger.warning("hermes_agent_adapter poller unavailable: %s", exc)
 
@@ -157,6 +169,20 @@ def _start_execution_pollers() -> list[threading.Thread]:
     return threads
 
 
+def _start_recovery_island_controller() -> threading.Thread | None:
+    """Start the Neo4j-fenced Beelink dispatcher when explicitly enabled."""
+    try:
+        from .recovery_island_control import start_recovery_island_dispatcher
+
+        thread = start_recovery_island_dispatcher()
+        if thread is not None:
+            logger.info("fenced recovery-island dispatcher started")
+        return thread
+    except Exception as exc:  # pragma: no cover
+        logger.warning("recovery-island dispatcher unavailable: %s", exc)
+        return None
+
+
 def main():
     validate_runtime_configuration(strict=True)
     # Warm up the full import chain in the PARENT process, single-threaded,
@@ -168,6 +194,7 @@ def main():
     # concurrently with a job thread.
     try:
         import importlib
+
         _warm = [
             "assistx.jobs",
             "assistx.agents.orchestrator",
@@ -178,6 +205,7 @@ def main():
             "assistx.fleet",
             "assistx.outbox_client",
             "assistx.neo4j_client",
+            "assistx.recovery_island_control",
             "prometheus_client",
             "prometheus_client.exposition",
             "prometheus_client.registry",
@@ -195,6 +223,7 @@ def main():
     except Exception as exc:  # pragma: no cover
         logger.warning("parent warmup failed: %s", exc)
     _start_execution_pollers()
+    _start_recovery_island_controller()
     listen = [os.getenv("RQ_QUEUE", "assistx")]
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
     concurrency = max(1, int(os.getenv("WORKER_CONCURRENCY", "1")))
@@ -208,7 +237,11 @@ def main():
 
     processes: list[mp.Process] = []
     for i in range(concurrency):
-        p = mp.Process(target=_run_one_worker, args=(i + 1, listen, redis_url), daemon=False)
+        p = mp.Process(
+            target=_run_one_worker,
+            args=(i + 1, listen, redis_url),
+            daemon=False,
+        )
         p.start()
         processes.append(p)
 
@@ -219,6 +252,7 @@ def main():
             exit_code = p.exitcode
     if exit_code:
         raise SystemExit(exit_code)
+
 
 if __name__ == "__main__":
     main()
