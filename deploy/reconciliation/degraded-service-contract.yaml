@@ -1,0 +1,67 @@
+schema_version: 1
+mode: degraded_control_plane
+node_class: beelink_recovery
+memory_budget_mb:
+  total_usable: 14336
+  emergency_headroom: 1024
+  local_model_target_max: 8192
+  services:
+    falkordb: 1024
+    redis_queue: 256
+    assistx_api: 768
+    auto_router: 384
+state_contracts:
+  falkordb:
+    authority: operational_only
+    allowed:
+      - leases
+      - claims
+      - heartbeats
+      - runtime_health
+      - route_observations
+      - delegations
+      - recovery_intents
+      - session_context
+      - kv_manifests
+    ttl_required: true
+    fenced_epoch_required:
+      - leases
+      - claims
+      - delegations
+      - recovery_intents
+  neo4j:
+    authority: durable_final
+    required_for:
+      - task_completion
+      - task_failure
+      - approvals
+      - permanent_runtime_identity
+      - permanent_configuration
+      - audit_evidence
+  redis:
+    authority: transport_only
+    eviction_policy: noeviction
+promotion_order:
+  - degraded
+  - assistx-shadow
+  - assistx-executor
+  - hermes-synthetic
+  - hermes-executor
+fail_closed:
+  falkordb_unavailable: freeze_claims_and_leases
+  redis_unavailable: reject_new_work
+  neo4j_unavailable: pending_durable_commit
+  no_independent_witness: read_only_partition_mode
+  memory_pressure:
+    - shed_ui_history
+    - drop_router_caches
+    - unload_local_model
+    - block_neo4j_promotion
+forbidden_in_degraded_mode:
+  - runtime_admission
+  - model_load
+  - model_unload
+  - repository_mutation
+  - generic_shell
+  - autonomous_ssh_deployment
+  - permanent_configuration_approval
