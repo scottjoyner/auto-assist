@@ -12,6 +12,7 @@ from .passive_claims import build_passive_claim_router
 from .passive_control import build_passive_control_router
 from .passive_events import build_passive_event_router
 from .passive_status import build_passive_status_router
+from .recovery_island_routes import build_recovery_island_router
 from .recovery_mode import build_recovery_mode_router, install_recovery_shadow_mode
 from .router_integration import build_router_integration_router
 from .runtime_projection import build_runtime_projection_router
@@ -47,6 +48,7 @@ install_control_room_runtime(control_room_module)
 install_strict_offline_projection(router_integration_module)
 _remove_superseded_operator_routes()
 app.include_router(build_recovery_mode_router(auth))
+app.include_router(build_recovery_island_router(_neo, auth_dependency=auth))
 app.include_router(build_control_room_router(_neo, auth, templates))
 app.include_router(build_router_integration_router(_neo))
 app.include_router(build_runtime_projection_router(_neo, auth_dependency=auth))
