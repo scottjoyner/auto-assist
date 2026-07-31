@@ -13,6 +13,8 @@ from typing import Any
 
 from .runtime_projection import projection_checksum, projection_signature
 
+_TAILSCALE_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
 
 def private_http_url(value: str) -> bool:
     parsed = urllib.parse.urlparse(str(value or "").strip())
@@ -29,7 +31,16 @@ def private_http_url(value: str) -> bool:
         address = ipaddress.ip_address(host)
     except ValueError:
         return False
-    return bool(address.is_loopback or address.is_private or address.is_link_local)
+    tailscale = (
+        isinstance(address, ipaddress.IPv4Address)
+        and address in _TAILSCALE_CGNAT
+    )
+    return bool(
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or tailscale
+    )
 
 
 def _request_json(
