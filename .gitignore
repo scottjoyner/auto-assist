@@ -6,6 +6,7 @@ deploy/reconciliation/migration-state.yaml
 deploy/reconciliation/final-cutover-evidence.yaml
 deploy/reconciliation/runtime-projection.yaml
 deploy/reconciliation/lan-runtime-map.json
+deploy/reconciliation/lan-runtime-map.json.sha256
 deploy/local/
 artifacts/deployment-canary/
 artifacts/reconciliation-preflight/

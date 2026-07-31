@@ -1,0 +1,13 @@
+{
+  "access_path_count": 2,
+  "evidence_sha256": "a68db9c24a46d88ca3586e093d7922d8684168a3a710cdfc392dda706a736365",
+  "expires_at_ts": 1785478616194,
+  "generation": 1,
+  "manifest": "deploy/reconciliation/runtime-projection.yaml",
+  "manifest_checksum": "1c4041d841a39b83897220d49f1e4584910f45ef89e28fe2170300888e86448b",
+  "mode": "apply",
+  "model_count": 1,
+  "revision": "reconciliation-generation-1",
+  "runtime_count": 1,
+  "status": "approved"
+}
