@@ -50,6 +50,11 @@ def install_recovery_shadow_mode(api_module: Any) -> dict[str, Any]:
 
     global _SHADOW_STATUS
     if not recovery_shadow_enabled():
+        _SHADOW_STATUS = {
+            "enabled": False,
+            "mode": "normal",
+            "disabled_startup_loops": [],
+        }
         return dict(_SHADOW_STATUS)
 
     os.environ["LLM_LOADER_DISABLE"] = "1"
@@ -59,7 +64,7 @@ def install_recovery_shadow_mode(api_module: Any) -> dict[str, Any]:
     os.environ["ASSISTX_REPO_TASK_GENERATOR_ENABLED"] = "false"
 
     @asynccontextmanager
-    async def recovery_shadow_lifespan(app):
+    async def recovery_shadow_lifespan(_app):
         api_module.validate_runtime_configuration(strict=True)
         neo = None
         try:
@@ -105,7 +110,7 @@ def build_recovery_mode_router(auth_dependency: Any) -> APIRouter:
     router = APIRouter(tags=["recovery-island"])
 
     @router.get("/api/fleet/recovery-island/shadow-status")
-    def shadow_status(user: str = Depends(auth_dependency)):
+    def shadow_status(_user: str = Depends(auth_dependency)):
         return recovery_shadow_status()
 
     return router
