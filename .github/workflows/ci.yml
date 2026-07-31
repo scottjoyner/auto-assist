@@ -134,7 +134,13 @@ jobs:
           BASIC_AUTH_USER: neo4j
           BASIC_AUTH_PASS: livelongandprosper
         run: |
-          pytest -q -m "not integration" --ignore=tests/integration
+          set +e
+          pytest -q -x -m "not integration" --ignore=tests/integration 2>&1 | tee pytest.log
+          status=${PIPESTATUS[0]}
+          echo "::group::pytest failure tail"
+          tail -n 200 pytest.log
+          echo "::endgroup::"
+          exit "$status"
 
   recovery-canary:
     runs-on: ubuntu-latest
