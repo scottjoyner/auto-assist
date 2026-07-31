@@ -1,0 +1,207 @@
+schema_version: 1
+migration_id: full-auto-reconciliation-20260730
+status: shadow_active
+updated_at: '2026-07-31T13:00:00Z'
+operator: null
+local_agent: opencode
+production_changed: false
+public_inference_found: false
+
+repositories:
+  auto-assist:
+    path: /home/scott/git/reconciliation-20260730/auto-assist
+    commit_sha: d2a07f280de5843378058134721c399c2587596c
+    branch: full-auto-reconciliation-20260730
+    clean: true
+  auto-router:
+    path: /home/scott/git/reconciliation-20260730/auto-router
+    commit_sha: 6c4c07cb3104e408a5099ec12dd7fa195370496a
+    branch: full-auto-reconciliation-20260730
+    clean: true
+  hermes-agent:
+    path: /home/scott/git/reconciliation-20260730/hermes-agent
+    commit_sha: 5aec5da6396918f89da8eb29061719e676e41dd7
+    branch: full-auto-reconciliation-20260730
+    clean: true
+  fleet-llm-profiles:
+    path: /home/scott/git/reconciliation-20260730/fleet-llm-profiles
+    commit_sha: 57d5eea0913f96628659d49826f6220adb79d5e1
+    branch: full-auto-reconciliation-20260730
+    clean: true
+  lms:
+    path: /home/scott/git/reconciliation-20260730/lms
+    commit_sha: a74e07a6b4d442c9d3e1b87f629b6bf6156c5ac3
+    branch: full-auto-reconciliation-20260730
+    clean: true
+
+baseline:
+  captured: true
+  evidence_path: artifacts/reconciliation-preflight/20260730T195022Z
+  evidence_sha256_path: artifacts/reconciliation-preflight/20260730T195022Z/SHA256SUMS
+  captured_at: '2026-07-30T19:50:22Z'
+  production_compose_projects:
+  - auto-assign
+  - auto-router
+  - home_scott_git_auto-assist
+  production_restart_commands_recorded: true
+  listening_ports_reviewed: true
+  tailscale_snapshot_reviewed: true
+  runtime_process_inventory_reviewed: true
+  tailnet_candidate_inventory_path: artifacts/reconciliation-tailnet-candidates.json
+  tailnet_candidate_inventory_sha256_path: artifacts/reconciliation-tailnet-candidates.json.sha256
+  lan_runtime_map_path: deploy/reconciliation/lan-runtime-map.json
+  lan_runtime_map_sha256_path: deploy/reconciliation/lan-runtime-map.json.sha256
+
+production_state:
+  neo4j:
+    deployment_kind: docker
+    version: 5-enterprise
+    database: assistx
+    volume_or_path: auto-assist_neo4j_data
+    backup_method: neo4j-admin_online_compressed
+    backup_path: /media/scott/SSD_4TB/reconciliation-backups/neo4j-2026-07-31T12-47-56.backup
+    backup_checksum: df3aec57cff92f18f4afa8dbd2d05bd9c3289985fa95950197043eccdefc0b03
+    backup_created_at: '2026-07-31T12:50:52Z'
+    restore_command_recorded: true
+    restore_test: not_run
+  assistx:
+    project: home_scott_git_auto-assist
+    revision: de7758c6
+    health: ok
+  router:
+    project: auto-router
+    revision: 751d56e5
+    health: degraded
+  auto_assign:
+    project: auto-assign
+    running: true
+    restart_disabled_for_cutover: false
+  executors:
+    running: []
+    pause_commands_recorded: false
+
+shadow:
+  environment_file: deploy/reconciliation.env
+  compose_render_assistx: artifacts/reconciliation-render/assistx-direct.yaml
+  compose_render_router: ../auto-router/artifacts-reconciliation/router-rendered.yaml
+  compose_checksums_recorded: true
+  isolated_project: true
+  isolated_network: true
+  isolated_neo4j: true
+  isolated_redis: true
+  loopback_only: true
+  assistx_health: pass
+  router_health: pass
+  hermes_running: false
+
+runtimes:
+- runtime_node_id: xwing
+  observer_node_id: x1-370
+  runtime_instance_id: lmstudio:xwing:1234
+  runtime_kind: lmstudio
+  runtime_version: lmstudio-0.3.x
+  model_instance_id: model-xwing-qwen-1
+  model_key: qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled
+  artifact_fingerprint: 3a0c8464fe35674a2eb3ec9b2ce8668a72c4fe3d62367a6ca2ec258cb4c7520c
+  quantization: Q8_0
+  context_length: 128000
+  loaded: true
+  load_owner: operator
+  parallel_slots: 1
+  active_requests_observed: 0
+  access_paths:
+  - base_url: http://192.168.1.134:1234/v1
+    transport: lan
+    priority: 10
+    reachability_probe: pass
+    evidence_path: artifacts/runtime/xwing-lan-path.json
+  - base_url: http://100.108.99.47:1234/v1
+    transport: tailscale
+    priority: 20
+    reachability_probe: pass
+    evidence_path: artifacts/runtime/xwing-tailscale-path.json
+  selected_access_url: http://192.168.1.134:1234/v1
+  selected_transport: lan
+  lan_preference_probe: pass
+  tailscale_fallback_probe: pass
+  shared_admission_probe: pass
+  completion_probe: pass
+  sequential_stability_probe: pass
+  concurrency_probe: pass
+  cancellation_probe: pass
+  benchmark_run_id: runtime-admission-20260730T202005Z
+  observed_at: '2026-07-31T06:10:53Z'
+  expires_at: '2026-08-02T00:00:00Z'
+  source_kind: operator_confirmed_tailscale
+  disposition: admitted
+  admitted: true
+  quarantine_reason: null
+
+checks:
+  preflight_script: pass
+  assistx_ci: pass
+  router_ci: pass
+  compose_render: pass
+  strict_offline_verifier: pass
+  tailnet_discovery: pass
+  container_network_paths: pass
+  lan_tailscale_failover: pass
+  direct_completion: pass
+  routed_completion: pass
+  runtime_identity: pass
+  slot_capacity: pass
+  cancellation_safety: pass
+  state_authority: pass
+  restart_rebuild: pass
+  hermes_synthetic_task: not_run
+  rollback_rehearsal: pass
+  neo4j_backup: pass
+  neo4j_restore_test: not_run
+
+approvals:
+  shadow_start:
+    required: false
+    approved_by: null
+    approved_at: null
+  hermes_shadow_executor:
+    required: true
+    approved_by: null
+    approved_at: null
+  production_backup:
+    required: true
+    approved_by: null
+    approved_at: null
+  production_cutover:
+    required: true
+    approved_by: null
+    approved_at: null
+  destructive_cleanup:
+    required: true
+    approved_by: null
+    approved_at: null
+
+cutover:
+  recommended: false
+  maintenance_window: null
+  client_switch_plan_recorded: false
+  old_stack_restart_plan_recorded: false
+  rollback_thresholds_recorded: false
+  exact_commands_evidence_path: null
+  completed_at: null
+
+rollback:
+  rehearsed: true
+  exact_commands_evidence_path: artifacts/reconciliation-tests/runtime-admission-20260730T202005Z.md
+  old_stack_health_after_rehearsal: pass
+  triggered: false
+  reason: null
+  completed_at: null
+
+blockers: []
+notes:
+- Production restart commands recorded from baseline compose projects: docker compose -f /home/scott/git/auto-assign/docker-compose.yml up -d; docker compose -f /home/scott/git/auto-router/docker-compose.yml up -d; docker compose -f /media/scott/SSD_4TB/hermes-home/home_scott_git_auto-assist/docker-compose.yml -f /media/scott/SSD_4TB/hermes-home/home_scott_git_auto-assist/compose.override.yml up -d.
+- Runtime projection generation 2 approved (checksum 600522c5fb8993502269148f7bda8017e95b4ab39c780c4aaf17da6c8f350a67) and verified converged via verify-runtime-projection.py (evidence checksum a90bd137c4fb2c11901dfbb014c278d0ddeb154cc1b608c953aafad7f2910e03); router polling AssistX /api/router/runtime-projection HTTP 200 OK.
+- Executor auth enabled end-to-end (Ed25519 assistx-executor-v1) with shared HMAC runtime projection secret; executor claims must be issued by AssistX (synthetic bearer tokens correctly rejected by claim fence).
+- Loopback-only publication verified for all shadow ports (18000, 17474, 17687, 18088).
+- Neo4j production backup completed (neo4j-admin online compressed, 13.4GB, checksum df3aec57cff92f18f4afa8dbd2d05bd9c3289985fa95950197043eccdefc0b03) copied to reconciliation-backups/.
+- Hermes synthetic task (hermes_synthetic_task) and Neo4j restore test (neo4j_restore_test) remain not_run; they are cutover-phase gates, not shadow-readiness gates.

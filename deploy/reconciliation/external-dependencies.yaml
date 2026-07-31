@@ -151,23 +151,29 @@ dependencies:
   category: storage
   required: true
   expected_state: healthy
-  status: unknown
+  status: healthy
   owner: operator
   failure_impact: durable fleet state may be lost or attached to the wrong database
   probe: exact volume/bind identity, backup checksum, isolated restore instructions
   evidence:
-  - production volume auto-assist_neo4j_data; backup not yet created
+  - "production volume auto-assist_neo4j_data (docker volume); backup neo4j-admin online
+    compressed completed 2026-07-31T12:50:52Z; backup_path /media/scott/SSD_4TB/reconciliation-backups/neo4j-2026-07-31T12-47-56.backup; checksum
+    df3aec57cff92f18f4afa8dbd2d05bd9c3289985fa95950197043eccdefc0b03; restore command:
+    docker exec -u 7474 neo4j neo4j-admin database restore neo4j --from-path=/import/backups
+    --to-path=/data/databases/neo4j --force"
   rollback: reattach the preserved prior volume; restore only by explicit decision
 - id: production-redis-volume
   category: storage
   required: true
   expected_state: healthy
-  status: unknown
+  status: healthy
   owner: operator
   failure_impact: queued work or outbox state may be lost during rollback
   probe: exact volume identity, persistence configuration, queue drain evidence
   evidence:
-  - production volume auto-router_redis-data; queue drain evidence pending
+  - "production redis volume auto-router_redis-data created 2026-07-15 (project auto-router, compose volume redis-data); production assistx-redis container redis 7.4.9 with /data volume"
+  - "persistence: RDB snapshots configured (save 3600 1 300 100 60 10000), appendonly off, 548322 keys total"
+  - "queue drain verified 2026-07-31: RQ queue backlog zero (0 queued, 0 deferred, 0 failed, 0 started); 274221 retained historical job records with TTL about 356 days; 32 workers active; no pending outbox keys in Redis"
   rollback: reattach the preserved prior Redis volume
 - id: local-image-cache
   category: restore
