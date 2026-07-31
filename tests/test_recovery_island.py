@@ -29,7 +29,9 @@ def layout(tmp_path):
     bundle_sha = hashlib.sha256(bundle.read_bytes()).hexdigest()
     manifest = tmp_path / "recovery-images.manifest.json"
     manifest.write_text(
-        json.dumps({"bundle_sha256": bundle_sha, "images": [{"id": "sha256:test"}]}),
+        json.dumps(
+            {"bundle_sha256": bundle_sha, "images": [{"id": "sha256:test"}]}
+        ),
         encoding="utf-8",
     )
     config = {
@@ -126,13 +128,16 @@ def test_activation_requires_second_signature_and_fence_proof(tmp_path):
     assert missing["reason"] == "unsupported_recovery_activation_version"
 
     invalid = activation(bundle_sha, fence_proof="unfenced")
-    assert verify_recovery_activation(
-        invalid,
-        {"activation-v1": ACTIVATION_KEY},
-        node_id="beelink-recovery",
-        deployment="assistx",
-        bundle_sha256=bundle_sha,
-    ) == "missing_recovery_fence_proof"
+    assert (
+        verify_recovery_activation(
+            invalid,
+            {"activation-v1": ACTIVATION_KEY},
+            node_id="beelink-recovery",
+            deployment="assistx",
+            bundle_sha256=bundle_sha,
+        )
+        == "missing_recovery_fence_proof"
+    )
 
     good = value.execute(
         signed_runbook(
@@ -197,7 +202,7 @@ def test_failed_health_check_rolls_back_activation(tmp_path):
     assert value.status("assistx")["status"] == "prepared"
 
 
-def test_dedicated_agent_refuses_non_recovery_tasks(tmp_path):
+def test_dedicated_agent_requires_canonical_recovery_capability(tmp_path):
     value, bundle_sha, _ = executor(tmp_path)
     ordinary = execute_task(
         {
@@ -207,9 +212,9 @@ def test_dedicated_agent_refuses_non_recovery_tasks(tmp_path):
         value,
     )
     assert ordinary["status"] == "FAILED"
-    assert ordinary["result"]["reason"] == "recovery_island_capability_required"
+    assert ordinary["result"]["reason"] == "recovery_capability_required"
 
-    recovery = execute_task(
+    legacy_island_capability = execute_task(
         {
             "required_capabilities": ["recovery_island"],
             "payload": {
@@ -218,4 +223,57 @@ def test_dedicated_agent_refuses_non_recovery_tasks(tmp_path):
         },
         value,
     )
+    assert legacy_island_capability["status"] == "FAILED"
+    assert (
+        legacy_island_capability["result"]["reason"]
+        == "recovery_capability_required"
+    )
+
+
+def test_dedicated_agent_rejects_ordinary_recovery_runbook(tmp_path):
+    value, _, _ = executor(tmp_path)
+    result = execute_task(
+        {
+            "required_capabilities": ["recovery"],
+            "target_agent_id": "beelink-recovery",
+            "payload": {"runbook": {"action": "restart_service"}},
+        },
+        value,
+    )
+    assert result["status"] == "FAILED"
+    assert result["result"]["reason"] == "missing_recovery_island_runbook"
+
+
+def test_dedicated_agent_rejects_wrong_target(tmp_path):
+    value, bundle_sha, _ = executor(tmp_path)
+    result = execute_task(
+        {
+            "required_capabilities": ["recovery"],
+            "target_agent_id": "another-node",
+            "payload": {
+                "recovery_island_runbook": signed_runbook("stage", bundle_sha)
+            },
+        },
+        value,
+    )
+    assert result["status"] == "FAILED"
+    assert result["result"]["reason"] == "recovery_island_target_mismatch"
+
+
+def test_dedicated_agent_returns_standard_verified_recovery_outcome(tmp_path):
+    value, bundle_sha, _ = executor(tmp_path)
+    recovery = execute_task(
+        {
+            "required_capabilities": ["recovery"],
+            "target_agent_id": "beelink-recovery",
+            "payload": {
+                "recovery_island_runbook": signed_runbook("stage", bundle_sha)
+            },
+        },
+        value,
+    )
     assert recovery["status"] == "DONE"
+    assert recovery["result"]["ok"] is True
+    assert recovery["result"]["status"] == "verified"
+    assert recovery["result"]["operation_status"] == "prepared"
+    assert recovery["result"]["verification"]["ok"] is True
