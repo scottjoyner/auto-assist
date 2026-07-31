@@ -9,7 +9,8 @@ services:
       - ASSISTX_OVERLAY_MODE=router
       - ASSISTX_STRICT_OFFLINE=true
       - ASSISTX_TOOL_EGRESS_MODE=disabled
-      - ASSISTX_RUNTIME_PROJECTION_HMAC_SECRET=${ASSISTX_RUNTIME_PROJECTION_HMAC_SECRET:?set the shared runtime projection HMAC secret}
+      - ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_FILE=/run/secrets/assistx_runtime_projection_private_key.pem
+      - ASSISTX_RUNTIME_PROJECTION_KEY_ID=${ASSISTX_RUNTIME_PROJECTION_KEY_ID:-assistx-runtime-projection-v1}
       - ASSISTX_RUNTIME_PROJECTION_TTL_SECONDS=${ASSISTX_RUNTIME_PROJECTION_TTL_SECONDS:-60}
       - ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN=${ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN:?set a dedicated executor bootstrap token}
       - ASSISTX_EXECUTOR_SERVICE_TOKEN=${ASSISTX_EXECUTOR_SERVICE_TOKEN:?set a dedicated router-to-AssistX executor service token}
@@ -49,6 +50,7 @@ services:
       - ./artifacts:/app/artifacts:rw
       - transcriptions:/app/transcriptions
       - ${ASSISTX_EXECUTOR_PRIVATE_KEY_FILE:?set ASSISTX_EXECUTOR_PRIVATE_KEY_FILE}:/run/secrets/assistx_executor_private_key.pem:ro
+      - ${ASSISTX_RUNTIME_PROJECTION_PRIVATE_KEY_FILE:?set ASSISTX_RUNTIME_PROJECTION_PRIVATE_KEY_FILE}:/run/secrets/assistx_runtime_projection_private_key.pem:ro
 
   worker:
     environment:
