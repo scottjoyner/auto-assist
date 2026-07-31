@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import replace
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from assistx.degraded_control_hardening import install_degraded_control_hardening
 from assistx.degraded_control_plane import (
     DegradedControlPlaneRuntime,
     build_degraded_control_router,
@@ -19,6 +19,8 @@ from assistx.runtime_projection import projection_checksum, projection_signature
 
 SECRET = "projection-secret"
 NOW = 1_000_000
+
+install_degraded_control_hardening()
 
 
 class MemoryStore:
@@ -167,13 +169,30 @@ def signed_projection():
                         "model_instance_id": "model-xwing-1",
                         "artifact_fingerprint": "sha256:abc",
                         "quantization": "Q4_K_M",
-                        "capabilities": ["chat", "code", "tool_use", "local_only"],
+                        "capabilities": [
+                            "chat",
+                            "code",
+                            "tool_use",
+                            "local_only",
+                        ],
                         "context_window": 32768,
                     }
                 ],
             }
         ],
     }
+    document["checksum"] = projection_checksum(document)
+    document["signature"] = projection_signature(
+        document["generation"],
+        document["checksum"],
+        document["generated_at_ms"],
+        document["expires_at_ms"],
+        SECRET,
+    )
+    return document
+
+
+def resign(document):
     document["checksum"] = projection_checksum(document)
     document["signature"] = projection_signature(
         document["generation"],
@@ -196,30 +215,41 @@ def test_signed_projection_is_cached_and_restored_from_journal(tmp_path):
     assert restored["checksum"] == projection["checksum"]
 
 
-def test_projection_tampering_and_public_provider_are_rejected(tmp_path):
+def test_projection_tampering_public_lane_and_public_url_are_rejected(tmp_path):
     value = runtime(tmp_path)
     tampered = signed_projection()
     tampered["providers"][0]["parallel_slots"] = 99
     with pytest.raises(ValueError, match="checksum mismatch"):
         value.publish_runtime_projection(tampered, secret=SECRET)
 
-    public = signed_projection()
-    public["providers"][0]["quota_class"] = "hosted"
-    public["checksum"] = projection_checksum(public)
-    public["signature"] = projection_signature(
-        public["generation"],
-        public["checksum"],
-        public["generated_at_ms"],
-        public["expires_at_ms"],
-        SECRET,
-    )
+    public_lane = signed_projection()
+    public_lane["providers"][0]["quota_class"] = "hosted"
+    resign(public_lane)
     with pytest.raises(ValueError, match="local providers only"):
-        value.publish_runtime_projection(public, secret=SECRET)
+        value.publish_runtime_projection(public_lane, secret=SECRET)
+
+    public_url = signed_projection()
+    public_url["providers"][0]["base_url"] = "https://example.com/v1"
+    public_url["providers"][0]["access_urls"] = ["https://example.com/v1"]
+    resign(public_url)
+    with pytest.raises(ValueError, match="local providers only"):
+        value.publish_runtime_projection(public_url, secret=SECRET)
 
 
-def test_delegation_uses_signed_projection_and_live_headroom(tmp_path):
+def test_delegation_requires_signed_projection_fresh_heartbeat_and_headroom(tmp_path):
     value = runtime(tmp_path)
     value.publish_runtime_projection(signed_projection(), secret=SECRET)
+
+    with pytest.raises(RuntimeError, match="fresh heartbeat"):
+        value.plan_delegation(
+            {
+                "task_id": "task-no-heartbeat",
+                "owner": "beelink",
+                "epoch": 1,
+                "required_capabilities": ["code"],
+            }
+        )
+
     value.record_heartbeat(
         {
             "node_id": "xwing",
@@ -228,7 +258,6 @@ def test_delegation_uses_signed_projection_and_live_headroom(tmp_path):
             "ttl_seconds": 45,
         }
     )
-
     planned = value.plan_delegation(
         {
             "task_id": "task-1",
@@ -241,6 +270,7 @@ def test_delegation_uses_signed_projection_and_live_headroom(tmp_path):
     assert planned["payload"]["target_node_id"] == "xwing"
     assert planned["payload"]["headroom"] == 1
     assert planned["payload"]["projection_generation"] == 9
+    assert planned["payload"]["heartbeat_observed_at_ms"] == NOW
 
 
 def test_finalization_journals_until_neo4j_returns_then_hands_off(
