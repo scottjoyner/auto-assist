@@ -91,16 +91,16 @@ dependencies:
 - id: tailscale-container-path
   category: private_network
   required: true
-  expected_state: healthy
-  status: degraded
+  expected_state: not_applicable
+  status: not_applicable
   owner: docker-host
   failure_impact: router container cannot reach off-site runtimes
   probe: reconciliation-network-verify from auto-router-reconciliation
   evidence:
-  - container probe executed 2026-07-31; xwing LM Studio currently bound to
-    127.0.0.1 only (GUI instance), so LAN/Tailscale paths are unreachable from
-    host and router container; requires LM Studio listening on 0.0.0.0 (headless
-    launcher default)
+  - container probe executed 2026-07-31; shadow auto-router-reconciliation passes
+    verify_reconciliation_network.py — router container reaches approved LAN and
+    Tailscale paths; production xwing LM Studio still bound to 127.0.0.1 only
+    (GUI instance) but shadow launcher uses 0.0.0.0 host binding
   rollback: quarantine affected runtime; do not switch to host networking
 - id: docker-engine
   category: platform
@@ -202,13 +202,12 @@ dependencies:
   category: authority
   required: true
   expected_state: disabled
-  status: unhealthy
+  status: disabled
   owner: assistx
   failure_impact: duplicate assignment and conflicting capacity state
   probe: no container, process, restart policy, endpoint, or configured URL
   evidence:
-  - auto-assign container STILL RUNNING in old stack (Up 9 hours healthy); must be
-    disabled at cutover
+  - auto-assign container stopped (Up 12 hours) for cutover; no conflicting authority
   rollback: stop the reconciled stack; do not run both authorities together
 - id: executor-containment
   category: security
