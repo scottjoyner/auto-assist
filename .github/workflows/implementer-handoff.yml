@@ -1,0 +1,78 @@
+name: implementer-handoff
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  validate-handoff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest ruff
+
+      - name: Compile and lint evidence validator
+        run: |
+          python -m py_compile \
+            scripts/validate-implementer-evidence.py \
+            tests/test_implementer_evidence.py
+          ruff check \
+            scripts/validate-implementer-evidence.py \
+            tests/test_implementer_evidence.py
+
+      - name: Validate checked-in evidence template
+        run: |
+          python scripts/validate-implementer-evidence.py \
+            deploy/reconciliation/implementer-evidence.example.json \
+            --stage integration \
+            --allow-template
+
+      - name: Test evidence gates
+        run: |
+          pytest -q tests/test_implementer_evidence.py
+
+      - name: Enforce runbook safety sections
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("docs/IMPLEMENTER_HANDOFF_20260731.md")
+          text = path.read_text(encoding="utf-8")
+          required = [
+              "## 1. Immutable inputs",
+              "## 2. Non-negotiable architecture",
+              "## 5. Integrate the exact Auto-assist revision",
+              "## 6. Validate Auto-assist integration",
+              "## 12. Prove warm standby is fenced",
+              "## 13. Verify a Neo4j backup before takeover",
+              "## 14. Create a signed activation envelope",
+              "## 17. Prove pending durable finalization",
+              "## 18. Prove deterministic memory shedding",
+              "## 20. Reconcile and return leadership",
+              "## 21. Rollback procedures",
+              "## 22. Required final evidence",
+              "## 23. Final go/no-go criteria",
+          ]
+          missing = [heading for heading in required if heading not in text]
+          assert not missing, f"runbook is missing required sections: {missing}"
+          assert "74a9f9c386de93e99e7c3f8488db868a31be6db6" in text
+          assert "f59002a5d91f89e670fe4cd0fe08f08703b08fe2" in text
+          assert "HTTP_CODE" in text and "423" in text
+          assert "PENDING_DURABLE_COMMIT" in text
+          assert "RELINQUISHED" in text
+          assert "PRODUCTION CHANGED: NO" in text
+          PY
