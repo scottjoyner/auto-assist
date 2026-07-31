@@ -80,3 +80,26 @@ jobs:
           assert "RELINQUISHED" in text
           assert "PRODUCTION CHANGED: NO" in text
           PY
+
+      - name: Enforce start-here command policy
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("docs/START_HERE_IMPLEMENTERS_20260731.md")
+          text = path.read_text(encoding="utf-8")
+          required = [
+              "## Required execution order",
+              "## Command-safety policy",
+              "Never expand a secret environment file into a command line",
+              "sudo systemctl start assistx-recovery-snapshot.service",
+              "Never infer leadership from health",
+              "Never promote two tiers at once",
+              "## Completion commands",
+          ]
+          missing = [value for value in required if value not in text]
+          assert not missing, f"start-here file is missing command policy: {missing}"
+          assert "env $(grep ... | xargs)" in text
+          assert "Do not use commands shaped like" in text
+          assert "production_changed" not in text or "production" in text.lower()
+          PY
