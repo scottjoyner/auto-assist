@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -13,27 +12,64 @@ class RedisCommands(Protocol):
     def execute_command(self, *args: Any) -> Any: ...
 
 
-FINAL_STATES = {"COMPLETED", "FAILED", "CANCELLED", "REJECTED", "ROLLED_BACK"}
+FINAL_STATES = {
+    "COMPLETED",
+    "FAILED",
+    "CANCELLED",
+    "REJECTED",
+    "ROLLED_BACK",
+}
 VOLATILE_KINDS = {
+    "backup_status",
     "claim",
+    "control_mode",
+    "delegation",
     "heartbeat",
+    "kv_manifest",
     "lease",
+    "memory_pressure",
+    "recovery_intent",
     "route_observation",
     "runtime_health",
+    "runtime_projection",
     "session_context",
-    "kv_manifest",
-    "recovery_intent",
+}
+FENCED_KINDS = {
+    "claim",
+    "control_mode",
     "delegation",
+    "lease",
+    "recovery_intent",
 }
 
 
 def _canonical(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
 
 
 def _identity(kind: str, logical_id: str) -> str:
     digest = hashlib.sha256(f"{kind}:{logical_id}".encode()).hexdigest()[:32]
     return f"op-{digest}"
+
+
+def _commit_identity(
+    record: "OperationalRecord",
+    final_state: str,
+    evidence: Mapping[str, Any] | None,
+) -> str:
+    body = {
+        "record_id": record.record_id,
+        "record_checksum": record.checksum,
+        "epoch": record.epoch,
+        "final_state": final_state,
+        "evidence": dict(evidence or {}),
+    }
+    return "commit-" + hashlib.sha256(_canonical(body).encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -67,11 +103,12 @@ class OperationalRecord:
 
 
 class OperationalStateStore:
-    """FalkorDB-backed volatile coordination state.
+    """FalkorDB-backed, bounded coordination state.
 
-    This store is deliberately not a second durable authority. It owns bounded,
-    reconstructable operational state while Neo4j remains the destination for
-    final outcomes, audit evidence, and long-lived fleet identity.
+    The graph contains only reconstructable operational records. Neo4j remains
+    the durable authority for final outcomes, audit evidence, and long-lived
+    fleet identity. Fenced records use one server-side conditional query so two
+    controllers cannot both win through a read-then-write race.
     """
 
     def __init__(
@@ -96,28 +133,15 @@ class OperationalStateStore:
         epoch: int = 0,
         ttl_seconds: int = 300,
     ) -> OperationalRecord:
-        kind = str(kind).strip().lower()
-        logical_id = str(logical_id).strip()
-        state = str(state).strip().upper()
-        if kind not in VOLATILE_KINDS:
-            raise ValueError(f"unsupported operational state kind: {kind}")
-        if not logical_id:
-            raise ValueError("logical_id is required")
-        ttl_seconds = max(5, min(int(ttl_seconds), 86_400))
-        now = self.clock_ms()
-        record_id = _identity(kind, logical_id)
-        body = {
-            "record_id": record_id,
-            "kind": kind,
-            "logical_id": logical_id,
-            "state": state,
-            "owner": owner,
-            "epoch": max(0, int(epoch)),
-            "payload": dict(payload or {}),
-            "updated_at_ms": now,
-            "expires_at_ms": now + ttl_seconds * 1000,
-        }
-        checksum = hashlib.sha256(_canonical(body).encode()).hexdigest()
+        body, params = self._record_parameters(
+            kind=kind,
+            logical_id=logical_id,
+            state=state,
+            payload=payload,
+            owner=owner,
+            epoch=epoch,
+            ttl_seconds=ttl_seconds,
+        )
         query = (
             "MERGE (r:OperationalRecord {record_id: $record_id}) "
             "ON CREATE SET r.created_at_ms = $now "
@@ -127,17 +151,64 @@ class OperationalStateStore:
             "r.checksum = $checksum "
             "RETURN r.created_at_ms"
         )
-        params = {
+        response = self._query(query, params)
+        created = self._extract_created_at(response, params["now"])
+        return OperationalRecord(
+            created_at_ms=created,
+            checksum=params["checksum"],
             **body,
-            "now": now,
-            "payload_json": _canonical(body["payload"]),
-            "checksum": checksum,
-        }
-        response = self.client.execute_command(
-            "GRAPH.QUERY", self.graph, query, "--compact", "PARAMS", _canonical(params)
         )
-        created = self._extract_created_at(response, now)
-        return OperationalRecord(created_at_ms=created, checksum=checksum, **body)
+
+    def upsert_fenced(
+        self,
+        *,
+        kind: str,
+        logical_id: str,
+        state: str,
+        owner: str,
+        epoch: int,
+        payload: Mapping[str, Any] | None = None,
+        ttl_seconds: int = 300,
+    ) -> OperationalRecord:
+        normalized_kind = str(kind).strip().lower()
+        if normalized_kind not in FENCED_KINDS:
+            raise ValueError(f"operational kind is not fenced: {normalized_kind}")
+        if not str(owner or "").strip():
+            raise ValueError("owner is required")
+        body, params = self._record_parameters(
+            kind=normalized_kind,
+            logical_id=logical_id,
+            state=state,
+            payload=payload,
+            owner=owner,
+            epoch=epoch,
+            ttl_seconds=ttl_seconds,
+        )
+        query = (
+            "MERGE (r:OperationalRecord {record_id: $record_id}) "
+            "ON CREATE SET r.created_at_ms = $now, r.epoch = -1, "
+            "r.expires_at_ms = 0, r.owner = null "
+            "WITH r "
+            "WHERE r.expires_at_ms <= $now OR "
+            "(r.owner = $owner AND coalesce(r.epoch, -1) <= $epoch) "
+            "SET r.kind = $kind, r.logical_id = $logical_id, r.state = $state, "
+            "r.owner = $owner, r.epoch = $epoch, r.payload_json = $payload_json, "
+            "r.updated_at_ms = $now, r.expires_at_ms = $expires_at_ms, "
+            "r.checksum = $checksum "
+            "RETURN r.record_id, r.created_at_ms"
+        )
+        response = self._query(query, params)
+        row = self._extract_row(response)
+        if not row:
+            current = self.get(normalized_kind, logical_id)
+            if current and current.owner != owner:
+                raise RuntimeError("fenced record is held by another owner")
+            raise RuntimeError("fenced record epoch moved backwards")
+        return OperationalRecord(
+            created_at_ms=int(row[1] or params["now"]),
+            checksum=params["checksum"],
+            **body,
+        )
 
     def acquire_lease(
         self,
@@ -148,16 +219,7 @@ class OperationalStateStore:
         ttl_seconds: int = 30,
         payload: Mapping[str, Any] | None = None,
     ) -> OperationalRecord:
-        if not owner:
-            raise ValueError("owner is required")
-        current = self.get("lease", logical_id)
-        now = self.clock_ms()
-        if current and current.expires_at_ms > now:
-            if current.owner != owner:
-                raise RuntimeError("lease is held by another owner")
-            if int(epoch) < current.epoch:
-                raise RuntimeError("lease epoch moved backwards")
-        return self.upsert(
+        return self.upsert_fenced(
             kind="lease",
             logical_id=logical_id,
             state="ACTIVE",
@@ -172,7 +234,8 @@ class OperationalStateStore:
         query = (
             "MATCH (r:OperationalRecord {record_id: $record_id}) "
             "RETURN r.record_id, r.kind, r.logical_id, r.state, r.owner, r.epoch, "
-            "r.payload_json, r.created_at_ms, r.updated_at_ms, r.expires_at_ms, r.checksum"
+            "r.payload_json, r.created_at_ms, r.updated_at_ms, "
+            "r.expires_at_ms, r.checksum"
         )
         response = self.client.execute_command(
             "GRAPH.RO_QUERY",
@@ -185,22 +248,20 @@ class OperationalStateStore:
         row = self._extract_row(response)
         if not row:
             return None
-        record = OperationalRecord(
-            record_id=str(row[0]),
-            kind=str(row[1]),
-            logical_id=str(row[2]),
-            state=str(row[3]),
-            owner=str(row[4]) if row[4] not in (None, "") else None,
-            epoch=int(row[5] or 0),
-            payload=json.loads(str(row[6] or "{}")),
-            created_at_ms=int(row[7] or 0),
-            updated_at_ms=int(row[8] or 0),
-            expires_at_ms=int(row[9] or 0),
-            checksum=str(row[10] or ""),
-        )
+        record = self._record_from_row(row)
         if record.expires_at_ms <= self.clock_ms():
             return None
         return record
+
+    def delete(self, kind: str, logical_id: str) -> bool:
+        record_id = _identity(str(kind).lower(), str(logical_id))
+        response = self._query(
+            "MATCH (r:OperationalRecord {record_id: $record_id}) "
+            "DELETE r RETURN count(r)",
+            {"record_id": record_id},
+        )
+        row = self._extract_row(response)
+        return bool(row and int(row[0] or 0) > 0)
 
     def sweep_expired(self, *, limit: int = 1000) -> int:
         now = self.clock_ms()
@@ -208,13 +269,9 @@ class OperationalStateStore:
             "MATCH (r:OperationalRecord) WHERE r.expires_at_ms <= $now "
             "WITH r LIMIT $limit DELETE r RETURN count(r)"
         )
-        response = self.client.execute_command(
-            "GRAPH.QUERY",
-            self.graph,
+        response = self._query(
             query,
-            "--compact",
-            "PARAMS",
-            _canonical({"now": now, "limit": max(1, min(int(limit), 10_000))}),
+            {"now": now, "limit": max(1, min(int(limit), 10_000))},
         )
         row = self._extract_row(response)
         return int(row[0]) if row else 0
@@ -227,32 +284,100 @@ class OperationalStateStore:
         neo4j_commit: Callable[[dict[str, Any]], Any],
         evidence: Mapping[str, Any] | None = None,
     ) -> Any:
-        final_state = str(final_state).upper()
-        if final_state not in FINAL_STATES:
-            raise ValueError(f"unsupported final state: {final_state}")
+        normalized_state = str(final_state).upper()
+        if normalized_state not in FINAL_STATES:
+            raise ValueError(f"unsupported final state: {normalized_state}")
+        commit_id = _commit_identity(record, normalized_state, evidence)
         envelope = record.as_dict()
         envelope.update(
             {
-                "final_state": final_state,
+                "final_state": normalized_state,
                 "finalized_at_ms": self.clock_ms(),
                 "evidence": dict(evidence or {}),
-                "commit_id": f"commit-{uuid.uuid4().hex}",
+                "commit_id": commit_id,
             }
         )
-        # Neo4j commits first. Operational state is only marked finalized after
-        # the durable transaction succeeds, preventing volatile success from
-        # becoming the source of truth.
+        # Durable commit first. A retry produces the same commit_id, allowing
+        # Neo4j MERGE semantics to make replay idempotent.
         result = neo4j_commit(envelope)
         self.upsert(
             kind=record.kind,
             logical_id=record.logical_id,
-            state=final_state,
+            state=normalized_state,
             owner=record.owner,
             epoch=record.epoch,
-            payload={"durable_commit_id": envelope["commit_id"]},
+            payload={"durable_commit_id": commit_id},
             ttl_seconds=60,
         )
         return result
+
+    def _record_parameters(
+        self,
+        *,
+        kind: str,
+        logical_id: str,
+        state: str,
+        payload: Mapping[str, Any] | None,
+        owner: str | None,
+        epoch: int,
+        ttl_seconds: int,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        normalized_kind = str(kind).strip().lower()
+        normalized_id = str(logical_id).strip()
+        normalized_state = str(state).strip().upper()
+        if normalized_kind not in VOLATILE_KINDS:
+            raise ValueError(
+                f"unsupported operational state kind: {normalized_kind}"
+            )
+        if not normalized_id:
+            raise ValueError("logical_id is required")
+        bounded_ttl = max(5, min(int(ttl_seconds), 86_400))
+        now = self.clock_ms()
+        body = {
+            "record_id": _identity(normalized_kind, normalized_id),
+            "kind": normalized_kind,
+            "logical_id": normalized_id,
+            "state": normalized_state,
+            "owner": str(owner) if owner not in (None, "") else None,
+            "epoch": max(0, int(epoch)),
+            "payload": dict(payload or {}),
+            "updated_at_ms": now,
+            "expires_at_ms": now + bounded_ttl * 1000,
+        }
+        checksum = hashlib.sha256(_canonical(body).encode()).hexdigest()
+        params = {
+            **body,
+            "now": now,
+            "payload_json": _canonical(body["payload"]),
+            "checksum": checksum,
+        }
+        return body, params
+
+    def _query(self, query: str, params: Mapping[str, Any]) -> Any:
+        return self.client.execute_command(
+            "GRAPH.QUERY",
+            self.graph,
+            query,
+            "--compact",
+            "PARAMS",
+            _canonical(dict(params)),
+        )
+
+    @staticmethod
+    def _record_from_row(row: list[Any]) -> OperationalRecord:
+        return OperationalRecord(
+            record_id=str(row[0]),
+            kind=str(row[1]),
+            logical_id=str(row[2]),
+            state=str(row[3]),
+            owner=str(row[4]) if row[4] not in (None, "") else None,
+            epoch=int(row[5] or 0),
+            payload=json.loads(str(row[6] or "{}")),
+            created_at_ms=int(row[7] or 0),
+            updated_at_ms=int(row[8] or 0),
+            expires_at_ms=int(row[9] or 0),
+            checksum=str(row[10] or ""),
+        )
 
     @staticmethod
     def _extract_created_at(response: Any, fallback: int) -> int:
