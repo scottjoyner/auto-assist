@@ -124,7 +124,11 @@ class HardenedRecoveryIslandExecutor(RecoveryIslandExecutor):
         if not isinstance(activation, dict):
             return self._outcome(False, "blocked", "missing_recovery_activation")
         epoch_state = self._read_json(self._epoch_path(deployment)) or {}
-        minimum_epoch = int(epoch_state.get("epoch") or 0)
+        active_state = self._read_json(self._active_path(deployment)) or {}
+        minimum_epoch = max(
+            int(epoch_state.get("epoch") or 0),
+            int(active_state.get("epoch") or 0),
+        )
         error = verify_recovery_activation(
             activation,
             self.activation_keys,
