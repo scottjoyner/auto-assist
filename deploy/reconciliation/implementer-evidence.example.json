@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "change_id": "replace-with-change-id",
+  "environment": "isolated-rehearsal",
+  "production_changed": false,
+  "operators": {
+    "integration_implementer": "replace-with-name",
+    "appliance_implementer": "replace-with-name",
+    "primary_operator": "replace-with-name",
+    "witness_or_break_glass_approver": "replace-with-name",
+    "validation_reviewer": "replace-with-name"
+  },
+  "source": {
+    "auto_assist_attested_sha": "74a9f9c386de93e99e7c3f8488db868a31be6db6",
+    "auto_assist_integration_sha": "replace-with-40-character-sha",
+    "fleet_resilience_attested_sha": "f59002a5d91f89e670fe4cd0fe08f08703b08fe2",
+    "fleet_resilience_integration_sha": "replace-with-40-character-sha"
+  },
+  "ci": {
+    "auto_assist_run_id": "replace-with-run-id",
+    "fleet_resilience_run_id": "replace-with-run-id"
+  },
+  "gates": [
+    {
+      "id": "source-integrity",
+      "status": "PASS",
+      "evidence": ["evidence/auto-assist-attested-commit.txt", "evidence/fleet-resilience-attested-commit.txt"],
+      "notes": "Exact source objects resolved and matched the attested SHAs."
+    },
+    {
+      "id": "conflict-review",
+      "status": "PASS",
+      "evidence": ["evidence/conflict-decisions.tsv"],
+      "notes": "Use a file containing 'none' when there were no conflicts."
+    },
+    {
+      "id": "auto-assist-validation",
+      "status": "PASS",
+      "evidence": ["evidence/auto-assist-unit.xml", "evidence/auto-assist-recovery-canary.xml", "evidence/auto-assist-degraded-canary.xml"],
+      "notes": "Full unit suite and both recovery canaries passed on the integration SHA."
+    },
+    {
+      "id": "appliance-validation",
+      "status": "PASS",
+      "evidence": ["evidence/fleet-resilience-actions-run.txt", "evidence/compose-degraded.rendered.yml", "evidence/compose-shadow.rendered.yml"],
+      "notes": "Recovery-island workflow and all Compose renders passed."
+    },
+    {
+      "id": "image-bundle",
+      "status": "PASS",
+      "evidence": ["evidence/image-identities.txt", "evidence/recovery-images.tar.sha256"],
+      "notes": "All required images were digest-pinned and the offline bundle was independently verified."
+    },
+    {
+      "id": "beelink-preflight",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "notes": "Physical gate. Must pass before warm standby installation is accepted."
+    },
+    {
+      "id": "warm-standby-fence",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "notes": "Must prove projection reads and claims return HTTP 423 before activation."
+    },
+    {
+      "id": "signed-snapshot-replication",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "notes": "Must prove the signed projection was verified, cached, and hashed."
+    },
+    {
+      "id": "neo4j-backup-verification",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "notes": "Must prove backup chain, RPO, database identity, and consistency where required."
+    },
+    {
+      "id": "degraded-activation",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "notes": "Requires a separate signed activation envelope and an independent fence proof."
+    },
+    {
+      "id": "heartbeat-delegation",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "notes": "Must prove fresh-heartbeat success and expired or saturated heartbeat rejection."
+    },
+    {
+      "id": "pending-durable-finalization",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "notes": "Must prove Neo4j-unavailable outcomes remain PENDING_DURABLE_COMMIT."
+    },
+    {
+      "id": "memory-shedding",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "notes": "Must prove only an explicitly reviewed optional service is stopped."
+    },
+    {
+      "id": "isolated-neo4j-restore",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "notes": "Must prove shadow mode remains inert and database identity matches."
+    },
+    {
+      "id": "journal-replay",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "notes": "Must prove remaining equals zero and the durable result exists exactly once."
+    },
+    {
+      "id": "primary-return",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "notes": "Must end in RELINQUISHED and reject new degraded coordination writes."
+    },
+    {
+      "id": "rollback",
+      "status": "NOT_RUN",
+      "evidence": [],
+      "notes": "Must prove stop order, volume preservation, and no primary data overwrite."
+    }
+  ],
+  "authorization": {
+    "production_deployment_approved": false,
+    "activation_epoch": 0,
+    "fence_proof_reference": "not-issued",
+    "activation_envelope_sha256": "not-generated"
+  },
+  "evidence_manifest_sha256": "replace-with-64-character-sha256",
+  "review": {
+    "decision": "NO_GO",
+    "reviewed_at_utc": "replace-with-ISO-8601-UTC-time",
+    "reviewer": "replace-with-name",
+    "exceptions": []
+  }
+}
