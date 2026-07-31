@@ -141,7 +141,11 @@ def _start_execution_pollers() -> list[threading.Thread]:
 
     if want_direct:
         try:
-            from .agents.hermes_agent_adapter import run_loop as hermes_run_loop
+            from .agents import hermes_agent_adapter
+            from .strict_executor_adapter import install_strict_executor_adapter
+
+            install_strict_executor_adapter(hermes_agent_adapter)
+            hermes_run_loop = hermes_agent_adapter.run_loop
 
             t = threading.Thread(
                 target=hermes_run_loop,
