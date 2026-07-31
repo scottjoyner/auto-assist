@@ -17,6 +17,9 @@ from .degraded_control_plane import (
     build_degraded_control_router,
     install_degraded_route_fence,
 )
+from .degraded_router_gate import (
+    install_degraded_router_activation_requirements,
+)
 from .executor_security import install_executor_security
 from .overlay_routes import build_overlay_router
 from .passive_agents import build_passive_agent_router
@@ -76,12 +79,13 @@ def _extract_legacy_recovery_execute() -> Callable[..., Any] | None:
 
 # Must run during module import, before the ASGI server enters the app lifespan.
 # Recovery-shadow mode disables normal mutation loops. Degraded mode then adds a
-# narrow HTTP fence; a second fence keeps coordination writes locked until the
-# Beelink verifies the separate signed recovery activation envelope.
+# narrow HTTP fence; a second fence keeps coordination writes and provider
+# projections locked until the Beelink verifies a signed activation envelope.
 install_recovery_shadow_mode(api_module)
 install_control_room_runtime(control_room_module)
 install_strict_offline_projection(router_integration_module)
 install_executor_security(app, _neo, api_module)
+install_degraded_router_activation_requirements()
 install_degraded_route_fence(app)
 install_degraded_activation_fence(
     app,
