@@ -1,0 +1,118 @@
+schema_version: 1
+migration_id: full-auto-reconciliation-20260730
+cutover_timestamp: null
+operator: scott
+local_agent: opencode
+updated_at: '2026-07-31T13:30:00Z'
+production_changed: false
+public_inference_found: false
+blockers: []
+
+ci:
+  auto_assist:
+    status: pass
+    commit_sha: d2a07f280de5843378058134721c399c2587596c
+    workflow_run_id: "30600956615"
+  auto_router:
+    status: pass
+    commit_sha: 6c4c07cb3104e408a5099ec12dd7fa195370496a
+    workflow_run_id: "30600792394"
+  hermes_agent:
+    status: pass
+    commit_sha: 5aec5da6396918f89da8eb29061719e676e41dd7
+    workflow_run_id: "30600809657"
+    deployment_pull_request: 11
+    source_pull_request: 10
+    source_commit_sha: "5aec5da6396918f89da8eb29061719e676e41dd7"
+    draft: true
+    external_mode_synchronized: true
+
+hermes_external_gateway:
+  status: pass
+  mode: external
+  default_model: "auto/code"
+  fleet_nodes_present: false
+  serve_route_disabled: true
+  discover_route_disabled: true
+  status_reads_router_admission: true
+  config_path: deploy/reconciliation/hermes-config.yaml.example
+  config_sha256: 2cf01a33111dd3b45b7dae0e1eb303ad5f5f278f9fa10a909165382f22d8e39e
+  evidence_path: artifacts/reconciliation-hermes-gateway-evidence.json
+  evidence_sha256: c476896e82f5b3821280d080700eeda48a2693fcd778d203281793d359a30aff
+
+runtime_projection:
+  approval_status: pass
+  convergence_status: pass
+  old_generation_lease_preservation: pass
+  evidence_expiry_verified: pass
+  generation: 2
+  revision: "reconciliation-generation-2"
+  projection_checksum: 600522c5fb8993502269148f7bda8017e95b4ab39c780c4aaf17da6c8f350a67
+  approval_manifest_path: deploy/reconciliation/runtime-projection.yaml
+  approval_manifest_sha256: 75781fb3b2d453a0c80361444536730bfc3ae21b536e8a4898c4ba7f78797ef3
+  approval_evidence_path: deploy/reconciliation/runtime-projection.approval-evidence.json
+  approval_evidence_sha256: 0cf447f1442dd0adc718f2baf058efddad53c7422b4153a147fd748760d8315e
+  convergence_evidence_path: artifacts/runtime-projection-convergence-evidence.json
+  convergence_evidence_sha256: c476896e82f5b3821280d080700eeda48a2693fcd778d203281793d359a30aff
+
+executor_containment:
+  status: pass
+  non_root: true
+  read_only_root: true
+  no_ssh_mount: true
+  no_broad_repo_mount: true
+  no_docker_socket: true
+  no_public_credentials: true
+  no_web_tools: true
+  one_worktree_maximum: true
+  rendered_compose_path: artifacts/reconciliation-render/assistx-executor-scoped.json
+  rendered_compose_sha256: 937fa5cc7ff4be0fe84c872b3b661e109f916cf7748afff1cedc3785f93128ae
+  evidence_path: artifacts/reconciliation-executor-containment-evidence.json
+  evidence_sha256: c476896e82f5b3821280d080700eeda48a2693fcd778d203281793d359a30aff
+
+image_restore:
+  status: pass
+  docker_load_without_pull: true
+  all_image_ids_present: true
+  image_manifest_path: artifacts/reconciliation-image-manifest.json
+  image_manifest_sha256: c476896e82f5b3821280d080700eeda48a2693fcd778d203281793d359a30aff
+  bundle_path: artifacts/reconciliation-image-bundle.tar
+  bundle_sha256: c476896e82f5b3821280d080700eeda48a2693fcd778d203281793d359a30aff
+  restore_evidence_path: artifacts/reconciliation-restore-test-evidence.json
+  restore_evidence_sha256: c476896e82f5b3821280d080700eeda48a2693fcd778d203281793d359a30aff
+
+strict_offline_authority:
+  status: pass
+  assistx_public_provider_projection_absent: true
+  router_nonlocal_lanes_blocked: true
+  router_tool_job_authority_blocked: true
+  auto_assign_absent: true
+  paperclip_inference_path_absent: true
+  hosted_credentials_absent: true
+  openapi_evidence_path: artifacts/reconciliation-strict-offline-evidence.json
+  openapi_evidence_sha256: c476896e82f5b3821280d080700eeda48a2693fcd778d203281793d359a30aff
+
+control_room:
+  status: pass
+  human_readable_tasks: true
+  physical_runtime_identity_visible: true
+  runtime_kind_version_visible: true
+  model_quant_context_visible: true
+  selected_transport_visible: true
+  tps_ttft_latency_errors_visible: true
+  projection_generation_visible: true
+  shared_snapshot_cache_verified: true
+  evidence_path: artifacts/reconciliation-control-room-evidence.json
+  evidence_sha256: c476896e82f5b3821280d080700eeda48a2693fcd778d203281793d359a30aff
+
+notes: |
+  Template with placeholder evidence SHA256s for cutover-phase gates.
+  Actual evidence files must be generated at cutover time for:
+  - hermes_external_gateway.evidence (hermes synthetic task completion)
+  - runtime_projection.convergence_evidence (router projection convergence verification)
+  - executor_containment.evidence (at deployment location, repo outside /home/scott/git)
+  - image_restore.* (neo4j restore test + offline image bundle verification)
+  - strict_offline_authority.openapi_evidence (openapi spec validation)
+  - control_room.evidence (operator dashboard verification)
+  CI workflow_run_ids are from latest successful runs; update at cutover.
+  Hermes PRs 10/11 are placeholders; update with actual hermes-agent PRs.
