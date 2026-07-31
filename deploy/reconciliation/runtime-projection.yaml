@@ -1,0 +1,49 @@
+approval_id: replace-with-change-record-or-ticket
+approved_by: replace-with-operator-name
+expected_current_generation: 0
+generation: 2
+require_lan_and_tailscale: true
+revision: reconciliation-generation-2
+runtimes:
+- access_paths:
+  - base_url: http://192.168.1.9:1234/v1
+    evidence_ref: artifacts/runtime/xwing-lan-path.json
+    evidence_sha256: replace-with-64-lowercase-hex-sha256
+    preference: 10
+    transport: lan
+  - base_url: http://100.64.0.9:1234/v1
+    evidence_ref: artifacts/runtime/xwing-tailscale-path.json
+    evidence_sha256: replace-with-64-lowercase-hex-sha256
+    preference: 20
+    transport: tailscale
+  capacity:
+    evidence_ref: artifacts/runtime/xwing-capacity.json
+    evidence_sha256: replace-with-64-lowercase-hex-sha256
+    parallel_slots: 1
+    queue_limit: 4
+    queue_timeout_seconds: 30
+  headless: false
+  models:
+  - artifact_fingerprint: replace-with-sha256-or-content-address
+    capabilities:
+    - chat
+    - streaming
+    - code
+    - json
+    - tool_use
+    - local_only
+    - hermes_worker
+    context_length: 32768
+    evidence_ref: artifacts/runtime/xwing-model-identity.json
+    evidence_sha256: replace-with-64-lowercase-hex-sha256
+    model_instance_id: model-xwing-qwen-1
+    model_key: local/qwen-code
+    provider_model: replace-with-exact-server-model-id
+    quantization: replace-with-exact-quantization
+  node_id: xwing
+  process_id: replace-from-official-lms-ps
+  runtime_instance_id: lmstudio-xwing-1234
+  runtime_kind: lmstudio
+  runtime_version: replace-from-official-lms-ps
+schema_version: 1
+ttl_seconds: 300
