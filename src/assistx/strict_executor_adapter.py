@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
+import subprocess
 import threading
 import time
 from typing import Any
@@ -11,28 +13,49 @@ import requests
 logger = logging.getLogger(__name__)
 
 _PATCH_LOCK = threading.RLock()
-_ENV_LOCK = threading.RLock()
+_CLIENT_LOCK = threading.RLock()
+
+
+def _truthy(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _terminate_process(proc: subprocess.Popen[str], grace_seconds: float = 3.0) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGTERM)
+        else:  # pragma: no cover - production executor is Linux
+            proc.terminate()
+        proc.wait(timeout=max(0.1, grace_seconds))
+        return
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        pass
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:  # pragma: no cover
+            proc.kill()
+    except ProcessLookupError:
+        pass
 
 
 def install_strict_executor_adapter(adapter: Any) -> None:
-    """Replace broad Basic/admin credentials with fenced executor credentials.
+    """Install the claim-scoped Hermes executor contract.
 
-    The bootstrap credential can only poll and claim. After a successful claim,
-    AssistX issues a short-lived task token used for context, heartbeat,
-    completion, and auto-router inference. The patch is installed only when
-    ASSISTX_STRICT_EXECUTOR_AUTH is enabled, which is the production default.
+    Bootstrap credentials can poll and claim only. A successful claim is exchanged
+    for a short-lived task token. The token is supplied only to the Hermes child
+    process and is never written into the worker's global environment. Continuous
+    heartbeats fence execution; lease loss actively terminates the process group and
+    prevents authoritative completion.
     """
 
-    enabled = os.getenv("ASSISTX_STRICT_EXECUTOR_AUTH", "true").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    if not enabled or getattr(adapter, "_strict_executor_auth_installed", False):
+    if not _truthy("ASSISTX_STRICT_EXECUTOR_AUTH", "true"):
+        return
+    if getattr(adapter, "_strict_executor_auth_installed", False):
         return
 
-    original_run_hermes = adapter.run_hermes
     original_self_task_call = adapter.call_self_task_llm
 
     def client_init(self, base_url=adapter.ASSISTX_URL, username=None, password=None):
@@ -50,9 +73,16 @@ def install_strict_executor_adapter(adapter: Any) -> None:
         self._active_task_id = ""
         self._active_claim_id = ""
         self._active_session_id = ""
+        self._active_process: subprocess.Popen[str] | None = None
+        with _CLIENT_LOCK:
+            adapter._strict_executor_client = self
 
     def token_for_path(self, path: str) -> str:
-        if path.startswith("/api/agent/tasks") or path.endswith("/claim") or path.startswith("/api/executor/claims/"):
+        if (
+            path.startswith("/api/agent/tasks")
+            or path.endswith("/claim")
+            or path.startswith("/api/executor/claims/")
+        ):
             return self.bootstrap_token
         return self.task_token
 
@@ -91,10 +121,24 @@ def install_strict_executor_adapter(adapter: Any) -> None:
             timeout=15,
         )
 
+    def mark_lease_lost(self, reason: str) -> None:
+        if self._lease_lost.is_set():
+            return
+        self._lease_lost.set()
+        self._heartbeat_stop.set()
+        proc = self._active_process
+        if proc is not None:
+            _terminate_process(proc)
+        logger.error(
+            "strict executor lease lost task=%s claim=%s reason=%s",
+            self._active_task_id,
+            self._active_claim_id,
+            reason,
+        )
+
     def heartbeat_loop(self) -> None:
-        expiry = int(self.task_claims.get("exp") or 0)
-        remaining = max(30, expiry - int(time.time())) if expiry else 300
-        interval = min(120, max(15, remaining // 3))
+        lease_seconds = max(60, int(os.getenv("HERMES_LEASE_SECONDS", "900")))
+        interval = min(120, max(15, lease_seconds // 3))
         max_failures = max(1, int(os.getenv("HERMES_HEARTBEAT_MAX_FAILURES", "3")))
         while not self._heartbeat_stop.wait(interval):
             try:
@@ -110,13 +154,8 @@ def install_strict_executor_adapter(adapter: Any) -> None:
                     exc,
                 )
                 if self._heartbeat_failures >= max_failures:
-                    self._lease_lost.set()
-                    self._heartbeat_stop.set()
-                    logger.error(
-                        "strict executor lease considered lost task=%s claim=%s",
-                        self._active_task_id,
-                        self._active_claim_id,
-                    )
+                    mark_lease_lost(self, "heartbeat_failure_budget_exhausted")
+                    return
 
     def start_heartbeat(self, task_id: str, session_id: str, claim_id: str) -> None:
         stop_heartbeat(self)
@@ -137,17 +176,15 @@ def install_strict_executor_adapter(adapter: Any) -> None:
 
     def clear_task_credential(self) -> None:
         stop_heartbeat(self)
+        proc = self._active_process
+        if proc is not None and proc.poll() is None:
+            _terminate_process(proc)
+        self._active_process = None
         self.task_token = ""
         self.task_claims = {}
         self._active_task_id = ""
         self._active_claim_id = ""
         self._active_session_id = ""
-        with _ENV_LOCK:
-            os.environ.pop("HERMES_EXECUTOR_TOKEN", None)
-            current = os.environ.get("OPENAI_API_KEY", "")
-            if current and current == getattr(self, "_exported_task_token", ""):
-                os.environ.pop("OPENAI_API_KEY", None)
-            self._exported_task_token = ""
 
     def claim_task(self, task_id: str, session_id: str):
         try:
@@ -178,14 +215,14 @@ def install_strict_executor_adapter(adapter: Any) -> None:
             claims = dict(issued.get("claims") or {})
             if not token:
                 raise RuntimeError("AssistX did not issue an executor task token")
+            if (
+                str(claims.get("task_id") or "") != task_id
+                or str(claims.get("claim_id") or "") != claim_id
+                or str(claims.get("agent_id") or "") != adapter.AGENT_ID
+            ):
+                raise RuntimeError("AssistX issued a token for a different claim identity")
             self.task_token = token
             self.task_claims = claims
-            self._exported_task_token = token
-            with _ENV_LOCK:
-                os.environ["HERMES_EXECUTOR_TOKEN"] = token
-                # Hermes custom/OpenAI-compatible providers conventionally read
-                # OPENAI_API_KEY. This value is task-scoped and removed afterward.
-                os.environ["OPENAI_API_KEY"] = token
             start_heartbeat(self, task_id, session_id, claim_id)
             return result
         except requests.HTTPError as exc:
@@ -258,9 +295,17 @@ def install_strict_executor_adapter(adapter: Any) -> None:
         finally:
             clear_task_credential(self)
 
-    def strict_run_hermes(*args, **kwargs):
-        client_token = os.getenv("HERMES_EXECUTOR_TOKEN", "").strip()
-        if not client_token:
+    def strict_run_hermes(
+        prompt: str,
+        timeout: int | None = None,
+        model: str | None = None,
+        provider: str | None = None,
+        toolsets: str | None = None,
+        cwd: str | None = None,
+    ) -> dict[str, Any]:
+        with _CLIENT_LOCK:
+            client = getattr(adapter, "_strict_executor_client", None)
+        if client is None or not client.task_token:
             return {
                 "success": False,
                 "error": "executor_task_token_missing",
@@ -268,25 +313,132 @@ def install_strict_executor_adapter(adapter: Any) -> None:
                 "session_id": None,
                 "elapsed": 0.0,
             }
-        return original_run_hermes(*args, **kwargs)
+        if client._lease_lost.is_set():
+            return {
+                "success": False,
+                "error": "executor_lease_lost",
+                "output": "",
+                "session_id": None,
+                "elapsed": 0.0,
+            }
+
+        effective_timeout = int(timeout or getattr(adapter, "HERMES_TIMEOUT", 300))
+        cmd = [
+            adapter.HERMES_BIN,
+            "chat",
+            "-q",
+            prompt,
+            "--quiet",
+            "--pass-session-id",
+            "--max-turns",
+            str(max(1, int(os.getenv("HERMES_MAX_TURNS", "20")))),
+        ]
+        selected_model = model or getattr(adapter, "HERMES_MODEL", None)
+        selected_provider = provider or getattr(adapter, "HERMES_PROVIDER", None)
+        if selected_model:
+            cmd += ["-m", selected_model]
+        if selected_provider:
+            cmd += ["--provider", selected_provider]
+
+        env = dict(os.environ)
+        env["HERMES_ACCEPT_HOOKS"] = "1"
+        env["HERMES_EXECUTOR_TOKEN"] = client.task_token
+        env["OPENAI_API_KEY"] = client.task_token
+        for protected_name in (
+            "ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN",
+            "ASSISTX_EXECUTOR_SERVICE_TOKEN",
+            "ASSISTX_EXECUTOR_SIGNING_KEY_FILE",
+            "ASSISTX_EXECUTOR_SIGNING_KEY_PEM",
+            "AUTO_ROUTER_ADMIN_TOKEN",
+            "AUTO_ROUTER_INTERNAL_SERVICE_TOKEN",
+            "ASSISTX_IMPROVEMENT_ATTESTATION_SECRET",
+            "ASSISTX_IMPROVEMENT_VERIFY_KEYS",
+            "ASSISTX_REPOSITORY_ROOTS_JSON",
+            "ASSISTX_IMPROVEMENT_WORKTREE_ROOT",
+        ):
+            env.pop(protected_name, None)
+        if toolsets:
+            env["HERMES_TOOLSETS"] = toolsets
+
+        started = time.monotonic()
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+                cwd=cwd,
+                start_new_session=(os.name == "posix"),
+            )
+        except FileNotFoundError:
+            return {
+                "success": False,
+                "error": "hermes_binary_not_found",
+                "output": "",
+                "session_id": None,
+                "elapsed": 0.0,
+            }
+        client._active_process = proc
+        error = ""
+        while proc.poll() is None:
+            if client._lease_lost.wait(0.25):
+                error = "executor_lease_lost"
+                _terminate_process(proc)
+                break
+            if time.monotonic() - started >= effective_timeout:
+                error = "timeout"
+                _terminate_process(proc)
+                break
+        stdout, stderr = proc.communicate()
+        client._active_process = None
+        elapsed = time.monotonic() - started
+        session_id = None
+        for line in (stdout or "").splitlines():
+            if "session_id:" in line or "Session ID:" in line:
+                parts = line.split(":", 1)
+                if len(parts) == 2:
+                    session_id = parts[1].strip()
+                    break
+        if error:
+            return {
+                "success": False,
+                "error": error,
+                "output": stdout or "",
+                "stderr": stderr or "",
+                "session_id": session_id,
+                "elapsed": elapsed,
+            }
+        if proc.returncode != 0:
+            return {
+                "success": False,
+                "error": f"exit_code_{proc.returncode}",
+                "output": stdout or "",
+                "stderr": stderr or "",
+                "session_id": session_id,
+                "elapsed": elapsed,
+            }
+        return {
+            "success": True,
+            "output": (stdout or "").strip(),
+            "session_id": session_id,
+            "elapsed": elapsed,
+        }
 
     def strict_self_task_call(*args, **kwargs):
-        if os.getenv("HERMES_SELFTASK_ENABLED", "false").strip().lower() not in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }:
+        if not _truthy("HERMES_SELFTASK_ENABLED", "false"):
             return {
                 "success": False,
                 "error": "self_tasks_disabled_in_strict_executor",
                 "output": "",
                 "elapsed": 0.0,
             }
-        if not os.getenv("HERMES_EXECUTOR_TOKEN", "").strip():
+        with _CLIENT_LOCK:
+            client = getattr(adapter, "_strict_executor_client", None)
+        if client is None or not client.task_token or client._lease_lost.is_set():
             return {
                 "success": False,
-                "error": "self_task_requires_claim_scoped_token",
+                "error": "self_task_requires_active_claim",
                 "output": "",
                 "elapsed": 0.0,
             }
