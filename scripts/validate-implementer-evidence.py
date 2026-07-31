@@ -13,6 +13,7 @@ FLEET_RESILIENCE_ATTESTED_SHA = "f59002a5d91f89e670fe4cd0fe08f08703b08fe2"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PLACEHOLDER = re.compile(r"replace-with|<[^>]+>", re.IGNORECASE)
+FENCE_PREFIXES = ("witness:", "manual-break-glass:")
 VALID_STATUS = {"PASS", "FAIL", "NOT_RUN", "BLOCKED"}
 
 INTEGRATION_GATES = {
@@ -151,8 +152,22 @@ def validate(
     if authorization.get("production_deployment_approved") is not False:
         raise EvidenceError("production deployment may not be approved by this handoff")
     epoch = authorization.get("activation_epoch")
-    if stage == "rehearsal" and (not isinstance(epoch, int) or epoch <= 0):
-        raise EvidenceError("rehearsal activation_epoch must be a positive integer")
+    if stage == "rehearsal":
+        if not isinstance(epoch, int) or epoch <= 0:
+            raise EvidenceError("rehearsal activation_epoch must be a positive integer")
+        fence = _text(
+            authorization.get("fence_proof_reference"),
+            "authorization.fence_proof_reference",
+        )
+        if not fence.startswith(FENCE_PREFIXES):
+            raise EvidenceError(
+                "rehearsal fence_proof_reference must use witness: or manual-break-glass:"
+            )
+        _validate_sha(
+            authorization.get("activation_envelope_sha256"),
+            "authorization.activation_envelope_sha256",
+            SHA256,
+        )
 
     manifest_sha = _text(
         document.get("evidence_manifest_sha256"),
