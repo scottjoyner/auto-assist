@@ -8,7 +8,12 @@ from . import router_integration as router_integration_module
 from .api import _neo, app, auth, templates
 from .control_room import LEGACY_UI_PATHS, build_control_room_router
 from .control_room_runtime import install_control_room_runtime
+from .degraded_activation import (
+    build_degraded_activation_router,
+    install_degraded_activation_fence,
+)
 from .degraded_control_plane import (
+    build_default_runtime,
     build_degraded_control_router,
     install_degraded_route_fence,
 )
@@ -71,15 +76,21 @@ def _extract_legacy_recovery_execute() -> Callable[..., Any] | None:
 
 # Must run during module import, before the ASGI server enters the app lifespan.
 # Recovery-shadow mode disables normal mutation loops. Degraded mode then adds a
-# narrower HTTP fence and a FalkorDB-backed coordination API.
+# narrow HTTP fence; a second fence keeps coordination writes locked until the
+# Beelink verifies the separate signed recovery activation envelope.
 install_recovery_shadow_mode(api_module)
 install_control_room_runtime(control_room_module)
 install_strict_offline_projection(router_integration_module)
 install_executor_security(app, _neo, api_module)
 install_degraded_route_fence(app)
+install_degraded_activation_fence(
+    app,
+    lambda: build_default_runtime(_neo),
+)
 _remove_superseded_operator_routes()
 _legacy_recovery_execute = _extract_legacy_recovery_execute()
 app.include_router(build_degraded_control_router(auth, neo_factory=_neo))
+app.include_router(build_degraded_activation_router(auth, neo_factory=_neo))
 app.include_router(build_recovery_mode_router(auth))
 app.include_router(
     build_recovery_island_router(
