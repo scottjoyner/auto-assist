@@ -6,6 +6,7 @@ import time
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .recovery_control import (
@@ -81,6 +82,16 @@ def _island_plan(body: RecoveryIslandRequestIn) -> dict[str, Any]:
     }
 
 
+def _is_island_proposal(proposal: dict[str, Any] | None) -> bool:
+    if not proposal:
+        return False
+    parameters = (proposal.get("plan") or {}).get("parameters")
+    return isinstance(parameters, dict) and isinstance(
+        parameters.get("recovery_island"),
+        dict,
+    )
+
+
 def _find_active_duplicate(
     store: Neo4jRecoveryStore,
     fingerprint: str,
@@ -134,6 +145,7 @@ def build_recovery_island_router(
     neo_factory: Callable[[], Any],
     *,
     auth_dependency: Any,
+    legacy_recovery_execute: Callable[..., Any] | None = None,
 ) -> APIRouter:
     router = APIRouter(tags=["recovery-island"])
 
@@ -144,13 +156,7 @@ def build_recovery_island_router(
             proposals = [
                 item
                 for item in Neo4jRecoveryStore(neo).list(limit=200)
-                if isinstance((item.get("plan") or {}).get("parameters"), dict)
-                and isinstance(
-                    (item.get("plan") or {}).get("parameters", {}).get(
-                        "recovery_island"
-                    ),
-                    dict,
-                )
+                if _is_island_proposal(item)
             ]
             return {
                 "shadow_mode": recovery_shadow_enabled(),
@@ -173,6 +179,7 @@ def build_recovery_island_router(
                     )
                     or {"assistx-shadow"}
                 ),
+                "generic_execute_fenced": True,
                 "proposals": proposals,
             }
         finally:
@@ -254,5 +261,53 @@ def build_recovery_island_router(
             }
         finally:
             neo.close()
+
+    @router.post("/api/fleet/recovery-control/proposals/{proposal_id}/execute")
+    def execute_recovery_proposal(
+        proposal_id: str,
+        user: str = Depends(auth_dependency),
+    ):
+        neo = neo_factory()
+        try:
+            proposal = Neo4jRecoveryStore(neo).get(proposal_id)
+        finally:
+            neo.close()
+        if not proposal:
+            raise HTTPException(status_code=404, detail="recovery proposal not found")
+        if _is_island_proposal(proposal):
+            status = str(proposal.get("status") or "UNKNOWN")
+            if status == "APPROVED":
+                return JSONResponse(
+                    status_code=202,
+                    content={
+                        "executed": False,
+                        "queued_for_dispatch": True,
+                        "proposal_id": proposal_id,
+                        "proposal_status": status,
+                        "dispatch_authority": "recovery-island-dispatcher",
+                    },
+                )
+            if status in {"EXECUTING", "DISPATCHED", "VERIFIED"}:
+                return {
+                    "executed": status in {"DISPATCHED", "VERIFIED"},
+                    "queued_for_dispatch": status == "EXECUTING",
+                    "proposal_id": proposal_id,
+                    "proposal_status": status,
+                    "dispatch_authority": "recovery-island-dispatcher",
+                }
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "island_proposal_not_dispatchable",
+                    "proposal_status": status,
+                    "dispatch_authority": "recovery-island-dispatcher",
+                },
+            )
+        if legacy_recovery_execute is None:
+            raise HTTPException(
+                status_code=503,
+                detail="legacy recovery execution endpoint is unavailable",
+            )
+        return legacy_recovery_execute(proposal_id, user)
 
     return router
