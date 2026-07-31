@@ -45,10 +45,13 @@ services:
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:?set NEO4J_PASSWORD}
       - NEO4J_DATABASE=${NEO4J_DATABASE:-assistx}
       - REDIS_URL=redis://redis:6379/0
+      - ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN=${ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN:?set a dedicated executor bootstrap token}
+      - ASSISTX_EXECUTOR_SIGNING_KEY_FILE=/run/secrets/assistx_executor_private_key.pem
+      - ASSISTX_EXECUTOR_KEY_ID=${ASSISTX_EXECUTOR_KEY_ID:-assistx-executor-v1}
       - AUTO_ROUTER_BASE_URL=http://auto-router-production:8088
       - AUTO_ROUTER_ADMIN_TOKEN=${AUTO_ROUTER_ADMIN_TOKEN:?set AUTO_ROUTER_ADMIN_TOKEN}
       - OPENAI_BASE_URL=http://auto-router-production:8088/v1
-      - OPENAI_API_KEY=local-offline-only
+      - OPENAI_API_KEY=${AUTO_ROUTER_INTERNAL_SERVICE_TOKEN:?set the AssistX-only router inference token}
       - AUTO_ASSIGN_BASE_URL=
       - PAPERCLIP_API_URL=
       - PAPERCLIP_API_TOKEN=
@@ -75,10 +78,12 @@ services:
     extra_hosts: !override []
     networks: !override
       - control
+      - executor
     volumes: !override
       - production_artifacts:/app/artifacts
       - production_cache:/app/.cache
       - production_transcriptions:/app/transcriptions
+      - ${ASSISTX_EXECUTOR_PRIVATE_KEY_FILE:?set ASSISTX_EXECUTOR_PRIVATE_KEY_FILE}:/run/secrets/assistx_executor_private_key.pem:ro
     security_opt:
       - no-new-privileges:true
 
@@ -91,6 +96,8 @@ services:
       - ASSISTX_RUNTIME_PROFILE=production
       - ASSISTX_DEPENDENCY_MODE=production
       - ASSISTX_OVERLAY_MODE=router
+      - ASSISTX_STRICT_EXECUTOR_AUTH=true
+      - ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN=${ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN:?set a dedicated executor bootstrap token}
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USER=${NEO4J_USER:?set NEO4J_USER}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:?set NEO4J_PASSWORD}
@@ -99,9 +106,8 @@ services:
       - ASSISTX_URL=http://api:8000
       - FLEET_ASSISTX_URL=http://api:8000
       - AUTO_ROUTER_BASE_URL=http://auto-router-production:8088
-      - AUTO_ROUTER_ADMIN_TOKEN=${AUTO_ROUTER_ADMIN_TOKEN:?set AUTO_ROUTER_ADMIN_TOKEN}
       - OPENAI_BASE_URL=http://auto-router-production:8088/v1
-      - OPENAI_API_KEY=local-offline-only
+      - OPENAI_API_KEY=${AUTO_ROUTER_INTERNAL_SERVICE_TOKEN:?set the AssistX-only router inference token}
       - AUTO_ASSIGN_BASE_URL=
       - PAPERCLIP_API_URL=
       - PAPERCLIP_API_TOKEN=
@@ -136,6 +142,7 @@ services:
     container_name: assistx-production-hermes
     profiles:
       - executor
+    command: python -m assistx.strict_executor_main
     restart: "no"
     user: "1000:1000"
     read_only: true
@@ -147,17 +154,20 @@ services:
       - /tmp:size=256m,mode=1777
     environment:
       - ASSISTX_URL=http://api:8000
-      - ASSISTX_USER=${BASIC_AUTH_USER:?set BASIC_AUTH_USER}
-      - ASSISTX_PASS=${BASIC_AUTH_PASS:?set BASIC_AUTH_PASS}
+      - ASSISTX_STRICT_EXECUTOR_AUTH=true
+      - ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN=${ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN:?set a dedicated executor bootstrap token}
       - AUTO_ASSIGN_BASE_URL=
       - HERMES_PROVIDER=assistx-router
       - HERMES_LM_BASE_URL=http://auto-router-production:8088/v1
+      - HERMES_MODEL=auto/code
       - HERMES_SELFTASK_ENABLED=false
       - HERMES_MAX_TASKS_PER_LOOP=1
+      - HERMES_HEARTBEAT_MAX_FAILURES=${HERMES_HEARTBEAT_MAX_FAILURES:-3}
       - HERMES_AGENT_CAPABILITIES=terminal,file,code_execution,skills,memory,session_search,clarify,todo
       - HERMES_TOOLSETS=terminal,file,code_execution,skills,memory,session_search,clarify,todo,kg
       - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
       - ASSISTX_TOOL_EGRESS_MODE=disabled
+      - OPENAI_API_KEY=
       - OPENROUTER_API_KEY=
       - GROQ_API_KEY=
       - CEREBRAS_API_KEY=
@@ -167,7 +177,7 @@ services:
       - ANTHROPIC_API_KEY=
     extra_hosts: !override []
     networks: !override
-      - control
+      - executor
     volumes: !override
       - production_hermes_home:/app/hermes-home
       - production_artifacts:/app/artifacts:ro
@@ -175,7 +185,10 @@ services:
 networks:
   control:
     external: true
-    name: ${ASSISTX_PRODUCTION_NETWORK:?set the shared private AssistX/router network}
+    name: ${ASSISTX_PRODUCTION_NETWORK:?set the private AssistX control network}
+  executor:
+    external: true
+    name: ${ASSISTX_EXECUTOR_NETWORK:?set the dedicated AssistX executor network}
 
 volumes:
   production_neo4j_data:
@@ -183,7 +196,7 @@ volumes:
     name: ${ASSISTX_NEO4J_DATA_VOLUME:?set the verified production Neo4j volume}
   production_redis_data:
     external: true
-    name: ${ASSISTX_REDIS_DATA_VOLUME:?set the verified production Redis volume}
+    name: ${ASSISTX_REDIS_DATA_VOLUME:?set the production Redis volume}
   production_artifacts:
     external: true
     name: ${ASSISTX_ARTIFACTS_VOLUME:?set the production artifacts volume}
