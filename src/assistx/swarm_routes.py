@@ -162,6 +162,35 @@ def _default_auth(
     return "system"
 
 
+def _optional_operator_auth(
+    request: Request,
+    credentials: HTTPBasicCredentials | None = Depends(security),
+) -> str | None:
+    """Return an operator identity or defer to signed webhook auth.
+
+    The canonical voice boundary supports the same operator Basic/trusted-header
+    authentication as the rest of AssistX, but a missing or invalid operator
+    credential must not pre-empt raw-body HMAC verification.
+    """
+
+    if _injected_auth_dependency is None:
+        return credentials.username if credentials else None
+    try:
+        return _injected_auth_dependency(request, credentials)
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            return None
+        raise
+
+
+# api.py includes this router before declaring the deprecated voice endpoints.
+# Registering here makes the canonical handlers the first runtime match while
+# preserving temporary import compatibility for the old functions.
+from .voice_routes import register_voice_routes
+
+register_voice_routes(router, _optional_operator_auth)
+
+
 @router.post("/api/events")
 def api_events(body: EventEnvelopeIn, user: str = Depends(_default_auth)):
     # W-05/W-06: enforce a valid (UUID) correlation_id at the boundary. The
@@ -182,28 +211,40 @@ def api_events(body: EventEnvelopeIn, user: str = Depends(_default_auth)):
             }
         )
     except Exception as e:  # pydantic ValidationError
-        raise HTTPException(status_code=422, detail=f"Invalid event envelope: {str(e)[:400]}")
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid event envelope: {str(e)[:400]}",
+        )
     neo = _neo()
     try:
         result = record_event(neo, body.model_dump())
-        # Persist the trace linkage for this envelope (correlation_id guaranteed).
         try:
             record_trace_from_envelope(neo, envelope)
-        except Exception as trace_exc:  # trace is best-effort; never block ingest
-            logger.warning("trace recording skipped for %s: %s", envelope.correlation_id, trace_exc)
+        except Exception as trace_exc:
+            logger.warning(
+                "trace recording skipped for %s: %s",
+                envelope.correlation_id,
+                trace_exc,
+            )
         return result
     except EventValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except EventConflictError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Event processing failed: {str(e)[:200]}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Event processing failed: {str(e)[:200]}",
+        )
     finally:
         neo.close()
 
 
 @router.post("/api/swarm/nodes/register")
-def api_register_node(body: SwarmNodeRegisterIn, user: str = Depends(_default_auth)):
+def api_register_node(
+    body: SwarmNodeRegisterIn,
+    user: str = Depends(_default_auth),
+):
     neo = _neo()
     try:
         return {"node": upsert_swarm_node(neo, body.model_dump(exclude_none=True))}
@@ -212,7 +253,11 @@ def api_register_node(body: SwarmNodeRegisterIn, user: str = Depends(_default_au
 
 
 @router.post("/api/swarm/nodes/{node_id}/heartbeat")
-def api_node_heartbeat(node_id: str, body: SwarmHeartbeatIn, user: str = Depends(_default_auth)):
+def api_node_heartbeat(
+    node_id: str,
+    body: SwarmHeartbeatIn,
+    user: str = Depends(_default_auth),
+):
     neo = _neo()
     try:
         payload = body.model_dump(exclude_none=True)
@@ -250,32 +295,53 @@ def api_list_model_endpoints(user: str = Depends(_default_auth)):
 
 
 @router.post("/api/swarm/model-endpoints/register")
-def api_register_model_endpoint(body: ModelEndpointRegisterIn, user: str = Depends(_default_auth)):
+def api_register_model_endpoint(
+    body: ModelEndpointRegisterIn,
+    user: str = Depends(_default_auth),
+):
     neo = _neo()
     try:
-        return {"endpoint": upsert_model_endpoint(neo, body.model_dump(exclude_none=True))}
+        return {
+            "endpoint": upsert_model_endpoint(
+                neo,
+                body.model_dump(exclude_none=True),
+            )
+        }
     finally:
         neo.close()
 
 
 @router.delete("/api/swarm/model-endpoints/{model_endpoint_id}")
-def api_delete_model_endpoint(model_endpoint_id: str, user: str = Depends(_default_auth)):
+def api_delete_model_endpoint(
+    model_endpoint_id: str,
+    user: str = Depends(_default_auth),
+):
     neo = _neo()
     try:
         result = delete_model_endpoint(neo, model_endpoint_id)
         if not result.get("deleted"):
-            raise HTTPException(status_code=404, detail=result.get("error", "Model endpoint not found"))
+            raise HTTPException(
+                status_code=404,
+                detail=result.get("error", "Model endpoint not found"),
+            )
         return result
     finally:
         neo.close()
 
 
 @router.post("/api/swarm/model-endpoints/{model_endpoint_id}/probe")
-def api_probe_model_endpoint(model_endpoint_id: str, user: str = Depends(_default_auth)):
+def api_probe_model_endpoint(
+    model_endpoint_id: str,
+    user: str = Depends(_default_auth),
+):
     neo = _neo()
     try:
         endpoint = next(
-            (item for item in list_model_endpoints(neo) if item.get("model_endpoint_id") == model_endpoint_id),
+            (
+                item
+                for item in list_model_endpoints(neo)
+                if item.get("model_endpoint_id") == model_endpoint_id
+            ),
             None,
         )
         if endpoint is None:
@@ -286,7 +352,10 @@ def api_probe_model_endpoint(model_endpoint_id: str, user: str = Depends(_defaul
 
 
 @router.post("/api/drafts/generate")
-def api_generate_draft(body: DraftGenerateIn, user: str = Depends(_default_auth)):
+def api_generate_draft(
+    body: DraftGenerateIn,
+    user: str = Depends(_default_auth),
+):
     try:
         return generate_draft(body.prompt, body.max_tokens)
     except DraftModelUnavailable as exc:
@@ -294,10 +363,21 @@ def api_generate_draft(body: DraftGenerateIn, user: str = Depends(_default_auth)
 
 
 @router.post("/api/tasks/{task_id}/fail")
-def api_fail_task(task_id: str, body: TaskFailIn, user: str = Depends(_default_auth)):
+def api_fail_task(
+    task_id: str,
+    body: TaskFailIn,
+    user: str = Depends(_default_auth),
+):
     neo = _neo()
     try:
-        task = fail_task(neo, task_id, body.agent_id, body.error_summary, body.retryable, body.session_id)
+        task = fail_task(
+            neo,
+            task_id,
+            body.agent_id,
+            body.error_summary,
+            body.retryable,
+            body.session_id,
+        )
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
         return {"task": task}
@@ -306,7 +386,10 @@ def api_fail_task(task_id: str, body: TaskFailIn, user: str = Depends(_default_a
 
 
 @router.post("/api/tasks/leases/release-expired")
-def api_release_expired_leases(body: LeaseSweepIn, user: str = Depends(_default_auth)):
+def api_release_expired_leases(
+    body: LeaseSweepIn,
+    user: str = Depends(_default_auth),
+):
     neo = _neo()
     try:
         return {"released": release_expired_task_leases(neo, now_ms=body.now_ms)}
@@ -320,35 +403,57 @@ def api_outbox_status(user: str = Depends(_default_auth)):
 
 
 @router.post("/api/swarm/outbox/flush")
-def api_outbox_flush(max_attempts: Optional[int] = None, user: str = Depends(_default_auth)):
+def api_outbox_flush(
+    max_attempts: Optional[int] = None,
+    user: str = Depends(_default_auth),
+):
     delivered = _outbox().flush(max_attempts=max_attempts or 10)
     return {"flushed": delivered, "remaining": _outbox().get_stats()}
 
 
 @router.get("/api/policy/voice-action")
-def api_voice_policy(auth_state: str, action: str = "create_draft_task", risk_level: str = "low", user: str = Depends(_default_auth)):
+def api_voice_policy(
+    auth_state: str,
+    action: str = "create_draft_task",
+    risk_level: str = "low",
+    user: str = Depends(_default_auth),
+):
     return {
         "auth_state": auth_state,
         "action": action,
         "risk_level": risk_level,
-        "approval_required": action_requires_approval(auth_state, action, risk_level),
+        "approval_required": action_requires_approval(
+            auth_state,
+            action,
+            risk_level,
+        ),
     }
 
 
 @router.get("/api/traces/{correlation_id}")
-def api_get_trace(correlation_id: str, user: str = Depends(_default_auth)):
+def api_get_trace(
+    correlation_id: str,
+    user: str = Depends(_default_auth),
+):
     neo = _neo()
     try:
         trace = get_trace(neo, correlation_id)
         if trace is None:
-            raise HTTPException(status_code=404, detail=f"No trace found for correlation_id={correlation_id}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"No trace found for correlation_id={correlation_id}",
+            )
         return trace
     finally:
         neo.close()
 
 
 @router.post("/api/traces/{correlation_id}/events")
-def api_record_trace_event(correlation_id: str, body: Dict[str, Any], user: str = Depends(_default_auth)):
+def api_record_trace_event(
+    correlation_id: str,
+    body: Dict[str, Any],
+    user: str = Depends(_default_auth),
+):
     neo = _neo()
     try:
         event_id = record_trace_event(
