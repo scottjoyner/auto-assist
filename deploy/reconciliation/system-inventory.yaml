@@ -1,0 +1,353 @@
+schema_version: 1
+inventory_id: full-auto-reconciliation-20260730
+created_at: "2026-07-30T18:21:00Z"
+status: migration_seed_not_live_truth
+branch: full-auto-reconciliation-20260730
+
+operating_assumptions:
+  current_stack_is_running: true
+  migration_style: side_by_side_then_controlled_cutover
+  public_inference_allowed: false
+  autonomous_model_loading_allowed: false
+  destructive_actions_allowed_during_shadow_phase: false
+  note: >-
+    This inventory is a migration seed. A local agent must replace every observed_* field
+    from live probes before using it for admission, routing, recovery, or cutover.
+
+authority:
+  durable_control_plane: auto-assist
+  durable_database: neo4j
+  inference_gateway: auto-router
+  primary_executor: hermes-agent
+  secondary_executor: opencode
+  desired_state_repository: fleet-llm-profiles
+  benchmark_probe_repository: lms
+  assignment_authority: auto-assist
+  recovery_authority: auto-assist
+  runtime_process_authority: physical_node_adapter
+
+repositories:
+  required:
+    - name: auto-assist
+      default_branch: main
+      migration_branch: full-auto-reconciliation-20260730
+      role: canonical control plane, graph schema, allocation, claims, leases, recovery, operations UI
+    - name: auto-router
+      default_branch: main
+      migration_branch: full-auto-reconciliation-20260730
+      role: strict-offline OpenAI-compatible gateway and admission-control seam
+    - name: hermes-agent
+      default_branch: main
+      migration_branch: full-auto-reconciliation-20260730
+      role: primary claimed-task executor
+    - name: fleet-llm-profiles
+      default_branch: master
+      migration_branch: full-auto-reconciliation-20260730
+      role: desired runtime profiles, hardware constraints, rollback and benchmark references
+    - name: lms
+      default_branch: main
+      migration_branch: full-auto-reconciliation-20260730
+      role: official LM Studio CLI bridge, physical-host loaded-process probes and deterministic benchmarks
+  workload_integrations:
+    - name: ai-research-vault
+      default_branch: master
+      migration_branch: full-auto-reconciliation-20260730
+      role: offline research workload consuming an assigned endpoint and model alias
+  superseded_or_absorb:
+    - name: auto-assign
+      action: do_not_run
+      absorb_into: auto-assist
+      preserve: tests, event fixtures, historical decisions
+    - name: fleet-inference-configs
+      action: freeze_deployments
+      absorb_into: fleet-llm-profiles
+      preserve: proven launchers, backend flags, benchmark evidence and failure notes
+    - name: fleet-resilience
+      action: do_not_run_as_recovery_authority
+      absorb_into: auto-assist
+      preserve: read-only probes, fixtures and diagnosis tests
+
+host_prerequisites:
+  required_commands:
+    - git
+    - docker
+    - curl
+    - jq
+    - python3
+    - ss
+  required_versions:
+    docker_compose: ">=2.24.4"
+    python: ">=3.12"
+  required_platform_services:
+    - docker_engine
+    - tailscale_or_equivalent_private_network
+    - ssh_client
+  lmstudio_hosts:
+    required_commands:
+      - lms
+    command_owner: official_lm_studio_cli
+    benchmark_cli: lms-agent
+  recommended:
+    - systemd
+    - rsync
+    - sha256sum
+    - timeout
+
+network_policy:
+  allowed_endpoint_classes:
+    - loopback
+    - rfc1918_lan
+    - tailscale_100.64.0.0/10
+    - approved_magicdns
+    - unix_socket
+  denied_endpoint_classes:
+    - public_inference_https
+    - provider_requiring_external_api_key
+    - broker_gateway_with_public_egress
+    - unresolved_physical_runtime
+  forbidden_provider_names:
+    - groq
+    - cerebras
+    - openrouter
+    - grok
+    - xai
+    - gemini
+    - anthropic
+    - mistral_cloud
+    - cloudflare_ai
+  operator_exception_policy: no_runtime_exception_on_this_branch
+
+ports:
+  existing_production:
+    discovery_required: true
+    warning: Do not assume these defaults; capture docker and socket state first.
+    common_defaults:
+      assistx_api: 8000
+      auto_router: 8088
+      auto_assign_legacy: 8090
+      neo4j_bolt: 7687
+      neo4j_http: 7474
+      lmstudio_openai: 1234
+  reconciliation_shadow:
+    bind_scope: loopback_only
+    assistx_api: 18000
+    auto_router: 18088
+    neo4j_bolt: 17687
+    neo4j_http: 17474
+    redis: internal_only
+
+services:
+  reconciliation_required:
+    - id: reconciliation-neo4j
+      owner: auto-assist
+      image_or_runtime: neo4j:5-community
+      state: isolated_named_volume
+      health: cypher_shell_return_1
+      mutation_policy: isolated_canary_only
+    - id: reconciliation-redis
+      owner: auto-assist
+      image_or_runtime: redis:7-alpine
+      state: disposable_queue_state
+      health: redis_ping
+    - id: reconciliation-assistx-api
+      owner: auto-assist
+      listen: 127.0.0.1:18000
+      dependencies: [reconciliation-neo4j, reconciliation-redis]
+      health: /health
+      required_flags:
+        ASSISTX_OVERLAY_MODE: router
+        ASSISTX_RECOVERY_EXECUTION_ENABLED: "false"
+        ASSISTX_REPO_TASK_GENERATOR_ENABLED: "false"
+        ASSISTX_REPO_TASK_AUTO_READY: "false"
+        FLEET_UNSAFE_SHELL_TASKS_ENABLED: "false"
+    - id: reconciliation-assistx-worker
+      owner: auto-assist
+      dependencies: [reconciliation-assistx-api, reconciliation-redis]
+      health: worker_health_endpoint
+      required_flags:
+        WORKER_CONCURRENCY: "1"
+        ASSISTX_OVERLAY_MODE: router
+    - id: reconciliation-auto-router
+      owner: auto-router
+      listen: 127.0.0.1:18088
+      dependencies: [reconciliation-assistx-api]
+      health: /health
+      required_flags:
+        AUTO_ROUTER_STRICT_OFFLINE: "true"
+        AUTO_ROUTER_AUTOLOAD_ENABLED: "false"
+        AUTO_ROUTER_PLACEMENT_UNLOAD: "false"
+        AUTO_ROUTER_FLEET_DISPATCHER_ENABLED: "false"
+    - id: reconciliation-router-redis
+      owner: auto-router
+      state: isolated_or_disposable
+      health: redis_ping
+  gated_until_shadow_passes:
+    - id: reconciliation-hermes-adapter
+      owner: auto-assist_and_hermes-agent
+      activation: explicit_compose_profile_executor
+      restrictions:
+        - synthetic_tasks_only
+        - one_task_per_loop
+        - no_self_task_generation
+        - no_model_load_or_unload
+        - no_repo_promotion
+    - id: opencode
+      activation: operator_opt_in
+      priority: lower_than_hermes
+      role: executor_only
+  prohibited:
+    - id: auto-assign
+      reason: duplicate assignment, lease and heartbeat authority
+    - id: fleet-medic-remediation-daemon
+      reason: duplicate recovery authority
+    - id: router-autoload-controller
+      reason: model loading must be a typed AssistX action against a resolved physical runtime
+    - id: public-provider-sidecar
+      reason: strict offline deployment
+
+persistent_state:
+  production_preserve:
+    - neo4j_database
+    - assistx_artifacts
+    - task_and_trace_evidence
+    - runtime_profiles
+    - benchmark_results
+    - hermes_home
+    - operator_secrets
+  shadow_isolate:
+    - reconciliation_neo4j_volume
+    - reconciliation_router_data
+    - reconciliation_assistx_cache
+    - reconciliation_artifacts
+  non_authoritative_and_rebuildable:
+    - auto_router_sqlite
+    - auto_assign_sqlite
+    - fleet_resilience_sqlite
+    - benchmark_generated_routing_rules
+  secret_classes:
+    - neo4j_credentials
+    - assistx_basic_auth
+    - node_tokens
+    - runbook_signing_keys
+    - improvement_attestation_keys
+    - ssh_private_keys
+  secret_rules:
+    - never_commit
+    - mode_0600
+    - never_capture_values_in_evidence
+    - separate_shadow_and_production_keys
+
+runtime_identity_contract:
+  required_fields:
+    - observer_node_id
+    - access_url
+    - transport
+    - runtime_node_id
+    - runtime_instance_id
+    - runtime_kind
+    - model_instance_id
+    - model_key
+    - quantization
+    - loaded
+    - load_owner
+    - parallel_slots
+    - active_requests
+    - completion_probe_ok
+    - observed_at
+    - expires_at
+    - source_kind
+  forbidden_identity_shortcuts:
+    - access_url_as_runtime_identity
+    - localhost_as_physical_owner
+    - v1_models_as_proof_of_process_ownership
+    - static_yaml_as_fresh_loaded_state
+
+runtime_seed:
+  source: fleet-llm-profiles/fleet-manifest.yaml_and_profile_docs
+  freshness: verify_live_before_use
+  nodes:
+    - node_id: x1-370
+      expected_role: primary_control_host_and_lmstudio_runtime
+      migration_policy: first_shadow_candidate
+      expected_access: host.docker.internal:1234
+      admission: require_official_lms_ps_and_completion_canary
+    - node_id: xwing
+      expected_role: heavy_worker
+      migration_policy: observe_only_until_operator_clears_frozen_workload
+      admission: disabled_by_default
+    - node_id: deathstar-XPS-8920
+      expected_role: amd_polaris_vulkan_worker
+      migration_policy: verify_current_runtime_kind_before_use
+      admission: require_sustained_canary_and_slot_count
+    - node_id: beelink-ryzen-7-mini-pc
+      expected_role: amd_vega_worker
+      migration_policy: quarantined
+      reason: documented single-slot instability under concurrent routing load
+    - node_id: destroyer
+      expected_role: intel_uhd_worker
+      migration_policy: verify_live_runtime_and_model_processes
+      admission: disabled_until_completion_and_concurrency_canary
+    - node_id: joyner
+      expected_role: lmstudio_worker
+      migration_policy: pending_auth_and_physical_inventory
+      admission: disabled
+    - node_id: scott-lenovo-ideapad-330s-15ikb
+      expected_role: weak_cpu_worker
+      migration_policy: excluded_from_generation_routing
+      reason: documented unusably slow fallback path
+    - node_id: scott-optiplex-9030-aio
+      expected_role: lightweight_worker
+      migration_policy: offline_or_unverified
+      admission: disabled
+    - node_id: scotts-macbook-air
+      expected_role: fast_personal_lmstudio_node
+      migration_policy: explicit_operator_opt_in_only
+      admission: disabled_in_initial_shadow
+    - node_id: raspberrypi
+      expected_role: watcher_only
+      migration_policy: never_inference
+
+required_evidence:
+  baseline:
+    - docker_compose_projects
+    - running_container_names_images_ports
+    - listening_sockets
+    - tailscale_peer_snapshot
+    - current_health_responses
+    - current_git_revisions
+    - current_runtime_process_inventory_per_physical_host
+  shadow:
+    - rendered_compose_without_secret_values
+    - strict_offline_validation
+    - one_unique_record_per_loaded_model_instance
+    - synthetic_completion_canary
+    - one_slot_concurrency_proof
+    - restart_and_state_rebuild_proof
+    - rollback_proof
+  cutover:
+    - queue_drained_or_checkpointed
+    - intake_frozen
+    - production_state_backup_or_snapshot
+    - old_stack_restart_commands_recorded
+    - new_stack_health_and_task_canary
+    - client_endpoint_switch_recorded
+
+cutover_gates:
+  - operator_approves_exact_production_compose_render
+  - operator_approves_backup_evidence
+  - zero_public_provider_findings
+  - zero_unresolved_runtime_owners
+  - zero_unknown_capacity_admitted_endpoints
+  - synthetic_hermes_task_passes
+  - rollback_rehearsal_passes
+
+rollback_policy:
+  trigger_conditions:
+    - duplicate_runtime_identity
+    - public_provider_visible_or_called
+    - queue_or_claim_corruption
+    - one_slot_concurrency_violation
+    - wrong_host_load_unload_or_restart_target
+    - production_health_regression
+  action: stop_new_stack_restore_old_compose_and_environment_restart_old_services
+  preserve_forensics: true

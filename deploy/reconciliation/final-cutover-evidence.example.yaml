@@ -1,0 +1,106 @@
+schema_version: 1
+migration_id: full-auto-reconciliation-20260730
+updated_at: null
+operator: null
+production_changed: false
+public_inference_found: false
+
+ci:
+  auto_assist:
+    status: not_run
+    commit_sha: null
+    workflow_run_id: null
+  auto_router:
+    status: not_run
+    commit_sha: null
+    workflow_run_id: null
+  hermes_agent:
+    status: not_run
+    commit_sha: null
+    workflow_run_id: null
+    deployment_pull_request: 11
+    source_pull_request: 10
+    source_commit_sha: null
+    external_mode_synchronized: unknown
+    draft: true
+
+hermes_external_gateway:
+  status: not_run
+  config_path: artifacts/reconciliation-hermes-home/config.yaml
+  config_sha256: null
+  mode: external
+  default_model: auto/code
+  fleet_nodes_present: unknown
+  serve_route_disabled: unknown
+  discover_route_disabled: unknown
+  status_reads_router_admission: unknown
+  evidence_path: null
+  evidence_sha256: null
+
+runtime_projection:
+  approval_status: not_run
+  convergence_status: not_run
+  generation: null
+  revision: null
+  projection_checksum: null
+  approval_manifest_path: deploy/reconciliation/runtime-projection.yaml
+  approval_manifest_sha256: null
+  approval_evidence_path: null
+  approval_evidence_sha256: null
+  convergence_evidence_path: artifacts/runtime-projection-evidence.json
+  convergence_evidence_sha256: null
+  old_generation_lease_preservation: not_run
+  evidence_expiry_verified: not_run
+
+executor_containment:
+  status: not_run
+  rendered_compose_path: artifacts/reconciliation-render/assistx-executor.json
+  rendered_compose_sha256: null
+  evidence_path: null
+  evidence_sha256: null
+  non_root: unknown
+  read_only_root: unknown
+  no_ssh_mount: unknown
+  no_broad_repo_mount: unknown
+  no_docker_socket: unknown
+  no_public_credentials: unknown
+  no_web_tools: unknown
+  one_worktree_maximum: unknown
+
+image_restore:
+  status: not_run
+  image_manifest_path: artifacts/reconciliation-images/reconciliation-images.manifest.json
+  image_manifest_sha256: null
+  bundle_path: artifacts/reconciliation-images/reconciliation-images.tar
+  bundle_sha256: null
+  restore_evidence_path: artifacts/reconciliation-images/reconciliation-images.restore-evidence.json
+  restore_evidence_sha256: null
+  docker_load_without_pull: unknown
+  all_image_ids_present: unknown
+
+strict_offline_authority:
+  status: not_run
+  assistx_public_provider_projection_absent: unknown
+  router_nonlocal_lanes_blocked: unknown
+  router_tool_job_authority_blocked: unknown
+  auto_assign_absent: unknown
+  paperclip_inference_path_absent: unknown
+  hosted_credentials_absent: unknown
+  openapi_evidence_path: null
+  openapi_evidence_sha256: null
+
+control_room:
+  status: not_run
+  human_readable_tasks: unknown
+  physical_runtime_identity_visible: unknown
+  runtime_kind_version_visible: unknown
+  model_quant_context_visible: unknown
+  selected_transport_visible: unknown
+  tps_ttft_latency_errors_visible: unknown
+  projection_generation_visible: unknown
+  shared_snapshot_cache_verified: unknown
+  evidence_path: null
+  evidence_sha256: null
+
+blockers: []
+notes: []

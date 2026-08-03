@@ -1,0 +1,199 @@
+schema_version: 1
+migration_id: full-auto-reconciliation-20260730
+status: not_started
+updated_at: null
+operator: null
+local_agent: null
+production_changed: false
+public_inference_found: unknown
+
+repositories:
+  auto-assist:
+    path: /home/scott/git/reconciliation-20260730/auto-assist
+    commit_sha: null
+    branch: full-auto-reconciliation-20260730
+    clean: unknown
+  auto-router:
+    path: /home/scott/git/reconciliation-20260730/auto-router
+    commit_sha: null
+    branch: full-auto-reconciliation-20260730
+    clean: unknown
+  hermes-agent:
+    path: /home/scott/git/reconciliation-20260730/hermes-agent
+    commit_sha: null
+    branch: full-auto-reconciliation-20260730
+    clean: unknown
+  fleet-llm-profiles:
+    path: /home/scott/git/reconciliation-20260730/fleet-llm-profiles
+    commit_sha: null
+    branch: full-auto-reconciliation-20260730
+    clean: unknown
+  lms:
+    path: /home/scott/git/reconciliation-20260730/lms
+    commit_sha: null
+    branch: full-auto-reconciliation-20260730
+    clean: unknown
+
+baseline:
+  captured: false
+  evidence_path: null
+  evidence_sha256_path: null
+  captured_at: null
+  production_compose_projects: []
+  production_restart_commands_recorded: false
+  listening_ports_reviewed: false
+  tailscale_snapshot_reviewed: false
+  runtime_process_inventory_reviewed: false
+  tailnet_candidate_inventory_path: null
+  tailnet_candidate_inventory_sha256_path: null
+  lan_runtime_map_path: null
+  lan_runtime_map_sha256_path: null
+
+production_state:
+  neo4j:
+    deployment_kind: unknown
+    version: null
+    database: null
+    volume_or_path: null
+    backup_method: null
+    backup_path: null
+    backup_checksum: null
+    backup_created_at: null
+    restore_command_recorded: false
+    restore_test: not_run
+  assistx:
+    project: null
+    revision: null
+    health: unknown
+  router:
+    project: null
+    revision: null
+    health: unknown
+  auto_assign:
+    project: null
+    running: unknown
+    restart_disabled_for_cutover: false
+  executors:
+    running: []
+    pause_commands_recorded: false
+
+shadow:
+  environment_file: deploy/reconciliation.env
+  compose_render_assistx: null
+  compose_render_router: null
+  compose_checksums_recorded: false
+  isolated_project: false
+  isolated_network: false
+  isolated_neo4j: false
+  isolated_redis: false
+  loopback_only: false
+  assistx_health: unknown
+  router_health: unknown
+  hermes_running: false
+
+runtimes: []
+# Example runtime record:
+# - runtime_node_id: xwing
+#   observer_node_id: control-host
+#   runtime_instance_id: lmstudio:xwing:1234
+#   runtime_kind: lmstudio
+#   runtime_version: null
+#   model_instance_id: null
+#   model_key: refinedtoolcallv5-3b
+#   artifact_fingerprint: null
+#   quantization: null
+#   context_length: 32768
+#   loaded: true
+#   load_owner: operator
+#   parallel_slots: 1
+#   active_requests_observed: 0
+#   access_paths:
+#     - base_url: http://192.168.1.51:1234/v1
+#       transport: lan
+#       priority: 10
+#       reachability_probe: pass
+#       evidence_path: artifacts/runtime-paths/xwing-lan.txt
+#     - base_url: http://100.90.80.70:1234/v1
+#       transport: tailscale
+#       priority: 100
+#       reachability_probe: pass
+#       evidence_path: artifacts/runtime-paths/xwing-tailscale.txt
+#   selected_access_url: http://192.168.1.51:1234/v1
+#   selected_transport: lan
+#   lan_preference_probe: pass
+#   tailscale_fallback_probe: pass
+#   shared_admission_probe: pass
+#   completion_probe: pass
+#   sequential_stability_probe: pass
+#   concurrency_probe: not_run
+#   cancellation_probe: not_run
+#   benchmark_run_id: null
+#   observed_at: null
+#   expires_at: null
+#   source_kind: official_lms_ps
+#   disposition: shadow_candidate
+#   admitted: false
+#   quarantine_reason: null
+
+checks:
+  preflight_script: not_run
+  assistx_ci: pass
+  router_ci: pass
+  compose_render: not_run
+  strict_offline_verifier: not_run
+  tailnet_discovery: not_run
+  container_network_paths: not_run
+  lan_tailscale_failover: not_run
+  direct_completion: not_run
+  routed_completion: not_run
+  runtime_identity: not_run
+  slot_capacity: not_run
+  cancellation_safety: not_run
+  state_authority: not_run
+  restart_rebuild: not_run
+  hermes_synthetic_task: not_run
+  rollback_rehearsal: not_run
+  neo4j_backup: not_run
+  neo4j_restore_test: not_run
+
+approvals:
+  shadow_start:
+    required: false
+    approved_by: null
+    approved_at: null
+  hermes_shadow_executor:
+    required: true
+    approved_by: null
+    approved_at: null
+  production_backup:
+    required: true
+    approved_by: null
+    approved_at: null
+  production_cutover:
+    required: true
+    approved_by: null
+    approved_at: null
+  destructive_cleanup:
+    required: true
+    approved_by: null
+    approved_at: null
+
+cutover:
+  recommended: false
+  maintenance_window: null
+  client_switch_plan_recorded: false
+  old_stack_restart_plan_recorded: false
+  rollback_thresholds_recorded: false
+  exact_commands_evidence_path: null
+  completed_at: null
+
+rollback:
+  rehearsed: false
+  exact_commands_evidence_path: null
+  old_stack_health_after_rehearsal: unknown
+  triggered: false
+  reason: null
+  completed_at: null
+
+blockers: []
+notes: []

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="legacy-page-alias" content="Fleet view">
+  <title>AssistX // Fleet Control Room</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='css/control_room.css') }}">
+</head>
+<body>
+  <div class="control-shell">
+    <header class="topbar">
+      <div class="identity">
+        <span class="prompt-mark">&gt;_</span>
+        <div>
+          <h1>ASSISTX FLEET CONTROL ROOM</h1>
+          <p>physical runtimes // local inference // execution telemetry</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span id="stream-state" class="state state-unknown">CONNECTING</span>
+        <span id="data-age" class="mono">age --</span>
+        <button id="manual-refresh" type="button">REFRESH</button>
+      </div>
+    </header>
+
+    <nav class="command-nav" aria-label="Operator navigation">
+      <a class="active" href="/control-room">CONTROL ROOM</a>
+      <a href="/tasks/ready">TASKS</a>
+      <a href="/review">APPROVALS</a>
+      <a href="#dependencies">DEPENDENCIES</a>
+      <a href="/metrics">METRICS</a>
+    </nav>
+
+    <main>
+      <section id="summary-strip" class="summary-strip" aria-label="Fleet summary">
+        <div class="summary-cell"><span>FLEET</span><strong id="summary-fleet">--</strong><small id="summary-fleet-note">runtimes</small></div>
+        <div class="summary-cell"><span>INFERENCE</span><strong id="summary-inference">LOCAL</strong><small>strict offline</small></div>
+        <div class="summary-cell"><span>REQUESTS</span><strong id="summary-requests">--</strong><small id="summary-queue">-- queued</small></div>
+        <div class="summary-cell"><span>CAPACITY</span><strong id="summary-capacity">--</strong><small>slots free</small></div>
+        <div class="summary-cell"><span>MODELS</span><strong id="summary-models">--</strong><small>loaded</small></div>
+        <div class="summary-cell"><span>THROUGHPUT</span><strong id="summary-tps">--</strong><small>tokens / second</small></div>
+        <div class="summary-cell"><span>ERRORS</span><strong id="summary-errors">--</strong><small>observed</small></div>
+        <div class="summary-cell"><span>DEPENDENCIES</span><strong id="summary-dependencies">--</strong><small>required failures</small></div>
+      </section>
+
+      <section class="panel panel-runtimes">
+        <div class="panel-head">
+          <div><span class="panel-index">01</span><h2>PHYSICAL RUNTIMES</h2></div>
+          <p>One row per process identity. LAN and Tailscale paths share the same slot counter.</p>
+        </div>
+        <div class="table-frame">
+          <table class="data-table runtime-table">
+            <thead>
+              <tr>
+                <th>NODE</th><th>RUNTIME</th><th>MODE</th><th>LOADED MODEL</th><th>PATH</th><th>SLOTS</th><th>QUEUE</th><th>STATUS</th>
+              </tr>
+            </thead>
+            <tbody id="runtime-body"><tr><td colspan="8" class="empty">WAITING FOR RUNTIME TELEMETRY</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="two-column">
+        <section id="dependencies" class="panel">
+          <div class="panel-head">
+            <div><span class="panel-index">02</span><h2>DEPENDENCIES</h2></div>
+            <p>Required services, private network, mounts, executors, and policy state.</p>
+          </div>
+          <div id="dependency-grid" class="dependency-grid"><div class="empty">PROBING DEPENDENCIES</div></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div><span class="panel-index">03</span><h2>MODEL PERFORMANCE</h2></div>
+            <p>Measured outcomes from the fleet performance ledger.</p>
+          </div>
+          <div class="table-frame compact">
+            <table class="data-table">
+              <thead><tr><th>MODEL</th><th>NODE</th><th>RUNS</th><th>TPS</th><th>TTFT</th><th>LATENCY</th><th>ERROR</th><th>QUALITY</th></tr></thead>
+              <tbody id="performance-body"><tr><td colspan="8" class="empty">NO PERFORMANCE SAMPLES</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <section class="panel activity-panel">
+        <div class="panel-head">
+          <div><span class="panel-index">04</span><h2>LIVE EXECUTION FEED</h2></div>
+          <div class="activity-controls">
+            <label><input id="only-active" type="checkbox"> ACTIVE ONLY</label>
+            <span id="activity-count" class="mono">0 events</span>
+          </div>
+        </div>
+        <div id="activity-feed" class="activity-feed"><div class="empty">WAITING FOR FLEET ACTIVITY</div></div>
+      </section>
+    </main>
+
+    <footer>
+      <span>AssistX authority: Neo4j</span>
+      <span>Routing: strict-offline auto-router</span>
+      <span>Executor mutation: operator-gated</span>
+      <span id="collected-at">snapshot --</span>
+    </footer>
+  </div>
+
+  <template id="runtime-detail-template">
+    <tr class="runtime-detail"><td colspan="8"><pre></pre></td></tr>
+  </template>
+  <script src="{{ url_for('static', path='js/control_room.js') }}"></script>
+</body>
+</html>

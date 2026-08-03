@@ -1,0 +1,20 @@
+# Optional overlay for one explicitly approved repository task.
+# Copy to an ignored local file, replace every required variable, render it, and
+# record its checksum before enabling the executor profile. Never mount the entire
+# git root, SSH directory, SSD, NAS, Docker socket, or unrelated repositories.
+services:
+  hermes-adapter:
+    environment:
+      - HERMES_TASK_SCOPE_ID=${HERMES_TASK_SCOPE_ID:?set the approved task id}
+      - HERMES_ALLOWED_REPOSITORY=${HERMES_ALLOWED_REPOSITORY:?set repository name}
+      - HERMES_ALLOWED_WORKTREE=/worktree
+      - HERMES_REPOSITORY_MUTATION_ENABLED=${HERMES_REPOSITORY_MUTATION_ENABLED:-false}
+      - HERMES_NETWORK_SCOPE=${HERMES_NETWORK_SCOPE:-private-only}
+    volumes: !override
+      - production_hermes_home:/app/hermes-home
+      - production_artifacts:/app/artifacts
+      - ${HERMES_APPROVED_WORKTREE:?set one exact approved worktree path}:/worktree:rw
+    working_dir: /worktree
+
+# SSH access requires a separate recovery overlay with an operator-approved key,
+# host allowlist, typed action, and rollback plan. It is intentionally absent here.

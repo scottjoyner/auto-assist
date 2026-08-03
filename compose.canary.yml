@@ -53,6 +53,7 @@ services:
     container_name: assistx-canary-hermes-adapter
     restart: "no"
     environment:
+      - AUTO_ASSIGN_BASE_URL=
       - HERMES_SELFTASK_ENABLED=false
       - HERMES_MAX_TASKS_PER_LOOP=1
       - FLEET_UNSAFE_SHELL_TASKS_ENABLED=false
