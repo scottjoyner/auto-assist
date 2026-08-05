@@ -7,6 +7,7 @@ on:
       - "src/assistx/runtime_projection.py"
       - "src/assistx/runtime_projection_v2.py"
       - "scripts/verify-runtime-projection-cross-repo.py"
+      - "tests/contracts/fleet-llm-profiles-bfe57f9b.contract.json"
       - ".github/workflows/cross-repository-runtime-contract.yml"
   push:
     branches: [main]
@@ -15,6 +16,7 @@ on:
       - "src/assistx/runtime_projection.py"
       - "src/assistx/runtime_projection_v2.py"
       - "scripts/verify-runtime-projection-cross-repo.py"
+      - "tests/contracts/fleet-llm-profiles-bfe57f9b.contract.json"
       - ".github/workflows/cross-repository-runtime-contract.yml"
   workflow_dispatch:
 
@@ -49,13 +51,6 @@ jobs:
           ref: ${{ env.LMS_SHA }}
           path: lms
 
-      - name: Checkout pinned fleet profiles
-        uses: actions/checkout@v4
-        with:
-          repository: scottjoyner/fleet-llm-profiles
-          ref: ${{ env.FLEET_PROFILES_SHA }}
-          path: fleet-llm-profiles
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -69,6 +64,31 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e "./auto-router[dev]" -e "./lms[test]"
           python -m pip install "jsonschema[format]>=4.21" PyYAML fastapi cryptography
+
+      - name: Validate pinned fleet-profile contract snapshot
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("auto-assist/tests/contracts/fleet-llm-profiles-bfe57f9b.contract.json")
+          contract = json.loads(path.read_text())
+          assert contract["source_commit"] == "bfe57f9b1529c511ead14cffebcd67d70b9b469c"
+          assert contract["source_blobs"] == {
+              "schemas/fleet-runtime-profile.v2.schema.json": "793336bdc86d28ecf8f13b1c8b91836dc95e36f0",
+              "schemas/fleet-runtime-profile.canary.v1.schema.json": "3f3ef789abbaf511084fa2baaf08cae1e76a5a45",
+          }
+          invariants = contract["required_invariants"]
+          assert invariants["admission_enabled"] is False
+          assert invariants["runtime_canary_success"] is True
+          assert invariants["runtime_canary_rollback_succeeded"] is True
+          assert invariants["runtime_canary_admitted"] is False
+          assert set(invariants["required_canary_gates"]) == {
+              "runtime_canary_soak",
+              "runtime_canary_rollback",
+              "runtime_canary_attested",
+          }
+          PY
 
       - name: Validate AssistX admission and projection contracts
         env:
@@ -88,11 +108,6 @@ jobs:
       - name: Validate LMS canary evidence producer
         run: python -m pytest -q lms/tests/test_runtime_canary.py
 
-      - name: Validate fleet-profile canary importer
-        run: |
-          python -m pytest -q \
-            fleet-llm-profiles/tests/test_import_lms_attested_canary.py
-
       - name: Prove AssistX-to-router Ed25519 compatibility
         run: |
           python auto-assist/scripts/verify-runtime-projection-cross-repo.py \
@@ -111,6 +126,7 @@ jobs:
             echo "auto-router=${AUTO_ROUTER_SHA}"
             echo "lms=${LMS_SHA}"
             echo "fleet-llm-profiles=${FLEET_PROFILES_SHA}"
+            echo "fleet-profile-contract=snapshot:793336bdc86d28ecf8f13b1c8b91836dc95e36f0,3f3ef789abbaf511084fa2baaf08cae1e76a5a45"
           } | tee artifacts/repository-matrix.txt
 
       - name: Upload contract evidence
