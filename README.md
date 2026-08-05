@@ -17,7 +17,7 @@ intake -> task graph -> allocation reservation -> fenced Hermes execution
 
 ## Reconciliation status
 
-Branch `full-auto-reconciliation-20260730` establishes the hard repository and runtime boundaries for the offline fleet:
+The current `main` branch establishes the hard repository and runtime boundaries for the offline fleet:
 
 - AssistX/Neo4j is the sole inventory, scheduling, assignment, claim, lease, health, and recovery authority.
 - `auto-router` is an offline-only protocol gateway and admission-control seam.
@@ -27,11 +27,11 @@ Branch `full-auto-reconciliation-20260730` establishes the hard repository and r
 - Unknown runtime capacity is not routable.
 - Hosted inference providers are excluded.
 
-Read [`docs/FULL_AUTO_RECONCILIATION_20260730.md`](docs/FULL_AUTO_RECONCILIATION_20260730.md) before deploying this branch.
+Read [`docs/HIGH_LEVEL_DESIGN.md`](docs/HIGH_LEVEL_DESIGN.md), [`docs/LOW_LEVEL_DESIGN.md`](docs/LOW_LEVEL_DESIGN.md), and [`docs/FULL_AUTO_RECONCILIATION_20260730.md`](docs/FULL_AUTO_RECONCILIATION_20260730.md) before deployment.
 
 ## Live migration while the old stack is running
 
-Do not use the normal quick-start commands to replace a running deployment. The reconciliation branch includes a side-by-side package that uses isolated container names, loopback ports, network, Redis, Neo4j state, artifacts, shadow secrets, and an operator-owned evidence ledger:
+Do not use the normal quick-start commands to replace a running deployment. The reconciliation package uses isolated container names, loopback ports, network, Redis, Neo4j state, artifacts, shadow secrets, and an operator-owned evidence ledger:
 
 - [`docs/LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md`](docs/LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md)
 - [`docs/LOCAL_AGENT_HANDOFF_20260730.md`](docs/LOCAL_AGENT_HANDOFF_20260730.md)
@@ -84,7 +84,9 @@ A passing ledger is evidence for operator review; it does not authorize the loca
 - Per-attempt detached Git worktrees, executor-measured diffs and tests, and HMAC-signed evidence.
 - A graph catalog for opaque prompt-prefix KV caches with exact model/quant/runtime compatibility, privacy scopes, TTL, telemetry, and cache-aware allocation.
 - Exact-fingerprint operator promotion with base-HEAD fencing, clean-target checks, verification, and automatic patch reversal on failure.
-- An authenticated Operations workspace at `/operations` for fleet state, readiness, allocation, recovery, migration, learning, and promotion.
+- An authenticated control room at `/control-room` for fleet state, readiness, allocation, recovery, migration, learning, and promotion.
+
+Legacy UI paths, including `/operations`, redirect to `/control-room` for compatibility.
 
 The self-improvement loop cannot approve itself, promote its own patch, commit, push, open a pull request, or use unrestricted shell payloads.
 
@@ -115,13 +117,16 @@ curl -u "$BASIC_AUTH_USER:$BASIC_AUTH_PASS" \
   http://localhost:8000/api/fleet/operations-readiness
 ```
 
-Then visit `http://localhost:8000/operations`.
+Then visit `http://localhost:8000/control-room`.
 
 Production deployments must explicitly configure repository bind mounts, worktree storage, node identities, attestation keys, recovery allowlists, and one execution backend. Inference providers must remain offline-only and resolve to approved physical LAN/Tailscale runtimes.
 
 ## Documentation
 
 - [`docs/INDEX.md`](docs/INDEX.md) — authoritative documentation map
+- [`docs/HIGH_LEVEL_DESIGN.md`](docs/HIGH_LEVEL_DESIGN.md) — canonical system context, boundaries, components, flows, security, and architectural decisions
+- [`docs/LOW_LEVEL_DESIGN.md`](docs/LOW_LEVEL_DESIGN.md) — canonical implementation map, graph/state contracts, APIs, fencing, recovery, and tests
+- [`docs/SYSTEM_GAP_REVIEW_20260804.md`](docs/SYSTEM_GAP_REVIEW_20260804.md) — prioritized cross-repository gaps, execution order, and system-ready criteria
 - [`docs/FULL_AUTO_RECONCILIATION_20260730.md`](docs/FULL_AUTO_RECONCILIATION_20260730.md) — repository decisions, strict-offline policy, LM Studio Link identity, containment, migration, and gates
 - [`docs/LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md`](docs/LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md) — side-by-side live migration, validation, cutover, and rollback
 - [`docs/LOCAL_AGENT_HANDOFF_20260730.md`](docs/LOCAL_AGENT_HANDOFF_20260730.md) — local-agent authority and evidence contract
