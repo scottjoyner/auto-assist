@@ -1,0 +1,25 @@
+{
+  "schema_version": "assistx.vendored-fleet-profile-contract.v1",
+  "source_repository": "scottjoyner/fleet-llm-profiles",
+  "source_commit": "bfe57f9b1529c511ead14cffebcd67d70b9b469c",
+  "source_blobs": {
+    "schemas/fleet-runtime-profile.v2.schema.json": "793336bdc86d28ecf8f13b1c8b91836dc95e36f0",
+    "schemas/fleet-runtime-profile.canary.v1.schema.json": "3f3ef789abbaf511084fa2baaf08cae1e76a5a45"
+  },
+  "required_invariants": {
+    "base_schema_version": "fleet_runtime_profile.v2",
+    "admission_enabled": false,
+    "profile_revision_minimum": 1,
+    "parallel_slots_minimum": 1,
+    "runtime_canary_namespace": "lms-runtime-canary",
+    "runtime_canary_success": true,
+    "runtime_canary_rollback_succeeded": true,
+    "runtime_canary_admitted": false,
+    "required_canary_gates": [
+      "runtime_canary_soak",
+      "runtime_canary_rollback",
+      "runtime_canary_attested"
+    ],
+    "sha256_pattern": "^sha256:[0-9a-f]{64}$"
+  }
+}
