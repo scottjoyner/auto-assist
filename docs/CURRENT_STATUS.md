@@ -18,9 +18,12 @@ AssistX now has a durable graph-backed control plane for:
 - signed executor evidence, central acceptance, skill profiles, and
   review-first repair proposals;
 - exact-fingerprint operator promotion with safe rollback;
-- authenticated monitoring and controls in `/operations`.
+- authenticated monitoring and controls in `/control-room`;
 - opaque prompt-prefix KV-cache manifests, strict model/quant/runtime
-  compatibility, affinity-aware allocation, TTL/eviction, and reuse telemetry;
+  compatibility, affinity-aware allocation, TTL/eviction, and reuse telemetry.
+
+Legacy UI paths, including `/operations`, redirect to `/control-room` and are
+retained only for compatibility.
 
 The real-Neo4j recovery canary exercises the lifecycle across recovery,
 reservation ownership, checkpoint migration, improvement evidence, learning,
@@ -71,26 +74,28 @@ without explicit reservation and idempotency controls.
 
 ## Remaining gaps
 
-The next high-value work is operational rather than relaxing safety:
+The repository contracts are substantially implemented. The highest-priority
+remaining work is cross-repository and operational:
 
-1. Run the end-to-end deployment stages on every code-capable node, including
-   crash cleanup and signing-key rotation.
-2. Export controller, reservation, migration, recovery, and improvement metrics
-   to the production alerting stack.
-3. Add operator-visible retention and cleanup policy for old evidence,
-   checkpoints, patches, and abandoned worktrees.
-4. Calibrate model opportunity-cost profiles from larger samples and expose
-   confidence/age alongside each routing recommendation.
-5. Add repository-specific verification policy presets without allowing a task
-   author to broaden the global executable allowlist.
-6. Continue the Operations UI overhaul with incident timelines, topology,
-   accessible controls, and explicit degraded-state explanations.
-7. Exercise disaster recovery for Neo4j state, controller leadership transfer,
-   and partially applied external recovery operations.
-8. Deploy and benchmark runtime-specific llama.cpp slot and SGLang HiCache
-   adapters; LM Studio and vLLM remain affinity-first until their configured
-   runtimes expose an approved portable restore boundary.
+1. execute the first signed physical observation, exact-loadout qualification,
+   transactional canary, negative drills, rollback verification, and real
+   non-admitted profile import;
+2. define and implement the AssistX-owned profile-to-admission candidate and
+   expiring/revocable admission-lease lifecycle;
+3. make the router consume only current AssistX runtime projections and require
+   a reservation or signed route authorization where durable assignment applies;
+4. add one pinned cross-repository compatibility workflow covering LMS evidence,
+   profile import, AssistX admission/projection, and router rejection behavior;
+5. physically rehearse Neo4j restore, degraded activation, journal replay,
+   worker promotion, leadership relinquishment, and rollback;
+6. export production telemetry and define retention, cleanup, calibration,
+   cohort rollout, error budgets, key rotation, and evidence revocation;
+7. deploy and benchmark runtime-specific llama.cpp slot and SGLang HiCache
+   adapters while keeping unsupported runtimes affinity-only.
 
-These gaps should strengthen observation, calibration, and recoverability. They
-should not grant agents approval, promotion, release, or unrestricted shell
-authority.
+The canonical prioritized review and acceptance criteria are in
+[`SYSTEM_GAP_REVIEW_20260804.md`](SYSTEM_GAP_REVIEW_20260804.md).
+
+These gaps should strengthen observation, integration, calibration, and
+recoverability. They must not grant agents approval, promotion, release, or
+unrestricted shell authority.
