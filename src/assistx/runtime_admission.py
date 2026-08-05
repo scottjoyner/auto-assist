@@ -111,6 +111,18 @@ def _private_url(value: Any) -> bool:
     )
 
 
+def _runtime_kind_key(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    text = text.replace(".", "_").replace(" ", "_")
+    aliases = {
+        "lm_studio": "lmstudio",
+        "llama_cpp": "llama_cpp",
+        "llamacpp": "llama_cpp",
+        "openai_compatible": "openai_compatible",
+    }
+    return aliases.get(text, text)
+
+
 def _normalized_sha(value: Any, label: str) -> str:
     text = str(value or "").strip().lower()
     if text.startswith("sha256:"):
@@ -339,9 +351,9 @@ def _verify_live(
         raise RuntimeAdmissionContractError(
             "live runtime identity does not match profile physical_instance"
         )
-    if str(live["runtime_kind"]).lower().replace(".", "_") != str(
+    if _runtime_kind_key(live["runtime_kind"]) != _runtime_kind_key(
         profile["runtime_kind"]
-    ).lower().replace(".", "_"):
+    ):
         raise RuntimeAdmissionContractError(
             "live runtime kind does not match the profile"
         )
@@ -450,7 +462,7 @@ def _verify_live(
         "expires_at_ms": expires_at_ms,
         "node_id": str(live["node_id"]),
         "runtime_instance_id": str(live["runtime_instance_id"]),
-        "runtime_kind": str(live["runtime_kind"]),
+        "runtime_kind": _runtime_kind_key(live["runtime_kind"]),
         "runtime_version": str(live["runtime_version"]),
         "headless": bool(live.get("headless")),
         "process_id": str(live["process_id"]),
