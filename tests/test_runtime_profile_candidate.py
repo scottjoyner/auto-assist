@@ -19,6 +19,16 @@ module = importlib.util.module_from_spec(SPEC)
 sys.modules[MODULE_NAME] = module
 SPEC.loader.exec_module(module)
 
+APPROVAL_MODULE_NAME = "approve_runtime_projection"
+APPROVAL_SPEC = importlib.util.spec_from_file_location(
+    APPROVAL_MODULE_NAME,
+    ROOT / "scripts" / "approve-runtime-projection.py",
+)
+assert APPROVAL_SPEC and APPROVAL_SPEC.loader
+approval_module = importlib.util.module_from_spec(APPROVAL_SPEC)
+sys.modules[APPROVAL_MODULE_NAME] = approval_module
+APPROVAL_SPEC.loader.exec_module(approval_module)
+
 
 def valid_profile() -> dict:
     return {
@@ -127,6 +137,9 @@ def test_builds_deterministic_non_mutating_projection_candidate() -> None:
     assert model["model_key"] == "local/qwen-code"
     assert model["context_length"] == 32768
     assert "local_only" in model["capabilities"]
+    validated = approval_module.validate_manifest(first)
+    assert validated.payload == first
+    assert len(validated.checksum) == 64
 
 
 def test_rejects_profile_that_is_already_admitting() -> None:
