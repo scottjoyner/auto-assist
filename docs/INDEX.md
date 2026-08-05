@@ -10,6 +10,7 @@ operating instructions.
 |---|---|
 | [`HIGH_LEVEL_DESIGN.md`](HIGH_LEVEL_DESIGN.md) | Canonical system context, authority boundaries, major components, control flows, security, availability, and architectural decisions |
 | [`LOW_LEVEL_DESIGN.md`](LOW_LEVEL_DESIGN.md) | Canonical implementation map, graph model, state machines, APIs, fencing, recovery, degraded operation, improvement, configuration, and test contracts |
+| [`SYSTEM_GAP_REVIEW_20260804.md`](SYSTEM_GAP_REVIEW_20260804.md) | Prioritized cross-repository physical, admission, projection, compatibility, recovery, operations, and strategic gaps with acceptance criteria |
 | [`FULL_AUTO_RECONCILIATION_20260730.md`](FULL_AUTO_RECONCILIATION_20260730.md) | Authoritative offline-only repository reconciliation, runtime identity contract, containment sequence, and migration gates |
 | [`LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md`](LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md) | Detailed side-by-side migration, shadow validation, cutover, and rollback instructions while the old stack remains live |
 | [`FINAL_CUTOVER_OPERATOR_PACKET_20260730.md`](FINAL_CUTOVER_OPERATOR_PACKET_20260730.md) | Final machine-side evidence sequence, LAN/Tailscale gates, dependency validation, approval stop, production order, and rollback triggers |
