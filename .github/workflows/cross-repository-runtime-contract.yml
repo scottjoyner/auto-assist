@@ -1,0 +1,122 @@
+name: cross-repository-runtime-contract
+
+on:
+  pull_request:
+    paths:
+      - "src/assistx/runtime_admission.py"
+      - "src/assistx/runtime_projection.py"
+      - "src/assistx/runtime_projection_v2.py"
+      - "scripts/verify-runtime-projection-cross-repo.py"
+      - ".github/workflows/cross-repository-runtime-contract.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/assistx/runtime_admission.py"
+      - "src/assistx/runtime_projection.py"
+      - "src/assistx/runtime_projection_v2.py"
+      - "scripts/verify-runtime-projection-cross-repo.py"
+      - ".github/workflows/cross-repository-runtime-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evidence-to-router-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AUTO_ROUTER_SHA: fc821ea59c8fb2ede65c7e2eccb579858dde14ce
+      LMS_SHA: 6ec5476f72936ebe74a45104dadded53cb8b0885
+      FLEET_PROFILES_SHA: bfe57f9b1529c511ead14cffebcd67d70b9b469c
+    steps:
+      - name: Checkout AssistX candidate
+        uses: actions/checkout@v4
+        with:
+          path: auto-assist
+
+      - name: Checkout pinned auto-router
+        uses: actions/checkout@v4
+        with:
+          repository: scottjoyner/auto-router
+          ref: ${{ env.AUTO_ROUTER_SHA }}
+          path: auto-router
+
+      - name: Checkout pinned LMS
+        uses: actions/checkout@v4
+        with:
+          repository: scottjoyner/lms
+          ref: ${{ env.LMS_SHA }}
+          path: lms
+
+      - name: Checkout pinned fleet profiles
+        uses: actions/checkout@v4
+        with:
+          repository: scottjoyner/fleet-llm-profiles
+          ref: ${{ env.FLEET_PROFILES_SHA }}
+          path: fleet-llm-profiles
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            auto-router/pyproject.toml
+            lms/pyproject.toml
+
+      - name: Install contract dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./auto-router[dev]" -e "./lms[test]"
+          python -m pip install "jsonschema[format]>=4.21" PyYAML fastapi cryptography
+
+      - name: Validate AssistX admission and projection contracts
+        env:
+          PYTHONPATH: auto-assist/src
+        run: |
+          python -m pytest -q \
+            auto-assist/tests/test_runtime_admission.py \
+            auto-assist/tests/test_runtime_projection.py \
+            auto-assist/tests/test_runtime_projection_v2.py
+
+      - name: Validate router projection consumer
+        run: |
+          python -m pytest -q \
+            auto-router/tests/test_runtime_projection.py \
+            auto-router/tests/test_runtime_projection_v2.py
+
+      - name: Validate LMS canary evidence producer
+        run: python -m pytest -q lms/tests/test_runtime_canary.py
+
+      - name: Validate fleet-profile canary importer
+        run: |
+          python -m pytest -q \
+            fleet-llm-profiles/tests/test_import_lms_attested_canary.py
+
+      - name: Prove AssistX-to-router Ed25519 compatibility
+        run: |
+          python auto-assist/scripts/verify-runtime-projection-cross-repo.py \
+            --assistx-src auto-assist/src \
+            --router-src auto-router/src \
+            --matrix-out artifacts/cross-repository-contract.json \
+            --assistx-sha "${GITHUB_SHA}" \
+            --router-sha "${AUTO_ROUTER_SHA}" \
+            --lms-sha "${LMS_SHA}" \
+            --profiles-sha "${FLEET_PROFILES_SHA}"
+
+      - name: Record exact repository matrix
+        run: |
+          {
+            echo "assistx=${GITHUB_SHA}"
+            echo "auto-router=${AUTO_ROUTER_SHA}"
+            echo "lms=${LMS_SHA}"
+            echo "fleet-llm-profiles=${FLEET_PROFILES_SHA}"
+          } | tee artifacts/repository-matrix.txt
+
+      - name: Upload contract evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: cross-repository-runtime-contract
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
