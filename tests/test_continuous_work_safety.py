@@ -92,7 +92,11 @@ def test_repository_scan_refreshes_head_and_skips_unchanged_tree(
     first = commit_file(
         repo,
         "src/example.py",
-        "def first() -> str:\n    return 'first'\n",
+        (
+            '"""Example module used to verify repository cursor behavior."""\n\n'
+            "def first() -> str:\n"
+            "    return 'first'\n"
+        ),
         "first",
     )
     monkeypatch.setenv(
@@ -115,7 +119,11 @@ def test_repository_scan_refreshes_head_and_skips_unchanged_tree(
     second = commit_file(
         repo,
         "src/example.py",
-        "def first() -> str:\n    return 'second'\n",
+        (
+            '"""Example module used to verify refreshed repository state."""\n\n'
+            "def first() -> str:\n"
+            "    return 'second'\n"
+        ),
         "second",
     )
     refreshed = repo_task_generator._create_tasks_for_repo(
