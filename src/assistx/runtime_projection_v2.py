@@ -115,10 +115,17 @@ def _apply_benchmark_routing(
     quality floor. The matrix still cannot create a provider or make a model
     routable; it only enriches runtimes that passed the existing identity,
     access-path, capacity, loaded-model, and operator approval gates.
+
+    Benchmark enrichment is advisory. If the matrix store is absent or
+    temporarily unavailable, signing proceeds with the authoritative admitted
+    runtime projection and no benchmark hints.
     """
 
-    benchmark_index = benchmark_projection_index(neo_factory)
-    node_policy_index = node_routing_policy_index(neo_factory)
+    try:
+        benchmark_index = benchmark_projection_index(neo_factory)
+        node_policy_index = node_routing_policy_index(neo_factory)
+    except Exception:
+        return
     for provider in document.get("providers") or []:
         if not isinstance(provider, dict):
             continue
