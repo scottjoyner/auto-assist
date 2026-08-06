@@ -22,6 +22,7 @@ from .degraded_router_gate import (
     install_degraded_router_activation_requirements,
 )
 from .executor_security import install_executor_security
+from .fleet_context_projection import install_fleet_node_context_projection
 from .fleet_routing_matrix import build_fleet_routing_matrix_router
 from .overlay_routes import build_overlay_router
 from .passive_agents import build_passive_agent_router
@@ -86,6 +87,7 @@ def _extract_legacy_recovery_execute() -> Callable[..., Any] | None:
 install_recovery_shadow_mode(api_module)
 install_control_room_runtime(control_room_module)
 install_strict_offline_projection(router_integration_module)
+install_fleet_node_context_projection(router_integration_module, _neo)
 install_executor_security(app, _neo, api_module)
 install_degraded_control_hardening()
 install_degraded_router_activation_requirements()
