@@ -10,6 +10,7 @@ operating instructions.
 |---|---|
 | [`HIGH_LEVEL_DESIGN.md`](HIGH_LEVEL_DESIGN.md) | Canonical system context, authority boundaries, major components, control flows, security, availability, and architectural decisions |
 | [`LOW_LEVEL_DESIGN.md`](LOW_LEVEL_DESIGN.md) | Canonical implementation map, graph model, state machines, APIs, fencing, recovery, degraded operation, improvement, configuration, and test contracts |
+| [`FLEET_CAPABILITY_ROUTING_DEPLOYMENT.md`](FLEET_CAPABILITY_ROUTING_DEPLOYMENT.md) | Complete Tailscale census, heterogeneous worker roles, LMS benchmark-matrix import, family-specific allocation/routing, scheduled refresh, validation, canaries, and rollback |
 | [`SYSTEM_GAP_REVIEW_20260804.md`](SYSTEM_GAP_REVIEW_20260804.md) | Prioritized cross-repository physical, admission, projection, compatibility, recovery, operations, and strategic gaps with acceptance criteria |
 | [`FULL_AUTO_RECONCILIATION_20260730.md`](FULL_AUTO_RECONCILIATION_20260730.md) | Authoritative offline-only repository reconciliation, runtime identity contract, containment sequence, and migration gates |
 | [`LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md`](LOCAL_AGENT_LIVE_MIGRATION_RUNBOOK_20260730.md) | Detailed side-by-side migration, shadow validation, cutover, and rollback instructions while the old stack remains live |
@@ -68,6 +69,10 @@ Implementation:
 |---|---|
 | API and authenticated operator routes | `src/assistx/api.py`, `src/assistx/api_router.py` |
 | Fleet control room and dependency telemetry | `src/assistx/control_room.py`, `templates/control_room.html`, `static/css/control_room.css`, `static/js/control_room.js` |
+| Tailnet node and benchmark-matrix import | `src/assistx/fleet_routing_matrix.py` |
+| Complete tailnet context/topology projection | `src/assistx/fleet_context_projection.py` |
+| Benchmark-aware heterogeneous allocation | `src/assistx/benchmark_allocation_policy.py`, `src/assistx/allocation_engine.py` |
+| Signed runtime/model benchmark hints | `src/assistx/runtime_projection_v2.py` |
 | Neo4j schema, task state, reservations | `src/assistx/neo4j_client.py` |
 | Allocation scoring and opportunity cost | `src/assistx/allocation_engine.py` |
 | Durable controller leases and fencing | `src/assistx/controller_runtime.py` |
@@ -104,6 +109,11 @@ make reconciliation-discover-tailnet
 make reconciliation-state-validate
 make reconciliation-cutover-gate
 ```
+
+The heterogeneous fleet routing gate is documented in
+`FLEET_CAPABILITY_ROUTING_DEPLOYMENT.md`. Its minimum acceptance is a complete
+non-admitting tailnet matrix with more than two discovered nodes, observer-only
+blocking for unapproved peers, and family-specific routing canaries.
 
 A passing cutover ledger is evidence for operator review, not authorization for a
 local agent to modify production.
