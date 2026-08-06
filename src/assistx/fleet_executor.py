@@ -1,1487 +1,835 @@
-"""Central fleet executor — the "helper" that does the work so agents don't have to.
+"""Claim-fenced continuous fleet executor.
 
-Agents only need an LM Studio endpoint. The executor:
-1. Discovers nodes + their model inventory from the router, probing each for
-   live LM Studio endpoints and the models they have loaded.
-2. Polls AssistX for READY tasks.
-3. For each task, finds the **best** capable node:
-   - ``llm`` tasks with a specific model → node that has it loaded.
-   - Generic ``llm`` → round-robin across all LM Studio nodes.
-   - ``script`` → subprocess on the executor host.
-4. Handles the full lifecycle: claim → execute → complete (idempotent).
-5. Tracks node health: skips unresponsive nodes, logs failures.
+The executor is deliberately a consumer of AssistX authority, never an
+independent discovery or scheduling authority. It:
 
-No agent-side code beyond running LM Studio.
+* reads only the current approved AssistX runtime projection;
+* claims READY ``llm`` tasks through Neo4j's atomic claim contract;
+* requires and propagates the current ``claim_id``;
+* heartbeats every active attempt while inference is running;
+* sends inference through auto-router with claim lineage metadata;
+* runs each inference request in a supervised process that is terminated before
+  capacity is released on timeout or lost ownership;
+* never executes arbitrary shell strings.
+
+Recurring execution is protected by a Neo4j ``DurableController`` lease, so
+multiple API processes or hosts do not create independent executor leaders.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import multiprocessing as mp
 import os
-import subprocess
+import queue
+import re
 import threading
 import time
-import urllib.error
-import urllib.request
-from datetime import datetime, timezone
-from typing import Any, Optional
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
+
+import httpx
+
+from .controller_runtime import (
+    DurableController,
+    Neo4jControllerStore,
+    start_durable_controller_loop,
+)
+from .neo4j_client import Neo4jClient
+from .runtime_projection import RuntimeProjectionBlocked, build_runtime_projection
 
 logger = logging.getLogger(__name__)
 
-# Singleton reference to the running fleet executor for API access
-_fleet_executor_instance: Optional[FleetExecutor] = None
-
-EXECUTOR_INTERVAL = float(os.getenv("FLEET_EXECUTOR_INTERVAL", "2"))
-LMSTUDIO_PORT = int(os.getenv("FLEET_LMSTUDIO_PORT", "1234"))
-MAX_CONCURRENT_LLM = int(os.getenv("FLEET_EXECUTOR_LLM_CONCURRENCY", "64"))
-MAX_CONCURRENT_SCRIPT = int(os.getenv("FLEET_EXECUTOR_SCRIPT_CONCURRENCY", "16"))
-NODE_HEALTH_TTL = float(os.getenv("FLEET_NODE_HEALTH_TTL", "90"))
-# Hard cap on total wall-time a single task may occupy a semaphore slot. Guards
-# against flaky fleet nodes wedging the pipeline by holding slots indefinitely.
-# Default is generous (10 min) because under sustained generator load tasks can
-# legitimately take minutes across node retries; the watchdog only fires to
-# prevent permanent wedging, not to interrupt normal long-running work.
-TASK_WALL_TIMEOUT = int(os.getenv("FLEET_TASK_WALL_TIMEOUT", "600"))
-# Bound a single LM Studio call so retries across nodes can't run for hours.
-LMSTUDIO_CALL_TIMEOUT = int(os.getenv("FLEET_LMSTUDIO_CALL_TIMEOUT", "120"))
-# Composite valuation: quality_weight * eval_score + (1-quality_weight) * normalized_tps
-# 0.0 = pure speed (TPS), 1.0 = pure quality (eval_score)
-ROUTING_QUALITY_WEIGHT = float(os.getenv("FLEET_ROUTING_QUALITY_WEIGHT", "0.5"))
-# When a task carries complexity:high|medium we route to the *largest* resident
-# model on a node (operator-curated "quality" tier) rather than the fastest.
-# The fleet adapts to whatever the operator has loaded — if they swap a model on
-# a machine we honor it. Default (no hint or complexity:low) keeps the current
-# speed-first weighted round-robin.
+EXECUTOR_INTERVAL = max(2, int(os.getenv("FLEET_EXECUTOR_INTERVAL", "5")))
+MAX_CONCURRENT_LLM = max(
+    1, min(128, int(os.getenv("FLEET_EXECUTOR_LLM_CONCURRENCY", "16")))
+)
+TASK_WALL_TIMEOUT = max(30, int(os.getenv("FLEET_TASK_WALL_TIMEOUT", "600")))
+TASK_LEASE_SECONDS = max(
+    60,
+    int(os.getenv("FLEET_TASK_LEASE_SECONDS", str(TASK_WALL_TIMEOUT + 120))),
+)
+HEARTBEAT_INTERVAL = max(
+    5,
+    min(
+        TASK_LEASE_SECONDS // 3,
+        int(os.getenv("FLEET_TASK_HEARTBEAT_INTERVAL", "15")),
+    ),
+)
+ROUTER_CALL_TIMEOUT = max(
+    10, int(os.getenv("FLEET_ROUTER_CALL_TIMEOUT", str(TASK_WALL_TIMEOUT - 5)))
+)
+ROUTER_URL = os.getenv("FLEET_ROUTER_URL", "http://router:8088").rstrip("/")
+ROUTER_BEARER_TOKEN = os.getenv("FLEET_ROUTER_BEARER_TOKEN", "").strip()
+EXECUTOR_AGENT_ID = os.getenv("FLEET_EXECUTOR_AGENT_ID", "fleet-executor").strip()
+BACKGROUND_MAX_FRACTION = min(
+    0.9,
+    max(0.0, float(os.getenv("FLEET_BACKGROUND_MAX_FRACTION", "0.5"))),
+)
+PROJECTION_TTL_SECONDS = max(
+    5, min(300, int(os.getenv("FLEET_EXECUTOR_PROJECTION_TTL_SECONDS", "60")))
+)
 COMPLEXITY_HINTS = {"high", "medium"}
-# Floor (in billions of params) below which a model is treated as a "small"
-# model and deprioritized for quality routing. Anything at or above this counts
-# as a candidate quality model when a task asks for quality.
 QUALITY_MODEL_FLOOR_B = float(os.getenv("FLEET_QUALITY_MODEL_FLOOR_B", "9"))
-# Per-node concurrency weight: "host:weight,host2:weight2" — lets a node
-# that can run N concurrent LM Studio sessions pull N× the work.
-NODE_CONCURRENCY = {}
-_raw = os.getenv("FLEET_NODE_CONCURRENCY", "")
-for _pair in _raw.split(","):
-    _pair = _pair.strip()
-    if ":" in _pair:
-        _h, _w = _pair.rsplit(":", 1)
-        try:
-            NODE_CONCURRENCY[_h.strip()] = max(1, int(_w))
-        except ValueError:
-            pass
+
+_fleet_executor_instance: Optional["FleetExecutor"] = None
+_executor_start_lock = threading.Lock()
+_executor_started = False
 
 
 def _model_billions(model_key: str) -> float:
-    """Best-effort extraction of a model's parameter count (in billions) from
-    its key/name, e.g. 'qwen3.6-28b-reap20-a3b' -> 28.0, 'lfm2.5-1.2b' -> 1.2.
-    Used as a VRAM-capacity proxy when the router reports no hardware specs."""
-    import re
-    if not model_key:
-        return 0.0
-    # Match a number followed by 'b' (billions) or 'm' (millions), allowing a
-    # decimal point; capture the largest such value in the key.
+    """Best-effort parameter count parsed from a model identifier."""
+
     best = 0.0
-    for m in re.finditer(r"(\d+(?:\.\d+)?)\s*([bm])", model_key, re.IGNORECASE):
-        val = float(m.group(1))
-        unit = m.group(2).lower()
-        billions = val / 1000.0 if unit == "m" else val
-        if billions > best:
-            best = billions
+    for match in re.finditer(
+        r"(\d+(?:\.\d+)?)\s*([bm])", model_key or "", re.IGNORECASE
+    ):
+        value = float(match.group(1))
+        billions = value / 1000.0 if match.group(2).lower() == "m" else value
+        best = max(best, billions)
     return best
 
 
 def _resident_quality_models(loaded_models: list[str]) -> list[str]:
-    """Return the resident models that count as 'quality' tier for a node,
-    sorted largest-first. Adapts to whatever the operator has loaded — we never
-    hard-code model names, we just look at parameter size."""
-    if not loaded_models:
-        return []
-    quality = [
-        m for m in loaded_models
-        if _model_billions(m) >= QUALITY_MODEL_FLOOR_B
-    ]
-    quality.sort(key=_model_billions, reverse=True)
-    return quality
+    return sorted(
+        [
+            model
+            for model in loaded_models
+            if _model_billions(model) >= QUALITY_MODEL_FLOOR_B
+        ],
+        key=_model_billions,
+        reverse=True,
+    )
 
 
-def _auto_weight(specs: Optional[dict], loaded_models: Optional[list] = None) -> int:
-    """Derive a sensible per-node concurrency from reported hardware so nodes
-    the operator adds are delegated work in proportion to their capacity
-    (instead of every node being capped at 1 concurrent task).
+def _auto_weight(
+    specs: Optional[dict], loaded_models: Optional[list[str]] = None
+) -> int:
+    """Compatibility helper retained for callers that display capacity hints.
 
-    Prefers explicit hardware specs (ram/vram/cores) when the router provides
-    them.  When specs are absent (common — our router doesn't gather hardware),
-    fall back to estimating capacity from the models the node actually has
-    resident: a node running a 28B model clearly has a large GPU, while one
-    with only 0.8B models is a small/CPU box.  This keeps auto-detection
-    meaningful without requiring hardware probing.
+    Runtime admission never trusts this estimate. The safe executor uses only
+    approved ``parallel_slots`` from the current projection.
     """
+
     loaded_models = loaded_models or []
     if specs and isinstance(specs, dict):
-        cores = int(specs.get("cpu_cores") or 0)
-        gpu = str(specs.get("gpu") or "").strip()
-        ram_gib = float(specs.get("system_ram_gib") or 0.0)
-        vram_gib = float(specs.get("vram_gib") or 0.0)
-        has_gpu = bool(gpu) and gpu.lower() not in ("", "none", "unknown")
-        if has_gpu:
-            w = max(6, min(16, 4 + cores // 2))
-        else:
-            w = max(2, min(6, 1 + cores // 4))
-        if ram_gib >= 24 or vram_gib >= 8:
-            w = min(20, w + 2)
-        return w
-
-    # No specs: estimate from resident models.
-    if not loaded_models:
-        # Node is reachable but has nothing loaded — give it a modest floor so
-        # it can still pick up work if models arrive, but don't over-delegate.
-        return 3
-    biggest = max((_model_billions(m) for m in loaded_models), default=0.0)
-    n_models = len(loaded_models)
-    # Map estimated VRAM to weight: ~1B≈small, ~9B≈mid, ~24B+≈big GPU.
+        cores = max(0, int(specs.get("cpu_cores") or 0))
+        vram = max(0.0, float(specs.get("vram_gib") or 0.0))
+        return max(1, min(16, 1 + cores // 4 + int(vram >= 8)))
+    biggest = max((_model_billions(model) for model in loaded_models), default=0.0)
     if biggest >= 20:
-        w = 14
-    elif biggest >= 9:
-        w = 10
-    elif biggest >= 3:
-        w = 8
-    elif biggest >= 1:
-        w = 5
-    else:
-        w = 4
-    # More resident models => more headroom for concurrent contexts.
-    w = min(20, w + max(0, n_models - 1))
-    return w
-BASIC_AUTH_USER = os.getenv("FLEET_BASIC_AUTH_USER", "admin")
-BASIC_AUTH_PASS = os.getenv("FLEET_BASIC_AUTH_PASS", "gluhlaf8")
-ASSISTX_URL = os.getenv("FLEET_ASSISTX_URL", "http://assistx:8000")
-ROUTER_URL = os.getenv("FLEET_ROUTER_URL", "http://router:8088")
-KNOWN_HOSTS = os.getenv("FLEET_KNOWN_HOSTS", "").split(",") if os.getenv("FLEET_KNOWN_HOSTS") else []
-
-# Benchmark-based routing data paths
-FLEET_LOADOUT_PATH = os.getenv("FLEET_LOADOUT_PATH", "/home/scott/git/lms/fleet_loadout.json")
-FLEET_STATE_PATH = os.getenv("FLEET_STATE_PATH", "/home/scott/git/lms/fleet_state.json")
+        return 8
+    if biggest >= 9:
+        return 6
+    if biggest >= 3:
+        return 4
+    return 2
 
 
-def _now_ts() -> int:
-    return int(datetime.now(timezone.utc).timestamp() * 1000)
-
-
-def _http(
-    method: str,
-    url: str,
-    data: Optional[dict] = None,
-    timeout: int = 30,
-) -> tuple[int, Any]:
-    headers = {}
-    if BASIC_AUTH_USER and BASIC_AUTH_PASS:
-        import base64
-        raw = f"{BASIC_AUTH_USER}:{BASIC_AUTH_PASS}"
-        headers["Authorization"] = f"Basic {base64.b64encode(raw.encode()).decode()}"
-    body = json.dumps(data).encode() if data else None
-    if body:
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
+def _decode_json(value: Any, default: Any) -> Any:
+    if isinstance(value, type(default)):
+        return value
+    if isinstance(value, str) and value.strip():
         try:
-            detail = json.loads(e.read().decode())
-        except Exception:
-            detail = {"error": str(e)}
-        return e.code, detail
-    except Exception as e:
-        return 0, {"error": str(e)}
+            decoded = json.loads(value)
+            return decoded if isinstance(decoded, type(default)) else default
+        except json.JSONDecodeError:
+            return default
+    return default
+
+
+def _task_priority(task: dict[str, Any]) -> str:
+    return str(task.get("priority") or "background").strip().lower()
+
+
+def _is_background(task: dict[str, Any]) -> bool:
+    return _task_priority(task) in {"background", "batch", "low", "unset", ""}
+
+
+def _router_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if ROUTER_BEARER_TOKEN:
+        headers["Authorization"] = f"Bearer {ROUTER_BEARER_TOKEN}"
+    return headers
+
+
+def _router_call_worker(
+    result_queue: Any,
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    timeout_seconds: int,
+) -> None:
+    """Process target for one cancellable router request."""
+
+    try:
+        with httpx.Client(
+            timeout=max(1, timeout_seconds),
+            follow_redirects=False,
+        ) as client:
+            response = client.post(url, headers=headers, json=payload)
+        try:
+            body: Any = response.json()
+        except ValueError:
+            body = {"text": response.text[:4000]}
+        result_queue.put(
+            {
+                "status_code": response.status_code,
+                "body": body,
+            }
+        )
+    except BaseException as exc:  # process boundary must always report a result
+        result_queue.put(
+            {
+                "status_code": 0,
+                "body": {"error": f"{type(exc).__name__}: {exc}"},
+            }
+        )
+
+
+@dataclass(frozen=True)
+class ProjectionInventory:
+    generation: int
+    revision: str
+    expires_at_ms: int
+    providers: tuple[dict[str, Any], ...]
+    aliases: tuple[str, ...]
+    total_slots: int
+
+    @classmethod
+    def from_document(cls, document: dict[str, Any]) -> "ProjectionInventory":
+        now_ms = int(time.time() * 1000)
+        generation = int(document.get("generation") or 0)
+        expires_at_ms = int(document.get("expires_at_ms") or 0)
+        providers = tuple(
+            provider
+            for provider in document.get("providers") or []
+            if isinstance(provider, dict) and provider.get("enabled", True)
+        )
+        if generation <= 0 or expires_at_ms <= now_ms or not providers:
+            raise RuntimeProjectionBlocked("executor projection is absent or expired")
+
+        aliases: list[str] = []
+        runtime_slots: dict[str, int] = {}
+        for provider in providers:
+            runtime_id = str(provider.get("runtime_instance_id") or "").strip()
+            slots = int(provider.get("parallel_slots") or 0)
+            if not runtime_id or slots <= 0:
+                continue
+            previous = runtime_slots.get(runtime_id)
+            if previous is not None and previous != slots:
+                raise RuntimeProjectionBlocked(
+                    f"conflicting capacity for runtime {runtime_id}"
+                )
+            runtime_slots[runtime_id] = slots
+            for model in provider.get("models") or []:
+                if not isinstance(model, dict):
+                    continue
+                alias = str(model.get("alias") or "").strip()
+                if alias and alias not in aliases:
+                    aliases.append(alias)
+        if not runtime_slots or not aliases:
+            raise RuntimeProjectionBlocked(
+                "projection has no admitted runtime capacity or model aliases"
+            )
+        return cls(
+            generation=generation,
+            revision=str(document.get("revision") or ""),
+            expires_at_ms=expires_at_ms,
+            providers=providers,
+            aliases=tuple(aliases),
+            total_slots=sum(runtime_slots.values()),
+        )
+
+    def choose_model(self, requested: str, complexity: str = "") -> str:
+        requested = requested.strip()
+        if requested:
+            exact = next((alias for alias in self.aliases if alias == requested), None)
+            if exact:
+                return exact
+            lowered = requested.lower()
+            partial = next(
+                (alias for alias in self.aliases if lowered in alias.lower()),
+                None,
+            )
+            if partial:
+                return partial
+            raise RuntimeProjectionBlocked(
+                f"requested model {requested!r} is not admitted by the projection"
+            )
+        if complexity in COMPLEXITY_HINTS:
+            return max(self.aliases, key=_model_billions)
+        return min(
+            self.aliases,
+            key=lambda value: (_model_billions(value) or 9999, value),
+        )
 
 
 class FleetRouting:
-    """Loads and provides benchmark-based routing intelligence from lms repo."""
+    """Compatibility facade over the approved projection inventory."""
 
     def __init__(self) -> None:
-        self._loadout: dict = {}
-        self._state: dict = {}
-        self._routing: dict = {}
-        self._model_to_node: dict = {}
-        self._node_models: dict = {}
-        self._model_perf: dict = {}
-        self._node_specs: dict = {}  # hostname -> {ram_gib, vram_gib}
-        self._model_sizes: dict = {}  # model -> estimated_size_gib
-        self._load()
+        self._projection: ProjectionInventory | None = None
 
-    def _estimate_model_size(self, model: str) -> float:
-        """Estimate model size in GiB from model name."""
-        ml = model.lower()
-        # Extract parameter count from name (e.g., "35b", "7b", "1.2b", "4b", "0.8b")
-        import re
-        # Match patterns like 35b, 7b, 1.2b, 4b, 0.8b, 27b, 70b, 72b
-        match = re.search(r'(\d+(?:\.\d+)?)b', ml)
-        if match:
-            params_b = float(match.group(1))
-            # Rough estimate: 4-bit quant = params_b * 0.5 GiB, 8-bit = params_b GiB
-            # Most local models are 4-bit quantized
-            return params_b * 0.5
-        # Fallback for known model patterns without 'b' suffix
-        if 'gemma-4-12b' in ml or 'qwen3.5-14b' in ml:
-            return 7.0
-        if 'gemma-4-31b' in ml or 'qwen3.5-27b' in ml or 'qwen3.5-35b' in ml or 'ornith-1.0-35b' in ml:
-            return 18.0
-        if 'qwen3.6-35b' in ml:
-            return 18.0
-        if 'gpt-oss-20b' in ml:
-            return 10.0
-        if 'granite-4-h-tiny' in ml or 'granite-4-h' in ml:
-            return 0.5
-        # Default small model
-        return 2.0
+    @staticmethod
+    def _estimate_model_size(model: str) -> float:
+        billions = _model_billions(model)
+        return billions * 0.5 if billions else 2.0
 
-    def _load(self) -> None:
-        # Load fleet_loadout.json (desired state)
-        try:
-            with open(FLEET_LOADOUT_PATH, "r") as f:
-                self._loadout = json.load(f)
-        except Exception as e:
-            logger.warning("fleet executor: failed to load loadout: %s", e)
-        # Load fleet_state.json (real-time state with perf metrics)
-        try:
-            with open(FLEET_STATE_PATH, "r") as f:
-                self._state = json.load(f)
-        except Exception as e:
-            logger.warning("fleet executor: failed to load state: %s", e)
+    def update(self, projection: ProjectionInventory) -> None:
+        self._projection = projection
 
-        # Build routing tables
-        self._build_routing()
+    def get_model_perf(self, hostname: str, model: str) -> dict[str, Any] | None:
+        return None
 
-    def _build_routing(self) -> None:
-        """Build model -> best node routing from loadout + state with composite valuation."""
-        # Build model -> best node mapping using composite valuation (TPS * quality)
-        # First pass: collect all model performance data from state
-        model_candidates: dict[str, list[dict]] = {}  # model -> list of {node, tps, eval, concurrency, score}
-        
-        if "nodes" in self._state:
-            for node in self._state["nodes"]:
-                hostname = node.get("name") or node.get("hostname")
-                if not hostname:
-                    continue
-                if not node.get("live", False):
-                    continue
-                # Store node hardware specs for model fitting
-                self._node_specs[hostname] = {
-                    "ram_gib": node.get("hardware", {}).get("ram_gib"),
-                    "vram_gib": node.get("hardware", {}).get("vram_gib"),
-                    "cpu": node.get("hardware", {}).get("cpu"),
-                }
-                for model_info in node.get("models", []):
-                    if isinstance(model_info, dict):
-                        mkey = model_info.get("model_key") or model_info.get("model")
-                        if not mkey:
-                            continue
-                        tps = model_info.get("tps_med", 0) or 0
-                        eval_score = model_info.get("eval_score", 0) or 0
-                        if tps <= 0:
-                            continue  # not available/benchmarked
-                        concurrency = model_info.get("concurrency", {})
-                        tier = concurrency.get("tier", 1) if isinstance(concurrency, dict) else 1
-                        # Composite valuation: TPS * (eval_score + epsilon) rewards both speed and quality
-                        eps = 0.1
-                        composite_score = tps * (eval_score + eps)
-                        
-                        model_candidates.setdefault(mkey, []).append({
-                            "node": hostname,
-                            "tps": tps,
-                            "eval_score": eval_score,
-                            "concurrency_tier": tier,
-                            "composite_score": composite_score,
-                        })
-        
-        # Second pass: select best node per model by composite score
-        for model, candidates in model_candidates.items():
-            candidates.sort(key=lambda c: c["composite_score"], reverse=True)
-            best = candidates[0]
-            available_on = [c["node"] for c in candidates]
-            self._model_to_node[model] = best["node"]
-            self._routing[model] = {
-                "best_node": best["node"],
-                "available_on": available_on,
-                "max_concurrency": best["concurrency_tier"],
-                "best_tps": best["tps"],
-                "best_eval": best["eval_score"],
-                "best_composite": best["composite_score"],
-            }
+    def check_model_fit(self, hostname: str, model: str) -> dict[str, Any]:
+        aliases = set(self._projection.aliases if self._projection else ())
+        return {
+            "fits": model in aliases,
+            "reason": "approved_projection" if model in aliases else "not_admitted",
+        }
 
-        # Also enrich loadout routing with quality data where available
-        if "routing" in self._loadout:
-            for model, info in self._loadout["routing"].items():
-                if isinstance(info, dict) and info.get("best_node"):
-                    # Already have better data from state; skip unless model not in state
-                    if model not in self._model_to_node:
-                        self._model_to_node[model] = info["best_node"]
-                        self._routing[model] = {
-                            "best_node": info["best_node"],
-                            "available_on": info.get("available_on", []),
-                            "max_concurrency": info.get("max_concurrency", 1),
-                            "best_tps": info.get("best_tps", 0),
-                        }
-
-        # Enrich with state data (real-time metrics) for per-node model perf
-        if "nodes" in self._state:
-            for node in self._state["nodes"]:
-                hostname = node.get("name") or node.get("hostname")
-                if not hostname:
-                    continue
-                self._node_models[hostname] = []
-                for model_info in node.get("models", []):
-                    if isinstance(model_info, dict):
-                        mkey = model_info.get("model_key") or model_info.get("model")
-                        if mkey:
-                            self._node_models[hostname].append(mkey)
-                            # Store performance metrics
-                            tps = model_info.get("tps_med", 0) or 0
-                            eval_score = model_info.get("eval_score", 0) or 0
-                            eps = 0.1
-                            self._model_perf[f"{hostname}:{mkey}"] = {
-                                "tps_med": tps,
-                                "ttft_med": model_info.get("ttft_med", 0),
-                                "eval_score": eval_score,
-                                "concurrency_tier": model_info.get("concurrency_tier", 1),
-                                "load_s": model_info.get("load_s", 0),
-                                "ok": model_info.get("ok", True),
-                                "composite_score": tps * (eval_score + eps),
-                            }
-
-    def get_best_node_for_model(self, model: str) -> Optional[str]:
-        """Get the best node for a specific model."""
-        return self._model_to_node.get(model)
-
-    def get_fallback_nodes(self, model: str) -> list[str]:
-        """Get fallback nodes for a model in priority order."""
-        info = self._routing.get(model, {})
-        return info.get("available_on", [])
-
-    def get_model_concurrency(self, model: str) -> int:
-        """Get max concurrency for a model."""
-        info = self._routing.get(model, {})
-        return info.get("max_concurrency", 1)
-
-    def get_node_models(self, hostname: str) -> list[str]:
-        """Get models available on a node."""
-        return self._node_models.get(hostname.lower(), [])
-
-    def get_model_perf(self, hostname: str, model: str) -> dict:
-        """Get performance metrics for a model on a node."""
-        return self._model_perf.get(f"{hostname.lower()}:{model}", {})
-
-    def check_model_fit(self, hostname: str, model: str) -> dict:
-        """Check if a model fits on a node based on hardware specs.
-        Returns dict with 'fits': bool, 'reason': str, 'model_size_gib': float, 'available_ram_gib': float, 'vram_gib': float."""
-        specs = self._node_specs.get(hostname, {})
-        if not specs:
-            return {"fits": True, "reason": "no_hardware_data", "model_size_gib": 0, "available_ram_gib": 0, "vram_gib": 0}
-        
-        ram_gib = specs.get("ram_gib")
-        vram_gib = specs.get("vram_gib")
-        available_ram = ram_gib  # Use total RAM as budget (conservative)
-        
-        # Estimate model size
-        model_size = self._estimate_model_size(model)
-        self._model_sizes[model] = model_size
-        
-        # For CPU-only nodes (no VRAM), model must fit in system RAM
-        # For nodes with VRAM, model can use VRAM + some system RAM
-        if vram_gib and vram_gib > 0:
-            # Can use VRAM + some RAM for offloading
-            # Require model to fit in VRAM * 1.5 (allows some offloading)
-            effective_vram = vram_gib * 1.5
-            if model_size <= effective_vram:
-                return {"fits": True, "reason": "fits_in_vram", "model_size_gib": model_size, "available_ram_gib": available_ram, "vram_gib": vram_gib}
-            # Check if it fits in RAM with offloading
-            if model_size <= available_ram * 0.9:  # Leave 10% headroom
-                return {"fits": True, "reason": "fits_in_ram_with_offload", "model_size_gib": model_size, "available_ram_gib": available_ram, "vram_gib": vram_gib}
-            return {"fits": False, "reason": f"model_too_large_for_{vram_gib}GiB_VRAM_and_{available_ram}GiB_RAM", "model_size_gib": model_size, "available_ram_gib": available_ram, "vram_gib": vram_gib}
-        else:
-            # CPU-only node, model must fit in system RAM
-            if model_size <= available_ram * 0.8:  # Leave 20% headroom for OS/other
-                return {"fits": True, "reason": "fits_in_ram", "model_size_gib": model_size, "available_ram_gib": available_ram, "vram_gib": 0}
-            return {"fits": False, "reason": f"model_too_large_for_{available_ram}GiB_RAM", "model_size_gib": model_size, "available_ram_gib": available_ram, "vram_gib": 0}
-
-    def reload(self) -> None:
-        """Reload routing data from disk."""
-        self._load()
-
-
-# Global routing instance
-_ROUTING: Optional[FleetRouting] = None
-
-
-def _get_routing() -> FleetRouting:
-    global _ROUTING
-    if _ROUTING is None:
-        _ROUTING = FleetRouting()
-    return _ROUTING
+    def snapshot(self) -> dict[str, Any]:
+        if not self._projection:
+            return {"generation": 0, "providers": [], "aliases": []}
+        return {
+            "generation": self._projection.generation,
+            "revision": self._projection.revision,
+            "providers": list(self._projection.providers),
+            "aliases": list(self._projection.aliases),
+            "total_slots": self._projection.total_slots,
+        }
 
 
 class FleetExecutor:
-    """Central task executor — claims READY tasks and runs them against fleet
-    nodes by capability. Runs as a daemon thread inside the assistx process."""
+    """Projection-driven, claim-fenced executor for continuous LLM work."""
 
-    def __init__(self) -> None:
-        self._nodes: list[dict] = []
-        # Re-entrant so node selection and reservation can be one atomic
-        # operation while _pick_node also takes the same lock.
-        self._node_lock = threading.RLock()
-        self._llm_sem = threading.Semaphore(MAX_CONCURRENT_LLM)
-        self._script_sem = threading.Semaphore(MAX_CONCURRENT_SCRIPT)
-        # Process-wide set of task ids already dispatched to a worker thread.
-        # Prevents the same READY task from being fetched and double-claimed
-        # across successive 2s poll iterations (the claim only happens inside
-        # the worker, after fetch, so a local per-call seen-set is not enough).
-        self._inflight_ids: set[str] = set()
-        self._inflight_lock = threading.Lock()
-        self._rr_index: int = 0
-        self._pick_count: dict[str, int] = {}
-        self._node_inflight: dict[str, int] = {}
-        self._node_semaphores: dict[str, threading.Semaphore] = {}
-        self._node_semaphore_limits: dict[str, int] = {}
-        self._node_latency: dict[str, float] = {}
-        # Cache the last successfully-resolved IP per hostname across refresh
-        # cycles.  The router sometimes advertises a docker-internal IP and
-        # Tailscale DNS can be intermittently unresolvable for some hosts, so
-        # without this cache a node the operator added would flap in and out of
-        # the fleet.  A cached real IP keeps it reachable between blips.
-        self._ip_cache: dict[str, str] = {}
-        self._tld = os.getenv("TAILSCALE_DOMAIN", "tailcb8954.ts.net")
-        # Load model routing data from LMS benchmark results
-        self._model_routing: dict = {}
-        self._model_best_node: dict = {}
-        self._model_fallbacks: dict = {}
-        self._model_tps: dict = {}
-        self._model_max_concurrency: dict = {}
-        self._load_routing_data()
-
-    def _load_routing_data(self) -> None:
-        """Load model routing data with composite valuation (TPS * quality) from fleet_state.json."""
-        import json
-        import os
-        # Try multiple locations for fleet_state.json (has both TPS and eval_score)
-        state_paths = [
-            "/home/scott/git/lms/fleet_state.json",
-            "/app/fleet_state.json",
-            os.path.join(os.path.dirname(__file__), "..", "..", "fleet_state.json"),
-        ]
-        for path in state_paths:
-            try:
-                with open(path, "r") as f:
-                    state = json.load(f)
-                if "nodes" not in state:
-                    continue
-                
-                # Build composite scores per model per node
-                model_candidates: dict[str, list[dict]] = {}
-                for node in state["nodes"]:
-                    hostname = node.get("name") or node.get("hostname")
-                    if not hostname or not node.get("live", False):
-                        continue
-                    for model_info in node.get("models", []):
-                        if isinstance(model_info, dict):
-                            mkey = model_info.get("model_key") or model_info.get("model")
-                            if not mkey:
-                                continue
-                            tps = model_info.get("tps_med", 0) or 0
-                            eval_score = model_info.get("eval_score", 0) or 0
-                            if tps <= 0:
-                                continue
-                            concurrency = model_info.get("concurrency", {})
-                            tier = concurrency.get("tier", 1) if isinstance(concurrency, dict) else 1
-                            # Composite valuation: TPS * (eval_score + epsilon)
-                            eps = 0.1
-                            composite = tps * (eval_score + eps)
-                            model_candidates.setdefault(mkey.lower(), []).append({
-                                "node": hostname.lower(),
-                                "tps": tps,
-                                "eval_score": eval_score,
-                                "composite": composite,
-                                "concurrency_tier": tier,
-                            })
-                
-                # Select best node per model by composite score
-                for model, candidates in model_candidates.items():
-                    candidates.sort(key=lambda c: c["composite"], reverse=True)
-                    best = candidates[0]
-                    self._model_best_node[model] = best["node"]
-                    self._model_fallbacks[model] = [c["node"] for c in candidates[1:]]
-                    self._model_tps[model] = best["tps"]
-                    self._model_max_concurrency[model] = best["concurrency_tier"]
-                    self._model_routing[model] = {
-                        "best_node": best["node"],
-                        "best_tps": best["tps"],
-                        "best_eval": best["eval_score"],
-                        "best_composite": best["composite"],
-                        "fallbacks": self._model_fallbacks[model],
-                    }
-                
-                logger.info("fleet executor: loaded composite routing for %d models from %s", len(self._model_routing), path)
-                return
-            except Exception:
-                continue
-        logger.warning("fleet executor: could not load composite routing from fleet_state.json")
-
-    @staticmethod
-    def _resolve(hostname: str, tld: str) -> Optional[str]:
-        """Resolve a hostname's tailscale IP via DNS. Retries a few times so
-        transient blips don't drop a node from the fleet."""
-        import socket
-        fqdn = f"{hostname}.{tld}" if "." not in hostname else hostname
-        last_err: Exception | None = None
-        for _attempt in range(3):
-            try:
-                return socket.getaddrinfo(fqdn, 1234)[0][4][0]
-            except Exception as e:  # transient DNS/network blip
-                last_err = e
-                time.sleep(0.3)
-        return None
-
-    def _refresh_nodes(self) -> None:
-        now = time.time()
-
-        # Build seed nodes from router + known hosts config.
-        seen_hostnames = set()
-        seed_nodes: list[dict] = []
-
-        st, body = _http("GET", f"{ROUTER_URL}/api/fleet/nodes", timeout=10)
-        if st == 200:
-            nodes = body.get("nodes") if isinstance(body, dict) else body
-            if isinstance(nodes, list):
-                for n in nodes:
-                    hostname = n.get("hostname") or n.get("ip", "")
-                    if not hostname:
-                        continue
-                    # Prefer the router-provided IP (already resolved via
-                    # Tailscale on the router side).  Inside this container we
-                    # may not have Tailscale magic DNS, so resolving hostnames
-                    # here would silently drop nodes.  Keep the IP as a hint.
-                    ip = n.get("ip") or ""
-                    seed_nodes.append({
-                        "hostname": hostname,
-                        "ip": ip,
-                        "specs": n.get("specs") or {},
-                    })
-                    seen_hostnames.add(hostname)
-
-        # Inject any known hosts not already tracked by the router.
-        for h in KNOWN_HOSTS:
-            h = h.strip()
-            if h and h not in seen_hostnames:
-                seed_nodes.append({"hostname": h})
-                seen_hostnames.add(h)
-
-        if not seed_nodes:
-            logger.warning("fleet executor: no seed nodes from router or config")
-            return
-
-        enriched = []
-        # Keep previously-seen nodes around (with their old IP/caps) so a
-        # transient blip doesn't drop a machine from the fleet — we just
-        # re-probe it next cycle instead of forgetting it.
-        prev_by_host = {n.get("hostname"): n for n in self._nodes}
-        for n in seed_nodes:
-            hostname = n.get("hostname", "")
-            if not hostname:
-                continue
-            # Prefer resolving the hostname via Tailscale DNS (authoritative
-            # 100.x.x.x addresses).  The router may advertise a docker-internal
-            # IP (e.g. 172.26.0.5) for nodes on its own subnet, which is NOT
-            # reachable from this container — so only fall back to the router's
-            # reported IP when DNS resolution fails (e.g. macbook-air not in
-            # Tailscale DNS).
-            ip = self._resolve(hostname, self._tld)
-            if ip:
-                # Remember a good IP so a later flaky DNS cycle can't drop the
-                # node entirely.
-                self._ip_cache[hostname] = ip
-            else:
-                hint = (n.get("ip") or "").strip()
-                if hint and not hint.startswith("172."):
-                    ip = hint
-                    self._ip_cache[hostname] = ip
-            if not ip:
-                # Last resort: a previously-cached real IP for this host.
-                cached = self._ip_cache.get(hostname)
-                if cached and not cached.startswith("172."):
-                    ip = cached
-            if not ip:
-                prev = prev_by_host.get(hostname)
-                if prev:
-                    logger.warning(
-                        "fleet executor: %s temporarily unresolvable, keeping (will retry)",
-                        hostname,
-                    )
-                    prev["last_seen"] = now
-                    prev["lmstudio_ok"] = False
-                    enriched.append(prev)
-                else:
-                    logger.warning("fleet executor: cannot resolve %s, skipping", hostname)
-                continue
-
-            caps = set(n.get("capabilities") or [])
-            caps.add("linux")
-            models = self._probe_models(ip)
-            service_capacity = self._probe_service_capacity(ip) if models is not None else None
-            known = hostname in set(h.strip() for h in KNOWN_HOSTS)
-            if models is not None:
-                caps.add("llm")
-                n["loaded_models"] = models
-                n["lmstudio_ok"] = True
-                n["service_ok"] = True
-                n["service_protocol"] = "openai-compatible"
-                n["service_capacity"] = service_capacity
-            else:
-                # Probe failed this cycle. If we previously knew this node had
-                # LM Studio, or it's an explicitly-configured known host, keep
-                # the llm capability so a transient blip (model load, brief
-                # overload) doesn't drop it from the fleet. We re-probe next
-                # cycle. Only hard-drop if we've never seen it serve models.
-                prev = prev_by_host.get(hostname)
-                had_llm = prev and prev.get("lmstudio_ok")
-                if had_llm or known:
-                    caps.add("llm")
-                    n["loaded_models"] = (prev or {}).get("loaded_models", [])
-                    n["lmstudio_ok"] = bool(had_llm)
-                    n["service_ok"] = bool(had_llm)
-                    n["service_protocol"] = (prev or {}).get("service_protocol", "openai-compatible")
-                    n["service_capacity"] = (prev or {}).get("service_capacity")
-                    if had_llm:
-                        logger.warning(
-                            "fleet executor: %s LM Studio probe flaky, retaining capability",
-                            hostname,
-                        )
-                else:
-                    n["loaded_models"] = []
-                    n["lmstudio_ok"] = False
-                    n["service_ok"] = False
-                    n["service_protocol"] = "openai-compatible"
-                    n["service_capacity"] = None
-            if self._probe_script():
-                caps.add("script")
-            n["capabilities"] = list(caps)
-            n["ip"] = ip
-            n["hostname"] = hostname
-            # Preserve a previously-derived weight only when the service does
-            # not advertise live capacity. Explicit config wins; llama.cpp's
-            # /slots count is otherwise authoritative and tracks --parallel.
-            prev_weight = (prev_by_host.get(hostname) or {}).get("weight")
-            configured_weight = next(
-                (value for key, value in NODE_CONCURRENCY.items() if key.lower() == hostname.lower()),
-                None,
-            )
-            n["weight"] = (
-                configured_weight
-                or service_capacity
-                or prev_weight
-                or _auto_weight(n.get("specs") or {}, n.get("loaded_models") or [])
-            )
-            n["last_seen"] = now
-            enriched.append(n)
-
-            # Create per-node semaphore to limit concurrent LM Studio requests
-            # to the node's weight (concurrency capacity).
-            if n.get("lmstudio_ok"):
-                weight = max(1, n.get("weight", 1))
-                with self._node_lock:
-                    current_limit = self._node_semaphore_limits.get(hostname)
-                    if hostname not in self._node_semaphores or (
-                        current_limit != weight and self._node_inflight.get(hostname, 0) == 0
-                    ):
-                        self._node_semaphores[hostname] = threading.Semaphore(weight)
-                        self._node_semaphore_limits[hostname] = weight
-
-        with self._node_lock:
-            self._nodes = enriched
-
-        for n in enriched:
-            _http(
-                "POST",
-                f"{ROUTER_URL}/api/fleet/node-report",
-                data={
-                    "hostname": n["hostname"],
-                    "capabilities": n.get("capabilities", []),
-                    "loaded": n.get("loaded_models", []),
-                    "library": n.get("loaded_models", []),
-                    "health": {"lmstudio": n.get("lmstudio_ok", False)},
-                },
-                timeout=10,
-            )
-        llm_count = sum(1 for n in enriched if n.get("lmstudio_ok"))
-        total_models = sum(len(n.get("loaded_models", [])) for n in enriched if n.get("lmstudio_ok"))
-        if llm_count:
-            logger.info(
-                "fleet executor: %d nodes with LM Studio (%d models): %s",
-                llm_count, total_models,
-                {n["hostname"]: len(n.get("loaded_models", [])) for n in enriched if n.get("lmstudio_ok")},
-            )
-        else:
-            logger.info("fleet executor: no LM Studio nodes found")
-
-    @staticmethod
-    def _probe_models(ip: str) -> Optional[list[str]]:
-        """Probe LM Studio for model list. Returns list of model IDs or None
-        if unreachable."""
-        try:
-            req = urllib.request.Request(
-                f"http://{ip}:{LMSTUDIO_PORT}/v1/models",
-                method="GET",
-            )
-            with urllib.request.urlopen(req, timeout=6) as r:
-                data = json.loads(r.read().decode())
-                models = data.get("data") or []
-                return [m["id"] for m in models if isinstance(m, dict) and m.get("id")]
-        except Exception:
-            return None
-
-    @staticmethod
-    def _probe_service_capacity(ip: str) -> Optional[int]:
-        """Return live llama.cpp slot capacity, or None for other services."""
-        try:
-            req = urllib.request.Request(
-                f"http://{ip}:{LMSTUDIO_PORT}/slots",
-                method="GET",
-            )
-            with urllib.request.urlopen(req, timeout=3) as r:
-                slots = json.loads(r.read().decode())
-                if isinstance(slots, list) and slots:
-                    return len(slots)
-        except Exception:
-            pass
-        return None
-
-    @staticmethod
-    def _probe_script() -> bool:
-        try:
-            subprocess.run("true", shell=True, capture_output=True, timeout=5)
-            return True
-        except Exception:
-            return False
-
-    def _pick_node(
+    def __init__(
         self,
-        required: list[str],
-        preferred_model: str = "",
-        exclude: set[str] | None = None,
-        complexity: str = "",
-    ) -> Optional[dict]:
-        """Pick the best node for a task.
-
-        - Specific ``preferred_model`` -> benchmark-best node that has it.
-        - ``complexity`` in {high, medium} -> prefer nodes running a large
-          "quality" resident model (operator-curated by whatever they loaded),
-          weighted round-robin among those; falls back to any LLM node if no
-          large model is resident anywhere.
-        - Otherwise (default) -> speed-first weighted round-robin across all LLM
-          nodes using composite benchmark scores (TPS * eval).
-        """
-        with self._node_lock:
-            candidates = list(self._nodes)
-        now = time.time()
-        exclude = exclude or set()
-        alive = [
-            n for n in candidates
-            if (now - n.get("last_seen", 0)) < NODE_HEALTH_TTL
-            and n.get("hostname", n.get("ip", "")) not in exclude
-            and (
-                "llm" not in required
-                or self._node_inflight.get(n.get("hostname", n.get("ip", "?")), 0)
-                < max(1, int(n.get("weight", 1)))
-            )
+        *,
+        neo_factory: Callable[[], Any] = Neo4jClient,
+        projection_loader: Callable[[], dict[str, Any]] | None = None,
+        router_runner: Callable[
+            [dict[str, Any], int, threading.Event], dict[str, Any]
         ]
-        matched = []
-        for n in alive:
-            caps = set(n.get("capabilities") or [])
-            if not caps.issuperset(required):
-                continue
-            matched.append(n)
+        | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.neo_factory = neo_factory
+        self.projection_loader = projection_loader or self._load_projection
+        self.router_runner = router_runner or self._run_router_supervised
+        self.clock = clock
+        self._pool = ThreadPoolExecutor(
+            max_workers=MAX_CONCURRENT_LLM,
+            thread_name_prefix="safe-fleet-task",
+        )
+        self._lock = threading.RLock()
+        self._active: dict[str, dict[str, Any]] = {}
+        self._futures: dict[str, Future[Any]] = {}
+        self._projection: ProjectionInventory | None = None
+        self._routing = FleetRouting()
+        self._nodes: list[dict[str, Any]] = []
+        self._stop = threading.Event()
 
-        if not matched:
-            return None
+    def _load_projection(self) -> dict[str, Any]:
+        # This internal read uses the same approved evidence contract as the
+        # signed router projection. The router independently verifies the signed
+        # schema-v2 document before forwarding inference.
+        return build_runtime_projection(
+            self.neo_factory,
+            secret="assistx-internal-executor-projection",
+            ttl_seconds=PROJECTION_TTL_SECONDS,
+        )
 
-        # If a specific model is requested, use benchmark-based routing
-        if preferred_model and "llm" in required:
-            model_lower = preferred_model.lower()
-            best_node_name = self._model_best_node.get(model_lower)
-            fallbacks = self._model_fallbacks.get(model_lower, [])
+    def _list_ready_llm_tasks(self, neo: Any, limit: int) -> list[dict[str, Any]]:
+        with neo._session() as session:
+            rows = session.run(
+                """
+                MATCH (t:Task {status:'READY'})
+                WHERE 'llm' IN coalesce(t.required_capabilities, [])
+                  AND coalesce(t.requires_approval, false)=false
+                RETURN t
+                ORDER BY CASE toLower(coalesce(t.priority, 'background'))
+                    WHEN 'critical' THEN 0
+                    WHEN 'repo_critical' THEN 1
+                    WHEN 'interactive' THEN 2
+                    WHEN 'local_only' THEN 3
+                    WHEN 'medium' THEN 4
+                    WHEN 'batch' THEN 5
+                    ELSE 6 END,
+                    coalesce(t.created_at_ts, 0)
+                LIMIT $limit
+                """,
+                {"limit": max(1, min(int(limit), 500))},
+            )
+            return [dict(row["t"]) for row in rows]
 
-            if best_node_name:
-                for n in matched:
-                    if n.get("hostname", "").lower() == best_node_name:
-                        node_models = [m.lower() for m in n.get("loaded_models", [])]
-                        if any(model_lower in m for m in node_models):
-                            routing_info = self._model_routing.get(model_lower, {})
-                            logger.info(
-                                "fleet executor: routing %s to best node %s (TPS: %.1f, eval: %.2f, composite: %.1f)",
-                                preferred_model, best_node_name,
-                                routing_info.get("best_tps", 0),
-                                routing_info.get("best_eval", 0),
-                                routing_info.get("best_composite", 0)
-                            )
-                            return n
+    @staticmethod
+    def _payload(task: dict[str, Any]) -> dict[str, Any]:
+        return _decode_json(task.get("payload") or task.get("payload_json"), {})
 
-            for fallback_name in fallbacks:
-                for n in matched:
-                    if n.get("hostname", "").lower() == fallback_name:
-                        node_models = [m.lower() for m in n.get("loaded_models", [])]
-                        if any(model_lower in m for m in node_models):
-                            logger.info(
-                                "fleet executor: routing %s to fallback node %s",
-                                preferred_model, fallback_name
-                            )
-                            return n
-
-            for n in matched:
-                node_models = [m.lower() for m in n.get("loaded_models", [])]
-                if any(model_lower in m for m in node_models):
-                    return n
-
-            for n in matched:
-                node_models_lower = [m.lower() for m in n.get("loaded_models", [])]
-                if any(model_lower in m for m in node_models_lower):
-                    return n
-
-        # Quality-aware routing: when a task asks for quality (complex/hard),
-        # prefer nodes running a large resident model. We adapt to whatever the
-        # operator has loaded — no hard-coded model names. Falls back to any LLM
-        # node if nowhere currently has a large model resident.
-        if "llm" in required and complexity in COMPLEXITY_HINTS:
-            quality_nodes = []
-            for n in matched:
-                if _resident_quality_models(n.get("loaded_models", [])):
-                    quality_nodes.append(n)
-            if quality_nodes:
-                best = None
-                best_score = float("inf")
-                for n in quality_nodes:
-                    hn = n.get("hostname", n.get("ip", "?"))
-                    effective_weight = float(n.get("weight", 1))
-                    picked = self._pick_count.get(hn, 0)
-                    score = picked / effective_weight
-                    if score < best_score:
-                        best_score = score
-                        best = n
-                if best:
-                    hn = best.get("hostname", best.get("ip", "?"))
-                    self._pick_count[hn] = self._pick_count.get(hn, 0) + 1
-                    if sum(self._pick_count.values()) > len(matched) * 20:
-                        for k in list(self._pick_count.keys()):
-                            self._pick_count[k] = self._pick_count[k] // 2
-                    logger.info(
-                        "fleet executor: quality routing %s task -> node %s (resident: %s)",
-                        complexity,
-                        hn,
-                        _resident_quality_models(best.get("loaded_models", [])),
-                    )
-                    return best
-
-        # Generic LLM task (no specific model): use composite benchmark scores
-        # as effective weights. Compute each node's best composite score across
-        # its loaded models. Nodes with no benchmark data fall back to configured weight.
-        routing = _get_routing()
-        node_scores: dict[str, float] = {}
-        for n in matched:
-            hn = n.get("hostname", n.get("ip", "?"))
-            best_composite = 0.0
-            for model in n.get("loaded_models", []):
-                perf = routing.get_model_perf(hn, model)
-                if perf:
-                    tps = perf.get("tps_med", 0) or 0
-                    eval_score = perf.get("eval_score", 0) or 0
-                    if tps > 0:
-                        composite = tps * (eval_score + 0.1)
-                        if composite > best_composite:
-                            best_composite = composite
-            if best_composite > 0:
-                node_scores[hn] = best_composite
-            else:
-                node_scores[hn] = float(n.get("weight", 1))
-
-        # Weighted round-robin using composite scores as weights
-        best: Optional[dict] = None
-        best_score = float("inf")
-        for n in matched:
-            hn = n.get("hostname", n.get("ip", "?"))
-            effective_weight = max(1.0, node_scores.get(hn, float(n.get("weight", 1))))
-            picked = self._pick_count.get(hn, 0)
-            score = picked / effective_weight
-            if score < best_score:
-                best_score = score
-                best = n
-        if best:
-            hn = best.get("hostname", best.get("ip", "?"))
-            self._pick_count[hn] = self._pick_count.get(hn, 0) + 1
-            if sum(self._pick_count.values()) > len(matched) * 20:
-                for k in list(self._pick_count.keys()):
-                    self._pick_count[k] = self._pick_count[k] // 2
-            return best
-        return matched[self._rr_index]
+    @staticmethod
+    def _messages(payload: dict[str, Any]) -> list[dict[str, str]]:
+        raw = payload.get("messages")
+        if isinstance(raw, list):
+            messages = [
+                {
+                    "role": str(item.get("role") or "user"),
+                    "content": str(item.get("content") or ""),
+                }
+                for item in raw
+                if isinstance(item, dict) and str(item.get("content") or "").strip()
+            ]
+            if messages:
+                return messages
+        prompt = str(payload.get("prompt") or payload.get("command") or "").strip()
+        return [{"role": "user", "content": prompt}] if prompt else []
 
     @staticmethod
     def _pick_fast_model(models: list[str]) -> str:
-        if not models:
-            return ""
-        def size_rank(m: str) -> int:
-            ml = m.lower()
-            for big in ("35b", "32b", "30b", "27b", "27-", "70b", "72b"):
-                if big in ml:
-                    return 3
-            for med in ("14b", "13b", "12b", "9b", "8b", "7b", "3b", "4b"):
-                if med in ml:
-                    return 1
-            return 2
-        return sorted(models, key=size_rank)[0]
+        return min(models, key=lambda value: (_model_billions(value) or 9999, value)) if models else ""
 
-    def _pick_best_model(self, node: dict) -> str:
-        """Pick the best model for a node using benchmark data, respecting hardware constraints."""
-        models = node.get("loaded_models", [])
-        if not models:
-            return ""
-        hostname = node.get("hostname", "")
-        routing = _get_routing()
-
-        # Score each model by TPS from benchmark data, filtered by hardware fit
-        best_model = ""
-        best_score = -1.0
-        for model in models:
-            # Check if model fits on this node's hardware
-            fit = routing.check_model_fit(hostname, model)
-            if not fit.get("fits", True):  # Default True if no spec data
-                logger.debug("fleet executor: model %s does not fit on %s: %s", model, hostname, fit.get("reason"))
-                continue
-            
-            perf = routing.get_model_perf(hostname, model)
-            if perf:
-                # Prefer models with high TPS and good eval score
-                tps = perf.get("tps_med", 0)
-                eval_score = perf.get("eval_score", 0)
-                # Combined score: TPS * eval_score (0-1 range)
-                score = tps * (eval_score + 0.1)  # +0.1 so even 0 eval gets some weight
-                if score > best_score:
-                    best_score = score
-                    best_model = model
-
-        if best_model:
-            return best_model
-
-        # Fallback: pick smallest model that fits
-        for model in sorted(models, key=lambda m: routing._estimate_model_size(m)):
-            fit = routing.check_model_fit(hostname, model)
-            if fit.get("fits", True):
-                return model
-
-        # Last resort: size-based heuristic
-        return self._pick_fast_model(models)
-
-    def _call_lmstudio(
-        self,
-        node: dict,
-        messages: list[dict],
-        model: str = "",
-        timeout: int = LMSTUDIO_CALL_TIMEOUT,
-        complexity: str = "",
-    ) -> dict:
-        ip = node.get("ip", "127.0.0.1")
-        hostname = node.get("hostname", ip)
-        url = f"http://{ip}:{LMSTUDIO_PORT}/v1/chat/completions"
-        payload = {
-            "messages": messages,
-            "temperature": 0.7,
-            "max_tokens": 4096,
-        }
-        if model:
-            payload["model"] = model
-        elif complexity in COMPLEXITY_HINTS:
-            # Quality routing: pick the largest resident model on this node.
-            # We adapt to whatever the operator has loaded, honoring manual swaps.
-            quality = _resident_quality_models(node.get("loaded_models", []))
-            if quality:
-                payload["model"] = quality[0]
-        elif node.get("loaded_models"):
-            payload["model"] = self._pick_best_model(node)
-
-        logger.info(
-            "fleet executor: calling LM Studio on %s model=%s",
-            hostname, payload.get("model", "default"),
-        )
-
-        # Acquire per-node semaphore to limit concurrent LM Studio requests
-        node_sem = self._node_semaphores.get(hostname)
-        if node_sem:
-            node_sem.acquire()
-        try:
-            st, body = _http("POST", url, data=payload, timeout=timeout)
-        finally:
-            if node_sem:
-                node_sem.release()
-
-        # If the model isn't actually loaded (LM Studio library entry but
-        # not in GPU), fall back to the default model / no model specified.
-        if st == 400 and isinstance(body, dict):
-            err_msg = (
-                body.get("error", {})
-                .get("message", "")
-                if isinstance(body.get("error"), dict)
-                else str(body.get("error", ""))
-            )
-            logger.debug("fleet executor: LM Studio %s error: %s", hostname, err_msg)
-            # Handle "Failed to load model" - retry without specifying a model
-            if "Failed to load model" in err_msg and payload.get("model"):
-                logger.warning(
-                    "fleet executor: model '%s' not loaded on %s, retrying with default",
-                    payload["model"], hostname,
-                )
-                del payload["model"]
-                if node_sem:
-                    node_sem.acquire()
-                try:
-                    st, body = _http("POST", url, data=payload, timeout=timeout)
-                finally:
-                    if node_sem:
-                        node_sem.release()
-                # After removing model, check for "Multiple models" on retry
-                if st == 400 and isinstance(body, dict):
-                    err_msg = (
-                        body.get("error", {})
-                        .get("message", "")
-                        if isinstance(body.get("error"), dict)
-                        else str(body.get("error", ""))
-                    )
-            # Handle "Multiple models are loaded" - retry with a specific fast model
-            if "Multiple models are loaded" in err_msg and not payload.get("model"):
-                fast_model = self._pick_fast_model(node.get("loaded_models", []))
-                if fast_model:
-                    logger.warning(
-                        "fleet executor: multiple models loaded on %s, retrying with %s",
-                        hostname, fast_model,
-                    )
-                    payload["model"] = fast_model
-                    if node_sem:
-                        node_sem.acquire()
-                    try:
-                        st, body = _http("POST", url, data=payload, timeout=timeout)
-                    finally:
-                        if node_sem:
-                            node_sem.release()
-
-        if st != 200:
-            logger.warning("fleet executor: LM Studio %s returned %s", hostname, st)
-            return {"error": body, "status_code": st, "exit_code": 1}
-
-        choice = body.get("choices", [{}])[0]
-        content = choice.get("message", {}).get("content", "")
-        usage = body.get("usage", {})
-        completion_tokens = usage.get("completion_tokens", 0)
-
-        # Validate response quality
-        validation = self._validate_response(content, completion_tokens)
-        if not validation["valid"]:
-            logger.warning("fleet executor: LM Studio %s response validation failed: %s", hostname, validation["reason"])
-            return {"error": validation["reason"], "status_code": st, "exit_code": 1}
-
-        return {
-            "content": content,
-            "model": body.get("model", payload.get("model", "")),
-            "usage": usage,
-            "node": hostname,
-            "exit_code": 0,
-            "validation": validation,
-        }
-
-    def _validate_response(self, content: str, completion_tokens: int) -> dict:
-        """Validate LLM response quality. Returns dict with valid:bool, reason:str, metrics."""
-        if not content or not content.strip():
+    @staticmethod
+    def _validate_response(content: str, completion_tokens: int = 0) -> dict[str, Any]:
+        stripped = str(content or "").strip()
+        if not stripped:
             return {"valid": False, "reason": "empty_response", "metrics": {}}
-
-        stripped = content.strip()
         if len(stripped) < 10:
-            return {"valid": False, "reason": "too_short", "metrics": {"length": len(stripped)}}
-
-        # Check for common refusal/error patterns
-        refusal_patterns = [
-            "i cannot", "i can't", "i'm unable", "i am unable",
-            "as an ai language model", "i don't have", "i do not have",
-            "i apologize", "i'm sorry", "i am sorry",
-            "cannot fulfill", "unable to fulfill", "refuse to",
-            "error:", "exception:", "traceback",
-            "i don't know", "i do not know", "not sure",
-        ]
-        lower = stripped.lower()
-        for pattern in refusal_patterns:
-            if pattern in lower[:200]:  # Check first 200 chars
-                return {"valid": False, "reason": f"refusal_pattern:{pattern}", "metrics": {}}
-
-        # Check for minimum token usage (avoid degenerate responses)
-        if completion_tokens > 0 and completion_tokens < 5:
-            return {"valid": False, "reason": "too_few_tokens", "metrics": {"completion_tokens": completion_tokens}}
-
-        # For kg_insight style tasks, check for structured content indicators
-        # (these tasks should produce analysis/insights, not just short answers)
-        insight_indicators = ["analysis", "insight", "summary", "finding", "conclusion", "recommendation",
-                             "key point", "observation", "implication", "pattern", "trend"]
-        has_insight_structure = any(ind in lower for ind in insight_indicators)
-
+            return {
+                "valid": False,
+                "reason": "too_short",
+                "metrics": {"length": len(stripped)},
+            }
         return {
             "valid": True,
             "reason": "ok",
             "metrics": {
                 "length": len(stripped),
-                "completion_tokens": completion_tokens,
-                "has_insight_structure": has_insight_structure,
+                "completion_tokens": max(0, int(completion_tokens or 0)),
             },
         }
 
-    def _pick_and_reserve_node(
+    def _request_payload(
         self,
-        required: list[str],
-        preferred_model: str = "",
-        exclude: set[str] | None = None,
-        complexity: str = "",
-    ) -> Optional[dict]:
-        """Atomically pick a node and increment its inflight counter.
-        Returns the node dict or None if no suitable node available.
+        task: dict[str, Any],
+        claim_id: str,
+        projection: ProjectionInventory,
+    ) -> dict[str, Any]:
+        payload = self._payload(task)
+        messages = self._messages(payload)
+        if not messages:
+            raise ValueError("task does not contain messages or a prompt")
+        complexity = str(
+            payload.get("complexity") or payload.get("quality") or ""
+        ).strip().lower()
+        model = projection.choose_model(str(payload.get("model") or ""), complexity)
+        metadata = dict(payload.get("metadata") or {})
+        metadata["assistx_executor"] = {
+            "task_id": str(task.get("id") or ""),
+            "claim_id": claim_id,
+            "agent_id": EXECUTOR_AGENT_ID,
+            "projection_generation": projection.generation,
+        }
+        return {
+            "model": model,
+            "messages": messages,
+            "temperature": float(payload.get("temperature", 0.2)),
+            "max_tokens": max(1, min(int(payload.get("max_tokens", 4096)), 32768)),
+            "stream": False,
+            "metadata": metadata,
+        }
 
-        Selection and increment share the re-entrant node lock so parallel
-        dispatchers cannot overbook the last advertised service slot.
-        """
-        with self._node_lock:
-            node = self._pick_node(required, preferred_model, exclude, complexity)
-            if node:
-                hn = node.get("hostname", node.get("ip", "?"))
-                self._node_inflight[hn] = self._node_inflight.get(hn, 0) + 1
-        return node
-
-    def _release_node(self, hostname: str) -> None:
-        """Decrement inflight counter for a node."""
-        with self._node_lock:
-            if hostname in self._node_inflight:
-                self._node_inflight[hostname] = max(0, self._node_inflight[hostname] - 1)
-
-    def _mark_inflight(self, task_id: str) -> bool:
-        """Reserve a task id for dispatch. Returns False if already in flight."""
-        with self._inflight_lock:
-            if task_id in self._inflight_ids:
-                return False
-            self._inflight_ids.add(task_id)
-            return True
-
-    def _clear_inflight(self, task_id: str) -> None:
-        with self._inflight_lock:
-            self._inflight_ids.discard(task_id)
-
-    def _execute_task(self, task: dict, reserved_node: dict | None = None) -> dict:
-        payload = task.get("payload", {})
-        if isinstance(payload, str):
-            try:
-                payload = json.loads(payload)
-            except Exception:
-                payload = {}
-        req_caps = task.get("required_capabilities") or task.get("required_capabilities_plain") or ["script"]
-
-        if "llm" in req_caps:
-            messages = payload.get("messages") or [
-                {"role": "user", "content": payload.get("prompt", payload.get("command", ""))}
-            ]
-            model = payload.get("model", "")
-            # Opt-in quality routing: honor an explicit complexity/quality hint.
-            complexity = str(payload.get("complexity") or payload.get("quality") or "").strip().lower()
-            tried: set[str] = set()
-
-            # First attempt: use reserved node if provided
-            if reserved_node:
-                hn = reserved_node.get("hostname", reserved_node.get("ip", "?"))
-                tried.add(hn)
-                try:
-                    start = time.time()
-                    result = self._call_lmstudio(reserved_node, messages, model, complexity=complexity)
-                    elapsed = time.time() - start
-                finally:
-                    self._release_node(hn)
-                result["node"] = hn
-                if result.get("exit_code", 1) == 0:
-                    old = self._node_latency.get(hn, elapsed)
-                    self._node_latency[hn] = old * 0.7 + elapsed * 0.3
-                    return result
-                logger.warning(
-                    "fleet executor: reserved node %s failed (model=%s), trying fallback",
-                    hn, model,
-                )
-
-            # Pass 1: nodes that have the requested model loaded (or quality tier).
-            for _ in range(min(4, len(self._nodes) + 1)):
-                node = self._pick_and_reserve_node(["llm"], preferred_model=model, exclude=tried, complexity=complexity)
-                if not node:
-                    break
-                hn = node.get("hostname", node.get("ip", "?"))
-                tried.add(hn)
-                try:
-                    start = time.time()
-                    result = self._call_lmstudio(node, messages, model, complexity=complexity)
-                    elapsed = time.time() - start
-                finally:
-                    self._release_node(hn)
-                result["node"] = hn
-                if result.get("exit_code", 1) == 0:
-                    old = self._node_latency.get(hn, elapsed)
-                    self._node_latency[hn] = old * 0.7 + elapsed * 0.3
-                    return result
-                logger.warning(
-                    "fleet executor: node %s failed (model=%s), trying next",
-                    hn, model,
-                )
-
-            # Pass 2: fall back to ANY LLM node with no model hint.
-            for _ in range(min(4, len(self._nodes) + 1)):
-                node = self._pick_and_reserve_node(["llm"], preferred_model="", exclude=tried)
-                if not node:
-                    break
-                hn = node.get("hostname", node.get("ip", "?"))
-                tried.add(hn)
-                try:
-                    start = time.time()
-                    result = self._call_lmstudio(node, messages, "")
-                    elapsed = time.time() - start
-                finally:
-                    self._release_node(hn)
-                result["node"] = hn
-                if result.get("exit_code", 1) == 0:
-                    old = self._node_latency.get(hn, elapsed)
-                    self._node_latency[hn] = old * 0.7 + elapsed * 0.3
-                    return result
-                logger.warning(
-                    "fleet executor: fallback node %s failed, trying next",
-                    hn,
-                )
-
-            return {"error": "all llm nodes failed", "exit_code": 1}
-
-        if "script" in req_caps:
-            command = payload.get("command") or payload.get("prompt", "")
-            result = self._run_script(command)
-            return result
-
-        return {"error": f"unhandled capabilities: {req_caps}", "exit_code": 1}
-
-    def _run_script(self, command: str, timeout: int = 120) -> dict:
+    def _run_router_supervised(
+        self,
+        request_payload: dict[str, Any],
+        timeout_seconds: int,
+        cancel_event: threading.Event,
+    ) -> dict[str, Any]:
+        context = mp.get_context("spawn")
+        result_queue = context.Queue(maxsize=1)
+        process = context.Process(
+            target=_router_call_worker,
+            args=(
+                result_queue,
+                f"{ROUTER_URL}/v1/chat/completions",
+                _router_headers(),
+                request_payload,
+                min(timeout_seconds, ROUTER_CALL_TIMEOUT),
+            ),
+            name=f"fleet-router:{request_payload.get('model', 'unknown')}",
+            daemon=True,
+        )
+        process.start()
+        deadline = self.clock() + timeout_seconds
         try:
-            r = subprocess.run(
-                command, shell=True, capture_output=True, text=True, timeout=timeout
-            )
-            return {"stdout": r.stdout, "stderr": r.stderr, "exit_code": r.returncode}
-        except subprocess.TimeoutExpired:
-            return {"stdout": "", "stderr": "timeout", "exit_code": -1}
-        except Exception as e:
-            return {"stdout": "", "stderr": str(e), "exit_code": -1}
+            while process.is_alive():
+                remaining = deadline - self.clock()
+                if cancel_event.is_set() or remaining <= 0:
+                    process.terminate()
+                    process.join(timeout=5)
+                    if process.is_alive():
+                        process.kill()
+                        process.join(timeout=5)
+                    return {
+                        "status_code": 0,
+                        "body": {
+                            "error": "claim_lost"
+                            if cancel_event.is_set()
+                            else "task_wall_timeout"
+                        },
+                    }
+                process.join(timeout=min(0.5, remaining))
+            try:
+                return result_queue.get(timeout=2)
+            except queue.Empty:
+                return {
+                    "status_code": 0,
+                    "body": {"error": "router_worker_exited_without_result"},
+                }
+        finally:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+            result_queue.close()
 
-    def _process_tasks(self) -> None:
-        self._refresh_nodes()
+    @staticmethod
+    def _result_from_router(response: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        status_code = int(response.get("status_code") or 0)
+        body = response.get("body")
+        if not isinstance(body, dict):
+            body = {"response": body}
+        if status_code != 200:
+            return "FAILED", {
+                "exit_code": 1,
+                "status_code": status_code,
+                "error": body,
+            }
+        choices = body.get("choices") or []
+        content = ""
+        if choices and isinstance(choices[0], dict):
+            message = choices[0].get("message") or {}
+            if isinstance(message, dict):
+                content = str(message.get("content") or "")
+        if not content.strip():
+            return "FAILED", {
+                "exit_code": 1,
+                "status_code": status_code,
+                "error": "empty_response",
+                "router_response": body,
+            }
+        return "DONE", {
+            "exit_code": 0,
+            "status_code": status_code,
+            "content": content,
+            "model": body.get("model"),
+            "usage": body.get("usage") or {},
+        }
 
-        # Fetch a full page of LLM tasks at once. A semaphore permit belongs to
-        # exactly one launched worker: acquire per row here, then release once
-        # in _handle_one. Never acquire once per page and release once per row;
-        # that inflates the semaphore and eventually creates unbounded threads.
-        seen_ids: set[str] = set()
-        while True:
-            st, body = _http(
-                "GET",
-                f"{ASSISTX_URL}/api/agent/tasks?status=READY&capabilities=llm&limit={MAX_CONCURRENT_LLM}",
-                timeout=15,
-            )
-            if st != 200:
-                break
-            rows = (body.get("items") if isinstance(body, dict) else body) or []
-            if not isinstance(rows, list):
-                rows = []
-            fresh = [r for r in rows if r.get("id") not in seen_ids]
-            if not fresh:
-                break
+    def _execute_claimed(
+        self,
+        task: dict[str, Any],
+        claim_id: str,
+        projection: ProjectionInventory,
+    ) -> None:
+        task_id = str(task.get("id") or "")
+        cancel_event = threading.Event()
+        neo = self.neo_factory()
+        try:
+            request_payload = self._request_payload(task, claim_id, projection)
+            holder: dict[str, Any] = {}
 
-            capacity_exhausted = False
-            for row in fresh:
-                tid = row.get("id")
-                seen_ids.add(tid)
-                if not self._llm_sem.acquire(blocking=False):
-                    capacity_exhausted = True
-                    break
-                if not self._mark_inflight(tid):
-                    self._llm_sem.release()
-                    continue
-
-                payload_raw = row.get("payload_json") or row.get("payload") or "{}"
-                try:
-                    payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
-                except Exception:
-                    payload = {}
-                model_hint = payload.get("model", "")
-                complexity_hint = str(payload.get("complexity") or payload.get("quality") or "").strip().lower()
-                raw_caps = row.get("required_capabilities") or []
-                if isinstance(raw_caps, str):
-                    try:
-                        req_caps = json.loads(raw_caps)
-                    except Exception:
-                        req_caps = ["llm"]
-                else:
-                    req_caps = list(raw_caps) if raw_caps else ["llm"]
-                reserved_node = self._pick_and_reserve_node(
-                    req_caps, preferred_model=model_hint, complexity=complexity_hint
+            def invoke() -> None:
+                holder["response"] = self.router_runner(
+                    request_payload,
+                    TASK_WALL_TIMEOUT,
+                    cancel_event,
                 )
-                if not reserved_node:
-                    self._clear_inflight(tid)
-                    self._llm_sem.release()
-                    logger.warning("fleet executor: no node available for task %s", tid)
-                    continue
-                threading.Thread(
-                    target=self._handle_one,
-                    args=(row, "llm", reserved_node),
-                    daemon=True,
-                ).start()
-            if capacity_exhausted:
-                break
 
-        # Launch script tasks through a strictly server-filtered lane. Without
-        # capabilities=script, LLM tasks can bypass the global LLM bound here.
-        script_seen: set[str] = set()
-        while True:
-            st, body = _http(
-                "GET",
-                f"{ASSISTX_URL}/api/agent/tasks?status=READY&capabilities=script&limit={MAX_CONCURRENT_SCRIPT}",
-                timeout=15,
+            invocation = threading.Thread(
+                target=invoke,
+                name=f"router-invocation:{task_id}",
+                daemon=True,
             )
-            if st != 200:
-                break
-            rows = (body.get("items") if isinstance(body, dict) else body) or []
-            if not isinstance(rows, list):
-                rows = []
-            fresh = [r for r in rows if r.get("id") not in script_seen]
-            if not fresh:
-                break
-
-            capacity_exhausted = False
-            for row in fresh:
-                tid = row.get("id")
-                script_seen.add(tid)
-                if not self._script_sem.acquire(blocking=False):
-                    capacity_exhausted = True
+            invocation.start()
+            while invocation.is_alive():
+                invocation.join(timeout=HEARTBEAT_INTERVAL)
+                if not invocation.is_alive():
                     break
-                if not self._mark_inflight(tid):
-                    self._script_sem.release()
-                    continue
-                threading.Thread(
-                    target=self._handle_one,
-                    args=(row, "script"),
-                    daemon=True,
-                ).start()
-            if capacity_exhausted:
-                break
+                heartbeat = neo.heartbeat_task(
+                    task_id,
+                    EXECUTOR_AGENT_ID,
+                    status="RUNNING",
+                    lease_seconds=TASK_LEASE_SECONDS,
+                    claim_id=claim_id,
+                    metadata={
+                        "executor": "safe-fleet-executor",
+                        "projection_generation": projection.generation,
+                        "model": request_payload["model"],
+                    },
+                )
+                if not heartbeat:
+                    logger.warning(
+                        "fleet executor: claim lost while task %s was running",
+                        task_id,
+                    )
+                    cancel_event.set()
+                    invocation.join(timeout=10)
+                    return
 
-    def _handle_one(self, row: dict, kind: str = "script", reserved_node: dict | None = None) -> None:
-        # Hard wall-clock guard: a single task must never hold a semaphore slot
-        # longer than TASK_WALL_TIMEOUT seconds. _execute_task can retry across
-        # several nodes with a long per-call timeout, so without this a flaky
-        # fleet node would wedge the entire LLM (or script) pipeline by
-        # exhausting the semaphore with stuck threads. The finally-block below
-        # always releases the slot even if the inner work times out.
-        sem = self._llm_sem if kind == "llm" else self._script_sem
-        worker = threading.Thread(target=self._do_handle, args=(row, reserved_node), daemon=True)
-        worker.start()
-        worker.join(timeout=TASK_WALL_TIMEOUT)
-        if worker.is_alive():
-            task_id = row.get("id", "?")
+            response = holder.get(
+                "response",
+                {
+                    "status_code": 0,
+                    "body": {"error": "router_invocation_failed"},
+                },
+            )
+            status, result = self._result_from_router(response)
+            summary = str(result.get("content") or result.get("error") or "")[:1000]
+            completed = neo.complete_task(
+                task_id,
+                EXECUTOR_AGENT_ID,
+                status,
+                summary=summary or None,
+                result={
+                    **result,
+                    "projection_generation": projection.generation,
+                    "projection_revision": projection.revision,
+                    "claim_id": claim_id,
+                },
+                idempotency_key=f"safe-fleet/complete/{task_id}/{claim_id}",
+                claim_id=claim_id,
+            )
+            if not completed:
+                logger.warning(
+                    "fleet executor: stale completion rejected for task %s",
+                    task_id,
+                )
+        except Exception as exc:
+            logger.exception("fleet executor: task %s failed: %s", task_id, exc)
+            try:
+                neo.complete_task(
+                    task_id,
+                    EXECUTOR_AGENT_ID,
+                    "FAILED",
+                    summary=str(exc)[:1000],
+                    result={"exit_code": 1, "error": str(exc)[:4000]},
+                    idempotency_key=f"safe-fleet/failure/{task_id}/{claim_id}",
+                    claim_id=claim_id,
+                )
+            except Exception:
+                logger.exception(
+                    "fleet executor: could not persist failure for task %s", task_id
+                )
+        finally:
+            try:
+                neo.close()
+            finally:
+                with self._lock:
+                    self._active.pop(task_id, None)
+                    self._futures.pop(task_id, None)
+
+    def _claim(
+        self,
+        neo: Any,
+        task: dict[str, Any],
+        projection: ProjectionInventory,
+    ) -> bool:
+        task_id = str(task.get("id") or "").strip()
+        if not task_id:
+            return False
+        claimed = neo.claim_task(
+            task_id,
+            EXECUTOR_AGENT_ID,
+            capabilities=["llm"],
+            lease_seconds=TASK_LEASE_SECONDS,
+        )
+        if not claimed or claimed.get("claimed") is not True:
+            return False
+        claimed_task = claimed.get("task")
+        if not isinstance(claimed_task, dict):
+            logger.error("fleet executor: task %s claim omitted task state", task_id)
+            return False
+        claim_id = str(claimed_task.get("claim_id") or "").strip()
+        if not claim_id:
             logger.error(
-                "fleet executor: task %s (%s) exceeded wall timeout %ss; releasing slot (worker continues detached)",
-                task_id, kind, TASK_WALL_TIMEOUT,
+                "fleet executor: task %s claim did not return claim_id; refusing execution",
+                task_id,
             )
-        sem.release()
-        self._clear_inflight(row.get("id"))
+            return False
+        with self._lock:
+            if task_id in self._active:
+                return False
+            self._active[task_id] = {
+                "claim_id": claim_id,
+                "priority": _task_priority(task),
+                "projection_generation": projection.generation,
+                "started_at_ts": int(self.clock() * 1000),
+            }
+            future = self._pool.submit(
+                self._execute_claimed,
+                claimed_task,
+                claim_id,
+                projection,
+            )
+            self._futures[task_id] = future
+        return True
 
-    def _do_handle(self, row: dict, reserved_node: dict | None = None) -> None:
-        """Execute a single task end-to-end: claim, run, complete."""
-        task_id = row["id"]
-        payload_raw = row.get("payload_json") or row.get("payload") or "{}"
+    def _refresh_nodes(self) -> None:
+        projection = ProjectionInventory.from_document(self.projection_loader())
+        self._projection = projection
+        self._routing.update(projection)
+        self._nodes = list(projection.providers)
+
+    def _process_tasks(self) -> dict[str, Any]:
+        return self.run_once()
+
+    @staticmethod
+    def _probe_models(ip: str) -> None:
+        # Retained only to make the retired behavior explicit to compatibility
+        # callers. OpenAI-compatible model visibility is not loaded-state proof.
+        return None
+
+    @staticmethod
+    def _run_script(command: str, timeout: int = 120) -> dict[str, Any]:
+        return {
+            "stdout": "",
+            "stderr": "unsafe_shell_disabled",
+            "exit_code": 126,
+        }
+
+    def run_once(self) -> dict[str, Any]:
+        if self._stop.is_set():
+            return {"executed": False, "reason": "stopping"}
         try:
-            payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
-        except Exception:
-            payload = {}
-        raw_caps = row.get("required_capabilities") or []
-        if isinstance(raw_caps, str):
-            try:
-                req_caps = json.loads(raw_caps)
-            except Exception:
-                req_caps = ["script"]
-        else:
-            req_caps = list(raw_caps) if raw_caps else ["script"]
+            projection = ProjectionInventory.from_document(self.projection_loader())
+        except Exception as exc:
+            logger.warning("fleet executor: projection unavailable: %s", exc)
+            return {
+                "executed": False,
+                "reason": "projection_unavailable",
+                "error": str(exc),
+            }
+        self._projection = projection
+        self._routing.update(projection)
+        self._nodes = list(projection.providers)
 
-        logger.info(
-            "fleet executor: %s (%s) caps=%s",
-            task_id, row.get("title", "?"), req_caps,
-        )
+        with self._lock:
+            active = len(self._active)
+            active_background = sum(
+                1
+                for item in self._active.values()
+                if item.get("priority")
+                in {"background", "batch", "low", "unset", ""}
+            )
+        capacity = min(MAX_CONCURRENT_LLM, projection.total_slots)
+        free = max(0, capacity - active)
+        if free <= 0:
+            return {
+                "executed": True,
+                "claimed": 0,
+                "active": active,
+                "capacity": capacity,
+                "projection_generation": projection.generation,
+            }
 
-        ik = f"fleet-exec/{task_id}"
-        attempt_key = f"{ik}/{int(time.time())}"
+        neo = self.neo_factory()
+        claimed_count = 0
+        try:
+            candidates = self._list_ready_llm_tasks(neo, max(free * 4, 20))
+            high_priority_waiting = any(not _is_background(task) for task in candidates)
+            if BACKGROUND_MAX_FRACTION <= 0:
+                background_limit = 0
+            elif capacity == 1:
+                background_limit = 1
+            else:
+                background_limit = min(
+                    max(1, int(capacity * BACKGROUND_MAX_FRACTION)),
+                    capacity - 1,
+                )
+            for task in candidates:
+                if claimed_count >= free:
+                    break
+                if _is_background(task):
+                    if high_priority_waiting:
+                        continue
+                    if active_background >= background_limit:
+                        continue
+                if self._claim(neo, task, projection):
+                    claimed_count += 1
+                    if _is_background(task):
+                        active_background += 1
+        finally:
+            neo.close()
+        return {
+            "executed": True,
+            "claimed": claimed_count,
+            "active": active + claimed_count,
+            "capacity": capacity,
+            "projection_generation": projection.generation,
+            "background_limit": background_limit,
+        }
 
-        st, claim = _http(
-            "POST",
-            f"{ASSISTX_URL}/api/tasks/{task_id}/claim",
-            data={"agent_id": "fleet-executor", "idempotency_key": attempt_key},
-            timeout=15,
-        )
-        if st != 200:
-            logger.info("fleet executor: claim %s failed (%s)", task_id, st)
-            return
-        if not claim.get("claimed", False):
-            return
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            active = {key: dict(value) for key, value in self._active.items()}
+        return {
+            "enabled": not self._stop.is_set(),
+            "agent_id": EXECUTOR_AGENT_ID,
+            "active": active,
+            "active_count": len(active),
+            "projection": self._routing.snapshot(),
+            "unsafe_shell_enabled": False,
+        }
 
-        task_dict = {"id": task_id, "payload": payload, "required_capabilities": req_caps}
-        result = self._execute_task(task_dict, reserved_node)
+    def get_nodes(self) -> list[dict[str, Any]]:
+        return list(self._nodes)
 
-        st, _ = _http(
-            "POST",
-            f"{ASSISTX_URL}/api/tasks/{task_id}/complete",
-            data={
-                "agent_id": "fleet-executor",
-                "status": "DONE" if result.get("exit_code", 0) == 0 else "FAILED",
-                "result": result,
-                "idempotency_key": f"fleet-exec/complete/{task_id}/{int(time.time())}",
-            },
-            timeout=15,
-        )
-        if st == 200:
-            logger.info("fleet executor: %s -> DONE  node=%s", task_id, result.get("node", "local"))
-        else:
-            logger.warning("fleet executor: %s complete failed (%s)", task_id, st)
+    def run_once_for_testing(self) -> dict[str, Any]:
+        return self.run_once()
 
-    def run_once(self) -> None:
-        """One poll + process cycle. For testing or manual trigger."""
-        self._refresh_nodes()
-        self._process_tasks()
+    def stop(self) -> None:
+        self._stop.set()
+        self._pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _start_executor_loop() -> None:
-    """Start the daemon background thread."""
+    """Start one fleet-wide executor leader through a durable Neo4j lease."""
 
-    def _loop() -> None:
-        global _fleet_executor_instance
+    global _fleet_executor_instance, _executor_started
+    enabled = os.getenv("ASSISTX_FLEET_EXECUTOR_ENABLED", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not enabled:
+        logger.info("fleet executor: disabled by ASSISTX_FLEET_EXECUTOR_ENABLED")
+        return
+    with _executor_start_lock:
+        if _executor_started:
+            return
+        _executor_started = True
         executor = FleetExecutor()
         _fleet_executor_instance = executor
-        time.sleep(15)
-        logger.info("fleet executor: starting poll loop (every %ss)", EXECUTOR_INTERVAL)
-        while True:
-            try:
-                executor._refresh_nodes()
-                executor._process_tasks()
-            except Exception as e:
-                logger.warning("fleet executor: cycle error: %s", e)
-            time.sleep(EXECUTOR_INTERVAL)
 
-    t = threading.Thread(target=_loop, name="fleet-executor", daemon=True)
-    t.start()
-    logger.info("fleet executor: daemon thread started")
+        def store_factory() -> tuple[Neo4jControllerStore, Callable[[], None]]:
+            neo = Neo4jClient()
+            return Neo4jControllerStore(neo), neo.close
+
+        controller = DurableController(
+            "safe-fleet-executor",
+            store_factory,
+            lease_seconds=max(60, EXECUTOR_INTERVAL * 6),
+        )
+        start_durable_controller_loop(
+            controller,
+            executor.run_once,
+            interval_seconds=EXECUTOR_INTERVAL,
+        )
+        logger.info("fleet executor: durable claim-fenced loop started")
 
 
 def get_fleet_executor() -> Optional[FleetExecutor]:
-    """Get the running fleet executor instance for API access."""
     return _fleet_executor_instance
