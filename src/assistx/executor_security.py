@@ -340,8 +340,83 @@ def _bootstrap_authorized(authorization: str | None) -> bool:
     return bool(expected and supplied.lower().startswith("bearer ") and hmac.compare_digest(supplied[7:].strip(), expected))
 
 
+def _claim_status_authorized(authorization: str | None) -> bool:
+    expected = os.getenv("ASSISTX_EXECUTOR_CLAIM_STATUS_TOKEN", "").strip()
+    supplied = str(authorization or "").strip()
+    return bool(
+        expected
+        and supplied.lower().startswith("bearer ")
+        and hmac.compare_digest(supplied[7:].strip(), expected)
+    )
+
+
 def build_executor_security_router(neo_factory: Callable[[], Any]) -> APIRouter:
     router = APIRouter(prefix="/api/executor", tags=["executor-security"])
+
+    @router.get("/claims/{task_id}/status")
+    def claim_status(
+        task_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Return the current claim/projection binding for auto-router fencing."""
+
+        if not _claim_status_authorized(authorization):
+            raise HTTPException(status_code=401, detail="invalid claim-status token")
+        neo = neo_factory()
+        try:
+            with neo._session() as session:
+                row = session.run(
+                    """
+                    MATCH (t:Task {id:$task_id})
+                    OPTIONAL MATCH (s:FleetProjectionState {name:'canonical'})
+                    RETURN properties(t) AS task,
+                           s.generation AS projection_generation,
+                           s.status AS projection_status,
+                           s.expires_at_ts AS projection_expires_at_ts
+                    LIMIT 1
+                    """,
+                    {"task_id": task_id},
+                ).single()
+        finally:
+            neo.close()
+        if not row:
+            return {"active": False, "task_id": task_id, "reason": "not_found"}
+        task = dict(row.get("task") or {})
+        now_ms = int(time.time() * 1000)
+        claim_id = str(task.get("claim_id") or task.get("active_claim_id") or "")
+        agent_id = str(task.get("claimed_by") or task.get("agent_id") or "")
+        status = str(task.get("status") or "").upper()
+        lease_expiry = int(
+            task.get("lease_expires_at_ts")
+            or task.get("claim_expires_at_ts")
+            or task.get("lease_until_ts")
+            or 0
+        )
+        generation = int(row.get("projection_generation") or 0)
+        projection_status = str(row.get("projection_status") or "").lower()
+        projection_expiry = int(row.get("projection_expires_at_ts") or 0)
+        reason = "active"
+        active = True
+        if status not in {"CLAIMED", "RUNNING", "PAUSING"}:
+            active, reason = False, "task_not_active"
+        elif not claim_id or not agent_id:
+            active, reason = False, "claim_identity_missing"
+        elif lease_expiry <= now_ms:
+            active, reason = False, "claim_expired"
+        elif projection_status != "approved" or generation <= 0:
+            active, reason = False, "projection_not_approved"
+        elif projection_expiry <= now_ms:
+            active, reason = False, "projection_expired"
+        return {
+            "active": active,
+            "reason": reason,
+            "task_id": task_id,
+            "claim_id": claim_id,
+            "agent_id": agent_id,
+            "lease_expires_at_ts": lease_expiry,
+            "projection_generation": generation,
+            "projection_expires_at_ts": projection_expiry,
+        }
 
     @router.post("/claims/{task_id}/token")
     def issue_task_token(
@@ -352,20 +427,23 @@ def build_executor_security_router(neo_factory: Callable[[], Any]) -> APIRouter:
         if not _bootstrap_authorized(authorization):
             raise HTTPException(status_code=401, detail="invalid executor bootstrap token")
         neo = neo_factory()
-        with neo._session() as session:
-            row = session.run(
-                """
-                MATCH (t:Task {id:$task_id})
-                WHERE toUpper(coalesce(t.status, '')) IN ['CLAIMED','RUNNING']
-                OPTIONAL MATCH (s:FleetProjectionState {name:'canonical'})
-                RETURN properties(t) AS task,
-                       s.generation AS projection_generation,
-                       s.status AS projection_status,
-                       s.expires_at_ts AS projection_expires_at_ts
-                LIMIT 1
-                """,
-                {"task_id": task_id},
-            ).single()
+        try:
+            with neo._session() as session:
+                row = session.run(
+                    """
+                    MATCH (t:Task {id:$task_id})
+                    WHERE toUpper(coalesce(t.status, '')) IN ['CLAIMED','RUNNING']
+                    OPTIONAL MATCH (s:FleetProjectionState {name:'canonical'})
+                    RETURN properties(t) AS task,
+                           s.generation AS projection_generation,
+                           s.status AS projection_status,
+                           s.expires_at_ts AS projection_expires_at_ts
+                    LIMIT 1
+                    """,
+                    {"task_id": task_id},
+                ).single()
+        finally:
+            neo.close()
         if not row:
             raise HTTPException(status_code=409, detail="task is not actively claimed")
         task = dict(row.get("task") or {})
