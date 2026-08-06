@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from assistx.executor_security import ExecutorTokenCodec
 from assistx.fleet_executor import FleetExecutor, ProjectionInventory
 from assistx.task_family_routing import (
     infer_task_family,
+    issue_executor_token,
     tag_task,
     virtual_model_for_family,
 )
@@ -67,6 +72,43 @@ def test_executor_preserves_virtual_alias_for_gateway_selection() -> None:
         "agent_id": "fleet-executor",
         "projection_generation": 7,
     }
+
+
+def test_virtual_alias_token_is_task_and_claim_scoped(monkeypatch) -> None:
+    private = Ed25519PrivateKey.generate()
+    private_pem = private.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode("utf-8")
+    monkeypatch.setenv("ASSISTX_EXECUTOR_SIGNING_KEY_PEM", private_pem)
+    monkeypatch.setenv("ASSISTX_EXECUTOR_KEY_ID", "routing-test-key")
+    request = {
+        "model": "auto/compress",
+        "max_tokens": 512,
+        "messages": [{"role": "user", "content": "compress"}],
+        "metadata": {
+            "task_family": "compression",
+            "assistx_executor": {
+                "task_id": "task-compress-1",
+                "claim_id": "claim-1",
+                "agent_id": "fleet-executor",
+                "projection_generation": 7,
+            },
+        },
+    }
+
+    token = issue_executor_token(request)
+    claims = ExecutorTokenCodec(
+        public_key=private.public_key(),
+        key_id="routing-test-key",
+    ).decode(token, audience="auto-router")
+
+    assert claims["task_id"] == "task-compress-1"
+    assert claims["claim_id"] == "claim-1"
+    assert claims["projection_generation"] == 7
+    assert claims["allowed_model_aliases"] == ["auto/compress"]
+    assert claims["scopes"] == ["inference"]
 
 
 def test_explicit_concrete_model_is_still_projection_validated() -> None:
