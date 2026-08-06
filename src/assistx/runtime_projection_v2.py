@@ -11,6 +11,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import APIRouter, Depends, HTTPException
 
 from . import runtime_projection as legacy
+from .fleet_routing_projection import (
+    benchmark_projection_index,
+    node_routing_policy_index,
+)
 
 
 _DEFAULT_KEY_ID = "assistx-runtime-projection-v1"
@@ -101,6 +105,70 @@ def signing_message(document: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+def _apply_benchmark_routing(
+    document: dict[str, Any],
+    neo_factory: Callable[[], Any],
+) -> None:
+    """Attach role and benchmark hints to already admitted models only.
+
+    Node role policy is preserved even when a model is unbenchmarked or failed a
+    quality floor. The matrix still cannot create a provider or make a model
+    routable; it only enriches runtimes that passed the existing identity,
+    access-path, capacity, loaded-model, and operator approval gates.
+
+    Benchmark enrichment is advisory. If the matrix store is absent or
+    temporarily unavailable, signing proceeds with the authoritative admitted
+    runtime projection and no benchmark hints.
+    """
+
+    try:
+        benchmark_index = benchmark_projection_index(neo_factory)
+        node_policy_index = node_routing_policy_index(neo_factory)
+    except Exception:
+        return
+    for provider in document.get("providers") or []:
+        if not isinstance(provider, dict):
+            continue
+        node_id = str(provider.get("node_id") or "")
+        node_policy = node_policy_index.get(node_id)
+        if node_policy is not None:
+            provider["routing_roles"] = node_policy["routing_roles"]
+            provider["worker_mode"] = node_policy["worker_mode"]
+            provider["allow_agent_runtime"] = node_policy[
+                "allow_agent_runtime"
+            ]
+            provider["allow_code_execution"] = node_policy[
+                "allow_code_execution"
+            ]
+        for model in provider.get("models") or []:
+            if not isinstance(model, dict):
+                continue
+            aliases = (
+                str(model.get("alias") or ""),
+                str(model.get("provider_model") or ""),
+            )
+            hint = next(
+                (
+                    benchmark_index[(node_id, alias)]
+                    for alias in aliases
+                    if (node_id, alias) in benchmark_index
+                ),
+                None,
+            )
+            policy = hint or node_policy
+            if policy is None:
+                continue
+            model["routing_roles"] = policy["routing_roles"]
+            model["worker_mode"] = policy["worker_mode"]
+            model["allow_agent_runtime"] = policy["allow_agent_runtime"]
+            model["allow_code_execution"] = policy[
+                "allow_code_execution"
+            ]
+            model["task_family_scores"] = (
+                hint["task_family_scores"] if hint is not None else {}
+            )
+
+
 def build_runtime_projection_v2(
     neo_factory: Callable[[], Any],
     *,
@@ -115,6 +183,7 @@ def build_runtime_projection_v2(
         ttl_seconds=ttl_seconds,
         now_ms=now_ms,
     )
+    _apply_benchmark_routing(document, neo_factory)
     document.pop("signature", None)
     document["schema_version"] = "2"
     document["signature_algorithm"] = "Ed25519"
