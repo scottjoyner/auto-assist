@@ -26,4 +26,15 @@ def install_repository_path_policy() -> None:
         except OSError:
             return False
 
+    original_changed_paths = generator._changed_paths
+
+    def changed_paths(repo: Path, previous: str | None, head: str) -> list[Path]:
+        # A durable cursor equal to HEAD means the tree was already scanned.
+        # Do not repeatedly reread every tracked file just to MERGE duplicate
+        # deterministic tasks.
+        if previous and previous == head:
+            return []
+        return original_changed_paths(repo, previous, head)
+
     generator._allowed_file = allowed_file
+    generator._changed_paths = changed_paths
