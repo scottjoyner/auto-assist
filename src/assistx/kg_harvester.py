@@ -28,13 +28,16 @@ from assistx.neo4j_client import Neo4jClient
 
 logger = logging.getLogger(__name__)
 
-HARVEST_INTERVAL = float(os.getenv("KG_HARVEST_INTERVAL", "10"))
+HARVEST_INTERVAL = max(1.0, float(os.getenv("KG_HARVEST_INTERVAL", "10")))
 # The harvester keeps the LLM backlog topped up to at least this many READY
 # tasks so fleet nodes are never starved between harvests.
-TARGET_BACKLOG = int(os.getenv("KG_TARGET_BACKLOG", "200"))
-READY_THRESHOLD = int(os.getenv("KG_READY_THRESHOLD", "100"))  # below this, harvest
-MAX_TASKS_PER_CYCLE = int(os.getenv("KG_MAX_TASKS_PER_CYCLE", "10"))
-MAX_PAPERS_PER_CYCLE = int(os.getenv("KG_MAX_PAPERS_PER_CYCLE", "10"))
+TARGET_BACKLOG = max(0, int(os.getenv("KG_TARGET_BACKLOG", "200")))
+READY_THRESHOLD = max(
+    0,
+    min(int(os.getenv("KG_READY_THRESHOLD", "100")), TARGET_BACKLOG),
+)
+MAX_TASKS_PER_CYCLE = max(1, int(os.getenv("KG_MAX_TASKS_PER_CYCLE", "10")))
+MAX_PAPERS_PER_CYCLE = max(1, int(os.getenv("KG_MAX_PAPERS_PER_CYCLE", "10")))
 
 BIG_MODELS = [
     "qwen3.6-35b-a3b-claude-4.7-opus-reasoning-distilled-apex-mtp",
@@ -63,6 +66,7 @@ class KgInsightHarvester:
     def __init__(self) -> None:
         self._nc = Neo4jClient()
         self._batch: list[dict] = []
+        self._cycle_limit = MAX_TASKS_PER_CYCLE
 
     # ── queries ──────────────────────────────────────────────
 
@@ -238,6 +242,8 @@ class KgInsightHarvester:
         model_hint: str = "",
         idempotency_key: str = "",
     ) -> None:
+        if len(self._batch) >= self._cycle_limit:
+            return
         self._batch.append(
             {
                 "title": title,
@@ -469,8 +475,11 @@ class KgInsightHarvester:
 
         queued = 0
         for name, fn in archetypes:
-            if queued >= MAX_TASKS_PER_CYCLE:
-                logger.info("kg harvester: hit max tasks (%s), stopping", MAX_TASKS_PER_CYCLE)
+            if len(self._batch) >= self._cycle_limit:
+                logger.info(
+                    "kg harvester: hit cycle limit (%s), stopping",
+                    self._cycle_limit,
+                )
                 break
             try:
                 created = fn()
@@ -485,12 +494,27 @@ class KgInsightHarvester:
             logger.info("kg harvester: wrote %s insight tasks this cycle", written)
         return written
 
-    def harvest_until_target(self) -> None:
-        """One harvest pass per tick. The fleet drains tasks between ticks; the
-        next tick refills. We avoid tight refill loops because each pass hits
-        Neo4j hard and a multi-pass loop overloads the connection pool, which
-        then defuncts and stalls the whole fleet."""
-        self.harvest_cycle()
+    def harvest_until_target(self) -> int:
+        """Generate background work only when the READY LLM backlog is low.
+
+        One bounded pass runs per tick. The fleet drains tasks between ticks;
+        the next tick refills. Tight refill loops are intentionally avoided
+        because each pass hits Neo4j and can saturate the connection pool.
+        """
+        ready = self._ready_llm_count()
+        if ready >= READY_THRESHOLD:
+            logger.debug(
+                "kg harvester: backlog healthy (%s >= %s), skipping",
+                ready,
+                READY_THRESHOLD,
+            )
+            return 0
+
+        remaining = max(0, TARGET_BACKLOG - ready)
+        self._cycle_limit = min(MAX_TASKS_PER_CYCLE, remaining)
+        if self._cycle_limit <= 0:
+            return 0
+        return self.harvest_cycle()
 
     def close(self) -> None:
         try:
@@ -499,23 +523,42 @@ class KgInsightHarvester:
             pass
 
 
+_harvester_thread: threading.Thread | None = None
+_harvester_thread_lock = threading.Lock()
+
+
 def _start_harvester_loop() -> None:
-    """Start the daemon background thread."""
+    """Start one recoverable daemon thread per process."""
+    global _harvester_thread
 
-    def _loop() -> None:
-        harvester = KgInsightHarvester()
-        time.sleep(25)  # stagger behind fleet executor
-        logger.info(
-            "kg harvester: starting loop (every %ss, threshold=%s)",
-            HARVEST_INTERVAL, READY_THRESHOLD,
+    with _harvester_thread_lock:
+        if _harvester_thread and _harvester_thread.is_alive():
+            return
+
+        def _loop() -> None:
+            harvester: KgInsightHarvester | None = None
+            time.sleep(25)  # stagger behind fleet executor
+            logger.info(
+                "kg harvester: starting loop (every %ss, threshold=%s)",
+                HARVEST_INTERVAL,
+                READY_THRESHOLD,
+            )
+            while True:
+                try:
+                    if harvester is None:
+                        harvester = KgInsightHarvester()
+                    harvester.harvest_until_target()
+                except Exception as e:
+                    logger.warning("kg harvester: cycle error: %s", e)
+                    if harvester is not None:
+                        harvester.close()
+                        harvester = None
+                time.sleep(HARVEST_INTERVAL)
+
+        _harvester_thread = threading.Thread(
+            target=_loop,
+            name="kg-harvester",
+            daemon=True,
         )
-        while True:
-            try:
-                harvester.harvest_until_target()
-            except Exception as e:
-                logger.warning("kg harvester: cycle error: %s", e)
-            time.sleep(HARVEST_INTERVAL)
-
-    t = threading.Thread(target=_loop, name="kg-harvester", daemon=True)
-    t.start()
+        _harvester_thread.start()
     logger.info("kg harvester: daemon thread started")
