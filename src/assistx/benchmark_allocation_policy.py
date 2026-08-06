@@ -71,7 +71,12 @@ def _strings(value: Any) -> set[str]:
     return set()
 
 
-def _indexes(snapshot: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[tuple[str, str, str], dict[str, Any]]]:
+def _indexes(
+    snapshot: dict[str, Any],
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[tuple[str, str, str], dict[str, Any]],
+]:
     nodes = {
         str(row.get("node_id")): row
         for row in snapshot.get("nodes") or []
@@ -133,11 +138,15 @@ def _enrich_nodes(
     raw_nodes: Iterable[dict[str, Any]],
     policies: dict[str, dict[str, Any]],
     family: str,
+    profiles: dict[tuple[str, str, str], dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    evidence = profiles or {}
     result: list[dict[str, Any]] = []
     for raw in raw_nodes:
         node = copy.deepcopy(raw)
-        node_id = str(node.get("hostname") or node.get("id") or node.get("node_id") or "")
+        node_id = str(
+            node.get("hostname") or node.get("id") or node.get("node_id") or ""
+        )
         policy = policies.get(node_id)
         if policy is None:
             result.append(node)
@@ -148,12 +157,51 @@ def _enrich_nodes(
             capabilities.add("llm")
         node["capabilities"] = sorted(capabilities)
         node["worker_mode"] = policy.get("worker_mode")
-        node["allow_agent_runtime"] = bool(policy.get("allow_agent_runtime", False))
-        node["allow_code_execution"] = bool(policy.get("allow_code_execution", False))
+        node["allow_agent_runtime"] = bool(
+            policy.get("allow_agent_runtime", False)
+        )
+        node["allow_code_execution"] = bool(
+            policy.get("allow_code_execution", False)
+        )
         node["routing_roles"] = sorted(roles)
         if not _node_allows(policy, family):
             node["is_blocked"] = True
             node["control_mode"] = "routing_policy_blocked"
+            result.append(node)
+            continue
+
+        loaded_models = node.get("loaded_models")
+        if isinstance(loaded_models, list) and loaded_models:
+            permitted_models: list[Any] = []
+            rejected_models: list[str] = []
+            for model in loaded_models:
+                profile = _profile_for(evidence, node_id, model, family)
+                if profile is not None and not bool(
+                    profile.get("quality_floor_passed", False)
+                ):
+                    rejected_models.extend(sorted(_model_candidates(model)))
+                    continue
+                permitted_models.append(model)
+            node["loaded_models"] = permitted_models
+            if rejected_models:
+                node["quality_floor_rejected_models"] = sorted(
+                    set(rejected_models)
+                )
+            if not permitted_models:
+                node["is_blocked"] = True
+                node["control_mode"] = "benchmark_quality_floor_failed"
+        else:
+            node_profiles = [
+                profile
+                for (profile_node, _model, profile_family), profile in evidence.items()
+                if profile_node == node_id and profile_family == family
+            ]
+            if node_profiles and not any(
+                bool(profile.get("quality_floor_passed", False))
+                for profile in node_profiles
+            ):
+                node["is_blocked"] = True
+                node["control_mode"] = "benchmark_quality_floor_failed"
         result.append(node)
     return result
 
@@ -181,7 +229,9 @@ def _family_value_matrix(
         row["success_rate"] = float(profile.get("reliability") or 0.0)
         if profile.get("tokens_per_second") is not None:
             row["tokens_per_second"] = float(profile["tokens_per_second"])
-        row["routing_utility_score"] = float(profile.get("utility_score") or 0.0)
+        row["routing_utility_score"] = float(
+            profile.get("utility_score") or 0.0
+        )
         if not row["benchmark_quality_floor_passed"]:
             row["quality_score"] = 0.0
             row["success_rate"] = 0.0
@@ -216,7 +266,12 @@ def install_benchmark_allocation_policy(
         recommendations: list[dict[str, Any]] = []
         for task in task_rows:
             family = normalize_family(task)
-            family_nodes = _enrich_nodes(node_rows, node_policies, family)
+            family_nodes = _enrich_nodes(
+                node_rows,
+                node_policies,
+                family,
+                profiles,
+            )
             family_matrix = _family_value_matrix(value_matrix, profiles, family)
             planned = original(
                 [task],
@@ -227,14 +282,20 @@ def install_benchmark_allocation_policy(
             )
             for recommendation in planned.get("recommendations") or []:
                 recommendation["task_family"] = family
-                recommendation["routing_matrix_applied"] = bool(node_policies or profiles)
+                recommendation["routing_matrix_applied"] = bool(
+                    node_policies or profiles
+                )
                 recommendations.append(recommendation)
         return {
             "recommendations": recommendations,
             "summary": {
                 "ready_tasks": len(task_rows),
-                "placeable": sum(1 for row in recommendations if row.get("recommended")),
-                "blocked": sum(1 for row in recommendations if not row.get("recommended")),
+                "placeable": sum(
+                    1 for row in recommendations if row.get("recommended")
+                ),
+                "blocked": sum(
+                    1 for row in recommendations if not row.get("recommended")
+                ),
             },
             "policy": {
                 "objective": (
