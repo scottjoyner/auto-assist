@@ -7,9 +7,11 @@ def _install_runtime_safety_boundaries() -> None:
     # interfaces remain unchanged.
     from . import kg_harvester
     from .durable_harvester import start_durable_harvester_loop
+    from .repository_path_policy import install_repository_path_policy
     from .strict_claims import install_strict_claim_fencing
 
     kg_harvester._start_harvester_loop = start_durable_harvester_loop
+    install_repository_path_policy()
     install_strict_claim_fencing()
 
 
