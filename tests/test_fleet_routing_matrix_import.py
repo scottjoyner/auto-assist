@@ -105,15 +105,23 @@ def test_context_merge_keeps_observer_visible_and_blocked() -> None:
 
 
 def test_runtime_projection_enriches_only_existing_admitted_model(monkeypatch) -> None:
+    node_policy = {
+        "routing_roles": ["auxiliary_llm", "summarization"],
+        "worker_mode": "auxiliary",
+        "allow_agent_runtime": False,
+        "allow_code_execution": False,
+    }
+    monkeypatch.setattr(
+        runtime_projection_v2,
+        "node_routing_policy_index",
+        lambda _factory: {"optiplex": node_policy},
+    )
     monkeypatch.setattr(
         runtime_projection_v2,
         "benchmark_projection_index",
         lambda _factory: {
             ("optiplex", "small-summary"): {
-                "routing_roles": ["auxiliary_llm", "summarization"],
-                "worker_mode": "auxiliary",
-                "allow_agent_runtime": False,
-                "allow_code_execution": False,
+                **node_policy,
                 "task_family_scores": {
                     "summarization": {
                         "quality_score": 0.75,
@@ -132,7 +140,11 @@ def test_runtime_projection_enriches_only_existing_admitted_model(monkeypatch) -
                     {
                         "alias": "small-summary",
                         "provider_model": "small-summary",
-                    }
+                    },
+                    {
+                        "alias": "unbenchmarked-small",
+                        "provider_model": "unbenchmarked-small",
+                    },
                 ],
             }
         ]
@@ -140,11 +152,14 @@ def test_runtime_projection_enriches_only_existing_admitted_model(monkeypatch) -
 
     runtime_projection_v2._apply_benchmark_routing(document, lambda: None)
 
-    model = document["providers"][0]["models"][0]
-    assert model["worker_mode"] == "auxiliary"
-    assert model["task_family_scores"]["summarization"]["utility_score"] == 0.82
+    provider = document["providers"][0]
+    measured, unmeasured = provider["models"]
+    assert provider["worker_mode"] == "auxiliary"
+    assert measured["task_family_scores"]["summarization"]["utility_score"] == 0.82
+    assert unmeasured["routing_roles"] == ["auxiliary_llm", "summarization"]
+    assert unmeasured["task_family_scores"] == {}
     assert len(document["providers"]) == 1
-    assert len(document["providers"][0]["models"]) == 1
+    assert len(provider["models"]) == 2
 
 
 def test_allocation_policy_blocks_auxiliary_coding_but_allows_summary() -> None:
@@ -165,7 +180,9 @@ def test_allocation_policy_blocks_auxiliary_coding_but_allows_summary() -> None:
         }
     ]
 
-    summary = benchmark_allocation_policy._enrich_nodes(nodes, policies, "summarization")
+    summary = benchmark_allocation_policy._enrich_nodes(
+        nodes, policies, "summarization"
+    )
     coding = benchmark_allocation_policy._enrich_nodes(nodes, policies, "coding")
 
     assert summary[0].get("is_blocked") is not True
