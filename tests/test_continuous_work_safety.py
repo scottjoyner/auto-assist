@@ -31,7 +31,7 @@ def commit_file(repo: Path, relative: str, content: str, message: str) -> str:
 
 
 def test_claimless_worker_mutations_fail_closed(monkeypatch) -> None:
-    monkeypatch.setenv("ASSISTX_REQUIRE_WORKER_CLAIM_ID", "true")
+    monkeypatch.setenv("ASSISTX_REQUIRE_WORKER_CLAIM_ID", "all")
     monkeypatch.delenv("ASSISTX_LEGACY_CLAIMLESS_AGENTS", raising=False)
     neo = Neo4jClient.__new__(Neo4jClient)
 
