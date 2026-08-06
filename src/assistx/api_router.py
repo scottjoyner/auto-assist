@@ -6,6 +6,7 @@ from . import api as api_module
 from . import control_room as control_room_module
 from . import router_integration as router_integration_module
 from .api import _neo, app, auth, templates
+from .benchmark_allocation_policy import install_benchmark_allocation_policy
 from .control_room import LEGACY_UI_PATHS, build_control_room_router
 from .control_room_runtime import install_control_room_runtime
 from .degraded_activation import (
@@ -88,6 +89,7 @@ install_recovery_shadow_mode(api_module)
 install_control_room_runtime(control_room_module)
 install_strict_offline_projection(router_integration_module)
 install_fleet_node_context_projection(router_integration_module, _neo)
+install_benchmark_allocation_policy(api_module, _neo)
 install_executor_security(app, _neo, api_module)
 install_degraded_control_hardening()
 install_degraded_router_activation_requirements()
