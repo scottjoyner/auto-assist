@@ -41,7 +41,12 @@ def start_durable_harvester_loop() -> None:
         # Import lazily so package initialization can install this wrapper
         # without creating a circular import.
         from . import kg_harvester
+        from .work_supply import (
+            current_work_supply_decision,
+            start_work_supply_controller,
+        )
 
+        start_work_supply_controller()
         interval = max(10, int(float(kg_harvester.HARVEST_INTERVAL)))
 
         def store_factory() -> tuple[Neo4jControllerStore, Callable[[], None]]:
@@ -55,10 +60,31 @@ def start_durable_harvester_loop() -> None:
         )
 
         def harvest() -> dict[str, Any]:
+            decision = current_work_supply_decision()
+            if not decision.allow_background:
+                return {
+                    "created": 0,
+                    "reason": decision.reason,
+                    "work_supply": decision.to_dict(),
+                }
             worker = kg_harvester.KgInsightHarvester()
             try:
+                remaining = max(
+                    0,
+                    decision.target_background_ready - decision.background_ready,
+                )
+                worker._cycle_limit = min(worker._cycle_limit, remaining)
+                if worker._cycle_limit <= 0:
+                    return {
+                        "created": 0,
+                        "reason": "background_target_satisfied",
+                        "work_supply": decision.to_dict(),
+                    }
                 created = int(worker.harvest_until_target() or 0)
-                return {"created": created}
+                return {
+                    "created": created,
+                    "work_supply": decision.to_dict(),
+                }
             finally:
                 worker.close()
 
