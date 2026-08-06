@@ -261,7 +261,10 @@ class ProjectionInventory:
             )
         if complexity in COMPLEXITY_HINTS:
             return max(self.aliases, key=_model_billions)
-        return min(self.aliases, key=lambda value: (_model_billions(value) or 9999, value))
+        return min(
+            self.aliases,
+            key=lambda value: (_model_billions(value) or 9999, value),
+        )
 
 
 class FleetRouting:
@@ -269,6 +272,11 @@ class FleetRouting:
 
     def __init__(self) -> None:
         self._projection: ProjectionInventory | None = None
+
+    @staticmethod
+    def _estimate_model_size(model: str) -> float:
+        billions = _model_billions(model)
+        return billions * 0.5 if billions else 2.0
 
     def update(self, projection: ProjectionInventory) -> None:
         self._projection = projection
@@ -322,6 +330,7 @@ class FleetExecutor:
         self._futures: dict[str, Future[Any]] = {}
         self._projection: ProjectionInventory | None = None
         self._routing = FleetRouting()
+        self._nodes: list[dict[str, Any]] = []
         self._stop = threading.Event()
 
     def _load_projection(self) -> dict[str, Any]:
@@ -377,6 +386,30 @@ class FleetExecutor:
                 return messages
         prompt = str(payload.get("prompt") or payload.get("command") or "").strip()
         return [{"role": "user", "content": prompt}] if prompt else []
+
+    @staticmethod
+    def _pick_fast_model(models: list[str]) -> str:
+        return min(models, key=lambda value: (_model_billions(value) or 9999, value)) if models else ""
+
+    @staticmethod
+    def _validate_response(content: str, completion_tokens: int = 0) -> dict[str, Any]:
+        stripped = str(content or "").strip()
+        if not stripped:
+            return {"valid": False, "reason": "empty_response", "metrics": {}}
+        if len(stripped) < 10:
+            return {
+                "valid": False,
+                "reason": "too_short",
+                "metrics": {"length": len(stripped)},
+            }
+        return {
+            "valid": True,
+            "reason": "ok",
+            "metrics": {
+                "length": len(stripped),
+                "completion_tokens": max(0, int(completion_tokens or 0)),
+            },
+        }
 
     def _request_payload(
         self,
@@ -611,11 +644,14 @@ class FleetExecutor:
             EXECUTOR_AGENT_ID,
             capabilities=["llm"],
             lease_seconds=TASK_LEASE_SECONDS,
-            idempotency_key=f"safe-fleet/claim/{task_id}",
         )
-        if not claimed:
+        if not claimed or claimed.get("claimed") is not True:
             return False
-        claim_id = str(claimed.get("claim_id") or "").strip()
+        claimed_task = claimed.get("task")
+        if not isinstance(claimed_task, dict):
+            logger.error("fleet executor: task %s claim omitted task state", task_id)
+            return False
+        claim_id = str(claimed_task.get("claim_id") or "").strip()
         if not claim_id:
             logger.error(
                 "fleet executor: task %s claim did not return claim_id; refusing execution",
@@ -633,12 +669,35 @@ class FleetExecutor:
             }
             future = self._pool.submit(
                 self._execute_claimed,
-                {**task, **claimed},
+                claimed_task,
                 claim_id,
                 projection,
             )
             self._futures[task_id] = future
         return True
+
+    def _refresh_nodes(self) -> None:
+        projection = ProjectionInventory.from_document(self.projection_loader())
+        self._projection = projection
+        self._routing.update(projection)
+        self._nodes = list(projection.providers)
+
+    def _process_tasks(self) -> dict[str, Any]:
+        return self.run_once()
+
+    @staticmethod
+    def _probe_models(ip: str) -> None:
+        # Retained only to make the retired behavior explicit to compatibility
+        # callers. OpenAI-compatible model visibility is not loaded-state proof.
+        return None
+
+    @staticmethod
+    def _run_script(command: str, timeout: int = 120) -> dict[str, Any]:
+        return {
+            "stdout": "",
+            "stderr": "unsafe_shell_disabled",
+            "exit_code": 126,
+        }
 
     def run_once(self) -> dict[str, Any]:
         if self._stop.is_set():
@@ -647,16 +706,22 @@ class FleetExecutor:
             projection = ProjectionInventory.from_document(self.projection_loader())
         except Exception as exc:
             logger.warning("fleet executor: projection unavailable: %s", exc)
-            return {"executed": False, "reason": "projection_unavailable", "error": str(exc)}
+            return {
+                "executed": False,
+                "reason": "projection_unavailable",
+                "error": str(exc),
+            }
         self._projection = projection
         self._routing.update(projection)
+        self._nodes = list(projection.providers)
 
         with self._lock:
             active = len(self._active)
             active_background = sum(
                 1
                 for item in self._active.values()
-                if item.get("priority") in {"background", "batch", "low", "unset", ""}
+                if item.get("priority")
+                in {"background", "batch", "low", "unset", ""}
             )
         capacity = min(MAX_CONCURRENT_LLM, projection.total_slots)
         free = max(0, capacity - active)
@@ -674,9 +739,15 @@ class FleetExecutor:
         try:
             candidates = self._list_ready_llm_tasks(neo, max(free * 4, 20))
             high_priority_waiting = any(not _is_background(task) for task in candidates)
-            background_limit = max(0, int(capacity * BACKGROUND_MAX_FRACTION))
-            if capacity > 1:
-                background_limit = min(background_limit, capacity - 1)
+            if BACKGROUND_MAX_FRACTION <= 0:
+                background_limit = 0
+            elif capacity == 1:
+                background_limit = 1
+            else:
+                background_limit = min(
+                    max(1, int(capacity * BACKGROUND_MAX_FRACTION)),
+                    capacity - 1,
+                )
             for task in candidates:
                 if claimed_count >= free:
                     break
@@ -713,8 +784,7 @@ class FleetExecutor:
         }
 
     def get_nodes(self) -> list[dict[str, Any]]:
-        projection = self._routing.snapshot()
-        return list(projection.get("providers") or [])
+        return list(self._nodes)
 
     def run_once_for_testing(self) -> dict[str, Any]:
         return self.run_once()
