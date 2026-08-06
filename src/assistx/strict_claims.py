@@ -12,12 +12,22 @@ logger = logging.getLogger(__name__)
 _INSTALLED = False
 
 
-def _enabled() -> bool:
-    return os.getenv("ASSISTX_REQUIRE_WORKER_CLAIM_ID", "true").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
+def _mode() -> str:
+    value = os.getenv("ASSISTX_REQUIRE_WORKER_CLAIM_ID", "modern").strip().lower()
+    if value in {"0", "false", "no", "off", "disabled"}:
+        return "disabled"
+    if value in {"all", "strict"}:
+        return "all"
+    return "modern"
+
+
+def _required_agents() -> set[str]:
+    return {
+        item.strip()
+        for item in os.getenv(
+            "ASSISTX_CLAIM_REQUIRED_AGENTS", "fleet-executor"
+        ).split(",")
+        if item.strip()
     }
 
 
@@ -29,11 +39,24 @@ def _legacy_agents() -> set[str]:
     }
 
 
+def _claim_required(agent_id: str) -> bool:
+    if agent_id in _legacy_agents():
+        return False
+    mode = _mode()
+    if mode == "disabled":
+        return False
+    if mode == "all":
+        return True
+    return agent_id in _required_agents()
+
+
 def install_strict_claim_fencing() -> None:
     """Require ``claim_id`` for heartbeat and completion mutations.
 
-    A temporary explicit legacy-agent allowlist is available for staged
-    migration. New deployments should leave it empty.
+    ``modern`` mode (the default) protects the current continuous executor while
+    older integrations are migrated. ``all`` enables fleet-wide strict mode.
+    A temporary explicit legacy-agent allowlist remains available for staged
+    cutover and should be empty after migration.
     """
 
     global _INSTALLED
@@ -55,7 +78,7 @@ def install_strict_claim_fencing() -> None:
         lease_seconds: int | None = None,
         claim_id: str | None = None,
     ) -> dict[str, Any] | None:
-        if _enabled() and not str(claim_id or "").strip() and agent_id not in _legacy_agents():
+        if _claim_required(agent_id) and not str(claim_id or "").strip():
             logger.warning(
                 "rejected claimless heartbeat task=%s agent=%s", task_id, agent_id
             )
@@ -83,7 +106,7 @@ def install_strict_claim_fencing() -> None:
         idempotency_key: str | None = None,
         claim_id: str | None = None,
     ) -> dict[str, Any] | None:
-        if _enabled() and not str(claim_id or "").strip() and agent_id not in _legacy_agents():
+        if _claim_required(agent_id) and not str(claim_id or "").strip():
             logger.warning(
                 "rejected claimless completion task=%s agent=%s", task_id, agent_id
             )
