@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import APIRouter, Depends, HTTPException
 
 from . import runtime_projection as legacy
+from .fleet_routing_matrix import benchmark_projection_index
 
 
 _DEFAULT_KEY_ID = "assistx-runtime-projection-v1"
@@ -101,6 +102,49 @@ def signing_message(document: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+def _apply_benchmark_routing(
+    document: dict[str, Any],
+    neo_factory: Callable[[], Any],
+) -> None:
+    """Attach non-authoritative benchmark hints to already admitted models.
+
+    The benchmark matrix cannot create a provider or make a model routable. It can
+    only enrich a runtime/model that passed the existing identity, access-path,
+    capacity, loaded-model, and operator approval gates.
+    """
+
+    index = benchmark_projection_index(neo_factory)
+    for provider in document.get("providers") or []:
+        if not isinstance(provider, dict):
+            continue
+        node_id = str(provider.get("node_id") or "")
+        provider_hints: dict[str, Any] | None = None
+        for model in provider.get("models") or []:
+            if not isinstance(model, dict):
+                continue
+            aliases = (
+                str(model.get("alias") or ""),
+                str(model.get("provider_model") or ""),
+            )
+            hint = next(
+                (index[(node_id, alias)] for alias in aliases if (node_id, alias) in index),
+                None,
+            )
+            if hint is None:
+                continue
+            model["task_family_scores"] = hint["task_family_scores"]
+            model["routing_roles"] = hint["routing_roles"]
+            model["worker_mode"] = hint["worker_mode"]
+            model["allow_agent_runtime"] = hint["allow_agent_runtime"]
+            model["allow_code_execution"] = hint["allow_code_execution"]
+            provider_hints = hint
+        if provider_hints is not None:
+            provider["routing_roles"] = provider_hints["routing_roles"]
+            provider["worker_mode"] = provider_hints["worker_mode"]
+            provider["allow_agent_runtime"] = provider_hints["allow_agent_runtime"]
+            provider["allow_code_execution"] = provider_hints["allow_code_execution"]
+
+
 def build_runtime_projection_v2(
     neo_factory: Callable[[], Any],
     *,
@@ -115,6 +159,7 @@ def build_runtime_projection_v2(
         ttl_seconds=ttl_seconds,
         now_ms=now_ms,
     )
+    _apply_benchmark_routing(document, neo_factory)
     document.pop("signature", None)
     document["schema_version"] = "2"
     document["signature_algorithm"] = "Ed25519"
