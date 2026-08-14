@@ -177,6 +177,19 @@ def report_to_router(
     _http("POST", f"{router_url}/api/fleet/node-report", data=body, timeout=10)
 
 
+def _default_model(lmstudio_url: str | None) -> str:
+    if not lmstudio_url:
+        return "local/model"
+    try:
+        status, body = _http("GET", f"{lmstudio_url}/v1/models", timeout=5)
+        data = body.get("data", []) if status == 200 and isinstance(body, dict) else []
+        if data and isinstance(data[0], dict) and data[0].get("id"):
+            return str(data[0]["id"])
+    except Exception:
+        pass
+    return "local/model"
+
+
 def execute_task(
     task: dict[str, Any],
     lmstudio_url: str | None,
@@ -344,7 +357,7 @@ def execute_task(
                 data={
                     "schema_version": 1,
                     "node_id": node_id,
-                    "model_id": payload.get("model", "local/model"),
+                    "model_id": payload.get("model") or _default_model(lmstudio_url),
                     "prefix_id": cache_request.get("prefix_id"),
                     "compatibility_fingerprint": cache_request.get(
                         "compatibility_fingerprint"
@@ -385,7 +398,7 @@ def execute_task(
         st, body = _http(
             "POST", f"{lmstudio_url}/v1/chat/completions",
             data={
-                "model": payload.get("model", "local/model"),
+                "model": payload.get("model") or _default_model(lmstudio_url),
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 1024,
                 **request_fields,
@@ -511,6 +524,8 @@ def run_node(args: argparse.Namespace) -> None:
                     auth=auth, headers=node_headers, timeout=20,
                 )
                 items = resp.get("items", []) if isinstance(resp, dict) else []
+                items = [item for item in items if set(item.get("required_capabilities") or []) <= set(poll_caps)]
+                items = [item for item in items if not ("command" in str(item.get("payload_json") or "") and os.getenv("FLEET_UNSAFE_SHELL_TASKS_ENABLED", "false").lower() not in {"1","true","yes","on"})]
                 if st == 200 and items:
                     for task in items:
                         if stop.is_set():
@@ -600,6 +615,8 @@ def run_node(args: argparse.Namespace) -> None:
                 cache_control_url=args.kv_cache_control_url,
             )
             result_payload = outcome.get("result") or {}
+            if not isinstance(result_payload, dict):
+                result_payload = {"raw": str(result_payload)}
             cache_manifest = result_payload.pop("kv_cache_manifest", None)
             cache_event = result_payload.pop("kv_cache_event", None)
             if isinstance(cache_manifest, dict):
