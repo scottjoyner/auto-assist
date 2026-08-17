@@ -224,7 +224,7 @@ def build_runtime_projection_router_v2(
                 ttl_seconds=int(
                     os.getenv(
                         "ASSISTX_RUNTIME_PROJECTION_TTL_SECONDS",
-                        "60",
+                        "900",
                     )
                 ),
             )
