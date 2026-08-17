@@ -44,6 +44,22 @@ def validate_trace(trace: dict[str, Any]) -> None:
         raise ValueError(f"unsupported schema_version: {trace.get('schema_version')!r}")
     _require_nonempty_string(trace.get("trace_id"), "trace_id")
 
+    experiment = trace.get("experiment")
+    if experiment is not None:
+        if not isinstance(experiment, dict):
+            raise ValueError("experiment must be an object")
+        _require_nonempty_string(experiment.get("name"), "experiment.name")
+        _require_nonempty_string(experiment.get("variant"), "experiment.variant")
+        baseline_id = experiment.get("baseline_id")
+        if baseline_id is not None:
+            _require_nonempty_string(baseline_id, "experiment.baseline_id")
+        source_commit = experiment.get("source_commit")
+        if source_commit is not None:
+            _require_nonempty_string(source_commit, "experiment.source_commit")
+        upstream = experiment.get("upstream")
+        if upstream is not None and not isinstance(upstream, dict):
+            raise ValueError("experiment.upstream must be an object")
+
     spans = trace.get("spans")
     if not isinstance(spans, list):
         raise ValueError("spans must be a list")
