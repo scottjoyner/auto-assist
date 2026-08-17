@@ -42,6 +42,8 @@ def install_strict_executor_adapter(adapter: Any) -> None:
         if not self.bootstrap_token:
             raise RuntimeError("ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN is required in strict executor mode")
         self.task_token = ""
+        self._base_openai_api_key = os.getenv("OPENAI_API_KEY", "")
+        self._base_hermes_lm_api_key = os.getenv("HERMES_LM_API_KEY", "")
         self.task_claims: dict[str, Any] = {}
         self._heartbeat_stop = threading.Event()
         self._lease_lost = threading.Event()
@@ -146,7 +148,10 @@ def install_strict_executor_adapter(adapter: Any) -> None:
             os.environ.pop("HERMES_EXECUTOR_TOKEN", None)
             current = os.environ.get("OPENAI_API_KEY", "")
             if current and current == getattr(self, "_exported_task_token", ""):
-                os.environ.pop("OPENAI_API_KEY", None)
+                os.environ["OPENAI_API_KEY"] = getattr(self, "_base_openai_api_key", "")
+            current_lm = os.environ.get("HERMES_LM_API_KEY", "")
+            if current_lm and current_lm == getattr(self, "_exported_task_token", ""):
+                os.environ["HERMES_LM_API_KEY"] = getattr(self, "_base_hermes_lm_api_key", "")
             self._exported_task_token = ""
 
     def claim_task(self, task_id: str, session_id: str):
@@ -186,6 +191,9 @@ def install_strict_executor_adapter(adapter: Any) -> None:
                 # Hermes custom/OpenAI-compatible providers conventionally read
                 # OPENAI_API_KEY. This value is task-scoped and removed afterward.
                 os.environ["OPENAI_API_KEY"] = token
+                # Hermes's provider prefers HERMES_LM_API_KEY when configured;
+                # strict execution must use the same claim-scoped JWT there too.
+                os.environ["HERMES_LM_API_KEY"] = token
             start_heartbeat(self, task_id, session_id, claim_id)
             return result
         except requests.HTTPError as exc:
