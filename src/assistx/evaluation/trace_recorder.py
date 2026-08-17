@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import time
 import uuid
@@ -18,6 +17,7 @@ class TraceRecorder:
     trace_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     spans: list[dict[str, Any]] = field(default_factory=list)
     started_at: float = field(default_factory=time.time)
+    experiment: dict[str, Any] | None = None
 
     def add_span(self, span_type: str, **attributes: Any) -> None:
         self.spans.append({"type": span_type, "attributes": attributes})
@@ -34,6 +34,8 @@ class TraceRecorder:
                 **metadata,
             },
         }
+        if self.experiment is not None:
+            trace["experiment"] = dict(self.experiment)
         validate_trace(trace)
         return trace
 
@@ -61,13 +63,17 @@ def benchmark_trace(
     validation_passed: bool | None,
     evidence_ids: list[str] | None = None,
     tokens_per_second: float | None = None,
+    experiment: dict[str, Any] | None = None,
+    shadow_evidence: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the first concrete AssistX trace shape for adaptive benchmarks."""
-    recorder = TraceRecorder(trace_id=f"benchmark-{task_id}")
+    recorder = TraceRecorder(trace_id=f"benchmark-{task_id}", experiment=experiment)
     recorder.add_span("task", task_id=task_id, task_family=task_family, benchmark=True)
     recorder.add_span("route", node_id=node_id, network_path="local_or_tailnet")
     recorder.add_span("model", model=model, node_id=node_id, tokens_per_second=tokens_per_second)
     recorder.add_span("test", validation_passed=validation_passed, benchmark_family=task_family)
+    for evidence in shadow_evidence or []:
+        recorder.add_span("test", shadow=True, **dict(evidence))
     return recorder.finish(
         "success" if success else "failure",
         evidence_ids=evidence_ids or ([f"benchmark-outcome:{task_id}"] if success else []),
