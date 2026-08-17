@@ -1,0 +1,26 @@
+[
+  {
+    "id": "identifiers",
+    "content_type": "application/json",
+    "content": "{\n  \"uuid\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"sha256\": \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\n  \"ip\": \"100.64.43.123\",\n  \"timestamp\": \"2026-08-17T19:51:00-04:00\"\n}",
+    "must_preserve": ["550e8400-e29b-41d4-a716-446655440000", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "100.64.43.123", "2026-08-17T19:51:00-04:00"]
+  },
+  {
+    "id": "numeric-edge-cases",
+    "content_type": "tool/json",
+    "content": "{\n  \"negative\": -42,\n  \"float\": -0.000125,\n  \"large\": 9223372036854775807,\n  \"port\": 8088\n}",
+    "must_preserve": ["-42", "-0.000125", "9223372036854775807", "8088"]
+  },
+  {
+    "id": "escaped-and-paths",
+    "content_type": "application/json",
+    "content": "{\n  \"path\": \"/mnt/SSD_4TB/models/qwen/model.gguf\",\n  \"windows\": \"C:\\\\models\\\\qwen\\\\model.gguf\",\n  \"message\": \"line1\\nline2\\tquoted: \\\"exact\\\"\"\n}",
+    "must_preserve": ["/mnt/SSD_4TB/models/qwen/model.gguf", "model.gguf", "line1"]
+  },
+  {
+    "id": "whitespace-sensitive-code",
+    "content_type": "text/plain",
+    "content": "def f():\n    if True:\n        return 1\n",
+    "must_preserve": ["def f():\n    if True:\n        return 1\n"]
+  }
+]
