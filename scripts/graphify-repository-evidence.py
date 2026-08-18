@@ -12,6 +12,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from assistx.repository_graph import RepositoryGraphProjection, normalize_graphify_graph
+from assistx.repository_graph_context_plan import build_graph_context_plan
 from assistx.repository_graph_query import neighborhood
 from assistx.repository_graph_reranker import rank_graph_files
 
@@ -80,6 +81,11 @@ def _historical_change_coupling(
         limit: {"recalls": [], "precisions": [], "zero": 0, "perfect": 0}
         for limit in (5, 10, 20)
     }
+    plan_configs = ((6, 6), (8, 8), (10, 10))
+    plan_metrics = {
+        config: {"recalls": [], "precisions": [], "zero": 0, "perfect": 0}
+        for config in plan_configs
+    }
     seed_rows: list[dict[str, object]] = []
     multi_file_commits = 0
 
@@ -146,6 +152,34 @@ def _historical_change_coupling(
                     "recall": recall,
                     "precision": precision,
                 }
+
+            for primary_limit, expansion_limit in plan_configs:
+                plan = build_graph_context_plan(
+                    projection,
+                    seed_file=seed,
+                    task_text=task_text,
+                    primary_limit=primary_limit,
+                    expansion_limit=expansion_limit,
+                )
+                predicted = set(plan.paths)
+                hits = targets & predicted
+                recall = len(hits) / len(targets)
+                precision = len(hits) / len(predicted) if predicted else 0.0
+                values = plan_metrics[(primary_limit, expansion_limit)]
+                values["recalls"].append(recall)
+                values["precisions"].append(precision)
+                if not hits:
+                    values["zero"] += 1
+                if recall == 1.0:
+                    values["perfect"] += 1
+                row[f"context_plan_{primary_limit}p{expansion_limit}e"] = {
+                    "predicted_neighbors": len(predicted),
+                    "primary": [candidate.path for candidate in plan.primary],
+                    "expansion": [candidate.path for candidate in plan.expansion],
+                    "hits": sorted(hits),
+                    "recall": recall,
+                    "precision": precision,
+                }
             seed_rows.append(row)
 
     depth1 = _metric_summary(**metrics[1])
@@ -153,6 +187,10 @@ def _historical_change_coupling(
     reranked = {
         f"top{limit}": _metric_summary(**reranker_metrics[limit])
         for limit in (5, 10, 20)
+    }
+    context_plans = {
+        f"{primary}p{expansion}e": _metric_summary(**plan_metrics[(primary, expansion)])
+        for primary, expansion in plan_configs
     }
     return {
         "historical_proxy_note": (
@@ -164,6 +202,7 @@ def _historical_change_coupling(
         "historical_depth1": depth1,
         "historical_depth2": depth2,
         "historical_reranked_depth2": reranked,
+        "historical_context_plans": context_plans,
         "mean_cochange_recall": depth1["mean_recall"],
         "median_cochange_recall": depth1["median_recall"],
         "mean_cochange_precision": depth1["mean_precision"],
@@ -242,7 +281,7 @@ def main() -> int:
         )
 
         payload = {
-            "schema_version": "assistx.graphify-repository-evidence.v4",
+            "schema_version": "assistx.graphify-repository-evidence.v5",
             "repository": repository,
             "commit_sha": commit_sha,
             "graphify_version": "0.9.46",
