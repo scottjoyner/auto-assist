@@ -1,0 +1,63 @@
+name: headroom-corpus-evidence
+
+on:
+  push:
+    branches: ["agent/context-compression-baseline"]
+  pull_request:
+    paths:
+      - "src/assistx/context_optimization.py"
+      - "src/assistx/headroom_adapter.py"
+      - "scripts/headroom-corpus-evidence.py"
+      - ".github/workflows/headroom-corpus-evidence.yml"
+
+jobs:
+  corpus-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install AssistX and pinned Headroom
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          pip install "headroom-ai==0.32.1"
+
+      - name: Run fixed corpus comparison
+        env:
+          PYTHONPATH: src
+        run: |
+          python scripts/headroom-corpus-evidence.py
+          python -m json.tool headroom-corpus-evidence.json >/dev/null
+
+      - name: Report promotion-relevant metrics without auto-promoting
+        run: |
+          python - <<'PY'
+          import json
+          p = json.load(open('headroom-corpus-evidence.json'))
+          print({
+              'cases': p['case_count'],
+              'mean_stdlib_reduction_ratio': p['mean_stdlib_reduction_ratio'],
+              'mean_headroom_reduction_ratio': p['mean_headroom_reduction_ratio'],
+              'fidelity_failure_count': p['fidelity_failure_count'],
+              'median_headroom_duration_ms': p['median_headroom_duration_ms'],
+          })
+          assert p['authoritative_behavior_changed'] is False
+          PY
+
+      - name: Upload Headroom corpus evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: headroom-corpus-evidence
+          path: headroom-corpus-evidence.json
+          if-no-files-found: error
+          retention-days: 30
