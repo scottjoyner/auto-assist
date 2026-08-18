@@ -94,9 +94,7 @@ def run_output_equivalence_case(
         compress_fn=headroom_compress_fn,
     )
     headroom_ms = (time.perf_counter() - started) * 1000
-    variant_messages.append(
-        ("headroom", headroom.messages, headroom_ms, "headroom")
-    )
+    variant_messages.append(("headroom", headroom.messages, headroom_ms, "headroom"))
 
     started = time.perf_counter()
     hybrid = compress_messages_hybrid(
@@ -105,9 +103,7 @@ def run_output_equivalence_case(
         compress_fn=headroom_compress_fn,
     )
     hybrid_ms = (time.perf_counter() - started) * 1000
-    variant_messages.append(
-        ("hybrid", hybrid.messages, hybrid_ms, hybrid.strategy)
-    )
+    variant_messages.append(("hybrid", hybrid.messages, hybrid_ms, hybrid.strategy))
 
     outputs: list[VariantOutput] = []
     for variant, messages, compression_ms, strategy in variant_messages:
@@ -130,12 +126,11 @@ def run_output_equivalence_case(
     return EquivalenceCaseResult(case_id=case.case_id, variants=tuple(outputs))
 
 
-def summarize_output_equivalence(
-    results: list[EquivalenceCaseResult],
-) -> dict[str, Any]:
+def summarize_output_equivalence(results: list[EquivalenceCaseResult]) -> dict[str, Any]:
     variants = ("raw", "lossless_json", "headroom", "hybrid")
+    raw_rows = [next(v for v in result.variants if v.variant == "raw") for result in results]
     summary: dict[str, Any] = {
-        "schema_version": "assistx.context-output-equivalence.v1",
+        "schema_version": "assistx.context-output-equivalence.v2",
         "cases": len(results),
         "all_candidate_variants_match_raw_correctness": all(
             result.all_candidate_variants_match_correctness for result in results
@@ -145,9 +140,15 @@ def summarize_output_equivalence(
     }
     for variant in variants:
         rows = [next(v for v in result.variants if v.variant == variant) for result in results]
+        equivalence_matches = sum(
+            candidate.passed == raw.passed for candidate, raw in zip(rows, raw_rows, strict=True)
+        )
         summary["variants"][variant] = {
             "pass_count": sum(row.passed for row in rows),
             "pass_rate": (sum(row.passed for row in rows) / len(rows)) if rows else 0.0,
+            "output_equivalence_rate": (
+                equivalence_matches / len(rows) if rows else 0.0
+            ),
             "mean_context_chars": (
                 sum(row.context_chars for row in rows) / len(rows) if rows else 0.0
             ),
@@ -155,9 +156,7 @@ def summarize_output_equivalence(
                 sum(row.invoke_duration_ms for row in rows) / len(rows) if rows else 0.0
             ),
             "mean_compression_duration_ms": (
-                sum(row.compression_duration_ms for row in rows) / len(rows)
-                if rows
-                else 0.0
+                sum(row.compression_duration_ms for row in rows) / len(rows) if rows else 0.0
             ),
         }
     return summary
