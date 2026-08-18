@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from assistx.context_compression_policy import compress_messages_hybrid
@@ -33,7 +34,8 @@ def test_escape_sensitive_tool_json_uses_lossless_fallback():
     assert result.bypassed_headroom is True
     assert result.strategy == "lossless_json_fallback"
     assert result.bypass_reason == "escape_sensitive_tool_json"
-    assert marker in result.messages[-1]["content"]
+    decoded = json.loads(result.messages[-1]["content"])
+    assert decoded["target"] == marker
     assert "\n  " not in result.messages[-1]["content"]
 
 
