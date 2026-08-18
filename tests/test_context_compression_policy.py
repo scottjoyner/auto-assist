@@ -39,10 +39,28 @@ def test_escape_sensitive_tool_json_uses_lossless_fallback():
     assert "\n  " not in result.messages[-1]["content"]
 
 
-def test_normal_structured_tool_output_can_use_headroom():
+def test_all_structured_tool_json_uses_lossless_fallback():
     messages = [
         {"role": "user", "content": "Find warnings."},
-        {"role": "tool", "content": '[{"status":"ok"},{"status":"warning"}]'},
+        {"role": "tool", "content": '{"checks":[{"status":"warning","service":"service-3"}]}'},
+    ]
+    result = compress_messages_hybrid(
+        messages,
+        model="fixture-model",
+        compress_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Headroom must not be called for structured evidence")
+        ),
+    )
+    assert result.bypassed_headroom is True
+    assert result.strategy == "lossless_json_fallback"
+    assert result.bypass_reason == "structured_tool_json"
+    assert json.loads(result.messages[-1]["content"])["checks"][0]["service"] == "service-3"
+
+
+def test_free_form_tool_text_remains_eligible_for_headroom():
+    messages = [
+        {"role": "user", "content": "Summarize this note."},
+        {"role": "tool", "content": "A free-form operational note with no structured payload."},
     ]
     result = compress_messages_hybrid(
         messages,
@@ -52,4 +70,19 @@ def test_normal_structured_tool_output_can_use_headroom():
     assert result.bypassed_headroom is False
     assert result.strategy == "headroom"
     assert result.headroom is not None
-    assert result.headroom.tokens_saved == 60
+
+
+def test_normal_structured_tool_output_uses_lossless_fallback():
+    messages = [
+        {"role": "user", "content": "Find warnings."},
+        {"role": "tool", "content": '[{"status":"ok"},{"status":"warning"}]'},
+    ]
+    result = compress_messages_hybrid(
+        messages,
+        model="fixture-model",
+        compress_fn=fake_headroom,
+    )
+    assert result.bypassed_headroom is True
+    assert result.strategy == "lossless_json_fallback"
+    assert result.bypass_reason == "structured_tool_json"
+    assert result.headroom is None

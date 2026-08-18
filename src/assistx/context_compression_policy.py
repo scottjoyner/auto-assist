@@ -38,6 +38,22 @@ def _tool_json_escape_sensitive(messages: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _tool_json_structured(messages: list[dict[str, Any]]) -> bool:
+    for message in messages:
+        if message.get("role") != "tool":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        try:
+            value = json.loads(content)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, (dict, list)):
+            return True
+    return False
+
+
 def _lossless_tool_json_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     optimized: list[dict[str, Any]] = []
     for message in messages:
@@ -60,11 +76,18 @@ def compress_messages_hybrid(
     baseline instead of being sent through lossy/content-aware compression.
     """
     if _tool_json_escape_sensitive(messages):
+        reason = "escape_sensitive_tool_json"
+    elif _tool_json_structured(messages):
+        reason = "structured_tool_json"
+    else:
+        reason = None
+
+    if reason is not None:
         return HybridCompressionResult(
             messages=_lossless_tool_json_messages(messages),
             strategy="lossless_json_fallback",
             bypassed_headroom=True,
-            bypass_reason="escape_sensitive_tool_json",
+            bypass_reason=reason,
             headroom=None,
         )
 
