@@ -6,7 +6,9 @@ on:
   pull_request:
     paths:
       - "src/assistx/context_optimization.py"
+      - "src/assistx/context_compression_policy.py"
       - "src/assistx/headroom_adapter.py"
+      - "tests/test_context_compression_policy.py"
       - "scripts/headroom-corpus-evidence.py"
       - ".github/workflows/headroom-corpus-evidence.yml"
 
@@ -32,6 +34,9 @@ jobs:
           pip install -r requirements-dev.txt
           pip install "headroom-ai==0.32.1"
 
+      - name: Run hybrid policy tests
+        run: pytest -q tests/test_context_compression_policy.py tests/test_headroom_adapter.py
+
       - name: Run fixed corpus comparison
         env:
           PYTHONPATH: src
@@ -48,8 +53,11 @@ jobs:
               'cases': p['case_count'],
               'mean_stdlib_reduction_ratio': p['mean_stdlib_reduction_ratio'],
               'mean_headroom_reduction_ratio': p['mean_headroom_reduction_ratio'],
-              'fidelity_failure_count': p['fidelity_failure_count'],
+              'mean_hybrid_reduction_ratio': p['mean_hybrid_reduction_ratio'],
+              'headroom_fidelity_failures': p['headroom_fidelity_failure_count'],
+              'hybrid_fidelity_failures': p['hybrid_fidelity_failure_count'],
               'median_headroom_duration_ms': p['median_headroom_duration_ms'],
+              'median_hybrid_duration_ms': p['median_hybrid_duration_ms'],
           })
           assert p['authoritative_behavior_changed'] is False
           PY
