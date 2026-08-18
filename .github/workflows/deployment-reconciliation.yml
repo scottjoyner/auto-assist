@@ -1,0 +1,56 @@
+name: deployment-reconciliation
+
+on:
+  push:
+    branches:
+      - agent/deployment-reconciliation-20260818
+  pull_request:
+    paths:
+      - "compose*.yml"
+      - "deploy/reconciliation/**"
+      - "scripts/unified-deploy.sh"
+      - "scripts/reconciliation-capture-runtime.sh"
+      - "docs/DEPLOYMENT_RECONCILIATION_20260818.md"
+      - ".github/workflows/deployment-reconciliation.yml"
+
+jobs:
+  safety-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate shell syntax
+        run: |
+          bash -n scripts/unified-deploy.sh
+          bash -n scripts/reconciliation-capture-runtime.sh
+
+      - name: Validate unified plan is render-only
+        run: |
+          bash scripts/unified-deploy.sh plan | tee /tmp/deploy-plan.txt
+          grep -F 'docker-compose.yml' /tmp/deploy-plan.txt
+          grep -F 'compose.prod.yml' /tmp/deploy-plan.txt
+          grep -F 'compose.production.reconciled.yml' /tmp/deploy-plan.txt
+          grep -F ' config' /tmp/deploy-plan.txt
+
+      - name: Prove apply is fail-closed without approval
+        run: |
+          set +e
+          output="$(bash scripts/unified-deploy.sh apply 2>&1)"
+          status=$?
+          set -e
+          test "$status" -ne 0
+          printf '%s\n' "$output" | grep -F 'ASSISTX_UNIFIED_DEPLOY_APPROVED=YES'
+
+      - name: Check edge contract stays non-authoritative by default
+        run: |
+          grep -F 'status: candidate_only' deploy/reconciliation/edge-exposure.example.yaml
+          grep -F 'exposure: private_only' deploy/reconciliation/edge-exposure.example.yaml
+          grep -F 'exposure: loopback_only' deploy/reconciliation/edge-exposure.example.yaml
+          grep -F 'magicdns_required_in_containers: false' deploy/reconciliation/edge-exposure.example.yaml
+
+      - name: Check reconciled production binds remain loopback-only
+        run: |
+          grep -F '127.0.0.1:${ASSISTX_API_PORT:-8000}:8000' compose.production.reconciled.yml
+          grep -F '127.0.0.1:${ASSISTX_NEO4J_HTTP_PORT:-7474}:7474' compose.production.reconciled.yml
+          grep -F '127.0.0.1:${ASSISTX_NEO4J_BOLT_PORT:-7687}:7687' compose.production.reconciled.yml
