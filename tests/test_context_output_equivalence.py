@@ -70,6 +70,32 @@ def test_marker_only_inside_quoted_tool_evidence_is_not_a_correct_answer():
     assert headroom.missing_markers == ("FLEET-7391",)
 
 
+def test_explicit_expected_answer_rejects_empty_or_truncated_output():
+    case = EquivalenceCase(
+        case_id="explicit-answer-contract",
+        messages=[{"role": "user", "content": "Return the exact marker."}],
+        required_output_markers=("FLEET-7391",),
+        expected_answer="FLEET-7391",
+    )
+
+    def invoke(_messages, variant):
+        if variant == "raw":
+            return "FLEET-7391"
+        return "**TOOL RESULT (evidence):** FLEET-7391"
+
+    result = run_output_equivalence_case(
+        case,
+        model="fixture-model",
+        invoke_fn=invoke,
+        headroom_compress_fn=fake_headroom,
+    )
+    raw = next(v for v in result.variants if v.variant == "raw")
+    headroom = next(v for v in result.variants if v.variant == "headroom")
+    assert raw.passed is True
+    assert headroom.passed is False
+    assert headroom.missing_markers == ("FLEET-7391",)
+
+
 def test_candidate_regression_is_visible_even_when_raw_passes():
     case = EquivalenceCase(
         case_id="regression",

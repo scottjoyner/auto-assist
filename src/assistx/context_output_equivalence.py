@@ -27,6 +27,7 @@ class EquivalenceCase:
     case_id: str
     messages: Messages
     required_output_markers: tuple[str, ...]
+    expected_answer: str | None = None
 
 
 @dataclass(frozen=True)
@@ -88,9 +89,16 @@ def _answer_prose(response: str) -> str:
     return "\n".join(prose).strip()
 
 
-def _score_response(response: str, markers: tuple[str, ...]) -> tuple[bool, tuple[str, ...]]:
+def _score_response(
+    response: str,
+    markers: tuple[str, ...],
+    expected_answer: str | None = None,
+) -> tuple[bool, tuple[str, ...]]:
     answer = _answer_prose(response)
-    missing = tuple(marker for marker in markers if marker not in answer)
+    required = list(markers)
+    if expected_answer and expected_answer not in required:
+        required.append(expected_answer)
+    missing = tuple(marker for marker in required if marker not in answer)
     return not missing, missing
 
 
@@ -130,7 +138,11 @@ def run_output_equivalence_case(
         started = time.perf_counter()
         response = str(invoke_fn(messages, variant))
         invoke_ms = (time.perf_counter() - started) * 1000
-        passed, missing = _score_response(response, case.required_output_markers)
+        passed, missing = _score_response(
+            response,
+            case.required_output_markers,
+            case.expected_answer,
+        )
         outputs.append(
             VariantOutput(
                 variant=variant,
