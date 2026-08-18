@@ -98,8 +98,13 @@ def _score_response(
     required = list(markers)
     if expected_answer and expected_answer not in required:
         required.append(expected_answer)
-    missing = tuple(marker for marker in required if marker not in answer)
-    return not missing, missing
+    missing = list(marker for marker in required if marker not in answer)
+    if expected_answer and "tool result" in answer.lower():
+        normalized_answer = answer.strip().strip("`*_").strip()
+        if normalized_answer != expected_answer:
+            if expected_answer not in missing:
+                missing.append(expected_answer)
+    return not missing, tuple(missing)
 
 
 def run_output_equivalence_case(

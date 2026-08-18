@@ -81,7 +81,7 @@ def test_explicit_expected_answer_rejects_empty_or_truncated_output():
     def invoke(_messages, variant):
         if variant == "raw":
             return "FLEET-7391"
-        return "**TOOL RESULT (evidence):** FLEET-7391"
+        return "The TOOL RESULT shows that the marker is `FLEET-7391`, but I cannot determine it."
 
     result = run_output_equivalence_case(
         case,
