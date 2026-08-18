@@ -8,6 +8,8 @@ on:
       - "src/assistx/evaluation/**"
       - "tests/test_experiment_*.py"
       - "tests/test_trace_*.py"
+      - "tests/test_promotion*.py"
+      - "tests/test_shadow_evidence.py"
       - "scripts/generate-experiment-smoke-artifact.py"
       - ".github/workflows/experiment-artifacts.yml"
 
@@ -47,6 +49,8 @@ jobs:
             tests/test_experiment_artifact.py \
             tests/test_experiment_runner.py \
             tests/test_promotion.py \
+            tests/test_promotion_policies.py \
+            tests/test_promotion_manifest.py \
             tests/test_shadow_evidence.py
 
       - name: Generate deterministic experiment artifact
