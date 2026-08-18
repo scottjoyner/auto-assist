@@ -11,8 +11,9 @@ import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from assistx.repository_graph import normalize_graphify_graph
+from assistx.repository_graph import RepositoryGraphProjection, normalize_graphify_graph
 from assistx.repository_graph_query import neighborhood
+from assistx.repository_graph_reranker import rank_graph_files
 
 
 def _git(*args: str) -> str:
@@ -33,16 +34,27 @@ def _expand_neighbors(seed: str, graph: dict[str, set[str]], depth: int) -> set[
     return seen - {seed}
 
 
+def _metric_summary(recalls: list[float], precisions: list[float], zero: int, perfect: int) -> dict[str, object]:
+    return {
+        "mean_recall": statistics.mean(recalls) if recalls else 0.0,
+        "median_recall": statistics.median(recalls) if recalls else 0.0,
+        "mean_precision": statistics.mean(precisions) if precisions else 0.0,
+        "median_precision": statistics.median(precisions) if precisions else 0.0,
+        "zero_hit_seed_count": zero,
+        "perfect_recall_seed_count": perfect,
+    }
+
+
 def _historical_change_coupling(
     *,
+    projection: RepositoryGraphProjection,
     node_file: dict[str, str],
-    edges: list[dict[str, object]],
     represented_python_files: set[str],
     commit_limit: int = 200,
 ) -> dict[str, object]:
     """Retrospective proxy: recover recent co-changed files from graph neighborhoods."""
     file_neighbors: defaultdict[str, set[str]] = defaultdict(set)
-    for edge in edges:
+    for edge in projection.edges:
         source_file = node_file.get(str(edge["source"]))
         target_file = node_file.get(str(edge["target"]))
         if (
@@ -64,6 +76,10 @@ def _historical_change_coupling(
         depth: {"recalls": [], "precisions": [], "zero": 0, "perfect": 0}
         for depth in (1, 2)
     }
+    reranker_metrics = {
+        limit: {"recalls": [], "precisions": [], "zero": 0, "perfect": 0}
+        for limit in (5, 10, 20)
+    }
     seed_rows: list[dict[str, object]] = []
     multi_file_commits = 0
 
@@ -76,10 +92,12 @@ def _historical_change_coupling(
         if len(changed) < 2:
             continue
         multi_file_commits += 1
+        task_text = _git("show", "-s", "--format=%s", commit)
         for seed in sorted(changed):
             targets = changed - {seed}
             row: dict[str, object] = {
                 "commit": commit,
+                "commit_subject": task_text,
                 "seed": seed,
                 "cochanged_targets": len(targets),
             }
@@ -101,23 +119,41 @@ def _historical_change_coupling(
                     "recall": recall,
                     "precision": precision,
                 }
+
+            ranked = rank_graph_files(
+                projection,
+                seed_file=seed,
+                task_text=task_text,
+                max_depth=2,
+                limit=20,
+            )
+            ranked_paths = [candidate.path for candidate in ranked]
+            for limit in (5, 10, 20):
+                predicted = set(ranked_paths[:limit])
+                hits = targets & predicted
+                recall = len(hits) / len(targets)
+                precision = len(hits) / len(predicted) if predicted else 0.0
+                values = reranker_metrics[limit]
+                values["recalls"].append(recall)
+                values["precisions"].append(precision)
+                if not hits:
+                    values["zero"] += 1
+                if recall == 1.0:
+                    values["perfect"] += 1
+                row[f"reranked_top{limit}"] = {
+                    "predicted_neighbors": len(predicted),
+                    "hits": sorted(hits),
+                    "recall": recall,
+                    "precision": precision,
+                }
             seed_rows.append(row)
 
-    def summary(depth: int) -> dict[str, object]:
-        values = metrics[depth]
-        recalls = values["recalls"]
-        precisions = values["precisions"]
-        return {
-            "mean_recall": statistics.mean(recalls) if recalls else 0.0,
-            "median_recall": statistics.median(recalls) if recalls else 0.0,
-            "mean_precision": statistics.mean(precisions) if precisions else 0.0,
-            "median_precision": statistics.median(precisions) if precisions else 0.0,
-            "zero_hit_seed_count": values["zero"],
-            "perfect_recall_seed_count": values["perfect"],
-        }
-
-    depth1 = summary(1)
-    depth2 = summary(2)
+    depth1 = _metric_summary(**metrics[1])
+    depth2 = _metric_summary(**metrics[2])
+    reranked = {
+        f"top{limit}": _metric_summary(**reranker_metrics[limit])
+        for limit in (5, 10, 20)
+    }
     return {
         "historical_proxy_note": (
             "current graph vs recent non-merge commit co-change; retrospective, not causal or held-out"
@@ -127,7 +163,7 @@ def _historical_change_coupling(
         "historical_seed_evaluations": len(seed_rows),
         "historical_depth1": depth1,
         "historical_depth2": depth2,
-        # Keep v2 fields for simple consumers; these remain depth-1 metrics.
+        "historical_reranked_depth2": reranked,
         "mean_cochange_recall": depth1["mean_recall"],
         "median_cochange_recall": depth1["median_recall"],
         "mean_cochange_precision": depth1["mean_precision"],
@@ -200,13 +236,13 @@ def main() -> int:
             len(represented_python_files) / len(tracked_python_files) if tracked_python_files else 0.0
         )
         coupling = _historical_change_coupling(
+            projection=projection,
             node_file=node_file,
-            edges=projection.edges,
             represented_python_files=represented_python_files,
         )
 
         payload = {
-            "schema_version": "assistx.graphify-repository-evidence.v3",
+            "schema_version": "assistx.graphify-repository-evidence.v4",
             "repository": repository,
             "commit_sha": commit_sha,
             "graphify_version": "0.9.46",
