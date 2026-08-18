@@ -65,6 +65,7 @@ def test_candidate_regression_is_visible_even_when_raw_passes():
     assert result.all_candidate_variants_match_correctness is False
 
     summary = summarize_output_equivalence([result])
+    assert summary["schema_version"] == "assistx.context-output-equivalence.v2"
     assert summary["variants"]["raw"]["output_equivalence_rate"] == 1.0
     assert summary["variants"]["headroom"]["output_equivalence_rate"] == 0.0
     assert summary["variants"]["hybrid"]["output_equivalence_rate"] == 1.0
@@ -86,6 +87,7 @@ def test_summary_reports_variant_pass_rates_and_context_sizes():
         headroom_compress_fn=fake_headroom,
     )
     summary = summarize_output_equivalence([result])
+    assert summary["schema_version"] == "assistx.context-output-equivalence.v2"
     assert summary["all_candidate_variants_match_raw_correctness"] is True
     assert summary["variants"]["raw"]["pass_rate"] == 1.0
     assert summary["variants"]["headroom"]["output_equivalence_rate"] == 1.0
