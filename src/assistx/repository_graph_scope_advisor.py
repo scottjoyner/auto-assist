@@ -29,14 +29,15 @@ def advise_scope(
     seed_file: str,
     task_text: str,
     max_files: int,
-    expansion_budget: int = 2,
+    expansion_budget: int = 0,
     historical_change_scores: dict[str, float] | None = None,
 ) -> ScopeAdvice:
     """Return a bounded candidate scope for an upstream contract builder.
 
     The seed is always first and counts against `max_files`. Remaining capacity is
-    filled precision-first from depth-1, then by at most `expansion_budget`
-    reranked depth-2 files. The returned tuple is advisory only.
+    filled precision-first from depth-1. Depth-2 expansion is opt-in because the
+    repository-scale evidence showed materially lower precision for every tested
+    expansion budget. The returned tuple is advisory only.
     """
     if max_files < 1:
         raise ValueError("max_files must be positive")
