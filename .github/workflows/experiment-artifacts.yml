@@ -1,0 +1,63 @@
+name: experiment-artifacts
+
+on:
+  push:
+    branches: ["agent/trace-eval-poc"]
+  pull_request:
+    paths:
+      - "src/assistx/evaluation/**"
+      - "tests/test_experiment_*.py"
+      - "tests/test_trace_*.py"
+      - "scripts/generate-experiment-smoke-artifact.py"
+      - ".github/workflows/experiment-artifacts.yml"
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run experiment and trace tests
+        env:
+          BASIC_AUTH_USER: neo4j
+          BASIC_AUTH_PASS: livelongandprosper
+        run: |
+          pytest -q \
+            tests/test_trace_eval.py \
+            tests/test_trace_schema.py \
+            tests/test_trace_recorder.py \
+            tests/test_benchmark_trace_integration.py \
+            tests/test_experiment_results.py \
+            tests/test_experiment_manifest.py \
+            tests/test_experiment_artifact.py \
+            tests/test_experiment_runner.py \
+            tests/test_promotion.py \
+            tests/test_shadow_evidence.py
+
+      - name: Generate deterministic experiment artifact
+        run: |
+          PYTHONPATH=src python scripts/generate-experiment-smoke-artifact.py
+          python -m json.tool artifacts/experiments/ci-smoke.json >/dev/null
+
+      - name: Upload experiment artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistx-experiment-smoke
+          path: artifacts/experiments/ci-smoke.json
+          if-no-files-found: error
+          retention-days: 30
