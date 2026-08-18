@@ -24,7 +24,7 @@ def test_settings_adapter_builds_self_hosted_bolt_configuration_without_connecti
         settings_factory=fake_settings_factory,
     )
     assert settings.neo4j["uri"] == "bolt://localhost:7687"
-    assert settings.neo4j["user"] == "neo4j"
+    assert "user" not in settings.neo4j
     assert settings.neo4j["password"] == "fixture-password"
     assert settings.llm == "ollama/qwen"
     assert settings.embedding == "BAAI/bge-small-en-v1.5"
