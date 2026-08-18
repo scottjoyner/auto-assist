@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the pinned Neo4j Agent Memory SDK surface without connecting to Neo4j."""
+"""Validate pinned Neo4j Agent Memory SDK surface without providers or DB I/O."""
 
 from __future__ import annotations
 
@@ -19,8 +19,6 @@ def main() -> int:
         AgentMemorySettingsSpec(
             neo4j_uri="bolt://localhost:7687",
             neo4j_password="fixture-password",
-            llm="ollama/qwen",
-            embedding="BAAI/bge-small-en-v1.5",
         ),
         settings_factory=MemorySettings,
     )
@@ -29,16 +27,23 @@ def main() -> int:
         session_id="fixture-task",
         user_identifier="assistx",
     )
-    client = MemoryClient(settings)
-    if client is None:
-        raise SystemExit("MemoryClient construction failed")
+
+    # Import/type compatibility is the boundary of this smoke. Constructing or
+    # entering MemoryClient may initialize drivers/providers, which would violate
+    # the explicit no-connection/no-provider contract of this CI experiment.
+    if not isinstance(MemoryClient, type):
+        raise SystemExit("MemoryClient is not an importable SDK class")
+
     print(
         json.dumps(
             {
-                "memory_client_class": type(client).__name__,
+                "memory_client_class": MemoryClient.__name__,
                 "settings_class": type(settings).__name__,
+                "neo4j_uri": str(settings.neo4j.uri),
                 "context_request_keys": sorted(request),
                 "sdk_version": "0.5.0",
+                "provider_resolution_requested": False,
+                "client_constructed": False,
                 "connected": False,
                 "writes_performed": False,
             },
