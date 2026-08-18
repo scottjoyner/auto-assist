@@ -15,7 +15,6 @@ from typing import Any, Callable
 class AgentMemorySettingsSpec:
     neo4j_uri: str
     neo4j_password: str
-    neo4j_user: str = "neo4j"
     llm: str | None = None
     embedding: str | None = None
 
@@ -24,8 +23,6 @@ class AgentMemorySettingsSpec:
             raise ValueError("neo4j_uri is required")
         if not self.neo4j_password:
             raise ValueError("neo4j_password is required")
-        if not self.neo4j_user.strip():
-            raise ValueError("neo4j_user is required")
 
 
 def build_agent_memory_settings(
@@ -33,7 +30,11 @@ def build_agent_memory_settings(
     *,
     settings_factory: Callable[..., Any] | None = None,
 ) -> Any:
-    """Construct upstream MemorySettings without opening a connection or writing."""
+    """Construct upstream MemorySettings without opening a connection or writing.
+
+    Neo4j Agent Memory 0.5.0's self-hosted MemorySettings accepts `uri` and
+    `password` in its `neo4j` block; it rejects an explicit `user` field.
+    """
     spec.validate()
     if settings_factory is None:
         try:
@@ -46,7 +47,6 @@ def build_agent_memory_settings(
     kwargs: dict[str, Any] = {
         "neo4j": {
             "uri": spec.neo4j_uri,
-            "user": spec.neo4j_user,
             "password": spec.neo4j_password,
         }
     }
