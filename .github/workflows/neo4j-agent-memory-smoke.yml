@@ -1,0 +1,52 @@
+name: neo4j-agent-memory-smoke
+
+on:
+  push:
+    branches: ["agent/procedural-memory-poc"]
+  pull_request:
+    paths:
+      - "src/assistx/neo4j_agent_memory_adapter.py"
+      - "tests/test_neo4j_agent_memory_adapter.py"
+      - "scripts/neo4j-agent-memory-smoke.py"
+      - ".github/workflows/neo4j-agent-memory-smoke.yml"
+
+jobs:
+  sdk-surface:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install AssistX and pinned Neo4j Agent Memory
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          pip install "neo4j-agent-memory==0.5.0"
+
+      - name: Run adapter tests
+        run: |
+          pytest -q tests/test_neo4j_agent_memory_adapter.py
+
+      - name: Validate real SDK surface without database connection
+        env:
+          PYTHONPATH: src
+        run: |
+          python scripts/neo4j-agent-memory-smoke.py | tee neo4j-agent-memory-smoke.json
+          python -m json.tool neo4j-agent-memory-smoke.json >/dev/null
+
+      - name: Upload SDK smoke result
+        uses: actions/upload-artifact@v4
+        with:
+          name: neo4j-agent-memory-smoke-result
+          path: neo4j-agent-memory-smoke.json
+          if-no-files-found: error
+          retention-days: 30

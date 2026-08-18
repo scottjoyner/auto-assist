@@ -1,0 +1,59 @@
+name: procedural-memory-heldout
+
+on:
+  push:
+    branches: ["agent/procedural-memory-poc"]
+  pull_request:
+    paths:
+      - "src/assistx/procedural_memory*.py"
+      - "src/assistx/cass_memory_adapter.py"
+      - "tests/test_procedural_memory*.py"
+      - "scripts/procedural-memory-heldout-smoke.py"
+      - ".github/workflows/procedural-memory-heldout.yml"
+
+jobs:
+  heldout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Run procedural memory tests
+        run: |
+          pytest -q \
+            tests/test_procedural_memory.py \
+            tests/test_procedural_memory_shadow.py \
+            tests/test_procedural_memory_report.py \
+            tests/test_procedural_memory_heldout.py \
+            tests/test_cass_memory_adapter.py
+      - name: Generate held-out evidence
+        env:
+          PYTHONPATH: src
+        run: |
+          python scripts/procedural-memory-heldout-smoke.py
+          python -m json.tool procedural-memory-heldout-evidence.json >/dev/null
+      - name: Validate non-authoritative evidence contract
+        run: |
+          python - <<'PY'
+          import json
+          p = json.load(open('procedural-memory-heldout-evidence.json'))
+          assert p['authoritative_behavior_changed'] is False
+          assert p['eligible_support_rate'] >= 0.75
+          assert p['repeated_error_reduction_ratio'] is not None
+          print({k: p[k] for k in ('eligible_support_rate','repeated_error_rate','repeated_error_reduction_ratio','task_success_rate')})
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: procedural-memory-heldout-evidence
+          path: procedural-memory-heldout-evidence.json
+          if-no-files-found: error
+          retention-days: 30
