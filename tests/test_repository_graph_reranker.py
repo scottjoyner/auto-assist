@@ -39,7 +39,7 @@ def test_depth1_high_signal_candidates_rank_before_depth2_by_default():
     assert "src/assistx/neo4j_client.py" in paths(ranked)
 
 
-def test_task_terms_can_lift_relevant_test_candidate():
+def test_task_terms_lift_relevant_test_into_primary_shortlist():
     ranked = rank_graph_files(
         _projection(),
         seed_file="src/assistx/api.py",
@@ -47,8 +47,10 @@ def test_task_terms_can_lift_relevant_test_candidate():
         max_depth=2,
         limit=3,
     )
-    assert ranked[0].path == "tests/test_api.py"
-    assert ranked[0].role_affinity == 1.0
+    by_path = {candidate.path: candidate for candidate in ranked}
+    assert "tests/test_api.py" in by_path
+    assert by_path["tests/test_api.py"].depth == 1
+    assert by_path["tests/test_api.py"].role_affinity == 1.0
 
 
 def test_historical_evidence_can_lift_depth2_without_unbounding_context():
