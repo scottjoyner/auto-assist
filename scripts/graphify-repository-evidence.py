@@ -29,7 +29,7 @@ def main() -> int:
         run_env = dict(os.environ)
         run_env["GRAPHIFY_OUT"] = str(output)
         completed = subprocess.run(
-            ["graphify", "--code-only", str(repository_root)],
+            ["graphify", str(repository_root), "--code-only"],
             cwd=repository_root,
             env=run_env,
             check=False,
