@@ -317,7 +317,7 @@ services:
       - /home/scott/.ssh/id_hermes.pub:/root/.ssh/id_hermes.pub:ro
       - /media/scott/SSD_4TB/hermes-home/container/ssh_config:/root/.ssh/config:ro
       # Knowledge data
-      - /home/scott/knowledge:/root/knowledge:ro
+      - /home/scott/knowledge:/root/knowledge:rw
       - /media/scott/SSD_4TB/hermes-home/.hermes/SOUL.md:/media/scott/SSD_4TB/hermes-home/.hermes/SOUL.md:ro
     #  hermes-adapter is always-on, not profile-gated
     # (remove profiles: to make it first-class)

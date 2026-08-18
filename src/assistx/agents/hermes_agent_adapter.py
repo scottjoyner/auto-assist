@@ -1203,7 +1203,8 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
         if work_packet
         else classify_model_tier(task)
     )
-    model = select_tier_model(tier, seed=task_id)
+    requested_model = str(payload.get("model") or "").strip()
+    model = requested_model or select_tier_model(tier, seed=task_id)
     category = task_category(task)
     ensure_model_env(model)
 
