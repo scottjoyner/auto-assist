@@ -28,8 +28,13 @@ POLICIES: dict[str, ExperimentPromotionPolicy] = {
         minimum_operational_metrics={
             "input_token_reduction_ratio": 0.15,
             "fidelity_failure_rate": 0.0,
+            "output_equivalence_rate": 1.0,
         },
-        required_fault_gates=("exact_value_fidelity", "whitespace_sensitive_identity"),
+        required_fault_gates=(
+            "exact_value_fidelity",
+            "whitespace_sensitive_identity",
+            "model_output_equivalence",
+        ),
     ),
     "repository-graph": ExperimentPromotionPolicy(
         name="repository-graph",
