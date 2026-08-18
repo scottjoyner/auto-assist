@@ -32,12 +32,19 @@ def main() -> int:
             ["graphify", str(repository_root)],
             cwd=repository_root,
             env=run_env,
-            check=True,
+            check=False,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
         upstream_log = completed.stdout or ""
+        if completed.returncode != 0:
+            Path("graphify-repository-upstream.log").write_text(upstream_log, encoding="utf-8")
+            raise SystemExit(
+                "Graphify repository extraction failed with exit code "
+                f"{completed.returncode}. Last output:\n{upstream_log[-8000:]}"
+            )
+
         graph_path = output / "graph.json"
         if not graph_path.exists():
             raise SystemExit(f"Graphify did not create {graph_path}\n{upstream_log[-4000:]}")
@@ -71,14 +78,10 @@ def main() -> int:
         isolated_nodes = sum(adjacency[str(node["id"])] == 0 for node in projection.nodes)
 
         tracked_python_files = [
-            line
-            for line in _git("ls-files", "*.py").splitlines()
-            if line.strip()
+            line for line in _git("ls-files", "*.py").splitlines() if line.strip()
         ]
         represented_files = set(node_counts_by_file)
-        represented_python_files = {
-            path for path in represented_files if path.endswith(".py")
-        }
+        represented_python_files = {path for path in represented_files if path.endswith(".py")}
         python_file_coverage = (
             len(represented_python_files) / len(tracked_python_files)
             if tracked_python_files
