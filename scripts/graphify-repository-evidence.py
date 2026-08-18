@@ -29,7 +29,7 @@ def main() -> int:
         run_env = dict(os.environ)
         run_env["GRAPHIFY_OUT"] = str(output)
         completed = subprocess.run(
-            ["graphify", str(repository_root)],
+            ["graphify", "--code-only", str(repository_root)],
             cwd=repository_root,
             env=run_env,
             check=False,
@@ -93,6 +93,7 @@ def main() -> int:
             "repository": repository,
             "commit_sha": commit_sha,
             "graphify_version": "0.9.46",
+            "mode": "code-only",
             "nodes": len(projection.nodes),
             "edges": len(projection.edges),
             "isolated_nodes": isolated_nodes,
