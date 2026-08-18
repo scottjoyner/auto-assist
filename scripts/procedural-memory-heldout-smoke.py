@@ -27,7 +27,9 @@ def candidate(rule: str, positives: int, negatives: int, confidence: float = 0.9
 def main() -> int:
     targeted = candidate("run targeted tests before broad integration tests", 9, 1)
     inspect = candidate("inspect failing logs before changing implementation", 8, 1)
-    invalid = candidate("delete state when migrations fail", 8, 1)
+    # Deliberately poor rule: it may be lexically retrieved but must never become
+    # eligible because repeated negative outcomes defeat the promotion floor.
+    invalid = candidate("delete state when migrations fail", 2, 6)
     lucky = ProceduralMemoryCandidate(
         rule="retry the same failing command repeatedly",
         source_run_ids=("lucky",),
@@ -51,13 +53,13 @@ def main() -> int:
         ),
         HeldOutTaskOutcome(
             task_id="heldout-2",
-            task_text="debug migration regression with targeted tests",
+            task_text="debug migration regression by inspecting logs then running targeted tests",
             success=True,
             repeated_error=False,
             searches=3,
             verification_retries=1,
             time_to_first_correct_plan_ms=1100,
-            supporting_rules=(targeted.rule,),
+            supporting_rules=(targeted.rule, inspect.rule),
             contradicted_rules=(invalid.rule,),
         ),
         HeldOutTaskOutcome(
@@ -82,8 +84,13 @@ def main() -> int:
             contradicted_rules=(lucky.rule,),
         ),
     ]
-    observations = [evaluate_heldout_task(outcome, candidates) for outcome in outcomes]
+    # A procedural rule set is only useful if retrieval is selective. Use the same
+    # small top-k budget we would consider for eventual shadow/canary injection.
+    observations = [
+        evaluate_heldout_task(outcome, candidates, limit=2) for outcome in outcomes
+    ]
     payload = summarize_heldout(observations, baseline_repeated_error_rate=0.5)
+    payload["retrieval_limit"] = 2
     payload["results"] = [
         {
             "task_id": o.task_id,
