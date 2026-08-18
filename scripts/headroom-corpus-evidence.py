@@ -39,6 +39,33 @@ def _count_messages(messages, encoding) -> int:
     return len(encoding.encode(json.dumps(messages, sort_keys=True, ensure_ascii=False)))
 
 
+def _strings(value):
+    """Yield semantic string values, decoding JSON-bearing message content when possible."""
+    if isinstance(value, str):
+        yield value
+        try:
+            decoded = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if isinstance(decoded, (dict, list)):
+            yield from _strings(decoded)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+def _missing_markers(messages, required_markers: tuple[str, ...]) -> tuple[str, ...]:
+    values = tuple(_strings(messages))
+    return tuple(
+        marker
+        for marker in required_markers
+        if not any(marker in value for value in values)
+    )
+
+
 def _cases():
     exact_uuid = "9d4db0ee-f3d4-4b7f-8cb9-992cdbe24c91"
     exact_sha = "a7d9f2936ae1352b040d3388f98d35bd9b7680f9fd1b7b8fbb81464557b855a6"
@@ -104,15 +131,13 @@ def main() -> int:
         started = time.perf_counter()
         headroom = compress_messages_with_headroom(raw_messages, model="gpt-4o")
         headroom_duration_ms = (time.perf_counter() - started) * 1000
-        headroom_serialized = json.dumps(headroom.messages, ensure_ascii=False)
-        headroom_missing = tuple(marker for marker in required_markers if marker not in headroom_serialized)
+        headroom_missing = _missing_markers(headroom.messages, required_markers)
 
         started = time.perf_counter()
         hybrid = compress_messages_hybrid(raw_messages, model="gpt-4o")
         hybrid_duration_ms = (time.perf_counter() - started) * 1000
         hybrid_tokens = _count_messages(hybrid.messages, encoding)
-        hybrid_serialized = json.dumps(hybrid.messages, ensure_ascii=False)
-        hybrid_missing = tuple(marker for marker in required_markers if marker not in hybrid_serialized)
+        hybrid_missing = _missing_markers(hybrid.messages, required_markers)
 
         results.append(
             CorpusCaseResult(
@@ -138,6 +163,7 @@ def main() -> int:
         "schema_version": "assistx.headroom-corpus-evidence.v2",
         "headroom_version": "0.32.1",
         "tokenizer_model": "gpt-4o",
+        "fidelity_check": "decoded-semantic-string-values",
         "cases": [asdict(result) for result in results],
         "case_count": len(results),
         "headroom_fidelity_failure_count": sum(bool(r.headroom_missing_required_markers) for r in results),
