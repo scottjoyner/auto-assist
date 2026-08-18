@@ -37,7 +37,19 @@ def test_seed_is_always_first_and_total_scope_is_bounded():
     assert len(advice.expansion_paths) <= 1
 
 
-def test_zero_expansion_budget_is_precision_first():
+def test_default_scope_advice_is_precision_only():
+    advice = advise_scope(
+        _projection(),
+        seed_file="src/assistx/api.py",
+        task_text="api client fix",
+        max_files=3,
+    )
+    assert advice.expansion_paths == ()
+    assert advice.primary_paths
+    assert all(path in {"src/assistx/llm/client.py", "tests/test_api.py"} for path in advice.primary_paths)
+
+
+def test_explicit_zero_expansion_budget_is_precision_first():
     advice = advise_scope(
         _projection(),
         seed_file="src/assistx/api.py",
