@@ -6,13 +6,14 @@ from assistx.evaluation.promotion_policies import (
 )
 
 
-def test_context_compression_policy_requires_real_savings_and_zero_fidelity_failures():
+def test_context_compression_policy_requires_savings_fidelity_and_output_equivalence():
     policy = get_promotion_policy("context-compression")
     passed, failures = evaluate_operational_metrics(
         policy,
         {
             "input_token_reduction_ratio": 0.20,
             "fidelity_failure_rate": 0.0,
+            "output_equivalence_rate": 1.0,
         },
     )
     assert passed is True
@@ -26,10 +27,25 @@ def test_context_compression_policy_rejects_weak_savings():
         {
             "input_token_reduction_ratio": 0.10,
             "fidelity_failure_rate": 0.0,
+            "output_equivalence_rate": 1.0,
         },
     )
     assert passed is False
     assert "threshold:input_token_reduction_ratio" in failures
+
+
+def test_context_compression_policy_rejects_any_output_equivalence_regression():
+    policy = get_promotion_policy("context-compression")
+    passed, failures = evaluate_operational_metrics(
+        policy,
+        {
+            "input_token_reduction_ratio": 0.40,
+            "fidelity_failure_rate": 0.0,
+            "output_equivalence_rate": 0.99,
+        },
+    )
+    assert passed is False
+    assert "threshold:output_equivalence_rate" in failures
 
 
 def test_cache_affinity_policy_rejects_any_routing_safety_regression():
