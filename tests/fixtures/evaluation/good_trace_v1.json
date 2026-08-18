@@ -1,0 +1,14 @@
+{
+  "schema_version": "assistx.trace.v1",
+  "trace_id": "trace-fixture-good-v1",
+  "spans": [
+    {"type": "task", "attributes": {"task_id": "fixture-task-1"}},
+    {"type": "route", "attributes": {"network_path": "tailscale", "runtime_id": "runtime-fixture-1"}},
+    {"type": "model", "attributes": {"model": "fixture-model", "quant": "fixture-quant"}},
+    {"type": "tool", "attributes": {"name": "repo_search"}}
+  ],
+  "outcome": {
+    "status": "success",
+    "evidence_ids": ["fixture-evidence-1"]
+  }
+}
