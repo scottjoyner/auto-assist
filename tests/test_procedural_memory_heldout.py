@@ -41,6 +41,27 @@ def test_heldout_observation_preserves_supported_and_contradicted_rules():
     assert "delete state when migrations fail" in observation.contradicted_eligible_rules
 
 
+def test_bounded_retrieval_limits_eligible_rule_surface():
+    candidates = [
+        _candidate("run targeted tests before broad integration tests", 8, 1),
+        _candidate("inspect failing logs before changing implementation", 8, 1),
+        _candidate("review repository configuration before deployment", 8, 1),
+    ]
+    observation = evaluate_heldout_task(
+        HeldOutTaskOutcome(
+            task_id="bounded",
+            task_text="inspect failing logs and run targeted tests",
+            success=True,
+            repeated_error=False,
+            supporting_rules=(candidates[0].rule, candidates[1].rule),
+        ),
+        candidates,
+        limit=2,
+    )
+    assert len(observation.retrieved_rules) <= 2
+    assert len(observation.eligible_rules) <= 2
+
+
 def test_summary_calculates_support_and_repeated_error_reduction():
     candidate = _candidate("run targeted tests before broad integration tests", 8, 1)
     observations = [
