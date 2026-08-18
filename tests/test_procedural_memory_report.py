@@ -1,3 +1,5 @@
+import pytest
+
 from assistx.procedural_memory_report import (
     ProceduralShadowObservation,
     evaluate_procedural_calibration,
@@ -16,9 +18,9 @@ def test_calibration_report_distinguishes_supported_and_contradicted_rules():
     assert report.observations == 4
     assert report.eligible_observations == 3
     assert report.support_rate == 0.5
-    assert report.eligible_support_rate == 2 / 3
-    assert report.mean_score_supported == 0.85
-    assert report.mean_score_contradicted == 0.5
+    assert report.eligible_support_rate == pytest.approx(2 / 3)
+    assert report.mean_score_supported == pytest.approx(0.85)
+    assert report.mean_score_contradicted == pytest.approx(0.5)
 
 
 def test_empty_calibration_report_is_stable():
