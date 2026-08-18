@@ -64,6 +64,11 @@ def test_candidate_regression_is_visible_even_when_raw_passes():
     assert headroom.passed is False
     assert result.all_candidate_variants_match_correctness is False
 
+    summary = summarize_output_equivalence([result])
+    assert summary["variants"]["raw"]["output_equivalence_rate"] == 1.0
+    assert summary["variants"]["headroom"]["output_equivalence_rate"] == 0.0
+    assert summary["variants"]["hybrid"]["output_equivalence_rate"] == 1.0
+
 
 def test_summary_reports_variant_pass_rates_and_context_sizes():
     case = EquivalenceCase(
@@ -83,4 +88,5 @@ def test_summary_reports_variant_pass_rates_and_context_sizes():
     summary = summarize_output_equivalence([result])
     assert summary["all_candidate_variants_match_raw_correctness"] is True
     assert summary["variants"]["raw"]["pass_rate"] == 1.0
+    assert summary["variants"]["headroom"]["output_equivalence_rate"] == 1.0
     assert summary["variants"]["lossless_json"]["mean_context_chars"] < summary["variants"]["raw"]["mean_context_chars"]
