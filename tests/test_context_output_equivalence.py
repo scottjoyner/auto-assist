@@ -43,6 +43,33 @@ def test_all_variants_can_be_scored_against_identical_answer_markers():
     assert all(output.passed for output in result.variants)
 
 
+def test_marker_only_inside_quoted_tool_evidence_is_not_a_correct_answer():
+    case = EquivalenceCase(
+        case_id="quoted-evidence-false-positive",
+        messages=[{"role": "user", "content": "Return the exact marker."}],
+        required_output_markers=("FLEET-7391",),
+    )
+
+    def invoke(_messages, variant):
+        if variant == "raw":
+            return "FLEET-7391"
+        return (
+            "The answer is __key:critical.\n\n"
+            "```json\n{\\\"marker\\\": \\\"FLEET-7391\\\"}\n```"
+        )
+
+    result = run_output_equivalence_case(
+        case,
+        model="fixture-model",
+        invoke_fn=invoke,
+        headroom_compress_fn=fake_headroom,
+    )
+    headroom = next(v for v in result.variants if v.variant == "headroom")
+    assert result.raw_passed is True
+    assert headroom.passed is False
+    assert headroom.missing_markers == ("FLEET-7391",)
+
+
 def test_candidate_regression_is_visible_even_when_raw_passes():
     case = EquivalenceCase(
         case_id="regression",

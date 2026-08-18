@@ -8,6 +8,7 @@ and records answer correctness plus context-size/latency evidence.
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
@@ -69,8 +70,27 @@ def _lossless_messages(messages: Messages) -> Messages:
     return result
 
 
+def _answer_prose(response: str) -> str:
+    """Return answer prose without quoted tool/evidence payloads."""
+    without_fences = re.sub(r"```.*?```", "", response, flags=re.DOTALL)
+    lines = without_fences.splitlines()
+    prose: list[str] = []
+    in_tool_result = False
+    for line in lines:
+        if line.strip().lower().startswith(("tool result:", "**tool result")):
+            in_tool_result = True
+            continue
+        if in_tool_result and not line.strip():
+            in_tool_result = False
+            continue
+        if not in_tool_result:
+            prose.append(line)
+    return "\n".join(prose).strip()
+
+
 def _score_response(response: str, markers: tuple[str, ...]) -> tuple[bool, tuple[str, ...]]:
-    missing = tuple(marker for marker in markers if marker not in response)
+    answer = _answer_prose(response)
+    missing = tuple(marker for marker in markers if marker not in answer)
     return not missing, missing
 
 
