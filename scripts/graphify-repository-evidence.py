@@ -19,20 +19,28 @@ def _git(*args: str) -> str:
     return subprocess.check_output(["git", *args], text=True).strip()
 
 
+def _expand_neighbors(seed: str, graph: dict[str, set[str]], depth: int) -> set[str]:
+    seen = {seed}
+    frontier = {seed}
+    for _ in range(depth):
+        frontier = {
+            neighbor
+            for current in frontier
+            for neighbor in graph.get(current, set())
+            if neighbor not in seen
+        }
+        seen.update(frontier)
+    return seen - {seed}
+
+
 def _historical_change_coupling(
     *,
     node_file: dict[str, str],
     edges: list[dict[str, object]],
     represented_python_files: set[str],
-    commit_limit: int = 50,
+    commit_limit: int = 200,
 ) -> dict[str, object]:
-    """Measure current-graph recovery of files that recently changed together.
-
-    This is deliberately a retrospective proxy rather than a causal/held-out
-    benchmark: the current graph is compared with recent history and topology may
-    have changed since older commits. It is useful for screening whether direct
-    graph neighborhoods contain practical file-discovery signal.
-    """
+    """Retrospective proxy: recover recent co-changed files from graph neighborhoods."""
     file_neighbors: defaultdict[str, set[str]] = defaultdict(set)
     for edge in edges:
         source_file = node_file.get(str(edge["source"]))
@@ -49,72 +57,83 @@ def _historical_change_coupling(
 
     commits = [
         value.strip()
-        for value in _git(
-            "log", "--no-merges", f"-n{commit_limit}", "--format=%H"
-        ).splitlines()
+        for value in _git("log", "--no-merges", f"-n{commit_limit}", "--format=%H").splitlines()
         if value.strip()
     ]
-    recalls: list[float] = []
-    precisions: list[float] = []
+    metrics = {
+        depth: {"recalls": [], "precisions": [], "zero": 0, "perfect": 0}
+        for depth in (1, 2)
+    }
     seed_rows: list[dict[str, object]] = []
     multi_file_commits = 0
-    zero_hit_seeds = 0
-    perfect_recall_seeds = 0
 
     for commit in commits:
         changed = {
             path.strip()
-            for path in _git(
-                "show",
-                "--pretty=",
-                "--name-only",
-                "--diff-filter=AM",
-                commit,
-            ).splitlines()
-            if path.strip().endswith(".py")
-            and path.strip() in represented_python_files
+            for path in _git("show", "--pretty=", "--name-only", "--diff-filter=AM", commit).splitlines()
+            if path.strip().endswith(".py") and path.strip() in represented_python_files
         }
         if len(changed) < 2:
             continue
         multi_file_commits += 1
         for seed in sorted(changed):
             targets = changed - {seed}
-            predicted = file_neighbors.get(seed, set())
-            hits = targets & predicted
-            recall = len(hits) / len(targets)
-            precision = len(hits) / len(predicted) if predicted else 0.0
-            recalls.append(recall)
-            precisions.append(precision)
-            if not hits:
-                zero_hit_seeds += 1
-            if recall == 1.0:
-                perfect_recall_seeds += 1
-            seed_rows.append(
-                {
-                    "commit": commit,
-                    "seed": seed,
-                    "cochanged_targets": len(targets),
+            row: dict[str, object] = {
+                "commit": commit,
+                "seed": seed,
+                "cochanged_targets": len(targets),
+            }
+            for depth in (1, 2):
+                predicted = _expand_neighbors(seed, file_neighbors, depth)
+                hits = targets & predicted
+                recall = len(hits) / len(targets)
+                precision = len(hits) / len(predicted) if predicted else 0.0
+                depth_metrics = metrics[depth]
+                depth_metrics["recalls"].append(recall)
+                depth_metrics["precisions"].append(precision)
+                if not hits:
+                    depth_metrics["zero"] += 1
+                if recall == 1.0:
+                    depth_metrics["perfect"] += 1
+                row[f"depth{depth}"] = {
                     "predicted_neighbors": len(predicted),
                     "hits": sorted(hits),
                     "recall": recall,
                     "precision": precision,
                 }
-            )
+            seed_rows.append(row)
 
+    def summary(depth: int) -> dict[str, object]:
+        values = metrics[depth]
+        recalls = values["recalls"]
+        precisions = values["precisions"]
+        return {
+            "mean_recall": statistics.mean(recalls) if recalls else 0.0,
+            "median_recall": statistics.median(recalls) if recalls else 0.0,
+            "mean_precision": statistics.mean(precisions) if precisions else 0.0,
+            "median_precision": statistics.median(precisions) if precisions else 0.0,
+            "zero_hit_seed_count": values["zero"],
+            "perfect_recall_seed_count": values["perfect"],
+        }
+
+    depth1 = summary(1)
+    depth2 = summary(2)
     return {
         "historical_proxy_note": (
-            "current graph vs recent non-merge commit co-change; retrospective, "
-            "not causal or held-out"
+            "current graph vs recent non-merge commit co-change; retrospective, not causal or held-out"
         ),
         "historical_commits_considered": len(commits),
         "historical_multifile_python_commits": multi_file_commits,
         "historical_seed_evaluations": len(seed_rows),
-        "mean_cochange_recall": statistics.mean(recalls) if recalls else 0.0,
-        "median_cochange_recall": statistics.median(recalls) if recalls else 0.0,
-        "mean_cochange_precision": statistics.mean(precisions) if precisions else 0.0,
-        "median_cochange_precision": statistics.median(precisions) if precisions else 0.0,
-        "zero_hit_seed_count": zero_hit_seeds,
-        "perfect_recall_seed_count": perfect_recall_seeds,
+        "historical_depth1": depth1,
+        "historical_depth2": depth2,
+        # Keep v2 fields for simple consumers; these remain depth-1 metrics.
+        "mean_cochange_recall": depth1["mean_recall"],
+        "median_cochange_recall": depth1["median_recall"],
+        "mean_cochange_precision": depth1["mean_precision"],
+        "median_cochange_precision": depth1["median_precision"],
+        "zero_hit_seed_count": depth1["zero_hit_seed_count"],
+        "perfect_recall_seed_count": depth1["perfect_recall_seed_count"],
         "historical_seed_samples": seed_rows[:50],
     }
 
@@ -150,11 +169,7 @@ def main() -> int:
             raise SystemExit(f"Graphify did not create {graph_path}\n{upstream_log[-4000:]}")
 
         raw_graph = json.loads(graph_path.read_text(encoding="utf-8"))
-        projection = normalize_graphify_graph(
-            raw_graph,
-            repository=repository,
-            commit_sha=commit_sha,
-        )
+        projection = normalize_graphify_graph(raw_graph, repository=repository, commit_sha=commit_sha)
         if not projection.nodes or not projection.edges:
             raise SystemExit("Repository-scale Graphify projection is unexpectedly empty")
 
@@ -175,20 +190,14 @@ def main() -> int:
 
         sample_nodes = projection.nodes[: min(100, len(projection.nodes))]
         neighborhood_sizes = [
-            len(neighborhood(projection, str(node["id"]), depth=1))
-            for node in sample_nodes
+            len(neighborhood(projection, str(node["id"]), depth=1)) for node in sample_nodes
         ]
         isolated_nodes = sum(adjacency[str(node["id"])] == 0 for node in projection.nodes)
-
-        tracked_python_files = [
-            line for line in _git("ls-files", "*.py").splitlines() if line.strip()
-        ]
+        tracked_python_files = [line for line in _git("ls-files", "*.py").splitlines() if line.strip()]
         represented_files = set(node_counts_by_file)
         represented_python_files = {path for path in represented_files if path.endswith(".py")}
         python_file_coverage = (
-            len(represented_python_files) / len(tracked_python_files)
-            if tracked_python_files
-            else 0.0
+            len(represented_python_files) / len(tracked_python_files) if tracked_python_files else 0.0
         )
         coupling = _historical_change_coupling(
             node_file=node_file,
@@ -197,7 +206,7 @@ def main() -> int:
         )
 
         payload = {
-            "schema_version": "assistx.graphify-repository-evidence.v2",
+            "schema_version": "assistx.graphify-repository-evidence.v3",
             "repository": repository,
             "commit_sha": commit_sha,
             "graphify_version": "0.9.46",
@@ -220,8 +229,7 @@ def main() -> int:
             "authoritative_behavior_changed": False,
         }
         Path("graphify-repository-evidence.json").write_text(
-            json.dumps(payload, sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
+            json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8"
         )
         print(json.dumps(payload, sort_keys=True))
     return 0
