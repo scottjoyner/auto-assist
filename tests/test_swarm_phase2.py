@@ -25,7 +25,7 @@ from assistx.swarm_core import (
 
 
 def _auth():
-    return (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    return (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
 
 def _base_event(**overrides):

@@ -153,7 +153,7 @@ jobs:
       - name: Run tests
         env:
           BASIC_AUTH_USER: neo4j
-          BASIC_AUTH_PASS: livelongandprosper
+          BASIC_AUTH_PASS: ${{ secrets.BASIC_AUTH_PASS }}
         run: |
           pytest -q -m "not integration" --ignore=tests/integration
 
@@ -180,7 +180,7 @@ jobs:
       - name: Recovery lifecycle canary
         env:
           BASIC_AUTH_USER: neo4j
-          BASIC_AUTH_PASS: livelongandprosper
+          BASIC_AUTH_PASS: ${{ secrets.BASIC_AUTH_PASS }}
         run: |
           pytest -q tests/test_recovery_canary.py tests/test_recovery_island.py tests/test_recovery_island_hardening.py
 
@@ -207,7 +207,7 @@ jobs:
       - name: Degraded control-plane disaster canary
         env:
           BASIC_AUTH_USER: neo4j
-          BASIC_AUTH_PASS: livelongandprosper
+          BASIC_AUTH_PASS: ${{ secrets.BASIC_AUTH_PASS }}
         run: |
           pytest -q \
             tests/test_operational_state.py \

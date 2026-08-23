@@ -10,7 +10,7 @@ def test_hermes_memory_provider_prefetch(monkeypatch):
         return type("R", (), {"json": lambda self: {"context_packet": {"id": "cp1", "query": json["query"], "references": []}}, "raise_for_status": lambda self: None})()
 
     monkeypatch.setattr("assistx.agents.hermes_memory_provider.requests.post", fake_post)
-    provider = HermesMemoryProvider(base_url="http://localhost:8000", auth=("neo4j", "livelongandprosper"))
+    provider = HermesMemoryProvider(base_url="http://localhost:8000", auth=("neo4j", "redacted-rotate-credentials"))
 
     packet = provider.prefetch("foo query", task_id="task-1")
 

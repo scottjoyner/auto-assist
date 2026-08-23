@@ -168,7 +168,7 @@ CREATE INDEX IF NOT EXISTS FOR (p:ContextPacket)   ON (p.query_hash)
 # Neo4j (host enterprise container, not an infra service)
 NEO4J_URI=bolt://host.docker.internal:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=knowledge_graph_2026
+NEO4J_PASSWORD=`<redacted - rotate>`
 NEO4J_DATABASE=assistx
 
 # API Security
@@ -230,7 +230,7 @@ HERMES_API_KEY=<api-key>
 ```bash
 curl -X POST http://localhost:8000/api/intents \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "source": "voice",
     "text": "Summarize recent conversations",
@@ -256,7 +256,7 @@ curl -X POST http://localhost:8000/api/intents \
 ```bash
 curl -X POST http://localhost:8000/api/brain/context \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "query": "Tasks related to customer support",
     "task_id": "task-xyz",
@@ -308,7 +308,7 @@ curl -X POST http://localhost:8000/api/brain/context \
 ```bash
 curl -X POST http://localhost:8000/api/dispatch \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "task_id": "task-xyz",
     "target": {
@@ -335,7 +335,7 @@ that match their capabilities.
 
 ```bash
 curl "http://localhost:8000/api/agent/tasks?capabilities=code_execution&agent_id=agent-local-01" \
-  -u "neo4j:livelongandprosper"
+  -u "neo4j:`<redacted - rotate>`"
 ```
 
 ```json
@@ -355,7 +355,7 @@ curl "http://localhost:8000/api/agent/tasks?capabilities=code_execution&agent_id
 ```bash
 curl -X POST http://localhost:8000/api/tasks/task-xyz/claim \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "agent_id": "agent-local-01",
     "capabilities": ["code_execution", "terminal"],
@@ -381,7 +381,7 @@ complete the task:
 ```bash
 curl -X POST http://localhost:8000/api/brain/context \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "query": "Analyze recent support tickets",
     "task_id": "task-xyz",
@@ -391,12 +391,12 @@ curl -X POST http://localhost:8000/api/brain/context \
 
 curl -X POST http://localhost:8000/api/tasks/task-xyz/heartbeat \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{"agent_id":"agent-local-01","status":"RUNNING","metadata":{"progress":"started"}}'
 
 curl -X POST http://localhost:8000/api/tasks/task-xyz/complete \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "agent_id": "agent-local-01",
     "status": "DONE",
@@ -410,7 +410,7 @@ curl -X POST http://localhost:8000/api/tasks/task-xyz/complete \
 ```bash
 curl -X POST http://localhost:8000/api/memory/items \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "kind": "observation",
     "text": "Hermes successfully executed Python code to fetch customer data",
@@ -436,7 +436,7 @@ curl -X POST http://localhost:8000/api/memory/items \
 ```bash
 curl -X POST http://localhost:8000/api/paperclip/events \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "event_type": "run_completed",
     "paperclip_issue_id": "issue-456",
@@ -464,7 +464,7 @@ curl -X POST http://localhost:8000/api/paperclip/events \
 ```bash
 curl -X POST http://localhost:8000/api/sessions/session-hermes-001 \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "paperclip_agent_id": "agent-local-01",
     "hermes_session_id": "hermes-sess-xyz",

@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 
 NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://100.64.43.123:7687")
 NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
-NEO4J_PASS = os.environ.get("NEO4J_PASSWORD", "knowledge_graph_2026")
+NEO4J_PASS = os.environ.get("NEO4J_PASSWORD", "redacted-rotate-credentials")
 
 # Canonical workspace root (per SOUL: SSD mirror is the shared workspace)
 WORKSPACE = "/media/scott/SSD_4TB"

@@ -241,7 +241,7 @@ AgentDevice -[:HAS_SESSION]-> AgentSession (future)
 # Neo4j (uses existing host enterprise container)
 NEO4J_URI=bolt://host.docker.internal:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=knowledge_graph_2026
+NEO4J_PASSWORD=`<redacted - rotate>`
 NEO4J_DATABASE=assistx
 
 # Redis

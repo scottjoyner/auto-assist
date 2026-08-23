@@ -437,7 +437,7 @@ def test_memory_provider_prefetch(monkeypatch):
     
     mp = HermesMemoryProvider(
         base_url="http://localhost:8000",
-        auth=("neo4j", "livelongandprosper"),
+        auth=("neo4j", "`<redacted - rotate>`"),
     )
     
     # Mock AssistX response
@@ -460,7 +460,7 @@ def test_memory_provider_write_memory(monkeypatch):
     """Test writing memory to AssistX"""
     mp = HermesMemoryProvider(
         base_url="http://localhost:8000",
-        auth=("neo4j", "livelongandprosper"),
+        auth=("neo4j", "`<redacted - rotate>`"),
     )
     
     with patch("requests.post") as mock_post:

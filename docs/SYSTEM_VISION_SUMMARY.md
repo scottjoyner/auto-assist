@@ -54,7 +54,7 @@ All repos sync to a shared Neo4j "brain" for context, with auto-assist using the
 - `neo4j_client.py` - Unified client for v1/v2 schemas
 
 **Neo4j Database**: Uses `assistx` database (separate from legacy memory graph)  
-**Password**: `livelongandprosper` (align with docker-compose)
+**Password**: ``<redacted - rotate>`` (align with docker-compose)
 
 **Task Lifecycle**:
 ```
@@ -111,7 +111,7 @@ READY → CLAIMED → RUNNING → DONE
 - `dashcam_yolo_embeddings.py` - Dashcam video processing with YOLO embeddings
 
 **Database**: Legacy Neo4j (`neo4j` or `memory`)  
-**Password**: `livelongandprosper` (may differ from docker-compose)
+**Password**: ``<redacted - rotate>`` (may differ from docker-compose)
 
 ---
 
@@ -160,7 +160,7 @@ docker compose up -d --force-recreate
 ```
 
 ### 2. Neo4j Password Mismatch
-**Problem**: docker-compose uses `knowledge_graph_2026`, legacy apps use `livelongandprosper`  
+**Problem**: docker-compose uses ``<redacted - rotate>``, legacy apps use ``<redacted - rotate>``  
 **Fix**: Align passwords before running apps or restoring dumps
 
 ### 3. Docker Network Bridging

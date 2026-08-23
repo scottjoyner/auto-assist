@@ -223,7 +223,7 @@ cat > .env << EOF
 # Neo4j (uses existing host enterprise container, not an infra service)
 NEO4J_URI=bolt://host.docker.internal:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=knowledge_graph_2026
+NEO4J_PASSWORD=`<redacted - rotate>`
 NEO4J_DATABASE=assistx
 
 # LLM Backend — "openai" (LM Studio) or "ollama"
@@ -297,7 +297,7 @@ gunicorn src.assistx.api:app --workers 4 --worker-class uvicorn.workers.UvicornW
 # Create intent (voice, webhook, dashboard, etc.)
 curl -X POST http://localhost:8000/api/intents \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "source": "voice",
     "text": "Summarize recent tasks",
@@ -305,10 +305,10 @@ curl -X POST http://localhost:8000/api/intents \
   }'
 
 # List intents
-curl http://localhost:8000/api/intents?source=voice -u "neo4j:livelongandprosper"
+curl http://localhost:8000/api/intents?source=voice -u "neo4j:`<redacted - rotate>`"
 
 # Get intent details
-curl http://localhost:8000/api/intents/{intent_id} -u "neo4j:livelongandprosper"
+curl http://localhost:8000/api/intents/{intent_id} -u "neo4j:`<redacted - rotate>`"
 ```
 
 ### Ask Deliverables
@@ -321,7 +321,7 @@ event on the answer stream when the deliverable is marked complete.
 ```bash
 curl -X POST http://localhost:8000/api/ask \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "question": "Build the migration update",
     "mode": "async",
@@ -337,7 +337,7 @@ Response includes `deliverable_id`, `epic_id`, `story_id`, and `task_id`.
 # Create context packet
 curl -X POST http://localhost:8000/api/brain/context \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "query": "Customer support tasks",
     "max_items": 20,
@@ -345,7 +345,7 @@ curl -X POST http://localhost:8000/api/brain/context \
   }'
 
 # Get context packet
-curl http://localhost:8000/api/context-packets/{packet_id} -u "neo4j:livelongandprosper"
+curl http://localhost:8000/api/context-packets/{packet_id} -u "neo4j:`<redacted - rotate>`"
 ```
 
 ### Dispatch and Execution
@@ -354,7 +354,7 @@ curl http://localhost:8000/api/context-packets/{packet_id} -u "neo4j:livelongand
 # Create local dispatch record (optional Paperclip transport comes later)
 curl -X POST http://localhost:8000/api/dispatch \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "task_id": "task-xyz",
     "target": {"paperclip_agent_id": "agent-1", "capabilities": ["code"]},
@@ -362,12 +362,12 @@ curl -X POST http://localhost:8000/api/dispatch \
   }'
 
 # List dispatches
-curl http://localhost:8000/api/dispatches -u "neo4j:livelongandprosper"
+curl http://localhost:8000/api/dispatches -u "neo4j:`<redacted - rotate>`"
 
 # Reassign dispatch
 curl -X POST http://localhost:8000/api/dispatches/{dispatch_id}/reassign \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{"paperclip_agent_id": "agent-2"}'
 ```
 
@@ -376,12 +376,12 @@ curl -X POST http://localhost:8000/api/dispatches/{dispatch_id}/reassign \
 ```bash
 # Agent polls READY tasks that match its capabilities
 curl "http://localhost:8000/api/agent/tasks?capabilities=code_execution&agent_id=agent-1" \
-  -u "neo4j:livelongandprosper"
+  -u "neo4j:`<redacted - rotate>`"
 
 # Agent atomically claims one task
 curl -X POST http://localhost:8000/api/tasks/{task_id}/claim \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "agent_id": "agent-1",
     "capabilities": ["code_execution"],
@@ -392,13 +392,13 @@ curl -X POST http://localhost:8000/api/tasks/{task_id}/claim \
 # Agent marks active work and stores heartbeat metadata
 curl -X POST http://localhost:8000/api/tasks/{task_id}/heartbeat \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{"agent_id":"agent-1","status":"RUNNING","metadata":{"progress":"started"}}'
 
 # Agent completes the task; AssistX writes AgentRun and optional outcome memory
 curl -X POST http://localhost:8000/api/tasks/{task_id}/complete \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "agent_id": "agent-1",
     "status": "DONE",
@@ -411,13 +411,13 @@ curl -X POST http://localhost:8000/api/tasks/{task_id}/complete \
 
 ```bash
 # Pause task
-curl -X POST http://localhost:8000/api/tasks/{task_id}/pause -u "neo4j:livelongandprosper"
+curl -X POST http://localhost:8000/api/tasks/{task_id}/pause -u "neo4j:`<redacted - rotate>`"
 
 # Resume task
-curl -X POST http://localhost:8000/api/tasks/{task_id}/resume -u "neo4j:livelongandprosper"
+curl -X POST http://localhost:8000/api/tasks/{task_id}/resume -u "neo4j:`<redacted - rotate>`"
 
 # Cancel task
-curl -X POST http://localhost:8000/api/tasks/{task_id}/cancel -u "neo4j:livelongandprosper"
+curl -X POST http://localhost:8000/api/tasks/{task_id}/cancel -u "neo4j:`<redacted - rotate>`"
 ```
 
 ### Memory Management
@@ -426,7 +426,7 @@ curl -X POST http://localhost:8000/api/tasks/{task_id}/cancel -u "neo4j:livelong
 # Write memory item
 curl -X POST http://localhost:8000/api/memory/items \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "kind": "observation",
     "text": "Hermes noted that customer prefers evening calls",
@@ -434,10 +434,10 @@ curl -X POST http://localhost:8000/api/memory/items \
   }'
 
 # List memory
-curl http://localhost:8000/api/memory?source=hermes -u "neo4j:livelongandprosper"
+curl http://localhost:8000/api/memory?source=hermes -u "neo4j:`<redacted - rotate>`"
 
 # Get memory item
-curl http://localhost:8000/api/memory/{memory_id} -u "neo4j:livelongandprosper"
+curl http://localhost:8000/api/memory/{memory_id} -u "neo4j:`<redacted - rotate>`"
 ```
 
 ### Agent Sessions
@@ -446,7 +446,7 @@ curl http://localhost:8000/api/memory/{memory_id} -u "neo4j:livelongandprosper"
 # Update session
 curl -X POST http://localhost:8000/api/sessions/session-1 \
   -H "Content-Type: application/json" \
-  -u "neo4j:livelongandprosper" \
+  -u "neo4j:`<redacted - rotate>`" \
   -d '{
     "hermes_session_id": "hermes-xyz",
     "device_id": "laptop-1",
@@ -454,7 +454,7 @@ curl -X POST http://localhost:8000/api/sessions/session-1 \
   }'
 
 # List sessions
-curl http://localhost:8000/api/sessions -u "neo4j:livelongandprosper"
+curl http://localhost:8000/api/sessions -u "neo4j:`<redacted - rotate>`"
 ```
 
 ---
@@ -514,7 +514,7 @@ docker-compose ps neo4j
 docker-compose logs neo4j | tail -20
 
 # Test connection
-cypher-shell -u neo4j -p livelongandprosper "RETURN 1"
+cypher-shell -u neo4j -p `<redacted - rotate>` "RETURN 1"
 ```
 
 ### AssistX API Errors
@@ -527,7 +527,7 @@ curl http://localhost:8000/health
 docker-compose logs assistx | tail -50
 
 # Check Neo4j schema was created
-curl -X GET http://localhost:8000/api/tasks -u "neo4j:livelongandprosper"
+curl -X GET http://localhost:8000/api/tasks -u "neo4j:`<redacted - rotate>`"
 ```
 
 ### Tests Failing
