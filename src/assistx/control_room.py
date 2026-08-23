@@ -35,13 +35,11 @@ _PUBLIC_PROVIDER_KEYS = (
 )
 
 _LEGACY_UI_PATHS = (
+    # "/" intentionally forwards to the live view; /command-center and /fleet
+    # remain consolidated into the control room. Everything else renders its
+    # own page again (TemplateResponse signatures fixed 2026-08-23).
     "/",
-    "/live",
-    "/operations",
-    "/fleet-dashboard",
     "/command-center",
-    "/strategy",
-    "/routing",
     "/fleet",
 )
 

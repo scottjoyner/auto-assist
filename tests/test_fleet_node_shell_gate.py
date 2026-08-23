@@ -9,8 +9,11 @@ def test_generic_shell_command_is_disabled_by_default(tmp_path, monkeypatch):
         str(tmp_path),
     )
 
+    # Since 9d8751a5 generic shell execution is removed entirely: execute_task
+    # only handles deterministic benchmark tasks; anything else is rejected
+    # before any process can spawn.
     assert outcome["status"] == "FAILED"
-    assert outcome["result"]["reason"] == "unsafe_shell_tasks_disabled"
+    assert outcome["result"]["reason"] == "not a benchmark task"
     assert not (tmp_path / "should-not-exist").exists()
 
 
@@ -25,6 +28,9 @@ def test_vision_shell_command_is_disabled_by_default(tmp_path, monkeypatch):
         str(tmp_path),
     )
 
+    # Since 9d8751a5 generic shell execution is removed entirely: execute_task
+    # only handles deterministic benchmark tasks; anything else is rejected
+    # before any process can spawn.
     assert outcome["status"] == "FAILED"
-    assert outcome["result"]["reason"] == "unsafe_shell_tasks_disabled"
+    assert outcome["result"]["reason"] == "not a benchmark task"
     assert not (tmp_path / "should-not-exist").exists()

@@ -133,6 +133,19 @@ def _auth_from_env() -> tuple[str, str] | None:
     return None
 
 
+def _default_model(lmstudio_url: str | None) -> str:
+    if not lmstudio_url:
+        return "local/model"
+    try:
+        status, body = _http("GET", f"{lmstudio_url}/v1/models", timeout=5)
+        data = body.get("data", []) if status == 200 and isinstance(body, dict) else []
+        if data and isinstance(data[0], dict) and data[0].get("id"):
+            return str(data[0]["id"])
+    except Exception:
+        pass
+    return "local/model"
+
+
 def execute_task(
     task: dict[str, Any],
     lmstudio_url: str | None,
@@ -140,14 +153,16 @@ def execute_task(
     *,
     node_id: str | None = None,
     should_stop: Callable[[], bool] | None = None,
+    cache_control_url: str | None = None,
 ) -> dict[str, Any]:
-    """Execute a deterministic benchmark task against the local LM Studio.
+    """Run a single deterministic task locally (benchmark or LLM).
 
     Restored public contract (dropped in 9d8751a5's executor hardening):
     benchmark_controller creates ``payload.benchmark`` tasks and expects
-    quality-scored outcomes ({quality_score, validation_passed,
-    tokens_per_second}). ``workdir`` is accepted for signature compatibility;
-    deterministic scoring never touches the filesystem.
+    quality-scored outcomes; LLM tasks support the KV-cache resolution
+    adapter whose request fields are strictly allowlisted. Generic shell /
+    vision commands stay removed — non-benchmark, non-LLM payloads are
+    rejected before any process can spawn.
     """
     payload = task.get("payload") or {}
     if not payload and task.get("payload_json"):
@@ -155,8 +170,32 @@ def execute_task(
             payload = json.loads(task["payload_json"])
         except (json.JSONDecodeError, TypeError):
             payload = {}
-    if not payload.get("benchmark"):
-        return {"status": "FAILED", "summary": "not a benchmark task", "result": {}}
+    should_stop = should_stop or (lambda: False)
+
+    if payload.get("benchmark"):
+        return _run_benchmark_cases(task, payload, lmstudio_url, should_stop)
+    if "llm" in (task.get("required_capabilities") or []) and lmstudio_url:
+        return _run_llm_task(
+            task,
+            payload,
+            lmstudio_url,
+            node_id=node_id,
+            should_stop=should_stop,
+            cache_control_url=cache_control_url,
+        )
+    return {
+        "status": "FAILED",
+        "summary": "unsupported task for local executor",
+        "result": {"reason": "not a benchmark task"},
+    }
+
+
+def _run_benchmark_cases(
+    task: dict[str, Any],
+    payload: dict[str, Any],
+    lmstudio_url: str | None,
+    should_stop: Callable[[], bool],
+) -> dict[str, Any]:
 
     cases = payload.get("cases") if isinstance(payload.get("cases"), list) else []
     should_stop = should_stop or (lambda: False)
@@ -222,6 +261,86 @@ def execute_task(
             "task_family": payload.get("task_family"),
         },
     }
+
+
+def _run_llm_task(
+    task: dict[str, Any],
+    payload: dict[str, Any],
+    lmstudio_url: str | None,
+    *,
+    node_id: str | None,
+    should_stop: Callable[[], bool],
+    cache_control_url: str | None,
+) -> dict[str, Any]:
+    prompt = payload.get("prompt") or task.get("title") or ""
+    cache_request = (
+        payload.get("kv_cache") if isinstance(payload.get("kv_cache"), dict) else {}
+    )
+    cache_resolution: dict[str, Any] = {}
+    request_fields: dict[str, Any] = {}
+    if cache_control_url and cache_request.get("prefix_id"):
+        cache_status, resolved = _http(
+            "POST",
+            f"{cache_control_url.rstrip('/')}/v1/kv-cache/resolve",
+            data={
+                "schema_version": 1,
+                "node_id": node_id,
+                "model_id": payload.get("model") or _default_model(lmstudio_url),
+                "prefix_id": cache_request.get("prefix_id"),
+                "compatibility_fingerprint": cache_request.get("compatibility_fingerprint"),
+                "privacy_scope": cache_request.get("privacy_scope", "private"),
+                "scope_id": cache_request.get("scope_id"),
+                "preferred_cache_id": task.get("allocation_cache_id"),
+            },
+            timeout=30,
+        )
+        if cache_status == 200 and isinstance(resolved, dict):
+            returned_fingerprint = str(resolved.get("compatibility_fingerprint") or "")
+            expected_fingerprint = str(cache_request.get("compatibility_fingerprint") or "")
+            # Never restore a cache whose fingerprint does not match exactly:
+            # mismatched prefixes silently corrupt generation.
+            if not expected_fingerprint or returned_fingerprint == expected_fingerprint:
+                cache_resolution = resolved
+                safe_fields = {"cache_id", "cache_prompt", "session_id", "slot_id"}
+                request_fields = {
+                    key: value
+                    for key, value in (resolved.get("request_fields") or {}).items()
+                    if key in safe_fields
+                }
+    st, body = _http(
+        "POST",
+        f"{(lmstudio_url or '').rstrip('/')}/v1/chat/completions",
+        data={
+            "model": payload.get("model") or _default_model(lmstudio_url),
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1024,
+            **request_fields,
+        },
+        timeout=300,
+    )
+    if st == 200 and isinstance(body, dict):
+        choices = body.get("choices", [{}])
+        message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+        text = (message or {}).get("content", "")
+        result: dict[str, Any] = {"answer": text}
+        cache_id = str(cache_resolution.get("cache_id") or "")
+        if cache_id:
+            mode = str(cache_resolution.get("mode") or "miss").lower()
+            result["kv_cache_event"] = {
+                "cache_id": cache_id,
+                "node_id": node_id,
+                "outcome": (
+                    "RESTORE" if mode == "restore" else "HIT" if mode == "local" else "MISS"
+                ),
+                "prefix_id": cache_request.get("prefix_id"),
+                "tokens_saved": int(cache_resolution.get("tokens_saved") or 0),
+                "prefill_ms_saved": int(cache_resolution.get("prefill_ms_saved") or 0),
+                "restore_ms": int(cache_resolution.get("restore_ms") or 0),
+            }
+            if isinstance(cache_resolution.get("manifest"), dict):
+                result["kv_cache_manifest"] = cache_resolution["manifest"]
+        return {"status": "DONE", "summary": "llm response", "result": result}
+    return {"status": "FAILED", "summary": f"lm call {st}", "result": body if isinstance(body, dict) else {}}
 
 
 def _claim_and_run(

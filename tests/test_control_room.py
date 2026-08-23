@@ -106,7 +106,9 @@ def test_build_overview_fails_closed_on_required_dependency(monkeypatch) -> None
 
 
 def test_legacy_operator_pages_are_consolidated() -> None:
+    # Only true duplicates stay consolidated; operator pages render again.
     assert "/" in control_room.LEGACY_UI_PATHS
-    assert "/live" in control_room.LEGACY_UI_PATHS
-    assert "/operations" in control_room.LEGACY_UI_PATHS
-    assert "/fleet-dashboard" in control_room.LEGACY_UI_PATHS
+    assert "/command-center" in control_room.LEGACY_UI_PATHS
+    assert "/fleet" in control_room.LEGACY_UI_PATHS
+    for revived in ("/live", "/operations", "/fleet-dashboard", "/strategy", "/routing"):
+        assert revived not in control_room.LEGACY_UI_PATHS

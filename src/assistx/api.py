@@ -1319,7 +1319,7 @@ def home():
 
 @app.get("/command-center", response_class=HTMLResponse)
 def command_center(request: Request, user: str = Depends(auth)):
-    return templates.TemplateResponse("command_center.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="command_center.html", context={"request": request})
 
 @app.get("/fleet", response_class=HTMLResponse)
 def fleet_ui(request: Request, user: str = Depends(auth)):
@@ -1330,7 +1330,7 @@ def fleet_ui(request: Request, user: str = Depends(auth)):
 @app.get("/fleet-dashboard", response_class=HTMLResponse)
 def fleet_dashboard_ui(request: Request, user: str = Depends(auth)):
     """New comprehensive fleet dashboard with live node/model/task visualization."""
-    return templates.TemplateResponse("fleet_dashboard.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="fleet_dashboard.html", context={"request": request})
 
 @app.get("/operations", response_class=HTMLResponse)
 def operations_ui(request: Request, user: str = Depends(auth)):
@@ -1346,32 +1346,32 @@ def trading_ui(request: Request, user: str = Depends(auth)):
 def routing_ui(request: Request, user: str = Depends(auth)):
     # DEPRECATED: fleet/router ownership moves to auto-router.
     _api_logger.warning("DEPRECATED route /routing accessed — fleet/router ownership moves to auto-router")
-    return templates.TemplateResponse("routing.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="routing.html", context={"request": request})
 
 
 @app.get("/intents", response_class=HTMLResponse)
 def intents_ui(request: Request, user: str = Depends(auth)):
-    return templates.TemplateResponse("intents.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="intents.html", context={"request": request})
 
 @app.get("/dispatches", response_class=HTMLResponse)
 def dispatches_ui(request: Request, user: str = Depends(auth)):
-    return templates.TemplateResponse("dispatches.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="dispatches.html", context={"request": request})
 
 @app.get("/sessions", response_class=HTMLResponse)
 def sessions_ui(request: Request, user: str = Depends(auth)):
-    return templates.TemplateResponse("sessions.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="sessions.html", context={"request": request})
 
 @app.get("/memory", response_class=HTMLResponse)
 def memory_ui(request: Request, user: str = Depends(auth)):
-    return templates.TemplateResponse("memory.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="memory.html", context={"request": request})
 
 @app.get("/devices", response_class=HTMLResponse)
 def devices_ui(request: Request, user: str = Depends(auth)):
-    return templates.TemplateResponse("devices.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="devices.html", context={"request": request})
 
 @app.get("/review", response_class=HTMLResponse)
 def review_ui(request: Request, user: str = Depends(auth)):
-    return templates.TemplateResponse("review_queue.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="review_queue.html", context={"request": request})
 
 # ------------------------------------------------
 
@@ -1394,7 +1394,7 @@ def tasks_review(request: Request, limit: int = 50, user: str = Depends(auth)):
         t["quality_score"] = s.get("quality_score")
         t["flags"] = s.get("flags") or []
         enriched.append(t)
-    return templates.TemplateResponse("review.html", {"request": request, "tasks": enriched})
+    return templates.TemplateResponse(request=request, name="review.html", context={"request": request, "tasks": enriched})
 
 @app.post("/tasks/{task_id}/approve")
 def approve_task(task_id: str, user: str = Depends(auth)):
@@ -1430,7 +1430,7 @@ def tasks_ready(request: Request, limit: int = 50, user: str = Depends(auth)):
         else:
             t["accept_status"] = "—"
         enriched.append(t)
-    return templates.TemplateResponse("ready.html", {"request": request, "tasks": enriched})
+    return templates.TemplateResponse(request=request, name="ready.html", context={"request": request, "tasks": enriched})
 
 @app.post("/tasks/{task_id}/execute")
 def execute_task(task_id: str, dry_run: bool = False, user: str = Depends(auth)):
@@ -1467,7 +1467,7 @@ def runs(request: Request, limit: int = 50, user: str = Depends(auth)):
         res = s.run("MATCH (r:AgentRun) RETURN r ORDER BY r.started_at DESC LIMIT $limit", {"limit": limit})
         rows = [dict(r[0]) for r in res]
     neo.close()
-    return templates.TemplateResponse("runs.html", {"request": request, "runs": rows})
+    return templates.TemplateResponse(request=request, name="runs.html", context={"request": request, "runs": rows})
 
 
 @app.get("/api/fleet/loadouts")
@@ -1495,7 +1495,7 @@ def metrics(user: str = Depends(auth)):
 
 @app.get("/answers", response_class=HTMLResponse)
 def answers_dashboard(request: Request, user: str = Depends(auth)):
-    return templates.TemplateResponse("answers.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="answers.html", context={"request": request})
 
 # =======================
 # Ingestion (v2)
@@ -1506,9 +1506,9 @@ def ingest_ui(request: Request, user: str = Depends(auth)):
     # We don’t leak the token; we only tell the UI whether it’s required.
     token_required = bool(os.getenv("API_TOKEN"))
     return templates.TemplateResponse(
-        "ingest.html",
-        {
-            "request": request,
+        request=request,
+        name="ingest.html",
+        context={
             "token_required": token_required,
             "upload_endpoint": "/upload-audio",
             "suggested_models": ["tiny", "base", "small", "medium", "large-v3"],
@@ -3084,7 +3084,7 @@ def api_live_dashboard(user: str = Depends(auth)):
 
 @app.get("/live", response_class=HTMLResponse)
 def live_dashboard(request: Request, user: str = Depends(auth)):
-    return templates.TemplateResponse("live.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="live.html", context={"request": request})
 
 
 @app.get("/links.json")
@@ -3453,7 +3453,7 @@ def api_delete_guidance(gid: str, user: str = Depends(auth)):
 
 @app.get("/strategy", response_class=HTMLResponse)
 def strategy_page(request: Request, user: str = Depends(auth)):
-    return templates.TemplateResponse("strategy.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="strategy.html", context={"request": request})
 
 
 @app.get("/api/ops/status")

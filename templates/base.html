@@ -131,6 +131,30 @@
       color: #eff6ff;
       box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.08) inset;
     }
+    /* --- Global fleet status banner --- */
+    .workspace-topbar { position: sticky; top: 0; z-index: 40; }
+    .ax-status-banner {
+      display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap;
+      padding: 0.55rem 1rem;
+      background: linear-gradient(180deg, rgba(14, 26, 49, 0.97), rgba(11, 22, 42, 0.97));
+      border-bottom: 1px solid var(--line);
+      font-size: 0.86rem;
+    }
+    .ax-pill {
+      display: inline-block; padding: 0.18rem 0.65rem; border-radius: 999px;
+      font-weight: 700; letter-spacing: 0.06em; font-size: 0.72rem;
+      border: 1px solid transparent;
+    }
+    .ax-ok       { background: rgba(34,197,94,0.15);  color: #4ade80; border-color: rgba(74,222,128,0.4); }
+    .ax-degraded { background: rgba(245,158,11,0.16); color: #fbbf24; border-color: rgba(251,191,36,0.45); }
+    .ax-down,
+    .ax-unknown  { background: rgba(239,68,68,0.16);  color: #f87171; border-color: rgba(248,113,113,0.45); }
+    .ax-flash    { animation: ax-pulse 0.9s ease-out 1; }
+    @keyframes ax-pulse { 0% { transform: scale(0.96); } 100% { transform: scale(1); } }
+    .ax-status-detail { color: var(--muted); display: flex; gap: 0.55rem; flex-wrap: wrap; align-items: center; }
+    .ax-status-detail a { color: var(--brand-2); font-weight: 600; }
+    .ax-sep { color: var(--line); }
+    .ax-bad-text { color: #f87171; font-weight: 600; }
     .nav-link .nav-label { font-weight: 600; }
     .nav-link small {
       color: var(--muted);
@@ -371,31 +395,31 @@
     </div>
 
     <div class="sidebar-section">
-      <div class="sidebar-section-title">Control surfaces</div>
+      <div class="sidebar-section-title">Operate</div>
       <div class="nav-list">
-        {{ nav_link("Live", "/live", match="/live", note="operational HQ") }}
-        {{ nav_link("Strategy", "/strategy", match="/strategy", note="overseer view") }}
-        {{ nav_link("Operations", "/operations", match="/operations", note="attention + work") }}
-        {{ nav_link("Overview", "/command-center", match="/command-center", note="legacy dashboard") }}
-        {{ nav_link("Workspace", "/", match="/", note="query + live answers") }}
+        {{ nav_link("Control room", "/control-room", match="/control-room", note="fleet HQ · live telemetry") }}
+        {{ nav_link("Operations", "/operations", match="/operations", note="incidents · work · approvals") }}
+        {{ nav_link("Live", "/live", match="/live", note="realtime activity") }}
+        {{ nav_link("Strategy", "/strategy", match="/strategy", note="trends & overseer view") }}
       </div>
     </div>
 
     <div class="sidebar-section">
-      <div class="sidebar-section-title">Fleet & routing</div>
+      <div class="sidebar-section-title">Work queue</div>
       <div class="nav-list">
-        {{ nav_link("Fleet", "/fleet-dashboard", match="/fleet-dashboard", note="operations workspace") }}
-        {{ nav_link("Routing", "/routing", match="/routing", note="overlay + graph") }}
-      </div>
-    </div>
-
-    <div class="sidebar-section">
-      <div class="sidebar-section-title">Operations</div>
-      <div class="nav-list">
-        {{ nav_link("Ready tasks", "/tasks/ready", match="/tasks/ready", note="queue intake") }}
-        {{ nav_link("Review", "/review", match="/review", note="human triage") }}
+        {{ nav_link("Ready tasks", "/tasks/ready", match="/tasks/ready", note="claimable now") }}
+        {{ nav_link("Review", "/review", match="/review", note="needs a human") }}
         {{ nav_link("Dispatches", "/dispatches", match="/dispatches", note="execution log") }}
         {{ nav_link("Runs", "/runs", match="/runs", note="agent activity") }}
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Fleet</div>
+      <div class="nav-list">
+        {{ nav_link("Fleet dashboard", "/fleet-dashboard", match="/fleet-dashboard", note="nodes · models · capacity") }}
+        {{ nav_link("Routing", "/routing", match="/routing", note="lanes & graph") }}
+        {{ nav_link("Devices", "/devices", match="/devices", note="registered nodes") }}
       </div>
     </div>
 
@@ -409,11 +433,10 @@
     </div>
 
     <div class="sidebar-section">
-      <div class="sidebar-section-title">Data & tools</div>
+      <div class="sidebar-section-title">System</div>
       <div class="nav-list">
-        {{ nav_link("Intents", "/intents", match="/intents", note="policy / routing") }}
+        {{ nav_link("Intents", "/intents", match="/intents", note="policy / routing rules") }}
         {{ nav_link("Ingest", "/ingest", match="/ingest", note="audio uploads") }}
-        {{ nav_link("Devices", "/devices", match="/devices", note="registered nodes") }}
       </div>
     </div>
 
@@ -429,7 +452,12 @@
   </aside>
 
   <div class="workspace">
-    <div class="workspace-topbar"></div>
+    <div class="workspace-topbar">
+      <div id="ax-status-banner" class="ax-status-banner" aria-label="Fleet status">
+        <span id="ax-status-pill" class="ax-pill ax-unknown">CHECKING…</span>
+        <span id="ax-status-detail" class="ax-status-detail">loading fleet overview…</span>
+      </div>
+    </div>
     <main class="container">
       {% block content %}{% endblock %}
     </main>
@@ -437,6 +465,7 @@
 </div>
 
 <script src="{{ url_for('static', path='js/ui_utils.js') }}"></script>
+<script src="{{ url_for('static', path='js/status_banner.js') }}"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>
