@@ -1,10 +1,29 @@
 import os
 
+import pytest
 from fastapi.testclient import TestClient
 # Import the fully-assembled app (``assistx.api_router:app`` is the deployed
 # entrypoint per the Dockerfile), which registers the router-integration,
 # overlay, and passive routers on top of the base ``assistx.api`` app.
 from assistx.api_router import app
+
+
+@pytest.fixture(autouse=True)
+def _isolate_routers_from_production_neo4j(neo4j_client, seeded_neo4j, monkeypatch):
+    """Route EVERY ``_neo`` binding to the ephemeral test database.
+
+    Router modules (assistx.routers.*) bind ``_neo`` from assistx.api at import
+    time, so patching only ``assistx.api._neo`` leaves them pointed at the
+    environment default — i.e. production Neo4j. Patch every module that holds
+    a ``_neo`` reference so tests can never read or write live graph state.
+    """
+    import sys
+
+    fake = lambda: seeded_neo4j  # noqa: E731
+    monkeypatch.setattr("assistx.api._neo", fake)
+    for name, module in list(sys.modules.items()):
+        if name.startswith("assistx.routers.") and hasattr(module, "_neo"):
+            monkeypatch.setattr(module, "_neo", fake)
 
 
 def test_api_intent_and_context_packet(seeded_neo4j, monkeypatch):
@@ -47,7 +66,7 @@ def test_api_intent_and_context_packet(seeded_neo4j, monkeypatch):
     context_payload = {
         "query": "Need bounded context for task review",
         "task_id": seeded_neo4j.get_ready_tasks()[0]["id"],
-        "include_sources": ["memory", "knowledge"],
+        "include_sources": ["memory", "knowledge", "orchestration"],
     }
     r2 = client.post("/api/brain/context", json=context_payload, auth=auth)
     assert r2.status_code == 200, r2.text
@@ -1152,8 +1171,13 @@ def test_sophia_event_ingestion(seeded_neo4j, monkeypatch):
     body = r.json()
     assert body["signal_event_id"] == "sophia-evt-1"
     assert body["intent_id"]
-    assert body["queue_class"] == "interactive"
-    assert body["routing_policy_fingerprint"]
+    # Strict-executor voice contract: authorization decision replaces queue_class.
+    assert body["accepted"] is True
+    assert body["authorization_action"] == "auto_dispatch_allowed"
+    assert body["review_required"] is False
+    assert body["audit_only"] is False
+    assert body["legacy_endpoint"] is True
+    assert body["contract_fingerprint"]
     assert created_issues
     assert created_issues[0]["assignee_id"] == "Hermes Agent"
     assert any(
@@ -1175,7 +1199,10 @@ def test_sophia_event_ingestion(seeded_neo4j, monkeypatch):
     r2 = client.post("/api/sophia/events", json=anomaly, auth=auth)
     assert r2.status_code == 200, r2.text
     b2 = r2.json()
-    assert b2["queue_class"] == "critical"
+    # Unknown/unverified speakers are audited, never auto-dispatched.
+    assert b2["accepted"] is True
+    assert b2["authorization_action"] == "rejected_audit_only"
+    assert b2["audit_only"] is True
     assert b2["incident_id"]
 
     summary = client.get("/api/sophia/summary?limit=50", auth=auth)

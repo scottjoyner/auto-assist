@@ -16,13 +16,23 @@ failing**, all in the clusters below.
 
 ## Remaining clusters (in suggested order)
 
-### tests/test_migration_api.py (13)
-Symptoms: 404 "Task not found" after dispatch flows, KeyError 'queue_class'.
-Hypothesis: dispatch/reassign endpoints now require executor-token auth
-(`executor token must contain three segments`) and the seeded_neo4j fixtures
-predate the runtime-projection lease response shape.
-Action: update fixtures to mint valid executor tokens; re-check queue_class
-against current `/api/dispatches` payload.
+### tests/test_migration_api.py (6 remain)
+ROOT CAUSE FOUND & FIXED (2026-08-23): routers bind `_neo` from assistx.api at
+import time; tests only patched assistx.api._neo, so router endpoints hit
+PRODUCTION Neo4j (verified: ephemeral DB was clean while test read fleet-gen
+tasks from June). Isolation fixture now patches every assistx.routers.*._neo.
+Also purged 21 test ContextPackets from prod graph.
+
+Remaining 6 encode the OLD sophia voice contract (queue_class,
+routing_policy_fingerprint). Canonical route is now
+voice_routes.api_legacy_sophia_voice_event (registered before api.py's
+deprecated handler) returning the strict-executor envelope:
+{accepted, authorization_action, review_required, audit_only,
+legacy_endpoint, contract_fingerprint}. NOTE: basic-auth callers are treated
+as trusted operators by _authenticate_transport, so auth_state anomalies are
+overridden - decide whether that is intended before migrating assertions
+(test_sophia_event_ingestion partially migrated; routing_policy_override,
+phase8 x2, task_trigger_lifecycle, ticket_hierarchy follow the same pattern).
 
 ### tests/test_swarm_phase2.py (4)
 Symptoms: trace linkage assertions fail around EventEnvelope links.
