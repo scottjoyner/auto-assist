@@ -120,6 +120,9 @@ services:
 
       # --- App paths ---
       - CACHE_PATH=/app/.assistx_cache.sqlite
+      # Fleet coordination guardrail: shared lock file visible to every node
+      # that mounts SSD_4TB/hermes-home (see /api/coordination).
+      - FLEET_COORDINATION_FILE=/app/fleet-state/FLEET-COORDINATION.json
     depends_on:
       redis:
         condition: service_healthy
@@ -143,6 +146,7 @@ services:
       - ./artifacts:/app/artifacts
       - transcriptions:/app/transcriptions
       - ./.assistx_cache.sqlite:/app/.assistx_cache.sqlite
+      - /media/scott/SSD_4TB/hermes-home/FLEET-STATE:/app/fleet-state
       - /media/scott/SSD_4TB/hermes-home/home_scott_.config/assistx-fleet/assistx-runtime-projection-ed25519.pem:/run/secrets/assistx_runtime_projection_private_key.pem:ro
       - /media/scott/SSD_4TB/hermes-home/home_scott_.config/assistx-fleet/assistx-runtime-projection-ed25519-public.pem:/run/secrets/assistx_runtime_projection_public_key.pem:ro
     healthcheck:

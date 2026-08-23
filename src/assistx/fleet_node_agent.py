@@ -133,6 +133,97 @@ def _auth_from_env() -> tuple[str, str] | None:
     return None
 
 
+def execute_task(
+    task: dict[str, Any],
+    lmstudio_url: str | None,
+    workdir: str,
+    *,
+    node_id: str | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """Execute a deterministic benchmark task against the local LM Studio.
+
+    Restored public contract (dropped in 9d8751a5's executor hardening):
+    benchmark_controller creates ``payload.benchmark`` tasks and expects
+    quality-scored outcomes ({quality_score, validation_passed,
+    tokens_per_second}). ``workdir`` is accepted for signature compatibility;
+    deterministic scoring never touches the filesystem.
+    """
+    payload = task.get("payload") or {}
+    if not payload and task.get("payload_json"):
+        try:
+            payload = json.loads(task["payload_json"])
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+    if not payload.get("benchmark"):
+        return {"status": "FAILED", "summary": "not a benchmark task", "result": {}}
+
+    cases = payload.get("cases") if isinstance(payload.get("cases"), list) else []
+    should_stop = should_stop or (lambda: False)
+    scores: list[float] = []
+    token_total = 0
+    elapsed_total = 0.0
+    case_results: list[dict[str, Any]] = []
+    for index, case in enumerate(cases[:10]):
+        if should_stop():
+            progress = index / max(min(len(cases), 10), 1)
+            return {
+                "status": "PAUSED",
+                "summary": f"benchmark paused at case {index}",
+                "progress": progress,
+                "checkpoint": {
+                    "handler": "benchmark",
+                    "next_case_index": index,
+                    "scores": scores,
+                    "token_total": token_total,
+                    "elapsed_total": elapsed_total,
+                    "case_results": case_results,
+                },
+            }
+        started = time.perf_counter()
+        st, body = _http(
+            "POST",
+            f"{(lmstudio_url or '').rstrip('/')}/v1/chat/completions",
+            data={
+                "model": payload.get("model"),
+                "messages": [{"role": "user", "content": str(case.get("prompt") or "")}],
+                "temperature": 0,
+                "max_tokens": int(payload.get("max_tokens_per_case") or 256),
+            },
+            timeout=min(300, int(payload.get("deadline_seconds") or 900)),
+        )
+        elapsed = max(time.perf_counter() - started, 0.001)
+        text = ""
+        if st == 200 and isinstance(body, dict):
+            choices = body.get("choices") or [{}]
+            message = choices[0].get("message") if isinstance(choices[0], dict) else {}
+            text = str((message or {}).get("content", ""))
+        terms = [str(term).lower() for term in case.get("required_terms") or []]
+        term_score = sum(term in text.lower() for term in terms) / max(len(terms), 1)
+        length_ok = len(text.strip()) >= int(case.get("min_chars") or 1)
+        score = term_score * (1.0 if length_ok else 0.5) if st == 200 else 0.0
+        usage = body.get("usage", {}) if isinstance(body, dict) else {}
+        tokens = int(usage.get("completion_tokens") or max(1, len(text) // 4))
+        token_total += tokens
+        elapsed_total += elapsed
+        scores.append(score)
+        case_results.append({"ok": score >= 0.7, "score": round(score, 3), "latency_ms": int(elapsed * 1000)})
+    quality = sum(scores) / len(scores) if scores else 0.0
+    return {
+        "status": "DONE" if cases and quality >= 0.5 else "FAILED",
+        "summary": f"benchmark quality={quality:.3f}",
+        "result": {
+            "quality_score": round(quality, 3),
+            "validation_passed": bool(cases and quality >= 0.7),
+            "tokens_per_second": round(token_total / max(elapsed_total, 0.001), 3),
+            "case_count": len(cases),
+            "cases": case_results,
+            "model": payload.get("model"),
+            "task_family": payload.get("task_family"),
+        },
+    }
+
+
 def _claim_and_run(
     *,
     assistx_url: str,
@@ -183,21 +274,31 @@ def _claim_and_run(
             if not lmstudio_url:
                 result = {"error": "LM Studio endpoint unavailable"}
             else:
-                prompt = str(task.get("prompt") or task.get("description") or "")
-                model = str(task.get("model") or "")
-                request: dict[str, Any] = {
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
-                }
-                llm_status, body = _http(
-                    "POST",
-                    f"{lmstudio_url.rstrip('/')}/v1/chat/completions",
-                    data=request,
-                    timeout=300,
-                )
-                success = llm_status == 200
-                result = body if isinstance(body, dict) else {"result": body}
+                raw_payload = task.get("payload") or {}
+                if not raw_payload and task.get("payload_json"):
+                    try:
+                        raw_payload = json.loads(task["payload_json"])
+                    except (json.JSONDecodeError, TypeError):
+                        raw_payload = {}
+                if isinstance(raw_payload, dict) and raw_payload.get("benchmark"):
+                    result = execute_task(task, lmstudio_url, workdir=".", node_id=node_id)
+                    success = result.get("status") == "DONE"
+                else:
+                    prompt = str(task.get("prompt") or task.get("description") or "")
+                    model = str(task.get("model") or "")
+                    request: dict[str, Any] = {
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": False,
+                    }
+                    llm_status, body = _http(
+                        "POST",
+                        f"{lmstudio_url.rstrip('/')}/v1/chat/completions",
+                        data=request,
+                        timeout=300,
+                    )
+                    success = llm_status == 200
+                    result = body if isinstance(body, dict) else {"result": body}
         else:
             result = {"error": f"unsupported task_type={task_type}"}
     except Exception as exc:  # pragma: no cover - defensive worker boundary
