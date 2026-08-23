@@ -1,5 +1,5 @@
 import os, json, sqlite3, time, threading, uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List, Callable
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
@@ -11,6 +11,10 @@ DEFAULT_API_PASS = os.environ.get("ASSISTX_AUTH_PASS", "")
 MAX_RETRIES = int(os.environ.get("ASSISTX_OUTBOX_MAX_RETRIES", "10"))
 RETRY_BASE_S = int(os.environ.get("ASSISTX_OUTBOX_RETRY_BASE_S", "5"))
 RETRY_MAX_S = int(os.environ.get("ASSISTX_OUTBOX_RETRY_MAX_S", "300"))
+# Guardrails: a destination that 422s forever must not accumulate an unbounded
+# poison queue (2026-08-23 incident: ~300k pending entries retrying for hours).
+TTL_DAYS = int(os.environ.get("ASSISTX_OUTBOX_TTL_DAYS", "7"))
+MAX_PENDING = int(os.environ.get("ASSISTX_OUTBOX_MAX_PENDING", "100000"))
 
 
 class OutboxEntry:
@@ -77,6 +81,7 @@ class OutboxClient:
         self._auth_header = _basic_auth_header(api_user, api_pass) if api_user or api_pass else None
         self._lock = threading.Lock()
         self._init_db()
+        self._purge_expired()
         if auto_flush:
             self._flusher = threading.Thread(target=self._flush_loop, args=(flush_interval_s,), daemon=True)
             self._flusher.start()
@@ -105,6 +110,51 @@ class OutboxClient:
             finally:
                 conn.close()
 
+    def _purge_expired(self) -> None:
+        """Delete terminal rows older than the TTL so the db cannot grow forever."""
+        if TTL_DAYS <= 0:
+            return
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=TTL_DAYS)).isoformat()
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                conn.execute(
+                    "DELETE FROM outbox WHERE status IN ('delivered', 'dead') AND created_at < ?",
+                    (cutoff,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def _enforce_pending_cap(self, conn: sqlite3.Connection) -> int:
+        """Demote oldest pending rows to 'dead' when the queue exceeds MAX_PENDING.
+
+        Stale notifications are worthless next to recent state; dropping from
+        the front keeps the newest events deliverable and bounds retry load.
+        Returns the number of demoted rows.
+        """
+        if MAX_PENDING <= 0:
+            return 0
+        depth = conn.execute(
+            "SELECT COUNT(*) FROM outbox WHERE status IN ('pending', 'failed')"
+        ).fetchone()[0]
+        excess = depth - MAX_PENDING
+        if excess <= 0:
+            return 0
+        ids = [
+            r[0]
+            for r in conn.execute(
+                "SELECT outbox_id FROM outbox WHERE status IN ('pending', 'failed') "
+                "ORDER BY created_at ASC LIMIT ?",
+                (excess,),
+            ).fetchall()
+        ]
+        conn.executemany(
+            "UPDATE outbox SET status='dead' WHERE outbox_id=?",
+            [(i,) for i in ids],
+        )
+        return len(ids)
+
     def enqueue(self, event: Dict[str, Any]) -> OutboxEntry:
         event_id = str(event.get("event_id", ""))
         outbox_id = str(uuid.uuid4())
@@ -130,6 +180,7 @@ class OutboxClient:
                     "INSERT INTO outbox (outbox_id, event_id, payload_json, attempt_count, last_attempt_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (entry.outbox_id, entry.event_id, entry.payload_json, entry.attempt_count, entry.last_attempt_at, entry.status, entry.created_at),
                 )
+                self._enforce_pending_cap(conn)
                 conn.commit()
             finally:
                 conn.close()
@@ -180,11 +231,23 @@ class OutboxClient:
                 conn.close()
 
         delivered = 0
+        now = datetime.now(timezone.utc)
         for row in rows:
             entry = OutboxEntry(*row)
             if entry.attempt_count >= max_retries:
                 self._update_status(entry.outbox_id, "dead", entry.attempt_count)
                 continue
+            # Exponential backoff: base * 2^attempt, capped at RETRY_MAX_S so a
+            # failing destination gets at most one attempt per window instead of
+            # one per flush tick.
+            if entry.last_attempt_at and entry.attempt_count > 0:
+                try:
+                    last = datetime.fromisoformat(entry.last_attempt_at)
+                    delay = min(RETRY_MAX_S, RETRY_BASE_S * (2 ** min(entry.attempt_count, 16)))
+                    if (now - last).total_seconds() < delay:
+                        continue
+                except ValueError:
+                    pass
             ok = self._deliver(entry)
             new_count = entry.attempt_count + 1
             if ok:

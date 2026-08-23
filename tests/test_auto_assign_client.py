@@ -69,4 +69,5 @@ def test_notify_task_created_defaults() -> None:
             assert call_body["source_repo"] == "auto-assist"
             assert call_body["source_service"] == "assistx"
             assert call_body["idempotency_key"].startswith("assistx-task-created:t3")
-            assert call_body["links"]["task_id"] == "t3"
+            # Canonical contract: links is a list of {rel, target_type, target_id}.
+            assert {"rel": "FOR_TASK", "target_type": "Task", "target_id": "t3"} in call_body["links"]
