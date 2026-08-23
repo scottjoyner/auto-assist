@@ -26,7 +26,6 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-import numpy as np
 
 
 class EmbedderError(RuntimeError):
@@ -53,45 +52,6 @@ DEFAULT_MATCH_THRESHOLD = float(os.getenv("ASSISTX_VOICE_MATCH_THRESHOLD", "0.72
 # ---------------------------------------------------------------------------
 # Decoding helpers
 # ---------------------------------------------------------------------------
-
-
-def decode_wav(raw: bytes) -> tuple[np.ndarray, int]:
-    with wave.open(io.BytesIO(raw), "rb") as wf:
-        sample_rate = wf.getframerate()
-        channels = wf.getnchannels()
-        if wf.getsampwidth() != 2:
-            raise EmbedderError("only 16-bit PCM WAV is supported")
-        frames = wf.readframes(wf.getnframes())
-    samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-    if channels > 1:
-        samples = samples.reshape(-1, channels).mean(axis=1)
-    return samples.astype(np.float32), sample_rate
-
-
-def _resample_to_16k(samples: np.ndarray, sample_rate: int) -> np.ndarray:
-    if sample_rate == 16000 or samples.size == 0:
-        return samples.astype(np.float32)
-    duration = samples.shape[0] / float(sample_rate)
-    target_len = max(int(duration * 16000), 1)
-    x_old = np.linspace(0.0, duration, num=samples.shape[0], dtype=np.float32)
-    x_new = np.linspace(0.0, duration, num=target_len, dtype=np.float32)
-    return np.interp(x_new, x_old, samples).astype(np.float32)
-
-
-def embed_audio_bytes(raw: bytes, filename_hint: str = "") -> Embedding:
-    """Embed an uploaded audio payload (16-bit PCM WAV today)."""
-    embedder = get_embedder()
-    if filename_hint.lower().endswith(".wav") or raw[:4] == b"RIFF":
-        samples, sr = decode_wav(raw)
-    else:
-        raise EmbedderError(
-            "unsupported audio container: upload 16-bit PCM WAV "
-            "(compressed formats go through the ingest pipeline first)"
-        )
-    samples = _resample_to_16k(samples, sr)
-    if samples.size < 8000:
-        raise EmbedderError("audio too short: need at least 0.5s of speech")
-    return embedder.embed_samples(samples)
 
 
 # ---------------------------------------------------------------------------
