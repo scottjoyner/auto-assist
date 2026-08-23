@@ -191,11 +191,17 @@ def _is_embedding_model(model_id: str) -> bool:
     return any(kw in ml for kw in _EMBED_KEYWORDS)
 
 
-def _probe_loaded_models(base_url: str) -> Optional[List[str]]:
-    """Return the list of model IDs actually loaded on a node, or None if down.
+def _probe_on_device_models(base_url: str) -> Optional[List[str]]:
+    """Return the FULL model library present on a node (on-device), or None if down.
 
-    Embedding models are excluded from the returned list so they never appear
-    as candidates for chat/tool-call routing.
+    This is the OpenAI-compatible /v1/models listing, which for LM Studio nodes
+    returns every cached model — loaded OR cold. Use this for DISCOVERY ("what
+    could be loaded here"). Embedding models are excluded so they never appear as
+    candidates for chat/tool-call routing.
+
+    NOTE: do NOT use this to determine residency. A model listed here may be a
+    cold library entry; see _probe_loaded_models() for the authoritative
+    "physically in VRAM right now" signal.
     """
     try:
         r = requests.get(f"{base_url}/models", timeout=8)
@@ -203,6 +209,51 @@ def _probe_loaded_models(base_url: str) -> Optional[List[str]]:
             return None
         data = r.json()
         out: List[str] = []
+        for m in data.get("data", []):
+            mid = m.get("id") or m.get("name") or m.get("model")
+            if mid and not _is_embedding_model(mid):
+                out.append(mid)
+        return out
+    except Exception:
+        return None
+
+
+def _probe_loaded_models(base_url: str) -> Optional[List[str]]:
+    """Return the model IDs physically resident (loaded in VRAM) on a node.
+
+    Authoritative signal = LM Studio native /api/v1/models with non-empty
+    ``loaded_instances`` — i.e. weights actually in memory right now. The
+    OpenAI-compatible /v1/models listing is deliberately NOT used here because it
+    returns the full on-device library (loaded + cold), which would conflate
+    "available" with "resident".
+
+    Fallback for bare llama-server nodes (no native API): their /v1/models lists
+    only what's loaded in the server process, so that listing IS the resident set.
+
+    Returns None if the node is down/unreachable; [] if reachable but nothing
+    loaded. Embedding models are excluded from routing candidates.
+    """
+    # Preferred: native LM Studio API with per-model instance state.
+    try:
+        r = requests.get(_native_models_url(base_url), timeout=8)
+        if r.status_code == 200:
+            out: List[str] = []
+            for m in r.json().get("models", []):
+                mid = m.get("key") or m.get("id")
+                if not mid or _is_embedding_model(mid):
+                    continue
+                if m.get("loaded_instances"):
+                    out.append(mid)
+            return out
+    except Exception:
+        pass
+    # Fallback: bare llama-server — /v1/models lists only loaded models.
+    try:
+        r = requests.get(f"{base_url}/models", timeout=8)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        out = []
         for m in data.get("data", []):
             mid = m.get("id") or m.get("name") or m.get("model")
             if mid and not _is_embedding_model(mid):
@@ -1078,11 +1129,16 @@ def _loader_neo():
 
 
 def _loader_discover_models() -> List[str]:
-    """All distinct model ids available on any online fleet node (on-disk)."""
+    """All distinct model ids available on any online fleet node (on-device).
+
+    Uses the full library listing (_probe_on_device_models), NOT the resident
+    set — discovery is about what COULD be loaded, so cold library models must
+    count. Residency itself is tracked separately by _fleet_model_inventory().
+    """
     _refresh_fleet_nodes()
     seen: Dict[str, int] = {}
     for base in _fleet_nodes:
-        ids = _probe_loaded_models(base)
+        ids = _probe_on_device_models(base)
         if not ids:
             continue
         for mid in ids:

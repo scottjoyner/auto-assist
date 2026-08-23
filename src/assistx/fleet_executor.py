@@ -272,6 +272,13 @@ class FleetRouting:
 
     def __init__(self) -> None:
         self._projection: ProjectionInventory | None = None
+        # Per-node hardware/spec map, read defensively by /api/fleet/dashboard.
+        # Populated when the routing layer tracks node specs; empty until then.
+        self._node_specs: dict[str, dict[str, Any]] = {}
+        # model -> best-node and routing-table maps, serialized into the dashboard
+        # response. Empty until the routing layer computes them.
+        self._model_to_node: dict[str, str] = {}
+        self._routing: dict[str, Any] = {}
 
     @staticmethod
     def _estimate_model_size(model: str) -> float:
@@ -332,6 +339,14 @@ class FleetExecutor:
         self._routing = FleetRouting()
         self._nodes: list[dict[str, Any]] = []
         self._stop = threading.Event()
+        # Per-node telemetry maps. This executor delegates node assignment to the
+        # router layer, so these are maintained by the router/heartbeat path and
+        # read defensively (via .get(key, default)) by /api/fleet/dashboard.
+        # Initialized here so the handler never hits AttributeError on a fresh
+        # instance before any task has been claimed.
+        self._node_inflight: dict[str, int] = {}
+        self._node_latency: dict[str, float] = {}
+        self._pick_count: dict[str, int] = {}
 
     def _load_projection(self) -> dict[str, Any]:
         # This internal read uses the same approved evidence contract as the

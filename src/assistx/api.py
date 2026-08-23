@@ -1554,14 +1554,20 @@ def _get_fleet_executor() -> Any:
     from .fleet_executor import FleetExecutor, get_fleet_executor
 
     running = get_fleet_executor()
-    if running is not None:
-        return running
-    if _fleet_executor_instance is None:
+    if running is None and _fleet_executor_instance is None:
         _fleet_executor_instance = FleetExecutor()
-    # The fallback exists only before the background singleton is published.
-    # Refresh it on every request so this temporary path cannot freeze UI data.
-    _fleet_executor_instance._refresh_nodes()
-    return _fleet_executor_instance
+    executor = running or _fleet_executor_instance
+    # Refresh on every request so the dashboard reflects current approved
+    # evidence. The background claim loop only refreshes when it claims a task,
+    # which leaves stale/empty node lists whenever no LLM tasks are ready.
+    # A failed refresh (e.g. projection evidence lapsed) keeps the last good
+    # snapshot instead of failing the request; re-admission repopulates it.
+    if executor is not None:
+        try:
+            executor._refresh_nodes()
+        except Exception as exc:  # noqa: BLE001 - dashboard must stay available
+            _api_logger.warning("fleet dashboard: projection refresh failed: %s", str(exc)[:240])
+    return executor
 
 def _get_fleet_routing() -> Any:
     """Get the fleet routing singleton."""
@@ -2382,6 +2388,32 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         str(n.get("hostname", n.get("ip", "?"))).lower(): n
         for n in executor._nodes
     }
+
+    def _provider_online(provider: dict[str, Any]) -> bool:
+        # Inference providers (LM Studio / llama-server) do not report to the
+        # auto-router; probe their base_url directly so the dashboard reflects
+        # real serving state instead of defaulting them offline.
+        if provider.get("type") in {"agent", "cli"} or not str(
+            provider.get("base_url") or ""
+        ).startswith(("http://", "https://")):
+            return False
+        base = str(provider["base_url"]).rstrip("/")
+        # Stored access paths may already carry a /v1 suffix (the OpenAI-compat
+        # endpoint). Bare llama-server rejects .../v1/v1/models with 404 while
+        # LM Studio GUI tolerates it, so probe the normalized form first and
+        # fall back to the other layout if that fails.
+        candidates = [base + "/models" if base.endswith("/v1") else base + "/v1/models"]
+        alt = base + "/v1/models" if base.endswith("/v1") else base + "/models"
+        if alt not in candidates:
+            candidates.append(alt)
+        for probe in candidates:
+            try:
+                _fetch_json(probe, timeout=4)
+                return True
+            except Exception:
+                continue
+        return False
+
     projected_nodes = network_map.get("nodes") or []
     node_ids = {
         str(item.get("id") or item.get("hostname") or item.get("ip"))
@@ -2405,7 +2437,18 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         specs = projected or routing._node_specs.get(hn, {})
         loaded_models = projected.get("loaded_models") if projected.get("report_fresh") else n.get("loaded_models", [])
         available_models = projected.get("all_models") if projected.get("report_fresh") else []
-        service_ok = bool(projected.get("online", n.get("lmstudio_ok", False)))
+        # Inference providers carry their resident models as a `models` list of
+        # {alias, quantization, context_length}; surface the aliases so the
+        # dashboard shows what is actually loaded on each node.
+        if not loaded_models and n:
+            loaded_models = [m.get("alias") for m in (n.get("models") or []) if isinstance(m, dict) and m.get("alias")]
+        # Inference providers (LM Studio / llama-server) do not self-report to the
+        # auto-router, so they have no fresh router report. Probe their base_url
+        # live so online/service_ok reflect real serving state instead of False.
+        if n and not projected.get("report_fresh"):
+            service_ok = _provider_online(n) or bool(projected.get("online", False))
+        else:
+            service_ok = bool(projected.get("online", n.get("lmstudio_ok", False)))
         received_at = projected.get("report_received_at")
         model_perf = {}
         for model in loaded_models or []:
