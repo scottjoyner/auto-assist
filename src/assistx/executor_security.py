@@ -473,6 +473,14 @@ def build_executor_security_router(neo_factory: Callable[[], Any]) -> APIRouter:
         model_aliases = _string_list(payload.get("allowed_model_aliases"))
         if not model_aliases:
             model_aliases = [str(payload.get("model") or "auto/code")]
+        # Operator-approved fleet defaults ride along so adapters whose runtime
+        # model differs from the task-declared alias are not 401'd by their own
+        # token scope. Comma-separated, empty by default.
+        model_aliases += [
+            a.strip() for a in
+            os.getenv("ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES", "").split(",")
+            if a.strip()
+        ]
         configured_tools = {
             item.strip()
             for item in os.getenv(

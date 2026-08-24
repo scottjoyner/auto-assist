@@ -53,3 +53,19 @@ Improvement-cycle proposal state machine drift; inspect against
   clear (benchmark outcomes, EventEnvelope, KV-cache allowlist).
 - Update tests when they encode deliberately removed behavior (generic shell).
 - Never make tests pass by weakening security assertions.
+
+
+## Signal-note recovery (2026-08-23 late)
+21 real note-to-self tasks requeued twice. Progression:
+1. `self_tasks_disabled_in_strict_executor` -> fixed: HERMES_SELFTASK_ENABLED=true on hermes-adapter.
+2. `401 requested model is outside the executor token scope` -> fixed:
+   ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES (api+adapter env, default
+   local/reasoning-large,qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled)
+   appended to executor-token claims at issuance (executor_security.py).
+3. REMAINING: `executor token must contain three segments` - the self-task LLM
+   call in strict_executor_adapter reaches the router WITHOUT a claim-scoped
+   JWT. Fix: in the self-task path, fetch the scoped token via the existing
+   /api/executor/claims/{task_id}/token endpoint (client_request pattern used
+   by get_context/complete_task) and attach as Bearer before the chat
+   completion. Contained change; keep token task-scoped (do NOT widen alias
+   policy further).

@@ -120,6 +120,9 @@ services:
 
       # --- App paths ---
       - CACHE_PATH=/app/.assistx_cache.sqlite
+      # Executor tokens admit these fleet-default model aliases when the task
+      # declares none (comma-separated).
+      - ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES=${ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES:-local/reasoning-large,qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled}
       # Fleet coordination guardrail: shared lock file visible to every node
       # that mounts SSD_4TB/hermes-home (see /api/coordination).
       - FLEET_COORDINATION_FILE=/app/fleet-state/FLEET-COORDINATION.json
@@ -270,7 +273,8 @@ services:
       - HERMES_LM_API_KEY=${AUTO_ROUTER_INTERNAL_SERVICE_TOKEN:?set router internal service token}
       - HERMES_MODEL=${HERMES_MODEL:-refinedtoolcallv5-3b}
       - HERMES_LEASE_SECONDS=${HERMES_LEASE_SECONDS:-900}
-      - HERMES_SELFTASK_ENABLED=false
+      - HERMES_SELFTASK_ENABLED=true
+      - ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES=${ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES:-local/reasoning-large,qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled}
       - HERMES_SELFTASK_DIR=${HERMES_SELFTASK_DIR:-/app/hermes-home/harvest}
       - HERMES_SELFTASK_KIND=${HERMES_SELFTASK_KIND:-harvest}
       - HERMES_SELFTASK_TIMEOUT=${HERMES_SELFTASK_TIMEOUT:-180}
