@@ -69,3 +69,22 @@ Improvement-cycle proposal state machine drift; inspect against
    by get_context/complete_task) and attach as Bearer before the chat
    completion. Contained change; keep token task-scoped (do NOT widen alias
    policy further).
+
+
+## Fleet execution findings (2026-08-24)
+Direct-worker claim path FIXED and live: destroyer/optiplex/lenovo agents
+claim via /api/tasks/{id}/claim; ~1.5k claims observed post-fix.
+
+REMAINING BLOCKER for synthetic workloads: executor tokens are minted
+scoped to the task's declared model alias (task_family_routing), but the
+workload generator requests rotating models (ornith-1.0-9b, qwen3.5...,
+empty) that are frequently outside the claiming node's approved set ->
+instant 401 -> FAILED. Options:
+  A) constrain the generator's model hints to each node's resident/approved
+     set (query runtime projection before submit);
+  B) add a routing-layer fallback that maps unapproved requests to an
+     approved resident model (policy change);
+  C) pause fleet-workload-generator until real work exists.
+Related: some nodes log 'Temporary failure in name resolution' during
+projection calls - check resolv.conf/search domains on lenovo+optiplex.
+Stuck CLAIMED tasks self-heal at lease expiry (900s) and re-enter READY.
