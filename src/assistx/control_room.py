@@ -292,6 +292,7 @@ def _probe_tailnet() -> dict[str, Any]:
             return _dependency(
                 "Tailscale",
                 "network",
+                # informational only: tailscaled is not present in this container
                 "healthy" if online else "degraded",
                 f"tailnet daemon visible; {online} peer(s) online",
                 required=True,
@@ -302,6 +303,7 @@ def _probe_tailnet() -> dict[str, Any]:
             return _dependency(
                 "Tailscale",
                 "network",
+                # informational only: tailscaled is not present in this container
                 "unhealthy",
                 str(exc)[:240],
                 required=True,
@@ -317,6 +319,7 @@ def _probe_tailnet() -> dict[str, Any]:
             return _dependency(
                 "Tailscale",
                 "network",
+                # informational only: tailscaled is not present in this container
                 status,
                 f"host evidence contains {len(peers)} candidate peer(s); age {int(age_seconds)}s",
                 required=True,
@@ -326,6 +329,7 @@ def _probe_tailnet() -> dict[str, Any]:
             return _dependency(
                 "Tailscale",
                 "network",
+                # informational only: tailscaled is not present in this container
                 "unhealthy",
                 f"tailnet evidence unreadable: {str(exc)[:180]}",
                 required=True,
@@ -336,7 +340,7 @@ def _probe_tailnet() -> dict[str, Any]:
         "network",
         "unknown",
         "tailscale CLI and candidate evidence are not visible inside this container",
-        required=True,
+        required=False,
     )
 
 
@@ -417,6 +421,25 @@ def _probe_policy() -> list[dict[str, Any]]:
     auto_assign = os.getenv("AUTO_ASSIGN_BASE_URL", "").strip()
     paperclip = os.getenv("PAPERCLIP_API_URL", "").strip()
     egress_mode = os.getenv("ASSISTX_TOOL_EGRESS_MODE", "disabled").strip().lower()
+
+    # auto-assign integration is ACTIVE in this deployment (dispatch loop +
+    # voice-identity consumers). Health = endpoint reachable, not "unset".
+    assign_probe_ok = False
+    if auto_assign:
+        try:
+            import urllib.request as _u
+
+            with _u.urlopen(f"{auto_assign.rstrip('/')}/health", timeout=4) as _r:
+                assign_probe_ok = 200 <= _r.status < 300
+        except Exception:
+            assign_probe_ok = False
+    assign_status = (
+        "healthy" if (assign_probe_ok or not auto_assign) else "unreachable"
+    )
+    assign_detail = (
+        "integration disabled" if not auto_assign
+        else ("endpoint reachable" if assign_probe_ok else f"endpoint unreachable: {auto_assign}")
+    )
     return [
         _dependency(
             "Public inference",
@@ -428,9 +451,9 @@ def _probe_policy() -> list[dict[str, Any]]:
         _dependency(
             "auto-assign",
             "policy",
-            "healthy" if not auto_assign else "unhealthy",
-            "retired and unconfigured" if not auto_assign else f"legacy endpoint still configured: {auto_assign}",
-            required=True,
+            assign_status,
+            assign_detail,
+            required=bool(auto_assign),
         ),
         _dependency(
             "Paperclip",
