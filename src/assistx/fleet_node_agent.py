@@ -102,6 +102,7 @@ def _detect_capabilities(lmstudio_url: str | None) -> tuple[list[str], list[str]
         status, body = _http("GET", f"{lmstudio_url.rstrip('/')}/v1/models", timeout=5)
         if status == 200 and isinstance(body, dict):
             caps.add("llm")
+            caps.add("lmstudio")
             models = [item.get("id", "") for item in body.get("data", []) if item.get("id")]
 
     # Lightweight vision/tooling detection without importing heavyweight libs.
@@ -478,6 +479,16 @@ def _claim_and_run(
     success = False
     try:
         task_type = str(task.get("task_type") or "").lower()
+        if not task_type:
+            _has_prompt = bool(
+                str(task.get("prompt") or task.get("description") or "").strip()
+                or str(task.get("payload_json") or "").strip()
+                or isinstance(task.get("payload"), dict)
+            )
+            if _has_prompt:
+                # Legacy/plain tasks (e.g. Signal note-to-self) carry only a text
+                # prompt with no explicit type - execute them as LLM tasks.
+                task_type = "llm"
         raw_payload = task.get("payload") or {}
         if not raw_payload and task.get("payload_json"):
             try:
@@ -519,8 +530,14 @@ def _claim_and_run(
                     result = execute_task(task, lmstudio_url, workdir=".", node_id=node_id)
                     success = result.get("status") == "DONE"
                 else:
-                    prompt = str(task.get("prompt") or task.get("description") or "")
-                    model = str(task.get("model") or "")
+                    prompt = str(
+                        raw_payload.get("prompt")
+                        or raw_payload.get("text")
+                        or task.get("prompt")
+                        or task.get("description")
+                        or ""
+                    )
+                    model = str(raw_payload.get("model") or task.get("model") or "")
                     request: dict[str, Any] = {
                         "model": model,
                         "messages": [{"role": "user", "content": prompt}],
@@ -542,15 +559,20 @@ def _claim_and_run(
         stop_heartbeat.set()
         heartbeat.join(timeout=1)
 
-    endpoint = "complete" if success else "fail"
+    # AssistX exposes a single completion endpoint; failures are reported via
+    # POST /complete with status=FAILED (no separate /fail route exists).
     _http(
         "POST",
-        f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/{endpoint}",
+        f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/complete",
         auth=auth,
         data={
             "node_id": node_id,
-            "claim_id": claim_id,
+            "agent_id": node_id,
+            "status": "DONE" if success else "FAILED",
+            "summary": str(result.get("error") or result.get("summary") or "")[:500],
             "result": result,
+            "session_id": session_id,
+            "claim_id": claim_id,
         },
     )
 
