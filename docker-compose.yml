@@ -122,6 +122,7 @@ services:
       - CACHE_PATH=/app/.assistx_cache.sqlite
       # Executor tokens admit these fleet-default model aliases when the task
       # declares none (comma-separated).
+      - AUTO_ROUTER_ADMIN_TOKEN=${AUTO_ROUTER_ADMIN_TOKEN:?set in .env}
       - ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES=${ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES:-local/reasoning-large,qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled}
       # Fleet coordination guardrail: shared lock file visible to every node
       # that mounts SSD_4TB/hermes-home (see /api/coordination).
