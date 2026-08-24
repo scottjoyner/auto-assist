@@ -30,6 +30,7 @@ FLEET_CAPABILITIES (comma-separated extra caps), FLEET_NODE_ID (override).
 from __future__ import annotations
 
 import argparse
+import uuid
 import json
 import os
 import platform
@@ -440,14 +441,22 @@ def _claim_and_run(
     if not task_id:
         return
 
+    session_id = f"{node_id}-{uuid.uuid4().hex[:8]}"
     status, claim = _http(
         "POST",
-        f"{assistx_url.rstrip('/')}/api/agent/tasks/{task_id}/claim",
+        f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/claim",
         auth=auth,
-        data={"node_id": node_id},
+        data={
+            "agent_id": node_id,
+            "capabilities": caps,
+            "session_id": session_id,
+            "lease_seconds": 900,
+        },
     )
-    if status >= 300 or not isinstance(claim, dict):
-        return
+    if status != 200 or not isinstance(claim, dict):
+        # 404/409/etc: task gone, drained, or claimed elsewhere. Report no-work
+        # so the caller sleeps instead of hot-looping on the same task.
+        return False
     claim_id = claim.get("claim_id")
 
     stop_heartbeat = threading.Event()
@@ -456,9 +465,9 @@ def _claim_and_run(
         while not stop_heartbeat.wait(15):
             _http(
                 "POST",
-                f"{assistx_url.rstrip('/')}/api/agent/tasks/{task_id}/heartbeat",
+                f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/heartbeat",
                 auth=auth,
-                data={"node_id": node_id, "claim_id": claim_id},
+                data={"node_id": node_id, "agent_id": node_id, "claim_id": claim_id},
                 timeout=10,
             )
 
@@ -536,7 +545,7 @@ def _claim_and_run(
     endpoint = "complete" if success else "fail"
     _http(
         "POST",
-        f"{assistx_url.rstrip('/')}/api/agent/tasks/{task_id}/{endpoint}",
+        f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/{endpoint}",
         auth=auth,
         data={
             "node_id": node_id,
