@@ -52,6 +52,7 @@ services:
       - WS_AUTH_REQUIRED=${WS_AUTH_REQUIRED:-1}
       - WS_AUTH_TOKEN=${WS_AUTH_TOKEN:-}
       - ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN=${ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN:?set a dedicated executor bootstrap token}
+      - ASSISTX_INTERNAL_SERVICE_TOKEN=${AUTO_ROUTER_INTERNAL_SERVICE_TOKEN}
       - ASSISTX_EXECUTOR_SIGNING_KEY_FILE=/run/secrets/assistx_runtime_projection_private_key.pem
       - ASSISTX_EXECUTOR_VERIFY_KEY_FILE=/run/secrets/assistx_runtime_projection_public_key.pem
       - ASSISTX_EXECUTOR_KEY_ID=assistx-executor-v1
@@ -258,6 +259,7 @@ services:
       - ASSISTX_USER=${ASSISTX_USER:-admin}
       - ASSISTX_PASS=${ASSISTX_PASS:-change-me}
       - ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN=${ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN:?set a dedicated executor bootstrap token}
+      - ASSISTX_INTERNAL_SERVICE_TOKEN=${AUTO_ROUTER_INTERNAL_SERVICE_TOKEN}
       - HERMES_AGENT_ID=${HERMES_AGENT_ID:-hermes-local}
       - HERMES_AGENT_CAPABILITIES=terminal,file,code_execution,web,search,browser,vision,skills,memory,session_search,delegation,cronjob,clarify,todo,llm,hermes_agent
       - HERMES_TOOLSETS=${HERMES_TOOLSETS:-terminal,file,code_execution,web,search,browser,vision,skills,memory,session_search,delegation,cronjob,clarify,todo,mcp,kg}

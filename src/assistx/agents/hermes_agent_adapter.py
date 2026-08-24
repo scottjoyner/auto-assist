@@ -693,7 +693,13 @@ def run_hermes(
                 break
 
     if proc.returncode != 0:
-        logger.warning("Hermes exit code %d (elapsed=%.1fs)", proc.returncode, elapsed)
+        logger.warning(
+            "Hermes exit code %d (elapsed=%.1fs) stderr_tail=%r stdout_tail=%r",
+            proc.returncode,
+            elapsed,
+            (stderr or "")[-400:],
+            (stdout or "")[-400:],
+        )
         return {
             "success": False,
             "error": f"exit_code_{proc.returncode}",
@@ -784,6 +790,27 @@ def call_self_task_llm(prompt: str, model: str, max_tokens: int = SELFTASK_MAX_T
     router directly lets us bound output length and avoid the tool-use loops
     that plague tiny models. Returns ``{"success", "output", "error", "elapsed"}``.
     """
+    # Constrain the requested model to the claim-scoped executor allowlist:
+    # the router 401s any model outside the token's allowed_model_aliases.
+    try:
+        import base64 as _b64
+        _tok = os.getenv("HERMES_EXECUTOR_TOKEN", "")
+        _payload_b64 = _tok.split(".")[1] if _tok.count(".") >= 2 else ""
+        _payload_b64 += "=" * (-len(_payload_b64) % 4)
+        _allowed = json.loads(_b64.urlsafe_b64decode(_payload_b64)).get("allowed_model_aliases") or []
+    except Exception:
+        _allowed = []
+    if _allowed and model not in _allowed:
+        # Prefer the host-local reasoning lane: this adapter runs on x1 and the
+        # signed projection only covers runtimes with fresh access evidence
+        # (remote nodes expire out of the projection).
+        preferred = [a for a in _allowed if a == "local/reasoning-large"]
+        chosen = preferred[0] if preferred else next(
+            (a for a in _allowed if a.startswith(("local/", "lmstudio-x1"))), _allowed[0]
+        )
+        logger.info("self-task model %s outside token scope; using %s", model, chosen)
+        model = chosen
+
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -797,8 +824,13 @@ def call_self_task_llm(prompt: str, model: str, max_tokens: int = SELFTASK_MAX_T
         # with "executor token must contain three segments".
         headers: Dict[str, str] = {}
         claim_token = os.getenv("HERMES_EXECUTOR_TOKEN", "").strip()
+        internal_token = os.getenv("ASSISTX_INTERNAL_SERVICE_TOKEN", "").strip()
         if claim_token:
             headers["Authorization"] = f"Bearer {claim_token}"
+        elif internal_token:
+            # Unclaimed background self-tasks authenticate as AssistX internal
+            # services; the router bypasses model-scope for this identity.
+            headers["Authorization"] = f"Bearer {internal_token}"
         resp = requests.post(ROUTER_CHAT_URL, json=payload, timeout=timeout, headers=headers)
         elapsed = time.monotonic() - start
         if resp.status_code != 200:
