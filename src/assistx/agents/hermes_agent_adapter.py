@@ -792,7 +792,14 @@ def call_self_task_llm(prompt: str, model: str, max_tokens: int = SELFTASK_MAX_T
     }
     start = time.monotonic()
     try:
-        resp = requests.post(ROUTER_CHAT_URL, json=payload, timeout=timeout)
+        # Strict-executor mode: the router validates the claim-scoped JWT on
+        # every inference call. Without this header the request is rejected
+        # with "executor token must contain three segments".
+        headers: Dict[str, str] = {}
+        claim_token = os.getenv("HERMES_EXECUTOR_TOKEN", "").strip()
+        if claim_token:
+            headers["Authorization"] = f"Bearer {claim_token}"
+        resp = requests.post(ROUTER_CHAT_URL, json=payload, timeout=timeout, headers=headers)
         elapsed = time.monotonic() - start
         if resp.status_code != 200:
             detail = ""
