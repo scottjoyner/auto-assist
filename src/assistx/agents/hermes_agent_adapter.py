@@ -109,7 +109,7 @@ MODEL_PROFILE_DEFAULTS = {
     "reasoning-mid": {
         "tier": "reasoning-mid",
         "profile": "reasoning-mid",
-        "model": "lfm2.5-8b-a1b",
+        "model": "google/gemma-4-12b-qat",
         "provider": "assistx-router",
         "context_length": 32768,
     },

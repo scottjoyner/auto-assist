@@ -738,6 +738,30 @@ def collect_performance(neo_factory: NeoFactory) -> list[dict[str, Any]]:
         return []
 
 
+
+def _load_doctor_findings() -> dict[str, Any]:
+    """Load deployment-conformance findings from FLEET-STATE/doctor-report.json."""
+    import json as _json
+    from pathlib import Path as _Path
+    state_dir = os.getenv(
+        "ASSISTX_FLEET_STATE_DIR",
+        "/media/scott/SSD_4TB/hermes-home/FLEET-STATE",
+    )
+    path = _Path(state_dir) / "doctor-report.json"
+    try:
+        data = _json.loads(path.read_text())
+        return {
+            "overall": data.get("overall", "unknown"),
+            "counts": data.get("counts", {}),
+            "findings": [
+                f for f in data.get("findings", [])
+                if f.get("status") != "healthy"
+            ],
+        }
+    except Exception:
+        return {"overall": "unknown", "findings": []}
+
+
 def build_overview(neo_factory: NeoFactory) -> dict[str, Any]:
     collected_at = _now_ms()
     dependencies, admission = collect_dependencies(neo_factory)
@@ -779,6 +803,8 @@ def build_overview(neo_factory: NeoFactory) -> dict[str, Any]:
         "activity": activity,
         "performance": performance,
         "admission": admission,
+        # Deployment conformance findings from assistx-doctor
+        "doctor": _load_doctor_findings(),
     }
 
 
