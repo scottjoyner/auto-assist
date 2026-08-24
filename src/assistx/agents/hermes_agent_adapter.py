@@ -102,14 +102,14 @@ MODEL_PROFILE_DEFAULTS = {
     "reasoning-large": {
         "tier": "reasoning-large",
         "profile": "reasoning-large",
-        "model": "ornith-1.0-35b",
+        "model": "ornith-1.5-35b-a3b-apex-mtp",
         "provider": "assistx-router",
-        "context_length": 131072,
+        "context_length": 65536,
     },
     "reasoning-mid": {
         "tier": "reasoning-mid",
         "profile": "reasoning-mid",
-        "model": "ornith-1.0-9b",
+        "model": "lfm2.5-8b-a1b",
         "provider": "assistx-router",
         "context_length": 32768,
     },
