@@ -551,7 +551,7 @@ def build_default_runtime(
                 "ASSISTX_OPERATIONAL_STATE_URL",
                 "redis://falkordb:6379/0",
             ),
-            decode_responses=False,
+            decode_responses=True,
         )
         store = OperationalStateStore(
             client,

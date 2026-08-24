@@ -240,10 +240,9 @@ class OperationalStateStore:
         response = self.client.execute_command(
             "GRAPH.RO_QUERY",
             self.graph,
-            query,
+            "CYPHER record_id=" + "'" + str(record_id).replace("'", "\\'") + "' "
+            + query,
             "--compact",
-            "PARAMS",
-            _canonical({"record_id": record_id}),
         )
         row = self._extract_row(response)
         if not row:
@@ -354,13 +353,30 @@ class OperationalStateStore:
         return body, params
 
     def _query(self, query: str, params: Mapping[str, Any]) -> Any:
+        # FalkorDB v4 removed the legacy "PARAMS <json>" trailing argument.
+        # Parameters are now passed via the CYPHER prefix (see FalkorDB docs,
+        # "Cypher coverage -> Parameters"). Stringify each parameter as a
+        # Cypher literal; JSON strings stay strings.
+        def literal(value: Any) -> str:
+            if value is None:
+                return "null"
+            if isinstance(value, bool):
+                return "true" if value else "false"
+            if isinstance(value, int):
+                return str(value)
+            if isinstance(value, float):
+                return repr(value)
+            escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
+            return f"'{escaped}'"
+
+        prefix = "CYPHER " + " ".join(
+            f"{key}={literal(value)}" for key, value in params.items()
+        )
         return self.client.execute_command(
             "GRAPH.QUERY",
             self.graph,
-            query,
+            prefix + query,
             "--compact",
-            "PARAMS",
-            _canonical(dict(params)),
         )
 
     @staticmethod
@@ -392,4 +408,32 @@ class OperationalStateStore:
         if not isinstance(rows, (list, tuple)) or not rows:
             return None
         first = rows[0]
-        return list(first) if isinstance(first, (list, tuple)) else None
+
+        def is_cell(item: Any) -> bool:
+            return (
+                isinstance(item, (list, tuple))
+                and len(item) == 2
+                and isinstance(item[0], int)
+            )
+
+        # FalkorDB v4 compact mode nests rows and encodes each cell as
+        # [type_code, value]. Unwrap container layers, then decode cells.
+        while (
+            isinstance(first, (list, tuple))
+            and first
+            and isinstance(first[0], (list, tuple))
+            and any(not is_cell(item) for item in first)
+        ):
+            first = first[0]
+        if not isinstance(first, (list, tuple)):
+            return None
+        cells = list(first)
+        if cells and all(is_cell(item) for item in cells):
+            values = [item[1] for item in cells]
+            # FalkorDB returns raw bytes for string cells even with
+            # decode_responses=True; normalize to str.
+            return [
+                v.decode("utf-8", "replace") if isinstance(v, bytes) else v
+                for v in values
+            ]
+        return cells if cells else None
