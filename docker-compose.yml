@@ -128,6 +128,7 @@ services:
       # Fleet coordination guardrail: shared lock file visible to every node
       # that mounts SSD_4TB/hermes-home (see /api/coordination).
       - FLEET_COORDINATION_FILE=/app/fleet-state/FLEET-COORDINATION.json
+      - ASSISTX_FLEET_STATE_DIR=/app/fleet-state
     depends_on:
       redis:
         condition: service_healthy
