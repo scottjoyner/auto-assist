@@ -121,4 +121,4 @@ providers:
     type: openai
     base_url: http://host.docker.internal:8088/v1
     api_key: dummy
-    default_model: groq.llama-3.1-8b-instant
+    default_model: local/reasoning-large
