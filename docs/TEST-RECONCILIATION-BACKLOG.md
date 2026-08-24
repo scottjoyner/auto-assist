@@ -62,13 +62,16 @@ Improvement-cycle proposal state machine drift; inspect against
    ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES (api+adapter env, default
    local/reasoning-large,qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled)
    appended to executor-token claims at issuance (executor_security.py).
-3. REMAINING: `executor token must contain three segments` - the self-task LLM
-   call in strict_executor_adapter reaches the router WITHOUT a claim-scoped
-   JWT. Fix: in the self-task path, fetch the scoped token via the existing
-   /api/executor/claims/{task_id}/token endpoint (client_request pattern used
-   by get_context/complete_task) and attach as Bearer before the chat
-   completion. Contained change; keep token task-scoped (do NOT widen alias
-   policy further).
+3. RESOLVED 2026-08-24: self-task call now presents HERMES_EXECUTOR_TOKEN as
+   Bearer (hermes_agent_adapter). NEXT BLOCKER moved upstream:
+   `signed AssistX runtime projection generation N is expired` - the router
+   enforces a SIGNED canonical projection whose approval expired. Renewal
+   requires the governed flow: scripts/build-runtime-projection-candidate.py
+   (needs an ATTESTED fleet runtime profile artifact) followed by
+   scripts/approve-runtime-projection.py. The attested profile is held by
+   whoever performed the original gen-460 approval (benchmark agent?).
+   Interim state bump of FleetProjectionState alone is insufficient - the
+   signed document must be regenerated from fresh attested evidence.
 
 
 ## Fleet execution findings (2026-08-24)
