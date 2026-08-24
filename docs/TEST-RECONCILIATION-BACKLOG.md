@@ -103,3 +103,13 @@ these tasks execute via run_hermes whose outbound model may differ per turn
 Next step: capture the exact JWT presented at failure (router debug log) and
 compare claims.allowed_model_aliases vs requested model - one comparison
 resolves whether it's mint-site #3 or turn-level model switching.
+
+
+## RESOLVED 2026-08-24 ~14:0x UTC - ALL 21 Signal notes DONE
+Final fixes (fleet_node_agent.py, commit series ending f-series):
+1. Default untyped tasks to llm execution when prompt-ish content exists.
+2. Extract prompt from payload.text (Signal notes store text there).
+3. Report failures via POST /complete status=FAILED (/fail never existed).
+Root causes were stacked: missing task_type defaulting + prompt-key mismatch +
+nonexistent fail endpoint. Fleet-wide node agents restarted onto the fix;
+verified across destroyer/optiplex/lenovo (answers from multiple nodes' models).
