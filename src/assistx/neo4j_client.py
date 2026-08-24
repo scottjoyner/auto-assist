@@ -590,7 +590,9 @@ class Neo4jClient:
                 ).single()
             s.run(
                 "MATCH (t:Task {id:$tid}), (d:Dispatch {id:$did}) "
-                "MERGE (t)-[:DISPATCHED_AS]->(d)",
+                "MERGE (t)-[:DISPATCHED_AS]->(d) "
+                "WITH t, d WHERE d.paperclip_issue_id IS NOT NULL "
+                "SET t.paperclip_dispatched=true",
                 {"tid": task_id, "did": dispatch_id},
             ).consume()
             if target.get("paperclip_agent_id"):
@@ -967,6 +969,8 @@ class Neo4jClient:
                 if not isinstance(required, list):
                     required = []
                 target_agent = item.get("target_agent_id")
+                if item.get("paperclip_dispatched"):
+                    continue
                 if caps and required and not all(cap in caps for cap in required):
                     continue
                 if agent_id is None and target_agent is not None:
@@ -1605,7 +1609,8 @@ class Neo4jClient:
             if task_status:
                 s.run(
                     "MATCH (t:Task)-[:DISPATCHED_AS]->(d:Dispatch {paperclip_issue_id:$issue}) "
-                    "SET t.status=$task_status, t.updated_at=datetime(), t.updated_at_ts=timestamp()",
+                    "SET t.status=$task_status, t.paperclip_dispatched=true, "
+                    "    t.updated_at=datetime(), t.updated_at_ts=timestamp()",
                     {"issue": paperclip_issue_id, "task_status": task_status},
                 ).consume()
             if paperclip_agent_id:

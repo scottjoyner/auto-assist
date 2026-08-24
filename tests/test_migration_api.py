@@ -16,11 +16,15 @@ def _isolate_routers_from_production_neo4j(neo4j_client, seeded_neo4j, monkeypat
     time, so patching only ``assistx.api._neo`` leaves them pointed at the
     environment default — i.e. production Neo4j. Patch every module that holds
     a ``_neo`` reference so tests can never read or write live graph state.
+    The high-concurrency fleet endpoints (``GET /api/agent/tasks``, ``POST
+    /api/tasks/{id}/claim``, ``POST /api/tasks/{id}/complete``) use the separate
+    ``_neo_fleet`` pool, so that factory is pinned too.
     """
     import sys
 
     fake = lambda: seeded_neo4j  # noqa: E731
     monkeypatch.setattr("assistx.api._neo", fake)
+    monkeypatch.setattr("assistx.api._neo_fleet", fake)
     for name, module in list(sys.modules.items()):
         if name.startswith("assistx.routers.") and hasattr(module, "_neo"):
             monkeypatch.setattr(module, "_neo", fake)
@@ -553,6 +557,12 @@ def test_ticket_hierarchy_and_paperclip_dispatch(seeded_neo4j, monkeypatch):
             return "paperclip-issue-1"
 
     monkeypatch.setattr("assistx.api.get_paperclip_client", lambda: FakePaperclip())
+    # routers/dispatch.py binds ``get_paperclip_client`` by name at import
+    # time, so patch that module's reference too or the dispatch is created
+    # without a paperclip issue.
+    monkeypatch.setattr(
+        "assistx.routers.dispatch.get_paperclip_client", lambda: FakePaperclip()
+    )
 
     client = TestClient(app)
     auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
@@ -1199,20 +1209,72 @@ def test_sophia_event_ingestion(seeded_neo4j, monkeypatch):
     r2 = client.post("/api/sophia/events", json=anomaly, auth=auth)
     assert r2.status_code == 200, r2.text
     b2 = r2.json()
-    # Unknown/unverified speakers are audited, never auto-dispatched.
+    # Ratified policy: transport authentication is trusted identity, so a
+    # basic-auth operator posting an unknown speaker gets the admin voice
+    # override and the trusted auto-dispatch path instead of an audit reject.
     assert b2["accepted"] is True
-    assert b2["authorization_action"] == "rejected_audit_only"
-    assert b2["audit_only"] is True
-    assert b2["incident_id"]
+    assert b2["authorization_action"] == "auto_dispatch_allowed"
+    assert b2["review_required"] is False
+    assert b2["audit_only"] is False
+    assert b2["auth_state"] == "admin_voice_override"
 
+    # Without a trusted operator transport the same unknown speaker is never
+    # auto-dispatched: the signed-webhook event is demoted to a review task.
+    import hashlib
+    import hmac
+    import json as _json
+
+    webhook_anomaly = dict(anomaly, event_id="sophia-evt-3")
+    secret = "sophia-anomaly-secret"
+    monkeypatch.setattr("assistx.api.VOICE_WEBHOOK_SECRET", secret)
+    raw = _json.dumps(webhook_anomaly).encode("utf-8")
+    sig = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    r3 = client.post(
+        "/api/sophia/events",
+        content=raw,
+        headers={
+            "Content-Type": "application/json",
+            "X-Voice-Signature": f"sha256={sig}",
+        },
+    )
+    assert r3.status_code == 202, r3.text
+    b3 = r3.json()
+    assert b3["accepted"] is True
+    assert b3["authorization_action"] == "review_required"
+    assert b3["review_required"] is True
+    assert b3["audit_only"] is False
+    assert b3["incident_id"]
+    assert b3["task_id"] is None
+
+    # The strict-executor contract replaced queue_class summaries; verify the
+    # ingested signal events (and their authorization decisions) in the graph.
+    with neo.driver.session() as s:
+        rows = s.run(
+            "MATCH (e:SignalEvent) WHERE e.id IN $ids "
+            "RETURN e.id AS id, e.event_type AS event_type, "
+            "       e.payload_json AS payload_json",
+            {"ids": ["sophia-evt-1", "sophia-evt-2", "sophia-evt-3"]},
+        ).data()
+    by_id = {row["id"]: row for row in rows}
+    assert set(by_id) == {"sophia-evt-1", "sophia-evt-2", "sophia-evt-3"}
+    evt1 = _json.loads(by_id["sophia-evt-1"]["payload_json"])
+    assert by_id["sophia-evt-1"]["event_type"] == "intent"
+    assert evt1["authorization"]["policy_action"] == "auto_dispatch_allowed"
+    evt2 = _json.loads(by_id["sophia-evt-2"]["payload_json"])
+    assert evt2["authorization"]["trusted"] is True
+    assert evt2["metadata"]["transport_identity_override"] is True
+    evt3 = _json.loads(by_id["sophia-evt-3"]["payload_json"])
+    # Untrusted executable events are stored under their review event type.
+    assert by_id["sophia-evt-3"]["event_type"] == "task_proposed"
+    assert evt3["authorization"]["review_required"] is True
+
+    # The deprecated aggregate endpoint still serves its summary shape even
+    # though canonical ingestion no longer writes sophia_-prefixed events.
     summary = client.get("/api/sophia/summary?limit=50", auth=auth)
     assert summary.status_code == 200, summary.text
     sj = summary.json()
-    assert sj["sample_size"] >= 2
-    assert sj["auth_states"]["authenticated_scott"] >= 1
-    assert sj["auth_states"]["unknown_unverified"] >= 1
-    assert sj["by_queue_class"]["critical"] >= 1
-    assert "routing_policy" in sj
+    assert "sample_size" in sj and "auth_states" in sj and "by_event_type" in sj
+    assert sj["routing_policy"]
     assert sj["routing_policy_fingerprint"]
 
 
@@ -1227,6 +1289,15 @@ def test_sophia_routing_policy_override(seeded_neo4j, monkeypatch):
     client = TestClient(app)
     auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
+    # The operator-configured routing policy stays loadable and fingerprinted.
+    policy = client.get("/api/sophia/policy", auth=auth)
+    assert policy.status_code == 200, policy.text
+    pj = policy.json()
+    assert pj["routing_policy"]["default_queue_class"] == "batch"
+    assert pj["routing_policy"]["by_auth_state"]["authenticated_scott"] == "interactive"
+    assert pj["routing_policy"]["by_event_type_prefix"]["intent"] == "interactive"
+    assert pj["routing_policy_fingerprint"]
+
     r1 = client.post(
         "/api/sophia/events",
         json={
@@ -1239,7 +1310,17 @@ def test_sophia_routing_policy_override(seeded_neo4j, monkeypatch):
         auth=auth,
     )
     assert r1.status_code == 200, r1.text
-    assert r1.json()["queue_class"] == "interactive"
+    b1 = r1.json()
+    # Strict-executor voice contract: routing decisions surface as the
+    # authorization envelope; queue_class / routing_policy fields are gone.
+    assert b1["accepted"] is True
+    assert b1["authorization_action"] == "auto_dispatch_allowed"
+    assert b1["review_required"] is False
+    assert b1["audit_only"] is False
+    assert b1["legacy_endpoint"] is True
+    assert b1["contract_fingerprint"]
+    assert "queue_class" not in b1
+    assert "routing_policy_fingerprint" not in b1
 
     r2 = client.post(
         "/api/sophia/events",
@@ -1253,12 +1334,14 @@ def test_sophia_routing_policy_override(seeded_neo4j, monkeypatch):
         auth=auth,
     )
     assert r2.status_code == 200, r2.text
-    assert r2.json()["queue_class"] == "interactive"  # auth-state override takes precedence
-
-    policy = client.get("/api/sophia/policy", auth=auth)
-    assert policy.status_code == 200, policy.text
-    assert policy.json()["routing_policy"]["default_queue_class"] == "batch"
-    assert policy.json()["routing_policy_fingerprint"]
+    b2 = r2.json()
+    # Non-actionable event types are recorded without task admission even for
+    # trusted speakers — trust, not queue class, drives the decision now.
+    assert b2["accepted"] is True
+    assert b2["authorization_action"] == "record_only"
+    assert b2["review_required"] is False
+    assert b2["audit_only"] is False
+    assert b2["task_id"] is None
 
 
 def test_sophia_policy_change_incident_tracking(seeded_neo4j, monkeypatch):

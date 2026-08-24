@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 from assistx.improvement_cycle import build_execution_contract
@@ -41,7 +42,7 @@ def contract():
         objective="Change one value",
         allowed_paths=["module.py"],
         verification_commands=[
-            ["python", "-c", "import module; assert module.VALUE == 2"]
+            [sys.executable, "-c", "import module; assert module.VALUE == 2"]
         ],
     )
 
@@ -165,7 +166,7 @@ def test_failed_promotion_verification_reverses_patch(tmp_path):
     failing_contract = {
         **value,
         "verification_commands": [
-            ["python", "-c", "raise SystemExit('promotion check failed')"]
+            [sys.executable, "-c", "raise SystemExit('promotion check failed')"]
         ],
     }
 

@@ -160,9 +160,11 @@ def execute_task(
     Restored public contract (dropped in 9d8751a5's executor hardening):
     benchmark_controller creates ``payload.benchmark`` tasks and expects
     quality-scored outcomes; LLM tasks support the KV-cache resolution
-    adapter whose request fields are strictly allowlisted. Generic shell /
-    vision commands stay removed — non-benchmark, non-LLM payloads are
-    rejected before any process can spawn.
+    adapter whose request fields are strictly allowlisted; recovery tasks
+    are dispatched to the typed, allowlisted RecoveryRunbookExecutor
+    (never a shell path); checkpoints resume without recomputing work.
+    Generic shell / vision commands stay removed — non-benchmark, non-LLM,
+    non-recovery payloads are rejected before any process can spawn.
     """
     payload = task.get("payload") or {}
     if not payload and task.get("payload_json"):
@@ -170,11 +172,56 @@ def execute_task(
             payload = json.loads(task["payload_json"])
         except (json.JSONDecodeError, TypeError):
             payload = {}
+    required = task.get("required_capabilities") or []
     should_stop = should_stop or (lambda: False)
+    saved_checkpoint = task.get("checkpoint") or task.get("checkpoint_json") or {}
+    if isinstance(saved_checkpoint, str):
+        try:
+            saved_checkpoint = json.loads(saved_checkpoint)
+        except (json.JSONDecodeError, TypeError):
+            saved_checkpoint = {}
+    if not isinstance(saved_checkpoint, dict):
+        saved_checkpoint = {}
+    if saved_checkpoint.get("handler") == "completed_outcome":
+        completed = saved_checkpoint.get("outcome")
+        if isinstance(completed, dict) and completed.get("status") in {
+            "DONE",
+            "FAILED",
+        }:
+            return completed
+
+    # Recovery work never enters the generic command path. It is parsed and
+    # executed as a typed, allowlisted runbook targeted to this node.
+    if payload.get("runbook") or "recovery" in required:
+        if os.getenv("FLEET_RECOVERY_RUNBOOKS_ENABLED", "false").lower() not in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            return {
+                "status": "FAILED",
+                "summary": "recovery runbooks disabled",
+                "result": {"reason": "recovery_runbooks_disabled"},
+            }
+        executor = RecoveryRunbookExecutor(
+            node_id=node_id or f"{platform.node()}-{platform.machine()}",
+            lmstudio_url=lmstudio_url,
+            state_dir=str(Path(workdir) / "recovery-state"),
+            http=_http,
+        )
+        result = executor.execute(payload.get("runbook") or {})
+        return {
+            "status": "DONE" if result.get("ok") else "FAILED",
+            "summary": f"recovery {result.get('status')}",
+            "result": result,
+        }
 
     if payload.get("benchmark"):
-        return _run_benchmark_cases(task, payload, lmstudio_url, should_stop)
-    if "llm" in (task.get("required_capabilities") or []) and lmstudio_url:
+        return _run_benchmark_cases(
+            task, payload, lmstudio_url, should_stop, saved_checkpoint
+        )
+    if "llm" in required and lmstudio_url:
         return _run_llm_task(
             task,
             payload,
@@ -182,6 +229,7 @@ def execute_task(
             node_id=node_id,
             should_stop=should_stop,
             cache_control_url=cache_control_url,
+            saved_checkpoint=saved_checkpoint,
         )
     return {
         "status": "FAILED",
@@ -195,15 +243,18 @@ def _run_benchmark_cases(
     payload: dict[str, Any],
     lmstudio_url: str | None,
     should_stop: Callable[[], bool],
+    saved_checkpoint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
 
     cases = payload.get("cases") if isinstance(payload.get("cases"), list) else []
     should_stop = should_stop or (lambda: False)
-    scores: list[float] = []
-    token_total = 0
-    elapsed_total = 0.0
-    case_results: list[dict[str, Any]] = []
-    for index, case in enumerate(cases[:10]):
+    checkpoint = saved_checkpoint or {}
+    scores: list[float] = list(checkpoint.get("scores") or [])
+    token_total = int(checkpoint.get("token_total") or 0)
+    elapsed_total = float(checkpoint.get("elapsed_total") or 0.0)
+    case_results: list[dict[str, Any]] = list(checkpoint.get("case_results") or [])
+    start_index = int(checkpoint.get("next_case_index") or 0)
+    for index, case in enumerate(cases[start_index:10], start=start_index):
         if should_stop():
             progress = index / max(min(len(cases), 10), 1)
             return {
@@ -271,8 +322,29 @@ def _run_llm_task(
     node_id: str | None,
     should_stop: Callable[[], bool],
     cache_control_url: str | None,
+    saved_checkpoint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     prompt = payload.get("prompt") or task.get("title") or ""
+    checkpoint = saved_checkpoint or {}
+    # A checkpoint captured after inference means the tokens were already
+    # paid for: resume must never repeat the inference call.
+    if (
+        checkpoint.get("handler") == "llm"
+        and checkpoint.get("phase") == "inference_complete"
+        and checkpoint.get("completed_answer")
+    ):
+        return {
+            "status": "DONE",
+            "summary": "llm response resumed from checkpoint",
+            "result": {"answer": checkpoint["completed_answer"]},
+        }
+    if should_stop():
+        return {
+            "status": "PAUSED",
+            "summary": "llm task paused before inference",
+            "progress": 0.0,
+            "checkpoint": {"handler": "llm", "phase": "before_inference"},
+        }
     cache_request = (
         payload.get("kv_cache") if isinstance(payload.get("kv_cache"), dict) else {}
     )
@@ -322,6 +394,17 @@ def _run_llm_task(
         choices = body.get("choices", [{}])
         message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
         text = (message or {}).get("content", "")
+        if should_stop():
+            return {
+                "status": "PAUSED",
+                "summary": "llm task paused after inference",
+                "progress": 0.95,
+                "checkpoint": {
+                    "handler": "llm",
+                    "phase": "inference_complete",
+                    "completed_answer": text,
+                },
+            }
         result: dict[str, Any] = {"answer": text}
         cache_id = str(cache_resolution.get("cache_id") or "")
         if cache_id:
@@ -386,9 +469,33 @@ def _claim_and_run(
     success = False
     try:
         task_type = str(task.get("task_type") or "").lower()
+        raw_payload = task.get("payload") or {}
+        if not raw_payload and task.get("payload_json"):
+            try:
+                raw_payload = json.loads(task["payload_json"])
+            except (json.JSONDecodeError, TypeError):
+                raw_payload = {}
         if task_type == "script":
-            result = RecoveryRunbookExecutor.execute_task_payload(task)
-            success = bool(result.get("success"))
+            # Script tasks are allowlisted recovery runbooks only. Generic
+            # command execution was removed with the strict executor (9d8751a5).
+            runbook = raw_payload.get("runbook") if isinstance(raw_payload, dict) else None
+            if os.getenv("FLEET_RECOVERY_RUNBOOKS_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
+                result = {"error": "recovery_runbooks_disabled"}
+            elif not isinstance(runbook, dict) or not runbook:
+                result = {"error": "script task missing allowlisted runbook payload"}
+            else:
+                executor = RecoveryRunbookExecutor(
+                    node_id=node_id or f"{platform.node()}-{platform.machine()}",
+                    lmstudio_url=lmstudio_url,
+                    state_dir=os.path.join(
+                        os.getenv("FLEET_RECOVERY_STATE_DIR", os.path.expanduser("~/.assistx")),
+                        "recovery-state",
+                    ),
+                    http=_http,
+                )
+                outcome = executor.execute(runbook)
+                result = outcome
+                success = bool(outcome.get("ok"))
         elif task_type == "llm":
             if not lmstudio_url:
                 result = {"error": "LM Studio endpoint unavailable"}

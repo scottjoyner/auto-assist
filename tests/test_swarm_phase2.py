@@ -37,6 +37,8 @@ def _base_event(**overrides):
         "node_id": "x1-370",
         "occurred_at": "2026-05-26T18:00:00-04:00",
         "idempotency_key": "capture-1:utterance-1",
+        "correlation_id": str(uuid.uuid4()),
+        "links": [],
         "schema_version": "1.0",
         "subject": {"kind": "utterance", "id": "utterance-1"},
         "payload": {
@@ -594,14 +596,14 @@ def test_events_endpoint_rejects_missing_correlation_id():
 
 
 def test_trace_event_links_to_task_and_updates_group_state(seeded_neo4j):
-    from assistx.contracts.event_envelope import EventEnvelop, EventLink
+    from assistx.contracts.event_envelope import EventEnvelope, EventLink
     from assistx.swarm_core import record_trace_from_envelope
 
     task_id = seeded_neo4j.upsert_ticket(
         title="trace-link-task", ticket_type="task", status="READY", kind="w05"
     )
     correlation_id = str(uuid.uuid4())
-    envelope = EventEnvelop(
+    envelope = EventEnvelope(
         schema_version="2026-06-08.v1",
         source_repo="auto-assist",
         event_type="task.candidate.created",
@@ -629,7 +631,7 @@ def test_trace_event_links_to_task_and_updates_group_state(seeded_neo4j):
         assert group["state"] == "pending"
 
     # A follow-up completion event should advance current_state -> "completed".
-    done = EventEnvelop(
+    done = EventEnvelope(
         schema_version="2026-06-08.v1",
         source_repo="auto-assist",
         event_type="assignment.completed",
