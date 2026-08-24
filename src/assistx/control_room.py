@@ -458,8 +458,11 @@ def _probe_policy() -> list[dict[str, Any]]:
         _dependency(
             "Paperclip",
             "integration",
-            "disabled" if not paperclip else "degraded",
-            "not configured" if not paperclip else f"legacy integration configured at {paperclip}",
+            # Retired platform (owner decision 2026-08): informational only.
+            "retired",
+            "legacy platform - intentionally not part of the active architecture"
+            if not paperclip
+            else f"retired; stale config still points at {paperclip}",
             required=False,
         ),
         _dependency(
