@@ -91,3 +91,15 @@ instant 401 -> FAILED. Options:
 Related: some nodes log 'Temporary failure in name resolution' during
 projection calls - check resolv.conf/search domains on lenovo+optiplex.
 Stuck CLAIMED tasks self-heal at lease expiry (900s) and re-enter READY.
+
+
+## Signal-note stragglers - final known state (2026-08-24 ~13:3x UTC)
+8 of 21 complete end-to-end with real summaries. 13 cycle FAILED->READY->
+CLAIMED->hermes exit_code_1 -> `401 requested model is outside the executor
+token scope`. Both mint sites include default aliases; adapter constrains
+self-task requests to token scope; router restarted clean. Suspected residual:
+these tasks execute via run_hermes whose outbound model may differ per turn
+(tool-calls embed model switches), OR an unpatched third mint path.
+Next step: capture the exact JWT presented at failure (router debug log) and
+compare claims.allowed_model_aliases vs requested model - one comparison
+resolves whether it's mint-site #3 or turn-level model switching.
