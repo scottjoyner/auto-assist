@@ -7,12 +7,45 @@ import pytest
 from assistx.operational_state import OperationalStateStore
 
 
+import re
+
+
+def _parse_cypher_params(query: str) -> tuple[dict, str]:
+    """Split a FalkorDB v4 'CYPHER k=v ...' prefix from the query body."""
+    params: dict = {}
+    if not query.startswith("CYPHER "):
+        return params, query
+    tokens = query[7:].split(" ")
+    header_tokens: list[str] = []
+    idx = 0
+    while idx < len(tokens) and re.match(r"^[A-Za-z_]\w*=", tokens[idx]):
+        header_tokens.append(tokens[idx])
+        idx += 1
+    body = " ".join(tokens[idx:])
+    for token in header_tokens:
+        key, sep, raw = token.partition("=")
+        if not sep:
+            continue
+        if raw == "null":
+            params[key] = None
+        elif re.fullmatch(r"-?\d+", raw):
+            params[key] = int(raw)
+        else:
+            stripped = raw[1:-1] if raw.startswith("'") and raw.endswith("'") else raw
+            params[key] = (
+                stripped.replace("\\'", "'").replace("\\\\", "\\")
+                if stripped.startswith("'") or "'" in raw
+                else stripped
+            )
+    return params, body
+
+
 class FakeGraph:
     def __init__(self):
         self.rows = {}
 
     def execute_command(self, command, graph, query, *args):
-        params = json.loads(args[-1]) if args and args[-2] == "PARAMS" else {}
+        params, query = _parse_cypher_params(query)
         if command == "GRAPH.QUERY" and "MERGE" in query:
             existing = self.rows.get(params["record_id"])
             created = existing[7] if existing else params["now"]

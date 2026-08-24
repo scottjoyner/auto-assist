@@ -366,6 +366,10 @@ class OperationalStateStore:
                 return str(value)
             if isinstance(value, float):
                 return repr(value)
+            if isinstance(value, (dict, list)):
+                # Compact JSON has no spaces, keeping the CYPHER prefix
+                # token-safe. Encode as a quoted string literal.
+                value = json.dumps(value, separators=(",", ":"), ensure_ascii=True)
             escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
             return f"'{escaped}'"
 
@@ -375,7 +379,7 @@ class OperationalStateStore:
         return self.client.execute_command(
             "GRAPH.QUERY",
             self.graph,
-            prefix + query,
+            f"{prefix} {query}",
             "--compact",
         )
 
