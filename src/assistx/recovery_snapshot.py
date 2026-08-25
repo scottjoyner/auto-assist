@@ -110,8 +110,7 @@ def _verify_ed25519_projection(document: dict[str, Any]) -> None:
 
 
 def verify_projection(document: dict[str, Any], secret: str) -> None:
-    if not secret:
-        raise ValueError("runtime projection HMAC secret is required")
+    algorithm = str(document.get("signature_algorithm") or "").strip().upper()
     checksum = projection_checksum(document)
     if str(document.get("checksum") or "") != checksum:
         raise ValueError("runtime projection checksum mismatch")
@@ -121,20 +120,19 @@ def verify_projection(document: dict[str, Any], secret: str) -> None:
         expires_at_ms = int(document.get("expires_at_ms") or 0)
     except (TypeError, ValueError) as exc:
         raise ValueError("runtime projection lease is invalid") from exc
-    if (
-        str(document.get("signature_algorithm") or "")
-        .strip()
-        .upper()
-        == "ED25519"
-    ):
-        _verify_ed25519_projection(document)
-        document["signature"] = projection_signature(
-            generation,
-            checksum,
-            generated_at_ms,
-            expires_at_ms,
-            secret,
-        )
+    if algorithm == "ED25519":
+        from .runtime_projection_v2 import verify_projection_v2
+
+        verify_projection_v2(document)
+        bridge = os.getenv("ASSISTX_REPLICATION_LEGACY_BRIDGE", "")
+        if bridge.strip().lower() in {"1", "true", "yes"}:
+            document["signature"] = projection_signature(
+                generation,
+                checksum,
+                generated_at_ms,
+                expires_at_ms,
+                secret,
+            )
         return
     signature = projection_signature(
         generation,

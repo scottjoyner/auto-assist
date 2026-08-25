@@ -83,6 +83,37 @@ def load_private_key() -> Ed25519PrivateKey:
     return key
 
 
+def verify_projection_v2(document: dict[str, Any], *, verify_key_file: str | None = None) -> None:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
+    from . import runtime_projection as legacy
+
+    checksum = legacy.projection_checksum(document)
+    if str(document.get("checksum") or "") != checksum:
+        raise ValueError("runtime projection checksum mismatch")
+    key_path = (
+        verify_key_file
+        or os.getenv("ASSISTX_RUNTIME_PROJECTION_VERIFY_KEY_FILE", "")
+    ).strip()
+    if not key_path:
+        raise ValueError(
+            "ASSISTX_RUNTIME_PROJECTION_VERIFY_KEY_FILE is required "
+            "to verify Ed25519 projections"
+        )
+    public_key = load_pem_public_key(Path(key_path).read_bytes())
+    if not isinstance(public_key, Ed25519PublicKey):
+        raise ValueError("projection verify key is not an Ed25519 public key")
+    raw_signature = str(document.get("signature") or "")
+    signature = base64.urlsafe_b64decode(
+        raw_signature + "=" * (-len(raw_signature) % 4)
+    )
+    try:
+        public_key.verify(signature, signing_message(document))
+    except Exception as exc:
+        raise ValueError("runtime projection signature mismatch") from exc
+
+
 def signing_message(document: dict[str, Any]) -> bytes:
     payload = {
         "schema_version": str(document.get("schema_version") or ""),
