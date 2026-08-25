@@ -583,6 +583,27 @@ def install_degraded_route_fence(app: Any) -> None:
 
     @app.middleware("http")
     async def degraded_route_fence(request: Request, call_next):
+        path = request.url.path.rstrip("/") or "/"
+        if (
+            not degraded_control_plane_enabled()
+            and request.method != "OPTIONS"
+            and (
+                path == "/api/degraded"
+                or path.startswith("/api/degraded/")
+            )
+        ):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": (
+                        "degraded control plane is not enabled on this node; "
+                        "operational state lives on the recovery island"
+                    ),
+                    "method": request.method.upper(),
+                    "path": path,
+                    "durable_authority": "neo4j",
+                },
+            )
         if not degraded_control_plane_enabled() or request.method == "OPTIONS":
             return await call_next(request)
         key = (request.method.upper(), request.url.path.rstrip("/") or "/")
