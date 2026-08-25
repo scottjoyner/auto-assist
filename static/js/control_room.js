@@ -107,6 +107,40 @@
     }).join('');
   }
 
+  function fmtAge(ms) {
+    if (ms == null) return '--';
+    if (ms < 60000) return `${Math.round(ms / 1000)}s`;
+    if (ms < 3600000) return `${Math.round(ms / 60000)}m`;
+    return `${Math.round(ms / 3600000)}h`;
+  }
+
+  function renderRecovery(snapshot) {
+    const grid = $('recovery-grid');
+    const rec = snapshot.recovery || { present: false, stale: true };
+    if (!rec.present) {
+      grid.innerHTML = '<div class="empty">NO ISLAND HEARTBEAT RECEIVED</div>';
+      return;
+    }
+    const p = rec.payload || {};
+    const cells = [
+      ['HEARTBEAT AGE', fmtAge(rec.age_ms), rec.stale ? 'STALE' : 'live'],
+      ['ISLAND MODE', esc(p.mode || '--'), ''],
+      ['JOURNAL', integer(p.journal_entries ?? 0), 'committed entries'],
+      ['PROJECTION GEN', p.projection_generation != null ? integer(p.projection_generation) : '--',
+        p.projection_expires_in_s != null ? `expires in ${p.projection_expires_in_s}s` : 'expired/none'],
+      ['WARM TIER', esc(p.warm_state || '--'), ''],
+      ['TIER-0 CONTAINERS', esc(p.containers || '--'), ''],
+      ['CARVE A', `${esc(p.carve_a_tb ?? '--')} TB`, `${integer(p.carve_a_rate ?? 0)} MB/s`],
+      ['CARVE B', `${esc(p.carve_b_tb ?? '--')} TB`, `${integer(p.carve_b_rate ?? 0)} MB/s`],
+    ];
+    grid.innerHTML = cells.map(([label, value, note]) => `
+      <div class="dependency-item${rec.stale ? ' degraded' : ''}">
+        <span class="dep-label">${label}</span>
+        <strong class="mono">${value}</strong>
+        <small>${note}</small>
+      </div>`).join('');
+  }
+
   function renderPerformance(snapshot) {
     const rows = snapshot.performance || [];
     const body = $('performance-body');
@@ -177,6 +211,7 @@
     renderRuntimes(snapshot);
     renderDependencies(snapshot);
     renderPerformance(snapshot);
+    renderRecovery(snapshot);
     renderActivity(snapshot);
     const streamState = $('stream-state');
     const overall = snapshot.overall_status || 'unknown';

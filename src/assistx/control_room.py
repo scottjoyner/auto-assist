@@ -776,6 +776,7 @@ def build_overview(neo_factory: NeoFactory) -> dict[str, Any]:
     queued = sum(int(runtime.get("queued") or 0) for runtime in runtimes)
     slots = sum(int(runtime.get("parallel_slots") or 0) for runtime in runtimes)
     loaded_models = sum(len(runtime.get("loaded_models") or []) for runtime in runtimes)
+    from .control_room_recovery import island_recovery_snapshot
     weighted_tps_runs = sum(float(row.get("tps_avg") or 0) * int(row.get("runs") or 0) for row in performance)
     performance_runs = sum(int(row.get("runs") or 0) for row in performance)
     average_tps = round(weighted_tps_runs / performance_runs, 2) if performance_runs else None
@@ -802,6 +803,7 @@ def build_overview(neo_factory: NeoFactory) -> dict[str, Any]:
         "runtimes": runtimes,
         "activity": activity,
         "performance": performance,
+        "recovery": island_recovery_snapshot(),
         "admission": admission,
         # Deployment conformance findings from assistx-doctor
         "doctor": _load_doctor_findings(),

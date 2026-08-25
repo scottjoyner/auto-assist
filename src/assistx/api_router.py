@@ -8,6 +8,7 @@ from . import router_integration as router_integration_module
 from .api import _neo, app, auth, templates
 from .benchmark_allocation_policy import install_benchmark_allocation_policy
 from .control_room import LEGACY_UI_PATHS, build_control_room_router
+from .control_room_recovery import build_recovery_router
 from .control_room_runtime import install_control_room_runtime
 from .degraded_activation import (
     build_degraded_activation_router,
@@ -114,6 +115,7 @@ app.include_router(
     )
 )
 app.include_router(build_control_room_router(_neo, auth, templates))
+app.include_router(build_recovery_router(auth))
 app.include_router(build_fleet_routing_matrix_router(_neo, auth))
 app.include_router(build_router_integration_router(_neo))
 app.include_router(build_runtime_projection_router_v2(_neo, auth_dependency=auth))
