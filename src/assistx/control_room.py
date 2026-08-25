@@ -762,6 +762,48 @@ def _load_doctor_findings() -> dict[str, Any]:
         return {"overall": "unknown", "findings": []}
 
 
+
+_FLEET_NODES_CACHE: dict[str, Any] = {"ts": 0.0, "data": []}
+
+
+def collect_fleet_nodes() -> list[dict[str, Any]]:
+    """Live fleet node matrix from the auto-router pubsub registry (10s cache)."""
+    now_mono = time.monotonic()
+    if now_mono - float(_FLEET_NODES_CACHE["ts"]) < 10:
+        return list(_FLEET_NODES_CACHE["data"])
+    url = os.getenv(
+        "AUTO_ROUTER_FLEET_NODES_URL",
+        "http://auto-router:8088/api/fleet/nodes",
+    )
+    nodes: list[dict[str, Any]] = []
+    try:
+        with urlopen(url, timeout=3) as resp:
+            data = json.load(resp)
+        now_ms = _now_ms()
+        for n in data.get("nodes", []):
+            seen = n.get("received_at") or n.get("last_seen") or 0
+            age_ms = (
+                max(0, now_ms - int(float(seen) * 1000)) if seen else None
+            )
+            nodes.append(
+                {
+                    "hostname": n.get("hostname") or n.get("ip") or "?",
+                    "ip": n.get("ip", ""),
+                    "last_seen_age_ms": age_ms,
+                    "loaded_models": n.get("loaded") or [],
+                    "capabilities": n.get("capabilities") or [],
+                    "gpu": (n.get("specs") or {}).get("gpu", ""),
+                    "health": n.get("health") or {},
+                }
+            )
+        nodes.sort(key=lambda item: item["hostname"])
+        _FLEET_NODES_CACHE["ts"] = now_mono
+        _FLEET_NODES_CACHE["data"] = nodes
+    except Exception:
+        pass
+    return list(_FLEET_NODES_CACHE["data"])
+
+
 def build_overview(neo_factory: NeoFactory) -> dict[str, Any]:
     collected_at = _now_ms()
     dependencies, admission = collect_dependencies(neo_factory)
@@ -807,6 +849,7 @@ def build_overview(neo_factory: NeoFactory) -> dict[str, Any]:
         "admission": admission,
         # Deployment conformance findings from assistx-doctor
         "doctor": _load_doctor_findings(),
+        "fleet_nodes": collect_fleet_nodes(),
     }
 
 

@@ -141,6 +141,31 @@
       </div>`).join('');
   }
 
+  function renderFleetNodes(snapshot) {
+    const body = $('fleet-nodes-body');
+    const chip = $('doctor-chip');
+    const doctor = snapshot.doctor || {};
+    if (chip) {
+      const counts = doctor.counts || {};
+      chip.textContent = `${(doctor.overall || 'unknown').toUpperCase()} (${counts.fail ?? '?'} fail / ${counts.warn ?? '?'} warn)`;
+    }
+    const nodes = snapshot.fleet_nodes || [];
+    if (!nodes.length) {
+      body.innerHTML = '<tr><td colspan="5" class="empty">NO NODE REGISTRY DATA</td></tr>';
+      return;
+    }
+    body.innerHTML = nodes.map((n) => {
+      const stale = n.last_seen_age_ms == null || n.last_seen_age_ms > 120000;
+      return `<tr>
+      <td>${esc(n.hostname)}</td>
+      <td class="mono">${esc(n.ip)}</td>
+      <td class="mono${stale ? ' state-degraded' : ''}">${fmtAge(n.last_seen_age_ms)}</td>
+      <td>${esc((n.loaded_models || []).join(', ') || '--')}</td>
+      <td>${esc((n.capabilities || []).slice(0, 4).join(', '))}</td>
+    </tr>`;
+    }).join('');
+  }
+
   function renderPerformance(snapshot) {
     const rows = snapshot.performance || [];
     const body = $('performance-body');
@@ -212,6 +237,7 @@
     renderDependencies(snapshot);
     renderPerformance(snapshot);
     renderRecovery(snapshot);
+    renderFleetNodes(snapshot);
     renderActivity(snapshot);
     const streamState = $('stream-state');
     const overall = snapshot.overall_status || 'unknown';
