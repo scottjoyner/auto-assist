@@ -75,6 +75,40 @@ def _request_json(
     return value
 
 
+def _verify_ed25519_projection(document: dict[str, Any]) -> None:
+    import base64
+
+    from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
+    key_path = os.getenv(
+        "ASSISTX_RUNTIME_PROJECTION_VERIFY_KEY_FILE",
+        "/srv/assistx-recovery/deployment/runtime-projection-verify.pem",
+    )
+    public_key = load_pem_public_key(Path(key_path).read_bytes())
+    payload = {
+        "schema_version": str(document.get("schema_version") or ""),
+        "source": str(document.get("source") or ""),
+        "generation": int(document.get("generation") or 0),
+        "revision": str(document.get("revision") or ""),
+        "checksum": str(document.get("checksum") or ""),
+        "generated_at_ms": int(document.get("generated_at_ms") or 0),
+        "expires_at_ms": int(document.get("expires_at_ms") or 0),
+        "signature_algorithm": str(document.get("signature_algorithm") or ""),
+        "signature_key_id": str(document.get("signature_key_id") or ""),
+    }
+    message = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    raw_signature = str(document.get("signature") or "")
+    signature = base64.urlsafe_b64decode(
+        raw_signature + "=" * (-len(raw_signature) % 4)
+    )
+    public_key.verify(signature, message)
+
+
 def verify_projection(document: dict[str, Any], secret: str) -> None:
     if not secret:
         raise ValueError("runtime projection HMAC secret is required")
@@ -87,6 +121,21 @@ def verify_projection(document: dict[str, Any], secret: str) -> None:
         expires_at_ms = int(document.get("expires_at_ms") or 0)
     except (TypeError, ValueError) as exc:
         raise ValueError("runtime projection lease is invalid") from exc
+    if (
+        str(document.get("signature_algorithm") or "")
+        .strip()
+        .upper()
+        == "ED25519"
+    ):
+        _verify_ed25519_projection(document)
+        document["signature"] = projection_signature(
+            generation,
+            checksum,
+            generated_at_ms,
+            expires_at_ms,
+            secret,
+        )
+        return
     signature = projection_signature(
         generation,
         checksum,
