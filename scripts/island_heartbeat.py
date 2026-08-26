@@ -92,15 +92,25 @@ def carve_payload(dev_size: int | None) -> dict:
         payload["carve_device_tb"] = round(dev_size / TIB, 2)
     for key, path in (("a", CARVE_A), ("b", CARVE_B)):
         pos = read_int(path)
-        if pos is None:
-            continue
         rate_dir = os.environ.get("ASSISTX_RATE_DIR", "/var/lib/assistx-recovery/state")
         history = os.path.join(rate_dir, f"carve_{key}_rate.json")
-        rate_bps = 0
         try:
             prev = json.load(open(history))
+        except Exception:
+            prev = {}
+        if pos is None:
+            # NFS source hung — keep last-known values so the panel shows
+            # stale-but-present instead of losing the stream entirely.
+            if prev.get("tb") is not None:
+                payload[f"carve_{key}_tb"] = prev["tb"]
+                payload[f"carve_{key}_pct"] = prev.get("pct")
+                payload[f"carve_{key}_rate"] = 0
+                payload[f"carve_{key}_stale"] = True
+            continue
+        rate_bps = 0
+        try:
             dt = time.time() - float(prev["t"])
-            if dt > 0:
+            if dt > 0 and pos >= int(prev.get("pos") or 0):
                 rate_bps = max(0, int((pos - int(prev["pos"])) / dt))
         except Exception:
             pass
