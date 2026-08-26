@@ -151,17 +151,19 @@
     }
     const nodes = snapshot.fleet_nodes || [];
     if (!nodes.length) {
-      body.innerHTML = '<tr><td colspan="5" class="empty">NO NODE REGISTRY DATA</td></tr>';
+      body.innerHTML = '<tr><td colspan="6" class="empty">NO NODE REGISTRY DATA</td></tr>';
       return;
     }
     body.innerHTML = nodes.map((n) => {
-      const stale = n.last_seen_age_ms == null || n.last_seen_age_ms > 120000;
+      const status = n.status || 'UNKNOWN';
       return `<tr>
-      <td>${esc(n.hostname)}</td>
+      <td>${esc(n.hostname)}${n.note ? ` <small class="mono">${esc(n.note)}</small>` : ''}</td>
+      <td><span class="state state-${status.toLowerCase()}">${status}</span></td>
       <td class="mono">${esc(n.ip)}</td>
-      <td class="mono${stale ? ' state-degraded' : ''}">${fmtAge(n.last_seen_age_ms)}</td>
+      <td class="mono">${fmtAge(n.last_seen_age_ms)}</td>
       <td>${esc((n.loaded_models || []).join(', ') || '--')}</td>
-      <td>${esc((n.capabilities || []).slice(0, 4).join(', '))}</td>
+      <td>${n.watchdog_us ? `${Math.round(n.watchdog_us / 1000000)}s wd` : '--'}</td>
+      <td>${esc((n.capabilities || []).slice(0, 3).join(', '))}</td>
     </tr>`;
     }).join('');
   }

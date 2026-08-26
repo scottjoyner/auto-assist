@@ -775,7 +775,7 @@ def collect_fleet_nodes() -> list[dict[str, Any]]:
         "AUTO_ROUTER_FLEET_NODES_URL",
         "http://auto-router:8088/api/fleet/nodes",
     )
-    nodes: list[dict[str, Any]] = []
+    registry: dict[str, dict[str, Any]] = {}
     try:
         with urlopen(url, timeout=3) as resp:
             data = json.load(resp)
@@ -785,22 +785,85 @@ def collect_fleet_nodes() -> list[dict[str, Any]]:
             age_ms = (
                 max(0, now_ms - int(float(seen) * 1000)) if seen else None
             )
-            nodes.append(
-                {
-                    "hostname": n.get("hostname") or n.get("ip") or "?",
-                    "ip": n.get("ip", ""),
-                    "last_seen_age_ms": age_ms,
-                    "loaded_models": n.get("loaded") or [],
-                    "capabilities": n.get("capabilities") or [],
-                    "gpu": (n.get("specs") or {}).get("gpu", ""),
-                    "health": n.get("health") or {},
-                }
-            )
-        nodes.sort(key=lambda item: item["hostname"])
-        _FLEET_NODES_CACHE["ts"] = now_mono
-        _FLEET_NODES_CACHE["data"] = nodes
+            key = str(n.get("ip") or n.get("hostname") or "?")
+            registry[key] = {
+                "hostname": n.get("hostname") or n.get("ip") or "?",
+                "ip": n.get("ip", ""),
+                "last_seen_age_ms": age_ms,
+                "loaded_models": n.get("loaded") or [],
+                "capabilities": n.get("capabilities") or [],
+                "gpu": (n.get("specs") or {}).get("gpu", ""),
+                "health": n.get("health") or {},
+            }
     except Exception:
         pass
+
+    # Merge with expected-node manifest so DARK nodes (powered off /
+    # suspended, never reporting) still appear instead of silently vanishing.
+    nodes: list[dict[str, Any]] = []
+    expected: list[dict[str, Any]] = []
+    try:
+        state_dir = os.getenv(
+            "ASSISTX_FLEET_STATE_DIR",
+            "/media/scott/SSD_4TB/hermes-home/FLEET-STATE",
+        )
+        manifest = json.loads(
+            (pathlib.Path(state_dir) / "fleet-expected-nodes.json").read_text()
+        )
+        expected = manifest.get("nodes", [])
+    except Exception:
+        expected = []
+
+    now_ms = _now_ms()
+    matched_keys: set[str] = set()
+    for exp in expected:
+        entry = None
+        for key, reg in registry.items():
+            if reg["ip"] == exp.get("ip") or (
+                exp.get("hostname") and reg["hostname"] == exp["hostname"]
+            ):
+                entry = dict(reg)
+                matched_keys.add(key)
+                break
+        entry = entry or {
+            "hostname": exp.get("hostname", "?"),
+            "ip": exp.get("ip", ""),
+            "last_seen_age_ms": None,
+            "loaded_models": [],
+            "capabilities": [],
+            "gpu": "",
+            "health": {},
+        }
+        age = entry.get("last_seen_age_ms")
+        if age is None:
+            status = "DARK"
+        elif age < 120_000:
+            status = "ONLINE"
+        else:
+            status = "STALE"
+        entry["status"] = status
+        entry["role"] = exp.get("role", "")
+        entry["watchdog_us"] = exp.get("watchdog_us")
+        entry["note"] = exp.get("note", "")
+        nodes.append(entry)
+
+    for key, reg in registry.items():
+        if key in matched_keys:
+            continue
+        reg = dict(reg)
+        age = reg.get("last_seen_age_ms")
+        reg["status"] = "ONLINE" if (age is not None and age < 120_000) else "STALE"
+        reg["role"] = ""
+        reg["watchdog_us"] = None
+        reg["note"] = ""
+        nodes.append(reg)
+
+    nodes.sort(key=lambda item: (
+        {"ONLINE": 0, "STALE": 1, "DARK": 2}.get(item.get("status"), 3),
+        item["hostname"],
+    ))
+    _FLEET_NODES_CACHE["ts"] = now_mono
+    _FLEET_NODES_CACHE["data"] = nodes
     return list(_FLEET_NODES_CACHE["data"])
 
 
