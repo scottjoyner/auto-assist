@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
+from .control_room_recovery import island_recovery_snapshot
 from .deps import load_redis_module
 
 NeoFactory = Callable[[], Any]
@@ -867,6 +868,32 @@ def collect_fleet_nodes() -> list[dict[str, Any]]:
     return list(_FLEET_NODES_CACHE["data"])
 
 
+
+_POWER_CACHE: dict[str, Any] = {"ts": 0.0, "data": {}}
+
+
+def collect_power() -> dict[str, Any]:
+    """Per-plug gate health from FLEET-STATE/power-status.json (host timer)."""
+    now_mono = time.monotonic()
+    if now_mono - float(_POWER_CACHE["ts"]) < 15:
+        return dict(_POWER_CACHE["data"])
+    state_dir = os.getenv(
+        "ASSISTX_FLEET_STATE_DIR",
+        "/media/scott/SSD_4TB/hermes-home/FLEET-STATE",
+    )
+    try:
+        data = json.loads(
+            (pathlib.Path(state_dir) / "power-status.json").read_text())
+        age_ms = max(0, _now_ms() - int(data.get("generated_at_ms") or 0))
+        data["probe_age_ms"] = age_ms
+        data["stale"] = age_ms > 180_000
+    except Exception as exc:
+        data = {"error": str(exc)[:120], "plugs": {}, "stale": True}
+    _POWER_CACHE["ts"] = now_mono
+    _POWER_CACHE["data"] = data
+    return dict(_POWER_CACHE["data"])
+
+
 def build_overview(neo_factory: NeoFactory) -> dict[str, Any]:
     collected_at = _now_ms()
     dependencies, admission = collect_dependencies(neo_factory)
@@ -881,7 +908,6 @@ def build_overview(neo_factory: NeoFactory) -> dict[str, Any]:
     queued = sum(int(runtime.get("queued") or 0) for runtime in runtimes)
     slots = sum(int(runtime.get("parallel_slots") or 0) for runtime in runtimes)
     loaded_models = sum(len(runtime.get("loaded_models") or []) for runtime in runtimes)
-    from .control_room_recovery import island_recovery_snapshot
     weighted_tps_runs = sum(float(row.get("tps_avg") or 0) * int(row.get("runs") or 0) for row in performance)
     performance_runs = sum(int(row.get("runs") or 0) for row in performance)
     average_tps = round(weighted_tps_runs / performance_runs, 2) if performance_runs else None
@@ -913,6 +939,7 @@ def build_overview(neo_factory: NeoFactory) -> dict[str, Any]:
         # Deployment conformance findings from assistx-doctor
         "doctor": _load_doctor_findings(),
         "fleet_nodes": collect_fleet_nodes(),
+        "power": collect_power(),
     }
 
 

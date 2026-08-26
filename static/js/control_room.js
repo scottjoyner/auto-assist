@@ -183,6 +183,41 @@
     }).join('');
   }
 
+  function renderPower(snapshot) {
+    const grid = $('power-grid');
+    const power = snapshot.power || {};
+    if (power.error) {
+      grid.innerHTML = `<div class="empty">POWER PROBE ERROR: ${esc(power.error)}</div>`;
+      return;
+    }
+    if (power.stale) {
+      grid.innerHTML = '<div class="empty">POWER PROBES STALE — host timer down?</div>';
+      return;
+    }
+    const last = power.last_mutation;
+    const cells = ['A', 'B', 'C', 'D'].map((pid) => {
+      const plug = (power.plugs || {})[pid] || { ok: false, gates: [] };
+      const state = plug.ok ? 'online' : 'degraded';
+      const gateBits = (plug.gates || []).map((g) =>
+        `${g.ok ? '✓' : '✗'} ${esc(g.gate)}`).join(' · ') || 'no gates';
+      return `<div class="dependency-item${plug.ok ? '' : ' degraded'}">
+        <span class="dep-label">PLUG ${pid}</span>
+        <strong class="mono">${state.toUpperCase()}</strong>
+        <small>${gateBits}</small>
+      </div>`;
+    });
+    let mutation = '';
+    if (last && last.ts) {
+      const age = Math.round((Date.now() - last.ts * 1000) / 1000);
+      mutation = `<div class="dependency-item">
+        <span class="dep-label">LAST MUTATION</span>
+        <strong class="mono">${esc(last.op)} ${esc(last.plug)}</strong>
+        <small>${fmtAge(age * 1000)} ago</small>
+      </div>`;
+    }
+    grid.innerHTML = cells.join('') + mutation;
+  }
+
   function renderPerformance(snapshot) {
     const rows = snapshot.performance || [];
     const body = $('performance-body');
@@ -255,6 +290,7 @@
     renderPerformance(snapshot);
     renderRecovery(snapshot);
     renderFleetNodes(snapshot);
+    renderPower(snapshot);
     renderActivity(snapshot);
     const streamState = $('stream-state');
     const overall = snapshot.overall_status || 'unknown';
