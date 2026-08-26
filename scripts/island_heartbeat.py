@@ -108,6 +108,7 @@ def carve_payload(dev_size: int | None) -> dict:
             json.dump({"t": time.time(), "pos": pos}, open(history, "w"))
         except Exception:
             pass
+        payload[f"carve_{key}_bytes"] = pos
         payload[f"carve_{key}_tb"] = round(pos / TIB, 2)
         payload[f"carve_{key}_rate"] = int(rate_bps / 1048576)
         payload[f"carve_{key}_pct"] = (
