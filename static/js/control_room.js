@@ -51,7 +51,26 @@
   }
 
   function renderRuntimes(snapshot) {
-    const runtimes = snapshot.runtimes || [];
+    // Collapse duplicates per physical node: prefer status=online, then the
+    // richer loaded-model set. Backend sources disagree on instance identity.
+    const byNode = {};
+    const runtimes = [];
+    for (const runtime of snapshot.runtimes || []) {
+      const key = String(runtime.node_id || runtime.runtime_instance_id || Math.random());
+      const prev = byNode[key];
+      if (!prev) {
+        byNode[key] = runtime;
+        runtimes.push(runtime);
+        continue;
+      }
+      const preferNew =
+        (runtime.status === 'online' && prev.status !== 'online') ||
+        (runtime.status === prev.status &&
+          (runtime.loaded_models || []).length > (prev.loaded_models || []).length);
+      if (preferNew) {
+        Object.assign(prev, runtime);
+      }
+    }
     const body = $('runtime-body');
     if (!runtimes.length) {
       body.innerHTML = '<tr><td colspan="8" class="empty">NO PHYSICAL RUNTIME RECORDS</td></tr>';

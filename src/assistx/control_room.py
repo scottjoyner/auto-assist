@@ -691,10 +691,36 @@ def collect_runtimes(neo_factory: NeoFactory, admission: dict[str, Any]) -> list
             "online" if target.get("path_selection_fresh") else "unknown"
         )
 
-    return sorted(
-        runtime_map.values(),
-        key=lambda item: (str(item.get("node_id") or "~"), str(item.get("runtime_instance_id"))),
-    )
+    # FINAL pass: collapse duplicates per physical node — the admission merge
+    # can reintroduce legacy ids (lmstudio-<node> vs lmstudio-<node>-1234).
+    by_node: dict[str, dict[str, Any]] = {}
+    ordered: list[dict[str, Any]] = []
+    for entry in runtime_map.values():
+        node = str(entry.get("node_id") or "")
+        key = node or ("id:" + str(entry.get("runtime_instance_id")))
+        cur = by_node.get(key)
+        if cur is None:
+            by_node[key] = entry
+            ordered.append(entry)
+            continue
+        prefer_new = (
+            (entry.get("status") == "online" and cur.get("status") != "online")
+            or (
+                entry.get("status") == cur.get("status")
+                and len(entry.get("loaded_models") or [])
+                > len(cur.get("loaded_models") or [])
+            )
+        )
+        winner = entry if prefer_new else cur
+        loser = cur if prefer_new else entry
+        winner["access_paths"] = list({
+            *(winner.get("access_paths") or []),
+            *(loser.get("access_paths") or []),
+        })
+        idx = ordered.index(loser)
+        ordered[idx] = winner
+        by_node[key] = winner
+    return ordered
 
 
 def collect_activity(neo_factory: NeoFactory, *, limit: int = 100) -> list[dict[str, Any]]:
