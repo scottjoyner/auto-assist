@@ -122,16 +122,31 @@
       return;
     }
     const p = rec.payload || {};
+    const gates = [];
+    if (p.replication_pending === 0 && p.journal_entries != null) gates.push(`replication ok (${p.journal_entries})`);
+    if (p.warm_state) gates.push(`warm ${p.warm_state}`);
+    if (p.containers) gates.push(`tier0 ${p.containers}`);
+    const ca = p.carve_a_eta_h != null ? 'active' : 'done/stopped';
+    const cb = p.carve_b_eta_h != null ? 'active' : 'idle';
+    gates.push(`carve A ${ca}`, `carve B ${cb}`);
+    const fmtStream = (key, label) => {
+      const tb = p[`carve_${key}_tb`], pct = p[`carve_${key}_pct`],
+            rate = p[`carve_${key}_rate`], eta = p[`carve_${key}_eta_h`];
+      if (tb == null) return [label, '--', ''];
+      return [label, `${tb} TB (${pct ?? '--'}%)`,
+        rate ? `${rate} MB/s${eta != null ? ` · ETA ${eta}h` : ''}` : 'no advance'];
+    };
     const cells = [
       ['HEARTBEAT AGE', fmtAge(rec.age_ms), rec.stale ? 'STALE' : 'live'],
       ['ISLAND MODE', esc(p.mode || '--'), ''],
-      ['JOURNAL', integer(p.journal_entries ?? 0), 'committed entries'],
+      ['JOURNAL', integer(p.journal_entries ?? 0), `${p.journal_pending ?? '--'} pending`],
       ['PROJECTION GEN', p.projection_generation != null ? integer(p.projection_generation) : '--',
         p.projection_expires_in_s != null ? `expires in ${p.projection_expires_in_s}s` : 'expired/none'],
       ['WARM TIER', esc(p.warm_state || '--'), ''],
       ['TIER-0 CONTAINERS', esc(p.containers || '--'), ''],
-      ['CARVE A', `${esc(p.carve_a_tb ?? '--')} TB`, `${integer(p.carve_a_rate ?? 0)} MB/s`],
-      ['CARVE B', `${esc(p.carve_b_tb ?? '--')} TB`, `${integer(p.carve_b_rate ?? 0)} MB/s`],
+      fmtStream('a', 'CARVE A'),
+      fmtStream('b', 'CARVE B'),
+      ['GATES', esc(gates.join(' · ')), ''],
     ];
     grid.innerHTML = cells.map(([label, value, note]) => `
       <div class="dependency-item${rec.stale ? ' degraded' : ''}">
