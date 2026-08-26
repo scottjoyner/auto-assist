@@ -5,9 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="legacy-page-alias" content="Fleet view">
   <title>AssistX // Fleet Control Room</title>
-  <link rel="stylesheet" href="{{ url_for('static', path='css/control_room.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/control_room.css') }}?v=1787711248">
 </head>
 <body>
+  <div id="fatal-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#7a1f1f;color:#fff;font:13px monospace;padding:8px 12px"></div>
+  <script>
+    window.addEventListener('error', function (e) {
+      var b = document.getElementById('fatal-banner');
+      b.style.display = 'block';
+      b.textContent = 'JS ERROR: ' + e.message + ' @ ' + e.filename + ':' + e.lineno;
+    });
+  </script>
   <div class="control-shell">
     <header class="topbar">
       <div class="identity">
@@ -136,6 +144,6 @@
   <template id="runtime-detail-template">
     <tr class="runtime-detail"><td colspan="8"><pre></pre></td></tr>
   </template>
-  <script src="{{ url_for('static', path='js/control_room.js') }}"></script>
+  <script src="{{ url_for('static', path='js/control_room.js') }}?v=1787711248"></script>
 </body>
 </html>
