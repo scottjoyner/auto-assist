@@ -576,8 +576,48 @@ def collect_runtimes(neo_factory: NeoFactory, admission: dict[str, Any]) -> list
             "queued": 0,
         }
 
+    # Collapse legacy attested duplicates: keep one identity per physical node,
+    # preferring status=online, then the richer model set.
+    by_node: dict[str, str] = {}
+    for rid in list(runtime_map.keys()):
+        entry = runtime_map[rid]
+        node = str(entry.get("node_id") or "")
+        if not node:
+            continue
+        cur_rid = by_node.get(node)
+        if cur_rid is None:
+            by_node[node] = rid
+            continue
+        cur = runtime_map[cur_rid]
+        prefer_new = (
+            (entry.get("status") == "online" and cur.get("status") != "online")
+            or (
+                entry.get("status") == cur.get("status")
+                and len(entry.get("loaded_models") or [])
+                > len(cur.get("loaded_models") or [])
+            )
+        )
+        winner, loser = (entry, cur) if prefer_new else (cur, entry)
+        winner["access_paths"] = (winner.get("access_paths") or []) + (
+            loser.get("access_paths") or [])
+        runtime_map.pop(loser["runtime_instance_id"], None)
+        if prefer_new:
+            by_node[node] = rid
+        else:
+            by_node[node] = cur_rid
+
+    node_to_runtime: dict[str, str] = {
+        str(entry.get("node_id")): rid
+        for rid, entry in runtime_map.items()
+        if entry.get("node_id")
+    }
     for row in endpoint_rows:
         runtime_id = str(row.get("runtime_instance_id") or row.get("node_id") or "unknown")
+        node_key = str(row.get("node_id") or "")
+        # Endpoints and runtimes may disagree on instance identity for the same
+        # physical node; merge on node_id so a node never renders twice.
+        if runtime_id not in runtime_map and node_key in node_to_runtime:
+            runtime_id = node_to_runtime[node_key]
         models_raw = _json_value(row.get("models_json"), [])
         models = []
         for model in models_raw:
@@ -597,6 +637,9 @@ def collect_runtimes(neo_factory: NeoFactory, admission: dict[str, Any]) -> list
                 "queued": 0,
             },
         )
+        if node_key and not target.get("node_id"):
+            target["node_id"] = row.get("node_id")
+            node_to_runtime.setdefault(node_key, runtime_id)
         for key in (
             "node_id",
             "runtime_kind",
