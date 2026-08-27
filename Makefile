@@ -79,7 +79,7 @@ RECON_EXECUTOR_SCOPED = $(RECON_EXECUTOR) -f compose.executor-scope.yml
 	reconciliation-hermes-config-validate reconciliation-runtime-evidence-validate \
 	reconciliation-runtime-projection-plan reconciliation-runtime-projection-approve \
 	reconciliation-runtime-projection-verify reconciliation-cutover-gate \
-	reconciliation-report reconciliation-preflight reconciliation-discover-tailnet \
+	reconciliation-report reconciliation-unified-report reconciliation-preflight reconciliation-discover-tailnet \
 	reconciliation-render-direct reconciliation-up-direct reconciliation-render-router \
 	reconciliation-up-router reconciliation-render-executor \
 	reconciliation-render-executor-scoped reconciliation-executor-containment-validate \
@@ -109,6 +109,7 @@ reconciliation-init:
 	@chmod +x scripts/reconciliation-discover-tailnet.py scripts/validate-external-dependencies.py
 	@chmod +x scripts/validate-reconciliation-state.py scripts/validate-final-cutover-evidence.py
 	@chmod +x scripts/render-reconciliation-report.py scripts/approve-runtime-projection.py
+	@chmod +x scripts/reconciliation-unified-report.py
 	@chmod +x scripts/validate-runtime-evidence.py scripts/validate-executor-containment.py
 	@chmod +x scripts/validate-hermes-external-config.py scripts/reconciliation-image-bundle.py
 	@chmod +x scripts/verify-runtime-projection.py
@@ -169,6 +170,12 @@ reconciliation-cutover-gate: reconciliation-dependencies-validate reconciliation
 reconciliation-report:
 	@python scripts/render-reconciliation-report.py $(RECON_STATE_FILE) --output $(RECON_REPORT_FILE)
 	@echo "Rendered $(RECON_REPORT_FILE)"
+
+reconciliation-unified-report:
+	@python scripts/reconciliation-unified-report.py $(RECON_STATE_FILE) \
+		$(if $(wildcard $(RECON_TAILSCALE_OUTPUT)),--candidates $(RECON_TAILSCALE_OUTPUT),) \
+		--output artifacts/reconciliation-unified-report.json
+	@echo "Rendered artifacts/reconciliation-unified-report.json"
 
 reconciliation-preflight:
 	@./scripts/reconciliation-preflight.sh

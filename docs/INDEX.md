@@ -90,6 +90,7 @@ Implementation:
 | Live migration scripts | `scripts/reconciliation-preflight.sh`, `scripts/reconciliation-verify-offline.sh` |
 | External dependency gate | `scripts/validate-external-dependencies.py`, `deploy/reconciliation/external-dependencies.example.yaml` |
 | Tailscale candidate discovery | `scripts/reconciliation-discover-tailnet.py` |
+| Unified reconciliation artifact | `scripts/reconciliation-unified-report.py` and `docs/RECONCILIATION_UNIFIED_REPORT.md` |
 | Migration ledger validator | `scripts/validate-reconciliation-state.py` |
 | Live migration Compose | `compose.canary.yml`, `compose.reconciliation.yml` |
 | Migration state and desired inventory | `deploy/reconciliation/migration-state.example.yaml`, `deploy/reconciliation/system-inventory.yaml` |
