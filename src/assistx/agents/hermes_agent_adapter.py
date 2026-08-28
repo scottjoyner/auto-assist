@@ -237,7 +237,8 @@ def ensure_model_env(model: Optional[str] = None) -> Optional[str]:
     m = data["models"].setdefault(model, {"environment_configured": False, "tasks": {}})
     m.setdefault("tier", "unknown")
     m.setdefault("nodes", [])
-    ws = f"/root/knowledge/{_safe_model_dir(model)}"
+    knowledge_root = os.getenv("HERMES_KNOWLEDGE_ROOT", "/root/knowledge")
+    ws = os.path.join(knowledge_root, _safe_model_dir(model))
     try:
         os.makedirs(ws, exist_ok=True)
         if not m.get("environment_configured"):
