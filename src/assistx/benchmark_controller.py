@@ -11,6 +11,8 @@ from typing import Any
 
 import requests
 
+from .evaluation.trace_recorder import append_trace_jsonl, benchmark_trace
+
 BENCHMARK_CASES: dict[str, list[dict[str, Any]]] = {
     "coding": [
         {"prompt": "Return only the Python expression that sums even integers in values.", "required_terms": ["sum", "values"], "min_chars": 12},
@@ -121,28 +123,62 @@ def publish_benchmark_outcome(task: dict[str, Any], agent_id: str, status: str, 
     payload = _payload(task)
     if task.get("kind") != "adaptive_model_benchmark" and not payload.get("benchmark"):
         return {"published": False, "reason": "not_benchmark"}
+
+    result = result if isinstance(result, dict) else {}
+    task_id = str(task.get("id") or uuid.uuid4().hex)
+    success = status == "DONE"
+    trace = benchmark_trace(
+        task_id=task_id,
+        node_id=agent_id,
+        model=str(payload.get("model") or "unknown"),
+        task_family=str(payload.get("task_family") or "unknown"),
+        success=success,
+        validation_passed=result.get("validation_passed"),
+        evidence_ids=[f"benchmark-outcome:{task_id}"] if success else [],
+        tokens_per_second=result.get("tokens_per_second"),
+    )
+    trace_path = append_trace_jsonl(trace)
+
     base, token = os.getenv("AUTO_ROUTER_BASE_URL", "").strip().rstrip("/"), os.getenv("AUTO_ROUTER_ADMIN_TOKEN", "")
     if not base or not token:
-        return {"published": False, "reason": "router_or_token_not_configured"}
-    result = result if isinstance(result, dict) else {}
-    event_id = f"benchmark:{task.get('id')}:{hashlib.sha256(str(result).encode()).hexdigest()[:12]}"
+        return {
+            "published": False,
+            "reason": "router_or_token_not_configured",
+            "trace_recorded": trace_path is not None,
+            "trace_path": trace_path,
+            "trace_id": trace["trace_id"],
+        }
+
+    event_id = f"benchmark:{task_id}:{hashlib.sha256(str(result).encode()).hexdigest()[:12]}"
     body = {
         "event_id": event_id, "source": "assistx-benchmark-controller",
-        "task_id": str(task.get("id") or uuid.uuid4().hex), "success": status == "DONE",
+        "task_id": task_id, "success": success,
         "provider": agent_id, "model": payload.get("model"), "node_id": agent_id,
         "tokens_per_second": result.get("tokens_per_second"),
         "validation_passed": result.get("validation_passed"), "privacy_class": "local_only",
         "metadata": {
             "task_family": payload.get("task_family"), "quality_score": result.get("quality_score"),
             "repair_count": 0, "benchmark_id": payload.get("benchmark_id"),
-            "case_count": result.get("case_count"),
+            "case_count": result.get("case_count"), "trace_id": trace["trace_id"],
         },
     }
     try:
         response = requests.post(f"{base}/api/memory/outcomes", json=body, headers={"X-Admin-Token": token}, timeout=10)
-        return {"published": response.status_code in {200, 201, 409}, "status_code": response.status_code}
+        return {
+            "published": response.status_code in {200, 201, 409},
+            "status_code": response.status_code,
+            "trace_recorded": trace_path is not None,
+            "trace_path": trace_path,
+            "trace_id": trace["trace_id"],
+        }
     except Exception as exc:
-        return {"published": False, "reason": str(exc)[:240]}
+        return {
+            "published": False,
+            "reason": str(exc)[:240],
+            "trace_recorded": trace_path is not None,
+            "trace_path": trace_path,
+            "trace_id": trace["trace_id"],
+        }
 
 
 def _payload(task: dict[str, Any]) -> dict[str, Any]:
