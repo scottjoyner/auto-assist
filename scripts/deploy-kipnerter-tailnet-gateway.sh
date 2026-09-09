@@ -19,10 +19,10 @@ done
 
 docker compose version >/dev/null 2>&1 || fail "docker compose v2 is required"
 [[ -f "$ENV_FILE" ]] || fail "AssistX environment file does not exist: $ENV_FILE"
-[[ -x scripts/configure-kipnerter-tailnet-serve.sh ]] || \
-  fail "scripts/configure-kipnerter-tailnet-serve.sh is missing or not executable"
-[[ -x scripts/verify-kipnerter-tailnet-gateway.sh ]] || \
-  fail "scripts/verify-kipnerter-tailnet-gateway.sh is missing or not executable"
+[[ -f scripts/configure-kipnerter-tailnet-serve.sh ]] || \
+  fail "scripts/configure-kipnerter-tailnet-serve.sh is missing"
+[[ -f scripts/verify-kipnerter-tailnet-gateway.sh ]] || \
+  fail "scripts/verify-kipnerter-tailnet-gateway.sh is missing"
 
 actual_sha="$(git rev-parse HEAD)"
 if [[ -n "$EXPECTED_SOURCE_SHA" && "$actual_sha" != "$EXPECTED_SOURCE_SHA" ]]; then
@@ -116,13 +116,13 @@ done
 
 TRUSTED_AUTH_HEADER="$TRUSTED_AUTH_HEADER" \
 ASSISTX_API_PORT="$API_PORT" \
-  scripts/configure-kipnerter-tailnet-serve.sh
+  bash scripts/configure-kipnerter-tailnet-serve.sh
 
 TRUSTED_AUTH_HEADER="$TRUSTED_AUTH_HEADER" \
 ASSISTX_API_PORT="$API_PORT" \
 KIPNERTER_GATEWAY_IDENTITY_PROBE="$IDENTITY_PROBE" \
 KIPNERTER_GATEWAY_AGENT_SMOKE="$AGENT_SMOKE" \
-  scripts/verify-kipnerter-tailnet-gateway.sh
+  bash scripts/verify-kipnerter-tailnet-gateway.sh
 
 cat <<EOF
 
