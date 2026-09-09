@@ -2,6 +2,7 @@
 set -euo pipefail
 
 API_PORT="${ASSISTX_API_PORT:-8000}"
+SERVE_PORT="${KIPNERTER_GATEWAY_SERVE_PORT:-8443}"
 TRUSTED_HEADER="${TRUSTED_AUTH_HEADER:-}"
 IDENTITY_PROBE="${KIPNERTER_GATEWAY_IDENTITY_PROBE:-1}"
 AGENT_SMOKE="${KIPNERTER_GATEWAY_AGENT_SMOKE:-0}"
@@ -48,8 +49,13 @@ if not name:
 print(name)
 ')"
 
-gateway_url="https://${dns_name}"
-serve_status="$(tailscale serve status 2>&1 || true)"
+if [[ "$SERVE_PORT" == "443" ]]; then
+  gateway_url="https://${dns_name}"
+else
+  gateway_url="https://${dns_name}:${SERVE_PORT}"
+fi
+
+serve_status="$(sudo tailscale serve status 2>&1 || true)"
 printf '%s\n' "$serve_status"
 
 if ! grep -Fq "$gateway_url" <<<"$serve_status"; then
@@ -64,27 +70,25 @@ for path in \
     fail "Tailscale Serve is missing required Kipnerter path ${path}"
 done
 
-# A previous bridge revision exposed the entire AssistX root. Do not accept a
-# root proxy to this backend: Tailnet SSO is a mobile boundary, not general
-# AssistX administrative authentication.
+# The host may intentionally have an unrelated root mount (x1-370 currently
+# uses Nextcloud at the :8443 root). That is allowed. A root mapping to AssistX
+# itself is not: Tailnet SSO is a bounded mobile surface, not general AssistX
+# administrative authentication.
 root_proxy="$(grep -E '\|-- /[[:space:]]+proxy http://127\.0\.0\.1:' <<<"$serve_status" || true)"
 if grep -Eq "proxy http://127\.0\.0\.1:${API_PORT}([/[:space:]]|$)" <<<"$root_proxy"; then
   echo "$root_proxy" >&2
-  fail "Tailscale Serve still exposes the entire AssistX API at root"
+  fail "Tailscale Serve exposes the entire AssistX API at root"
 fi
 
-# Prove a representative non-mobile AssistX route is not reachable through the
-# Serve surface. A whole-API mapping would normally yield AssistX auth/status;
-# the route-scoped gateway must instead leave it unmounted.
-scope_body="$(mktemp)"
-trap 'rm -f "${scope_body:-}" "${whoami_file:-}" "${agent_headers:-}" "${agent_body:-}"' EXIT
-scope_status="$(curl --silent --show-error --max-time 10 \
-  --output "$scope_body" --write-out '%{http_code}' \
-  "${gateway_url}/api/degraded/status" || true)"
-[[ "$scope_status" == "404" ]] || {
-  cat "$scope_body" >&2 || true
-  fail "non-mobile AssistX route is reachable through Serve (HTTP ${scope_status})"
-}
+# Structural scope proof: no explicit degraded-control-plane mount may exist.
+# With an unrelated root service present, a live request can legitimately be
+# handled by that service instead of returning 404, so Serve structure is the
+# authoritative proof that this path is not routed to AssistX.
+if grep -Fq "/api/degraded/status" <<<"$serve_status"; then
+  fail "non-mobile AssistX route /api/degraded/status is explicitly mounted through Serve"
+fi
+
+trap 'rm -f "${whoami_file:-}" "${agent_headers:-}" "${agent_body:-}"' EXIT
 
 if [[ "$IDENTITY_PROBE" == "1" ]]; then
   whoami_file="$(mktemp)"
@@ -157,7 +161,8 @@ cat <<EOF
 kipnerter_gateway_ready=true
 kipnerter_gateway_url=${gateway_url}
 assistx_backend=http://127.0.0.1:${API_PORT}
-serve_scope=mobile-only
+tailnet_serve_https_port=${SERVE_PORT}
+serve_scope=mobile-paths-only
 identity_probe=${IDENTITY_PROBE}
 agent_smoke=${AGENT_SMOKE}
 EOF
