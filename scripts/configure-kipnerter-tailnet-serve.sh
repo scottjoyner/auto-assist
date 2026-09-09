@@ -32,11 +32,17 @@ fi
 # is still reachable directly from LAN/tailnet clients, because those clients
 # could forge Tailscale-User-* headers.
 if command -v ss >/dev/null 2>&1; then
-  listeners="$(ss -ltn 2>/dev/null | awk -v port=":${API_PORT}" '$4 ~ port"$" {print $4}' || true)"
-  if grep -Eq "(^|\])0\.0\.0\.0:${API_PORT}$|\*:${API_PORT}$|\[::\]:${API_PORT}$" <<<"$listeners"; then
+  listeners="$(ss -ltnH 2>/dev/null | awk -v port=":${API_PORT}" '$4 ~ port"$" {print $4}' || true)"
+  if grep -Eq "^(0\.0\.0\.0|\*|\[::\]):${API_PORT}$" <<<"$listeners"; then
     echo "ERROR: AssistX port ${API_PORT} is not localhost-only:" >&2
     echo "$listeners" >&2
     echo "Set ASSISTX_API_BIND=127.0.0.1 and recreate the api container first." >&2
+    exit 4
+  fi
+  if [[ -n "$listeners" ]] && ! grep -Eq "^(127\.0\.0\.1|\[::1\]):${API_PORT}$" <<<"$listeners"; then
+    echo "ERROR: unexpected AssistX listener for port ${API_PORT}:" >&2
+    echo "$listeners" >&2
+    echo "Only 127.0.0.1 or ::1 listeners are accepted for trusted identity mode." >&2
     exit 4
   fi
 fi
