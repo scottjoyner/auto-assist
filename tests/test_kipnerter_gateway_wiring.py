@@ -24,13 +24,16 @@ def test_gateway_env_overlay_is_fail_closed() -> None:
     assert "KIPNERTER_TAILNET_ALLOWED_LOGINS=" in text
 
 
-def test_deploy_helper_requires_exact_source_when_requested() -> None:
+def test_deploy_helper_requires_exact_source_and_caddy_fence() -> None:
     text = (ROOT / "scripts" / "deploy-kipnerter-tailnet-gateway.sh").read_text(
         encoding="utf-8"
     )
     assert "KIPNERTER_GATEWAY_SOURCE_SHA" in text
     assert "does not match required backend SHA" in text
     assert "working tree is dirty" in text
+    assert "KIPNERTER_LEGACY_CADDY_FENCE_CONFIRMED" in text
+    assert "legacy x1-370 Caddy Tailscale-header fence is not confirmed" in text
+    assert "scottjoyner/Sophia#13" in text
 
 
 def test_serve_helper_exposes_only_mobile_surface() -> None:
