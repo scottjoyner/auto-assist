@@ -9,7 +9,12 @@ from typing import Any, Callable, Iterable, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
+
+
+_TAILSCALE_LOGIN_HEADER = "Tailscale-User-Login"
+_mobile_security = HTTPBasic(auto_error=False)
 
 
 class MobileAgentMessageIn(BaseModel):
@@ -38,7 +43,20 @@ def _decode_identity_header(value: str) -> str:
 
 
 def _trusted_login_header_name() -> str:
-    return os.getenv("TRUSTED_AUTH_HEADER", "").strip()
+    """Return the canonical Tailnet login header only when explicitly enabled.
+
+    Executor security intentionally rewrites the legacy api module's
+    TRUSTED_AUTH_HEADER variable to its own internal identity header. The mobile
+    boundary must not depend on that mutable module variable. Instead it reads
+    the deployment environment directly and only accepts Tailscale's canonical
+    login header name. Any other configured trusted header fails closed for the
+    mobile SSO path and leaves legacy Basic auth as the fallback.
+    """
+
+    configured = os.getenv("TRUSTED_AUTH_HEADER", "").strip()
+    if configured.lower() != _TAILSCALE_LOGIN_HEADER.lower():
+        return ""
+    return _TAILSCALE_LOGIN_HEADER
 
 
 def _allowed_tailnet_login(login: str) -> bool:
@@ -141,10 +159,26 @@ def _sse_chunks(output: str, model: str, session_id: str, chunk_size: int = 256)
 
 
 def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..., str]) -> None:
+    def mobile_auth(
+        request: Request,
+        credentials: HTTPBasicCredentials | None = Depends(_mobile_security),
+    ) -> str:
+        """Authenticate the mobile boundary without sharing executor identity state.
+
+        Tailscale Serve is authoritative for Agent Auto and injects the canonical
+        identity header. If no Tailnet identity is present, preserve the existing
+        operator Basic-auth dependency as the explicit legacy fallback.
+        """
+
+        identity = _tailnet_identity(request)
+        if identity is not None:
+            return identity[0]
+        return auth_dependency(request, credentials)
+
     @router.get("/api/v1/auth/whoami", tags=["kipnerter-mobile"])
     def tailnet_whoami(
         request: Request,
-        user: str = Depends(auth_dependency),
+        user: str = Depends(mobile_auth),
     ) -> dict[str, Any]:
         identity = _tailnet_identity(request)
         if identity is None:
@@ -173,7 +207,7 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
     async def mobile_agent_chat(
         body: MobileAgentChatIn,
         request: Request,
-        user: str = Depends(auth_dependency),
+        user: str = Depends(mobile_auth),
         x_hermes_session_id: str | None = Header(default=None),
         x_hermes_session_key: str | None = Header(default=None),
     ):
