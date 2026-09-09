@@ -6,6 +6,7 @@ EXPECTED_SOURCE_SHA="${KIPNERTER_GATEWAY_SOURCE_SHA:-}"
 ALLOW_DIRTY="${KIPNERTER_GATEWAY_ALLOW_DIRTY:-0}"
 CADDY_FENCE_CONFIRMED="${KIPNERTER_LEGACY_CADDY_FENCE_CONFIRMED:-0}"
 API_PORT="${ASSISTX_API_PORT:-8000}"
+SERVE_PORT="${KIPNERTER_GATEWAY_SERVE_PORT:-8443}"
 IDENTITY_PROBE="${KIPNERTER_GATEWAY_IDENTITY_PROBE:-0}"
 AGENT_SMOKE="${KIPNERTER_GATEWAY_AGENT_SMOKE:-0}"
 
@@ -42,6 +43,7 @@ fi
 export ASSISTX_ENV_FILE="$ENV_FILE"
 export ASSISTX_API_BIND=127.0.0.1
 export ASSISTX_API_PORT="$API_PORT"
+export KIPNERTER_GATEWAY_SERVE_PORT="$SERVE_PORT"
 export TRUSTED_AUTH_HEADER=Tailscale-User-Login
 export KIPNERTER_AGENT_ALLOW_MODEL_OVERRIDE=0
 export KIPNERTER_AGENT_TIMEOUT="${KIPNERTER_AGENT_TIMEOUT:-300}"
@@ -53,6 +55,7 @@ chmod 600 "$backup" 2>/dev/null || true
 echo "environment_backup=$backup"
 echo "backend_source_sha=$actual_sha"
 echo "legacy_caddy_fence_confirmed=true"
+echo "tailnet_serve_https_port=$SERVE_PORT"
 
 python3 - "$ENV_FILE" <<'PY'
 from __future__ import annotations
@@ -104,9 +107,9 @@ chmod 600 "$ENV_FILE" 2>/dev/null || true
 compose=(docker compose --env-file "$ENV_FILE")
 "${compose[@]}" config >/dev/null
 
-# Recreate the API so both the trusted-header configuration and loopback-only
-# host port publication take effect. Dependencies are started if needed but are
-# not force-recreated.
+# Recreate only the API service so trusted-header configuration and the
+# loopback-only host publication take effect without force-recreating unrelated
+# fleet services.
 "${compose[@]}" up -d --build --force-recreate api
 
 healthy=0
@@ -122,10 +125,12 @@ done
 
 TRUSTED_AUTH_HEADER="$TRUSTED_AUTH_HEADER" \
 ASSISTX_API_PORT="$API_PORT" \
+KIPNERTER_GATEWAY_SERVE_PORT="$SERVE_PORT" \
   bash scripts/configure-kipnerter-tailnet-serve.sh
 
 TRUSTED_AUTH_HEADER="$TRUSTED_AUTH_HEADER" \
 ASSISTX_API_PORT="$API_PORT" \
+KIPNERTER_GATEWAY_SERVE_PORT="$SERVE_PORT" \
 KIPNERTER_GATEWAY_IDENTITY_PROBE="$IDENTITY_PROBE" \
 KIPNERTER_GATEWAY_AGENT_SMOKE="$AGENT_SMOKE" \
   bash scripts/verify-kipnerter-tailnet-gateway.sh
@@ -136,12 +141,16 @@ Kipnerter gateway deployment wiring completed.
 backend_source_sha=${actual_sha}
 environment_backup=${backup}
 legacy_caddy_fence_confirmed=true
+tailnet_serve_https_port=${SERVE_PORT}
 
-The server-side transport gate is configured. Release authority still requires
-an enrolled physical iPhone to prove /api/v1/auth/whoami and an Agent Auto chat
-through the HTTPS Serve URL before RC2 TestFlight upload is enabled.
+The server-side transport gate is configured without claiming host TLS :443.
+Release authority still requires an enrolled physical iPhone to prove whoami and
+an Agent Auto chat through the HTTPS Serve URL before RC2 TestFlight upload.
 
-Manual rollback if needed:
+Manual backend rollback if needed:
   cp '${backup}' '${ENV_FILE}'
   docker compose --env-file '${ENV_FILE}' up -d --build --force-recreate api
+
+If removing the mobile gateway, remove only its three path mounts from Serve.
+Do not use tailscale serve reset on this multi-service host.
 EOF
