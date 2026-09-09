@@ -116,13 +116,19 @@ def _agent_timeout() -> int:
     return max(30, min(value, 900))
 
 
-def _run_hermes(prompt: str, *, timeout: int, model: Optional[str]) -> dict[str, Any]:
+def _run_hermes(
+    prompt: str,
+    *,
+    timeout: int,
+    model: Optional[str],
+    provider: str,
+) -> dict[str, Any]:
     # Import lazily so API startup and contract tests do not require the Hermes
     # executable. The executor itself remains server-side and receives its own
     # claim-scoped router credentials; no executor token is ever sent to iOS.
     from .agents.hermes_agent_adapter import run_hermes
 
-    return run_hermes(prompt, timeout=timeout, model=model)
+    return run_hermes(prompt, timeout=timeout, model=model, provider=provider)
 
 
 def _openai_response(output: str, model: str, session_id: str) -> dict[str, Any]:
@@ -223,6 +229,7 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
             prompt,
             timeout=_agent_timeout(),
             model=model_override,
+            provider=os.getenv("HERMES_PROVIDER", "assistx-router").strip() or "assistx-router",
         )
         if not result.get("success"):
             error = str(result.get("error") or "hermes_execution_failed")[:240]

@@ -156,10 +156,11 @@ def test_agent_chat_invokes_hermes_server_side_and_streams_openai_sse(monkeypatc
     monkeypatch.delenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", raising=False)
     captured = {}
 
-    def fake_run(prompt: str, *, timeout: int, model):
+    def fake_run(prompt: str, *, timeout: int, model, provider):
         captured["prompt"] = prompt
         captured["timeout"] = timeout
         captured["model"] = model
+        captured["provider"] = provider
         return {
             "success": True,
             "output": "Hermes completed the fleet-routed request.",
@@ -197,6 +198,7 @@ def test_agent_chat_invokes_hermes_server_side_and_streams_openai_sse(monkeypatc
     # The mobile alias selects the agent, not a raw model. The actual model is
     # chosen by Hermes/AssistX/Auto-Router on the server.
     assert captured["model"] is None
+    assert captured["provider"] == "assistx-router"
 
 
 def test_agent_chat_returns_gateway_failure_when_hermes_fails(monkeypatch):
@@ -205,7 +207,7 @@ def test_agent_chat_returns_gateway_failure_when_hermes_fails(monkeypatch):
     monkeypatch.setattr(
         mobile,
         "_run_hermes",
-        lambda prompt, *, timeout, model: {
+        lambda prompt, *, timeout, model, provider: {
             "success": False,
             "error": "timeout",
             "output": "",
