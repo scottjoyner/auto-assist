@@ -4,6 +4,7 @@ set -euo pipefail
 ENV_FILE="${ASSISTX_ENV_FILE:-.env}"
 EXPECTED_SOURCE_SHA="${KIPNERTER_GATEWAY_SOURCE_SHA:-}"
 ALLOW_DIRTY="${KIPNERTER_GATEWAY_ALLOW_DIRTY:-0}"
+CADDY_FENCE_CONFIRMED="${KIPNERTER_LEGACY_CADDY_FENCE_CONFIRMED:-0}"
 API_PORT="${ASSISTX_API_PORT:-8000}"
 IDENTITY_PROBE="${KIPNERTER_GATEWAY_IDENTITY_PROBE:-0}"
 AGENT_SMOKE="${KIPNERTER_GATEWAY_AGENT_SMOKE:-0}"
@@ -34,6 +35,10 @@ if [[ "$ALLOW_DIRTY" != "1" ]] && \
   fail "working tree is dirty; exact-source deployment refused (set KIPNERTER_GATEWAY_ALLOW_DIRTY=1 only for controlled recovery)"
 fi
 
+if [[ "$CADDY_FENCE_CONFIRMED" != "1" ]]; then
+  fail "legacy x1-370 Caddy Tailscale-header fence is not confirmed; deploy/reload scottjoyner/Sophia#13 first, verify it strips Tailscale-User-* headers on /assistx/*, then set KIPNERTER_LEGACY_CADDY_FENCE_CONFIRMED=1"
+fi
+
 export ASSISTX_ENV_FILE="$ENV_FILE"
 export ASSISTX_API_BIND=127.0.0.1
 export ASSISTX_API_PORT="$API_PORT"
@@ -47,6 +52,7 @@ chmod 600 "$backup" 2>/dev/null || true
 
 echo "environment_backup=$backup"
 echo "backend_source_sha=$actual_sha"
+echo "legacy_caddy_fence_confirmed=true"
 
 python3 - "$ENV_FILE" <<'PY'
 from __future__ import annotations
@@ -129,6 +135,7 @@ cat <<EOF
 Kipnerter gateway deployment wiring completed.
 backend_source_sha=${actual_sha}
 environment_backup=${backup}
+legacy_caddy_fence_confirmed=true
 
 The server-side transport gate is configured. Release authority still requires
 an enrolled physical iPhone to prove /api/v1/auth/whoami and an Agent Auto chat
