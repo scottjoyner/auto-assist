@@ -40,4 +40,4 @@ def test_verifier_proves_identity_and_hermes_marker() -> None:
     assert "/api/v1/auth/whoami" in text
     assert "/api/v1/agent/chat/completions" in text
     assert "X-Kipnerter-Agent-Executor" in text
-    assert "provider") if False else True
+    assert "whoami provider is not tailscale" in text
