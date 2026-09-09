@@ -68,6 +68,28 @@ A non-secret overlay with these settings is maintained at `.env.kipnerter-gatewa
 
 Do not use Tailscale Funnel for this endpoint.
 
+### Serve is route-scoped, not an AssistX front door
+
+The identity-bearing Serve listener does **not** proxy the entire AssistX API. It publishes only:
+
+- `/health`
+- `/api/v1/auth/whoami`
+- `/api/v1/agent/chat/completions`
+
+This matters because `TRUSTED_AUTH_HEADER` is part of the existing AssistX authentication dependency. A root proxy would unnecessarily put unrelated AssistX routes behind the same Tailnet identity boundary. The gateway verifier therefore fails if the old whole-API root mapping to port 8000 remains, and it probes `/api/degraded/status` to prove that a representative non-mobile AssistX route is not mounted through Serve.
+
+### Legacy x1-370 Caddy path
+
+x1-370 also has a pre-existing Caddy listener on `:8443` with an `/assistx/*` route that reaches `assistx-api:8000` over Docker networking. Host-loopback binding does not remove that container-to-container route.
+
+Before enabling trusted-header auth in production, deploy the paired `scottjoyner/Sophia` change that strips these headers from the legacy Caddy upstream request:
+
+- `Tailscale-User-Login`
+- `Tailscale-User-Name`
+- `Tailscale-User-Profile-Pic`
+
+That preserves the legacy Caddy path and its normal AssistX authentication behavior without allowing an arbitrary `:8443` client to present itself as a Tailscale-authenticated Kipnerter user. The Kipnerter SSO authority remains Tailscale Serve only.
+
 ## Exact-source deployment
 
 The preferred deployment path is `scripts/deploy-kipnerter-tailnet-gateway.sh`. It deliberately mutates only the gateway-related keys in the selected AssistX environment file and leaves the existing database, router, executor, and other secret configuration in place.
@@ -83,8 +105,11 @@ The helper:
 7. validates Docker Compose configuration;
 8. recreates only the AssistX API service (dependencies may start but are not force-recreated);
 9. waits for loopback `/health`;
-10. configures Tailscale Serve using the guarded Serve helper; and
-11. runs the gateway verifier.
+10. removes the obsolete whole-API Serve root only when it points to this exact AssistX loopback port;
+11. publishes the three route-scoped Serve mounts; and
+12. runs the gateway verifier.
+
+If an existing Tailscale Serve root belongs to another service, the helper refuses to overwrite it.
 
 From the exact backend candidate checkout:
 
@@ -107,7 +132,7 @@ KIPNERTER_GATEWAY_AGENT_SMOKE=1 \
 bash scripts/verify-kipnerter-tailnet-gateway.sh
 ```
 
-The verifier discovers the node's HTTPS Tailnet DNS name from `tailscale status --json`, checks the raw AssistX listener is loopback-only, checks the Serve mapping, requires `whoami` to report an authenticated Tailscale identity when identity probing is enabled, and optionally requires a successful agent response carrying `X-Kipnerter-Agent-Executor: hermes`.
+The verifier discovers the node's HTTPS Tailnet DNS name from `tailscale status --json`, checks the raw AssistX listener is loopback-only, requires the three Serve mounts, rejects the old AssistX root mapping, confirms a non-mobile AssistX route is not mounted, requires `whoami` to report an authenticated Tailscale identity when identity probing is enabled, and optionally requires a successful agent response carrying `X-Kipnerter-Agent-Executor: hermes`.
 
 ### Rollback
 
@@ -118,7 +143,9 @@ cp .env.pre-kipnerter-gateway.<timestamp> .env
 docker compose --env-file .env up -d --build --force-recreate api
 ```
 
-If the old deployment did not use Serve, also remove the new Serve mapping using the installed Tailscale CLI after confirming which other Serve routes are present. Do not reset all Serve configuration blindly on a host that may publish unrelated services.
+Remove only the Kipnerter Serve mount points if the rollout is abandoned. Do not use `tailscale serve reset` blindly on a host that may publish unrelated services.
+
+If the legacy Caddy header fence was deployed as part of this rollout, it is safe to leave in place: stripping client-supplied Tailscale identity headers on a non-Serve proxy is the desired long-term behavior.
 
 ## Failure behavior
 
@@ -130,11 +157,13 @@ If the old deployment did not use Serve, also remove the new Serve mapping using
 
 ## Deployment acceptance
 
-1. AssistX API host port is bound to `127.0.0.1`, not `0.0.0.0` or `::`.
-2. Tailscale Serve is enabled, not Funnel.
-3. An enrolled iPhone gets `authenticated=true` from `/api/v1/auth/whoami` without entering a second password.
-4. The same user can complete a request through `/api/v1/agent/chat/completions` and the response identifies `X-Kipnerter-Agent-Executor: hermes`.
-5. A direct LAN/tailnet request to raw port 8000 is impossible.
-6. No `HERMES_EXECUTOR_TOKEN`, `ASSISTX_INTERNAL_SERVICE_TOKEN`, or Auto-Router admin token is present in the iOS app, its settings, or response payloads.
-7. Kipnerter reports `Agent Auto` as the active route for the accepted turn.
-8. The exact backend SHA and exact iOS SHA used for acceptance are recorded before any RC2 TestFlight upload.
+1. The legacy x1-370 Caddy AssistX proxy strips client-supplied Tailscale identity headers.
+2. AssistX API host port is bound to `127.0.0.1`, not `0.0.0.0` or `::`.
+3. Tailscale Serve is enabled, not Funnel, and exposes only the three approved Kipnerter paths.
+4. `/api/degraded/status` and other non-mobile AssistX routes are not mounted through the Serve gateway.
+5. An enrolled iPhone gets `authenticated=true` from `/api/v1/auth/whoami` without entering a second password.
+6. The same user can complete a request through `/api/v1/agent/chat/completions` and the response identifies `X-Kipnerter-Agent-Executor: hermes`.
+7. A direct LAN/tailnet request to raw port 8000 is impossible.
+8. No `HERMES_EXECUTOR_TOKEN`, `ASSISTX_INTERNAL_SERVICE_TOKEN`, or Auto-Router admin token is present in the iOS app, its settings, or response payloads.
+9. Kipnerter reports `Agent Auto` as the active route for the accepted turn.
+10. The exact backend SHA, Caddy SHA, and exact iOS SHA used for acceptance are recorded before any RC2 TestFlight upload.
