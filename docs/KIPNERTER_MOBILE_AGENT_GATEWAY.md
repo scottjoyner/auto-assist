@@ -82,13 +82,15 @@ This matters because `TRUSTED_AUTH_HEADER` is part of the existing AssistX authe
 
 x1-370 also has a pre-existing Caddy listener on `:8443` with an `/assistx/*` route that reaches `assistx-api:8000` over Docker networking. Host-loopback binding does not remove that container-to-container route.
 
-Before enabling trusted-header auth in production, deploy the paired `scottjoyner/Sophia` change that strips these headers from the legacy Caddy upstream request:
+Before enabling trusted-header auth in production, deploy the paired `scottjoyner/Sophia#13` change that strips these headers from the legacy Caddy upstream request:
 
 - `Tailscale-User-Login`
 - `Tailscale-User-Name`
 - `Tailscale-User-Profile-Pic`
 
 That preserves the legacy Caddy path and its normal AssistX authentication behavior without allowing an arbitrary `:8443` client to present itself as a Tailscale-authenticated Kipnerter user. The Kipnerter SSO authority remains Tailscale Serve only.
+
+The deployment helper fails closed until the operator explicitly supplies `KIPNERTER_LEGACY_CADDY_FENCE_CONFIRMED=1`. Set that confirmation only after the paired Caddy change has actually been deployed/reloaded and verified on x1-370; merely having the PR open or merged is not enough.
 
 ## Exact-source deployment
 
@@ -98,23 +100,25 @@ The helper:
 
 1. refuses a mismatched source checkout when `KIPNERTER_GATEWAY_SOURCE_SHA` is supplied;
 2. refuses a dirty working tree by default;
-3. creates a timestamped backup of the selected `.env` file before changing it;
-4. forces the host-published AssistX API port to `127.0.0.1`;
-5. enables `TRUSTED_AUTH_HEADER=Tailscale-User-Login`;
-6. keeps mobile model override disabled;
-7. validates Docker Compose configuration;
-8. recreates only the AssistX API service (dependencies may start but are not force-recreated);
-9. waits for loopback `/health`;
-10. removes the obsolete whole-API Serve root only when it points to this exact AssistX loopback port;
-11. publishes the three route-scoped Serve mounts; and
-12. runs the gateway verifier.
+3. refuses to enable trusted-header auth until `KIPNERTER_LEGACY_CADDY_FENCE_CONFIRMED=1` is supplied after the legacy Caddy header fence is deployed/reloaded;
+4. creates a timestamped backup of the selected `.env` file before changing it;
+5. forces the host-published AssistX API port to `127.0.0.1`;
+6. enables `TRUSTED_AUTH_HEADER=Tailscale-User-Login`;
+7. keeps mobile model override disabled;
+8. validates Docker Compose configuration;
+9. recreates only the AssistX API service (dependencies may start but are not force-recreated);
+10. waits for loopback `/health`;
+11. removes the obsolete whole-API Serve root only when it points to this exact AssistX loopback port;
+12. publishes the three route-scoped Serve mounts; and
+13. runs the gateway verifier.
 
 If an existing Tailscale Serve root belongs to another service, the helper refuses to overwrite it.
 
-From the exact backend candidate checkout:
+From the exact backend candidate checkout, **after** deploying/reloading and verifying the Caddy fence:
 
 ```bash
 KIPNERTER_GATEWAY_SOURCE_SHA="$(git rev-parse HEAD)" \
+KIPNERTER_LEGACY_CADDY_FENCE_CONFIRMED=1 \
 KIPNERTER_TAILNET_ALLOWED_LOGINS="user@example.com" \
 KIPNERTER_GATEWAY_IDENTITY_PROBE=0 \
 KIPNERTER_GATEWAY_AGENT_SMOKE=0 \
