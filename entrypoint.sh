@@ -5,10 +5,15 @@ set -e
 HERMES_HOME="${HERMES_HOME:-/app/hermes-home}"
 DEFAULTS="/app/hermes-home.defaults"
 
-if [ ! -f "${HERMES_HOME}/config.yaml" ] && [ -d "$DEFAULTS" ]; then
+mkdir -p "${HERMES_HOME}"
+if [ ! -f "${HERMES_HOME}/config.yaml" ] && [ -f "${DEFAULTS}/config.yaml" ]; then
     echo "Initializing ${HERMES_HOME} from defaults..."
-    cp -r "$DEFAULTS"/* "$HERMES_HOME/" 2>/dev/null || true
+    cp "${DEFAULTS}/config.yaml" "${HERMES_HOME}/config.yaml"
 fi
+
+# A missing config makes provider selection fail as "Unknown provider". Fail
+# closed instead of allowing the API to start with a dangling Hermes home.
+test -f "${HERMES_HOME}/config.yaml"
 
 # Ensure ~/.hermes/config.yaml exists
 mkdir -p /root/.hermes

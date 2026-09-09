@@ -14,6 +14,14 @@ def test_baked_hermes_router_uses_existing_scoped_inference_token_env() -> None:
     assert "api_key:" not in provider_block
 
 
+def test_api_entrypoint_copies_config_defaults_into_empty_hermes_home() -> None:
+    entrypoint = (ROOT / "entrypoint.sh").read_text()
+
+    assert 'mkdir -p "${HERMES_HOME}"' in entrypoint
+    assert 'cp "${DEFAULTS}/config.yaml" "${HERMES_HOME}/config.yaml"' in entrypoint
+    assert 'test -f "${HERMES_HOME}/config.yaml"' in entrypoint
+
+
 def test_api_service_already_receives_scoped_router_inference_token() -> None:
     compose = (ROOT / "docker-compose.yml").read_text()
 
