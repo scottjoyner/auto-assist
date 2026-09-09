@@ -190,6 +190,13 @@ from .voice_routes import register_voice_routes
 
 register_voice_routes(router, _optional_operator_auth)
 
+# Kipnerter's mobile bridge is registered on the same authenticated router. The
+# HTTP boundary owns Tailnet identity while Hermes and router executor tokens stay
+# entirely server-side.
+from .mobile_agent_routes import register_mobile_agent_routes
+
+register_mobile_agent_routes(router, _default_auth)
+
 
 @router.post("/api/events")
 def api_events(body: EventEnvelopeIn, user: str = Depends(_default_auth)):

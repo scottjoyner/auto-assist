@@ -595,24 +595,22 @@ def install_degraded_route_fence(app: Any) -> None:
     @app.middleware("http")
     async def degraded_route_fence(request: Request, call_next):
         path = request.url.path.rstrip("/") or "/"
-        is_degraded = (
-            path == "/api/degraded" or path.startswith("/api/degraded/")
-        )
-        if not is_degraded or request.method == "OPTIONS":
+        if request.method == "OPTIONS" or not degraded_control_plane_enabled():
             return await call_next(request)
-        if degraded_control_plane_enabled():
-            key = (request.method.upper(), path)
-            if key not in _ALLOWED_ROUTES:
-                return JSONResponse(
-                    status_code=503,
-                    content={
-                        "detail": "route unavailable in degraded control-plane mode",
-                        "method": key[0],
-                        "path": key[1],
-                        "durable_authority": "neo4j",
-                        "operational_store": "falkordb",
-                    },
-                )
+
+        key = (request.method.upper(), path)
+        if key not in _ALLOWED_ROUTES:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "route unavailable in degraded control-plane mode",
+                    "method": key[0],
+                    "path": key[1],
+                    "durable_authority": "neo4j",
+                    "operational_store": "falkordb",
+                },
+            )
+
         try:
             return await call_next(request)
         except HTTPException:
