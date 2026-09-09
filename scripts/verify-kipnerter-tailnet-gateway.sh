@@ -22,14 +22,14 @@ if command -v ss >/dev/null 2>&1; then
   listeners="$(ss -ltnH 2>/dev/null | awk -v port=":${API_PORT}" '$4 ~ port"$" {print $4}' || true)"
   [[ -n "$listeners" ]] || fail "no AssistX listener found on port ${API_PORT}"
 
-  if grep -Eq "^(0\\.0\\.0\\.0|\\*|\\[::\\]):${API_PORT}$" <<<"$listeners"; then
+  if grep -Eq "^(0\.0\.0\.0|\*|\[::\]):${API_PORT}$" <<<"$listeners"; then
     echo "$listeners" >&2
     fail "AssistX port ${API_PORT} is exposed on a wildcard listener"
   fi
 
   while IFS= read -r listener; do
     [[ -z "$listener" ]] && continue
-    if ! grep -Eq "^(127\\.0\\.0\\.1|\\[::1\\]):${API_PORT}$" <<<"$listener"; then
+    if ! grep -Eq "^(127\.0\.0\.1|\[::1\]):${API_PORT}$" <<<"$listener"; then
       echo "$listeners" >&2
       fail "unexpected non-loopback AssistX listener: ${listener}"
     fi
@@ -56,9 +56,38 @@ if ! grep -Fq "$gateway_url" <<<"$serve_status"; then
   fail "Tailscale Serve does not report ${gateway_url}"
 fi
 
+for path in \
+  /health \
+  /api/v1/auth/whoami \
+  /api/v1/agent/chat/completions; do
+  grep -Fq "$path" <<<"$serve_status" || \
+    fail "Tailscale Serve is missing required Kipnerter path ${path}"
+done
+
+# A previous bridge revision exposed the entire AssistX root. Do not accept a
+# root proxy to this backend: Tailnet SSO is a mobile boundary, not general
+# AssistX administrative authentication.
+root_proxy="$(grep -E '\|-- /[[:space:]]+proxy http://127\.0\.0\.1:' <<<"$serve_status" || true)"
+if grep -Eq "proxy http://127\.0\.0\.1:${API_PORT}([/[:space:]]|$)" <<<"$root_proxy"; then
+  echo "$root_proxy" >&2
+  fail "Tailscale Serve still exposes the entire AssistX API at root"
+fi
+
+# Prove a representative non-mobile AssistX route is not reachable through the
+# Serve surface. A whole-API mapping would normally yield AssistX auth/status;
+# the route-scoped gateway must instead leave it unmounted.
+scope_body="$(mktemp)"
+trap 'rm -f "${scope_body:-}" "${whoami_file:-}" "${agent_headers:-}" "${agent_body:-}"' EXIT
+scope_status="$(curl --silent --show-error --max-time 10 \
+  --output "$scope_body" --write-out '%{http_code}' \
+  "${gateway_url}/api/degraded/status" || true)"
+[[ "$scope_status" == "404" ]] || {
+  cat "$scope_body" >&2 || true
+  fail "non-mobile AssistX route is reachable through Serve (HTTP ${scope_status})"
+}
+
 if [[ "$IDENTITY_PROBE" == "1" ]]; then
   whoami_file="$(mktemp)"
-  trap 'rm -f "${whoami_file:-}" "${agent_headers:-}" "${agent_body:-}"' EXIT
 
   whoami_status="$(curl --silent --show-error --max-time 10 \
     --output "$whoami_file" --write-out '%{http_code}' \
@@ -128,6 +157,7 @@ cat <<EOF
 kipnerter_gateway_ready=true
 kipnerter_gateway_url=${gateway_url}
 assistx_backend=http://127.0.0.1:${API_PORT}
+serve_scope=mobile-only
 identity_probe=${IDENTITY_PROBE}
 agent_smoke=${AGENT_SMOKE}
 EOF
