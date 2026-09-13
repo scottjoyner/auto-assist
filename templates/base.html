@@ -6,23 +6,25 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <link rel="stylesheet" href="{{ url_for('static', path='css/ingest.css') }}">
   <style>
+    /* Unified theme: control-room palette (same token names as before, so every
+       page re-skins without layout changes). */
     :root {
-      --bg: #07111f;
-      --panel: #0e1a31;
-      --panel-2: #0b162a;
-      --panel-3: #12213f;
-      --line: #243556;
-      --line-2: #1a2741;
-      --text: #e2e8f0;
-      --muted: #94a3b8;
-      --brand: #60a5fa;
-      --brand-2: #38bdf8;
-      --ok: #22c55e;
-      --warn: #f59e0b;
-      --bad: #ef4444;
-      --accent: #1d4ed8;
-      --accent-2: #2563eb;
-      --shadow: 0 18px 48px rgba(2, 6, 23, 0.35);
+      --bg: #050708;
+      --panel: #090d0f;
+      --panel-2: #0c1215;
+      --panel-3: #0c1215;
+      --line: #1e3037;
+      --line-2: #16242b;
+      --text: #d8e3e7;
+      --muted: #72858d;
+      --brand: #46e7ff;
+      --brand-2: #46e7ff;
+      --ok: #43f08a;
+      --warn: #ffc857;
+      --bad: #ff4d5e;
+      --accent: #2e6974;
+      --accent-2: #2e6974;
+      --shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
       --sidebar-w: 290px;
     }
     * { box-sizing: border-box; }
@@ -31,13 +33,14 @@
       margin: 0;
       font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
       background:
-        radial-gradient(circle at top left, rgba(37, 99, 235, 0.14), transparent 30%),
-        radial-gradient(circle at top right, rgba(14, 165, 233, 0.10), transparent 26%),
+        linear-gradient(rgba(70, 231, 255, 0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(70, 231, 255, 0.025) 1px, transparent 1px),
         var(--bg);
+      background-size: 32px 32px;
       color: var(--text);
     }
     a { color: var(--brand); text-decoration: none; }
-    a:hover { color: #93c5fd; }
+    a:hover { color: #8ff0ff; }
     code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .app-shell {
       display: grid;
@@ -398,6 +401,7 @@
       <div class="sidebar-section-title">Operate</div>
       <div class="nav-list">
         {{ nav_link("Control room", "/control-room", match="/control-room", note="fleet HQ · live telemetry") }}
+        {{ nav_link("Harness evolution", "/harness", match="/harness", note="chains · mistakes · live responses") }}
         {{ nav_link("Operations", "/operations", match="/operations", note="incidents · work · approvals") }}
         {{ nav_link("Live", "/live", match="/live", note="realtime activity") }}
         {{ nav_link("Strategy", "/strategy", match="/strategy", note="trends & overseer view") }}

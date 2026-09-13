@@ -43,6 +43,7 @@ from .improvement_cycle import (
     evaluate_completion,
 )
 from .improvement_runtime import promote_patch
+from .harness_views import harness_evolution_snapshot
 from .kv_cache import build_manifest
 from .recovery_control import (
     Neo4jRecoveryStore,
@@ -1331,6 +1332,29 @@ def fleet_ui(request: Request, user: str = Depends(auth)):
 def fleet_dashboard_ui(request: Request, user: str = Depends(auth)):
     """New comprehensive fleet dashboard with live node/model/task visualization."""
     return templates.TemplateResponse(request=request, name="fleet_dashboard.html", context={"request": request})
+
+@app.get("/harness", response_class=HTMLResponse)
+def harness_ui(request: Request, user: str = Depends(auth)):
+    """Harness evolution traceability: chains, live tasks, mistakes, reflections."""
+    return templates.TemplateResponse(request=request, name="harness.html", context={"request": request})
+
+
+@app.get("/api/harness/evolution")
+def api_harness_evolution(user: str = Depends(auth)):
+    """Snapshot of harness evolution chains, live harness tasks, and mistakes."""
+    neo = _neo()
+    try:
+        runs = neo.list_evaluation_runs(limit=200)
+    except Exception:
+        runs = []
+    tasks: list = []
+    try:
+        for status in ("READY", "CLAIMED", "RUNNING", "DONE", "FAILED", "ERROR"):
+            tasks.extend(neo.get_tasks_by_status(status, limit=40))
+    except Exception:
+        tasks = []
+    return harness_evolution_snapshot(runs, tasks)
+
 
 @app.get("/operations", response_class=HTMLResponse)
 def operations_ui(request: Request, user: str = Depends(auth)):
