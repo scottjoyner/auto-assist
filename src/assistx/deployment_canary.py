@@ -447,7 +447,13 @@ class DeploymentCanary:
                 "lease_seconds": 120,
             },
         )
-        claim_id = str(claimed.get("claim_id") or "")
+        # The claim API returns claim_id nested in the task on the fresh-claim
+        # path and at the top level on the idempotent-replay path; accept both.
+        claim_id = str(
+            claimed.get("claim_id")
+            or (claimed.get("task") or {}).get("claim_id")
+            or ""
+        )
         if not claimed.get("claimed") or not claim_id:
             raise CanaryFailure(f"canary task was not claimed: {claimed}")
         self.client.request(
