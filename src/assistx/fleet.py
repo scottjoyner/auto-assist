@@ -34,6 +34,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Dict, List, Optional, Tuple
 
 import requests
@@ -321,11 +322,14 @@ def _load_value_data(force: bool = False) -> None:
                         for row in csv.DictReader(fh):
                             host_raw = (row.get("host_name") or row.get("host") or "").strip().lower()
                             # Dual-inference nodes serve per-variant endpoints; the
-                            # run artifact may carry the endpoint as its own column
-                            # or as "host:port" in the host field.
+                            # run artifact may carry the endpoint as its own column,
+                            # as "host:port" in the host field, or (as lms writes it)
+                            # as the port inside the row's base_url.
                             endpoint = (row.get("endpoint") or row.get("endpoint_id") or "").strip().lower()
                             if not endpoint and ":" in host_raw:
                                 host_raw, _, endpoint = host_raw.partition(":")
+                            if not endpoint:
+                                endpoint = _port_of_base_url(row.get("base_url") or "")
                             host = _norm_node(host_raw)
                             mk = _norm_model(row.get("model_key") or row.get("model_id") or "")
                             fam = (row.get("task_family") or "").strip().lower()
@@ -373,6 +377,21 @@ def _load_value_data(force: bool = False) -> None:
             "value-layer: loaded %d capability rows, %d fit rows, %d summary rows from %s",
             len(vi), len(fi), len(si), base,
         )
+
+
+def _port_of_base_url(base_url: str) -> str:
+    """Extract the port from a run artifact's base_url column
+    (``http://100.69.158.114:1235/v1`` -> ``"1235"``; no port -> ``""``)."""
+    text = (base_url or "").strip()
+    if not text:
+        return ""
+    if "//" not in text:
+        text = f"//{text}"
+    try:
+        port = urlsplit(text).port
+        return str(port) if port else ""
+    except ValueError:
+        return ""
 
 
 def _value_cap(node: str, mk: str, task_family: str, endpoint: str = "") -> Optional[dict]:

@@ -78,6 +78,52 @@ def test_host_port_in_host_field_is_split(tmp_path, monkeypatch):
     assert cap is not None and cap["grade"] == "a"
 
 
+def test_endpoint_parsed_from_lms_base_url_column(tmp_path, monkeypatch):
+    # lms capability_matrix.csv rows carry base_url instead of an endpoint
+    # column; the port distinguishes dual-inference variants.
+    run = tmp_path / "run-lms"
+    run.mkdir(parents=True)
+    with (run / "capability_matrix.csv").open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(
+            fh,
+            fieldnames=["run_id", "host_name", "host_ip", "base_url", "model_key",
+                        "task_family", "score", "grade", "recommended_use", "avoid_use"],
+        )
+        writer.writeheader()
+        writer.writerow({
+            "run_id": "1787719575", "host_name": "optiplex", "host_ip": "192.168.1.139",
+            "base_url": "http://100.69.158.114:1235/v1", "model_key": "minicpm5-2b-iter5",
+            "task_family": "tool_use", "score": "1.0000", "grade": "A",
+            "recommended_use": "preferred for this task family", "avoid_use": "",
+        })
+        writer.writerow({
+            "run_id": "1787719575", "host_name": "optiplex", "host_ip": "192.168.1.139",
+            "base_url": "http://100.69.158.114:1234/v1", "model_key": "vibethinker-3b",
+            "task_family": "tool_use", "score": "0.1000", "grade": "F",
+            "recommended_use": "", "avoid_use": "avoid for tool tasks",
+        })
+        writer.writerow({
+            "run_id": "1787719575", "host_name": "optiplex", "host_ip": "192.168.1.139",
+            "base_url": "http://100.69.158.114/v1", "model_key": "edge-model",
+            "task_family": "summarization", "score": "0.8000", "grade": "B",
+            "recommended_use": "", "avoid_use": "",
+        })
+    _load(tmp_path, monkeypatch)
+
+    assert ("optiplex", "1235", "minicpm5-2b-iter5", "tool_use") in fleet._value_index
+    assert ("optiplex", "1234", "vibethinker-3b", "tool_use") in fleet._value_index
+    # base_url without an explicit port stays host-level.
+    assert ("optiplex", "", "edge-model", "summarization") in fleet._value_index
+
+
+def test_port_of_base_url():
+    assert fleet._port_of_base_url("http://100.69.158.114:1235/v1") == "1235"
+    assert fleet._port_of_base_url("http://192.168.1.139/v1") == ""
+    assert fleet._port_of_base_url("100.69.158.114:1234") == "1234"
+    assert fleet._port_of_base_url("") == ""
+    assert fleet._port_of_base_url("http://host:notaport/v1") == ""
+
+
 def test_value_factor_uses_endpoint_row(tmp_path, monkeypatch):
     rows = [
         {"host_name": "optiplex", "endpoint": "1235", "model_key": "cpm",
