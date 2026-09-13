@@ -549,7 +549,9 @@ def _runtime_inventory(neo_factory: NeoFactory) -> list[dict[str, Any]]:
                        quantization: m.quantization,
                        context_length: m.context_length,
                        loaded_at_ts: m.loaded_at_ts,
-                       load_owner: m.load_owner
+                       load_owner: m.load_owner,
+                       admitted: m.admitted,
+                       expires_at_ts: m.expires_at_ts
                    }) AS loaded_models
             ORDER BY r.node_id, r.runtime_instance_id
             """,
@@ -562,14 +564,29 @@ def collect_runtimes(neo_factory: NeoFactory, admission: dict[str, Any]) -> list
     endpoint_rows = _endpoint_inventory(neo_factory)
     runtime_rows = _runtime_inventory(neo_factory)
     runtime_map: dict[str, dict[str, Any]] = {}
+    now_ms = _now_ms()
 
     for row in runtime_rows:
         runtime_id = str(row.get("runtime_instance_id") or row.get("node_id") or "unknown")
-        models = [model for model in (row.get("loaded_models") or []) if model.get("model_key")]
+        # Loaded means resident NOW: an expired LoadedModelInstance TTL is a
+        # stale graph row (historically written from library scans), never a
+        # live load. Entries without a TTL have no provenance either way and
+        # are kept for backward compatibility.
+        models: list[dict[str, Any]] = []
+        stale = 0
+        for model in row.get("loaded_models") or []:
+            if not model.get("model_key"):
+                continue
+            expires = model.get("expires_at_ts")
+            if isinstance(expires, (int, float)) and expires <= now_ms:
+                stale += 1
+                continue
+            models.append(model)
         runtime_map[runtime_id] = {
             **row,
             "runtime_instance_id": runtime_id,
             "loaded_models": models,
+            "stale_loaded_models": stale,
             "access_paths": [],
             "parallel_slots": 0,
             "active": 0,
@@ -624,7 +641,14 @@ def collect_runtimes(neo_factory: NeoFactory, admission: dict[str, Any]) -> list
             if isinstance(model, str):
                 models.append({"model_key": model})
             elif isinstance(model, dict):
-                models.append(model)
+                entry = dict(model)
+                entry.setdefault(
+                    "model_key",
+                    str(model.get("model_id") or model.get("served_name") or ""),
+                )
+                models.append(entry)
+        # models_json is the node's downloaded library scan (on-disk paths) —
+        # catalog, not load state. It must never render as loaded_models.
         target = runtime_map.setdefault(
             runtime_id,
             {
@@ -654,8 +678,8 @@ def collect_runtimes(neo_factory: NeoFactory, admission: dict[str, Any]) -> list
                 target[key] = row.get(key)
         if row.get("base_url") and row.get("base_url") not in target["access_paths"]:
             target["access_paths"].append(row.get("base_url"))
-        if models and not target["loaded_models"]:
-            target["loaded_models"] = models
+        if models:
+            target["catalog_models"] = models
 
     access_by_runtime = {
         str(item.get("runtime_instance_id")): item
