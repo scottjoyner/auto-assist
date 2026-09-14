@@ -34,6 +34,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Dict, List, Optional, Tuple
 
 import requests
@@ -168,7 +169,9 @@ LMS_RUNS_DIR = os.getenv("FLEET_LMS_RUNS_DIR", "/home/scott/git/lms/runs")
 LMS_RELOAD_INTERVAL = float(os.getenv("FLEET_LMS_RELOAD_INTERVAL", "120"))
 
 _value_lock = threading.Lock()
-_value_index: Dict[Tuple[str, str, str], dict] = {}   # (node, model, family) -> cap row
+_value_index: Dict[Tuple[str, str, str, str], dict] = {}   # (node, endpoint, model, family) -> cap row
+# endpoint is "" for host-level rows (runs recorded without an endpoint) and a
+# port string ("1235") for per-variant rows from dual-inference nodes.
 _fit_index: Dict[Tuple[str, str], str] = {}            # (node, model) -> fit_grade
 _summary_index: Dict[Tuple[str, str], dict] = {}       # (node, model) -> summary row
 _value_loaded_at = 0.0
@@ -375,12 +378,22 @@ def _load_value_data(force: bool = False) -> None:
                 try:
                     with cap.open(newline="", encoding="utf-8") as fh:
                         for row in csv.DictReader(fh):
-                            host = _norm_node(row.get("host_name") or row.get("host") or "")
+                            host_raw = (row.get("host_name") or row.get("host") or "").strip().lower()
+                            # Dual-inference nodes serve per-variant endpoints; the
+                            # run artifact may carry the endpoint as its own column,
+                            # as "host:port" in the host field, or (as lms writes it)
+                            # as the port inside the row's base_url.
+                            endpoint = (row.get("endpoint") or row.get("endpoint_id") or "").strip().lower()
+                            if not endpoint and ":" in host_raw:
+                                host_raw, _, endpoint = host_raw.partition(":")
+                            if not endpoint:
+                                endpoint = _port_of_base_url(row.get("base_url") or "")
+                            host = _norm_node(host_raw)
                             mk = _norm_model(row.get("model_key") or row.get("model_id") or "")
                             fam = (row.get("task_family") or "").strip().lower()
                             if not host or not mk or not fam:
                                 continue
-                            vi[(host, mk, fam)] = {
+                            vi[(host, endpoint, mk, fam)] = {
                                 "grade": (row.get("grade") or "").strip().lower(),
                                 "route_score": _to_float(row.get("score")),
                                 "recommended_use": (row.get("recommended_use") or ""),
@@ -424,18 +437,44 @@ def _load_value_data(force: bool = False) -> None:
         )
 
 
-def _value_factor(full_id: str, model: str, task_family: str) -> float:
+def _port_of_base_url(base_url: str) -> str:
+    """Extract the port from a run artifact's base_url column
+    (``http://100.69.158.114:1235/v1`` -> ``"1235"``; no port -> ``""``)."""
+    text = (base_url or "").strip()
+    if not text:
+        return ""
+    if "//" not in text:
+        text = f"//{text}"
+    try:
+        port = urlsplit(text).port
+        return str(port) if port else ""
+    except ValueError:
+        return ""
+
+
+def _value_cap(node: str, mk: str, task_family: str, endpoint: str = "") -> Optional[dict]:
+    """Capability row for ``(node, model, family)``, preferring the exact
+    per-variant endpoint (e.g. ``"1235"``) over host-level rows."""
+    if endpoint:
+        cap = _value_index.get((node, endpoint.strip().lower(), mk, task_family))
+        if cap:
+            return cap
+    return _value_index.get((node, "", mk, task_family))
+
+
+def _value_factor(full_id: str, model: str, task_family: str, endpoint: str = "") -> float:
     """Return a value multiplier (clamped ~[0.05, 1.3]) for ``(node, model, family)``.
 
     1.0 when no benchmark data exists (degrades safe). Below 1.0 penalises models
     that benchmark poorly for this task / on this hardware; above 1.0 rewards ones
     that earn their keep. A model flagged ``avoid_use`` for the task (or grade F)
-    is crushed so it is only used as a last resort."""
+    is crushed so it is only used as a last resort. ``endpoint`` (a port string)
+    selects per-variant benchmark rows on dual-inference nodes when present."""
     node = _norm_node(_node_of(full_id))
     mk = _norm_model(model)
     fit = _fit_index.get((node, mk), "unknown")
     fit_mult = _FIT_MULT.get(fit, 1.0)
-    cap = _value_index.get((node, mk, task_family))
+    cap = _value_cap(node, mk, task_family, endpoint)
     if cap:
         grade = cap.get("grade") or ""
         avoid = (cap.get("avoid_use") or "").strip().lower()
