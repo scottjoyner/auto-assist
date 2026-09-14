@@ -18,7 +18,7 @@ rely on static model lists. Instead it:
     2-5 tok/s) are used for background/summarisation but never for an interactive
     session a human is waiting on.
 
-Node-prefixed ids (``lmstudio-<node>.<model>``) are returned so the router always
+Node-prefixed ids (``<runtime>-<node>.<model>``) are returned so the router always
 routes to the intended machine.
 """
 from __future__ import annotations
@@ -236,23 +236,81 @@ def quality_score(model: str) -> float:
 # ---------------------------------------------------------------------------
 # Value layer (benchmarked value, from the `lms` toolkit)
 # ---------------------------------------------------------------------------
+# Router model ids are ``<runtime>-<node>.<model>``. LM Studio was the only
+# fleet runtime when the ids were introduced; other OpenAI-compatible
+# runtimes publish through the router the same way (e.g. FastFlowLM on an
+# NPU box, vLLM, SGLang, llama.cpp, Ollama). Ids without a recognized
+# runtime prefix cannot be attributed to a node and stay undiscovered —
+# unknown runtime capacity is not routable.
+RUNTIME_PREFIXES = {
+    "lmstudio",
+    "fastflowlm",
+    "vllm",
+    "sglang",
+    "llama_cpp",
+    "llamacpp",
+    "ollama",
+}
+
+
+def parse_router_model_id(model_id: str) -> tuple | None:
+    """Split ``<runtime>-<node>.<model>`` into ``(runtime, node, model)``.
+
+    Node names contain no dots; model ids may contain dots and colons.
+    Returns None when the id carries no known runtime prefix or no node
+    attribution."""
+    mid = (model_id or "").strip()
+    runtime, sep, rest = mid.partition("-")
+    if not sep or not rest:
+        return None
+    runtime = runtime.strip().lower()
+    if runtime not in RUNTIME_PREFIXES:
+        return None
+    node, dot, model = rest.partition(".")
+    if not dot or not node or not model:
+        return None
+    return runtime, node, model
+
+
+def _strip_runtime_prefix(name: str) -> str:
+    prefix, sep, rest = name.partition("-")
+    if sep and prefix in RUNTIME_PREFIXES:
+        return rest
+    return name
+
+
+_UNATTRIBUTED_PREFIXES: set = set()
+
+
+def _log_unattributed_id(model_id: str) -> None:
+    """Log skipped ids once per unknown prefix so discovery gaps stay visible
+    without flooding the log on every refresh tick."""
+    prefix = (model_id or "").strip().partition("-")[0].strip().lower()
+    if prefix in _UNATTRIBUTED_PREFIXES:
+        return
+    _UNATTRIBUTED_PREFIXES.add(prefix)
+    logger.info(
+        "discovery: skipping model id without recognized runtime prefix: %r",
+        model_id,
+    )
+
+
 def _norm_node(name: str) -> str:
     """Normalise a node/host name for matching benchmark data.
 
-    Fleet nodes are ``lmstudio-<node>``; lms host names may be ``destroyer`` or a
+    Fleet nodes are ``<runtime>-<node>``; lms host names may be ``destroyer`` or a
     Tailscale FQDN like ``destroyer.tailcb8954.ts.net``. Collapse both to the short
     lower-cased host label."""
-    n = (name or "").lower()
-    if n.startswith("lmstudio-"):
-        n = n[len("lmstudio-"):]
+    n = _strip_runtime_prefix((name or "").lower())
     return n.split(".")[0]
 
 
 def _norm_model(model: str) -> str:
-    """Normalise a model id: drop any ``lmstudio-<node>.`` prefix, keep the bare id."""
+    """Normalise a model id: drop any ``<runtime>-<node>.`` prefix, keep the bare id."""
     m = (model or "").lower()
-    if m.startswith("lmstudio-"):
-        m = m.split(".", 1)[1] if "." in m else m
+    parsed = parse_router_model_id(m)
+    if parsed:
+        return parsed[2]
     return m
 
 
@@ -424,12 +482,11 @@ def discover(force: bool = False) -> None:
     model_map: dict = {}
     for entry in data.get("data", []):
         mid = entry.get("id", "")
-        if not mid.startswith("lmstudio-"):
+        parsed = parse_router_model_id(mid)
+        if parsed is None:
+            _log_unattributed_id(mid)
             continue
-        rest = mid[len("lmstudio-"):]
-        node, _, model = rest.partition(".")  # first dot: node names have none
-        if not node or not model:
-            continue
+        runtime, node, model = parsed
         full = mid
         nodes.setdefault(node, {"models": {}})
         nodes[node]["models"][model] = full
@@ -692,9 +749,8 @@ def _iter_models():
 # Selection
 # ---------------------------------------------------------------------------
 def _node_of(full_id: str) -> str:
-    if full_id.startswith("lmstudio-"):
-        return full_id[len("lmstudio-"):].partition(".")[0]
-    return ""
+    parsed = parse_router_model_id(full_id)
+    return parsed[1] if parsed else ""
 
 
 def _score(full_id: str, model: str, task: dict) -> Optional[dict]:
