@@ -78,14 +78,17 @@ check_path_conflict() {
 
 check_path_conflict "/health" "http://127.0.0.1:${API_PORT}/health"
 check_path_conflict "/api/v1/auth/whoami" "http://127.0.0.1:${API_PORT}/api/v1/auth/whoami"
+check_path_conflict "/api/v1/runtime/catalog" "http://127.0.0.1:${API_PORT}/api/v1/runtime/catalog"
 check_path_conflict "/api/v1/agent/chat/completions" "http://127.0.0.1:${API_PORT}/api/v1/agent/chat/completions"
 
-# Add only the three route-scoped mobile mounts. --bg persists the Serve config
+# Add only the four route-scoped mobile mounts. --bg persists the Serve config
 # across command exit/reboot. Existing root/path/Funnel state is left untouched.
 sudo tailscale serve --https="${SERVE_PORT}" --set-path=/health --bg \
   "http://127.0.0.1:${API_PORT}/health"
 sudo tailscale serve --https="${SERVE_PORT}" --set-path=/api/v1/auth/whoami --bg \
   "http://127.0.0.1:${API_PORT}/api/v1/auth/whoami"
+sudo tailscale serve --https="${SERVE_PORT}" --set-path=/api/v1/runtime/catalog --bg \
+  "http://127.0.0.1:${API_PORT}/api/v1/runtime/catalog"
 sudo tailscale serve --https="${SERVE_PORT}" --set-path=/api/v1/agent/chat/completions --bg \
   "http://127.0.0.1:${API_PORT}/api/v1/agent/chat/completions"
 
@@ -101,6 +104,7 @@ Identity header: ${TRUSTED_HEADER}
 Published AssistX paths:
   /health
   /api/v1/auth/whoami
+  /api/v1/runtime/catalog
   /api/v1/agent/chat/completions
 
 Existing unrelated Serve roots and Funnel mappings were not reset or replaced.

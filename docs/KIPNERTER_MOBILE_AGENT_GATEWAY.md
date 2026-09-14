@@ -173,3 +173,18 @@ The deployed Caddy identity-header fence should normally remain in place; stripp
 8. The same iPhone completes an Agent Auto request and the response identifies `X-Kipnerter-Agent-Executor: hermes`.
 9. No Hermes executor, AssistX internal-service, or Auto-Router admin credential appears in iOS settings or response payloads.
 10. Exact backend, Caddy, and iOS SHAs are recorded before any RC2 TestFlight upload.
+
+
+## Sanitized runtime catalog
+
+Authenticated Kipnerter clients may read `GET /api/v1/runtime/catalog` through the
+same route-scoped Tailscale Serve boundary as `whoami` and agent chat. The route
+is derived from AssistX's approved runtime projection but deliberately returns
+only opaque runtime identifiers, aggregate runtime/model counts, runtime kind,
+and coarse capability flags. It must never return node names, raw runtime/model
+identifiers, access URLs, ports, artifact fingerprints, or executor/router
+credentials.
+
+Catalog availability is observational. A catalog failure must not cause the iOS
+client to invent direct fleet topology or weaken Agent Auto authentication; the
+phone may continue using its separately bounded direct-LM-Studio fallback.

@@ -5,6 +5,7 @@ API_PORT="${ASSISTX_API_PORT:-8000}"
 SERVE_PORT="${KIPNERTER_GATEWAY_SERVE_PORT:-8443}"
 TRUSTED_HEADER="${TRUSTED_AUTH_HEADER:-}"
 IDENTITY_PROBE="${KIPNERTER_GATEWAY_IDENTITY_PROBE:-1}"
+CATALOG_PROBE="${KIPNERTER_GATEWAY_CATALOG_PROBE:-1}"
 AGENT_SMOKE="${KIPNERTER_GATEWAY_AGENT_SMOKE:-0}"
 
 fail() {
@@ -65,6 +66,7 @@ fi
 for path in \
   /health \
   /api/v1/auth/whoami \
+  /api/v1/runtime/catalog \
   /api/v1/agent/chat/completions; do
   grep -Fq "$path" <<<"$serve_status" || \
     fail "Tailscale Serve is missing required Kipnerter path ${path}"
@@ -88,7 +90,7 @@ if grep -Fq "/api/degraded/status" <<<"$serve_status"; then
   fail "non-mobile AssistX route /api/degraded/status is explicitly mounted through Serve"
 fi
 
-trap 'rm -f "${whoami_file:-}" "${agent_headers:-}" "${agent_body:-}"' EXIT
+trap 'rm -f "${whoami_file:-}" "${catalog_file:-}" "${agent_headers:-}" "${agent_body:-}"' EXIT
 
 if [[ "$IDENTITY_PROBE" == "1" ]]; then
   whoami_file="$(mktemp)"
@@ -115,6 +117,41 @@ login = str(value.get("login") or "").strip()
 if not login:
     raise SystemExit(f"whoami did not return a login: {value}")
 print(f"tailnet_identity={login}")
+PY
+fi
+
+if [[ "$CATALOG_PROBE" == "1" ]]; then
+  catalog_file="$(mktemp)"
+  catalog_status="$(curl --silent --show-error --max-time 10 \
+    --output "$catalog_file" --write-out '%{http_code}' \
+    "${gateway_url}/api/v1/runtime/catalog")"
+  [[ "$catalog_status" == "200" ]] || {
+    cat "$catalog_file" >&2 || true
+    fail "runtime catalog returned HTTP ${catalog_status}"
+  }
+
+  python3 - "$catalog_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+if value.get("schema_version") != "1":
+    raise SystemExit(f"unexpected runtime catalog schema: {value}")
+if value.get("source") != "assistx-runtime-projection":
+    raise SystemExit(f"unexpected runtime catalog source: {value}")
+for key in ("fleet_runtime_count", "fleet_model_count", "agent_runtime_count", "code_runtime_count"):
+    item = value.get(key)
+    if not isinstance(item, int) or item < 0:
+        raise SystemExit(f"invalid {key}: {item!r}")
+if not isinstance(value.get("runtimes"), list):
+    raise SystemExit("runtime catalog runtimes must be a list")
+serialized = json.dumps(value, sort_keys=True).lower()
+for forbidden in ("base_url", "access_urls", "node_id", "runtime_instance_id", "artifact_fingerprint", "provider_model", "http://", "https://"):
+    if forbidden in serialized:
+        raise SystemExit(f"mobile runtime catalog leaked forbidden detail: {forbidden}")
+print(f"fleet_runtime_count={value['fleet_runtime_count']}")
+print(f"fleet_model_count={value['fleet_model_count']}")
 PY
 fi
 
@@ -164,5 +201,6 @@ assistx_backend=http://127.0.0.1:${API_PORT}
 tailnet_serve_https_port=${SERVE_PORT}
 serve_scope=mobile-paths-only
 identity_probe=${IDENTITY_PROBE}
+catalog_probe=${CATALOG_PROBE}
 agent_smoke=${AGENT_SMOKE}
 EOF

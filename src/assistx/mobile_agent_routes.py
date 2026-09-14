@@ -164,6 +164,99 @@ def _sse_chunks(output: str, model: str, session_id: str, chunk_size: int = 256)
     yield "data: [DONE]\n\n"
 
 
+
+def _sanitize_runtime_projection_for_mobile(projection: dict[str, Any]) -> dict[str, Any]:
+    """Return the minimum fleet metadata useful to an authenticated phone.
+
+    The authoritative runtime projection contains internal routing coordinates,
+    runtime/model identifiers, artifact fingerprints, and network access paths.
+    None of those belong on the mobile boundary. The phone receives only opaque
+    runtime identities, aggregate counts, runtime kind, and coarse capability
+    flags needed to render Models & Agents truthfully.
+    """
+
+    runtimes: list[dict[str, Any]] = []
+    model_total = 0
+    agent_total = 0
+    code_total = 0
+
+    for provider in projection.get("providers") or []:
+        if not isinstance(provider, dict) or provider.get("enabled") is False:
+            continue
+        models = [item for item in (provider.get("models") or []) if isinstance(item, dict)]
+        if not models:
+            continue
+
+        node_id = str(provider.get("node_id") or "")
+        runtime_instance_id = str(provider.get("runtime_instance_id") or "")
+        runtime_name = str(provider.get("name") or "")
+        opaque_seed = "|".join((node_id, runtime_instance_id, runtime_name))
+        opaque_id = hashlib.sha256(opaque_seed.encode("utf-8")).hexdigest()[:20]
+
+        agent_capable = bool(provider.get("allow_agent_runtime")) or any(
+            bool(model.get("allow_agent_runtime")) for model in models
+        )
+        code_capable = bool(provider.get("allow_code_execution")) or any(
+            bool(model.get("allow_code_execution")) for model in models
+        )
+        capabilities = sorted(
+            {
+                str(capability)
+                for model in models
+                for capability in (model.get("capabilities") or [])
+                if str(capability).strip()
+            }
+        )
+        runtime_kind = str(
+            provider.get("runtime_kind") or provider.get("type") or "runtime"
+        ).strip() or "runtime"
+
+        runtimes.append(
+            {
+                "runtime_id": f"runtime:{opaque_id}",
+                "kind": runtime_kind,
+                "model_count": len(models),
+                "agent_capable": agent_capable,
+                "code_execution_capable": code_capable,
+                "capabilities": capabilities,
+            }
+        )
+        model_total += len(models)
+        agent_total += int(agent_capable)
+        code_total += int(code_capable)
+
+    runtimes.sort(key=lambda item: (item["kind"], item["runtime_id"]))
+    runtime_total = len(runtimes)
+    return {
+        "schema_version": "1",
+        "source": "assistx-runtime-projection",
+        "generated_at_ms": projection.get("generated_at_ms"),
+        "expires_at_ms": projection.get("expires_at_ms"),
+        "fleet_runtime_count": runtime_total,
+        "fleet_model_count": model_total,
+        "agent_runtime_count": agent_total,
+        "code_runtime_count": code_total,
+        "agent_auto_available": runtime_total > 0,
+        "runtimes": runtimes,
+    }
+
+
+def _mobile_runtime_catalog() -> dict[str, Any]:
+    from .api import _neo
+    from .runtime_projection_v2 import build_runtime_projection_v2
+
+    try:
+        ttl_seconds = int(
+            os.getenv("ASSISTX_RUNTIME_PROJECTION_TTL_SECONDS", "900")
+        )
+    except ValueError:
+        ttl_seconds = 900
+    projection = build_runtime_projection_v2(
+        _neo,
+        ttl_seconds=max(30, min(ttl_seconds, 3600)),
+    )
+    return _sanitize_runtime_projection_for_mobile(projection)
+
 def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..., str]) -> None:
     def mobile_auth(
         request: Request,
@@ -208,6 +301,23 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
             "account_id": _account_id(login),
             "session_expires_at": None,
         }
+
+    @router.get("/api/v1/runtime/catalog", tags=["kipnerter-mobile"])
+    def mobile_runtime_catalog(
+        request: Request,
+        user: str = Depends(mobile_auth),
+    ) -> dict[str, Any]:
+        # Re-evaluate Tailnet identity so an allowlist change cannot be bypassed
+        # after dependency resolution. Legacy Basic auth remains an operator-only
+        # fallback exactly as it is for whoami/chat.
+        _tailnet_identity(request)
+        try:
+            return _mobile_runtime_catalog()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "runtime_catalog_unavailable"},
+            ) from exc
 
     @router.post("/api/v1/agent/chat/completions", tags=["kipnerter-mobile"])
     async def mobile_agent_chat(
