@@ -12,36 +12,53 @@ iPhone
   -> AssistX/Auto-Router scoped fleet runtime
 ```
 
-The phone sends the normal conversation context to AssistX. AssistX invokes Hermes server-side. Hermes and AssistX retain the claim-scoped/internal credentials used for model routing; those credentials are never returned to the phone.
+The phone sends normal conversation context to AssistX. AssistX invokes Hermes server-side. Hermes and AssistX retain the claim-scoped/internal credentials used for model routing; those credentials are never returned to the phone.
 
-## Live x1-370 topology
+## Live topology boundary
 
-Runtime inspection on 2026-09-09 established the authoritative listener layout:
+The approved topology keeps the AssistX API loopback-only and publishes only route-scoped mobile capabilities through the existing Tailnet-only HTTPS listener. Host standard TLS, unrelated Serve roots, and unrelated Funnel mappings must remain untouched.
 
-- host standard TLS `:443` is owned by the `x1-370-links` Caddy container;
-- Tailscale Serve already owns tailnet-only HTTPS `:8443` with an existing Nextcloud root mount;
-- an unrelated Funnel mapping exists on `:8445` for Sophia/voice and must remain untouched;
-- AssistX host port `8000` is now bound to `127.0.0.1` only.
-
-The Kipnerter mobile gateway therefore **does not claim :443**. It adds only three more-specific AssistX paths to the existing Tailscale Serve `:8443` listener while preserving the Nextcloud root and unrelated Funnel state.
-
-Canonical mobile gateway URL:
+Canonical mobile gateway URL currently used by the iOS configuration:
 
 ```text
 https://x1-370.tailcb8954.ts.net:8443
 ```
 
+This document defines the source/deployment contract. It is not, by itself, proof that the current PR head is deployed. Live deployment state must be re-verified before physical-device acceptance or release.
+
 ## HTTP contract
+
+The mobile Serve surface consists of exactly four AssistX paths:
+
+- `/health`
+- `/api/v1/auth/whoami`
+- `/api/v1/runtime/catalog`
+- `/api/v1/agent/chat/completions`
+
+An unrelated root service may coexist on the same Serve listener. The whole AssistX API must never be exposed as a Serve root, and `/api/degraded/status` must not be explicitly mounted to the mobile boundary.
 
 ### `GET /api/v1/auth/whoami`
 
-When a request arrives through Tailscale Serve and AssistX is configured with `TRUSTED_AUTH_HEADER=Tailscale-User-Login`, the response reports authenticated Tailnet identity. A request authenticated only with legacy Basic auth is deliberately not represented as Tailnet SSO.
+When a request arrives through Tailscale Serve and AssistX is configured with `TRUSTED_AUTH_HEADER=Tailscale-User-Login`, the response reports authenticated Tailnet identity. A request authenticated only with legacy Basic auth is deliberately not represented to the app as Tailnet SSO.
+
+### `GET /api/v1/runtime/catalog`
+
+This is the authoritative mobile discovery projection used by Kipnerter's **Models & Agents** experience. It is derived from AssistX's approved runtime projection but intentionally returns only aggregate counts and opaque/coarse capabilities required by the phone.
+
+It may return:
+
+- schema/source and projection freshness timestamps;
+- fleet runtime/model counts;
+- agent-capable and code-capable runtime counts;
+- opaque runtime IDs, runtime kind, model count, and coarse capability flags.
+
+It must not return node names, raw runtime IDs, model IDs/provider model names, artifact fingerprints, access URLs, ports, or executor/router credentials. Catalog failure is observational only: it must not weaken Agent Auto authentication or cause the iPhone to infer hidden fleet topology.
 
 ### `POST /api/v1/agent/chat/completions`
 
 The request is intentionally OpenAI-chat compatible so Kipnerter can retain its existing SSE parser. `hermes-agent`, `auto`, `agent:auto`, and `fleet-auto` are routing aliases, not model identifiers. AssistX/Hermes chooses the fleet model unless a server-side test override is explicitly enabled.
 
-The current bridge invokes the existing synchronous Hermes adapter and returns OpenAI-compatible response framing; it does not claim token-by-token Hermes execution.
+The bridge invokes the existing Hermes adapter and returns OpenAI-compatible response framing. Executor credentials remain server-side.
 
 ## Security boundary
 
@@ -57,134 +74,86 @@ KIPNERTER_AGENT_ALLOW_MODEL_OVERRIDE=0
 
 `KIPNERTER_TAILNET_ALLOWED_LOGINS` is optional but recommended. Tailnet ACL/grants remain the network boundary; the application allowlist adds a second boundary for the mobile surface.
 
-Do not use Funnel for this gateway.
-
-### Serve is route-scoped, not an AssistX front door
-
-Only these AssistX routes are added to Tailscale Serve:
-
-- `/health`
-- `/api/v1/auth/whoami`
-- `/api/v1/agent/chat/completions`
-
-An unrelated root mount such as the existing Nextcloud `/` on `:8443` is allowed and preserved. A root mount that proxies the whole AssistX backend is forbidden. `/api/degraded/status` must not be explicitly mounted to AssistX through the mobile Serve boundary.
+Do not use Funnel for this gateway. Do not add or rotate an Auto-Router admin credential. Do not place an AssistX/Hermes/Auto-Router executor credential on the iPhone.
 
 ### Legacy Caddy path
 
-The host Caddy listener on standard `:443` also provides a legacy `/assistx/*` proxy into Docker networking. Host-loopback binding alone does not eliminate that container-to-container path.
-
-Before enabling trusted-header auth, the paired `scottjoyner/Sophia#13` fence must be deployed/reloaded so the legacy Caddy upstream removes:
+Any legacy Caddy AssistX proxy must strip client-authored Tailscale identity headers before trusted-header authentication is enabled. The required long-term fence removes:
 
 - `Tailscale-User-Login`
 - `Tailscale-User-Name`
 - `Tailscale-User-Profile-Pic`
 
-That runtime fence was deployed and validated on x1-370 on 2026-09-09. It prevents arbitrary legacy-proxy clients from impersonating Tailscale-authenticated Kipnerter users.
+This prevents arbitrary legacy-proxy clients from impersonating Tailscale-authenticated Kipnerter users.
 
 ## Exact-source deployment
 
-Use `scripts/deploy-kipnerter-tailnet-gateway.sh`. It:
+Use `scripts/deploy-kipnerter-tailnet-gateway.sh`. The helper must:
 
-1. requires the expected source SHA when supplied;
-2. refuses a dirty checkout by default;
-3. requires explicit confirmation that the Caddy identity-header fence is live;
-4. backs up the selected `.env`;
-5. forces AssistX host publication to `127.0.0.1`;
-6. enables `TRUSTED_AUTH_HEADER=Tailscale-User-Login`;
-7. keeps mobile model override disabled;
-8. validates Docker Compose;
-9. recreates only the AssistX API service;
-10. waits for loopback health;
-11. preserves unrelated Serve roots/Funnel state;
-12. adds only the three mobile path mounts on `KIPNERTER_GATEWAY_SERVE_PORT` (default `8443`); and
-13. runs the structural gateway verifier.
+1. require the expected source SHA when supplied;
+2. refuse a dirty checkout by default;
+3. require explicit confirmation that the Caddy identity-header fence is live;
+4. back up the selected `.env`;
+5. keep AssistX host publication loopback-only;
+6. enable the canonical Tailscale trusted identity header;
+7. keep mobile model override disabled;
+8. validate Docker Compose;
+9. recreate only the AssistX API service;
+10. wait for loopback health;
+11. preserve unrelated Serve roots/Funnel state;
+12. ensure only the four mobile path mounts listed above are published; and
+13. run the structural gateway verifier.
 
-If any of the three exact mobile paths is already owned by another Serve target, the helper stops instead of overwriting it. It never runs `tailscale serve reset`.
+If any exact mobile path is already owned by another Serve target, the helper must stop instead of overwriting it. It must never run `tailscale serve reset`.
 
-Example:
-
-```bash
-KIPNERTER_GATEWAY_SOURCE_SHA="$(git rev-parse HEAD)" \
-KIPNERTER_LEGACY_CADDY_FENCE_CONFIRMED=1 \
-KIPNERTER_GATEWAY_SERVE_PORT=8443 \
-KIPNERTER_TAILNET_ALLOWED_LOGINS="user@example.com" \
-KIPNERTER_GATEWAY_IDENTITY_PROBE=0 \
-KIPNERTER_GATEWAY_AGENT_SMOKE=0 \
-bash scripts/deploy-kipnerter-tailnet-gateway.sh
-```
-
-The identity and agent probes default off during transport deployment so host-side setup cannot be mistaken for physical-iPhone acceptance.
+The identity, catalog, and agent probes are acceptance checks. Host-side transport setup must not be mistaken for physical-iPhone acceptance.
 
 ## Verification
 
-After publication:
+`scripts/verify-kipnerter-tailnet-gateway.sh` is the deployment verifier. It must prove:
 
-```bash
-TRUSTED_AUTH_HEADER=Tailscale-User-Login \
-ASSISTX_API_PORT=8000 \
-KIPNERTER_GATEWAY_SERVE_PORT=8443 \
-KIPNERTER_GATEWAY_IDENTITY_PROBE=1 \
-KIPNERTER_GATEWAY_AGENT_SMOKE=1 \
-bash scripts/verify-kipnerter-tailnet-gateway.sh
-```
+- raw AssistX port 8000 remains loopback-only;
+- the expected Tailnet HTTPS listener exists;
+- all four mobile path mounts exist;
+- unrelated root services may remain, but a whole-AssistX root mapping is rejected;
+- `/api/degraded/status` is not explicitly mounted to AssistX;
+- `whoami` reports authenticated Tailscale identity when identity probing is enabled;
+- the runtime catalog returns HTTP 200 with the sanitized schema/counts and no forbidden routing/network detail when catalog probing is enabled;
+- an optional bounded agent smoke returns HTTP 200 and `X-Kipnerter-Agent-Executor: hermes`.
 
-The verifier:
-
-- requires raw AssistX port 8000 to remain loopback-only;
-- derives the node MagicDNS name from Tailscale state;
-- targets `https://<node>.<tailnet>.ts.net:8443` by default;
-- requires all three mobile path mounts;
-- permits unrelated root services but rejects a whole-AssistX root mapping;
-- rejects an explicit `/api/degraded/status` mobile mount;
-- requires `whoami` to report `authenticated=true` with provider `tailscale` when identity probing is enabled;
-- optionally requires an agent response containing `X-Kipnerter-Agent-Executor: hermes`.
+A reachable `/health` route alone is not acceptance.
 
 ## Rollback
 
-The deployment helper prints its timestamped environment backup. Restore that backup and recreate the API if the backend configuration must be reverted.
+Restore the deployment helper's timestamped environment backup and recreate only the AssistX API if the backend configuration must be reverted.
 
-If abandoning the mobile gateway, remove only these three Serve mounts from `:8443`:
+If abandoning this mobile gateway, remove only these four Serve mounts from the selected Tailnet HTTPS listener:
 
 - `/health`
 - `/api/v1/auth/whoami`
+- `/api/v1/runtime/catalog`
 - `/api/v1/agent/chat/completions`
 
-Do **not** use `tailscale serve reset` on x1-370 because the node publishes unrelated services.
-
-The deployed Caddy identity-header fence should normally remain in place; stripping client-authored Tailscale identity headers on a non-Serve proxy is the desired long-term behavior.
+Do **not** use `tailscale serve reset`, because the node may publish unrelated services. The Caddy identity-header fence should normally remain in place.
 
 ## Failure behavior
 
 - Tailnet/DNS/TLS failure is separate from agent execution failure.
-- A reachable `/health` endpoint is not sufficient; Agent Auto must prove `whoami` and the agent route.
+- A reachable gateway is not sufficient; Agent Auto must prove the mobile agent contract and authenticated identity.
+- Runtime-catalog failure must remain a discovery/observability failure, not an authentication bypass.
 - Hermes execution failures return an application error rather than masquerading as a healthy chat route.
-- Direct LM Studio remains an explicit fallback lane and does not grant the phone an executor token.
+- Direct LM Studio remains an explicit bounded fallback lane and does not grant the phone an executor token.
 - A failed submitted agent turn is not automatically replayed to another route.
 
 ## Deployment acceptance
 
-1. The legacy Caddy AssistX proxy strips client-supplied Tailscale identity headers.
-2. AssistX port 8000 is bound only to loopback.
-3. Caddy retains host TLS `:443`.
-4. Existing Tailscale Serve `:8443` root/Nextcloud and unrelated Funnel state remain intact.
-5. Only the three approved AssistX mobile paths are added on Serve `:8443`.
-6. `/api/degraded/status` is not explicitly mounted to AssistX through Serve.
-7. An enrolled iPhone gets `authenticated=true` from `/api/v1/auth/whoami` without a second password or bearer token.
-8. The same iPhone completes an Agent Auto request and the response identifies `X-Kipnerter-Agent-Executor: hermes`.
-9. No Hermes executor, AssistX internal-service, or Auto-Router admin credential appears in iOS settings or response payloads.
-10. Exact backend, Caddy, and iOS SHAs are recorded before any RC2 TestFlight upload.
+Before physical-iPhone acceptance or an RC/TestFlight decision, record the exact backend, gateway/fence, and iOS source SHAs and prove the live deployment at those identities. Acceptance requires:
 
-
-## Sanitized runtime catalog
-
-Authenticated Kipnerter clients may read `GET /api/v1/runtime/catalog` through the
-same route-scoped Tailscale Serve boundary as `whoami` and agent chat. The route
-is derived from AssistX's approved runtime projection but deliberately returns
-only opaque runtime identifiers, aggregate runtime/model counts, runtime kind,
-and coarse capability flags. It must never return node names, raw runtime/model
-identifiers, access URLs, ports, artifact fingerprints, or executor/router
-credentials.
-
-Catalog availability is observational. A catalog failure must not cause the iOS
-client to invent direct fleet topology or weaken Agent Auto authentication; the
-phone may continue using its separately bounded direct-LM-Studio fallback.
+1. the legacy proxy cannot spoof Tailscale identity;
+2. AssistX port 8000 is loopback-only;
+3. existing standard TLS, unrelated Serve root, and unrelated Funnel state remain intact;
+4. exactly the four approved AssistX mobile paths are published;
+5. the enrolled iPhone gets authenticated Tailnet identity without a second password/bearer token;
+6. the runtime catalog is available and sanitized;
+7. the same iPhone completes an Agent Auto request proving Hermes execution; and
+8. no executor/admin credential appears in iOS settings, configuration, or response payloads.
