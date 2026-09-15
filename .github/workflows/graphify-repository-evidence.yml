@@ -1,0 +1,62 @@
+name: graphify-repository-evidence
+
+on:
+  push:
+    branches: ["agent/graphify-projection-poc"]
+  pull_request:
+    paths:
+      - "src/assistx/repository_graph.py"
+      - "src/assistx/repository_graph_query.py"
+      - "scripts/graphify-repository-evidence.py"
+      - ".github/workflows/graphify-repository-evidence.yml"
+
+jobs:
+  repository-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout full repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install AssistX and pinned Graphify
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          pip install "graphifyy==0.9.46"
+
+      - name: Generate Graphify evidence for auto-assist checkout
+        env:
+          PYTHONPATH: src
+        run: |
+          python scripts/graphify-repository-evidence.py
+          python -m json.tool graphify-repository-evidence.json >/dev/null
+
+      - name: Enforce non-empty structural evidence
+        run: |
+          python - <<'PY'
+          import json
+          p = json.load(open('graphify-repository-evidence.json'))
+          assert p['nodes'] > 0
+          assert p['edges'] > 0
+          assert p['represented_python_files'] > 0
+          assert p['authoritative_behavior_changed'] is False
+          print({k: p[k] for k in ('nodes','edges','python_file_coverage','mean_depth1_neighborhood_size')})
+          PY
+
+      - name: Upload repository-scale Graphify evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphify-auto-assist-evidence
+          path: graphify-repository-evidence.json
+          if-no-files-found: error
+          retention-days: 30
