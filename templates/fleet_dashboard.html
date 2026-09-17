@@ -163,6 +163,26 @@
     <div id="completions-list" class="stack-sm mt-3">Loading…</div>
   </section>
 
+  <section class="card half" id="section-inference-state">
+    <div class="section-header">
+      <div>
+        <h3>Live Inference State</h3>
+        <p class="kicker">Active model inference sessions registered on assistx — start/stop from here.</p>
+      </div>
+    </div>
+    <div id="inference-state" class="mt-3">Loading inference state…</div>
+  </section>
+
+  <section class="card" id="section-service-health">
+    <div class="section-header">
+      <div>
+        <h3>Service Health</h3>
+        <p class="kicker">Read-only dependency probes from the control room, with status, latency, and required/optional impact.</p>
+      </div>
+    </div>
+    <div id="service-health-table" class="table-wrap mt-3">Loading…</div>
+  </section>
+
   <section class="card half" id="section-hardware">
     <div class="section-header">
       <div>
@@ -176,11 +196,21 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ url_for('static', path='js/ui_utils.js') }}"></script>
+<script src="{{ url_for('static', path='js/fleet_dashboard.js') }}"></script>
 <script>
 (async () => {
   const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])));
   const short = window.UIUtils?.shortId || ((v, n = 8) => (v || "").toString().slice(0, n));
   const relTime = (ts) => ts ? `${((Date.now() - ts) / 1000).toFixed(1)}s ago` : 'never';
+  const bytes = (value) => {
+    const n = Number(value || 0);
+    if (!n) return '—';
+    const units = ['B', 'GiB', 'TiB'];
+    let v = n; let i = 0;
+    while (v >= 1024 ** 3 && i < 2) { v /= 1024 ** 3; i++; }
+    return `${v.toFixed(1)} ${units[i]}`;
+  };
 
   let autoRefresh = true;
   let refreshTimer = null;
@@ -203,6 +233,30 @@
       console.error('Dashboard load failed:', e);
       return null;
     }
+  }
+
+  async function loadControlRoom() {
+    try {
+      const r = await fetch('/api/control-room/overview');
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    } catch (e) {
+      console.error('Service health load failed:', e);
+      return null;
+    }
+  }
+
+  function renderServiceHealth(data) {
+    const wrap = document.getElementById('service-health-table');
+    const items = data?.dependencies || [];
+    if (!items.length) {
+      wrap.innerHTML = '<div class="muted">Service health unavailable</div>';
+      return;
+    }
+    wrap.innerHTML = `<table class="dashboard-table"><thead><tr><th>Service</th><th>Category</th><th>Status</th><th>Latency</th><th>Impact</th><th>Detail</th></tr></thead><tbody>${items.map(item => {
+      const cls = item.status === 'healthy' || item.status === 'disabled' ? 'ok' : (item.status === 'degraded' ? 'warn' : 'err');
+      return `<tr><td><strong>${esc(item.name)}</strong></td><td>${esc(item.category)}</td><td><span class="badge ${cls}">${esc(item.status)}</span></td><td>${item.latency_ms == null ? '—' : esc(item.latency_ms.toFixed(1) + ' ms')}</td><td>${item.required ? '<span class="badge warn">required</span>' : 'optional'}</td><td>${esc(item.detail || '')}</td></tr>`;
+    }).join('')}</tbody></table>`;
   }
 
   function renderSummary(data) {
@@ -241,6 +295,7 @@
           </div>
           <div class="muted">${esc(n.ip || '')}</div>
         </div>
+        <div class="muted mt-1"><strong>Note:</strong> ${esc(n.note || 'no note recorded')} · <strong>OS:</strong> ${esc(n.os || 'not reported')}</div>
         <div class="mt-2 summary-line">
           <span class="badge">Cap: ${esc((n.capabilities || []).join(', '))}</span>
           <span class="badge">Weight: ${esc(n.weight)}</span>
@@ -260,9 +315,15 @@
         <div class="mt-2 stack-xs">
           <div class="summary-line">
             <span class="badge">RAM: ${esc(n.hardware?.ram_gib ? n.hardware.ram_gib.toFixed(1) + ' GiB' : '—')}</span>
+            <span class="badge">Available RAM: ${esc(n.hardware?.available_ram_gib ? n.hardware.available_ram_gib.toFixed(1) + ' GiB' : '—')}</span>
             <span class="badge">VRAM: ${esc(n.hardware?.vram_gib ? n.hardware.vram_gib.toFixed(1) + ' GiB' : '—')}</span>
             <span class="badge">CPU: ${esc(n.hardware?.cpu || '—')}</span>
+            <span class="badge">Cores: ${esc(n.hardware?.cpu_cores || '—')}</span>
           </div>
+          <div class="muted"><strong>GPU:</strong> ${esc(n.hardware?.gpu || 'none reported')}</div>
+          <div class="muted"><strong>Health:</strong> ${esc(n.health?.status || 'not reported')} · load ${esc(n.health?.load_1m ?? '—')} · uptime ${n.health?.uptime_sec ? esc((n.health.uptime_sec / 86400).toFixed(1) + 'd') : '—'} · SMART ${esc(n.health?.smart_status || 'not reported')}</div>
+          <div class="muted"><strong>Disks:</strong> ${(n.disk?.mounts || []).map(d => `${esc(d.mount)} ${esc(d.use_pct)}% used (${esc(bytes(d.free_bytes))} free / ${esc(bytes(d.total_bytes))})`).join(' · ') || 'not reported'}${n.disk?.profile ? ` · profile: ${esc(n.disk.profile)}` : ''}</div>
+          <div class="muted"><strong>Power:</strong> ${esc(n.power_profile || 'not reported')}</div>
           <div class="muted"><strong>Loaded:</strong> ${esc((n.loaded_models || []).join(', ') || 'none reported')}</div>
           <div class="muted"><strong>Available:</strong> ${esc((n.available_models || []).slice(0, 12).join(', ') || 'not reported')}${n.available_models?.length > 12 ? ' …' : ''}</div>
           <div class="summary-line mt-1">
@@ -613,7 +674,7 @@
     let html = `
       <table class="dashboard-table">
         <thead>
-          <tr><th>Node</th><th>RAM (GiB)</th><th>VRAM (GiB)</th><th>CPU</th><th>Weight</th><th>Models</th><th>Status</th></tr>
+          <tr><th>Node</th><th>RAM (GiB)</th><th>VRAM (GiB)</th><th>CPU</th><th>Drives</th><th>Health</th><th>Weight</th><th>Models</th><th>Status</th></tr>
         </thead>
         <tbody>
     `;
@@ -625,6 +686,8 @@
           <td>${n.hardware?.ram_gib?.toFixed(1) ?? '—'}</td>
           <td>${n.hardware?.vram_gib?.toFixed(1) ?? '—'}</td>
           <td>${esc(n.hardware?.cpu || '—')}</td>
+          <td>${esc((n.disk?.drives || []).map(d => `${d.device || '?'}${d.mountpoint ? ' @ ' + d.mountpoint : ''} (${bytes(d.size_bytes)})`).join(', ') || (n.disk?.mounts || []).length || '—')}</td>
+          <td><span class="badge ${n.health?.status === 'healthy' ? 'ok' : 'warn'}">${esc(n.health?.status || 'unknown')}</span></td>
           <td>${esc(n.weight)}</td>
           <td>${esc((n.loaded_models || []).length)}</td>
           <td><span class="badge ${healthy ? 'ok' : 'err'}">${healthy ? 'online' : 'offline'}</span></td>
@@ -636,7 +699,8 @@
   }
 
   async function refresh() {
-    const data = await loadDashboard();
+    const [data, controlRoom] = await Promise.all([loadDashboard(), loadControlRoom()]);
+    renderServiceHealth(controlRoom);
     if (data) {
       renderSummary(data);
       renderNodes(data);
@@ -650,8 +714,14 @@
       renderTasks(data);
       renderCompletions(data);
       renderHardware(data);
+      if (window.FleetDashboardUI) {
+        window.FleetDashboardUI.renderInferenceState(data, 'inference-state');
+        window.FleetDashboardUI.bindInferenceStart();
+      }
     }
   }
+
+  window.addEventListener('fleet-refresh', () => refresh());
 
   document.getElementById('btn-refresh').addEventListener('click', refresh);
   document.getElementById('btn-benchmark-control').addEventListener('click', async function() {

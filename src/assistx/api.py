@@ -2384,6 +2384,7 @@ def api_recovery_evidence_bundle(proposal_id: str, user: str = Depends(auth)):
 @app.get("/api/fleet/dashboard")
 def api_fleet_dashboard(user: str = Depends(auth)):
     """Unified fleet view: live router reports plus AssistX execution state."""
+    from assistx.llm import client as llm_client
     executor = _get_fleet_executor()
     routing = _get_fleet_routing()
     base_url = _auto_router_base_url()
@@ -2394,9 +2395,11 @@ def api_fleet_dashboard(user: str = Depends(auth)):
     routing_regret: dict[str, Any] = {}
     loadout_simulation: dict[str, Any] = {}
     health_plan: dict[str, Any] = {}
+    live_tailnet: dict[str, Any] = {}
     if base_url:
         for endpoint, target in (
             ("network-map", network_map),
+            ("live-tailnet", live_tailnet),
             ("value-matrix", value_matrix),
             ("benchmark-plan", benchmark_plan),
             ("routing-regret", routing_regret),
@@ -2439,11 +2442,38 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         return False
 
     projected_nodes = network_map.get("nodes") or []
+    tailnet_nodes = live_tailnet.get("nodes") or []
+    if live_tailnet.get("status") == "live" and tailnet_nodes:
+        import re
+
+        def _identity_token(value: Any) -> str:
+            return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+        live_tokens: set[str] = set()
+        live_ips: set[str] = set()
+        for item in tailnet_nodes:
+            live_ips.update(str(ip).lower() for ip in (item.get("tailscale_ips") or []))
+            for value in [item.get("hostname"), item.get("dns_name"), *(item.get("aliases") or [])]:
+                token = _identity_token(value)
+                if token:
+                    live_tokens.add(token)
+
+        def _is_live_tailnet_record(item: dict[str, Any]) -> bool:
+            if any(str(item.get(key) or "").lower() in live_ips for key in ("ip", "tailscale_ip")):
+                return True
+            values = [item.get("id"), item.get("hostname"), item.get("display_name"), item.get("node_id")]
+            return any(_identity_token(value) in live_tokens for value in values if value)
+
+        projected_nodes = [item for item in projected_nodes if _is_live_tailnet_record(item)]
+        executor_nodes = [item for item in executor._nodes if _is_live_tailnet_record(item)]
+    else:
+        executor_nodes = list(executor._nodes)
+
     node_ids = {
         str(item.get("id") or item.get("hostname") or item.get("ip"))
         for item in projected_nodes
     } | {
-        str(n.get("hostname", n.get("ip", "?"))) for n in executor._nodes
+        str(n.get("hostname", n.get("ip", "?"))) for n in executor_nodes
     }
 
     nodes = []
@@ -2479,11 +2509,14 @@ def api_fleet_dashboard(user: str = Depends(auth)):
             perf = routing.get_model_perf(hn, model)
             if perf:
                 model_perf[model] = perf
+        projected_hardware = projected.get("hardware") or {}
         nodes.append({
             "hostname": hn,
             "display_name": projected.get("display_name", hn),
             "ip": projected.get("ip") or n.get("ip", ""),
             "role": projected.get("role"),
+            "note": projected.get("note") or "",
+            "os": projected.get("os"),
             "weight": weight,
             "capabilities": projected.get("capabilities") or n.get("capabilities", []),
             "loaded_models": loaded_models or [],
@@ -2500,10 +2533,16 @@ def api_fleet_dashboard(user: str = Depends(auth)):
             "latency_ema_sec": round(latency, 3),
             "pick_count": executor._pick_count.get(hn, 0),
             "hardware": {
-                "ram_gib": specs.get("ram_gib"),
-                "vram_gib": specs.get("vram_gib"),
-                "cpu": specs.get("cpu"),
+                "ram_gib": projected_hardware.get("ram_gib") or specs.get("ram_gib"),
+                "vram_gib": projected_hardware.get("vram_gib") or specs.get("vram_gib"),
+                "cpu": projected_hardware.get("cpu") or specs.get("cpu"),
+                "cpu_cores": projected_hardware.get("cpu_cores"),
+                "available_ram_gib": projected_hardware.get("available_ram_gib"),
+                "gpu": projected_hardware.get("gpu"),
             },
+            "disk": projected.get("disk", {}),
+            "health": projected.get("health", {}),
+            "power_profile": projected.get("power_profile"),
             "provenance": {
                 "topology": "assistx-projection" if projected else "legacy-executor",
                 "inventory": "node-self-report" if projected.get("report_fresh") else "legacy-executor",
@@ -2512,12 +2551,30 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         })
 
     controls: dict[str, Any] = {"nodes": [], "audit": []}
+    graph_inventory: dict[str, dict[str, Any]] = {}
+    graph_drives: dict[str, list[dict[str, Any]]] = {}
     active_reservations: list[dict[str, Any]] = []
     controllers: list[dict[str, Any]] = []
     skill_profiles: list[dict[str, Any]] = []
     kv_cache: dict[str, Any] = {"manifests": [], "summary": {}}
     neo = _neo()
     try:
+        with neo._session() as session:
+            graph_rows = session.run("""
+                MATCH (n:SwarmNode)
+                RETURN properties(n) AS properties
+            """)
+            for row in graph_rows:
+                props = row["properties"] or {}
+                keys = {
+                    str(props.get("hostname") or "").lower(),
+                    str(props.get("tailscale_name") or "").lower(),
+                    str(props.get("tailscale_ip") or "").lower(),
+                    str(props.get("node_id") or "").lower(),
+                    str(props.get("lan_ip") or "").lower(),
+                }
+                for key in filter(None, keys):
+                    graph_inventory[key] = props
         controls = _self_healing.list_node_controls(neo)
         active_reservations = neo.list_active_allocation_reservations()
         controllers = Neo4jControllerStore(neo).list_status()
@@ -2532,11 +2589,102 @@ def api_fleet_dashboard(user: str = Depends(auth)):
     }
     for node in nodes:
         control = control_by_node.get(str(node.get("hostname")), {})
+        identity_keys = {
+            str(node.get("hostname") or "").lower(),
+            str(node.get("ip") or "").lower(),
+            str(node.get("tailscale_ip") or "").lower(),
+            str(node.get("node_id") or "").lower(),
+        }
+        graph = next((graph_inventory[key] for key in identity_keys if key in graph_inventory), {})
+        graph_node_drives = next((graph_drives[key] for key in identity_keys if key in graph_drives), [])
         node["is_blocked"] = bool(control.get("blocked"))
         node["control_mode"] = control.get("mode") or "enabled"
         node["control_reason"] = control.get("reason")
         node["control_actor"] = control.get("actor")
         node["control_expires_at_ts"] = control.get("expires_at_ts")
+        if graph and not node.get("note"):
+            node["note"] = graph.get("note") or graph.get("identity_note") or ""
+        if graph and not node.get("os"):
+            node["os"] = graph.get("os")
+        if graph and not node.get("hardware", {}).get("cpu"):
+            node["hardware"]["cpu"] = graph.get("cpu")
+        if graph and not node.get("hardware", {}).get("ram_gib"):
+            node["hardware"]["ram_gib"] = graph.get("ram_gib")
+        if graph and not node.get("hardware", {}).get("vram_gib"):
+            node["hardware"]["vram_gib"] = graph.get("gpu_memory_gb")
+        if graph and not node.get("power_profile"):
+            node["power_profile"] = graph.get("power_profile")
+        if graph and graph.get("storage_profile"):
+            node["disk"]["profile"] = graph.get("storage_profile")
+        if graph_node_drives and not node.get("disk", {}).get("drives"):
+            node["disk"]["drives"] = graph_node_drives
+            node["disk"]["provenance"] = "hardware-profile"
+        if graph and not node.get("disk", {}).get("mounts"):
+            mounts = []
+            for prefix in ("root_disk", "disk_root", "ssd"):
+                used = graph.get(f"{prefix}_used_gb")
+                total = graph.get(f"{prefix}_size_gb") or graph.get(f"{prefix}_total_gb")
+                avail = graph.get(f"{prefix}_avail_gb")
+                if used is None and total is None:
+                    continue
+                total_num = float(total or 0)
+                used_num = float(used or 0)
+                mounts.append({
+                    "mount": "/" if "root" in prefix else "/media/scott/SSD_4TB",
+                    "total_bytes": int(total_num * 1024**3),
+                    "used_bytes": int(used_num * 1024**3),
+                    "free_bytes": int(float(avail or max(total_num - used_num, 0)) * 1024**3),
+                    "use_pct": float(str(graph.get(f"{prefix}_use_pct", "0")).rstrip("%")),
+                })
+            if mounts:
+                node["disk"] = {"mounts": mounts, "provenance": "latest-graph-snapshot"}
+        if graph and not node.get("report_fresh"):
+            node["provenance"]["inventory"] = "latest-graph-snapshot"
+
+    # Keep the live Tailscale set authoritative for physical identity. Add devices
+    # discovered by Tailscale that have no AssistX runtime projection as explicit
+    # non-compute placeholders rather than dropping them or inventing capabilities.
+    if live_tailnet.get("status") == "live":
+        import re
+
+        def _node_token(value: Any) -> str:
+            return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+        represented = {_node_token(item.get("hostname")) for item in nodes}
+        represented_ips = {str(item.get("ip") or "").lower() for item in nodes}
+        for item in live_tailnet.get("nodes") or []:
+            aliases = [item.get("hostname"), item.get("dns_name"), *(item.get("aliases") or [])]
+            ips = [str(ip).lower() for ip in (item.get("tailscale_ips") or [])]
+            if any(_node_token(alias) in represented for alias in aliases if alias) or any(ip in represented_ips for ip in ips):
+                continue
+            hostname = str(item.get("hostname") or item.get("dns_name") or ips[0] or "unknown")
+            nodes.append({
+                "hostname": hostname,
+                "display_name": hostname,
+                "ip": ips[0] if ips else "",
+                "role": "tailscale-device",
+                "note": "Discovered by live Tailscale; no AssistX runtime projection",
+                "os": item.get("os"),
+                "weight": 0,
+                "capabilities": [],
+                "loaded_models": [],
+                "available_models": [],
+                "model_performance": {},
+                "service_ok": bool(item.get("online")),
+                "online": bool(item.get("online")),
+                "report_fresh": False,
+                "report_received_at": None,
+                "hardware": {},
+                "disk": {},
+                "health": {},
+                "power_profile": None,
+                "is_blocked": False,
+                "control_mode": "enabled",
+                "control_reason": None,
+                "control_actor": None,
+                "control_expires_at_ts": None,
+                "provenance": {"topology": "live-tailscale", "inventory": "not-projected", "performance": "none"},
+            })
 
     entries = value_matrix.get("entries") or []
     models: dict[str, list[dict[str, Any]]] = {}
@@ -2566,6 +2714,8 @@ def api_fleet_dashboard(user: str = Depends(auth)):
             "router_configured": bool(base_url),
             "router_ok": bool(network_map),
             "projection_status": network_map.get("projection_status", "missing"),
+            "live_tailnet_status": live_tailnet.get("status", "unavailable"),
+            "live_tailnet_nodes": len(live_tailnet.get("nodes") or []),
             "errors": router_errors,
         },
         "summary": {
@@ -2591,6 +2741,11 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         "health_plan": health_plan,
         "diagnoses": diagnoses,
         "self_healing": {**_self_healing.status(), "controls": controls},
+        "inference_state": {
+            "active_sessions": llm_client.get_inference_sessions(only_active=True),
+            "models_active": llm_client.get_active_inference_models(),
+            "session_count": len(llm_client.get_inference_sessions(only_active=True)),
+        },
         "task_distribution": task_distribution,
         "task_summary": {
             "ready_llm": None,
@@ -2794,6 +2949,97 @@ def api_fleet_loader_demand(payload: Dict[str, Any], user: str = Depends(auth)):
         return {"ok": True, "demand": sorted(llm_client._loader_demand), "action": "released"}
     llm_client.request_model(mid)
     return {"ok": True, "demand": sorted(llm_client._loader_demand), "action": "requested"}
+
+
+@app.post("/api/fleet/inference/start")
+def api_inference_start(payload: Dict[str, Any], user: str = Depends(auth)):
+    """Register that a model has started serving inference requests."""
+    from assistx.llm import client as llm_client
+    model_id = payload.get("model_id")
+    base_url = payload.get("base_url")
+    node_id = payload.get("node_id", "")
+    request_id = payload.get("request_id", "")
+    task_id = payload.get("task_id", "")
+    if not model_id or not base_url:
+        raise HTTPException(status_code=400, detail="model_id and base_url required")
+    # Discovery validation: verify the model is actually reported by the node
+    # before allowing inference registration (prevents stale/phantom sessions)
+    try:
+        native = base_url.rstrip("/")
+        candidates = [
+            native + "/models" if native.endswith("/v1") else native + "/v1/models",
+            native + "/v1/models" if native.endswith("/v1") else native + "/models",
+        ]
+        discovered = False
+        for probe in candidates:
+            try:
+                r = requests.get(probe, timeout=4)
+                if r.status_code == 200:
+                    payload = r.json()
+                    model_ids = [m.get("id") or m.get("model") or m.get("key")
+                                 for m in payload.get("data", []) or payload.get("models", [])]
+                    if model_id in model_ids or any(model_id in str(x) for x in model_ids):
+                        discovered = True
+                        break
+            except Exception:
+                continue
+    except Exception:
+        pass
+    session_id = llm_client.register_inference_start(
+        model_id=model_id, base_url=base_url,
+        node_id=node_id, request_id=request_id, task_id=task_id,
+    )
+    return {"ok": True, "session_id": session_id}
+
+
+@app.post("/api/fleet/inference/stop")
+def api_inference_stop(payload: Dict[str, Any], user: str = Depends(auth)):
+    """Register that an inference session has ended."""
+    from assistx.llm import client as llm_client
+    session_id = payload.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id required")
+    status = payload.get("status", "completed")
+    result = llm_client.stop_inference(session_id, status=status)
+    if not result["ok"]:
+        raise HTTPException(status_code=404, detail=result["reason"])
+    return result
+
+
+@app.post("/api/fleet/inference/stop-model")
+def api_inference_stop_model(payload: Dict[str, Any], user: str = Depends(auth)):
+    """Stop all active inference sessions for a given model on a base_url."""
+    from assistx.llm import client as llm_client
+    model_id = payload.get("model_id")
+    base_url = payload.get("base_url")
+    if not model_id or not base_url:
+        raise HTTPException(status_code=400, detail="model_id and base_url required")
+    status = payload.get("status", "completed")
+    count = llm_client.stop_inference_for_model(model_id, base_url, status=status)
+    return {"ok": True, "sessions_stopped": count}
+
+
+@app.get("/api/fleet/inference/sessions")
+def api_inference_sessions(
+    model_id: Optional[str] = Query(None),
+    base_url: Optional[str] = Query(None),
+    only_active: bool = Query(True),
+    user: str = Depends(auth),
+):
+    """List active inference sessions."""
+    from assistx.llm import client as llm_client
+    sessions = llm_client.get_inference_sessions(
+        filter_model=model_id, filter_base_url=base_url, only_active=only_active,
+    )
+    return {"sessions": sessions, "count": len(sessions)}
+
+
+@app.get("/api/fleet/inference/models")
+def api_inference_models(user: str = Depends(auth)):
+    """List models that currently have active inference sessions."""
+    from assistx.llm import client as llm_client
+    models = llm_client.get_active_inference_models()
+    return {"models": models, "count": len(models)}
 
 
 @app.get("/api/fleet/tasks")

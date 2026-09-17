@@ -307,8 +307,109 @@ _loader_user_configs: Dict[tuple, dict] = {}
 _loader_demand: set = set()
 _loader_state: Dict[str, Any] = {
     "running": False, "last_run_ts": 0.0, "last_action": "",
-    "cycle": 0, "discovered_models": [], "per_node": {}, "owners": {},
 }
+
+# --- Inference session tracking -----------------------------------------
+# Tracks active model inference sessions so the fleet can know which
+# models are currently serving requests and for how long.  This lets
+# the dashboard and routing reflect real-time inference load, not just
+# "loaded in VRAM" state.  The UI can call register_inference_start /
+# stop_inference to record when a model begins or ends serving work.
+_inference_sessions: Dict[str, Dict[str, Any]] = {}
+_inference_lock = threading.Lock()
+_inference_session_id = 0
+
+def register_inference_start(model_id: str, base_url: str, node_id: str = "",
+                              request_id: str = "", task_id: str = "") -> str:
+    """Register that a model has started serving inference requests.
+
+    Returns a session_id that can be passed to stop_inference.
+    """
+    global _inference_session_id
+    with _inference_lock:
+        _inference_session_id += 1
+        session_id = f"inf_{_inference_session_id}_{int(time.time())}"
+        _inference_sessions[session_id] = {
+            "session_id": session_id,
+            "model_id": model_id,
+            "base_url": base_url,
+            "node_id": node_id,
+            "request_id": request_id,
+            "task_id": task_id,
+            "started_at": time.time(),
+            "started_at_ts": int(time.time() * 1000),
+            "status": "active",
+        }
+    return session_id
+
+def stop_inference(session_id: str, status: str = "completed") -> Dict[str, Any]:
+    """Register that an inference session has ended.
+
+    Returns the session record with duration info, or an error dict.
+    """
+    with _inference_lock:
+        session = _inference_sessions.get(session_id)
+        if not session:
+            return {"ok": False, "reason": f"session {session_id} not found"}
+        ended = time.time()
+        session["ended_at"] = ended
+        session["ended_at_ts"] = int(ended * 1000)
+        session["status"] = status
+        session["duration_s"] = round(ended - session["started_at"], 2)
+        return {"ok": True, "session": session}
+
+def stop_inference_for_model(model_id: str, base_url: str, status: str = "completed") -> int:
+    """Stop all active inference sessions for a given model on a base_url.
+
+    Returns the count of sessions stopped.
+    """
+    count = 0
+    with _inference_lock:
+        for sid, session in list(_inference_sessions.items()):
+            if (session.get("model_id") == model_id and
+                session.get("base_url") == base_url and
+                session.get("status") == "active"):
+                ended = time.time()
+                session["ended_at"] = ended
+                session["ended_at_ts"] = int(ended * 1000)
+                session["status"] = status
+                session["duration_s"] = round(ended - session["started_at"], 2)
+                count += 1
+    return count
+
+def get_inference_sessions(filter_model: str = None, filter_base_url: str = None,
+                           only_active: bool = True) -> List[Dict[str, Any]]:
+    """Return inference sessions, optionally filtered."""
+    with _inference_lock:
+        sessions = []
+        for session in _inference_sessions.values():
+            if only_active and session.get("status") != "active":
+                continue
+            if filter_model and session.get("model_id") != filter_model:
+                continue
+            if filter_base_url and session.get("base_url") != filter_base_url:
+                continue
+            sessions.append(dict(session))
+        return sessions
+
+def get_active_inference_models() -> List[Dict[str, Any]]:
+    """Return a summary of which models currently have active inference."""
+    with _inference_lock:
+        models = {}
+        for session in _inference_sessions.values():
+            if session.get("status") != "active":
+                continue
+            key = (session.get("model_id"), session.get("base_url"))
+            if key not in models:
+                models[key] = {
+                    "model_id": session["model_id"],
+                    "base_url": session["base_url"],
+                    "node_id": session.get("node_id", ""),
+                    "active_sessions": 0,
+                    "total_duration_s": 0.0,
+                }
+            models[key]["active_sessions"] += 1
+        return list(models.values())
 _loader_lock = threading.Lock()
 
 
