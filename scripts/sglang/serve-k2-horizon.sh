@@ -12,7 +12,7 @@ GGUF_PATH="${K2HORIZON_GGUF:-/home/scott/.lmstudio/models/NANI-Nithin/K2-Horizon
 HOST="${K2HORIZON_HOST:-0.0.0.0}"
 PORT="${K2HORIZON_PORT:-30000}"
 NGL="${K2HORIZON_NGL:-999}"
-CTX="${K2HORIZON_CTX:-8192}"
+CTX="${K2HORIZON_CTX:-65536}"
 SLOTS="${K2HORIZON_SLOTS:-2}"
 DEVICE="${K2HORIZON_DEVICE:-ROCm0}"
 LOG_DIR="/home/scott/git/auto-assist/logs/llama"
@@ -35,7 +35,7 @@ fi
 
 log "=== Starting K2-Horizon-MoVA-36B-A4B serving layer ==="
 log "Model: $GGUF_PATH"
-log "Target: $HOST:$PORT (device: $DEVICE, GPU layers: $NGL, ctx: $CTX, slots: $SLOTS)"
+log "Target: $HOST:$PORT (device: $DEVICE, GPU layers: $NGL, ctx: $CTX, slots: $NP)"
 
 exec "$LLAMA_SERVER" \
   -m "$GGUF_PATH" \
