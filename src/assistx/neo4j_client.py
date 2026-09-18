@@ -354,6 +354,50 @@ class Neo4jClient:
             rec = s.run(q, {"id": intent_id, "props": props, "mark_orchestrated": mark_orchestrated}).single()
             return rec["id"]
 
+    def record_intent_policy_shadow(
+        self,
+        intent_id: str,
+        evidence: dict[str, Any],
+    ) -> None:
+        """Persist a my-jev shadow decision without changing live intent policy."""
+        response = evidence.get("response") or {}
+        resolved = response.get("resolved") or {}
+        assistx = response.get("assistx") or {}
+        with self._session() as s:
+            s.run(
+                """
+                MATCH (i:Intent {id:$intent_id})
+                SET i.policy_shadow_json=$evidence_json,
+                    i.policy_shadow_contract=$contract,
+                    i.policy_shadow_route=$model_route,
+                    i.policy_shadow_disposition=$disposition,
+                    i.policy_shadow_policy_action=$shadow_policy_action,
+                    i.policy_shadow_at=datetime(),
+                    i.policy_shadow_at_ts=timestamp(),
+                    i.updated_at=datetime(),
+                    i.updated_at_ts=timestamp()
+                """,
+                {
+                    "intent_id": intent_id,
+                    "evidence_json": json.dumps(
+                        evidence,
+                        ensure_ascii=False,
+                    ),
+                    "contract": str(
+                        response.get("contract") or ""
+                    ),
+                    "model_route": str(
+                        resolved.get("model_route") or ""
+                    ),
+                    "disposition": str(
+                        resolved.get("disposition") or ""
+                    ),
+                    "shadow_policy_action": str(
+                        assistx.get("policy_action") or ""
+                    ),
+                },
+            ).consume()
+
     def create_context_packet(
         self,
         query: str,
