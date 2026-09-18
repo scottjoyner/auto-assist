@@ -5,7 +5,6 @@ import json
 import os
 import pathlib
 import shutil
-import socket
 import subprocess
 import time
 from collections.abc import Callable
@@ -115,7 +114,7 @@ def _http_json(
     timeout: float = 2.0,
     admin_token: str = "",
 ) -> tuple[dict[str, Any], float]:
-    url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+    url = f"{base_url.rstrip('/')}/{path.lstrip('/')}" if path else base_url
     headers = {"Accept": "application/json"}
     if admin_token:
         headers["X-Admin-Token"] = admin_token
@@ -124,6 +123,16 @@ def _http_json(
     with urlopen(request, timeout=timeout) as response:  # noqa: S310 - private URLs are operator-configured
         payload = json.loads(response.read().decode("utf-8"))
     return payload, _elapsed_ms(started)
+
+
+def _router_url(path: str, override_env: str | None = None) -> str:
+    override = os.getenv(override_env or "", "").strip()
+    if override:
+        return override
+    base_url = os.getenv("AUTO_ROUTER_BASE_URL", "").strip()
+    if not base_url:
+        base_url = "http://auto-router:8088"
+    return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
 
 
 def _probe_neo4j(neo_factory: NeoFactory) -> dict[str, Any]:
@@ -860,15 +869,270 @@ def _load_doctor_findings() -> dict[str, Any]:
 _FLEET_NODES_CACHE: dict[str, Any] = {"ts": 0.0, "data": []}
 
 
-def collect_fleet_nodes() -> list[dict[str, Any]]:
-    """Live fleet node matrix from the auto-router pubsub registry (10s cache)."""
+def _hw_lookup(hardware_rows) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Index canonical hardware manifest by tailscale_ip and node_id."""
+    by_ip: dict[str, Any] = {}
+    by_id: dict[str, Any] = {}
+    for row in (hardware_rows or []):
+        for field in ("tailscale_ip", "lan_ip", "ip"):
+            ip = _identity_key(row.get(field))
+            if ip:
+                by_ip[ip] = row
+        for identity in _entry_identities(row):
+            by_id[identity] = row
+    return by_ip, by_id
+
+
+def _identity_key(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _entry_identities(entry: dict[str, Any]) -> list[str]:
+    return list(dict.fromkeys(
+        _identity_key(entry.get(field))
+        for field in ("ip", "tailscale_ip", "lan_ip", "node_id", "hostname_display", "canonical_name", "hostname")
+        if _identity_key(entry.get(field))
+    ))
+
+
+def _hardware_for_entry(entry: dict[str, Any], by_ip: dict[str, Any],
+                        identity_to_hw: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    for field in ("ip", "tailscale_ip", "lan_ip"):
+        hw = by_ip.get(_identity_key(entry.get(field)))
+        if hw:
+            return hw
+    for key in _entry_identities(entry):
+        hw = identity_to_hw.get(key)
+        if hw:
+            return hw
+    return {}
+
+
+def _instrument_summary(hw: dict[str, Any]) -> str:
+    """Compact instrument tag from the canonical hardware manifest."""
+    if not hw:
+        return "UNKNOWN"
+    inst = hw.get("instrument") or {}
+    if not isinstance(inst, dict):
+        return "UNKNOWN"
+    tags: list[str] = []
+    if inst.get("npu"):
+        tags.append("NPU")
+    d = inst.get("dGPU") or {}
+    ig = inst.get("iGPU") or {}
+    if isinstance(d, dict) and d.get("on") and d.get("model"):
+        tags.append(f"dGPU:{d['model'][:20]}")
+    elif isinstance(ig, dict) and ig.get("on") and ig.get("model"):
+        tags.append(f"iGPU:{ig['model'][:20]}")
+    if not tags:
+        cpu = _identity_key(hw.get("cpu"))
+        if not cpu or cpu in {"tbd", "unknown"} or "specs tbd" in _identity_key(hw.get("note")):
+            return "UNKNOWN"
+        return "CPU"
+    return "+".join(tags)
+
+
+def _json_latency(pj: dict) -> float | None:
+    try:
+        return float((pj or {}).get("latency_ms"))
+    except Exception:
+        return None
+
+
+def _live_loaded_models(neo_factory: NeoFactory | None) -> dict[str, Any] | None:
+    """Return live loaded-model truth from the latest FleetSnapshot.
+
+    ``None`` means the snapshot database is unavailable, an empty mapping means a
+    snapshot exists but contains no model states, and a mapping contains node
+    names keyed to their latest model observations.
+    """
+    if not neo_factory:
+        return None
+    neo = None
+    try:
+        neo = neo_factory()
+        with neo.driver.session(database="neo4j") as session:
+            rows = session.run(
+                """
+                MATCH (s:FleetSnapshot) WHERE s.captured_at_ms IS NOT NULL
+                RETURN max(s.captured_at_ms) AS ms
+                """
+            ).data()
+            ms = rows[0]["ms"] if rows else None
+            if not ms:
+                return None
+            query = (
+                "MATCH (s:FleetSnapshot)-[:HAS_MODEL_STATE]->(m:FleetModelState) "
+                "WHERE s.captured_at_ms=$ms "
+                "RETURN m.node_name AS node, "
+                "       collect(DISTINCT {model_id:m.model_id, "
+                "       online:m.online, loaded:m.loaded, "
+                "       inventory_authoritative:m.inventory_authoritative, "
+                "       latency_ms:m.latency_ms}) AS states"
+            )
+            rows = session.run(query, ms=ms).data()
+    except Exception:
+        return None
+    finally:
+        if neo is not None:
+            try:
+                neo.close()
+            except Exception:
+                pass
+
+    out: dict[str, Any] = {}
+    for row in rows:
+        node = str(row.get("node") or "")
+        if not node:
+            continue
+        online = True
+        models: list[str] = []
+        latencies: dict[str, Any] = {}
+        for state in row.get("states") or []:
+            if state.get("online") is not True:
+                online = False
+                continue
+            if state.get("loaded") is not True or state.get("inventory_authoritative") is not True:
+                continue
+            model = state.get("model_id")
+            if not model:
+                continue
+            models.append(str(model))
+            latency = state.get("latency_ms")
+            if latency is not None:
+                latencies[str(model)] = float(latency)
+        entry = out.setdefault(
+            node, {"models": [], "online": online, "observed_at": str(ms), "latencies": {}}
+        )
+        for model in models:
+            if model not in entry["models"]:
+                entry["models"].append(model)
+        entry["online"] = entry.get("online", True) and online
+        entry["latencies"].update(latencies)
+
+    return out
+
+
+def _historical_loaded_models(neo_factory: NeoFactory | None) -> dict[str, Any]:
+    """Return each node's most recent snapshot containing a loaded model."""
+    if not neo_factory:
+        return {}
+    neo = None
+    try:
+        neo = neo_factory()
+        with neo.driver.session(database="neo4j") as session:
+            rows = session.run(
+                """
+                MATCH (s:FleetSnapshot)-[:HAS_MODEL_OBSERVATION]->(m:FleetModelObservation)
+                WHERE m.online = true AND m.loaded = true AND m.inventory_authoritative = true
+                WITH s.captured_at_ms AS snap, m.node_name AS node,
+                     collect(DISTINCT m.model_id) AS models
+                RETURN node, snap, models
+                ORDER BY node, snap DESC
+                """
+            ).data()
+    except Exception:
+        return {}
+    finally:
+        if neo is not None:
+            try:
+                neo.close()
+            except Exception:
+                pass
+
+    out: dict[str, Any] = {}
+    now_ms = int(time.time() * 1000)
+    for row in rows:
+        node = str(row.get("node") or "")
+        if not node or node in out:
+            continue
+        try:
+            snap = int(row.get("snap"))
+        except (TypeError, ValueError):
+            continue
+        models = [str(model) for model in (row.get("models") or []) if model]
+        if not models:
+            continue
+        out[node] = {
+            "models": models,
+            "observed_at_ms": snap,
+            "age_ms": max(0, now_ms - snap),
+        }
+    return out
+
+
+def _provider_catalog(neo_factory: NeoFactory | None = None) -> dict[str, list[str]]:
+    """Return available provider models indexed by node identity."""
+    base_url = os.getenv("AUTO_ROUTER_BASE_URL", "").strip()
+    url = os.getenv("AUTO_ROUTER_ADMIN_PROVIDERS_URL", "").strip()
+    if not url:
+        if not base_url:
+            return {}
+        url = f"{base_url.rstrip('/')}/admin/providers"
+    admin_token = os.getenv("AUTO_ROUTER_ADMIN_TOKEN", "").strip()
+    try:
+        data, _ = _http_json(url, "", admin_token=admin_token)
+    except Exception:
+        return {}
+    out: dict[str, list[str]] = {}
+    for provider in data.get("providers", []) or []:
+        if not provider.get("enabled"):
+            continue
+        node_id = str(provider.get("node_id") or "").lower()
+        runtime_id = str(provider.get("runtime_instance_id") or "").lower()
+        base = str(provider.get("base_url") or "")
+        host = ""
+        try:
+            from urllib.parse import urlsplit as _urlsplit
+            host = (_urlsplit(base).hostname or "").lower()
+        except Exception:
+            host = base.split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0].lower()
+        models = [
+            model.get("provider_model") or model.get("alias") or model.get("model_instance_id")
+            for model in (provider.get("models") or [])
+            if model and (model.get("provider_model") or model.get("alias") or model.get("model_instance_id"))
+        ]
+        for identity in (node_id, runtime_id, host):
+            if not identity:
+                continue
+            bucket = out.setdefault(identity, [])
+            for model in models:
+                if model and model not in bucket:
+                    bucket.append(model)
+    return out
+
+
+def collect_fleet_nodes(neo_factory: NeoFactory | None = None) -> list[dict[str, Any]]:
+    """Live fleet node matrix from the auto-router pubsub registry (10s cache).
+
+    Enriched with the canonical hardware manifest (node-hardware.json):
+    instrument tag (NPU/iGPU/dGPU/CPU), load_tag + slot_cap + roles, and —
+    when a Neo4j factory is available — what model is actually loaded RIGHT NOW
+    from live FleetModelObservation instead of the stale router fallback.
+    """
     now_mono = time.monotonic()
     if now_mono - float(_FLEET_NODES_CACHE["ts"]) < 10:
         return list(_FLEET_NODES_CACHE["data"])
-    url = os.getenv(
-        "AUTO_ROUTER_FLEET_NODES_URL",
-        "http://auto-router:8088/api/fleet/nodes",
+
+    # Canonical hardware inventory (operator-provided; authoritative).
+    state_dir = os.getenv(
+        "ASSISTX_FLEET_STATE_DIR",
+        "/media/scott/SSD_4TB/hermes-home/FLEET-STATE",
     )
+    try:
+        hw_rows = json.loads(
+            (pathlib.Path(state_dir) / "node-hardware.json").read_text()
+        ).get("nodes", [])
+    except Exception:
+        hw_rows = []
+    by_ip, by_id = _hw_lookup(hw_rows)
+
+    # Live loaded-model truth per hostname (latest live observation wins).
+    live_models = _live_loaded_models(neo_factory)
+    # Backfill: most-recent snapshot that had ANY model, for idle-but-online nodes so the
+    # dashboard shows what they were running last instead of a blank LOADED cell.
+    historical_models = _historical_loaded_models(neo_factory)
+    url = _router_url("api/fleet/nodes", "AUTO_ROUTER_FLEET_NODES_URL")
     registry: dict[str, dict[str, Any]] = {}
     try:
         with urlopen(url, timeout=3) as resp:
@@ -882,6 +1146,8 @@ def collect_fleet_nodes() -> list[dict[str, Any]]:
             key = str(n.get("ip") or n.get("hostname") or "?")
             registry[key] = {
                 "hostname": n.get("hostname") or n.get("ip") or "?",
+                "node_id": n.get("node_id"),
+                "hostname_display": n.get("hostname_display"),
                 "ip": n.get("ip", ""),
                 "last_seen_age_ms": age_ms,
                 "loaded_models": n.get("loaded") or [],
@@ -908,19 +1174,22 @@ def collect_fleet_nodes() -> list[dict[str, Any]]:
     except Exception:
         expected = []
 
-    now_ms = _now_ms()
     matched_keys: set[str] = set()
     for exp in expected:
         entry = None
+        exp_hw = _hardware_for_entry(exp, by_ip, by_id)
+        exp_ids = set(_entry_identities(exp) + _entry_identities(exp_hw))
         for key, reg in registry.items():
-            if reg["ip"] == exp.get("ip") or (
-                exp.get("hostname") and reg["hostname"] == exp["hostname"]
-            ):
+            reg_hw = _hardware_for_entry(reg, by_ip, by_id)
+            reg_ids = set(_entry_identities(reg) + _entry_identities(reg_hw))
+            if key not in matched_keys and exp_ids.intersection(reg_ids):
                 entry = dict(reg)
                 matched_keys.add(key)
                 break
         entry = entry or {
-            "hostname": exp.get("hostname", "?"),
+            "hostname": exp.get("hostname") or exp.get("hostname_display") or exp.get("node_id") or "?",
+            "node_id": exp.get("node_id"),
+            "hostname_display": exp.get("hostname_display"),
             "ip": exp.get("ip", ""),
             "last_seen_age_ms": None,
             "loaded_models": [],
@@ -951,6 +1220,149 @@ def collect_fleet_nodes() -> list[dict[str, Any]]:
         reg["watchdog_us"] = None
         reg["note"] = ""
         nodes.append(reg)
+
+    def _hw_for(entry) -> dict[str, Any]:
+        return _hardware_for_entry(entry, by_ip, by_id)
+
+    def _identities_for(entry) -> list[str]:
+        return list(dict.fromkeys(_entry_identities(_hw_for(entry)) + _entry_identities(entry)))
+
+    live_by_key = {_identity_key(key): value for key, value in (live_models or {}).items()}
+    history_by_key = {_identity_key(key): value for key, value in historical_models.items()}
+
+    def _state_for(entry, states) -> dict[str, Any] | None:
+        for identity in _identities_for(entry):
+            if identity in states:
+                return states[identity]
+        return None
+
+    def _clean_model_name(model: Any) -> str | None:
+        """Return a clean model id, dropping raw filesystem paths.
+
+        The router registry sometimes echoes the full serving path (e.g.
+        /mnt/.../VibeThinker-3B-Hermes-v04-Q8_0.gguf). Strip to the last segment
+        and drop the extension so we never surface a path in the LOADED column.
+        """
+        if model is None:
+            return None
+        s = str(model).strip()
+        if pathlib.PurePosixPath(s).is_absolute() or pathlib.PureWindowsPath(s).is_absolute():
+            base = s.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            for ext in (".gguf", ".bin", ".pt", ".pth", ".mlx", ".so"):
+                if base.lower().endswith(ext):
+                    base = base[: -len(ext)]
+                    break
+            s = base
+        return s or None
+
+    # Available (registered/installed) models per node, cross-referenced against
+    # the router's /admin/providers catalog. Providers arrive keyed by node_id OR
+    # base_url hostname; hardware rows arrive keyed by ip/node_id/hostname_display.
+    # We index both sides so a node matches whichever identity strings overlap.
+    catalog = _provider_catalog(neo_factory)
+    available_by_key: dict[str, list[str]] = {}
+
+    def _merge(key: str, models: list[str]) -> None:
+        key = str(key).strip().lower()
+        if not key or key in ("null", "none"):
+            return
+        bucket = available_by_key.setdefault(key, [])
+        for m in (models or []):
+            if m and m not in bucket:
+                bucket.append(m)
+
+    for identity, models in catalog.items():
+        _merge(identity, [m for m in (_clean_model_name(model) for model in models) if m])
+
+    def _available_for(entry) -> list[str]:
+        candidates = _identities_for(entry)
+        merged: list[str] = []
+        for c in candidates:
+            for m in available_by_key.get(c.lower(), []):
+                if m not in merged:
+                    merged.append(m)
+        return merged
+
+    for entry in nodes:
+        hw = _hw_for(entry)
+
+        # Canonical name: override the router's arbitrary label with the
+        # manifest's canonical hostname_display so Scott sees "scotts-macbook-air"
+        # instead of whatever key the pubsub registry used for this IP.
+        canon = hw
+        if canon:
+            disp = str(canon.get("hostname_display") or "").strip() or str(canon.get("node_id") or "")
+            if disp.lower() != entry.get("hostname", "").lower():
+                entry["canonical_name"] = disp
+
+        entry["instrument"] = _instrument_summary(hw)
+        entry["load_tag"] = hw.get("load_tag") or None
+        entry["slot_cap"] = hw.get("slot_cap") if hw else None
+        roles = []
+        if hw and isinstance(hw.get("role"), list):
+            roles = [r for r in hw["role"] if r]
+        elif entry.get("role"):
+            roles = [entry.get("role")]
+        entry["roles"] = roles or (entry.get("role") or "")
+
+        # Live authoritative model set from the graph beats the router fallback.
+        live_entry = _state_for(entry, live_by_key)
+        if live_models is not None:
+            if live_entry and live_entry.get("models"):
+                cleaned = [m for m in (_clean_model_name(m) for m in live_entry["models"]) if m]
+                entry["loaded_models"] = cleaned
+                entry["model_source"] = "live"
+                entry["model_online"] = live_entry.get("online", True)
+                entry["model_observed_at"] = live_entry.get("observed_at")
+            else:
+                entry["loaded_models"] = []
+                entry["model_source"] = "live-empty"
+                entry["model_observed_at"] = (live_entry or {}).get("observed_at")
+                entry["model_clue"] = "live graph reports no loaded models"
+                entry["opacity"] = "opaque"
+        else:
+            # No authoritative graph data: sanitize whatever the router reported so
+            # a raw file path never leaks into the LOADED column. If nothing clean,
+            # fall back to the manifest's primary_model when we know it.
+            router_models = entry.get("loaded_models") or []
+            cleaned_router = [m for m in (_clean_model_name(m) for m in router_models) if m]
+            if cleaned_router:
+                entry["loaded_models"] = cleaned_router
+                entry["model_source"] = "router"
+            elif hw and hw.get("primary_model"):
+                primary = _clean_model_name(hw["primary_model"])
+                entry["loaded_models"] = [primary] if primary else []
+                entry["model_source"] = "manifest-primary"
+                entry["opacity"] = "inferred"
+                entry["model_clue"] = "only known model is the operator-assigned primary — endpoint did not confirm it loaded"
+            else:
+                entry["loaded_models"] = []
+
+        # --- Available (registered/installed) vs loaded, plus an opacity signal ---
+        available = _available_for(entry)
+        if available:
+            entry["available_models"] = available
+        # Opacity clue: node reports ONLINE/STALE but NO source tells us what it's
+        # running. That "can't tell" state is itself a data-quality flag, not a blank
+        # cell — surface it so Scott knows the endpoint isn't telling us anything.
+        loaded = entry.get("loaded_models") or []
+        if (entry.get("status") in ("ONLINE", "STALE")) and not loaded:
+            if entry.get("model_source") not in {"manifest-primary", "live-empty"}:
+                entry["opacity"] = "opaque"
+                entry["model_clue"] = (
+                    "endpoint reachable but reported no running models; source="
+                    f"{entry.get('model_source', 'none')} (no live graph data)"
+                )
+            # Backfill: these nodes were benchmarked machines that are powered up but not
+            # serving right now. Show what they ran last instead of a blank LOADED cell —
+            # matches against canonical_name first, then the raw registry hostname.
+            hist = _state_for(entry, history_by_key)
+            if hist is not None:
+                cleaned_hist = [m for m in (_clean_model_name(m) for m in hist["models"]) if m][:4]
+                entry["last_known"] = {
+                    "models": cleaned_hist,
+                    "age_ms": hist["age_ms"],
+                }
 
     nodes.sort(key=lambda item: (
         {"ONLINE": 0, "STALE": 1, "DARK": 2}.get(item.get("status"), 3),
@@ -1031,7 +1443,7 @@ def build_overview(neo_factory: NeoFactory) -> dict[str, Any]:
         "admission": admission,
         # Deployment conformance findings from assistx-doctor
         "doctor": _load_doctor_findings(),
-        "fleet_nodes": collect_fleet_nodes(),
+        "fleet_nodes": collect_fleet_nodes(neo_factory),
         "power": collect_power(),
     }
 

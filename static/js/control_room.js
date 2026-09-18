@@ -168,12 +168,42 @@
       ['GATES', esc(gates.join(' · ')), ''],
     ];
     grid.innerHTML = cells.map(([label, value, note]) => `
-      <div class="dependency-item${rec.stale ? ' degraded' : ''}">
+      <div class="dependency-item${rec.stale ? ' degraded' : ''}>
         <span class="dep-label">${label}</span>
         <strong class="mono">${value}</strong>
         <small>${note}</small>
       </div>`).join('');
   }
+
+  const token = (value) => String(value == null ? '' : value).toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+  const modelList = (models, limit = 4) => {
+    const items = Array.isArray(models) ? models.filter((model) => model != null) : [];
+    if (!items.length) return '<span class="dependency-category">none reported</span>';
+    const shown = items.slice(0, limit).map((model) => `<span class="model-token">${esc(model)}</span>`);
+    const more = items.length - shown.length;
+    return shown.join('<span class="model-separator"> / </span>') + (more ? ` <span class="dependency-category">+${more} more</span>` : '');
+  };
+  const sourceLabel = (node) => {
+    const source = String(node.model_source || '').toLowerCase();
+    if (source === 'live' || source === 'graph') return 'live graph';
+    if (source === 'manifest-primary') return 'manifest primary';
+    if (source === 'router') return 'router report';
+    if (source === 'live-empty') return 'live empty';
+    if (node.model_observed_at != null) return 'live graph';
+    return '';
+  };
+  const modelEvidence = (node) => {
+    const loaded = Array.isArray(node.loaded_models) ? node.loaded_models : [];
+    const source = sourceLabel(node);
+    const sourceHtml = source ? `<span class="source-badge source-${token(source)}">${esc(source)}</span>` : '';
+    const opacity = token(node.opacity);
+    const opacityHtml = opacity ? `<span class="clue-badge opacity-${opacity}">${esc(String(node.opacity || '').toUpperCase())}</span>` : '';
+    const lastKnown = node.last_known && Array.isArray(node.last_known.models) && node.last_known.models.length
+      ? `<div class="last-known"><span class="dependency-category">last known</span> ${modelList(node.last_known.models, 3)} <span class="dependency-category">${fmtAge(node.last_known.age_ms)} ago</span></div>`
+      : '';
+    const clue = node.model_clue ? `<div class="fleet-clue">${esc(node.model_clue)}</div>` : '';
+    return `<div class="fleet-models">${modelList(loaded)}${sourceHtml}${opacityHtml}${lastKnown}${clue}</div>`;
+  };
 
   function renderFleetNodes(snapshot) {
     const body = $('fleet-nodes-body');
@@ -185,20 +215,43 @@
     }
     const nodes = snapshot.fleet_nodes || [];
     if (!nodes.length) {
-      body.innerHTML = '<tr><td colspan="6" class="empty">NO NODE REGISTRY DATA</td></tr>';
+      body.innerHTML = '<tr><td colspan="11" class="empty">NO NODE REGISTRY DATA</td></tr>';
       return;
     }
     body.innerHTML = nodes.map((n) => {
-      const status = n.status || 'UNKNOWN';
-      return `<tr>
-      <td>${esc(n.hostname)}${n.note ? ` <small class="mono">${esc(n.note)}</small>` : ''}</td>
-      <td><span class="state state-${status.toLowerCase()}">${status}</span></td>
-      <td class="mono">${esc(n.ip)}</td>
-      <td class="mono">${fmtAge(n.last_seen_age_ms)}</td>
-      <td>${esc((n.loaded_models || []).join(', ') || '--')}</td>
-      <td>${n.watchdog_us ? `${Math.round(n.watchdog_us / 1000000)}s wd` : '--'}</td>
-      <td>${esc((n.capabilities || []).slice(0, 3).join(', '))}</td>
-    </tr>`;
+      const status = String(n.status || 'UNKNOWN').toUpperCase();
+      const instrumentRaw = n.instrument == null || n.instrument === '' ? 'UNKNOWN' : String(n.instrument);
+      let instrumentClass = 'instrument-tag';
+      if (/\bdGPU\b/.test(instrumentRaw)) instrumentClass += ' tag-dgpu';
+      else if (/\bNPU\b/.test(instrumentRaw)) instrumentClass += ' tag-npu';
+      else if (/\biGPU\b/.test(instrumentRaw)) instrumentClass += ' tag-igpu';
+      else instrumentClass += ' tag-cpu';
+      const roles = Array.isArray(n.roles) ? n.roles.filter(Boolean) : [n.role].filter(Boolean);
+      const roleText = roles.length ? roles.map((role) => esc(role)).join(' · ') : '';
+      const capabilityText = (Array.isArray(n.capabilities) ? n.capabilities : []).filter(Boolean).slice(0, 4).map((cap) => esc(cap)).join(', ') || '--';
+      let loadChip = '';
+      if (n.load_tag) {
+        const tag = token(n.load_tag);
+        loadChip = ` <span class="mono load-chip ${tag}" title="operator-assigned soft load">${esc(String(n.load_tag).toUpperCase())}</span>`;
+      }
+      if (typeof n.slot_cap === 'number') {
+        loadChip += ` <span class="mono cap-chip" title="soft concurrency cap">cap ${n.slot_cap}</span>`;
+      }
+      const nodeName = n.canonical_name || n.hostname || 'unresolved';
+      const opacityClass = token(n.opacity) ? `opacity-${token(n.opacity)}` : '';
+      return `<tr class="fleet-row ${token(status)} ${opacityClass}">
+        <td class="fleet-node-cell"><strong>${esc(nodeName)}</strong>${roleText ? ` <span class="dependency-category">${roleText}</span>` : ''}${loadChip}${n.note ? ` <small class="mono fleet-note">${esc(n.note)}</small>` : ''}</td>
+        <td><span class="${instrumentClass}">${esc(instrumentRaw)}</span></td>
+        <td><span class="state state-${token(status)}">${status}</span></td>
+        <td class="mono">${esc(n.ip || '--')}</td>
+        <td class="mono">${fmtAge(n.last_seen_age_ms)}</td>
+        <td>${modelEvidence(n)}</td>
+        <td><div class="fleet-available">${modelList(n.available_models, 3)}</div></td>
+        <td>${n.model_clue ? `<span class="clue-badge">${esc(String(n.opacity || 'opacity').toUpperCase())}</span>` : '--'}</td>
+        <td class="mono">${n.model_observed_at == null ? '--' : fmtAge(Number(n.model_observed_at))}</td>
+        <td class="mono">${n.watchdog_us ? `${Math.round(n.watchdog_us / 1000000)}s wd` : '--'}</td>
+        <td><div class="fleet-caps">${roleText}${capabilityText ? (roleText ? ' · ' : '') + capabilityText : ''}</div></td>
+      </tr>`;
     }).join('');
   }
 
