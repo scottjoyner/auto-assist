@@ -29,7 +29,7 @@ def export_rows(
     WITH i
     ORDER BY coalesce(i.policy_shadow_at_ts, i.created_at_ts, 0) ASC
     WITH i
-    LIMIT CASE WHEN $limit <= 0 THEN 2147483647 ELSE $limit END
+    LIMIT $limit
     RETURN
       i.id AS intent_id,
       i.source AS source,
@@ -62,7 +62,11 @@ def export_rows(
         records = session.run(
             query,
             {
-                "limit": int(limit),
+                "limit": (
+                    int(limit)
+                    if int(limit) > 0
+                    else 2_147_483_647
+                ),
                 "since_ts": int(since_ts),
             },
         )
