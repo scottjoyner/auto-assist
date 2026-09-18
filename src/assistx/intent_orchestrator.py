@@ -149,6 +149,39 @@ def process_intents_job() -> Dict[str, Any]:
         _reschedule()
 
 
+def _record_my_jev_policy_shadow(
+    neo: Any,
+    intent: Dict[str, Any],
+) -> None:
+    """Best-effort policy observation. Never changes live orchestration."""
+    try:
+        from .my_jev_policy import request_policy_shadow
+
+        evidence = request_policy_shadow(intent)
+        if not evidence:
+            return
+        recorder = getattr(
+            neo,
+            "record_intent_policy_shadow",
+            None,
+        )
+        if recorder is None:
+            logger.warning(
+                "my-jev shadow response produced but Neo4j recorder is unavailable"
+            )
+            return
+        recorder(
+            str(intent.get("id") or ""),
+            evidence,
+        )
+    except Exception as exc:
+        logger.warning(
+            "my-jev policy shadow failed for intent %s: %s",
+            intent.get("id"),
+            exc,
+        )
+
+
 def _process_intent(neo: Neo4jClient, intent: Dict[str, Any]) -> None:
     intent_id = intent.get("id")
     text = intent.get("text", "").strip()
@@ -158,6 +191,11 @@ def _process_intent(neo: Neo4jClient, intent: Dict[str, Any]) -> None:
     if not text:
         neo.mark_intent_orchestrated(intent_id)
         return
+
+    _record_my_jev_policy_shadow(
+        neo,
+        intent,
+    )
 
     if classification == CLASSIFICATION_CANCEL:
         if policy_action == "review_cancel":
