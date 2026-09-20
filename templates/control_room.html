@@ -17,18 +17,30 @@
     });
   </script>
   <div class="control-shell">
+    <div id="critical-alerts-banner" class="critical-alerts-banner" style="display:none;">
+      <div class="alert-content">
+        <span class="alert-icon">⚠</span>
+        <span class="alert-text"></span>
+      </div>
+    </div>
     <header class="topbar">
       <div class="identity">
-        <span class="prompt-mark">&gt;_</span>
+        <span class="prompt-mark">_&gt;</span>
         <div>
           <h1>ASSISTX FLEET CONTROL ROOM</h1>
           <p>physical runtimes // local inference // execution telemetry</p>
         </div>
       </div>
+      </div>
       <div class="topbar-actions">
         <span id="stream-state" class="state state-unknown">CONNECTING</span>
         <span id="data-age" class="mono">age --</span>
+        <span class="health-indicator">
+          <span class="health-score">--</span>
+          <span class="critical-alerts" style="display:none;"></span>
+        </span>
         <button id="manual-refresh" type="button">REFRESH</button>
+        <button id="quick-actions" type="button" class="quick-actions-btn">⚡ QUICK ACTIONS</button>
       </div>
     </header>
 

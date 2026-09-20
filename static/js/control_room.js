@@ -6,6 +6,9 @@
     source: null,
     reconnects: 0,
     lastReceivedAt: 0,
+    lastDataUpdate: 0,
+    healthScore: 0,
+    criticalAlerts: [],
   };
 
   const $ = (id) => document.getElementById(id);
@@ -35,6 +38,45 @@
   };
   const statusClass = (status) => `status-${String(status || 'unknown').toLowerCase()}`;
   const modelName = (model) => model.model_key || model.served_name || model.model_id || 'unknown';
+  const healthScore = (snapshot) => {
+    if (!snapshot) return 0;
+    let score = 100;
+    const doctor = snapshot.doctor || {};
+    const counts = doctor.counts || {};
+    if (counts.fail) score -= Math.min(30, counts.fail * 10);
+    if (counts.warn) score -= Math.min(20, counts.warn * 5);
+    const dependencies = snapshot.dependencies || [];
+    for (const dep of dependencies) {
+      if (dep.status === 'degraded') score -= 5;
+      if (dep.status === 'failed') score -= 15;
+    }
+    const runtimes = snapshot.runtimes || [];
+    for (const runtime of runtimes) {
+      if (runtime.status === 'offline') score -= 10;
+      if (runtime.status === 'error') score -= 20;
+    }
+    const power = snapshot.power || {};
+    if (power.error) score -= 25;
+    if (power.stale) score -= 10;
+    return Math.max(0, Math.min(100, score));
+  };
+  const getCriticalAlerts = (snapshot) => {
+    const alerts = [];
+    const doctor = snapshot.doctor || {};
+    const counts = doctor.counts || {};
+    if (counts.fail > 0) alerts.push(`${counts.fail} component(s) failed`);
+    const dependencies = snapshot.dependencies || [];
+    for (const dep of dependencies) {
+      if (dep.status === 'failed') alerts.push(`${dep.name} dependency failed`);
+    }
+    const runtimes = snapshot.runtimes || [];
+    for (const runtime of runtimes) {
+      if (runtime.status === 'error') alerts.push(`${runtime.node_id || 'runtime'} in error state`);
+    }
+    const power = snapshot.power || {};
+    if (power.error) alerts.push(`Power probe error: ${power.error}`);
+    return alerts;
+  };
 
   function renderSummary(snapshot) {
     const summary = snapshot.summary || {};
@@ -356,6 +398,9 @@
   function render(snapshot) {
     state.snapshot = snapshot;
     state.lastReceivedAt = Date.now();
+    state.lastDataUpdate = Date.now();
+    state.healthScore = healthScore(snapshot);
+    state.criticalAlerts = getCriticalAlerts(snapshot);
     renderSummary(snapshot);
     renderRuntimes(snapshot);
     renderDependencies(snapshot);
@@ -368,7 +413,134 @@
     const overall = snapshot.overall_status || 'unknown';
     streamState.className = `state state-${overall}`;
     streamState.textContent = overall.toUpperCase();
+    const dataAge = state.lastReceivedAt ? Date.now() - state.lastReceivedAt : 0;
+    const dataAgeElement = $('data-age');
+    if (dataAgeElement) {
+      if (dataAge < 5000) {
+        dataAgeElement.textContent = `LIVE`;
+        dataAgeElement.className = 'mono live-indicator';
+      } else if (dataAge < 30000) {
+        dataAgeElement.textContent = `${Math.round(dataAge / 1000)}s ago`;
+        dataAgeElement.className = 'mono warning-indicator';
+      } else {
+        dataAgeElement.textContent = `${Math.round(dataAge / 60000)}m ago`;
+        dataAgeElement.className = 'mono stale-indicator';
+      }
+    }
     $('collected-at').textContent = `snapshot ${compactTime(snapshot.collected_at_ts)}`;
+    const healthScoreElement = document.querySelector('.health-score');
+    if (healthScoreElement) {
+      healthScoreElement.textContent = `${state.healthScore}`;
+      healthScoreElement.className = `health-score ${state.healthScore >= 90 ? 'healthy' : state.healthScore >= 70 ? 'warning' : 'critical'}`;
+    }
+    const alertsElement = document.querySelector('.critical-alerts');
+    if (alertsElement) {
+      if (state.criticalAlerts.length > 0) {
+        alertsElement.innerHTML = state.criticalAlerts.map(alert => `<span class="alert-badge critical">${alert}</span>`).join('');
+        alertsElement.style.display = 'flex';
+      } else {
+        alertsElement.style.display = 'none';
+      }
+    }
+    const alertsBanner = document.getElementById('critical-alerts-banner');
+    if (alertsBanner) {
+      if (state.criticalAlerts.length > 0) {
+        alertsBanner.style.display = 'block';
+        const alertText = alertsBanner.querySelector('.alert-text');
+        if (alertText) {
+          alertText.textContent = `${state.criticalAlerts.length} critical issue(s) detected`;
+        }
+      } else {
+        alertsBanner.style.display = 'none';
+      }
+    }
+  }
+
+  function showQuickActions() {
+    const actions = [];
+    if (state.criticalAlerts.length > 0) {
+      actions.push({
+        label: 'View Critical Alerts',
+        action: () => {
+          const alertsBanner = document.getElementById('critical-alerts-banner');
+          if (alertsBanner) alertsBanner.scrollIntoView({ behavior: 'smooth' });
+        }
+      });
+    }
+    actions.push({
+      label: 'Refresh Data',
+      action: () => fetchOnce().catch((error) => {
+        $('stream-state').className = 'state state-unhealthy';
+        $('stream-state').textContent = error.message;
+      })
+    });
+    if (state.snapshot?.fleet_nodes?.some(n => n.status === 'offline' || n.status === 'error')) {
+      actions.push({
+        label: 'Check Offline Nodes',
+        action: () => {
+          const fleetSection = document.getElementById('fleet-nodes');
+          if (fleetSection) fleetSection.scrollIntoView({ behavior: 'smooth' });
+        }
+      });
+    }
+    if (state.snapshot?.dependencies?.some(d => d.status === 'failed')) {
+      actions.push({
+        label: 'Resolve Dependencies',
+        action: () => {
+          const depsSection = document.getElementById('dependencies');
+          if (depsSection) depsSection.scrollIntoView({ behavior: 'smooth' });
+        }
+      });
+    }
+    if (actions.length === 0) return;
+    const menu = document.createElement('div');
+    menu.className = 'quick-actions-menu';
+    menu.innerHTML = `
+      <div class="quick-actions-header">Quick Actions</div>
+      ${actions.map(action => `
+        <button class="quick-action-btn" onclick="this.closest('.quick-actions-menu').remove(); ${action.action.toString()}">
+          ${action.label}
+        </button>
+      `).join('')}
+    `;
+    document.body.appendChild(menu);
+    menu.style.position = 'fixed';
+    menu.style.top = '60px';
+    menu.style.right = '20px';
+    menu.style.backgroundColor = 'white';
+    menu.style.border = '1px solid var(--line)';
+    menu.style.borderRadius = '8px';
+    menu.style.padding = '8px';
+    menu.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+    menu.style.zIndex = '1000';
+    const header = menu.querySelector('.quick-actions-header');
+    if (header) {
+      header.style.fontWeight = '600';
+      header.style.paddingBottom = '8px';
+      header.style.borderBottom = '1px solid var(--line)';
+      header.style.marginBottom = '8px';
+    }
+    const buttons = menu.querySelectorAll('.quick-action-btn');
+    buttons.forEach(btn => {
+      btn.style.display = 'block';
+      btn.style.width = '100%';
+      btn.style.padding = '8px 12px';
+      btn.style.marginBottom = '4px';
+      btn.style.textAlign = 'left';
+      btn.style.border = 'none';
+      btn.style.backgroundColor = 'transparent';
+      btn.style.cursor = 'pointer';
+      btn.style.borderRadius = '4px';
+      btn.addEventListener('mouseover', (e) => {
+        e.target.style.backgroundColor = 'var(--hover-bg, #f5f5f5)';
+      });
+      btn.addEventListener('mouseout', (e) => {
+        e.target.style.backgroundColor = 'transparent';
+      });
+    });
+    setTimeout(() => {
+      if (menu.parentNode) menu.parentNode.removeChild(menu);
+    }, 5000);
   }
 
   async function fetchOnce() {
@@ -398,6 +570,13 @@
     $('stream-state').className = 'state state-unhealthy';
     $('stream-state').textContent = error.message;
   }));
+  const quickActionsBtn = document.getElementById('quick-actions');
+  if (quickActionsBtn) {
+    quickActionsBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showQuickActions();
+    });
+  }
   $('only-active').addEventListener('change', () => {
     if (state.snapshot) renderActivity(state.snapshot);
   });

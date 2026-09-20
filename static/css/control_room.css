@@ -196,6 +196,56 @@ main { display: grid; gap: 10px; margin-top: 10px; }
 .source-badge.source-manifest-primary { color: var(--amber); }
 .source-badge.source-live-empty { color: var(--muted); }
 .source-badge.source-live { color: var(--green); }
+.health-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px;
+}
+.health-score {
+  font-weight: 700;
+  font-size: 0.9rem;
+  padding: 2px 8px;
+  border-radius: 12px;
+  color: white;
+}
+.health-score.healthy { background-color: var(--green); }
+.health-score.warning { background-color: var(--amber); }
+.health-score.critical { background-color: var(--red); }
+.alert-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: white;
+}
+.alert-badge.critical { background-color: var(--red); }
+.live-indicator { color: var(--green); font-weight: 600; }
+.warning-indicator { color: var(--amber); font-weight: 600; }
+.stale-indicator { color: var(--red); font-weight: 600; }
+.critical-alerts-banner {
+  background-color: var(--red);
+  color: white;
+  padding: 8px 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.alert-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.alert-icon {
+  font-size: 1.2rem;
+}
+.alert-text {
+  flex: 1;
+}
 .clue-badge.opacity-inferred { color: var(--amber); }
 .clue-badge.opacity-opaque { color: var(--red); }
 
