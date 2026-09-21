@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from assistx.my_jev_trajectory import enrich_shadow_trajectory
 from assistx.neo4j_client import Neo4jClient
 
 
@@ -51,9 +52,36 @@ def export_rows(
           .status,
           .priority,
           .claimed_by,
+          .approved_by,
+          .approved_at_ts,
+          .completed_by,
           .result_summary,
+          .result_json,
           .created_at_ts,
-          .completed_at_ts
+          .completed_at_ts,
+          agent_runs: [(t)-[:EXECUTED_BY]->(r:AgentRun) |
+            r{
+              .id,
+              .agent,
+              .model,
+              .status,
+              .summary,
+              .result_json,
+              .started_at_ts,
+              .ended_at_ts,
+              tool_calls: [(r)-[:USED_TOOL]->(k:ToolCall) |
+                k{
+                  .id,
+                  .tool,
+                  .ok,
+                  .input_json,
+                  .output_json,
+                  .started_at_ts,
+                  .ended_at_ts
+                }
+              ]
+            }
+          ]
         }
       ] AS created_tasks
     """
@@ -78,9 +106,7 @@ def export_rows(
     for row in rows:
         # The raw export has not passed through a redaction pipeline.
         row["redacted"] = False
-        metadata = row.get("created_tasks")
-        if not isinstance(metadata, list):
-            row["created_tasks"] = []
+        enrich_shadow_trajectory(row)
     return rows
 
 
