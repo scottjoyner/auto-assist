@@ -199,3 +199,50 @@ def test_shadow_job_owns_and_closes_its_neo4j_client(
 
     assert observed == [(neo, payload)]
     assert neo.closed is True
+
+
+def test_shadow_persistence_only_writes_namespaced_shadow_fields():
+    captured = {}
+
+    class _Result:
+        def consume(self):
+            return None
+
+    class _Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def run(self, query, params):
+            captured["query"] = query
+            captured["params"] = params
+            return _Result()
+
+    client = neo4j_client.Neo4jClient.__new__(
+        neo4j_client.Neo4jClient
+    )
+    client._session = lambda: _Session()
+
+    client.record_intent_policy_shadow(
+        "intent-8",
+        {
+            "response": {
+                "contract": "assistx-agent-policy-v1",
+                "resolved": {
+                    "model_route": "act",
+                    "disposition": "propose_action",
+                },
+                "assistx": {
+                    "policy_action": "review_dispatch",
+                },
+            },
+        },
+    )
+
+    query = captured["query"]
+    assert "policy_shadow_json" in query
+    assert "policy_shadow_at_ts" in query
+    assert "i.updated_at=" not in query
+    assert "i.updated_at_ts=" not in query
