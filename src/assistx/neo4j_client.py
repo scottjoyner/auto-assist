@@ -373,9 +373,7 @@ class Neo4jClient:
                     i.policy_shadow_disposition=$disposition,
                     i.policy_shadow_policy_action=$shadow_policy_action,
                     i.policy_shadow_at=datetime(),
-                    i.policy_shadow_at_ts=timestamp(),
-                    i.updated_at=datetime(),
-                    i.updated_at_ts=timestamp()
+                    i.policy_shadow_at_ts=timestamp()
                 """,
                 {
                     "intent_id": intent_id,
