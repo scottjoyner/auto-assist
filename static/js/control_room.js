@@ -60,22 +60,92 @@
     if (power.stale) score -= 10;
     return Math.max(0, Math.min(100, score));
   };
-  const getCriticalAlerts = (snapshot) => {
-    const alerts = [];
+  const getComponentHealth = (snapshot) => {
+    const components = [];
     const doctor = snapshot.doctor || {};
     const counts = doctor.counts || {};
-    if (counts.fail > 0) alerts.push(`${counts.fail} component(s) failed`);
+    components.push({
+      name: 'System',
+      status: counts.fail > 0 || counts.warn > 0 ? 'critical' : 'healthy',
+      score: Math.max(0, 100 - (counts.fail * 10 + counts.warn * 5)),
+      issues: counts.fail > 0 ? `${counts.fail} failed` : counts.warn > 0 ? `${counts.warn} warnings` : 'none'
+    });
     const dependencies = snapshot.dependencies || [];
     for (const dep of dependencies) {
-      if (dep.status === 'failed') alerts.push(`${dep.name} dependency failed`);
+      components.push({
+        name: dep.name,
+        status: dep.status,
+        score: dep.status === 'healthy' ? 100 : dep.status === 'degraded' ? 50 : 0,
+        issues: dep.status === 'degraded' ? 'degraded' : dep.status === 'failed' ? 'failed' : 'none',
+        category: dep.category,
+        required: dep.required
+      });
     }
     const runtimes = snapshot.runtimes || [];
     for (const runtime of runtimes) {
-      if (runtime.status === 'error') alerts.push(`${runtime.node_id || 'runtime'} in error state`);
+      components.push({
+        name: runtime.node_id || runtime.runtime_instance_id || 'unknown',
+        status: runtime.status,
+        score: runtime.status === 'online' ? 100 : runtime.status === 'offline' ? 0 : 50,
+        issues: runtime.status === 'offline' ? 'offline' : runtime.status === 'error' ? 'error' : 'none',
+        runtime: runtime.runtime_kind,
+        transport: runtime.selected_transport
+      });
     }
     const power = snapshot.power || {};
-    if (power.error) alerts.push(`Power probe error: ${power.error}`);
-    return alerts;
+    components.push({
+      name: 'Power',
+      status: power.error ? 'critical' : power.stale ? 'warning' : 'healthy',
+      score: power.error ? 0 : power.stale ? 50 : 100,
+      issues: power.error ? `error: ${power.error}` : power.stale ? 'stale' : 'none',
+      plugCount: (power.plugs || {}).length
+    });
+    return components;
+  };
+  const getTrendData = (snapshot) => {
+    const trends = [];
+    const now = Date.now();
+    if (snapshot.doctor?.counts?.fail) {
+      trends.push({
+        metric: 'Component Failures',
+        current: snapshot.doctor.counts.fail,
+        trend: 'increasing',
+        change: '+1',
+        severity: snapshot.doctor.counts.fail > 2 ? 'critical' : snapshot.doctor.counts.fail > 0 ? 'warning' : 'stable'
+      });
+    }
+    const dependencies = snapshot.dependencies || [];
+    const failedDeps = dependencies.filter(d => d.status === 'failed').length;
+    if (failedDeps > 0) {
+      trends.push({
+        metric: 'Failed Dependencies',
+        current: failedDeps,
+        trend: 'increasing',
+        change: `+${failedDeps}`,
+        severity: failedDeps > 2 ? 'critical' : failedDeps > 0 ? 'warning' : 'stable'
+      });
+    }
+    const offlineRuntimes = (snapshot.runtimes || []).filter(r => r.status === 'offline').length;
+    if (offlineRuntimes > 0) {
+      trends.push({
+        metric: 'Offline Runtimes',
+        current: offlineRuntimes,
+        trend: 'increasing',
+        change: `+${offlineRuntimes}`,
+        severity: offlineRuntimes > 2 ? 'critical' : offlineRuntimes > 0 ? 'warning' : 'stable'
+      });
+    }
+    const errorRuntimes = (snapshot.runtimes || []).filter(r => r.status === 'error').length;
+    if (errorRuntimes > 0) {
+      trends.push({
+        metric: 'Error Runtimes',
+        current: errorRuntimes,
+        trend: 'increasing',
+        change: `+${errorRuntimes}`,
+        severity: errorRuntimes > 1 ? 'critical' : errorRuntimes > 0 ? 'warning' : 'stable'
+      });
+    }
+    return trends;
   };
 
   function renderSummary(snapshot) {
@@ -453,6 +523,32 @@
       } else {
         alertsBanner.style.display = 'none';
       }
+    }
+    const componentHealthElement = document.querySelector('.component-health');
+    if (componentHealthElement) {
+      const components = getComponentHealth(snapshot);
+      componentHealthElement.innerHTML = components.map(comp => `
+        <div class="component-health-item">
+          <span class="component-name">${comp.name}</span>
+          <span class="component-status ${comp.status}">${comp.status.toUpperCase()}</span>
+          <span class="component-score">${comp.score}</span>
+          <span class="component-issues">${comp.issues}</span>
+          ${comp.category ? `<span class="component-category">${comp.category}</span>` : ''}
+          ${comp.runtime ? `<span class="component-runtime">${comp.runtime}</span>` : ''}
+        </div>
+      `).join('');
+    }
+    const trendDataElement = document.querySelector('.trend-data');
+    if (trendDataElement) {
+      const trends = getTrendData(snapshot);
+      trendDataElement.innerHTML = trends.map(trend => `
+        <div class="trend-item ${trend.severity}">
+          <span class="trend-metric">${trend.metric}</span>
+          <span class="trend-value">${trend.current}</span>
+          <span class="trend-change ${trend.trend}">${trend.change}</span>
+          <span class="trend-severity ${trend.severity}">${trend.severity.toUpperCase()}</span>
+        </div>
+      `).join('');
     }
   }
 
