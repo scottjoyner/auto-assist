@@ -149,6 +149,65 @@ def process_intents_job() -> Dict[str, Any]:
         _reschedule()
 
 
+_POLICY_SHADOW_SNAPSHOT_FIELDS = (
+    "id",
+    "source",
+    "text",
+    "classification",
+    "policy_action",
+    "metadata_json",
+    "metadata",
+)
+
+
+def _policy_shadow_snapshot(
+    intent: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Copy only policy-observation inputs into the asynchronous shadow job."""
+    return {
+        key: intent.get(key)
+        for key in _POLICY_SHADOW_SNAPSHOT_FIELDS
+        if key in intent
+    }
+
+
+def _enqueue_my_jev_policy_shadow(
+    intent: Dict[str, Any],
+) -> None:
+    """Best-effort enqueue after live orchestration has already committed."""
+    try:
+        from .my_jev_policy import shadow_enabled
+
+        if not shadow_enabled():
+            return
+        get_q().enqueue(
+            record_my_jev_policy_shadow_job,
+            _policy_shadow_snapshot(intent),
+        )
+    except Exception as exc:
+        logger.warning(
+            "my-jev policy shadow enqueue failed for intent %s: %s",
+            intent.get("id"),
+            exc,
+        )
+
+
+def record_my_jev_policy_shadow_job(
+    intent: Dict[str, Any],
+) -> None:
+    """Run shadow inference outside the live intent-handling call path."""
+    from .neo4j_client import Neo4jClient
+
+    neo = Neo4jClient()
+    try:
+        _record_my_jev_policy_shadow(
+            neo,
+            intent,
+        )
+    finally:
+        neo.close()
+
+
 def _record_my_jev_policy_shadow(
     neo: Any,
     intent: Dict[str, Any],
@@ -192,11 +251,6 @@ def _process_intent(neo: Neo4jClient, intent: Dict[str, Any]) -> None:
         neo.mark_intent_orchestrated(intent_id)
         return
 
-    _record_my_jev_policy_shadow(
-        neo,
-        intent,
-    )
-
     if classification == CLASSIFICATION_CANCEL:
         if policy_action == "review_cancel":
             _queue_intent_review(neo, intent, policy_action, "Cancellation intent below confidence threshold")
@@ -218,6 +272,7 @@ def _process_intent(neo: Neo4jClient, intent: Dict[str, Any]) -> None:
             _queue_intent_review(neo, intent, policy_action, "Unknown intent classification requires review")
 
     neo.mark_intent_orchestrated(intent_id)
+    _enqueue_my_jev_policy_shadow(intent)
 
 
 def _intent_policy_action(intent: Dict[str, Any]) -> str:
