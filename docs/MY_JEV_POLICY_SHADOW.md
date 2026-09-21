@@ -89,21 +89,43 @@ Each observed Intent stores:
 - shadow timestamp.
 
 The evidence includes the current legacy classification/policy action alongside
-the model route. This lets an extractor later build rows such as:
+the model route. The operator-run exporter now enriches each row with a
+read-only `trajectory` object assembled from existing graph evidence:
+
+- explicit Task approval fields when present;
+- terminal Task status, completion actor, summary and result;
+- linked AgentRun status/model/result;
+- linked ToolCall input/output and success flag;
+- verification evidence recorded by the existing `acceptance` tool or explicit
+  task-result verification fields.
+
+Approval and verification are intentionally **not inferred** from `READY`,
+`DONE`, a successful tool call, or any other proxy. Missing explicit approval
+evidence therefore means "unknown/not recorded", not "not approved".
+
+This slice does not yet emit user-correction labels because AssistX does not have
+one canonical Intent-to-correction relation to read. A future evidence-only slice
+can add that once the provenance link is explicit; the exporter must not guess
+corrections from later messages.
+
+The resulting rows contain:
 
 ```text
 policy state
 model probability vector
 legacy behavior
 resolved shadow recommendation
-eventual task/tool outcome
-approval result
-user correction
-verification evidence
+explicit approval evidence
+task outcome
+agent runs
+tool calls
+explicit verification evidence
 ```
 
 That is the basis for the DAgger-style trajectory loop described in
-`scottjoyner/my-jev/docs/ASSISTX_POLICY.md`.
+`scottjoyner/my-jev/docs/ASSISTX_POLICY.md`. The exporter remains read-only and
+does not feed any trajectory field back into classification, dispatch, approval,
+tool authorization, mutation authority or recovery control.
 
 ## Rollout phases
 
