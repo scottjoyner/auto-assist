@@ -93,6 +93,10 @@ def test_trajectory_does_not_infer_approval_from_ready_or_done_status():
     trajectory = enrich_shadow_trajectory(row)["trajectory"]
 
     assert trajectory["approvals"] == []
+    assert [
+        item["task_id"]
+        for item in trajectory["task_outcomes"]
+    ] == ["task-done"]
 
 
 def test_trajectory_does_not_infer_verification_from_successful_task():
