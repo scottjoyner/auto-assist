@@ -9,178 +9,139 @@
   <link rel="stylesheet" href="/static/css/control_room.css">
 </head>
 <body>
-  <div class="control-shell">
-    <header class="topbar">
-      <div class="identity">
-        <span class="prompt-mark">&gt;_</span>
-        <div>
-          <h1>ASSISTX FLEET CONTROL ROOM</h1>
-          <p>physical runtimes // local inference // execution telemetry</p>
+  {% extends "base.html" %}
+  {% block content %}
+  <main>
+    <section id="summary-strip" class="summary-strip" aria-label="Fleet summary">
+      <div class="summary-cell"><span>FLEET</span><strong id="summary-fleet">--</strong><small id="summary-fleet-note">runtimes</small></div>
+      <div class="summary-cell"><span>INFERENCE</span><strong id="summary-inference">LOCAL</strong><small>strict offline</small></div>
+      <div class="summary-cell"><span>REQUESTS</span><strong id="summary-requests">--</strong><small id="summary-queue">-- queued</small></div>
+      <div class="summary-cell"><span>CAPACITY</span><strong id="summary-capacity">--</strong><small>slots free</small></div>
+      <div class="summary-cell"><span>MODELS</span><strong id="summary-models">--</strong><small>loaded</small></div>
+      <div class="summary-cell"><span>THROUGHPUT</span><strong id="summary-tps">--</strong><small>tokens / second</small></div>
+      <div class="summary-cell"><span>ERRORS</span><strong id="summary-errors">--</strong><small>observed</small></div>
+      <div class="summary-cell"><span>DEPENDENCIES</span><strong id="summary-dependencies">--</strong><small>required failures</small></div>
+    </section>
+
+    <section class="panel panel-runtimes">
+      <div class="panel-head">
+        <div><span class="panel-index">01</span><h2>PHYSICAL RUNTIMES</h2></div>
+        <p>One row per process identity. LAN and Tailscale paths share the same slot counter.</p>
+      </div>
+      <div class="table-frame">
+        <table class="data-table runtime-table">
+          <thead>
+            <tr>
+              <th>NODE</th><th>RUNTIME</th><th>MODE</th><th>LOADED MODEL</th><th>PATH</th><th>SLOTS</th><th>QUEUE</th><th>STATUS</th>
+            </tr>
+          </thead>
+          <tbody id="runtime-body"><tr><td colspan="8" class="empty">WAITING FOR RUNTIME TELEMETRY</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div><span class="panel-index">01.5</span><h2>COMPONENT HEALTH</h2></div>
+        <p>Detailed health status of all system components with individual scores and issues.</p>
+      </div>
+      <div class="component-health-grid">
+        <div class="component-health-header">
+          <span>COMPONENT</span>
+          <span>STATUS</span>
+          <span>SCORE</span>
+          <span>ISSUES</span>
+          <span>CATEGORY</span>
+          <span>DETAILS</span>
+        </div>
+        <div class="component-health-body">
+          <div class="component-health-loading">Loading component health data...</div>
         </div>
       </div>
-      <div class="topbar-actions">
-        <span id="stream-state" class="state state-unknown">CONNECTING</span>
-        <span id="data-age" class="mono">age --</span>
-        <span class="health-indicator">
-          <span class="health-score">--</span>
-          <span class="critical-alerts" style="display:none;"></span>
-        </span>
-        <button id="export-data" type="button" class="btn btn-outline">EXPORT DATA</button>
-        <button id="manual-refresh" type="button">REFRESH</button>
-        <button id="quick-actions" type="button" class="quick-actions-btn">⚡ QUICK ACTIONS</button>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div><span class="panel-index">01.6</span><h2>TREND ANALYSIS</h2></div>
+        <p>Key metrics trends and predictive indicators for proactive monitoring.</p>
       </div>
-    </header>
+      <div class="trend-grid">
+        <div class="trend-header">
+          <span>METRIC</span>
+          <span>CURRENT</span>
+          <span>TREND</span>
+          <span>SEVERITY</span>
+        </div>
+        <div class="trend-body">
+          <div class="trend-loading">Loading trend data...</div>
+        </div>
+      </div>
+    </section>
 
-    <nav class="command-nav" aria-label="Operator navigation">
-      <a class="active" href="/control-room">CONTROL ROOM</a>
-      <a href="/tasks/ready">TASKS</a>
-      <a href="/review">APPROVALS</a>
-      <a href="#dependencies">DEPENDENCIES</a>
-      <a href="/metrics">METRICS</a>
-    </nav>
-
-    <main>
-      <section id="summary-strip" class="summary-strip" aria-label="Fleet summary">
-        <div class="summary-cell"><span>FLEET</span><strong id="summary-fleet">--</strong><small id="summary-fleet-note">runtimes</small></div>
-        <div class="summary-cell"><span>INFERENCE</span><strong id="summary-inference">LOCAL</strong><small>strict offline</small></div>
-        <div class="summary-cell"><span>REQUESTS</span><strong id="summary-requests">--</strong><small id="summary-queue">-- queued</small></div>
-        <div class="summary-cell"><span>CAPACITY</span><strong id="summary-capacity">--</strong><small>slots free</small></div>
-        <div class="summary-cell"><span>MODELS</span><strong id="summary-models">--</strong><small>loaded</small></div>
-        <div class="summary-cell"><span>THROUGHPUT</span><strong id="summary-tps">--</strong><small>tokens / second</small></div>
-        <div class="summary-cell"><span>ERRORS</span><strong id="summary-errors">--</strong><small>observed</small></div>
-        <div class="summary-cell"><span>DEPENDENCIES</span><strong id="summary-dependencies">--</strong><small>required failures</small></div>
+    <div class="two-column">
+      <section id="dependencies" class="panel">
+        <div class="panel-head">
+          <div><span class="panel-index">02</span><h2>DEPENDENCIES</h2></div>
+          <p>Required services, private network, mounts, executors, and policy state.</p>
+        </div>
+        <div id="dependency-grid" class="dependency-grid"><div class="empty">PROBING DEPENDENCIES</div></div>
       </section>
 
-      <section class="panel panel-runtimes">
+      <section class="panel">
         <div class="panel-head">
-          <div><span class="panel-index">01</span><h2>PHYSICAL RUNTIMES</h2></div>
-          <p>One row per process identity. LAN and Tailscale paths share the same slot counter.</p>
+          <div><span class="panel-index">03</span><h2>MODEL PERFORMANCE</h2></div>
+          <p>Measured outcomes from the fleet performance ledger.</p>
         </div>
-        <div class="table-frame">
-          <table class="data-table runtime-table">
-            <thead>
-              <tr>
-                <th>NODE</th><th>RUNTIME</th><th>MODE</th><th>LOADED MODEL</th><th>PATH</th><th>SLOTS</th><th>QUEUE</th><th>STATUS</th>
-              </tr>
-            </thead>
-            <tbody id="runtime-body"><tr><td colspan="8" class="empty">WAITING FOR RUNTIME TELEMETRY</td></tr></tbody>
+        <div class="table-frame compact">
+          <table class="data-table">
+            <thead><tr><th>MODEL</th><th>NODE</th><th>RUNS</th><th>TPS</th><th>TTFT</th><th>LATENCY</th><th>ERROR</th><th>QUALITY</th></tr></thead>
+            <tbody id="performance-body"><tr><td colspan="8" class="empty">NO MODEL PERFORMANCE SAMPLES</td></tr></tbody>
           </table>
         </div>
       </section>
+    </div>
 
-      <section class="panel">
-        <div class="panel-head">
-          <div><span class="panel-index">01.5</span><h2>COMPONENT HEALTH</h2></div>
-          <p>Detailed health status of all system components with individual scores and issues.</p>
+    <section class="panel activity-panel">
+      <div class="panel-head">
+        <div><span class="panel-index">04</span><h2>LIVE EXECUTION FEED</h2></div>
+        <div class="activity-controls">
+          <label><input id="only-active" type="checkbox"> ACTIVE ONLY</label>
+          <span id="activity-count" class="mono">0 events</span>
         </div>
-        <div class="component-health-grid">
-          <div class="component-health-header">
-            <span>COMPONENT</span>
-            <span>STATUS</span>
-            <span>SCORE</span>
-            <span>ISSUES</span>
-            <span>CATEGORY</span>
-            <span>DETAILS</span>
-          </div>
-          <div class="component-health-body">
-            <div class="component-health-loading">Loading component health data...</div>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head">
-          <div><span class="panel-index">01.6</span><h2>TREND ANALYSIS</h2></div>
-          <p>Key metrics trends and predictive indicators for proactive monitoring.</p>
-        </div>
-        <div class="trend-grid">
-          <div class="trend-header">
-            <span>METRIC</span>
-            <span>CURRENT</span>
-            <span>TREND</span>
-            <span>SEVERITY</span>
-          </div>
-          <div class="trend-body">
-            <div class="trend-loading">Loading trend data...</div>
-          </div>
-        </div>
-      </section>
-
-      <div class="two-column">
-        <section id="dependencies" class="panel">
-          <div class="panel-head">
-            <div><span class="panel-index">02</span><h2>DEPENDENCIES</h2></div>
-            <p>Required services, private network, mounts, executors, and policy state.</p>
-          </div>
-          <div id="dependency-grid" class="dependency-grid"><div class="empty">PROBING DEPENDENCIES</div></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <div><span class="panel-index">03</span><h2>MODEL PERFORMANCE</h2></div>
-            <p>Measured outcomes from the fleet performance ledger.</p>
-          </div>
-          <div class="table-frame compact">
-            <table class="data-table">
-              <thead><tr><th>MODEL</th><th>NODE</th><th>RUNS</th><th>TPS</th><th>TTFT</th><th>LATENCY</th><th>ERROR</th><th>QUALITY</th></tr></thead>
-              <tbody id="performance-body"><tr><td colspan="8" class="empty">NO MODEL PERFORMANCE SAMPLES</td></tr></tbody>
-            </table>
-          </div>
-        </section>
       </div>
+      <div id="activity-feed" class="activity-feed"><div class="empty">WAITING FOR FLEET ACTIVITY</div></div>
+    </section>
 
-      <section class="panel activity-panel">
-        <div class="panel-head">
-          <div><span class="panel-index">04</span><h2>LIVE EXECUTION FEED</h2></div>
-          <div class="activity-controls">
-            <label><input id="only-active" type="checkbox"> ACTIVE ONLY</label>
-            <span id="activity-count" class="mono">0 events</span>
-          </div>
-        </div>
-        <div id="activity-feed" class="activity-feed"><div class="empty">WAITING FOR FLEET ACTIVITY</div></div>
-      </section>
+    <section class="panel">
+      <div class="panel-head">
+        <div><span class="panel-index">05</span><h2>RECOVERY ISLAND</h2></div>
+        <p>Beelink heartbeat: degraded tier, replication journal, NAS5 carve progress.</p>
+      </div>
+      <div id="recovery-grid" class="dependency-grid"><div class="empty">WAITING FOR ISLAND HEARTBEAT</div></div>
+    </section>
 
-      <section class="panel">
-        <div class="panel-head">
-          <div><span class="panel-index">05</span><h2>RECOVERY ISLAND</h2></div>
-          <p>Beelink heartbeat: degraded tier, replication journal, NAS5 carve progress.</p>
-        </div>
-        <div id="recovery-grid" class="dependency-grid"><div class="empty">WAITING FOR ISLAND HEARTBEAT</div></div>
-      </section>
+    <section class="panel panel-runtimes">
+      <div class="panel-head">
+        <div><span class="panel-index">06</span><h2>FLEET NODES</h2></div>
+        <p>Registry nodes enriched with canonical hardware, live graph model state, and operator hints. <span id="doctor-chip" class="mono">--</span></p>
+      </div>
+      <div class="table-frame compact fleet-frame">
+        <table class="data-table fleet-table">
+          <thead><tr><th>NODE</th><th>INSTRUMENT</th><th>STATUS</th><th>IP</th><th>LAST SEEN</th><th>LOADED</th><th>AVAILABLE</th><th>EVIDENCE</th><th>OBSERVED</th><th>WATCHDOG</th><th>CAPS</th></tr></thead>
+          <tbody id="fleet-nodes-body"><tr><td colspan="11" class="empty">WAITING FOR NODE REGISTRY</td></tr></tbody>
+        </table>
+      </div>
+    </section>
 
-      <section class="panel panel-runtimes">
-        <div class="panel-head">
-          <div><span class="panel-index">06</span><h2>FLEET NODES</h2></div>
-          <p>Registry nodes enriched with canonical hardware, live graph model state, and operator hints. <span id="doctor-chip" class="mono">--</span></p>
-        </div>
-        <div class="table-frame compact fleet-frame">
-          <table class="data-table fleet-table">
-            <thead><tr><th>NODE</th><th>INSTRUMENT</th><th>STATUS</th><th>IP</th><th>LAST SEEN</th><th>LOADED</th><th>AVAILABLE</th><th>EVIDENCE</th><th>OBSERVED</th><th>WATCHDOG</th><th>CAPS</th></tr></thead>
-            <tbody id="fleet-nodes-body"><tr><td colspan="11" class="empty">WAITING FOR NODE REGISTRY</td></tr></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head">
-          <div><span class="panel-index">07</span><h2>POWER</h2></div>
-          <p>Govee plug health gates via fleet-plug. Mutations: fleet-plug CLI only.</p>
-        </div>
-        <div id="power-grid" class="dependency-grid"><div class="empty">PROBING PLUG GATES</div></div>
-      </section>
-    </main>
-
-    <footer>
-      <span>AssistX authority: Neo4j</span>
-      <span>Routing: strict-offline auto-router</span>
-      <span>Executor mutation: operator-gated</span>
-      <span id="collected-at">snapshot --</span>
-    </footer>
-  </div>
-
-  <template id="runtime-detail-template">
-    <tr class="runtime-detail"><td colspan="8"><pre></pre></td></tr>
-  </template>
+    <section class="panel">
+      <div class="panel-head">
+        <div><span class="panel-index">07</span><h2>POWER</h2></div>
+        <p>Govee plug health gates via fleet-plug. Mutations: fleet-plug CLI only.</p>
+      </div>
+      <div id="power-grid" class="dependency-grid"><div class="empty">PROBING PLUG GATES</div></div>
+    </section>
+  </main>
+  {% endblock %}
   <script src="/static/js/control_room.js"></script>
 </body>
 </html>
