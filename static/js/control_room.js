@@ -604,6 +604,108 @@
     menu.style.top = '60px';
     menu.style.right = '20px';
     menu.style.backgroundColor = 'white';
+    menu.style.border = '1px solid var(--line-hot)';
+    menu.style.borderRadius = '8px';
+    menu.style.padding = '8px';
+    menu.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+    menu.style.zIndex = '1000';
+    const header = menu.querySelector('.quick-actions-header');
+    if (header) {
+      header.style.fontWeight = '600';
+      header.style.paddingBottom = '8px';
+      header.style.borderBottom = '1px solid var(--line)';
+      header.style.marginBottom = '8px';
+    }
+    const buttons = menu.querySelectorAll('.quick-action-btn');
+    buttons.forEach(btn => {
+      btn.style.display = 'block';
+      btn.style.width = '100%';
+      btn.style.padding = '8px 12px';
+      btn.style.marginBottom = '4px';
+      btn.style.textAlign = 'left';
+      btn.style.border = 'none';
+      btn.style.backgroundColor = 'transparent';
+      btn.style.cursor = 'pointer';
+      btn.style.borderRadius = '4px';
+      btn.addEventListener('mouseover', (e) => {
+        e.target.style.backgroundColor = 'var(--hover-bg, #f5f5f5)';
+      });
+      btn.addEventListener('mouseout', (e) => {
+        e.target.style.backgroundColor = 'transparent';
+      });
+    });
+    setTimeout(() => {
+      if (menu.parentNode) menu.parentNode.removeChild(menu);
+    }, 5000);
+  }
+
+  function init() {
+    Navigation.init();
+    fetchOnce();
+    connectStream();
+    const quickActionsBtn = document.getElementById('quick-actions');
+    if (quickActionsBtn) {
+      quickActionsBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        showQuickActions();
+      });
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', init);
+
+  function showQuickActions() {
+    const actions = [];
+    if (state.criticalAlerts.length > 0) {
+      actions.push({
+        label: 'View Critical Alerts',
+        action: () => {
+          const alertsBanner = document.getElementById('critical-alerts-banner');
+          if (alertsBanner) alertsBanner.scrollIntoView({ behavior: 'smooth' });
+        }
+      });
+    }
+    actions.push({
+      label: 'Refresh Data',
+      action: () => fetchOnce().catch((error) => {
+        $('stream-state').className = 'state state-unhealthy';
+        $('stream-state').textContent = error.message;
+      })
+    });
+    if (state.snapshot?.fleet_nodes?.some(n => n.status === 'offline' || n.status === 'error')) {
+      actions.push({
+        label: 'Check Offline Nodes',
+        action: () => {
+          const fleetSection = document.getElementById('fleet-nodes');
+          if (fleetSection) fleetSection.scrollIntoView({ behavior: 'smooth' });
+        }
+      });
+    }
+    if (state.snapshot?.dependencies?.some(d => d.status === 'failed')) {
+      actions.push({
+        label: 'Resolve Dependencies',
+        action: () => {
+          const depsSection = document.getElementById('dependencies');
+          if (depsSection) depsSection.scrollIntoView({ behavior: 'smooth' });
+        }
+      });
+    }
+    if (actions.length === 0) return;
+    const menu = document.createElement('div');
+    menu.className = 'quick-actions-menu';
+    menu.innerHTML = `
+      <div class="quick-actions-header">Quick Actions</div>
+      ${actions.map(action => `
+        <button class="quick-action-btn" onclick="this.closest('.quick-actions-menu').remove(); ${action.action.toString()}">
+          ${action.label}
+        </button>
+      `).join('')}
+    `;
+    document.body.appendChild(menu);
+    menu.style.position = 'fixed';
+    menu.style.top = '60px';
+    menu.style.right = '20px';
+    menu.style.backgroundColor = 'white';
     menu.style.border = '1px solid var(--line)';
     menu.style.borderRadius = '8px';
     menu.style.padding = '8px';

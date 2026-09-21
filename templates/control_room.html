@@ -3,34 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="legacy-page-alias" content="Fleet view">
   <title>AssistX // Fleet Control Room</title>
-  <link rel="stylesheet" href="{{ url_for('static', path='css/control_room.css') }}?v=20260917-control-room-v3">
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+  <link rel="stylesheet" href="/static/css/control_room.css">
 </head>
 <body>
-  <div id="fatal-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#7a1f1f;color:#fff;font:13px monospace;padding:8px 12px"></div>
-  <script>
-    window.addEventListener('error', function (e) {
-      var b = document.getElementById('fatal-banner');
-      b.style.display = 'block';
-      b.textContent = 'JS ERROR: ' + e.message + ' @ ' + e.filename + ':' + e.lineno;
-    });
-  </script>
   <div class="control-shell">
-    <div id="critical-alerts-banner" class="critical-alerts-banner" style="display:none;">
-      <div class="alert-content">
-        <span class="alert-icon">⚠</span>
-        <span class="alert-text"></span>
-      </div>
-    </div>
     <header class="topbar">
       <div class="identity">
-        <span class="prompt-mark">_&gt;</span>
+        <span class="prompt-mark">&gt;_</span>
         <div>
           <h1>ASSISTX FLEET CONTROL ROOM</h1>
           <p>physical runtimes // local inference // execution telemetry</p>
         </div>
-      </div>
       </div>
       <div class="topbar-actions">
         <span id="stream-state" class="state state-unknown">CONNECTING</span>
@@ -136,7 +122,7 @@
           <div class="table-frame compact">
             <table class="data-table">
               <thead><tr><th>MODEL</th><th>NODE</th><th>RUNS</th><th>TPS</th><th>TTFT</th><th>LATENCY</th><th>ERROR</th><th>QUALITY</th></tr></thead>
-              <tbody id="performance-body"><tr><td colspan="8" class="empty">NO PERFORMANCE SAMPLES</td></tr></tbody>
+              <tbody id="performance-body"><tr><td colspan="8" class="empty">NO MODEL PERFORMANCE SAMPLES</td></tr></tbody>
             </table>
           </div>
         </section>
@@ -194,6 +180,6 @@
   <template id="runtime-detail-template">
     <tr class="runtime-detail"><td colspan="8"><pre></pre></td></tr>
   </template>
-  <script src="{{ url_for('static', path='js/control_room.js') }}?v=20260917-control-room-v3"></script>
+  <script src="/static/js/control_room.js"></script>
 </body>
 </html>

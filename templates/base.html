@@ -1,475 +1,147 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <title>{% block title %}AssistX{% endblock %}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <link rel="stylesheet" href="{{ url_for('static', path='css/ingest.css') }}">
-  <style>
-    /* Unified theme: control-room palette (same token names as before, so every
-       page re-skins without layout changes). */
-    :root {
-      --bg: #050708;
-      --panel: #090d0f;
-      --panel-2: #0c1215;
-      --panel-3: #0c1215;
-      --line: #1e3037;
-      --line-2: #16242b;
-      --text: #d8e3e7;
-      --muted: #72858d;
-      --brand: #46e7ff;
-      --brand-2: #46e7ff;
-      --ok: #43f08a;
-      --warn: #ffc857;
-      --bad: #ff4d5e;
-      --accent: #2e6974;
-      --accent-2: #2e6974;
-      --shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
-      --sidebar-w: 290px;
-    }
-    * { box-sizing: border-box; }
-    html, body { min-height: 100%; }
-    body {
-      margin: 0;
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      background:
-        linear-gradient(rgba(70, 231, 255, 0.025) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(70, 231, 255, 0.025) 1px, transparent 1px),
-        var(--bg);
-      background-size: 32px 32px;
-      color: var(--text);
-    }
-    a { color: var(--brand); text-decoration: none; }
-    a:hover { color: #8ff0ff; }
-    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .app-shell {
-      display: grid;
-      grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
-      min-height: 100vh;
-    }
-    .sidebar {
-      position: sticky;
-      top: 0;
-      height: 100vh;
-      overflow: auto;
-      border-right: 1px solid var(--line);
-      background: linear-gradient(180deg, rgba(10, 18, 35, 0.98), rgba(8, 14, 27, 0.98));
-      padding: 1rem;
-      display: flex;
-      flex-direction: column;
-      gap: 1rem;
-      box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.02);
-    }
-    .brand-block {
-      display: flex;
-      flex-direction: column;
-      gap: 0.35rem;
-      padding: 0.75rem 0.8rem;
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      background: linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(10, 18, 35, 0.96));
-      box-shadow: var(--shadow);
-    }
-    .brand-row {
-      display: flex;
-      align-items: center;
-      gap: 0.7rem;
-    }
-    .brand-dot {
-      width: 12px;
-      height: 12px;
-      border-radius: 999px;
-      background: linear-gradient(135deg, var(--brand), var(--brand-2));
-      box-shadow: 0 0 14px rgba(96, 165, 250, 0.8);
-      flex: 0 0 auto;
-    }
-    .brand-title {
-      font-weight: 750;
-      letter-spacing: 0.02em;
-      font-size: 1rem;
-      line-height: 1.2;
-    }
-    .brand-subtitle {
-      color: var(--muted);
-      font-size: 0.84rem;
-      line-height: 1.45;
-    }
-    .sidebar-section {
-      display: grid;
-      gap: 0.5rem;
-    }
-    .sidebar-section-title {
-      margin: 0 0 0.1rem;
-      color: #cbd5e1;
-      font-size: 0.74rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      padding: 0 0.25rem;
-    }
-    .nav-list {
-      display: grid;
-      gap: 0.35rem;
-    }
-    .nav-link {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 0.75rem;
-      border: 1px solid transparent;
-      border-radius: 0.9rem;
-      padding: 0.65rem 0.8rem;
-      color: #dbeafe;
-      background: rgba(15, 23, 42, 0.35);
-      transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
-    }
-    .nav-link:hover {
-      background: rgba(29, 78, 216, 0.18);
-      border-color: rgba(96, 165, 250, 0.18);
-      transform: translateX(1px);
-    }
-    .nav-link.active {
-      background: linear-gradient(135deg, rgba(37, 99, 235, 0.30), rgba(14, 165, 233, 0.18));
-      border-color: rgba(96, 165, 250, 0.38);
-      color: #eff6ff;
-      box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.08) inset;
-    }
-    /* --- Global fleet status banner --- */
-    .workspace-topbar { position: sticky; top: 0; z-index: 40; }
-    .ax-status-banner {
-      display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap;
-      padding: 0.55rem 1rem;
-      background: linear-gradient(180deg, rgba(14, 26, 49, 0.97), rgba(11, 22, 42, 0.97));
-      border-bottom: 1px solid var(--line);
-      font-size: 0.86rem;
-    }
-    .ax-pill {
-      display: inline-block; padding: 0.18rem 0.65rem; border-radius: 999px;
-      font-weight: 700; letter-spacing: 0.06em; font-size: 0.72rem;
-      border: 1px solid transparent;
-    }
-    .ax-ok       { background: rgba(34,197,94,0.15);  color: #4ade80; border-color: rgba(74,222,128,0.4); }
-    .ax-degraded { background: rgba(245,158,11,0.16); color: #fbbf24; border-color: rgba(251,191,36,0.45); }
-    .ax-down,
-    .ax-unknown  { background: rgba(239,68,68,0.16);  color: #f87171; border-color: rgba(248,113,113,0.45); }
-    .ax-flash    { animation: ax-pulse 0.9s ease-out 1; }
-    @keyframes ax-pulse { 0% { transform: scale(0.96); } 100% { transform: scale(1); } }
-    .ax-status-detail { color: var(--muted); display: flex; gap: 0.55rem; flex-wrap: wrap; align-items: center; }
-    .ax-status-detail a { color: var(--brand-2); font-weight: 600; }
-    .ax-sep { color: var(--line); }
-    .ax-bad-text { color: #f87171; font-weight: 600; }
-    .nav-link .nav-label { font-weight: 600; }
-    .nav-link small {
-      color: var(--muted);
-      font-size: 0.76rem;
-      white-space: nowrap;
-    }
-    .sidebar-footer {
-      margin-top: auto;
-      padding-top: 0.5rem;
-      border-top: 1px solid var(--line-2);
-      display: grid;
-      gap: 0.5rem;
-    }
-    .sidebar-footer .status-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 0.5rem;
-      flex-wrap: wrap;
-    }
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
-      font-size: 0.78rem;
-      padding: 0.2rem 0.55rem;
-      border-radius: 999px;
-      border: 1px solid #1f2a4d;
-      color: var(--muted);
-      white-space: nowrap;
-      background: rgba(15, 23, 42, 0.55);
-    }
-    .badge.ok { color: #bbf7d0; border-color: #14532d; }
-    .badge.err { color: #fecaca; border-color: #7f1d1d; }
-    .workspace {
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
-    }
-    .workspace-topbar {
-      display: none;
-    }
-    main.container {
-      width: min(100%, 1600px);
-      margin: 0 auto;
-      padding: 1.15rem 1.15rem 2rem;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(12, minmax(0, 1fr));
-      gap: 16px;
-    }
-    .card {
-      grid-column: span 12;
-      background: linear-gradient(180deg, rgba(14, 26, 49, 0.98), rgba(11, 22, 42, 0.98));
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      padding: 18px;
-      box-shadow: var(--shadow);
-      min-width: 0;
-    }
-    .half { grid-column: span 12; }
-    .third { grid-column: span 12; }
-    @media (min-width: 960px) {
-      .half { grid-column: span 6; }
-      .third { grid-column: span 4; }
-    }
-    .muted { color: var(--muted); }
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 0.35rem;
-      background: linear-gradient(135deg, var(--accent), var(--accent-2));
-      color: white;
-      border: 1px solid rgba(96, 165, 250, 0.20);
-      padding: 0.55rem 0.85rem;
-      border-radius: 0.7rem;
-      cursor: pointer;
-      font-size: 0.92rem;
-      line-height: 1.2;
-      box-shadow: 0 10px 24px rgba(29, 78, 216, 0.22);
-    }
-    .btn.secondary {
-      background: rgba(51, 65, 85, 0.72);
-      box-shadow: none;
-      border-color: rgba(148, 163, 184, 0.18);
-    }
-    .btn.danger { background: var(--bad); }
-    textarea, input[type="text"], select {
-      width: 100%;
-      background: var(--panel-2);
-      color: var(--text);
-      border: 1px solid #26385d;
-      border-radius: 0.7rem;
-      padding: 0.58rem 0.7rem;
-      min-height: 2.3rem;
-      outline: none;
-    }
-    textarea:focus, input[type="text"]:focus, select:focus {
-      border-color: rgba(96, 165, 250, 0.5);
-      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
-    }
-    select { appearance: none; }
-    pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .feed {
-      max-height: 320px;
-      overflow: auto;
-      border: 1px solid #243158;
-      border-radius: 0.85rem;
-      background: #09132b;
-    }
-    .feed .row { padding: 0.55rem 0.75rem; border-bottom: 1px solid #18254a; }
-    .row .status { font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 999px; background: #18254a; margin-left: 0.4rem; }
-    .stack-xs > * + * { margin-top: 0.35rem; }
-    .stack-sm > * + * { margin-top: 0.6rem; }
-    .stack-md > * + * { margin-top: 1rem; }
-    .actions { display: flex; gap: 0.45rem; flex-wrap: wrap; align-items: center; }
-    .panel {
-      background: rgba(10, 19, 39, 0.78);
-      border: 1px solid #1f2a4d;
-      border-radius: 0.95rem;
-      padding: 0.8rem;
-    }
-    .hero {
-      background: linear-gradient(135deg, rgba(15, 26, 51, 0.98), rgba(11, 19, 42, 0.98));
-      border: 1px solid #21345d;
-      border-radius: 1.1rem;
-      padding: 20px;
-    }
-    .hero h1, .hero h2 { margin-top: 0; }
-    .section-header {
-      display: flex;
-      justify-content: space-between;
-      gap: 1rem;
-      align-items: flex-end;
-      flex-wrap: wrap;
-    }
-    .metric-grid {
-      display: grid;
-      grid-template-columns: repeat(12, minmax(0, 1fr));
-      gap: 12px;
-    }
-    .metric {
-      grid-column: span 12;
-      background: var(--panel-2);
-      border: 1px solid #26305f;
-      border-radius: 1rem;
-      padding: 14px;
-      min-width: 0;
-    }
-    .metric-value { font-size: 1.4rem; font-weight: 750; margin-top: 0.15rem; }
-    .metric-label {
-      color: var(--muted);
-      font-size: 0.78rem;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-    }
-    .metric-note { color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; }
-    .table-wrap { overflow: auto; border: 1px solid #243158; border-radius: 0.85rem; background: #09132b; }
-    table.dashboard-table { width: 100%; border-collapse: collapse; }
-    table.dashboard-table th, table.dashboard-table td {
-      padding: 0.7rem 0.8rem;
-      border-bottom: 1px solid #18254a;
-      text-align: left;
-      vertical-align: top;
-    }
-    table.dashboard-table th {
-      color: #cbd5e1;
-      font-size: 0.78rem;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      position: sticky;
-      top: 0;
-      background: #09132b;
-    }
-    .label { display: block; font-size: 0.78rem; color: var(--muted); margin-bottom: 0.35rem; }
-    .kicker { margin: 0; color: var(--muted); font-size: 0.92rem; }
-    .summary-line { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; }
-    .nowrap { white-space: nowrap; }
-    .mt-2 { margin-top: 0.45rem; }
-    .mt-3 { margin-top: 0.6rem; }
-    .mt-4 { margin-top: 0.75rem; }
-    .mt-5 { margin-top: 1rem; }
-    .mb-4 { margin-bottom: 1rem; }
-    .grid-flow { display: grid; gap: 0.5rem; }
-    .feed-sm { max-height: 260px; }
-    .feed-audit { max-height: 360px; }
-    .feed-md { max-height: 500px; }
-    .feed-lg { max-height: 600px; }
-    .feed-xl { max-height: 700px; }
-    .prewrap { white-space: pre-wrap; }
-    .pad-2 { padding: 8px; }
-    .input-flex-wide { min-width: 260px; flex: 1 1 280px; }
-    .input-flex { min-width: 220px; flex: 1 1 220px; }
-    .minw-180 { min-width: 180px; }
-    @media (min-width: 960px) {
-      .metric { grid-column: span 3; }
-    }
-    @media (max-width: 960px) {
-      .app-shell { grid-template-columns: 1fr; }
-      .sidebar {
-        position: relative;
-        top: auto;
-        height: auto;
-        border-right: 0;
-        border-bottom: 1px solid var(--line);
-        padding-bottom: 0.85rem;
-      }
-      .workspace-topbar { display: block; }
-      main.container { padding: 0.85rem; }
-      .card { padding: 12px; border-radius: 14px; }
-    }
-    @media (max-width: 700px) {
-      .nav-link { padding: 0.58rem 0.72rem; }
-      .nav-link small { display: none; }
-      .section-header { align-items: flex-start; }
-    }
-  </style>
-  {% block head %}{% endblock %}
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AssistX // Fleet Control Room</title>
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+  <link rel="stylesheet" href="/static/css/control_room.css">
 </head>
 <body>
-{%- macro nav_link(label, href, match=None, note=None) -%}
-  {% set is_active = request.url.path == href or (match and match != '/' and request.url.path.startswith(match)) -%}
-  <a class="nav-link{% if is_active %} active{% endif %}" href="{{ href }}">
-    <span class="nav-label">{{ label }}</span>
-    {% if note %}<small>{{ note }}</small>{% endif %}
-  </a>
-{%- endmacro %}
-<div class="app-shell">
-  <aside class="sidebar">
-    <div class="brand-block">
-      <div class="brand-row">
-        <span class="brand-dot"></span>
-        <div class="brand-title">AssistX</div>
+  <div class="control-shell">
+    <header class="topbar">
+      <div class="identity">
+        <span class="prompt-mark">&gt;_</span>
+        <div>
+          <h1>ASSISTX FLEET CONTROL ROOM</h1>
+          <p>physical runtimes // local inference // execution telemetry</p>
+        </div>
       </div>
-      <div class="brand-subtitle">Workflow control plane for intake, routing, review, memory, and live operator state.</div>
-    </div>
+      <div class="topbar-actions">
+        <span id="stream-state" class="state state-unknown">CONNECTING</span>
+        <span id="data-age" class="mono">age --</span>
+        <span class="health-indicator">
+          <span class="health-score">--</span>
+          <span class="critical-alerts" style="display:none;"></span>
+        </span>
+        <button id="manual-refresh" type="button">REFRESH</button>
+        <button id="quick-actions" type="button" class="quick-actions-btn">⚡ QUICK ACTIONS</button>
+      </div>
+    </header>
 
-    <div class="sidebar-section">
-      <div class="sidebar-section-title">Operate</div>
-      <div class="nav-list">
-        {{ nav_link("Control room", "/control-room", match="/control-room", note="fleet HQ · live telemetry") }}
-        {{ nav_link("Harness evolution", "/harness", match="/harness", note="chains · mistakes · live responses") }}
-        {{ nav_link("Operations", "/operations", match="/operations", note="incidents · work · approvals") }}
-        {{ nav_link("Live", "/live", match="/live", note="realtime activity") }}
-        {{ nav_link("Strategy", "/strategy", match="/strategy", note="trends & overseer view") }}
-      </div>
-    </div>
+    <nav class="command-nav" aria-label="Operator navigation">
+      <a class="active" href="/control-room">CONTROL ROOM</a>
+      <a href="/tasks/ready">TASKS</a>
+      <a href="/review">APPROVALS</a>
+      <a href="#dependencies">DEPENDENCIES</a>
+      <a href="/metrics">METRICS</a>
+    </nav>
 
-    <div class="sidebar-section">
-      <div class="sidebar-section-title">Work queue</div>
-      <div class="nav-list">
-        {{ nav_link("Ready tasks", "/tasks/ready", match="/tasks/ready", note="claimable now") }}
-        {{ nav_link("Review", "/review", match="/review", note="needs a human") }}
-        {{ nav_link("Dispatches", "/dispatches", match="/dispatches", note="execution log") }}
-        {{ nav_link("Runs", "/runs", match="/runs", note="agent activity") }}
-      </div>
-    </div>
+    <main>
+      <section id="summary-strip" class="summary-strip" aria-label="Fleet summary">
+        <div class="summary-cell"><span>FLEET</span><strong id="summary-fleet">--</strong><small id="summary-fleet-note">runtimes</small></div>
+        <div class="summary-cell"><span>INFERENCE</span><strong id="summary-inference">LOCAL</strong><small>strict offline</small></div>
+        <div class="summary-cell"><span>REQUESTS</span><strong id="summary-requests">--</strong><small id="summary-queue">-- queued</small></div>
+        <div class="summary-cell"><span>CAPACITY</span><strong id="summary-capacity">--</strong><small>slots free</small></div>
+        <div class="summary-cell"><span>MODELS</span><strong id="summary-models">--</strong><small>loaded</small></div>
+        <div class="summary-cell"><span>THROUGHPUT</span><strong id="summary-tps">--</strong><small>tokens / second</small></div>
+        <div class="summary-cell"><span>ERRORS</span><strong id="summary-errors">--</strong><small>observed</small></div>
+        <div class="summary-cell"><span>DEPENDENCIES</span><strong id="summary-dependencies">--</strong><small>required failures</small></div>
+      </section>
 
-    <div class="sidebar-section">
-      <div class="sidebar-section-title">Fleet</div>
-      <div class="nav-list">
-        {{ nav_link("Fleet dashboard", "/fleet-dashboard", match="/fleet-dashboard", note="nodes · models · capacity") }}
-        {{ nav_link("Routing", "/routing", match="/routing", note="lanes & graph") }}
-        {{ nav_link("Devices", "/devices", match="/devices", note="registered nodes") }}
-      </div>
-    </div>
+      <section class="panel panel-runtimes">
+        <div class="panel-head">
+          <div><span class="panel-index">01</span><h2>PHYSICAL RUNTIMES</h2></div>
+          <p>One row per process identity. LAN and Tailscale paths share the same slot counter.</p>
+        </div>
+        <div class="table-frame">
+          <table class="data-table runtime-table">
+            <thead>
+              <tr>
+                <th>NODE</th><th>RUNTIME</th><th>MODE</th><th>LOADED MODEL</th><th>PATH</th><th>SLOTS</th><th>QUEUE</th><th>STATUS</th>
+              </tr>
+            </thead>
+            <tbody id="runtime-body"><tr><td colspan="8" class="empty">WAITING FOR RUNTIME TELEMETRY</td></tr></tbody>
+          </table>
+        </div>
+      </section>
 
-    <div class="sidebar-section">
-      <div class="sidebar-section-title">Knowledge</div>
-      <div class="nav-list">
-        {{ nav_link("Sessions", "/sessions", match="/sessions", note="agent sessions") }}
-        {{ nav_link("Memory", "/memory", match="/memory", note="graph writes") }}
-        {{ nav_link("Answers", "/answers", match="/answers", note="live responses") }}
-      </div>
-    </div>
+      <div class="two-column">
+        <section id="dependencies" class="panel">
+          <div class="panel-head">
+            <div><span class="panel-index">02</span><h2>DEPENDENCIES</h2></div>
+            <p>Required services, private network, mounts, executors, and policy state.</p>
+          </div>
+          <div id="dependency-grid" class="dependency-grid"><div class="empty">PROBING DEPENDENCIES</div></div>
+        </section>
 
-    <div class="sidebar-section">
-      <div class="sidebar-section-title">System</div>
-      <div class="nav-list">
-        {{ nav_link("Intents", "/intents", match="/intents", note="policy / routing rules") }}
-        {{ nav_link("Ingest", "/ingest", match="/ingest", note="audio uploads") }}
+        <section class="panel">
+          <div class="panel-head">
+            <div><span class="panel-index">03</span><h2>MODEL PERFORMANCE</h2></div>
+            <p>Measured outcomes from the fleet performance ledger.</p>
+          </div>
+          <div class="table-frame compact">
+            <table class="data-table">
+              <thead><tr><th>MODEL</th><th>NODE</th><th>RUNS</th><th>TPS</th><th>TTFT</th><th>LATENCY</th><th>ERROR</th><th>QUALITY</th></tr></thead>
+              <tbody id="performance-body"><tr><td colspan="8" class="empty">NO PERFORMANCE SAMPLES</td></tr></tbody>
+            </table>
+          </div>
+        </section>
       </div>
-    </div>
 
-    <div class="sidebar-footer">
-      <div class="status-row">
-        <span id="live-badge" class="badge">live: connecting…</span>
-        <span class="badge">AssistX UI</span>
-      </div>
-      <div class="muted" style="font-size:0.84rem; line-height:1.45;">
-        Start in Operations for incidents, work, capacity, approvals, and fleet state.
-      </div>
-    </div>
-  </aside>
+      <section class="panel activity-panel">
+        <div class="panel-head">
+          <div><span class="panel-index">04</span><h2>LIVE EXECUTION FEED</h2></div>
+          <div class="activity-controls">
+            <label><input id="only-active" type="checkbox"> ACTIVE ONLY</label>
+            <span id="activity-count" class="mono">0 events</span>
+          </div>
+        </div>
+        <div id="activity-feed" class="activity-feed"><div class="empty">WAITING FOR FLEET ACTIVITY</div></div>
+      </section>
 
-  <div class="workspace">
-    <div class="workspace-topbar">
-      <div id="ax-status-banner" class="ax-status-banner" aria-label="Fleet status">
-        <span id="ax-status-pill" class="ax-pill ax-unknown">CHECKING…</span>
-        <span id="ax-status-detail" class="ax-status-detail">loading fleet overview…</span>
-      </div>
-    </div>
-    <main class="container">
-      {% block content %}{% endblock %}
+      <section class="panel">
+        <div class="panel-head">
+          <div><span class="panel-index">05</span><h2>RECOVERY ISLAND</h2></div>
+          <p>Beelink heartbeat: degraded tier, replication journal, NAS5 carve progress.</p>
+        </div>
+        <div id="recovery-grid" class="dependency-grid"><div class="empty">WAITING FOR ISLAND HEARTBEAT</div></div>
+      </section>
+
+      <section class="panel panel-runtimes">
+        <div class="panel-head">
+          <div><span class="panel-index">06</span><h2>FLEET NODES</h2></div>
+          <p>Registry nodes enriched with canonical hardware, live graph model state, and operator hints. <span id="doctor-chip" class="mono">--</span></p>
+        </div>
+        <div class="table-frame compact fleet-frame">
+          <table class="data-table fleet-table">
+            <thead><tr><th>NODE</th><th>INSTRUMENT</th><th>STATUS</th><th>IP</th><th>LAST SEEN</th><th>LOADED</th><th>AVAILABLE</th><th>EVIDENCE</th><th>OBSERVED</th><th>WATCHDOG</th><th>CAPS</th></tr></thead>
+            <tbody id="fleet-nodes-body"><tr><td colspan="11" class="empty">WAITING FOR NODE REGISTRY</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><span class="panel-index">07</span><h2>POWER</h2></div>
+          <p>Govee plug health gates via fleet-plug. Mutations: fleet-plug CLI only.</p>
+        </div>
+        <div id="power-grid" class="dependency-grid"><div class="empty">PROBING PLUG GATES</div></div>
+      </section>
     </main>
-  </div>
-</div>
 
-<script src="{{ url_for('static', path='js/ui_utils.js') }}"></script>
-<script src="{{ url_for('static', path='js/status_banner.js') }}"></script>
-{% block scripts %}{% endblock %}
+    <footer>
+      <span>AssistX authority: Neo4j</span>
+      <span>Routing: strict-offline auto-router</span>
+      <span>Executor mutation: operator-gated</span>
+      <span id="collected-at">snapshot --</span>
+    </footer>
+  </div>
+
+  <template id="runtime-detail-template">
+    <tr class="runtime-detail"><td colspan="8"><pre></pre></td></tr>
+  </template>
+  <script src="/static/js/control_room.js"></script>
 </body>
 </html>
