@@ -52,11 +52,15 @@ def enrich_shadow_trajectory(
         task_result = _decode_json(
             task.get("result_json")
         )
-        if (
-            task.get("status")
-            or task.get("result_summary")
-            or task_result not in (None, {}, "")
-        ):
+        terminal_status = str(
+            task.get("status") or ""
+        ).upper() in {
+            "DONE",
+            "FAILED",
+            "CANCELLED",
+        }
+        completed = task.get("completed_at_ts") is not None
+        if terminal_status or completed:
             task_outcomes.append(
                 {
                     "task_id": task_id,
