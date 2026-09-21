@@ -10,12 +10,19 @@ Shadow mode is deliberately the first deployment phase.
 ```text
 incoming Intent
      |
-     +----> current classifier/orchestrator ----> live behavior
+     v
+current classifier/orchestrator ----> live behavior
      |
-     +----> my-jev policy sidecar -------------> shadow evidence only
-                                                    |
-                                                    v
-                                               Neo4j Intent
+     +----> mark intent orchestrated
+               |
+               v
+        enqueue sanitized snapshot
+               |
+               v
+        shadow observer job ----> my-jev sidecar
+                                      |
+                                      v
+                               policy_shadow_* only
 ```
 
 The two paths are recorded together so disagreements can become training and
@@ -35,8 +42,15 @@ Shadow mode never:
 
 The sidecar can return a resolved recommendation, but AssistX only stores it.
 
-A timeout, connection failure, malformed response or unavailable recorder is
-logged and ignored. Current orchestration continues.
+The live intent handler never calls the sidecar. After live handling succeeds and
+the Intent is marked orchestrated, AssistX best-effort enqueues a sanitized snapshot
+containing only the fields needed for policy observation. The observer job owns its
+own Neo4j client and performs the HTTP request out of band.
+
+A queue failure, timeout, connection failure, malformed response or unavailable
+recorder is logged and ignored. None can reopen the already-committed live decision.
+Shadow persistence is restricted to `policy_shadow_*` fields and does not update
+the Intent's generic lifecycle timestamps.
 
 ## Configuration
 
