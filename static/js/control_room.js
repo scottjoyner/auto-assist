@@ -639,6 +639,29 @@
     }, 5000);
   }
 
+  function exportData() {
+    if (!state.snapshot) return;
+    
+    const data = {
+      timestamp: new Date().toISOString(),
+      snapshot: state.snapshot,
+      healthScore: state.healthScore,
+      criticalAlerts: state.criticalAlerts,
+      lastDataUpdate: state.lastDataUpdate,
+      reconnects: state.reconnects
+    };
+    
+    const dataStr = JSON.stringify(data, null, 2);
+    const dataUri = 'data:application/json;charset=utf-8,' + encodeURIComponent(dataStr);
+    
+    const exportName = `assistx-dashboard-data-${new Date().toISOString().split('T')[0]}.json`;
+    
+    const linkElement = document.createElement('a');
+    linkElement.setAttribute('href', dataUri);
+    linkElement.setAttribute('download', exportName);
+    linkElement.click();
+  }
+
   function init() {
     Navigation.init();
     fetchOnce();
@@ -649,6 +672,10 @@
         e.stopPropagation();
         showQuickActions();
       });
+    }
+    const exportBtn = document.getElementById('export-data');
+    if (exportBtn) {
+      exportBtn.addEventListener('click', exportData);
     }
   }
 
