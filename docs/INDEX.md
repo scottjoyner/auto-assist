@@ -88,7 +88,7 @@ Implementation:
 | KV-cache identity, compatibility, and economics | `src/assistx/kv_cache.py` |
 | Hermes worker integration | `src/assistx/agents/hermes_agent_adapter.py` |
 | Kipnerter authenticated mobile boundary | `src/assistx/mobile_agent_routes.py` |
-| Kipnerter Agent Auto live verifier/reporting | `scripts/verify-kipnerter-agent-auto-live.sh`, `scripts/render-kipnerter-agent-auto-report.py`, `scripts/publish-kipnerter-agent-auto-report.sh` |
+| Kipnerter Agent Auto live verifier/reporting | `scripts/verify-kipnerter-agent-auto-live.sh`, `scripts/render-kipnerter-agent-auto-report.py`, `scripts/publish-kipnerter-agent-auto-contract.sh`, `scripts/publish-kipnerter-agent-auto-report.sh` |
 | Readiness gates | `src/assistx/operations_readiness.py` |
 | Live migration scripts | `scripts/reconciliation-preflight.sh`, `scripts/reconciliation-verify-offline.sh` |
 | External dependency gate | `scripts/validate-external-dependencies.py`, `deploy/reconciliation/external-dependencies.example.yaml` |
