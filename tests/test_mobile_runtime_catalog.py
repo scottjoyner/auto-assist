@@ -197,7 +197,7 @@ def test_mobile_runtime_catalog_route_uses_tailnet_boundary(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json()["fleet_runtime_count"] == 1
+    assert response.json()["fleet_runtime_count"] == 2
 
 
 def test_mobile_runtime_catalog_route_sanitizes_backend_failure(monkeypatch):
