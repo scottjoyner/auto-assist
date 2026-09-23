@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -294,6 +295,7 @@ def main(argv: list[str] | None = None) -> int:
         f"projected={summary['projected']} "
         f"unprojected={summary['unprojected_runtime']} "
         f"model_drift={summary['model_drift']}",
+        file=sys.stderr,
     )
     return 0
 
