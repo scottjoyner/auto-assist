@@ -110,7 +110,7 @@ jobs:
         run: |
           python -m pytest -q \
             lms/tests/test_runtime_canary.py \
-            lms/tests/test_fleet_runtime_observations.py
+            lms/tests/test_fleet_node_reporter.py
 
       - name: Validate AssistX runtime-observation reconciliation
         env:
