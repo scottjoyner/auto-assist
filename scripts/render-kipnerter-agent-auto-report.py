@@ -30,6 +30,9 @@ def render_report(
     exit_code: int,
     failure_reason: str,
     timestamp_utc: str,
+    repo_validation_result: str,
+    repo_baseline_exceptions: str,
+    repo_validation_run_url: str,
 ) -> dict[str, object]:
     before = evidence_dir / "tailscale-serve-before.json"
     after = evidence_dir / "tailscale-serve-after.json"
@@ -42,7 +45,20 @@ def render_report(
         failure_reason = f"command failed during {stage}"
 
     executor = _agent_executor(evidence_dir)
-    healthy = result == "PASS" and exit_code == 0
+    repo_validation_accepted = repo_validation_result in {
+        "PASS",
+        "PASS_WITH_NAMED_BASELINE_EXCEPTIONS",
+    }
+    named_exception_ok = (
+        repo_validation_result != "PASS_WITH_NAMED_BASELINE_EXCEPTIONS"
+        or bool(repo_baseline_exceptions.strip())
+    )
+    healthy = (
+        result == "PASS"
+        and exit_code == 0
+        and repo_validation_accepted
+        and named_exception_ok
+    )
     report: dict[str, object] = {
         "schema_version": 1,
         "timestamp_utc": timestamp_utc,
@@ -52,6 +68,9 @@ def render_report(
         "failure_reason": failure_reason or None,
         "source_sha": source_sha,
         "gateway": gateway,
+        "repo_validation_result": repo_validation_result,
+        "repo_baseline_exceptions": repo_baseline_exceptions.strip() or None,
+        "repo_validation_run_url": repo_validation_run_url.strip() or None,
         "serve_topology_unchanged": serve_unchanged,
         "tailnet_whoami_http": _read_text(evidence_dir, "whoami-status.txt"),
         "executor_spoof_http": _read_text(evidence_dir, "spoof-negative-status.txt"),
@@ -92,6 +111,9 @@ def render_report(
 - Executor-spoof HTTP: `{report["executor_spoof_http"]}`
 - Agent Auto HTTP: `{report["agent_auto_http"]}`
 - Agent executor: `{executor}`
+- Repository validation: `{repo_validation_result}`
+- Named baseline exceptions: {repo_baseline_exceptions or "none"}
+- Repository validation run: {repo_validation_run_url or "not recorded"}
 - Authority widening performed by verifier: **no**
 
 {claim}
@@ -114,7 +136,23 @@ def main() -> int:
     parser.add_argument("--exit-code", required=True, type=int)
     parser.add_argument("--failure-reason", default="")
     parser.add_argument("--timestamp-utc", required=True)
+    parser.add_argument(
+        "--repo-validation-result",
+        required=True,
+        choices=("PASS", "PASS_WITH_NAMED_BASELINE_EXCEPTIONS", "FAIL", "UNRECORDED"),
+    )
+    parser.add_argument("--repo-baseline-exceptions", default="")
+    parser.add_argument("--repo-validation-run-url", default="")
     args = parser.parse_args()
+
+    if (
+        args.repo_validation_result == "PASS_WITH_NAMED_BASELINE_EXCEPTIONS"
+        and not args.repo_baseline_exceptions.strip()
+    ):
+        parser.error(
+            "--repo-baseline-exceptions is required for "
+            "PASS_WITH_NAMED_BASELINE_EXCEPTIONS"
+        )
 
     render_report(
         evidence_dir=args.evidence_dir,
@@ -125,6 +163,9 @@ def main() -> int:
         exit_code=args.exit_code,
         failure_reason=args.failure_reason,
         timestamp_utc=args.timestamp_utc,
+        repo_validation_result=args.repo_validation_result,
+        repo_baseline_exceptions=args.repo_baseline_exceptions,
+        repo_validation_run_url=args.repo_validation_run_url,
     )
     return 0
 
