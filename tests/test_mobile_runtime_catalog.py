@@ -71,7 +71,10 @@ def _projection() -> dict:
 
 
 def test_mobile_catalog_redacts_internal_runtime_coordinates():
-    catalog = mobile._sanitize_runtime_projection_for_mobile(_projection())
+    catalog = mobile._sanitize_runtime_projection_for_mobile(
+        _projection(),
+        handle_secret="test-mobile-handle-secret",
+    )
 
     assert catalog["schema_version"] == "2"
     assert catalog["source"] == "assistx-runtime-projection"
@@ -90,7 +93,7 @@ def test_mobile_catalog_redacts_internal_runtime_coordinates():
 
     models = {item["display_name"]: item for item in catalog["models"]}
     assert set(models) == {"Coder 7B", "Qwen 35B"}
-    assert models["Qwen 35B"]["model_handle"].startswith("model:")
+    assert models["Qwen 35B"]["model_handle"].startswith("model:v1:")
     assert models["Qwen 35B"]["state"] == "ready"
     assert models["Qwen 35B"]["ready_runtime_count"] == 2
     assert models["Qwen 35B"]["capabilities"] == [
@@ -145,9 +148,12 @@ def test_mobile_model_handle_survives_runtime_migration():
         "alias": "Ternary Bonsai 2",
     }
 
-    assert mobile._mobile_model_handle(first) == mobile._mobile_model_handle(moved)
-    assert mobile._mobile_model_handle(first) != mobile._mobile_model_handle(other)
-    assert mobile._mobile_model_handle({"alias": "missing identity"}) is None
+    secret = "test-mobile-handle-secret"
+    assert mobile._mobile_model_handle(first, secret=secret) == mobile._mobile_model_handle(moved, secret=secret)
+    assert mobile._mobile_model_handle(first, secret=secret) != mobile._mobile_model_handle(other, secret=secret)
+    assert mobile._mobile_model_handle(first, secret="different-secret") != mobile._mobile_model_handle(first, secret=secret)
+    assert mobile._mobile_model_handle({"alias": "missing identity"}, secret=secret) is None
+    assert mobile._mobile_model_handle(first, secret="") is None
 
 
 def test_mobile_catalog_omits_unidentified_models_from_handle_list_but_keeps_counts():
@@ -159,7 +165,10 @@ def test_mobile_catalog_omits_unidentified_models_from_handle_list_but_keeps_cou
         }
     )
 
-    catalog = mobile._sanitize_runtime_projection_for_mobile(projection)
+    catalog = mobile._sanitize_runtime_projection_for_mobile(
+        projection,
+        handle_secret="test-mobile-handle-secret",
+    )
 
     assert catalog["fleet_model_count"] == 4
     assert catalog["fleet_unique_model_count"] == 2
@@ -188,7 +197,10 @@ def test_mobile_runtime_catalog_route_uses_tailnet_boundary(monkeypatch):
     monkeypatch.setattr(
         mobile,
         "_mobile_runtime_catalog",
-        lambda: mobile._sanitize_runtime_projection_for_mobile(_projection()),
+        lambda: mobile._sanitize_runtime_projection_for_mobile(
+            _projection(),
+            handle_secret="test-mobile-handle-secret",
+        ),
     )
 
     response = TestClient(_app()).get(
