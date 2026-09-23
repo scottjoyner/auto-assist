@@ -9,6 +9,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 RENDER = ROOT / "scripts" / "render-kipnerter-agent-auto-report.py"
 PUBLISH = ROOT / "scripts" / "publish-kipnerter-agent-auto-report.sh"
+PUBLISH_CONTRACT = ROOT / "scripts" / "publish-kipnerter-agent-auto-contract.sh"
 
 
 def _render(
@@ -139,6 +140,40 @@ def test_publisher_writes_only_bounded_knowledge_project_record(tmp_path: Path) 
     assert (evidence / "knowledge-published-path.txt").read_text().strip() == str(target)
 
 
+def test_contract_publisher_mirrors_canonical_acceptance_doc(tmp_path: Path) -> None:
+    knowledge = tmp_path / "knowledge"
+    project = knowledge / "20-Projects" / "kipnerter-ios"
+    project.mkdir(parents=True)
+    log = project / "EXECUTION-LOG-2026-09-09-RC2-GATEWAY.md"
+    log.write_text("# Existing gateway log\n")
+
+    env = os.environ.copy()
+    env["KNOWLEDGE_ROOT"] = str(knowledge)
+    subprocess.run(
+        ["bash", str(PUBLISH_CONTRACT)],
+        env=env,
+        cwd=ROOT,
+        check=True,
+    )
+
+    target = project / "AGENT-AUTO-VALIDATION-AND-REPORTING.md"
+    assert target.read_text() == (
+        ROOT / "docs" / "KIPNERTER_AGENT_AUTO_ACCEPTANCE.md"
+    ).read_text()
+    log_text = log.read_text()
+    assert "<!-- agent-auto-validation-contract -->" in log_text
+    assert "Only an exact-SHA live PASS" in log_text
+
+    subprocess.run(
+        ["bash", str(PUBLISH_CONTRACT)],
+        env=env,
+        cwd=ROOT,
+        check=True,
+    )
+    assert log.read_text().count("<!-- agent-auto-validation-contract -->") == 1
+
+
 def test_publisher_and_renderer_have_valid_syntax() -> None:
     subprocess.run(["bash", "-n", str(PUBLISH)], check=True)
+    subprocess.run(["bash", "-n", str(PUBLISH_CONTRACT)], check=True)
     subprocess.run(["python", "-m", "py_compile", str(RENDER)], check=True)
