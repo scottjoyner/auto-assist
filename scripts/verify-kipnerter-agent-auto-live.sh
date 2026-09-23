@@ -28,6 +28,21 @@ ACTUAL_SHA="$(git rev-parse HEAD)"
 [[ "$ACTUAL_SHA" == "$EXPECTED_SHA" ]] || die "checkout is $ACTUAL_SHA, expected $EXPECTED_SHA"
 [[ -z "$(git status --porcelain)" ]] || die "worktree is dirty; refusing live recreate"
 
+REPO_VALIDATION_RESULT="${REPO_VALIDATION_RESULT:-}"
+REPO_BASELINE_EXCEPTIONS="${REPO_BASELINE_EXCEPTIONS:-}"
+REPO_VALIDATION_RUN_URL="${REPO_VALIDATION_RUN_URL:-}"
+case "$REPO_VALIDATION_RESULT" in
+  PASS)
+    ;;
+  PASS_WITH_NAMED_BASELINE_EXCEPTIONS)
+    [[ -n "$REPO_BASELINE_EXCEPTIONS" ]] \
+      || die "REPO_BASELINE_EXCEPTIONS is required for named baseline exceptions"
+    ;;
+  *)
+    die "REPO_VALIDATION_RESULT must be PASS or PASS_WITH_NAMED_BASELINE_EXCEPTIONS"
+    ;;
+esac
+
 KIPNERTER_GATEWAY_URL="${KIPNERTER_GATEWAY_URL:-https://x1-370.tailcb8954.ts.net:8443}"
 KIPNERTER_GATEWAY_URL="${KIPNERTER_GATEWAY_URL%/}"
 [[ "$KIPNERTER_GATEWAY_URL" == https://* ]] || die "KIPNERTER_GATEWAY_URL must use HTTPS"
@@ -59,7 +74,10 @@ write_report() {
     --gateway "$KIPNERTER_GATEWAY_URL" \
     --exit-code "$rc" \
     --failure-reason "$FAILURE_REASON" \
-    --timestamp-utc "$STAMP"
+    --timestamp-utc "$STAMP" \
+    --repo-validation-result "$REPO_VALIDATION_RESULT" \
+    --repo-baseline-exceptions "$REPO_BASELINE_EXCEPTIONS" \
+    --repo-validation-run-url "$REPO_VALIDATION_RUN_URL"
 }
 
 on_exit() {
