@@ -78,12 +78,29 @@ guardrail tests fails, the baseline exception cannot be reused.
 
 ## Live validation gate
 
+The live verifier refuses to run unless repository validation has already been
+classified explicitly as one of:
+
+- `PASS`; or
+- `PASS_WITH_NAMED_BASELINE_EXCEPTIONS`.
+
+The second value requires the exact exception names in
+`REPO_BASELINE_EXCEPTIONS`. A queued, unreviewed, failed, or unrecorded
+repository run is not an acceptable live precondition.
+
 Use:
 
 ```bash
+REPO_VALIDATION_RESULT=PASS_WITH_NAMED_BASELINE_EXCEPTIONS \
+REPO_BASELINE_EXCEPTIONS="test_fleet_dashboard_html_includes_inference_section; test_fleet_dashboard_html_has_all_sections" \
+REPO_VALIDATION_RUN_URL="<exact-head GitHub Actions run URL>" \
 EXPECTED_SHA=<exact candidate SHA> \
   bash scripts/verify-kipnerter-agent-auto-live.sh
 ```
+
+Use `REPO_VALIDATION_RESULT=PASS` and leave
+`REPO_BASELINE_EXCEPTIONS` empty when the exact-head repository gate is fully
+green.
 
 The verifier must prove all of the following:
 
@@ -159,6 +176,10 @@ stage:
 - `result.txt` on success;
 - `validation-report.json`;
 - `knowledge-report.md`.
+
+The validation report must also carry the repository-validation classification,
+the named baseline exceptions when applicable, and the exact-head workflow URL
+when one is available.
 
 Secret values must never be included in the evidence bundle.
 
