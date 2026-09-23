@@ -7,6 +7,7 @@ set -euo pipefail
 # exactly one no-mutation Agent Auto chat smoke.
 
 die() {
+  FAILURE_REASON="$*"
   printf 'FAIL: %s\n' "$*" >&2
   exit 1
 }
@@ -44,9 +45,34 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 EVIDENCE_DIR="$EVIDENCE_ROOT/$STAMP"
 mkdir -p "$EVIDENCE_DIR"
 
+RESULT="BLOCKED"
+STAGE="predeploy_evidence"
+FAILURE_REASON=""
+
+write_report() {
+  local rc="$1"
+  python scripts/render-kipnerter-agent-auto-report.py \
+    --evidence-dir "$EVIDENCE_DIR" \
+    --result "$RESULT" \
+    --stage "$STAGE" \
+    --source-sha "$ACTUAL_SHA" \
+    --gateway "$KIPNERTER_GATEWAY_URL" \
+    --exit-code "$rc" \
+    --failure-reason "$FAILURE_REASON" \
+    --timestamp-utc "$STAMP"
+}
+
+on_exit() {
+  local rc="$?"
+  write_report "$rc" || true
+}
+
+trap on_exit EXIT
+
 printf '%s\n' "$ACTUAL_SHA" > "$EVIDENCE_DIR/source-sha.txt"
 printf '%s\n' "$KIPNERTER_GATEWAY_URL" > "$EVIDENCE_DIR/gateway-url.txt"
 
+STAGE="capture_predeploy_serve"
 note "Capturing pre-deploy Serve evidence"
 tailscale serve status --json > "$EVIDENCE_DIR/tailscale-serve-before.json"
 sha256sum "$EVIDENCE_DIR/tailscale-serve-before.json" > "$EVIDENCE_DIR/tailscale-serve-before.sha256"
@@ -66,12 +92,18 @@ COMPOSE=(
   -f "$ASSISTX_PROD_COMPOSE_FILE"
 )
 
+STAGE="build_api"
+RESULT="BLOCKED"
 note "Building only api from exact source $ACTUAL_SHA"
 "${COMPOSE[@]}" build api
 
+STAGE="recreate_api"
+RESULT="BLOCKED"
 note "Recreating only assistx-api"
 "${COMPOSE[@]}" up -d --no-deps --force-recreate api
 
+STAGE="api_health"
+RESULT="BLOCKED"
 note "Waiting for loopback health"
 healthy=0
 for _ in $(seq 1 60); do
@@ -85,6 +117,8 @@ done
 
 docker inspect --format '{{.Image}}' assistx-api > "$EVIDENCE_DIR/api-image-after.txt"
 
+RESULT="FAIL"
+STAGE="loopback_containment"
 note "Proving raw AssistX publication remains loopback-only"
 docker inspect --format '{{range $binding := index .NetworkSettings.Ports "8000/tcp"}}{{println $binding.HostIp $binding.HostPort}}{{end}}'   assistx-api > "$EVIDENCE_DIR/api-port-bindings.txt"
 
@@ -103,6 +137,7 @@ for fields in lines:
         raise SystemExit(f"unsafe AssistX publication: {host}:{port}")
 PY
 
+STAGE="credential_wiring"
 note "Checking mobile-boundary configuration without revealing credentials"
 docker exec -i assistx-api python - <<'PY' > "$EVIDENCE_DIR/api-runtime-config.json"
 import json
@@ -129,11 +164,13 @@ if data.get("effective_hermes_provider") != "assistx-router":
     raise SystemExit("effective Hermes provider is not assistx-router")
 PY
 
+STAGE="serve_immutability"
 note "Proving Tailscale Serve topology did not change"
 tailscale serve status --json > "$EVIDENCE_DIR/tailscale-serve-after.json"
 sha256sum "$EVIDENCE_DIR/tailscale-serve-after.json" > "$EVIDENCE_DIR/tailscale-serve-after.sha256"
 cmp -s "$EVIDENCE_DIR/tailscale-serve-before.json" "$EVIDENCE_DIR/tailscale-serve-after.json"   || die "Tailscale Serve topology changed; stop and review before any Agent Auto smoke"
 
+STAGE="tailnet_identity"
 note "Checking Tailnet identity through the existing route-scoped gateway"
 whoami_status="$(
   curl --silent --show-error     --output "$EVIDENCE_DIR/whoami.json"     --write-out '%{http_code}'     "$KIPNERTER_GATEWAY_URL/api/v1/auth/whoami"
@@ -151,6 +188,7 @@ if data.get("authenticated") is not True or data.get("provider") != "tailscale":
     raise SystemExit("gateway did not authenticate this request through Tailscale")
 PY
 
+STAGE="executor_spoof_negative"
 note "Checking executor-identity spoof rejection on loopback"
 spoof_status="$(
   curl --silent --show-error     --output "$EVIDENCE_DIR/spoof-negative.json"     --write-out '%{http_code}'     -H 'x-assistx-executor-identity: spoofed-executor'     http://127.0.0.1:8000/api/v1/auth/whoami
@@ -171,6 +209,7 @@ cat > "$EVIDENCE_DIR/agent-auto-request.json" <<'JSON'
 }
 JSON
 
+STAGE="agent_auto_smoke"
 note "Sending exactly one bounded Agent Auto smoke through Serve"
 chat_status="$(
   curl --silent --show-error     --dump-header "$EVIDENCE_DIR/agent-auto-response.headers"     --output "$EVIDENCE_DIR/agent-auto-response.json"     --write-out '%{http_code}'     -H 'Content-Type: application/json'     --data-binary "@$EVIDENCE_DIR/agent-auto-request.json"     "$KIPNERTER_GATEWAY_URL/api/v1/agent/chat/completions"
@@ -197,6 +236,8 @@ if not content:
     raise SystemExit("Agent Auto response contained no assistant content")
 PY
 
+RESULT="PASS"
+STAGE="complete"
 cat > "$EVIDENCE_DIR/result.txt" <<EOF
 KIPNERTER_AGENT_AUTO_LIVE_PASS
 source_sha=$ACTUAL_SHA
