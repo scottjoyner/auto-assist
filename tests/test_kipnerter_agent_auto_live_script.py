@@ -19,6 +19,9 @@ def test_live_verifier_is_exact_sha_and_clean_worktree_gated() -> None:
     assert "git rev-parse HEAD" in text
     assert "git status --porcelain" in text
     assert "worktree is dirty; refusing live recreate" in text
+    assert "REPO_VALIDATION_RESULT" in text
+    assert "PASS_WITH_NAMED_BASELINE_EXCEPTIONS" in text
+    assert "REPO_BASELINE_EXCEPTIONS is required" in text
 
 
 def test_live_verifier_recreates_only_api_and_never_mutates_serve() -> None:
@@ -41,6 +44,8 @@ def test_live_verifier_preserves_credential_and_authority_boundaries() -> None:
     assert "/api/v1/agent/chat/completions" in text
     assert "x-kipnerter-agent-executor" in text.lower()
     assert "/api/v1/runtime/catalog" not in text
+    assert "render-kipnerter-agent-auto-report.py" in text
+    assert "--repo-validation-result" in text
 
 
 def test_live_verifier_has_exactly_one_chat_request_site() -> None:
