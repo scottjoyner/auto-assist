@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import os
 from email.header import decode_header, make_header
@@ -165,25 +166,43 @@ def _sse_chunks(output: str, model: str, session_id: str, chunk_size: int = 256)
 
 
 
-def _mobile_model_handle(model: dict[str, Any]) -> str | None:
+def _mobile_model_handle(
+    model: dict[str, Any],
+    *,
+    secret: str | None = None,
+) -> str | None:
     """Derive a stable opaque mobile handle from admitted artifact identity.
 
-    The handle is intentionally independent of node, runtime instance, access
-    path, and provider route so the same admitted artifact keeps its identity
-    when it moves between serving runtimes. The raw artifact fingerprint never
-    crosses the mobile boundary.
+    Handles are keyed so a public/known artifact fingerprint cannot be mapped to
+    the mobile identifier by an offline dictionary. The version prefix gives us
+    an explicit future rotation/migration boundary. Physical node/runtime/route
+    identity is deliberately excluded so replica movement does not change the
+    handle.
     """
 
     fingerprint = str(model.get("artifact_fingerprint") or "").strip().lower()
     if not fingerprint:
         return None
-    digest = hashlib.sha256(
-        ("assistx-mobile-model-handle-v1\0" + fingerprint).encode("utf-8")
-    ).hexdigest()[:24]
-    return f"model:{digest}"
+    handle_secret = (
+        secret
+        if secret is not None
+        else os.getenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET", "")
+    ).strip()
+    if not handle_secret:
+        return None
+    digest = hmac.new(
+        handle_secret.encode("utf-8"),
+        ("assistx-mobile-model-handle-v1\0" + fingerprint).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()[:32]
+    return f"model:v1:{digest}"
 
 
-def _sanitize_runtime_projection_for_mobile(projection: dict[str, Any]) -> dict[str, Any]:
+def _sanitize_runtime_projection_for_mobile(
+    projection: dict[str, Any],
+    *,
+    handle_secret: str | None = None,
+) -> dict[str, Any]:
     """Return the minimum fleet/model metadata useful to an authenticated phone.
 
     The authoritative runtime projection contains internal routing coordinates,
@@ -246,7 +265,7 @@ def _sanitize_runtime_projection_for_mobile(projection: dict[str, Any]) -> dict[
         )
 
         for model in models:
-            handle = _mobile_model_handle(model)
+            handle = _mobile_model_handle(model, secret=handle_secret)
             if handle is None:
                 # A signed production projection should already contain complete
                 # artifact identity. If an older/incomplete record slips through,
