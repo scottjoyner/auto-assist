@@ -212,6 +212,18 @@ existing gateway log is:
 20-Projects/kipnerter-ios/EXECUTION-LOG-2026-09-09-RC2-GATEWAY.md
 ```
 
+Before the first live attempt for this contract, mirror the canonical contract
+into the existing knowledge project:
+
+```bash
+bash scripts/publish-kipnerter-agent-auto-contract.sh
+```
+
+This writes
+`20-Projects/kipnerter-ios/AGENT-AUTO-VALIDATION-AND-REPORTING.md` and adds one
+idempotent reference checkpoint to the existing RC2 gateway execution log. It
+does not create a live result.
+
 For every live attempt:
 
 1. preserve the raw evidence bundle in the auto-assist checkout;
@@ -233,7 +245,9 @@ Publishing the report is documentation, not deployment authority. It does not
 change the live result and must not convert a failure into a pass.
 
 Use `scripts/publish-kipnerter-agent-auto-report.sh` after the verifier to
-perform the bounded knowledge-base write.
+perform the bounded per-attempt knowledge-base write. The contract publisher and
+the result publisher do not commit or push the knowledge repository; normal
+knowledge-repo review/commit/push remains a separate operator action.
 
 ## Cross-repository reporting
 
