@@ -11,7 +11,17 @@ RENDER = ROOT / "scripts" / "render-kipnerter-agent-auto-report.py"
 PUBLISH = ROOT / "scripts" / "publish-kipnerter-agent-auto-report.sh"
 
 
-def _render(evidence: Path, *, result: str = "PASS", exit_code: int = 0) -> dict:
+def _render(
+    evidence: Path,
+    *,
+    result: str = "PASS",
+    exit_code: int = 0,
+    repo_validation_result: str = "PASS_WITH_NAMED_BASELINE_EXCEPTIONS",
+    repo_baseline_exceptions: str = (
+        "test_fleet_dashboard_html_includes_inference_section; "
+        "test_fleet_dashboard_html_has_all_sections"
+    ),
+) -> dict:
     (evidence / "tailscale-serve-before.json").write_text('{"serve":"same"}\n')
     (evidence / "tailscale-serve-after.json").write_text('{"serve":"same"}\n')
     (evidence / "whoami-status.txt").write_text("200\n")
@@ -40,6 +50,12 @@ def _render(evidence: Path, *, result: str = "PASS", exit_code: int = 0) -> dict
             "" if result == "PASS" else "bounded smoke failed",
             "--timestamp-utc",
             "20260923T204500Z",
+            "--repo-validation-result",
+            repo_validation_result,
+            "--repo-baseline-exceptions",
+            repo_baseline_exceptions,
+            "--repo-validation-run-url",
+            "https://github.com/scottjoyner/auto-assist/actions/runs/123",
         ],
         check=True,
     )
@@ -59,8 +75,32 @@ def test_renderer_allows_healthy_claim_only_for_live_pass(tmp_path: Path) -> Non
     assert report["agent_auto_http"] == "200"
     assert report["agent_executor"] == "hermes"
     assert report["authority_widening_performed_by_verifier"] is False
+    assert report["repo_validation_result"] == "PASS_WITH_NAMED_BASELINE_EXCEPTIONS"
+    assert "test_fleet_dashboard_html_includes_inference_section" in str(
+        report["repo_baseline_exceptions"]
+    )
     knowledge = (evidence / "knowledge-report.md").read_text()
     assert "Agent Auto live path verified" in knowledge
+
+
+def test_renderer_live_pass_without_repo_validation_is_not_healthy(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    report = _render(
+        evidence,
+        result="PASS",
+        exit_code=0,
+        repo_validation_result="UNRECORDED",
+        repo_baseline_exceptions="",
+    )
+
+    assert report["result"] == "PASS"
+    assert report["healthy_claim_allowed"] is False
+    assert "No healthy Agent Auto claim is permitted" in (
+        evidence / "knowledge-report.md"
+    ).read_text()
 
 
 def test_renderer_never_promotes_failed_attempt(tmp_path: Path) -> None:
