@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "verify-kipnerter-agent-auto-live.sh"
@@ -6,6 +7,10 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "verify-kipnerter-age
 
 def _text() -> str:
     return SCRIPT.read_text(encoding="utf-8")
+
+
+def test_live_verifier_has_valid_bash_syntax() -> None:
+    subprocess.run(["bash", "-n", str(SCRIPT)], check=True)
 
 
 def test_live_verifier_is_exact_sha_and_clean_worktree_gated() -> None:
