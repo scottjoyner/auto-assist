@@ -63,6 +63,9 @@ source_sha = str(data.get("source_sha") or "unknown")
 stamp = str(data.get("timestamp_utc") or "unknown")
 stage = str(data.get("last_stage") or "unknown")
 failure = data.get("failure_reason") or "none"
+repo_validation = str(data.get("repo_validation_result") or "UNRECORDED")
+baseline = data.get("repo_baseline_exceptions") or "none"
+run_url = data.get("repo_validation_run_url") or "not recorded"
 evidence = report_path.parent
 
 entry = f"""
@@ -75,6 +78,9 @@ entry = f"""
 - Exact auto-assist SHA: `{source_sha}`
 - Last completed stage: `{stage}`
 - Failure reason: {failure}
+- Repository validation: `{repo_validation}`
+- Named baseline exceptions: {baseline}
+- Repository validation run: {run_url}
 - Evidence bundle: `{evidence}`
 - Published validation record: `{target}`
 - Serve/authority rule: no Serve reconfiguration, no client/router-admin credential
