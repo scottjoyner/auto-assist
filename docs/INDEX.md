@@ -10,6 +10,7 @@ operating instructions.
 |---|---|
 | [`HIGH_LEVEL_DESIGN.md`](HIGH_LEVEL_DESIGN.md) | Canonical system context, authority boundaries, major components, control flows, security, availability, and architectural decisions |
 | [`LOW_LEVEL_DESIGN.md`](LOW_LEVEL_DESIGN.md) | Canonical implementation map, graph model, state machines, APIs, fencing, recovery, degraded operation, improvement, configuration, and test contracts |
+| [`KIPNERTER_AGENT_AUTO_ACCEPTANCE.md`](KIPNERTER_AGENT_AUTO_ACCEPTANCE.md) | Exact-SHA Kipnerter Agent Auto deployment, live acceptance, stop conditions, evidence vocabulary, and knowledge-base reporting contract |
 | [`FLEET_CAPABILITY_ROUTING_DEPLOYMENT.md`](FLEET_CAPABILITY_ROUTING_DEPLOYMENT.md) | Complete Tailscale census, heterogeneous worker roles, LMS benchmark-matrix import, family-specific allocation/routing, scheduled refresh, validation, canaries, and rollback |
 | [`FLEET_TASK_FAMILY_ROUTING.md`](FLEET_TASK_FAMILY_ROUTING.md) | Producer tagging, virtual aliases, benchmark quality-floor enforcement, and task/claim-scoped executor tokens |
 | [`FLEET_CAPABILITY_ROUTING_CANARY.md`](FLEET_CAPABILITY_ROUTING_CANARY.md) | Positive and negative heterogeneous-fleet canaries and required evidence |
@@ -86,6 +87,8 @@ Implementation:
 | Isolated worktrees and promotion | `src/assistx/improvement_runtime.py` |
 | KV-cache identity, compatibility, and economics | `src/assistx/kv_cache.py` |
 | Hermes worker integration | `src/assistx/agents/hermes_agent_adapter.py` |
+| Kipnerter authenticated mobile boundary | `src/assistx/mobile_agent_routes.py` |
+| Kipnerter Agent Auto live verifier/reporting | `scripts/verify-kipnerter-agent-auto-live.sh`, `scripts/render-kipnerter-agent-auto-report.py`, `scripts/publish-kipnerter-agent-auto-contract.sh`, `scripts/publish-kipnerter-agent-auto-report.sh` |
 | Readiness gates | `src/assistx/operations_readiness.py` |
 | Live migration scripts | `scripts/reconciliation-preflight.sh`, `scripts/reconciliation-verify-offline.sh` |
 | External dependency gate | `scripts/validate-external-dependencies.py`, `deploy/reconciliation/external-dependencies.example.yaml` |
@@ -113,6 +116,13 @@ make reconciliation-discover-tailnet
 make reconciliation-state-validate
 make reconciliation-cutover-gate
 ```
+
+The Kipnerter Agent Auto gate is documented in
+`KIPNERTER_AGENT_AUTO_ACCEPTANCE.md`. Repository validation, exact-source x1-370
+deployment freshness, and the live Tailnet/Hermes smoke are distinct claims. Only
+a live `PASS` for the exact accepted SHA permits the Agent Auto healthy claim.
+The sanitized report is then published into the existing Kipnerter knowledge
+project with `scripts/publish-kipnerter-agent-auto-report.sh`.
 
 The heterogeneous fleet routing gate is documented in
 `FLEET_CAPABILITY_ROUTING_DEPLOYMENT.md`. Its minimum acceptance is a complete
