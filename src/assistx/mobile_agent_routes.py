@@ -165,25 +165,47 @@ def _sse_chunks(output: str, model: str, session_id: str, chunk_size: int = 256)
 
 
 
+def _mobile_model_handle(model: dict[str, Any]) -> str | None:
+    """Derive a stable opaque mobile handle from admitted artifact identity.
+
+    The handle is intentionally independent of node, runtime instance, access
+    path, and provider route so the same admitted artifact keeps its identity
+    when it moves between serving runtimes. The raw artifact fingerprint never
+    crosses the mobile boundary.
+    """
+
+    fingerprint = str(model.get("artifact_fingerprint") or "").strip().lower()
+    if not fingerprint:
+        return None
+    digest = hashlib.sha256(
+        ("assistx-mobile-model-handle-v1\0" + fingerprint).encode("utf-8")
+    ).hexdigest()[:24]
+    return f"model:{digest}"
+
+
 def _sanitize_runtime_projection_for_mobile(projection: dict[str, Any]) -> dict[str, Any]:
-    """Return the minimum fleet metadata useful to an authenticated phone.
+    """Return the minimum fleet/model metadata useful to an authenticated phone.
 
     The authoritative runtime projection contains internal routing coordinates,
-    runtime/model identifiers, artifact fingerprints, and network access paths.
-    None of those belong on the mobile boundary. The phone receives only opaque
-    runtime identities, aggregate counts, runtime kind, and coarse capability
-    flags needed to render Models & Agents truthfully.
+    runtime/model instance identifiers, artifact fingerprints, and network access
+    paths. Those stay server-side. Mobile receives opaque runtime/model handles,
+    presentation names, readiness, and coarse capabilities only.
     """
 
     runtimes: list[dict[str, Any]] = []
     model_total = 0
     agent_total = 0
     code_total = 0
+    model_accumulators: dict[str, dict[str, Any]] = {}
 
     for provider in projection.get("providers") or []:
         if not isinstance(provider, dict) or provider.get("enabled") is False:
             continue
-        models = [item for item in (provider.get("models") or []) if isinstance(item, dict)]
+        models = [
+            item
+            for item in (provider.get("models") or [])
+            if isinstance(item, dict)
+        ]
         if not models:
             continue
 
@@ -192,6 +214,7 @@ def _sanitize_runtime_projection_for_mobile(projection: dict[str, Any]) -> dict[
         runtime_name = str(provider.get("name") or "")
         opaque_seed = "|".join((node_id, runtime_instance_id, runtime_name))
         opaque_id = hashlib.sha256(opaque_seed.encode("utf-8")).hexdigest()[:20]
+        opaque_runtime_id = f"runtime:{opaque_id}"
 
         agent_capable = bool(provider.get("allow_agent_runtime")) or any(
             bool(model.get("allow_agent_runtime")) for model in models
@@ -213,7 +236,7 @@ def _sanitize_runtime_projection_for_mobile(projection: dict[str, Any]) -> dict[
 
         runtimes.append(
             {
-                "runtime_id": f"runtime:{opaque_id}",
+                "runtime_id": opaque_runtime_id,
                 "kind": runtime_kind,
                 "model_count": len(models),
                 "agent_capable": agent_capable,
@@ -221,22 +244,89 @@ def _sanitize_runtime_projection_for_mobile(projection: dict[str, Any]) -> dict[
                 "capabilities": capabilities,
             }
         )
+
+        for model in models:
+            handle = _mobile_model_handle(model)
+            if handle is None:
+                # A signed production projection should already contain complete
+                # artifact identity. If an older/incomplete record slips through,
+                # keep aggregate visibility but do not mint an unstable handle.
+                continue
+            display_name = str(model.get("alias") or "").strip()
+            if not display_name:
+                continue
+            accumulator = model_accumulators.setdefault(
+                handle,
+                {
+                    "display_names": set(),
+                    "capabilities": set(),
+                    "runtime_ids": set(),
+                    "agent_capable": False,
+                    "code_execution_capable": False,
+                },
+            )
+            accumulator["display_names"].add(display_name)
+            accumulator["capabilities"].update(
+                str(capability)
+                for capability in (model.get("capabilities") or [])
+                if str(capability).strip()
+            )
+            accumulator["runtime_ids"].add(opaque_runtime_id)
+            accumulator["agent_capable"] = bool(
+                accumulator["agent_capable"]
+                or provider.get("allow_agent_runtime")
+                or model.get("allow_agent_runtime")
+            )
+            accumulator["code_execution_capable"] = bool(
+                accumulator["code_execution_capable"]
+                or provider.get("allow_code_execution")
+                or model.get("allow_code_execution")
+            )
+
         model_total += len(models)
         agent_total += int(agent_capable)
         code_total += int(code_capable)
 
+    mobile_models: list[dict[str, Any]] = []
+    for handle, accumulator in model_accumulators.items():
+        display_name = sorted(
+            accumulator["display_names"],
+            key=lambda value: value.casefold(),
+        )[0]
+        mobile_models.append(
+            {
+                "model_handle": handle,
+                "display_name": display_name,
+                "state": "ready",
+                "ready_runtime_count": len(accumulator["runtime_ids"]),
+                "agent_capable": bool(accumulator["agent_capable"]),
+                "code_execution_capable": bool(
+                    accumulator["code_execution_capable"]
+                ),
+                "capabilities": sorted(accumulator["capabilities"]),
+            }
+        )
+
     runtimes.sort(key=lambda item: (item["kind"], item["runtime_id"]))
+    mobile_models.sort(
+        key=lambda item: (
+            item["display_name"].casefold(),
+            item["model_handle"],
+        )
+    )
     runtime_total = len(runtimes)
     return {
-        "schema_version": "1",
+        "schema_version": "2",
         "source": "assistx-runtime-projection",
         "generated_at_ms": projection.get("generated_at_ms"),
         "expires_at_ms": projection.get("expires_at_ms"),
         "fleet_runtime_count": runtime_total,
         "fleet_model_count": model_total,
+        "fleet_unique_model_count": len(mobile_models),
         "agent_runtime_count": agent_total,
         "code_runtime_count": code_total,
         "agent_auto_available": runtime_total > 0,
+        "models": mobile_models,
         "runtimes": runtimes,
     }
 
