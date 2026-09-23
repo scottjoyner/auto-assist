@@ -93,10 +93,13 @@ boundary. It must not use the Auto-Router admin token, add credentials to the
 phone, perform direct router probes, or broaden the runtime-catalog surface.
 
 The operational result vocabulary is `NOT_RUN`, `BLOCKED`, `FAIL`, or `PASS`.
-Only `PASS` for the exact accepted SHA permits the statement **Agent Auto live
-path verified**. Named mainline/baseline CI exceptions may be recorded as
-exceptions, but they are not converted into passing tests and must be shown
-separately from the live result.
+Only a live `PASS` for the exact accepted SHA, paired with an explicitly
+accepted repository-validation classification, permits the statement
+**Agent Auto live path verified**. The live verifier requires
+`REPO_VALIDATION_RESULT=PASS` or
+`PASS_WITH_NAMED_BASELINE_EXCEPTIONS`; the latter also requires the exact
+exception names. Named mainline/baseline CI exceptions are not converted into
+passing tests and must be shown separately from the live result.
 
 Every live attempt produces a sanitized machine-readable validation report and
 a knowledge-base markdown report. The latter is published under the existing
