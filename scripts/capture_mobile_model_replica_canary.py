@@ -503,7 +503,6 @@ def capture_phase(
     }
     _json_write(_state_path(out_dir), state)
 
-    execution_payload = execution.get("payload", {})
     summary: dict[str, Any] = {
         "phase": phase,
         "model_handle": selected_handle,
