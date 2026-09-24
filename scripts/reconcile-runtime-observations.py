@@ -97,6 +97,24 @@ def _verify_runtime_identity_witness(
         raise ValueError("unsupported runtime identity witness schema")
     if witness.get("admission") != {"admitted": False}:
         raise ValueError("runtime identity witness must remain non-admitted")
+    process_identity = witness.get("process")
+    model_file_identity = witness.get("model_file_identity")
+    if not isinstance(process_identity, dict) or not isinstance(model_file_identity, dict):
+        raise ValueError("runtime identity witness process/model file identity is missing")
+    try:
+        if (
+            int(process_identity.get("pid") or 0) <= 0
+            or int(process_identity.get("process_start_ticks") or 0) <= 0
+            or int(model_file_identity.get("inode") or 0) <= 0
+            or int(model_file_identity.get("size_bytes") or 0) <= 0
+            or int(model_file_identity.get("mtime_ns") or 0) <= 0
+            or int(model_file_identity.get("ctime_ns") or 0) <= 0
+        ):
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise ValueError("runtime identity witness process/model file identity is invalid") from exc
+    if str(witness.get("model_process_binding") or "") not in {"proc_maps", "cmdline"}:
+        raise ValueError("runtime identity witness model-process binding is invalid")
     fingerprint = str(witness.get("witness_fingerprint") or "")
     core = {key: value for key, value in witness.items() if key != "witness_fingerprint"}
     if fingerprint != _canonical_hash(core):
@@ -545,6 +563,13 @@ def reconcile(
                         or continuity.get("model_process_binding_valid") is not True
                     ):
                         witness_problem = "signed_witness_process_continuity_failed"
+                    elif (
+                        str(verified_witness.get("model_process_binding") or "")
+                        != "proc_maps"
+                        or str(continuity.get("model_process_binding") or "")
+                        != "proc_maps"
+                    ):
+                        witness_problem = "signed_witness_model_not_memory_mapped"
                     else:
                         try:
                             continuity_matches = (
