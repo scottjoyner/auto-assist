@@ -702,6 +702,8 @@ def reconcile(
             witness_loadout_fingerprint: str | None = None
             witness_model_content_sha256: str | None = None
             witness_signing_key_fingerprint: str | None = None
+            continuity_signing_key_fingerprint: str | None = None
+            continuity_signer_identity: str | None = None
             witness_error = str(
                 observation.get("_runtime_identity_witness_error") or ""
             ).strip()
@@ -783,7 +785,17 @@ def reconcile(
                     status = "projected"
                     action = "none"
 
-                continuity = observation.get("runtime_identity_continuity")
+                verified_continuity_attestation = observation.get(
+                    "_verified_runtime_identity_continuity"
+                )
+                continuity_error = str(
+                    observation.get("_runtime_identity_continuity_error") or ""
+                ).strip()
+                continuity = (
+                    verified_continuity_attestation.get("continuity")
+                    if isinstance(verified_continuity_attestation, dict)
+                    else None
+                )
                 if witness_error and status == "projected":
                     status = "runtime_identity_unverified"
                     action = "review_runtime_identity"
@@ -799,6 +811,19 @@ def reconcile(
                     witness_signing_key_fingerprint = str(
                         verified_witness.get("witness_signing_key_fingerprint") or ""
                     ) or None
+                    if isinstance(verified_continuity_attestation, dict):
+                        continuity_signing_key_fingerprint = str(
+                            verified_continuity_attestation.get(
+                                "signing_key_fingerprint"
+                            )
+                            or ""
+                        ) or None
+                        continuity_signer_identity = str(
+                            verified_continuity_attestation.get(
+                                "signer_identity"
+                            )
+                            or ""
+                        ) or None
                     witness_node = _node_id(verified_witness.get("node_id"))
                     witness_port = _port(verified_witness.get("runtime_url"))
                     witness_provider_model = str(
@@ -830,11 +855,14 @@ def reconcile(
                         witness_problem = "signed_witness_canary_rollback_not_verified"
                     elif not isinstance(witness_process, dict):
                         witness_problem = "signed_witness_process_identity_missing"
+                    elif not isinstance(verified_continuity_attestation, dict):
+                        witness_problem = "signed_witness_continuity_attestation_unverified"
                     elif not continuity_fresh:
                         witness_problem = "signed_witness_continuity_stale"
                     elif (
                         not isinstance(continuity, dict)
                         or continuity.get("valid") is not True
+                        or continuity.get("executable_file_valid") is not True
                         or continuity.get("model_file_valid") is not True
                         or continuity.get("model_process_binding_valid") is not True
                     ):
@@ -867,7 +895,11 @@ def reconcile(
                     for _canonical, ids, fingerprints in groups:
                         if witness_provider_model.casefold() in ids:
                             expected_fingerprints.update(fingerprints)
-                    if (
+                    if witness_problem is None and not expected_fingerprints:
+                        witness_problem = "signed_projection_artifact_fingerprint_missing"
+                    elif witness_problem is None and len(expected_fingerprints) > 1:
+                        witness_problem = "signed_projection_artifact_identity_ambiguous"
+                    elif (
                         witness_problem is None
                         and witness_model_content_sha256 not in expected_fingerprints
                     ):
@@ -881,9 +913,26 @@ def reconcile(
                         action = "collect_model_identity_evidence"
                         reasons.append(witness_problem)
                         artifact_identity_reason = witness_problem
-                    elif witness_problem == "signed_witness_continuity_stale":
+                    elif witness_problem in {
+                        "signed_witness_continuity_stale",
+                        "signed_witness_continuity_attestation_unverified",
+                        "signed_projection_artifact_fingerprint_missing",
+                    }:
                         status = "runtime_identity_unverified"
-                        action = "refresh_runtime_observation"
+                        action = (
+                            "refresh_runtime_observation"
+                            if witness_problem
+                            in {
+                                "signed_witness_continuity_stale",
+                                "signed_witness_continuity_attestation_unverified",
+                            }
+                            else "review_projection_artifact_identity"
+                        )
+                        reasons.append(witness_problem)
+                        artifact_identity_reason = witness_problem
+                    elif witness_problem == "signed_projection_artifact_identity_ambiguous":
+                        status = "artifact_identity_ambiguous"
+                        action = "review_projection_artifact_identity"
                         reasons.append(witness_problem)
                         artifact_identity_reason = witness_problem
                     else:
@@ -933,6 +982,10 @@ def reconcile(
                     "witness_loadout_fingerprint": witness_loadout_fingerprint,
                     "witness_model_content_sha256": witness_model_content_sha256,
                     "witness_signing_key_fingerprint": witness_signing_key_fingerprint,
+                    "continuity_signer_identity": continuity_signer_identity,
+                    "continuity_signing_key_fingerprint": (
+                        continuity_signing_key_fingerprint
+                    ),
                     "required_admission_evidence": (
                         list(_REQUIRED_ADMISSION_EVIDENCE)
                         if status == "unprojected_runtime"
@@ -971,6 +1024,7 @@ def reconcile(
         "unprojected_runtime",
         "model_drift",
         "ambiguous_projection_match",
+        "artifact_identity_ambiguous",
         "runtime_identity_mismatch",
         "runtime_identity_unverified",
         "runtime_not_ready",
@@ -1165,6 +1219,7 @@ def main(argv: list[str] | None = None) -> int:
         f"projected={summary['projected']} "
         f"unprojected={summary['unprojected_runtime']} "
         f"model_drift={summary['model_drift']} "
+        f"artifact_ambiguous={summary['artifact_identity_ambiguous']} "
         f"identity_mismatch={summary['runtime_identity_mismatch']} "
         f"identity_unverified={summary['runtime_identity_unverified']} "
         f"not_ready={summary['runtime_not_ready']} "
