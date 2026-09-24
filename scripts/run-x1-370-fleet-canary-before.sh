@@ -137,13 +137,16 @@ mkdir -p "$canary_dir"
 mv "$canary_dir-before-summary.tmp" "$canary_dir/before-summary.json"
 printf '%s\n' "$canary_dir" > "$OPS_ROOT/.latest-replica-canary-dir"
 
-target="$(
+readarray -t transition < <(
   python3 - "$canary_dir/before-summary.json" <<'PY'
 import json,sys
 data=json.load(open(sys.argv[1]))
 print(data.get("transition_target_provider") or "")
+print(data.get("serving_node_id") or "")
 PY
-)"
+)
+target="${transition[0]:-}"
+target_node="${transition[1]:-}"
 test -n "$target"
 
 cat <<EOF
@@ -153,6 +156,7 @@ BEFORE CAPTURE COMPLETE
 Model: $display_name
 Handle: $handle
 Transition target provider: $target
+Transition target node: ${target_node:-unknown}
 Evidence: $canary_dir
 
 STOP HERE until the exact provider above is removed from eligibility through
