@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import time
+import uuid
 from email.header import decode_header, make_header
 from typing import Any, Callable, Iterable, Optional
 
@@ -468,7 +469,18 @@ def _mobile_router_config() -> tuple[str, str]:
 def _mobile_model_router_payload(
     body: MobileModelChatIn,
     resolved: dict[str, Any],
+    *,
+    mobile_request_id: str | None = None,
 ) -> dict[str, Any]:
+    metadata = {
+        "assistx_source": True,
+        "privacy": "local_only",
+        "local_only": True,
+        "assistx_mobile_model_handle": body.model_handle,
+        "assistx_artifact_fingerprint": resolved["artifact_fingerprint"],
+    }
+    if mobile_request_id:
+        metadata["assistx_mobile_request_id"] = mobile_request_id
     return {
         "model": "auto/local",
         "messages": [
@@ -480,13 +492,7 @@ def _mobile_model_router_payload(
         "stream": body.stream,
         "local_only": True,
         "allow_cloud": False,
-        "metadata": {
-            "assistx_source": True,
-            "privacy": "local_only",
-            "local_only": True,
-            "assistx_mobile_model_handle": body.model_handle,
-            "assistx_artifact_fingerprint": resolved["artifact_fingerprint"],
-        },
+        "metadata": metadata,
     }
 
 
@@ -640,7 +646,17 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
                 detail={"error": "fleet_model_router_unavailable"},
             ) from exc
 
-        payload = _mobile_model_router_payload(body, resolved)
+        mobile_request_id = f"kmr:{uuid.uuid4().hex}"
+        payload = _mobile_model_router_payload(
+            body,
+            resolved,
+            mobile_request_id=mobile_request_id,
+        )
+        response_headers = {
+            "Cache-Control": "no-store",
+            "X-Kipnerter-Model-Authority": "assistx-runtime-projection",
+            "X-Kipnerter-Model-Request-ID": mobile_request_id,
+        }
         headers = {
             "Authorization": f"Bearer {router_token}",
             "Content-Type": "application/json",
@@ -675,10 +691,7 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
                         decoded,
                         body.model_handle,
                     ),
-                    headers={
-                        "Cache-Control": "no-store",
-                        "X-Kipnerter-Model-Authority": "assistx-runtime-projection",
-                    },
+                    headers=response_headers,
                 )
             finally:
                 await client.aclose()
@@ -713,10 +726,7 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
                 body.model_handle,
             ),
             media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-store",
-                "X-Kipnerter-Model-Authority": "assistx-runtime-projection",
-            },
+            headers=response_headers,
         )
 
     @router.post("/api/v1/agent/chat/completions", tags=["kipnerter-mobile"])
