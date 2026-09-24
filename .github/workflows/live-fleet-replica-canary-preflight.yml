@@ -16,6 +16,7 @@ jobs:
     env:
       EXPECTED_HOST: x1-370
       EXPECTED_AUTO_ROUTER_SHA: 1fbb9726de46a30c0c91616c65c04dc1f35845a6
+      RUNNER_BOOTSTRAP_SHA: 0f78e629964e58fcc7a0a7615bf7545b5accf800
     steps:
       - uses: actions/checkout@v4
 
