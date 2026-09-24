@@ -356,6 +356,12 @@ def capture_phase(
     out_dir.mkdir(parents=True, exist_ok=True)
     base_url = _normalize_base_url(assistx_base_url)
 
+    if phase == "before" and _state_path(out_dir).exists():
+        raise CaptureError(
+            "output directory already contains capture-state.json; "
+            "use a fresh --out-dir so prior evidence cannot be overwritten"
+        )
+
     prior_state: dict[str, Any] | None = None
     if phase == "after":
         prior_state = _load_state(out_dir)
@@ -370,6 +376,16 @@ def capture_phase(
         if display_name is None:
             state_name = prior_state.get("display_name")
             display_name = state_name if isinstance(state_name, str) else None
+        for key, current in (
+            ("auto_assist_sha", assistx_sha),
+            ("auto_router_sha", router_sha),
+        ):
+            before_value = prior_state.get(key)
+            if before_value and current and before_value != current:
+                raise CaptureError(
+                    f"{key} changed between before and after capture: "
+                    f"{before_value} != {current}"
+                )
 
     catalog, _ = _http_json(
         "GET",
@@ -558,6 +574,10 @@ def main() -> int:
         parser.error("--router-db or ROUTER_DB is required")
     if args.phase == "before" and not (args.display_name or args.handle):
         parser.error("before phase requires --display-name/DISPLAY_NAME or --handle")
+    if not args.assistx_sha:
+        parser.error("--assistx-sha or ASSISTX_SHA is required for exact-head evidence")
+    if not args.router_sha:
+        parser.error("--router-sha or AUTO_ROUTER_SHA is required for exact-head evidence")
 
     try:
         summary = capture_phase(
