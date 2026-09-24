@@ -4,6 +4,8 @@ on:
   push:
     paths:
       - ".github/workflows/live-fleet-replica-canary-preflight.yml"
+      - "scripts/bootstrap-x1-370-canary-workspace.sh"
+      - "scripts/bootstrap-x1-370-canary-runner.sh"
   workflow_dispatch:
 
 permissions:
@@ -15,23 +17,33 @@ jobs:
     timeout-minutes: 10
     env:
       EXPECTED_HOST: x1-370
-      EXPECTED_AUTO_ROUTER_SHA: 1fbb9726de46a30c0c91616c65c04dc1f35845a6
-      RUNNER_BOOTSTRAP_SHA: 0f78e629964e58fcc7a0a7615bf7545b5accf800
+      ASSISTX_RUNTIME_SHA: aad657bbf4fff5bec2080ada07f5a4ad02292743
+      AUTO_ROUTER_RUNTIME_SHA: 1fbb9726de46a30c0c91616c65c04dc1f35845a6
+      ASSISTX_RUNTIME_WORKTREE: /home/scott/git/auto-assist-canary-runtime
+      AUTO_ROUTER_RUNTIME_WORKTREE: /home/scott/git/auto-router-canary-runtime
     steps:
       - uses: actions/checkout@v4
 
-      - name: Guard exact execution host
+      - name: Guard exact execution host and pinned worktrees
         shell: bash
         run: |
           set -euo pipefail
-          short_host="$(hostname -s)"
-          test "$short_host" = "$EXPECTED_HOST"
+          test "$(hostname -s)" = "$EXPECTED_HOST"
           test "$(uname -s)" = "Linux"
           test "$(uname -m)" = "x86_64"
-          command -v tailscale >/dev/null
-          command -v docker >/dev/null
-          command -v curl >/dev/null
-          command -v python3 >/dev/null
+
+          for cmd in tailscale docker curl python3 git sha256sum; do
+            command -v "$cmd" >/dev/null
+          done
+
+          test -d "$ASSISTX_RUNTIME_WORKTREE/.git" -o -f "$ASSISTX_RUNTIME_WORKTREE/.git"
+          test -d "$AUTO_ROUTER_RUNTIME_WORKTREE/.git" -o -f "$AUTO_ROUTER_RUNTIME_WORKTREE/.git"
+
+          test "$(git -C "$ASSISTX_RUNTIME_WORKTREE" rev-parse HEAD)" = "$ASSISTX_RUNTIME_SHA"
+          test "$(git -C "$AUTO_ROUTER_RUNTIME_WORKTREE" rev-parse HEAD)" = "$AUTO_ROUTER_RUNTIME_SHA"
+          test -z "$(git -C "$ASSISTX_RUNTIME_WORKTREE" status --porcelain)"
+          test -z "$(git -C "$AUTO_ROUTER_RUNTIME_WORKTREE" status --porcelain)"
+
           tailscale status --json > /tmp/tailscale-status.json
           python3 - <<'PY'
           import json
@@ -44,20 +56,11 @@ jobs:
           open("/tmp/tailscale-dns.txt","w").write(dns+"\n")
           PY
 
-      - name: Capture read-only live preflight
+      - name: Verify live authority code matches pinned runtime worktrees
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p artifacts/live-fleet-replica-preflight
-          dns="$(cat /tmp/tailscale-dns.txt)"
-          base_url="https://${dns}:8443"
-
-          curl -fsS --connect-timeout 5 --max-time 20 \
-            "${base_url}/api/v1/runtime/catalog" \
-            > artifacts/live-fleet-replica-preflight/runtime-catalog.json
-
-          docker ps --format '{{.Names}}' \
-            > artifacts/live-fleet-replica-preflight/docker-running-names.txt
 
           assistx_container="$(
             docker ps --format '{{.Names}}' |
@@ -73,19 +76,65 @@ jobs:
           test -n "$assistx_container"
           test -n "$router_container"
 
-          assistx_revision="$(
-            docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
-              "$assistx_container"
+          local_assistx_hash="$(
+            sha256sum "$ASSISTX_RUNTIME_WORKTREE/src/assistx/mobile_agent_routes.py" |
+              awk '{print $1}'
           )"
-          router_revision="$(
-            docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
-              "$router_container"
+          live_assistx_hash="$(
+            docker exec "$assistx_container" python -c               'import hashlib; print(hashlib.sha256(open("/app/src/assistx/mobile_agent_routes.py","rb").read()).hexdigest())'
+          )"
+          test "$local_assistx_hash" = "$live_assistx_hash"
+
+          router_pkg="$(
+            docker exec "$router_container" python -c               'import auto_router,pathlib; print(pathlib.Path(auto_router.__file__).resolve().parent)'
           )"
 
-          test -n "$assistx_revision"
-          test -n "$router_revision"
-          test "$assistx_revision" = "$GITHUB_SHA"
-          test "$router_revision" = "$EXPECTED_AUTO_ROUTER_SHA"
+          for rel in policy.py route_events.py; do
+            expected="$(
+              sha256sum "$AUTO_ROUTER_RUNTIME_WORKTREE/src/auto_router/$rel" |
+                awk '{print $1}'
+            )"
+            actual="$(
+              docker exec "$router_container" python -c                 "import hashlib; print(hashlib.sha256(open('$router_pkg/$rel','rb').read()).hexdigest())"
+            )"
+            test "$expected" = "$actual"
+            printf '%s %s\n' "$rel" "$actual"               >> artifacts/live-fleet-replica-preflight/auto-router-authority-hashes.txt
+          done
+
+          printf '%s\n' "$live_assistx_hash"             > artifacts/live-fleet-replica-preflight/assistx-mobile-route.sha256
+
+          # Because AssistX bind-mounts /app/src, ensure the process was started
+          # after the authority file's current mtime; otherwise a Python process
+          # could still have older module code loaded despite matching files.
+          file_mtime="$(
+            docker exec "$assistx_container" stat -c %Y /app/src/assistx/mobile_agent_routes.py
+          )"
+          container_started="$(
+            docker inspect --format '{{.State.StartedAt}}' "$assistx_container"
+          )"
+          python3 - "$file_mtime" "$container_started" <<'PY'
+          import datetime, sys
+          mtime=int(sys.argv[1])
+          started=datetime.datetime.fromisoformat(sys.argv[2].replace("Z","+00:00")).timestamp()
+          if started < mtime:
+              raise SystemExit(
+                  "assistx-api started before current mobile_agent_routes.py mtime; "
+                  "restart/redeploy is required for exact runtime proof"
+              )
+          PY
+
+          echo "$assistx_container"             > artifacts/live-fleet-replica-preflight/assistx-container.txt
+          echo "$router_container"             > artifacts/live-fleet-replica-preflight/auto-router-container.txt
+
+      - name: Capture read-only live topology preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="artifacts/live-fleet-replica-preflight"
+          assistx_container="$(cat "$out/assistx-container.txt")"
+          router_container="$(cat "$out/auto-router-container.txt")"
+
+          docker exec "$assistx_container" sh -lc             'curl -fsS -u "$BASIC_AUTH_USER:$BASIC_AUTH_PASS" http://127.0.0.1:8000/api/v1/runtime/catalog'             > "$out/runtime-catalog.json"
 
           router_data_source="$(
             docker inspect "$router_container" |
@@ -99,6 +148,7 @@ jobs:
           test -n "$router_data_source"
           router_db="${router_data_source%/}/router.sqlite3"
           test -r "$router_db"
+          echo "$router_db" > "$out/router-db-path.txt"
 
           python3 - <<'PY'
           import json, os
@@ -109,27 +159,38 @@ jobs:
           models = catalog.get("models") if isinstance(catalog, dict) else None
           if not isinstance(models, list):
               raise SystemExit("runtime catalog missing models")
-          replicated = [
-              {
-                  "model_handle": row.get("model_handle"),
-                  "display_name": row.get("display_name"),
-                  "ready_runtime_count": row.get("ready_runtime_count"),
-                  "state": row.get("state"),
-              }
-              for row in models
-              if isinstance(row, dict)
-              and row.get("state") == "ready"
-              and int(row.get("ready_runtime_count") or 0) >= 2
-          ]
+
+          replicated = []
+          for row in models:
+              if not isinstance(row, dict) or row.get("state") != "ready":
+                  continue
+              try:
+                  count = int(row.get("ready_runtime_count") or 0)
+              except (TypeError, ValueError):
+                  continue
+              if count < 2:
+                  continue
+              replicated.append(
+                  {
+                      "model_handle": row.get("model_handle"),
+                      "display_name": row.get("display_name"),
+                      "ready_runtime_count": count,
+                      "state": row.get("state"),
+                  }
+              )
+
           summary = {
               "host": os.uname().nodename,
-              "assistx_sha": os.environ["GITHUB_SHA"],
-              "auto_router_sha": os.environ["EXPECTED_AUTO_ROUTER_SHA"],
+              "tailscale_dns": Path("/tmp/tailscale-dns.txt").read_text().strip(),
+              "assistx_runtime_sha": os.environ["ASSISTX_RUNTIME_SHA"],
+              "auto_router_runtime_sha": os.environ["AUTO_ROUTER_RUNTIME_SHA"],
               "replicated_ready_models": replicated,
               "replicated_ready_model_count": len(replicated),
               "preflight": "PASS" if replicated else "NO_REPLICATED_READY_MODEL",
           }
-          (out / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+          (out / "summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n"
+          )
           if not replicated:
               raise SystemExit("no ready mobile catalog model has >=2 replicas")
           PY
