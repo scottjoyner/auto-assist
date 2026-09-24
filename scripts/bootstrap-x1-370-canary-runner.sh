@@ -66,7 +66,8 @@ if [[ "$(id -u)" -eq 0 ]]; then
   ./svc.sh start
   ./svc.sh status
 elif command -v sudo >/dev/null; then
-  sudo ./svc.sh install
+  runner_user="$(id -un)"
+  sudo ./svc.sh install "$runner_user"
   sudo ./svc.sh start
   sudo ./svc.sh status
 else
