@@ -14,6 +14,7 @@ AUTO_ROUTER_REPO="${AUTO_ROUTER_REPO:-$GIT_ROOT/auto-router}"
 
 OPS_BRANCH="${OPS_BRANCH:-agent/kipnerter-model-handle-resolution}"
 ASSISTX_RUNTIME_SHA="${ASSISTX_RUNTIME_SHA:-aad657bbf4fff5bec2080ada07f5a4ad02292743}"
+AUTO_ROUTER_BRANCH="${AUTO_ROUTER_BRANCH:-agent/artifact-identity-routing}"
 AUTO_ROUTER_RUNTIME_SHA="${AUTO_ROUTER_RUNTIME_SHA:-1fbb9726de46a30c0c91616c65c04dc1f35845a6}"
 
 OPS_WORKTREE="${OPS_WORKTREE:-$GIT_ROOT/auto-assist-canary-ops}"
@@ -37,6 +38,7 @@ mkdir -p "$GIT_ROOT"
 ensure_clone() {
   local url="$1"
   local repo="$2"
+  local expected_slug="$3"
 
   if [[ ! -e "$repo" ]]; then
     echo "Cloning $url -> $repo"
@@ -46,7 +48,14 @@ ensure_clone() {
     exit 3
   fi
 
-  git -C "$repo" remote get-url origin >/dev/null
+  origin_url="$(git -C "$repo" remote get-url origin)"
+  case "$origin_url" in
+    *"$expected_slug"* ) ;;
+    * )
+      echo "$repo origin is $origin_url, expected repository $expected_slug" >&2
+      exit 3
+      ;;
+  esac
   git -C "$repo" fetch origin --prune --tags
 }
 
@@ -102,11 +111,14 @@ ensure_branch_worktree() {
   test "$(git -C "$path" rev-parse HEAD)" = "$commit"
 }
 
-ensure_clone "$AUTO_ASSIST_URL" "$AUTO_ASSIST_REPO"
-ensure_clone "$AUTO_ROUTER_URL" "$AUTO_ROUTER_REPO"
+ensure_clone "$AUTO_ASSIST_URL" "$AUTO_ASSIST_REPO" "scottjoyner/auto-assist"
+ensure_clone "$AUTO_ROUTER_URL" "$AUTO_ROUTER_REPO" "scottjoyner/auto-router"
 
-git -C "$AUTO_ASSIST_REPO" fetch origin   "$OPS_BRANCH"   "$ASSISTX_RUNTIME_SHA"
-git -C "$AUTO_ROUTER_REPO" fetch origin "$AUTO_ROUTER_RUNTIME_SHA"
+git -C "$AUTO_ASSIST_REPO" fetch origin   "$OPS_BRANCH:refs/remotes/origin/$OPS_BRANCH"
+git -C "$AUTO_ROUTER_REPO" fetch origin   "$AUTO_ROUTER_BRANCH:refs/remotes/origin/$AUTO_ROUTER_BRANCH"
+
+git -C "$AUTO_ASSIST_REPO" cat-file -e "$ASSISTX_RUNTIME_SHA^{commit}"
+git -C "$AUTO_ROUTER_REPO" cat-file -e "$AUTO_ROUTER_RUNTIME_SHA^{commit}"
 
 ensure_branch_worktree   "$AUTO_ASSIST_REPO"   "$OPS_WORKTREE"   "origin/$OPS_BRANCH"
 
