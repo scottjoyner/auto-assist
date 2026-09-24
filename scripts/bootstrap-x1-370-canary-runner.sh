@@ -63,12 +63,11 @@ if [[ "$(id -u)" -eq 0 ]]; then
   ./svc.sh install
   ./svc.sh start
   ./svc.sh status
+elif command -v sudo >/dev/null; then
+  sudo ./svc.sh install
+  sudo ./svc.sh start
+  sudo ./svc.sh status
 else
-  echo
-  echo "Runner configured at: $RUNNER_DIR"
-  echo "To install/start it as a service:"
-  echo "  cd '$RUNNER_DIR' && sudo ./svc.sh install && sudo ./svc.sh start && sudo ./svc.sh status"
-  echo
-  echo "Or run it immediately in this shell:"
-  echo "  cd '$RUNNER_DIR' && ./run.sh"
+  echo "runner configured but sudo is unavailable; run ./run.sh manually" >&2
+  exit 4
 fi
