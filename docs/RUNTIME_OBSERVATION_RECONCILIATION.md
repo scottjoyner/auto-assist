@@ -33,11 +33,72 @@ Runtime observations always remain `admitted: false`.
 
 The PR contract currently pins:
 
-- auto-router: `251cdc4532041f1d0616bd95c0f939bd99be0bb9`
-- lms: `4243b24394dc6746e65c2a3716ad7823dc4b03c0`
+- auto-router: `dcf1da72684bdda1999e4445708b24cd52bc96db`
+- lms: `4e277a838231abaa70cba9982267ee8ff6391b85`
 
 The Auto-Assist head is recorded by the cross-repository workflow as
 `GITHUB_SHA` in the uploaded repository matrix.
+
+## Signed artifact/process witness
+
+For a runtime that should prove artifact identity, create one witness **after the
+approved runtime process is live**. This hashes the model file once, proves that
+the live process references that file, binds the result to the already-signed
+runtime-canary/loadout evidence, and signs the compact witness with OpenSSH.
+
+Example:
+
+```bash
+lms-runtime-witness \
+  --loadout /path/to/exact-loadout.json \
+  --canary-run-dir /path/to/signed-canary-run \
+  --allowed-signers /path/to/allowed_signers \
+  --canary-identity runtime-canary-operator \
+  --pid "$RUNTIME_PID" \
+  --runtime-url http://localhost:1235 \
+  --runtime-kind llama_cpp \
+  --provider-model k2-36b \
+  --model-path /path/to/k2.gguf \
+  --signing-key /path/to/operator-ed25519-key \
+  --out /var/lib/lms/runtime-witnesses/k2.json
+```
+
+The builder rejects the witness unless:
+
+- the runtime-canary attestation verifies and completed with successful rollback;
+- the canary `loadout_fingerprint` equals the exact loadout;
+- a one-time SHA-256 of the live model file equals
+  `loadout.model.content_sha256`;
+- the selected process currently references that exact model path through its
+  command line or `/proc/<pid>/maps`;
+- the signing key is a private operator key with safe permissions.
+
+The signed witness binds:
+
+- node/runtime endpoint and declared runtime kind;
+- provider model ID;
+- exact model-content SHA-256 and loadout fingerprint;
+- boot ID, PID, process start ticks and executable SHA-256;
+- model-file device/inode/size/mtime identity;
+- successful canary provenance;
+- `admission: {"admitted": false}`.
+
+Configure the node reporter with the witness:
+
+```bash
+python fleet_node_reporter.py \
+  --runtime-url http://localhost:1235 \
+  --runtime-witness /var/lib/lms/runtime-witnesses/k2.json
+```
+
+The detached signature must remain beside the JSON as `k2.json.sig`.
+`FLEET_RUNTIME_WITNESSES` may be used instead of repeated CLI flags.
+
+The reporter does **not** hash the model again on every report. It cheaply
+revalidates that the same boot/PID/start identity is alive, the model file still
+has the signed device/inode/size/mtime identity, and the process still references
+that file. A restart, replacement, file mutation, or process/model unbinding makes
+continuity fail closed.
 
 ## Smallest operator evidence package
 
@@ -57,6 +118,8 @@ python scripts/reconcile-runtime-observations.py \
   --router-status evidence/router-status.json \
   --verify-key-file /path/to/runtime-projection-public.pem \
   --expected-key-id assistx-runtime-projection-v1 \
+  --runtime-witness-allowed-signers /path/to/allowed_signers \
+  --runtime-witness-identity runtime-witness-operator \
   --max-observation-age-seconds 180 \
   --output evidence/reconciliation.json
 ```
@@ -73,7 +136,10 @@ The command fails before reconciliation when:
 - Auto-Router's active generation, revision, or checksum differs from the
   verified projection.
 
-The output also records SHA-256 hashes of all input files.
+The output also records SHA-256 hashes of all input files, including the
+runtime-witness allowed-signers file. Witness signatures are verified with the
+`lms-runtime-identity-witness` OpenSSH namespace before any witness field is
+trusted.
 
 ## Classification contract
 
@@ -85,19 +151,32 @@ source IP positively matches one of the signed provider's literal IP access path
 and every projected model group is represented by either its alias or provider-model
 ID with no unexpected observed models.
 
-This means **endpoint and model-name agreement only**.
+Without a valid signed runtime witness, this means **endpoint and model-name
+agreement only** and `artifact_identity_verified` remains false.
 
-It does **not** prove the currently loaded bytes equal the signed
-`artifact_fingerprint`. The report therefore always records:
+With a valid witness, reconciliation additionally requires:
+
+- the witness signature to verify against the operator allowed-signers file;
+- witness node, port, runtime kind and provider model to match the observation;
+- the signed canary to have verified rollback provenance;
+- live process continuity to match the signed boot/PID/start/executable identity;
+- the same model file identity to remain bound to the process;
+- `witness.model_content_sha256` to equal the matching signed projection
+  `artifact_fingerprint`.
+
+Only then does the report emit:
 
 ```json
 {
-  "artifact_identity_verified": false,
-  "identity_evidence_level": "endpoint_and_model_names"
+  "artifact_identity_verified": true,
+  "artifact_identity_reason": "signed_model_artifact_and_process_match",
+  "identity_evidence_level": "signed_model_artifact_and_process"
 }
 ```
 
-Artifact continuity remains an independent operator/canary evidence requirement.
+A verified witness may also refine a generic `openai_compatible` observation to
+its operator-signed runtime kind (for example `llama_cpp`), but it still cannot
+grant admission or create a provider.
 
 ### `unprojected_runtime`
 
@@ -176,6 +255,9 @@ The runtime sanitizer still:
 - bounds runtime/model counts and string lengths;
 - rejects credential-bearing URLs;
 - strips unknown artifact/token fields;
+- preserves only a bounded signed runtime-witness envelope plus live continuity
+  facts;
+- never interprets that witness as routing/admission state;
 - forces `admitted: false`;
 - forces an empty model set to `ready: false`.
 
@@ -185,7 +267,11 @@ The minimum exact-head acceptance matrix is:
 
 | Fixture | Required result |
 | --- | --- |
-| Fresh K2 on signed node/port/kind with expected model | `projected` |
+| Fresh K2 on signed node/port/kind with expected model, no witness | `projected`, artifact unverified |
+| Fresh K2 + valid signed witness + live model/process continuity | `projected`, artifact verified |
+| Signed witness artifact hash differs from projection | `model_drift` |
+| Signed witness process/model continuity fails | `runtime_identity_mismatch` |
+| Runtime witness signature does not verify | `runtime_identity_unverified` |
 | Ternary Bonsai on a genuinely unsigned port | `unprojected_runtime` |
 | Extra observed model | `model_drift` |
 | Missing projected model | `model_drift` |
@@ -207,12 +293,16 @@ All results must retain:
 }
 ```
 
-## Remaining deliberate gap
+## Scope boundary
 
-This slice does not attempt to hash multi-gigabyte model weights on every fleet
-report. The next artifact-identity step should consume an already-produced,
-operator-verifiable loadout/canary fingerprint or another bounded runtime witness
-and compare it with the signed `ModelArtifact.artifact_fingerprint`.
+This slice deliberately avoids repeated multi-gigabyte model hashing. The model is
+hashed once when the operator issues the witness. Continued validity is then tied
+to the exact live process plus stable file identity and process→model binding.
 
-Until that exists, a `projected` reconciliation result must not be described as
-proof of artifact equivalence.
+A plain `projected` result without `artifact_identity_verified: true` is still
+only endpoint/model-name agreement. Only the signed-witness path described above
+is evidence of the projected model artifact bytes for that continuing process.
+
+The witness remains evidence, not authority: changing or producing a witness does
+not change AssistX admission, Auto-Router providers, capacity, approved access
+paths, routing policy, or projection generation.
