@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import ipaddress
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -70,6 +71,109 @@ def _canonical_witness_bytes(value: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+def _validate_allowed_signers_trust_file(path: Path) -> os.stat_result:
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("runtime witness allowed-signers file is unavailable")
+    stat = path.stat()
+    if os.name == "posix":
+        mode = stat.st_mode & 0o777
+        if mode & 0o022:
+            raise ValueError(
+                "runtime witness allowed-signers file may not be group/world writable"
+            )
+        if stat.st_uid not in {0, os.geteuid()}:
+            raise ValueError(
+                "runtime witness allowed-signers file must be owned by root or the current operator"
+            )
+    return stat
+
+
+def _allowed_signer_key_fingerprint(
+    *,
+    ssh_keygen: str,
+    key_type: str,
+    key_data: str,
+    directory: Path,
+    ordinal: int,
+) -> str | None:
+    key_path = directory / f"allowed-signer-{ordinal}.pub"
+    key_path.write_text(f"{key_type} {key_data}\n", encoding="utf-8")
+    process = subprocess.run(
+        [ssh_keygen, "-lf", str(key_path), "-E", "sha256"],
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if process.returncode != 0:
+        return None
+    return next(
+        (
+            field
+            for field in process.stdout.strip().split()
+            if field.startswith("SHA256:")
+        ),
+        None,
+    )
+
+
+def _narrow_allowed_signers(
+    *,
+    allowed_signers: Path,
+    identity: str,
+    declared_fingerprint: str,
+    ssh_keygen: str,
+    directory: Path,
+) -> Path:
+    if not re.fullmatch(r"SHA256:[A-Za-z0-9+/]+={0,2}", declared_fingerprint):
+        raise ValueError("runtime witness signing-key fingerprint is invalid")
+    lines = allowed_signers.read_text(encoding="utf-8").splitlines()
+    matching: list[str] = []
+    ordinal = 0
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        principals = parts[0].split(",")
+        if identity not in principals:
+            # ssh-keygen performs the final principal check. This fast filter
+            # intentionally supports only explicit principals for witness
+            # identities; wildcard principal policy is too broad for artifact
+            # attestation.
+            continue
+        key_index = next(
+            (
+                index
+                for index, token in enumerate(parts[1:], start=1)
+                if token.startswith(("ssh-", "ecdsa-", "sk-"))
+            ),
+            None,
+        )
+        if key_index is None or key_index + 1 >= len(parts):
+            continue
+        fingerprint = _allowed_signer_key_fingerprint(
+            ssh_keygen=ssh_keygen,
+            key_type=parts[key_index],
+            key_data=parts[key_index + 1],
+            directory=directory,
+            ordinal=ordinal,
+        )
+        ordinal += 1
+        if fingerprint == declared_fingerprint:
+            matching.append(raw)
+    if not matching:
+        raise ValueError(
+            "runtime witness declared signing key is not trusted for the configured identity"
+        )
+    narrowed = directory / "allowed_signers.narrowed"
+    narrowed.write_text("\n".join(matching) + "\n", encoding="utf-8")
+    narrowed.chmod(0o600)
+    return narrowed
+
+
 def _verify_runtime_identity_witness(
     payload: str,
     signature: str,
@@ -80,8 +184,7 @@ def _verify_runtime_identity_witness(
 ) -> dict[str, Any]:
     if not _SIGNER_IDENTITY_RE.fullmatch(identity):
         raise ValueError("runtime witness signer identity is invalid")
-    if not allowed_signers.is_file() or allowed_signers.is_symlink():
-        raise ValueError("runtime witness allowed-signers file is unavailable")
+    _validate_allowed_signers_trust_file(allowed_signers)
     ssh_keygen = shutil.which("ssh-keygen")
     if not ssh_keygen:
         raise ValueError("ssh-keygen is required to verify runtime identity witnesses")
@@ -97,14 +200,34 @@ def _verify_runtime_identity_witness(
         raise ValueError("unsupported runtime identity witness schema")
     if witness.get("admission") != {"admitted": False}:
         raise ValueError("runtime identity witness must remain non-admitted")
+    if str(witness.get("witness_signer_identity") or "") != identity:
+        raise ValueError("runtime identity witness signer identity mismatch")
+    if str(witness.get("witness_signature_namespace") or "") != namespace:
+        raise ValueError("runtime identity witness signature namespace mismatch")
+    declared_signing_fingerprint = str(
+        witness.get("witness_signing_key_fingerprint") or ""
+    )
     process_identity = witness.get("process")
     model_file_identity = witness.get("model_file_identity")
-    if not isinstance(process_identity, dict) or not isinstance(model_file_identity, dict):
+    executable_file_identity = (
+        process_identity.get("executable_file_identity")
+        if isinstance(process_identity, dict)
+        else None
+    )
+    if (
+        not isinstance(process_identity, dict)
+        or not isinstance(model_file_identity, dict)
+        or not isinstance(executable_file_identity, dict)
+    ):
         raise ValueError("runtime identity witness process/model file identity is missing")
     try:
         if (
             int(process_identity.get("pid") or 0) <= 0
             or int(process_identity.get("process_start_ticks") or 0) <= 0
+            or int(executable_file_identity.get("inode") or 0) <= 0
+            or int(executable_file_identity.get("size_bytes") or 0) <= 0
+            or int(executable_file_identity.get("mtime_ns") or 0) <= 0
+            or int(executable_file_identity.get("ctime_ns") or 0) <= 0
             or int(model_file_identity.get("inode") or 0) <= 0
             or int(model_file_identity.get("size_bytes") or 0) <= 0
             or int(model_file_identity.get("mtime_ns") or 0) <= 0
@@ -125,7 +248,15 @@ def _verify_runtime_identity_witness(
         raise ValueError("runtime identity witness signature is malformed")
 
     with tempfile.TemporaryDirectory(prefix="assistx-runtime-witness-") as directory:
-        signature_path = Path(directory) / "witness.sig"
+        temp_root = Path(directory)
+        narrowed_signers = _narrow_allowed_signers(
+            allowed_signers=allowed_signers,
+            identity=identity,
+            declared_fingerprint=declared_signing_fingerprint,
+            ssh_keygen=ssh_keygen,
+            directory=temp_root,
+        )
+        signature_path = temp_root / "witness.sig"
         signature_path.write_text(signature, encoding="utf-8")
         process = subprocess.run(
             [
@@ -133,7 +264,7 @@ def _verify_runtime_identity_witness(
                 "-Y",
                 "verify",
                 "-f",
-                str(allowed_signers),
+                str(narrowed_signers),
                 "-I",
                 identity,
                 "-n",
