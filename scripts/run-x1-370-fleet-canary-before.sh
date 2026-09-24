@@ -149,6 +149,61 @@ target="${transition[0]:-}"
 target_node="${transition[1]:-}"
 test -n "$target"
 
+if command -v tailscale >/dev/null; then
+  tailscale status --json > "$canary_dir/tailscale-status-before.json"
+  python3 - "$canary_dir/before-summary.json" "$canary_dir/tailscale-status-before.json" "$canary_dir/transition-target.json" <<'PY'
+import json,sys
+summary=json.load(open(sys.argv[1]))
+ts=json.load(open(sys.argv[2]))
+provider=summary.get("transition_target_provider")
+node=summary.get("serving_node_id") or ""
+needle=str(node).strip().lower()
+
+candidates=[]
+self_node=ts.get("Self")
+if isinstance(self_node,dict):
+    candidates.append(self_node)
+peers=ts.get("Peer")
+if isinstance(peers,dict):
+    candidates.extend(v for v in peers.values() if isinstance(v,dict))
+
+def names(item):
+    out=[]
+    for key in ("HostName","DNSName","ID","StableID"):
+        value=item.get(key)
+        if isinstance(value,str) and value:
+            out.append(value.rstrip(".").lower())
+    return out
+
+matches=[]
+if needle:
+    for item in candidates:
+        aliases=names(item)
+        if any(
+            needle == alias
+            or needle == alias.split(".",1)[0]
+            or alias == needle.split(".",1)[0]
+            for alias in aliases
+        ):
+            matches.append({
+                "hostname": item.get("HostName"),
+                "dns_name": (item.get("DNSName") or "").rstrip(".") or None,
+                "tailscale_ips": item.get("TailscaleIPs") or [],
+                "online": item.get("Online"),
+                "id": item.get("ID"),
+                "stable_id": item.get("StableID"),
+            })
+
+output={
+    "provider": provider,
+    "node_id": node or None,
+    "tailscale_matches": matches,
+}
+json.dump(output,open(sys.argv[3],"w"),indent=2,sort_keys=True)
+open(sys.argv[3],"a").write("\n")
+PY
+fi
+
 cat <<EOF
 
 BEFORE CAPTURE COMPLETE
@@ -157,6 +212,7 @@ Model: $display_name
 Handle: $handle
 Transition target provider: $target
 Transition target node: ${target_node:-unknown}
+Transition target detail: $canary_dir/transition-target.json
 Evidence: $canary_dir
 
 STOP HERE until the exact provider above is removed from eligibility through
