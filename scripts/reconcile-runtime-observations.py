@@ -291,7 +291,7 @@ def _verify_runtime_continuity_attestation(
     *,
     allowed_signers: Path,
     expected_node_id: str,
-    expected_observation_id: str,
+    expected_observation: dict[str, Any],
     expected_witness_fingerprint: str,
 ) -> dict[str, Any]:
     if not _SIGNER_IDENTITY_RE.fullmatch(expected_node_id):
@@ -318,8 +318,35 @@ def _verify_runtime_continuity_attestation(
         raise ValueError("runtime continuity signer identity mismatch")
     if str(document.get("signature_namespace") or "") != _CONTINUITY_NAMESPACE:
         raise ValueError("runtime continuity signature namespace mismatch")
+    expected_observation_id = str(
+        expected_observation.get("runtime_observation_id") or ""
+    )
     if str(document.get("runtime_observation_id") or "") != expected_observation_id:
         raise ValueError("runtime continuity observation ID mismatch")
+    expected_models = sorted(
+        {
+            str(model).strip()
+            for model in (expected_observation.get("models") or [])
+            if str(model).strip()
+        },
+        key=str.casefold,
+    )
+    try:
+        expected_observed_at = int(expected_observation.get("observed_at") or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("runtime continuity enclosing observation timestamp is invalid") from exc
+    expected_signed_observation = {
+        "runtime_observation_id": expected_observation_id,
+        "observed_at": expected_observed_at,
+        "runtime_kind": str(expected_observation.get("runtime_kind") or ""),
+        "protocol": str(expected_observation.get("protocol") or ""),
+        "base_url": str(expected_observation.get("base_url") or "").strip().rstrip("/"),
+        "models": expected_models,
+        "ready": bool(expected_observation.get("ready")) and bool(expected_models),
+        "observed_model_count": len(expected_models),
+    }
+    if document.get("observation") != expected_signed_observation:
+        raise ValueError("runtime continuity signed observation mismatch")
     if str(document.get("witness_fingerprint") or "") != expected_witness_fingerprint:
         raise ValueError("runtime continuity witness fingerprint mismatch")
     continuity = document.get("continuity")
@@ -437,7 +464,7 @@ def _verify_node_witnesses(
                     continuity_signature,
                     allowed_signers=continuity_allowed_signers,
                     expected_node_id=node_id,
-                    expected_observation_id=observation_id,
+                    expected_observation=observation,
                     expected_witness_fingerprint=str(
                         verified.get("witness_fingerprint") or ""
                     ),
