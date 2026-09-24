@@ -45,7 +45,7 @@ Use the real authenticated Tailscale/Serve path. Do not synthesize `Tailscale-Us
 If an additional gateway header is required, put its value in an environment variable and pass only the environment-variable name, for example:
 
 ~~~bash
-export KIPNERNTER_GATEWAY_AUTH="Bearer ..."
+export KIPNERTER_GATEWAY_AUTH="Bearer ..."
 EXTRA_AUTH=(--header-env "Authorization=KIPNERNTER_GATEWAY_AUTH")
 ~~~
 
@@ -68,11 +68,11 @@ The command fails unless:
 - the matching `exact_artifact` route-decision event appears;
 - the matching completed execution event appears.
 
-The collector writes immutable before evidence and `capture-state.json`.
+The collector writes immutable before evidence and `capture-state.json`. Its JSON summary also emits `transition_target_provider`; that is the **before-serving replica** the approved canary transition must remove from eligibility.
 
 ### 2. Perform the approved replica eligibility transition
 
-Make exactly one same-artifact replica unavailable **only through the approved canary/staging or existing operational procedure**. Do not change the artifact identity, model handle, handle secret, AssistX code, Auto-Router code, or routing authority.
+Make the exact `transition_target_provider` from the before capture unavailable **only through the approved canary/staging or existing operational procedure**. Do not remove an arbitrary sibling replica: the canary is intended to prove that the replica which actually served the before request leaves the exact-artifact candidate set. Do not change the artifact identity, model handle, handle secret, AssistX code, Auto-Router code, or routing authority.
 
 Wait until the authoritative mobile catalog reports the same handle with a smaller positive `ready_runtime_count`.
 
@@ -112,6 +112,7 @@ A valid run proves all of the following simultaneously:
 - the mobile handle is unchanged;
 - the exact artifact fingerprint is unchanged in trusted server-side decision and execution evidence;
 - the **completed serving provider/replica** changes;
+- the before-serving provider is absent from the after `exact_artifact` candidate set;
 - ready replica count decreases but remains positive;
 - policy profile stays `exact_artifact`;
 - decision and execution remain `local_only=true` and `allow_cloud=false`;
