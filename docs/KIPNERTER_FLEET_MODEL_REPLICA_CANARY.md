@@ -2,7 +2,7 @@
 
 This runbook proves the operational invariant behind opaque Fleet model handles:
 
-> the same mobile `model:v1:*` handle and the same admitted artifact remain authoritative when one same-artifact replica becomes ineligible, while Auto-Router selects a different surviving replica and the mobile response exposes no physical runtime coordinates.
+> the same mobile `model:v1:*` handle and the same admitted artifact remain authoritative when one same-artifact replica becomes ineligible, while a different surviving replica actually completes the request and the mobile response exposes no physical runtime coordinates.
 
 ## Safety boundary
 
@@ -13,13 +13,14 @@ Preferred execution is an ephemeral/staging topology that mirrors the current si
 ## Preconditions
 
 - Kipnerter/AssistX model-handle route is deployed.
-- Auto-Router contains the trusted route-evidence fields:
-  - `assistx_mobile_model_handle`
-  - `assistx_mobile_request_id`
-  - `artifact_fingerprint`
-  - chosen provider/replica
+- Auto-Router contains trusted server-side route evidence for:
+  - `assistx_mobile_model_handle`;
+  - `assistx_mobile_request_id`;
+  - `artifact_fingerprint`;
+  - `router.route_decision` with `profile=exact_artifact`;
+  - `router.execution_stage.completed` with the actual serving provider/replica.
 - The target Fleet model is `state=ready` with `ready_runtime_count >= 2`.
-- The two replicas serve the same admitted artifact.
+- The replicas serve the same admitted artifact.
 - The operator can read Auto-Router's local SQLite outbox. Default container DB is `/data/router.sqlite3`; use the matching host-mounted path for the deployment.
 
 ## Environment
@@ -77,10 +78,22 @@ sqlite3 -json "$ROUTER_DB" "
     AND json_extract(payload_json, '$.assistx_mobile_request_id') = '$BEFORE_REQUEST_ID'
   ORDER BY id DESC
   LIMIT 1;
-" | jq '.[0] | {payload: (.payload | fromjson)}' > before-route-event.json
+" | jq '.[0] | {payload: (.payload | fromjson)}' > before-route-decision.json
 
-test "$(jq -r '.payload.assistx_mobile_request_id' before-route-event.json)" = "$BEFORE_REQUEST_ID"
+sqlite3 -json "$ROUTER_DB" "
+  SELECT payload_json AS payload
+  FROM event_outbox
+  WHERE event_type = 'router.execution_stage.completed'
+    AND json_extract(payload_json, '$.assistx_mobile_request_id') = '$BEFORE_REQUEST_ID'
+  ORDER BY id DESC
+  LIMIT 1;
+" | jq '.[0] | {payload: (.payload | fromjson)}' > before-route-execution.json
+
+test "$(jq -r '.payload.assistx_mobile_request_id' before-route-decision.json)" = "$BEFORE_REQUEST_ID"
+test "$(jq -r '.payload.assistx_mobile_request_id' before-route-execution.json)" = "$BEFORE_REQUEST_ID"
 ~~~
+
+The policy decision proves the request stayed in the `exact_artifact` profile. The completed execution event proves which physical replica actually served it.
 
 ## Replica eligibility transition
 
@@ -129,26 +142,38 @@ sqlite3 -json "$ROUTER_DB" "
     AND json_extract(payload_json, '$.assistx_mobile_request_id') = '$AFTER_REQUEST_ID'
   ORDER BY id DESC
   LIMIT 1;
-" | jq '.[0] | {payload: (.payload | fromjson)}' > after-route-event.json
+" | jq '.[0] | {payload: (.payload | fromjson)}' > after-route-decision.json
 
-test "$(jq -r '.payload.assistx_mobile_request_id' after-route-event.json)" = "$AFTER_REQUEST_ID"
+sqlite3 -json "$ROUTER_DB" "
+  SELECT payload_json AS payload
+  FROM event_outbox
+  WHERE event_type = 'router.execution_stage.completed'
+    AND json_extract(payload_json, '$.assistx_mobile_request_id') = '$AFTER_REQUEST_ID'
+  ORDER BY id DESC
+  LIMIT 1;
+" | jq '.[0] | {payload: (.payload | fromjson)}' > after-route-execution.json
+
+test "$(jq -r '.payload.assistx_mobile_request_id' after-route-decision.json)" = "$AFTER_REQUEST_ID"
+test "$(jq -r '.payload.assistx_mobile_request_id' after-route-execution.json)" = "$AFTER_REQUEST_ID"
 ~~~
 
 ## Build and validate the evidence bundle
 
 ~~~bash
-jq -n   --slurpfile before_catalog before-catalog.json   --slurpfile before_response before-response.json   --slurpfile before_event before-route-event.json   --slurpfile after_catalog after-catalog.json   --slurpfile after_response after-response.json   --slurpfile after_event after-route-event.json   --arg before_request_id "$BEFORE_REQUEST_ID"   --arg after_request_id "$AFTER_REQUEST_ID"   '{
+jq -n   --slurpfile before_catalog before-catalog.json   --slurpfile before_response before-response.json   --slurpfile before_decision before-route-decision.json   --slurpfile before_execution before-route-execution.json   --slurpfile after_catalog after-catalog.json   --slurpfile after_response after-response.json   --slurpfile after_decision after-route-decision.json   --slurpfile after_execution after-route-execution.json   --arg before_request_id "$BEFORE_REQUEST_ID"   --arg after_request_id "$AFTER_REQUEST_ID"   '{
     before: {
       catalog: $before_catalog[0],
       mobile_response: $before_response[0],
       mobile_request_id: $before_request_id,
-      route_event: $before_event[0]
+      route_decision_event: $before_decision[0],
+      route_execution_event: $before_execution[0]
     },
     after: {
       catalog: $after_catalog[0],
       mobile_response: $after_response[0],
       mobile_request_id: $after_request_id,
-      route_event: $after_event[0]
+      route_decision_event: $after_decision[0],
+      route_execution_event: $after_execution[0]
     }
   }' > evidence.json
 
@@ -158,17 +183,19 @@ python /path/to/auto-assist/scripts/validate_mobile_model_replica_canary.py   ev
 A valid run returns `"result": "PASS"` and proves all of the following simultaneously:
 
 - mobile handle is unchanged;
-- artifact fingerprint is unchanged in trusted server-side evidence;
-- chosen provider/replica changes;
+- artifact fingerprint is unchanged in trusted server-side decision and execution evidence;
+- the completed serving provider/replica changes;
 - ready replica count decreases but remains positive;
-- route profile stays `exact_artifact`;
-- `local_only=true` and `allow_cloud=false`;
-- each mobile request is matched to exactly its own internal route event by the AssistX-generated `kmr:*` correlation ID;
+- policy profile stays `exact_artifact`;
+- both decision and execution remain `local_only=true` and `allow_cloud=false`;
+- each mobile request is matched to its own decision and completed execution events by the AssistX-generated `kmr:*` correlation ID;
 - the mobile response contains no artifact fingerprint, runtime instance, provider identity, base URL, access URL, or other physical route coordinate.
+
+The decision's initially chosen provider is **not** used as the serving-replica proof. That is intentional: if candidate A fails and the same exact-artifact stage succeeds on candidate B, only the completed execution event proves B actually served the request.
 
 ## Evidence retention
 
-Retain `evidence.json`, `result.json`, both catalog snapshots, response bodies, response headers, and route-event extracts together with:
+Retain `evidence.json`, `result.json`, both catalog snapshots, response bodies, response headers, decision events, and completed execution events together with:
 
 - exact `auto-assist` SHA;
 - exact `auto-router` SHA;
