@@ -145,3 +145,54 @@ def test_build_evidence_bundle_uses_request_metadata_correlation(tmp_path: Path)
     assert bundle["after"]["mobile_request_id"] == "kmr:after"
     assert bundle["before"]["route_decision_event"]["payload"]["profile"] == "exact_artifact"
     assert bundle["after"]["route_execution_event"]["payload"]["status"] == "completed"
+
+
+
+def test_capture_before_refuses_to_overwrite_existing_evidence(tmp_path: Path) -> None:
+    (tmp_path / "capture-state.json").write_text(
+        json.dumps({"model_handle": HANDLE}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CaptureError, match="fresh --out-dir"):
+        _MODULE.capture_phase(
+            phase="before",
+            assistx_base_url="https://assistx.example",
+            router_db=tmp_path / "router.sqlite3",
+            out_dir=tmp_path,
+            display_name="Ternary Bonsai 2",
+            handle=None,
+            request_headers={},
+            event_timeout_seconds=1,
+            assistx_sha="assistx-a",
+            router_sha="router-a",
+        )
+
+
+def test_capture_after_rejects_exact_head_drift_before_network(tmp_path: Path) -> None:
+    (tmp_path / "capture-state.json").write_text(
+        json.dumps(
+            {
+                "model_handle": HANDLE,
+                "display_name": "Ternary Bonsai 2",
+                "ready_runtime_count": 2,
+                "auto_assist_sha": "assistx-a",
+                "auto_router_sha": "router-a",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CaptureError, match="auto_assist_sha changed"):
+        _MODULE.capture_phase(
+            phase="after",
+            assistx_base_url="https://assistx.example",
+            router_db=tmp_path / "router.sqlite3",
+            out_dir=tmp_path,
+            display_name=None,
+            handle=None,
+            request_headers={},
+            event_timeout_seconds=1,
+            assistx_sha="assistx-b",
+            router_sha="router-a",
+        )
