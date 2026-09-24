@@ -47,7 +47,12 @@ def _mobile_response() -> dict:
     }
 
 
-def _route_decision_event(provider: str, request_id: str, mobile_request_id: str) -> dict:
+def _route_decision_event(
+    provider: str,
+    request_id: str,
+    mobile_request_id: str,
+    candidates: list[str],
+) -> dict:
     return {
         "payload": {
             "request_id": request_id,
@@ -62,6 +67,13 @@ def _route_decision_event(provider: str, request_id: str, mobile_request_id: str
                 "provider": provider,
                 "provider_id": provider,
             },
+            "candidates": [
+                {
+                    "provider": candidate,
+                    "provider_id": candidate,
+                }
+                for candidate in candidates
+            ],
         }
     }
 
@@ -89,16 +101,24 @@ def _bundle() -> dict:
             "catalog": _catalog(2),
             "mobile_response": _mobile_response(),
             "mobile_request_id": "kmr:before",
-            "route_decision_event": _route_decision_event("runtime-a", "before", "kmr:before"),
+            "route_decision_event": _route_decision_event(
+                "runtime-a",
+                "before",
+                "kmr:before",
+                ["runtime-a", "runtime-b"],
+            ),
             "route_execution_event": _route_execution_event("runtime-a", "before", "kmr:before"),
         },
         "after": {
             "catalog": _catalog(1),
             "mobile_response": _mobile_response(),
             "mobile_request_id": "kmr:after",
-            # The policy may initially choose A and then complete on B if A
-            # becomes unavailable. Serving-replica proof comes from execution.
-            "route_decision_event": _route_decision_event("runtime-a", "after", "kmr:after"),
+            "route_decision_event": _route_decision_event(
+                "runtime-b",
+                "after",
+                "kmr:after",
+                ["runtime-b"],
+            ),
             "route_execution_event": _route_execution_event("runtime-b", "after", "kmr:after"),
         },
     }
@@ -138,7 +158,17 @@ def test_replica_canary_rejects_mobile_runtime_coordinate_leak() -> None:
 
 def test_replica_canary_rejects_same_serving_replica() -> None:
     bundle = _bundle()
-    bundle["after"]["route_execution_event"] = _route_execution_event("runtime-a", "after", "kmr:after")
+    bundle["after"]["route_decision_event"] = _route_decision_event(
+        "runtime-a",
+        "after",
+        "kmr:after",
+        ["runtime-a"],
+    )
+    bundle["after"]["route_execution_event"] = _route_execution_event(
+        "runtime-a",
+        "after",
+        "kmr:after",
+    )
 
     with pytest.raises(CanaryEvidenceError, match="chosen replica did not change"):
         validate_evidence(bundle)
@@ -149,4 +179,18 @@ def test_replica_canary_rejects_mismatched_request_correlation() -> None:
     bundle["after"]["route_execution_event"]["payload"]["assistx_mobile_request_id"] = "kmr:other"
 
     with pytest.raises(CanaryEvidenceError, match="does not match mobile request ID"):
+        validate_evidence(bundle)
+
+
+
+def test_replica_canary_rejects_before_provider_still_in_after_candidates() -> None:
+    bundle = _bundle()
+    bundle["after"]["route_decision_event"] = _route_decision_event(
+        "runtime-b",
+        "after",
+        "kmr:after",
+        ["runtime-a", "runtime-b"],
+    )
+
+    with pytest.raises(CanaryEvidenceError, match="remains eligible"):
         validate_evidence(bundle)
