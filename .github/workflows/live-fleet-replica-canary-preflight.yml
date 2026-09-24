@@ -1,12 +1,6 @@
 name: Live Fleet Replica Canary Preflight
 
 on:
-  push:
-    paths:
-      - ".github/workflows/live-fleet-replica-canary-preflight.yml"
-      - "scripts/bootstrap-x1-370-canary-workspace.sh"
-      - "scripts/bootstrap-x1-370-canary-runner.sh"
-      - "scripts/run-x1-370-live-fleet-preflight.sh"
   workflow_dispatch:
 
 permissions:
