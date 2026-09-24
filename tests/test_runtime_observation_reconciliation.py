@@ -396,6 +396,7 @@ def _attach_verified_witness(
     runtime_kind: str = "openai_compatible",
     model_sha: str = "sha256:k2",
     continuity_valid: bool = True,
+    binding_method: str = "proc_maps",
 ) -> None:
     observation = nodes["nodes"][0]["runtimes"][0]
     observation["_verified_runtime_identity_witness"] = {
@@ -404,7 +405,7 @@ def _attach_verified_witness(
         "runtime_url": "http://localhost:1235",
         "runtime_kind": runtime_kind,
         "provider_model": "k2-36b",
-        "model_process_binding": "proc_maps",
+        "model_process_binding": binding_method,
         "model_file_identity": {
             "device": 1,
             "inode": 2,
@@ -567,6 +568,48 @@ def test_signed_witness_can_refine_generic_runtime_kind() -> None:
     assert k2["runtime_kind_refined_by_signed_witness"] is True
     assert k2["status"] == "projected"
     assert k2["artifact_identity_verified"] is True
+
+
+def test_signed_witness_accepts_matching_strong_darwin_binding() -> None:
+    nodes = _nodes()
+    _attach_verified_witness(
+        nodes,
+        binding_method="darwin_vmmap_lsof",
+    )
+
+    result = _reconcile(nodes=nodes)
+    k2 = next(
+        item
+        for item in result["items"]
+        if item["runtime_observation_id"] == "runtime-observation:k2"
+    )
+
+    assert k2["status"] == "projected"
+    assert k2["artifact_identity_verified"] is True
+    assert k2["artifact_identity_reason"] == "signed_model_artifact_and_process_match"
+
+
+def test_mixed_linux_and_darwin_binding_methods_fail_closed() -> None:
+    nodes = _nodes()
+    _attach_verified_witness(
+        nodes,
+        binding_method="darwin_vmmap_lsof",
+    )
+    observation = nodes["nodes"][0]["runtimes"][0]
+    observation["_verified_runtime_identity_continuity"]["continuity"][
+        "model_process_binding"
+    ] = "proc_maps"
+
+    result = _reconcile(nodes=nodes)
+    k2 = next(
+        item
+        for item in result["items"]
+        if item["runtime_observation_id"] == "runtime-observation:k2"
+    )
+
+    assert k2["status"] == "runtime_identity_mismatch"
+    assert k2["artifact_identity_verified"] is False
+    assert "signed_witness_model_not_memory_mapped" in k2["reason_codes"]
 
 
 @pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="OpenSSH unavailable")
