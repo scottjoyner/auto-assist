@@ -488,6 +488,14 @@ def capture_phase(
             if prior_state is not None
             else serving_provider
         ),
+        "before_serving_node_id": (
+            prior_state.get("before_serving_node_id")
+            if prior_state is not None
+            else (
+                execution_payload.get("runtime_node_id")
+                or execution_payload.get("node_id")
+            )
+        ),
         "auto_assist_sha": assistx_sha
         or (prior_state or {}).get("auto_assist_sha"),
         "auto_router_sha": router_sha
@@ -495,6 +503,7 @@ def capture_phase(
     }
     _json_write(_state_path(out_dir), state)
 
+    execution_payload = execution.get("payload", {})
     summary: dict[str, Any] = {
         "phase": phase,
         "model_handle": selected_handle,
@@ -503,9 +512,13 @@ def capture_phase(
         "mobile_request_id": mobile_request_id,
         "route_profile": decision.get("payload", {}).get("profile"),
         "serving_provider": serving_provider,
-        "artifact_fingerprint": execution.get("payload", {}).get(
-            "artifact_fingerprint"
+        "serving_node_id": (
+            execution_payload.get("runtime_node_id")
+            or execution_payload.get("node_id")
         ),
+        "runtime_instance_id": execution_payload.get("runtime_instance_id"),
+        "runtime_kind": execution_payload.get("runtime_kind"),
+        "artifact_fingerprint": execution_payload.get("artifact_fingerprint"),
         "out_dir": str(out_dir),
     }
     if phase == "before":
