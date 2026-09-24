@@ -35,7 +35,7 @@ jobs:
     timeout-minutes: 30
     env:
       AUTO_ROUTER_SHA: de16cbbda1ecb3658f2a67281a41369434cd1815
-      LMS_SHA: a7cafa6f5d5734de9627b2d3c00bdf2e45d0e31c
+      LMS_SHA: 47fb7de1fdc61b48f89bbd07bcb01991156eb9fc
       FLEET_PROFILES_SHA: bfe57f9b1529c511ead14cffebcd67d70b9b469c
     steps:
       - name: Checkout AssistX candidate
