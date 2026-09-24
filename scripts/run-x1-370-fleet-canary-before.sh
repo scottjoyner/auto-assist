@@ -2,7 +2,7 @@
 set -euo pipefail
 
 EXPECTED_HOST="${EXPECTED_HOST:-x1-370}"
-OPS_ROOT="${OPS_ROOT:-$(git rev-parse --show-toplevel)}"
+OPS_ROOT="${OPS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 RUNTIME_ENV="${RUNTIME_ENV:-$OPS_ROOT/.canary-runtime.env}"
 EVIDENCE_ROOT="${CANARY_EVIDENCE_ROOT:-$HOME/git/canary-evidence}"
 
