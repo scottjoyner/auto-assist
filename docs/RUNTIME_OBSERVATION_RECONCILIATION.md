@@ -33,8 +33,8 @@ Runtime observations always remain `admitted: false`.
 
 The PR contract currently pins:
 
-- auto-router: `147980ec83c12370c068ad65350481df9599fcaf`
-- lms: `3049ee04e144092322723d6de17ec753d65743e1`
+- auto-router: `5f862eda47cb689133641d2deeaf7c934ce12fdb`
+- lms: `7ce693e548ebf7eaa07df8fae6235c4f692808d5`
 
 The Auto-Assist head is recorded by the cross-repository workflow as
 `GITHUB_SHA` in the uploaded repository matrix.
@@ -190,8 +190,21 @@ python fleet_node_reporter.py \
   --runtime-continuity-identity "$(hostname -s)"
 ```
 
-Before treating a Mac runtime as strongly verified, confirm locally that these
-read-only probes work for the serving PID:
+Before treating a Mac runtime as strongly verified, run the repository's
+read-only evidence probe first:
+
+```bash
+python scripts/check-runtime-evidence.py \
+  --pid "$RUNTIME_PID" \
+  --model-path /path/to/model
+```
+
+A result of `status: "strong"` with
+`model_process_binding: "darwin_vmmap_lsof"` means the OS evidence is strong
+enough for the signed continuity path. `diagnostic` or `unverified` remains
+visible evidence but cannot upgrade artifact identity.
+
+You can also confirm locally that these read-only probes work for the serving PID:
 
 ```bash
 ps -p "$RUNTIME_PID" -o lstart= -o command=
