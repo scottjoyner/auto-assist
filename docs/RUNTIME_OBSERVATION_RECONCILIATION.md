@@ -34,7 +34,7 @@ Runtime observations always remain `admitted: false`.
 The PR contract currently pins:
 
 - auto-router: `dcf1da72684bdda1999e4445708b24cd52bc96db`
-- lms: `c9ffcc2240191a656221ed45a39a597c76990d3e`
+- lms: `1fb670d1e57ca02f1284c3f9c9ebb11c3689cddf`
 
 The Auto-Assist head is recorded by the cross-repository workflow as
 `GITHUB_SHA` in the uploaded repository matrix.
