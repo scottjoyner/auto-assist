@@ -7,6 +7,9 @@ on:
       - "src/assistx/runtime_projection.py"
       - "src/assistx/runtime_projection_v2.py"
       - "scripts/verify-runtime-projection-cross-repo.py"
+      - "scripts/reconcile-runtime-observations.py"
+      - "tests/test_runtime_observation_reconciliation.py"
+      - "docs/RUNTIME_OBSERVATION_RECONCILIATION.md"
       - "tests/contracts/fleet-llm-profiles-bfe57f9b.contract.json"
       - ".github/workflows/cross-repository-runtime-contract.yml"
   push:
@@ -16,6 +19,9 @@ on:
       - "src/assistx/runtime_projection.py"
       - "src/assistx/runtime_projection_v2.py"
       - "scripts/verify-runtime-projection-cross-repo.py"
+      - "scripts/reconcile-runtime-observations.py"
+      - "tests/test_runtime_observation_reconciliation.py"
+      - "docs/RUNTIME_OBSERVATION_RECONCILIATION.md"
       - "tests/contracts/fleet-llm-profiles-bfe57f9b.contract.json"
       - ".github/workflows/cross-repository-runtime-contract.yml"
   workflow_dispatch:
@@ -28,8 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      AUTO_ROUTER_SHA: fc821ea59c8fb2ede65c7e2eccb579858dde14ce
-      LMS_SHA: 6ec5476f72936ebe74a45104dadded53cb8b0885
+      AUTO_ROUTER_SHA: 5f862eda47cb689133641d2deeaf7c934ce12fdb
+      LMS_SHA: 7ce693e548ebf7eaa07df8fae6235c4f692808d5
       FLEET_PROFILES_SHA: bfe57f9b1529c511ead14cffebcd67d70b9b469c
     steps:
       - name: Checkout AssistX candidate
@@ -99,14 +105,24 @@ jobs:
             auto-assist/tests/test_runtime_projection.py \
             auto-assist/tests/test_runtime_projection_v2.py
 
-      - name: Validate router projection consumer
+      - name: Validate router projection consumer and runtime observations
         run: |
           python -m pytest -q \
             auto-router/tests/test_runtime_projection.py \
-            auto-router/tests/test_runtime_projection_v2.py
+            auto-router/tests/test_runtime_projection_v2.py \
+            auto-router/tests/test_fleet_runtime_observations.py
 
-      - name: Validate LMS canary evidence producer
-        run: python -m pytest -q lms/tests/test_runtime_canary.py
+      - name: Validate LMS canary evidence producer and runtime observations
+        run: |
+          python -m pytest -q \
+            lms/tests/test_runtime_canary.py \
+            lms/tests/test_runtime_identity_witness.py \
+            lms/tests/test_fleet_node_reporter.py
+
+      - name: Validate AssistX runtime-observation reconciliation
+        env:
+          PYTHONPATH: auto-assist/src
+        run: python -m pytest -q auto-assist/tests/test_runtime_observation_reconciliation.py
 
       - name: Prove AssistX-to-router Ed25519 compatibility
         run: |
