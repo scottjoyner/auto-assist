@@ -12,7 +12,8 @@ Expected JSON shape:
     "catalog": {"models": [...]},
     "mobile_response": {...},
     "mobile_request_id": "kmr:...",
-    "route_event": {"payload": {...}}
+    "route_decision_event": {"payload": {...}},
+    "route_execution_event": {"payload": {...}}
   },
   "after": {
     "catalog": {"models": [...]},
@@ -94,11 +95,12 @@ def _phase(
         catalog = evidence["catalog"]
         response = evidence["mobile_response"]
         mobile_request_id = evidence["mobile_request_id"]
-        event = _payload(evidence["route_event"])
+        decision = _payload(evidence["route_decision_event"])
+        execution = _payload(evidence["route_execution_event"])
     except KeyError as exc:
         raise CanaryEvidenceError(f"{phase} is missing {exc.args[0]}") from exc
 
-    if not all(isinstance(item, dict) for item in (catalog, response, event)):
+    if not all(isinstance(item, dict) for item in (catalog, response, decision, execution)):
         raise CanaryEvidenceError(f"{phase} evidence entries must be objects")
     if (
         not isinstance(mobile_request_id, str)
@@ -122,24 +124,39 @@ def _phase(
     if replica_count < 1:
         raise CanaryEvidenceError(f"{phase} has no ready replicas")
 
-    if event.get("profile") != "exact_artifact":
+    if decision.get("profile") != "exact_artifact":
         raise CanaryEvidenceError(f"{phase} route profile is not exact_artifact")
-    if event.get("assistx_mobile_model_handle") != handle:
-        raise CanaryEvidenceError(f"{phase} route event handle does not match mobile handle")
-    if event.get("assistx_mobile_request_id") != mobile_request_id:
-        raise CanaryEvidenceError(f"{phase} route event does not match mobile request ID")
-    artifact = event.get("artifact_fingerprint")
-    if not isinstance(artifact, str) or not artifact.strip():
-        raise CanaryEvidenceError(f"{phase} route event lacks artifact identity")
-    if event.get("local_only") is not True or event.get("allow_cloud") is not False:
-        raise CanaryEvidenceError(f"{phase} widened local-only routing authority")
+    for event_name, event in (("decision", decision), ("execution", execution)):
+        if event.get("assistx_mobile_model_handle") != handle:
+            raise CanaryEvidenceError(
+                f"{phase} {event_name} event handle does not match mobile handle"
+            )
+        if event.get("assistx_mobile_request_id") != mobile_request_id:
+            raise CanaryEvidenceError(
+                f"{phase} {event_name} event does not match mobile request ID"
+            )
+        if event.get("local_only") is not True or event.get("allow_cloud") is not False:
+            raise CanaryEvidenceError(
+                f"{phase} {event_name} widened local-only routing authority"
+            )
 
-    chosen = event.get("chosen")
-    if not isinstance(chosen, dict):
-        raise CanaryEvidenceError(f"{phase} route event lacks chosen candidate")
-    provider = chosen.get("provider_id") or chosen.get("provider")
+    artifact = decision.get("artifact_fingerprint")
+    execution_artifact = execution.get("artifact_fingerprint")
+    if not isinstance(artifact, str) or not artifact.strip():
+        raise CanaryEvidenceError(f"{phase} route decision lacks artifact identity")
+    if execution_artifact != artifact:
+        raise CanaryEvidenceError(
+            f"{phase} execution artifact does not match route decision"
+        )
+    if execution.get("status") != "completed":
+        raise CanaryEvidenceError(f"{phase} route execution did not complete")
+    status_code = execution.get("status_code")
+    if not isinstance(status_code, int) or not (200 <= status_code < 400):
+        raise CanaryEvidenceError(f"{phase} route execution lacks a successful status code")
+
+    provider = execution.get("provider_id") or execution.get("provider")
     if not isinstance(provider, str) or not provider.strip():
-        raise CanaryEvidenceError(f"{phase} route event lacks chosen replica")
+        raise CanaryEvidenceError(f"{phase} execution event lacks serving replica")
 
     _assert_mobile_redaction(response)
 
@@ -149,8 +166,8 @@ def _phase(
         "provider": provider,
         "mobile_request_id": mobile_request_id,
         "ready_runtime_count": replica_count,
-        "request_id": event.get("request_id"),
-        "correlation_id": event.get("correlation_id"),
+        "request_id": execution.get("request_id"),
+        "correlation_id": execution.get("correlation_id"),
     }
 
 
