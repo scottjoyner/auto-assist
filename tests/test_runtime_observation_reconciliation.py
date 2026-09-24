@@ -622,3 +622,22 @@ def test_unverified_generic_witness_does_not_look_unprojected() -> None:
     assert k2["action"] == "review_runtime_identity"
     assert "runtime_identity_witness_signature_unverified" in k2["reason_codes"]
     assert k2["matched_runtime_ids"] == ["destroyer-k2-runtime"]
+
+
+def test_stale_signed_witness_continuity_cannot_verify_artifact() -> None:
+    nodes = _nodes()
+    _attach_verified_witness(nodes)
+    observation = nodes["nodes"][0]["runtimes"][0]
+    observation["runtime_identity_continuity"]["checked_at"] = 1
+
+    result = _reconcile(nodes=nodes)
+    k2 = next(
+        item
+        for item in result["items"]
+        if item["runtime_observation_id"] == "runtime-observation:k2"
+    )
+
+    assert k2["status"] == "runtime_identity_unverified"
+    assert k2["action"] == "refresh_runtime_observation"
+    assert k2["artifact_identity_verified"] is False
+    assert "signed_witness_continuity_stale" in k2["reason_codes"]
