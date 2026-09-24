@@ -6,6 +6,7 @@ RUNNER_NAME="${RUNNER_NAME:-x1-370-auto-assist-canary}"
 RUNNER_DIR="${RUNNER_DIR:-$HOME/actions-runner-auto-assist-canary}"
 RUNNER_LABELS="${RUNNER_LABELS:-x1-370,assistx-canary}"
 RUNNER_VERSION="${RUNNER_VERSION:-2.337.0}"
+RUNNER_SHA256="${RUNNER_SHA256:-70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613}"
 
 if [[ "$(hostname -s)" != "x1-370" ]]; then
   echo "refusing to register runner on host $(hostname -s); expected x1-370" >&2
@@ -44,6 +45,7 @@ url="https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${ar
 
 if [[ ! -x ./config.sh ]]; then
   curl -fL "$url" -o "$archive"
+  printf '%s  %s\n' "$RUNNER_SHA256" "$archive" | sha256sum -c -
   tar xzf "$archive"
 fi
 
