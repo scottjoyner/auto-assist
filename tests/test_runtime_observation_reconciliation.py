@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import shutil
+import subprocess
 import sys
 from copy import deepcopy
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -361,8 +366,6 @@ def test_router_status_mismatch_is_rejected() -> None:
         },
     }
 
-    import pytest
-
     with pytest.raises(ValueError, match="does not match"):
         module._verify_router_status(projection, status)
 
@@ -384,3 +387,198 @@ def test_missing_transport_source_cannot_be_projected() -> None:
         "transport_source_ip_not_verifiable_against_signed_access_paths"
         in k2["reason_codes"]
     )
+
+
+def _attach_verified_witness(
+    nodes: dict,
+    *,
+    runtime_kind: str = "openai_compatible",
+    model_sha: str = "sha256:k2",
+    continuity_valid: bool = True,
+) -> None:
+    observation = nodes["nodes"][0]["runtimes"][0]
+    observation["_verified_runtime_identity_witness"] = {
+        "schema_version": "fleet-runtime-identity-witness.v1",
+        "node_id": "destroyer",
+        "runtime_url": "http://localhost:1235",
+        "runtime_kind": runtime_kind,
+        "provider_model": "k2-36b",
+        "loadout_fingerprint": "sha256:" + "1" * 64,
+        "model_content_sha256": model_sha,
+        "witness_signing_key_fingerprint": "SHA256:witness-key",
+        "canary": {
+            "rollback_succeeded": True,
+        },
+        "process": {
+            "pid": 42,
+            "boot_id": "boot",
+            "process_start_ticks": 99,
+            "executable_basename": "llama-server",
+        },
+        "admission": {"admitted": False},
+    }
+    observation["_runtime_identity_witness_signature_verified"] = True
+    observation["runtime_identity_continuity"] = {
+        "valid": continuity_valid,
+        "reason": "match" if continuity_valid else "process_identity_changed",
+        "checked_at": 110,
+        "pid": 42,
+        "boot_id": "boot",
+        "process_start_ticks": 99,
+        "executable_basename": "llama-server",
+    }
+
+
+def test_signed_witness_upgrades_projected_to_artifact_and_process_identity() -> None:
+    nodes = _nodes()
+    _attach_verified_witness(nodes)
+
+    result = _reconcile(nodes=nodes)
+    k2 = next(
+        item
+        for item in result["items"]
+        if item["runtime_observation_id"] == "runtime-observation:k2"
+    )
+
+    assert k2["status"] == "projected"
+    assert k2["artifact_identity_verified"] is True
+    assert k2["artifact_identity_reason"] == "signed_loadout_and_process_match"
+    assert k2["identity_evidence_level"] == "signed_loadout_artifact_and_process"
+    assert k2["witness_model_content_sha256"] == "sha256:k2"
+    assert k2["witness_signing_key_fingerprint"] == "SHA256:witness-key"
+
+
+def test_signed_witness_artifact_mismatch_becomes_model_drift() -> None:
+    nodes = _nodes()
+    _attach_verified_witness(nodes, model_sha="sha256:different")
+
+    result = _reconcile(nodes=nodes)
+    k2 = next(
+        item
+        for item in result["items"]
+        if item["runtime_observation_id"] == "runtime-observation:k2"
+    )
+
+    assert k2["status"] == "model_drift"
+    assert k2["artifact_identity_verified"] is False
+    assert "signed_witness_artifact_fingerprint_mismatch" in k2["reason_codes"]
+
+
+def test_signed_witness_process_change_becomes_identity_mismatch() -> None:
+    nodes = _nodes()
+    _attach_verified_witness(nodes, continuity_valid=False)
+
+    result = _reconcile(nodes=nodes)
+    k2 = next(
+        item
+        for item in result["items"]
+        if item["runtime_observation_id"] == "runtime-observation:k2"
+    )
+
+    assert k2["status"] == "runtime_identity_mismatch"
+    assert k2["artifact_identity_verified"] is False
+    assert "signed_witness_process_continuity_failed" in k2["reason_codes"]
+
+
+def test_unverified_witness_signature_cannot_upgrade_identity() -> None:
+    nodes = _nodes()
+    observation = nodes["nodes"][0]["runtimes"][0]
+    observation["_runtime_identity_witness_error"] = "bad signature"
+
+    result = _reconcile(nodes=nodes)
+    k2 = next(
+        item
+        for item in result["items"]
+        if item["runtime_observation_id"] == "runtime-observation:k2"
+    )
+
+    assert k2["status"] == "runtime_identity_unverified"
+    assert k2["artifact_identity_verified"] is False
+    assert "runtime_identity_witness_signature_unverified" in k2["reason_codes"]
+
+
+def test_signed_witness_can_refine_generic_runtime_kind() -> None:
+    nodes = _nodes()
+    projection = _projection()
+    projection["providers"][0]["runtime_kind"] = "llama_cpp"
+    _attach_verified_witness(nodes, runtime_kind="llama_cpp")
+
+    result = _reconcile(nodes=nodes, projection=projection)
+    k2 = next(
+        item
+        for item in result["items"]
+        if item["runtime_observation_id"] == "runtime-observation:k2"
+    )
+
+    assert k2["observed_runtime_kind"] == "openai_compatible"
+    assert k2["runtime_kind"] == "llama_cpp"
+    assert k2["runtime_kind_refined_by_signed_witness"] is True
+    assert k2["status"] == "projected"
+    assert k2["artifact_identity_verified"] is True
+
+
+@pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="OpenSSH unavailable")
+def test_runtime_witness_signature_verification_round_trip(tmp_path) -> None:
+    key = tmp_path / "witness-key"
+    generated = subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
+        capture_output=True,
+        check=False,
+    )
+    assert generated.returncode == 0
+    allowed = tmp_path / "allowed_signers"
+    allowed.write_text(
+        "runtime-witness-operator "
+        + key.with_suffix(".pub").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    core = {
+        "schema_version": "fleet-runtime-identity-witness.v1",
+        "node_id": "destroyer",
+        "runtime_url": "http://localhost:1235",
+        "runtime_kind": "llama_cpp",
+        "provider_model": "k2-36b",
+        "loadout_fingerprint": "sha256:" + "1" * 64,
+        "model_content_sha256": "sha256:" + "2" * 64,
+        "witness_signing_key_fingerprint": "SHA256:witness",
+        "canary": {"rollback_succeeded": True},
+        "process": {
+            "pid": 42,
+            "boot_id": "boot",
+            "process_start_ticks": 99,
+            "executable_basename": "llama-server",
+        },
+        "admission": {"admitted": False},
+    }
+    document = {
+        **core,
+        "witness_fingerprint": module._canonical_hash(core),
+    }
+    payload = module._canonical_witness_bytes(document)
+    source = tmp_path / "witness.json"
+    source.write_bytes(payload)
+    signed = subprocess.run(
+        [
+            "ssh-keygen",
+            "-Y",
+            "sign",
+            "-f",
+            str(key),
+            "-n",
+            "lms-runtime-identity-witness",
+            str(source),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    assert signed.returncode == 0
+    signature = Path(str(source) + ".sig").read_text(encoding="utf-8")
+
+    verified = module._verify_runtime_identity_witness(
+        payload.decode("utf-8"),
+        signature,
+        allowed_signers=allowed,
+        identity="runtime-witness-operator",
+    )
+
+    assert verified == document
