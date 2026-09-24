@@ -365,3 +365,22 @@ def test_router_status_mismatch_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="does not match"):
         module._verify_router_status(projection, status)
+
+
+def test_missing_transport_source_cannot_be_projected() -> None:
+    nodes = _nodes()
+    nodes["nodes"][0]["source_ip"] = ""
+
+    result = _reconcile(nodes=nodes)
+    k2 = next(
+        item
+        for item in result["items"]
+        if item["runtime_observation_id"] == "runtime-observation:k2"
+    )
+
+    assert k2["status"] == "runtime_identity_unverified"
+    assert k2["node_source_match"] is None
+    assert (
+        "transport_source_ip_not_verifiable_against_signed_access_paths"
+        in k2["reason_codes"]
+    )
