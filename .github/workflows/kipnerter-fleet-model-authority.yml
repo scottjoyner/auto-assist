@@ -5,8 +5,10 @@ on:
     paths:
       - "src/assistx/mobile_agent_routes.py"
       - "scripts/validate_mobile_model_replica_canary.py"
+      - "scripts/capture_mobile_model_replica_canary.py"
       - "tests/test_mobile_runtime_catalog.py"
       - "tests/test_mobile_model_replica_canary.py"
+      - "tests/test_capture_mobile_model_replica_canary.py"
       - "docs/KIPNERTER_FLEET_MODEL_REPLICA_CANARY.md"
       - ".github/workflows/kipnerter-fleet-model-authority.yml"
   pull_request:
@@ -34,7 +36,9 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Compile authority path
         run: |
-          python -m py_compile             src/assistx/mobile_agent_routes.py             scripts/validate_mobile_model_replica_canary.py
+          python -m py_compile             src/assistx/mobile_agent_routes.py             scripts/validate_mobile_model_replica_canary.py \
+            scripts/capture_mobile_model_replica_canary.py
       - name: Run Fleet model authority contracts
         run: |
-          pytest -q             tests/test_mobile_runtime_catalog.py             tests/test_mobile_model_replica_canary.py
+          pytest -q             tests/test_mobile_runtime_catalog.py             tests/test_mobile_model_replica_canary.py \
+            tests/test_capture_mobile_model_replica_canary.py
