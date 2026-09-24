@@ -33,8 +33,8 @@ Runtime observations always remain `admitted: false`.
 
 The PR contract currently pins:
 
-- auto-router: `de16cbbda1ecb3658f2a67281a41369434cd1815`
-- lms: `47fb7de1fdc61b48f89bbd07bcb01991156eb9fc`
+- auto-router: `147980ec83c12370c068ad65350481df9599fcaf`
+- lms: `3049ee04e144092322723d6de17ec753d65743e1`
 
 The Auto-Assist head is recorded by the cross-repository workflow as
 `GITHUB_SHA` in the uploaded repository matrix.
@@ -137,6 +137,70 @@ observation itself. Unsigned continuity booleans are retained only as diagnostic
 visibility and can never produce `artifact_identity_verified:true`. A missing,
 invalid, or stale node attestation produces `runtime_identity_unverified` and
 requires a fresh signed observation rather than being replayed as artifact proof.
+
+## macOS / MacBook runtime continuity
+
+The strong continuity path now supports Darwin without pretending Linux
+`/proc` exists.
+
+On macOS, LMS derives:
+
+- boot identity from `sysctl kern.boottime`;
+- process start identity from `ps ... lstart`;
+- executable text-file identity from machine-readable `lsof`;
+- process virtual-memory membership from `vmmap`;
+- device + inode confirmation from machine-readable `lsof -F` records.
+
+A Darwin runtime earns the strong binding value
+`darwin_vmmap_lsof` only when **both** the VM map contains the model path and
+the process file evidence matches the model's current device + inode. A path
+match by itself is insufficient.
+
+If `vmmap`/process inspection is unavailable, or an MLX/Python runtime has
+already closed/unmapped its weight files after loading, the reporter falls back
+to diagnostic command-line evidence where available. That runtime remains
+visible but cannot set `artifact_identity_verified:true`.
+
+For a MacBook joining the fleet, keep the two evidence keys separate:
+
+```bash
+# One-time on the MacBook. This is the low-authority node continuity key.
+install -d -m 700 ~/.config/lms/runtime-evidence
+ssh-keygen -q -t ed25519 -N '' \
+  -f ~/.config/lms/runtime-evidence/continuity-ed25519
+
+# Print the line that should be reviewed and appended to the AssistX
+# node-continuity allowed-signers file.
+printf '%s ' "$(hostname -s)"
+cat ~/.config/lms/runtime-evidence/continuity-ed25519.pub
+```
+
+Do **not** copy the operator witness private key onto the MacBook. The operator
+witness may be issued elsewhere after the exact loadout/runtime is approved.
+The MacBook only needs its node continuity private key.
+
+Run the reporter with the signed witness and the node key:
+
+```bash
+python fleet_node_reporter.py \
+  --runtime-url http://localhost:<serving-port> \
+  --runtime-witness /path/to/runtime-witness.json \
+  --runtime-continuity-signing-key \
+    ~/.config/lms/runtime-evidence/continuity-ed25519 \
+  --runtime-continuity-identity "$(hostname -s)"
+```
+
+Before treating a Mac runtime as strongly verified, confirm locally that these
+read-only probes work for the serving PID:
+
+```bash
+ps -p "$RUNTIME_PID" -o lstart= -o command=
+lsof -nP -a -p "$RUNTIME_PID" -F fDin | head -80
+vmmap -w "$RUNTIME_PID" | grep -F -- '/path/to/model'
+```
+
+Failure of any probe is evidence quality loss, not a reason to widen admission
+or routing authority.
 
 ## Smallest operator evidence package
 
