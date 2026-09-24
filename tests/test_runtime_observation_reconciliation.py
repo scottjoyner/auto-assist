@@ -584,3 +584,24 @@ def test_runtime_witness_signature_verification_round_trip(tmp_path) -> None:
     )
 
     assert verified == document
+
+
+def test_unverified_generic_witness_does_not_look_unprojected() -> None:
+    nodes = _nodes()
+    projection = _projection()
+    projection["providers"][0]["runtime_kind"] = "llama_cpp"
+    observation = nodes["nodes"][0]["runtimes"][0]
+    observation["_runtime_identity_witness_error"] = "bad signature"
+
+    result = _reconcile(nodes=nodes, projection=projection)
+    k2 = next(
+        item
+        for item in result["items"]
+        if item["runtime_observation_id"] == "runtime-observation:k2"
+    )
+
+    assert k2["observed_runtime_kind"] == "openai_compatible"
+    assert k2["status"] == "runtime_identity_unverified"
+    assert k2["action"] == "review_runtime_identity"
+    assert "runtime_identity_witness_signature_unverified" in k2["reason_codes"]
+    assert k2["matched_runtime_ids"] == ["destroyer-k2-runtime"]
