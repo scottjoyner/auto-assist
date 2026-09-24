@@ -5,7 +5,11 @@ import argparse
 import hashlib
 import ipaddress
 import json
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -37,6 +41,132 @@ _REQUIRED_ADMISSION_EVIDENCE = [
     "runtime_canary_rollback",
     "operator_approval",
 ]
+
+
+_WITNESS_SCHEMA = "fleet-runtime-identity-witness.v1"
+_WITNESS_NAMESPACE = "lms-runtime-identity-witness"
+_SIGNER_IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._-]{0,255}$")
+
+
+def _canonical_hash(value: Any) -> str:
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _canonical_witness_bytes(value: dict[str, Any]) -> bytes:
+    return (
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _verify_runtime_identity_witness(
+    payload: str,
+    signature: str,
+    *,
+    allowed_signers: Path,
+    identity: str,
+    namespace: str = _WITNESS_NAMESPACE,
+) -> dict[str, Any]:
+    if not _SIGNER_IDENTITY_RE.fullmatch(identity):
+        raise ValueError("runtime witness signer identity is invalid")
+    if not allowed_signers.is_file() or allowed_signers.is_symlink():
+        raise ValueError("runtime witness allowed-signers file is unavailable")
+    ssh_keygen = shutil.which("ssh-keygen")
+    if not ssh_keygen:
+        raise ValueError("ssh-keygen is required to verify runtime identity witnesses")
+    if len(payload.encode("utf-8")) > 16 * 1024:
+        raise ValueError("runtime identity witness exceeds size bound")
+    if len(signature.encode("utf-8")) > 8 * 1024:
+        raise ValueError("runtime identity witness signature exceeds size bound")
+    try:
+        witness = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError("runtime identity witness is not valid JSON") from exc
+    if not isinstance(witness, dict) or witness.get("schema_version") != _WITNESS_SCHEMA:
+        raise ValueError("unsupported runtime identity witness schema")
+    if witness.get("admission") != {"admitted": False}:
+        raise ValueError("runtime identity witness must remain non-admitted")
+    fingerprint = str(witness.get("witness_fingerprint") or "")
+    core = {key: value for key, value in witness.items() if key != "witness_fingerprint"}
+    if fingerprint != _canonical_hash(core):
+        raise ValueError("runtime identity witness fingerprint mismatch")
+    if _canonical_witness_bytes(witness) != payload.encode("utf-8"):
+        raise ValueError("runtime identity witness is not canonical JSON")
+    if "BEGIN SSH SIGNATURE" not in signature or "END SSH SIGNATURE" not in signature:
+        raise ValueError("runtime identity witness signature is malformed")
+
+    with tempfile.TemporaryDirectory(prefix="assistx-runtime-witness-") as directory:
+        signature_path = Path(directory) / "witness.sig"
+        signature_path.write_text(signature, encoding="utf-8")
+        process = subprocess.run(
+            [
+                ssh_keygen,
+                "-Y",
+                "verify",
+                "-f",
+                str(allowed_signers),
+                "-I",
+                identity,
+                "-n",
+                namespace,
+                "-s",
+                str(signature_path),
+            ],
+            input=payload.encode("utf-8"),
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    if process.returncode != 0:
+        stderr = process.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError("runtime identity witness signature verification failed: " + stderr)
+    return witness
+
+
+def _verify_node_witnesses(
+    nodes_payload: dict[str, Any],
+    *,
+    allowed_signers: Path,
+    identity: str,
+    namespace: str = _WITNESS_NAMESPACE,
+) -> None:
+    for node_report in nodes_payload.get("nodes") or []:
+        if not isinstance(node_report, dict):
+            continue
+        for observation in node_report.get("runtimes") or []:
+            if not isinstance(observation, dict):
+                continue
+            payload = observation.get("runtime_identity_witness_json")
+            signature = observation.get("runtime_identity_witness_signature")
+            if payload is None and signature is None:
+                continue
+            if not isinstance(payload, str) or not isinstance(signature, str):
+                observation["_runtime_identity_witness_error"] = "witness_payload_or_signature_missing"
+                continue
+            try:
+                verified = _verify_runtime_identity_witness(
+                    payload,
+                    signature,
+                    allowed_signers=allowed_signers,
+                    identity=identity,
+                    namespace=namespace,
+                )
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                observation["_runtime_identity_witness_error"] = str(exc)[:500]
+                continue
+            observation["_verified_runtime_identity_witness"] = verified
+            observation["_runtime_identity_witness_signature_verified"] = True
 
 
 def _kind(value: Any) -> str:
@@ -236,7 +366,20 @@ def reconcile(
                 # observation claiming admission as trustworthy evidence.
                 continue
 
-            runtime_kind = _kind(observation.get("runtime_kind"))
+            observed_runtime_kind = _kind(observation.get("runtime_kind"))
+            verified_witness = observation.get("_verified_runtime_identity_witness")
+            witness_kind = (
+                _kind(verified_witness.get("runtime_kind"))
+                if isinstance(verified_witness, dict)
+                else "unknown"
+            )
+            runtime_kind = observed_runtime_kind
+            if (
+                observed_runtime_kind == "openai_compatible"
+                and witness_kind
+                in {"lmstudio", "llama_cpp", "vllm", "sglang", "openai_compatible"}
+            ):
+                runtime_kind = witness_kind
             port = _port(observation.get("base_url"))
             if port is None:
                 continue
@@ -273,6 +416,11 @@ def reconcile(
             matched_runtime_ids: list[str] = []
             projected_artifact_fingerprints: list[str] = []
             node_source_match: bool | None = None
+            artifact_identity_verified = False
+            artifact_identity_reason = "signed_runtime_witness_missing"
+            witness_loadout_fingerprint: str | None = None
+            witness_model_content_sha256: str | None = None
+            witness_signing_key_fingerprint: str | None = None
 
             if len(matches) > 1:
                 status = "ambiguous_projection_match"
@@ -345,6 +493,88 @@ def reconcile(
                     status = "projected"
                     action = "none"
 
+                witness_error = str(
+                    observation.get("_runtime_identity_witness_error") or ""
+                ).strip()
+                continuity = observation.get("runtime_identity_continuity")
+                if witness_error and status == "projected":
+                    status = "runtime_identity_unverified"
+                    action = "review_runtime_identity"
+                    reasons.append("runtime_identity_witness_signature_unverified")
+                    artifact_identity_reason = "witness_signature_unverified"
+                elif isinstance(verified_witness, dict) and status == "projected":
+                    witness_loadout_fingerprint = str(
+                        verified_witness.get("loadout_fingerprint") or ""
+                    ) or None
+                    witness_model_content_sha256 = str(
+                        verified_witness.get("model_content_sha256") or ""
+                    ) or None
+                    witness_signing_key_fingerprint = str(
+                        verified_witness.get("witness_signing_key_fingerprint") or ""
+                    ) or None
+                    witness_node = _node_id(verified_witness.get("node_id"))
+                    witness_port = _port(verified_witness.get("runtime_url"))
+                    witness_provider_model = str(
+                        verified_witness.get("provider_model") or ""
+                    ).strip()
+                    witness_canary = verified_witness.get("canary")
+                    witness_process = verified_witness.get("process")
+                    witness_problem: str | None = None
+                    if witness_node != node or witness_port != port:
+                        witness_problem = "signed_witness_endpoint_identity_mismatch"
+                    elif witness_kind != runtime_kind:
+                        witness_problem = "signed_witness_runtime_kind_mismatch"
+                    elif witness_provider_model.casefold() not in observed_cf:
+                        witness_problem = "signed_witness_model_not_observed"
+                    elif not isinstance(witness_canary, dict) or witness_canary.get(
+                        "rollback_succeeded"
+                    ) is not True:
+                        witness_problem = "signed_witness_canary_rollback_not_verified"
+                    elif not isinstance(witness_process, dict):
+                        witness_problem = "signed_witness_process_identity_missing"
+                    elif not isinstance(continuity, dict) or continuity.get("valid") is not True:
+                        witness_problem = "signed_witness_process_continuity_failed"
+                    else:
+                        try:
+                            continuity_matches = (
+                                int(continuity.get("pid") or 0)
+                                == int(witness_process.get("pid") or 0)
+                                and str(continuity.get("boot_id") or "")
+                                == str(witness_process.get("boot_id") or "")
+                                and int(continuity.get("process_start_ticks") or 0)
+                                == int(witness_process.get("process_start_ticks") or 0)
+                                and str(continuity.get("executable_basename") or "")
+                                == str(witness_process.get("executable_basename") or "")
+                            )
+                        except (TypeError, ValueError):
+                            continuity_matches = False
+                        if not continuity_matches:
+                            witness_problem = "signed_witness_process_identity_changed"
+
+                    expected_fingerprints: set[str] = set()
+                    for _canonical, ids, fingerprints in groups:
+                        if witness_provider_model.casefold() in ids:
+                            expected_fingerprints.update(fingerprints)
+                    if (
+                        witness_problem is None
+                        and witness_model_content_sha256 not in expected_fingerprints
+                    ):
+                        witness_problem = "signed_witness_artifact_fingerprint_mismatch"
+
+                    if witness_problem is None:
+                        artifact_identity_verified = True
+                        artifact_identity_reason = "signed_loadout_and_process_match"
+                    elif witness_problem == "signed_witness_artifact_fingerprint_mismatch":
+                        status = "model_drift"
+                        action = "collect_model_identity_evidence"
+                        reasons.append(witness_problem)
+                        artifact_identity_reason = witness_problem
+                    else:
+                        status = "runtime_identity_mismatch"
+                        action = "review_runtime_identity"
+                        reasons.append(witness_problem)
+                        artifact_identity_reason = witness_problem
+
             items.append(
                 {
                     "node_id": node,
@@ -353,7 +583,11 @@ def reconcile(
                     "runtime_observation_id": str(
                         observation.get("runtime_observation_id") or ""
                     ),
+                    "observed_runtime_kind": observed_runtime_kind,
                     "runtime_kind": runtime_kind,
+                    "runtime_kind_refined_by_signed_witness": (
+                        runtime_kind != observed_runtime_kind
+                    ),
                     "port": port,
                     "observed_models": observed_models,
                     "observed_at": observed_at,
@@ -372,10 +606,16 @@ def reconcile(
                     "projected_artifact_fingerprints": sorted(
                         set(projected_artifact_fingerprints)
                     ),
-                    # Endpoint/model-name reconciliation cannot prove that the
-                    # bytes currently loaded are the signed artifact.
-                    "artifact_identity_verified": False,
-                    "identity_evidence_level": "endpoint_and_model_names",
+                    "artifact_identity_verified": artifact_identity_verified,
+                    "artifact_identity_reason": artifact_identity_reason,
+                    "identity_evidence_level": (
+                        "signed_loadout_artifact_and_process"
+                        if artifact_identity_verified
+                        else "endpoint_and_model_names"
+                    ),
+                    "witness_loadout_fingerprint": witness_loadout_fingerprint,
+                    "witness_model_content_sha256": witness_model_content_sha256,
+                    "witness_signing_key_fingerprint": witness_signing_key_fingerprint,
                     "required_admission_evidence": (
                         list(_REQUIRED_ADMISSION_EVIDENCE)
                         if status == "unprojected_runtime"
@@ -540,12 +780,28 @@ def main(argv: list[str] | None = None) -> int:
         default=180,
     )
     parser.add_argument("--router-status", type=Path, required=True)
+    parser.add_argument(
+        "--runtime-witness-allowed-signers",
+        type=Path,
+        required=True,
+    )
+    parser.add_argument("--runtime-witness-identity", required=True)
+    parser.add_argument(
+        "--runtime-witness-namespace",
+        default=_WITNESS_NAMESPACE,
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
 
     nodes = _load(args.nodes)
     projection = _load(args.projection)
     router_status = _load(args.router_status)
+    _verify_node_witnesses(
+        nodes,
+        allowed_signers=args.runtime_witness_allowed_signers,
+        identity=args.runtime_witness_identity,
+        namespace=args.runtime_witness_namespace,
+    )
     _verify_projection(
         projection,
         args.verify_key_file,
@@ -564,6 +820,9 @@ def main(argv: list[str] | None = None) -> int:
         "projection": _sha256_file(args.projection),
         "router_status": _sha256_file(args.router_status),
         "verify_key": _sha256_file(args.verify_key_file),
+        "runtime_witness_allowed_signers": _sha256_file(
+            args.runtime_witness_allowed_signers
+        ),
     }
 
     rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
