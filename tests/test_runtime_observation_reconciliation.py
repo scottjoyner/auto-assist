@@ -426,6 +426,8 @@ def _attach_verified_witness(
         "boot_id": "boot",
         "process_start_ticks": 99,
         "executable_basename": "llama-server",
+        "model_file_valid": True,
+        "model_process_binding_valid": True,
     }
 
 
@@ -442,8 +444,8 @@ def test_signed_witness_upgrades_projected_to_artifact_and_process_identity() ->
 
     assert k2["status"] == "projected"
     assert k2["artifact_identity_verified"] is True
-    assert k2["artifact_identity_reason"] == "signed_loadout_and_process_match"
-    assert k2["identity_evidence_level"] == "signed_loadout_artifact_and_process"
+    assert k2["artifact_identity_reason"] == "signed_model_artifact_and_process_match"
+    assert k2["identity_evidence_level"] == "signed_model_artifact_and_process"
     assert k2["witness_model_content_sha256"] == "sha256:k2"
     assert k2["witness_signing_key_fingerprint"] == "SHA256:witness-key"
 
