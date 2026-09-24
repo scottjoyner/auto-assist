@@ -33,8 +33,8 @@ Runtime observations always remain `admitted: false`.
 
 The PR contract currently pins:
 
-- auto-router: `dcf1da72684bdda1999e4445708b24cd52bc96db`
-- lms: `1fb670d1e57ca02f1284c3f9c9ebb11c3689cddf`
+- auto-router: `5677281991a05052198bc8f396191b3e58f5872b`
+- lms: `221e8be8a17b6739f0f651e26ef8f7b799da3165`
 
 The Auto-Assist head is recorded by the cross-repository workflow as
 `GITHUB_SHA` in the uploaded repository matrix.
@@ -96,9 +96,15 @@ The detached signature must remain beside the JSON as `k2.json.sig`.
 
 The reporter does **not** hash the model again on every report. It cheaply
 revalidates that the same boot/PID/start identity is alive, the model file still
-has the signed device/inode/size/mtime identity, and the process still references
-that file. A restart, replacement, file mutation, or process/model unbinding makes
-continuity fail closed.
+has the signed device/inode/size/mtime/ctime identity, and the process still
+references that file. A restart, replacement, file mutation, or process/model
+unbinding makes continuity fail closed.
+
+For `artifact_identity_verified:true`, reconciliation additionally requires the
+signed and current binding method to be `proc_maps`. A model path present only
+in argv is useful provenance but is insufficient for strong artifact continuity,
+because a hot-reload-capable process could retain an old launch argument while
+serving different bytes.
 
 ## Smallest operator evidence package
 
@@ -160,7 +166,8 @@ With a valid witness, reconciliation additionally requires:
 - witness node, port, runtime kind and provider model to match the observation;
 - the signed canary to have verified rollback provenance;
 - live process continuity to match the signed boot/PID/start/executable identity;
-- the same model file identity to remain bound to the process;
+- the same model file identity, including ctime, to remain bound to the process
+  through a live `/proc/<pid>/maps` mapping;
 - `witness.model_content_sha256` to equal the matching signed projection
   `artifact_fingerprint`.
 
