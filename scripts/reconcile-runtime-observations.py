@@ -544,6 +544,17 @@ def reconcile(
                     witness_canary = verified_witness.get("canary")
                     witness_process = verified_witness.get("process")
                     witness_problem: str | None = None
+                    try:
+                        continuity_checked_at = int(
+                            continuity.get("checked_at") if isinstance(continuity, dict) else 0
+                        )
+                    except (TypeError, ValueError):
+                        continuity_checked_at = 0
+                    continuity_fresh = (
+                        continuity_checked_at > 0
+                        and abs(now - continuity_checked_at) <= max_age
+                        and abs(observed_at - continuity_checked_at) <= 30
+                    )
                     if witness_node != node or witness_port != port:
                         witness_problem = "signed_witness_endpoint_identity_mismatch"
                     elif witness_kind != runtime_kind:
@@ -556,6 +567,8 @@ def reconcile(
                         witness_problem = "signed_witness_canary_rollback_not_verified"
                     elif not isinstance(witness_process, dict):
                         witness_problem = "signed_witness_process_identity_missing"
+                    elif not continuity_fresh:
+                        witness_problem = "signed_witness_continuity_stale"
                     elif (
                         not isinstance(continuity, dict)
                         or continuity.get("valid") is not True
@@ -603,6 +616,11 @@ def reconcile(
                     elif witness_problem == "signed_witness_artifact_fingerprint_mismatch":
                         status = "model_drift"
                         action = "collect_model_identity_evidence"
+                        reasons.append(witness_problem)
+                        artifact_identity_reason = witness_problem
+                    elif witness_problem == "signed_witness_continuity_stale":
+                        status = "runtime_identity_unverified"
+                        action = "refresh_runtime_observation"
                         reasons.append(witness_problem)
                         artifact_identity_reason = witness_problem
                     else:
