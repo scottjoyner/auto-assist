@@ -450,7 +450,7 @@ def _attach_verified_witness(
         "executable_file_valid": True,
         "model_file_valid": True,
         "model_process_binding_valid": True,
-        "model_process_binding": "proc_maps",
+        "model_process_binding": binding_method,
     }
     observation["runtime_identity_continuity"] = continuity
     observation["_verified_runtime_identity_continuity"] = {
