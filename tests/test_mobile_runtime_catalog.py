@@ -200,6 +200,60 @@ def test_model_handle_resolves_current_projection_across_replicas():
     assert resolved["capabilities"] == ["chat", "local_only", "streaming"]
 
 
+
+def test_model_handle_survives_replica_loss_with_same_artifact_authority():
+    projection = _projection()
+    projection["expires_at_ms"] = 9_999_999_999_999
+    secret = "test-mobile-handle-secret"
+    handle = mobile._mobile_model_handle(
+        projection["providers"][0]["models"][0],
+        secret=secret,
+    )
+    assert handle is not None
+
+    before = mobile._resolve_mobile_model_handle(
+        projection,
+        handle,
+        handle_secret=secret,
+    )
+    assert before is not None
+    assert before["model_handle"] == handle
+    assert before["artifact_fingerprint"] == "sha256:qwen-artifact"
+    assert before["ready_runtime_count"] == 2
+
+    # Simulate the LM Studio replica disappearing while the llama.cpp replica
+    # for the same admitted artifact remains in the fresh signed projection.
+    surviving_projection = {
+        **projection,
+        "providers": [
+            provider
+            for provider in projection["providers"]
+            if provider.get("name") != "assistx-secret-node-runtime"
+        ],
+    }
+    after = mobile._resolve_mobile_model_handle(
+        surviving_projection,
+        handle,
+        handle_secret=secret,
+    )
+
+    assert after is not None
+    assert after["model_handle"] == handle
+    assert after["artifact_fingerprint"] == before["artifact_fingerprint"]
+    assert after["ready_runtime_count"] == 1
+    assert after["display_name"] == "Qwen 35B"
+
+    body = mobile.MobileModelChatIn(
+        model_handle=handle,
+        messages=[mobile.MobileAgentMessageIn(role="user", content="hello")],
+        stream=False,
+    )
+    routed = mobile._mobile_model_router_payload(body, after)
+    assert routed["metadata"]["assistx_artifact_fingerprint"] == "sha256:qwen-artifact"
+    assert routed["metadata"]["assistx_mobile_model_handle"] == handle
+    assert "runtime_instance_id" not in json.dumps(routed)
+    assert "base_url" not in json.dumps(routed)
+
 def test_model_handle_resolution_fails_closed_for_unknown_or_expired():
     projection = _projection()
     projection["expires_at_ms"] = 9_999_999_999_999
