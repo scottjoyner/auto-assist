@@ -34,8 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      AUTO_ROUTER_SHA: 251cdc4532041f1d0616bd95c0f939bd99be0bb9
-      LMS_SHA: 4243b24394dc6746e65c2a3716ad7823dc4b03c0
+      AUTO_ROUTER_SHA: f77b676fa3cc21da43dc458a6fd2c6d4d1c85a34
+      LMS_SHA: 773b0b42298367366e80339b981003d534d55414
       FLEET_PROFILES_SHA: bfe57f9b1529c511ead14cffebcd67d70b9b469c
     steps:
       - name: Checkout AssistX candidate
@@ -116,6 +116,7 @@ jobs:
         run: |
           python -m pytest -q \
             lms/tests/test_runtime_canary.py \
+            lms/tests/test_runtime_identity_witness.py \
             lms/tests/test_fleet_node_reporter.py
 
       - name: Validate AssistX runtime-observation reconciliation
