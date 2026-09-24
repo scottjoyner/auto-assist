@@ -2,6 +2,7 @@
 set -euo pipefail
 
 EXPECTED_HOST="${EXPECTED_HOST:-x1-370}"
+REPO="${REPO:-scottjoyner/auto-assist}"
 GIT_ROOT="${GIT_ROOT:-$HOME/git}"
 
 AUTO_ASSIST_URL="${AUTO_ASSIST_URL:-https://github.com/scottjoyner/auto-assist.git}"
@@ -23,7 +24,7 @@ if [[ "$(hostname -s)" != "$EXPECTED_HOST" ]]; then
   exit 2
 fi
 
-for cmd in git curl gh; do
+for cmd in git curl gh timeout; do
   command -v "$cmd" >/dev/null || {
     echo "missing required command: $cmd" >&2
     exit 2
@@ -132,4 +133,31 @@ echo "  Auto-Router:     $AUTO_ROUTER_RUNTIME_WORKTREE @ $AUTO_ROUTER_RUNTIME_SH
 echo
 
 echo "Registering/starting the x1-370 canary Actions runner..."
-exec bash "$OPS_WORKTREE/scripts/bootstrap-x1-370-canary-runner.sh"
+bash "$OPS_WORKTREE/scripts/bootstrap-x1-370-canary-runner.sh"
+
+ops_sha="$(git -C "$OPS_WORKTREE" rev-parse HEAD)"
+echo
+echo "Waiting for exact-head live preflight for $ops_sha ..."
+
+run_id=""
+deadline=$((SECONDS + 120))
+while [[ -z "$run_id" && "$SECONDS" -lt "$deadline" ]]; do
+  run_id="$(
+    gh run list       --repo "$REPO"       --workflow "Live Fleet Replica Canary Preflight"       --branch "$OPS_BRANCH"       --limit 20       --json databaseId,headSha,status       --jq ".[] | select(.headSha == \"$ops_sha\") | .databaseId" |
+      head -n1
+  )"
+  [[ -n "$run_id" ]] || sleep 2
+done
+
+if [[ -z "$run_id" ]]; then
+  echo "no exact-head live preflight run registered for $ops_sha" >&2
+  exit 6
+fi
+
+echo "Watching GitHub Actions preflight run $run_id ..."
+timeout 15m gh run watch "$run_id" --repo "$REPO" --exit-status
+
+echo
+echo "Live preflight passed. Capturing the replicated before state..."
+cd "$OPS_WORKTREE"
+exec bash scripts/run-x1-370-fleet-canary-before.sh
