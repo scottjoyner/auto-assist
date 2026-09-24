@@ -158,12 +158,31 @@ def _phase(
     if not isinstance(provider, str) or not provider.strip():
         raise CanaryEvidenceError(f"{phase} execution event lacks serving replica")
 
+    candidates = decision.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        raise CanaryEvidenceError(f"{phase} route decision lacks candidate evidence")
+    candidate_providers = {
+        candidate.get("provider_id") or candidate.get("provider")
+        for candidate in candidates
+        if isinstance(candidate, dict)
+    }
+    candidate_providers = {
+        value
+        for value in candidate_providers
+        if isinstance(value, str) and value.strip()
+    }
+    if provider not in candidate_providers:
+        raise CanaryEvidenceError(
+            f"{phase} serving replica is absent from exact-artifact candidates"
+        )
+
     _assert_mobile_redaction(response)
 
     return {
         "handle": handle,
         "artifact_fingerprint": artifact,
         "provider": provider,
+        "candidate_providers": sorted(candidate_providers),
         "mobile_request_id": mobile_request_id,
         "ready_runtime_count": replica_count,
         "request_id": execution.get("request_id"),
@@ -188,6 +207,10 @@ def validate_evidence(bundle: dict[str, Any]) -> dict[str, Any]:
         raise CanaryEvidenceError("artifact authority changed across replica loss")
     if after["provider"] == before["provider"]:
         raise CanaryEvidenceError("chosen replica did not change")
+    if before["provider"] in after["candidate_providers"]:
+        raise CanaryEvidenceError(
+            "before serving replica remains eligible after replica-loss transition"
+        )
     if after["mobile_request_id"] == before["mobile_request_id"]:
         raise CanaryEvidenceError("before and after requests reused one correlation ID")
     if before["ready_runtime_count"] < 2:
@@ -201,6 +224,8 @@ def validate_evidence(bundle: dict[str, Any]) -> dict[str, Any]:
         "artifact_fingerprint": before["artifact_fingerprint"],
         "before_provider": before["provider"],
         "after_provider": after["provider"],
+        "before_candidate_providers": before["candidate_providers"],
+        "after_candidate_providers": after["candidate_providers"],
         "before_mobile_request_id": before["mobile_request_id"],
         "after_mobile_request_id": after["mobile_request_id"],
         "before_ready_runtime_count": before["ready_runtime_count"],
