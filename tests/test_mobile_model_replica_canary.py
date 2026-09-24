@@ -40,13 +40,14 @@ def _mobile_response() -> dict:
     }
 
 
-def _route_event(provider: str, request_id: str) -> dict:
+def _route_event(provider: str, request_id: str, mobile_request_id: str) -> dict:
     return {
         "payload": {
             "request_id": request_id,
             "correlation_id": f"corr-{request_id}",
             "profile": "exact_artifact",
             "assistx_mobile_model_handle": HANDLE,
+            "assistx_mobile_request_id": mobile_request_id,
             "artifact_fingerprint": ARTIFACT,
             "local_only": True,
             "allow_cloud": False,
@@ -63,12 +64,14 @@ def _bundle() -> dict:
         "before": {
             "catalog": _catalog(2),
             "mobile_response": _mobile_response(),
-            "route_event": _route_event("runtime-a", "before"),
+            "mobile_request_id": "kmr:before",
+            "route_event": _route_event("runtime-a", "before", "kmr:before"),
         },
         "after": {
             "catalog": _catalog(1),
             "mobile_response": _mobile_response(),
-            "route_event": _route_event("runtime-b", "after"),
+            "mobile_request_id": "kmr:after",
+            "route_event": _route_event("runtime-b", "after", "kmr:after"),
         },
     }
 
@@ -106,7 +109,15 @@ def test_replica_canary_rejects_mobile_runtime_coordinate_leak() -> None:
 
 def test_replica_canary_rejects_same_serving_replica() -> None:
     bundle = _bundle()
-    bundle["after"]["route_event"] = _route_event("runtime-a", "after")
+    bundle["after"]["route_event"] = _route_event("runtime-a", "after", "kmr:after")
 
     with pytest.raises(CanaryEvidenceError, match="chosen replica did not change"):
+        validate_evidence(bundle)
+
+
+def test_replica_canary_rejects_mismatched_request_correlation() -> None:
+    bundle = _bundle()
+    bundle["after"]["route_event"]["payload"]["assistx_mobile_request_id"] = "kmr:other"
+
+    with pytest.raises(CanaryEvidenceError, match="does not match mobile request ID"):
         validate_evidence(bundle)
