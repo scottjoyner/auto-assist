@@ -431,11 +431,14 @@ def test_mobile_model_chat_resolves_handle_and_sanitizes_router_response(monkeyp
     assert response.status_code == 200
     assert response.json()["model"] == handle
     assert response.json()["choices"][0]["message"]["content"] == "fleet reply"
+    mobile_request_id = response.headers["x-kipnerter-model-request-id"]
+    assert mobile_request_id.startswith("kmr:")
     assert "secret-provider-model" not in response.text
     assert "secret-fingerprint" not in response.text
     assert captured["url"] == "http://router:8088/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer server-only-token"
     assert captured["payload"]["metadata"]["assistx_artifact_fingerprint"] == "sha256:qwen-artifact"
+    assert captured["payload"]["metadata"]["assistx_mobile_request_id"] == mobile_request_id
     assert captured["payload"]["local_only"] is True
 
 
