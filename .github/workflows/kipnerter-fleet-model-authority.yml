@@ -6,6 +6,9 @@ on:
       - "src/assistx/mobile_agent_routes.py"
       - "scripts/validate_mobile_model_replica_canary.py"
       - "scripts/capture_mobile_model_replica_canary.py"
+      - "scripts/bootstrap-x1-370-canary-runner.sh"
+      - "scripts/bootstrap-x1-370-canary-workspace.sh"
+      - ".github/workflows/live-fleet-replica-canary-preflight.yml"
       - "tests/test_mobile_runtime_catalog.py"
       - "tests/test_mobile_model_replica_canary.py"
       - "tests/test_capture_mobile_model_replica_canary.py"
@@ -42,6 +45,8 @@ jobs:
             src/assistx/mobile_agent_routes.py \
             scripts/validate_mobile_model_replica_canary.py \
             scripts/capture_mobile_model_replica_canary.py
+          bash -n scripts/bootstrap-x1-370-canary-runner.sh
+          bash -n scripts/bootstrap-x1-370-canary-workspace.sh
       - name: Run Fleet model authority contracts
         run: |
           pytest -q \
