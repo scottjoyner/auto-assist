@@ -10,6 +10,8 @@ Do **not** change the phone's selected handle, rotate the mobile-handle secret, 
 
 Preferred execution is an ephemeral/staging topology that mirrors the current signed projection. A production run should be observation-only unless the existing deployment/rollback procedure explicitly authorizes a replica stop. If a production replica is already unavailable naturally, this canary may capture that transition without further mutation.
 
+The capture tool is itself read-only with respect to fleet/runtime state. It refuses to overwrite an existing evidence directory and refuses an after-phase capture when the declared AssistX or Auto-Router SHA changed since the before phase.
+
 ## Preconditions
 
 - Kipnerter/AssistX model-handle route is deployed.
@@ -22,6 +24,7 @@ Preferred execution is an ephemeral/staging topology that mirrors the current si
 - The target Fleet model is `state=ready` with `ready_runtime_count >= 2`.
 - The replicas serve the same admitted artifact.
 - The operator can read Auto-Router's local SQLite outbox. Default container DB is `/data/router.sqlite3`; use the matching host-mounted path for the deployment.
+- Exact deployed AssistX and Auto-Router SHAs are known.
 
 ## Environment
 
@@ -29,177 +32,136 @@ Preferred execution is an ephemeral/staging topology that mirrors the current si
 export ASSISTX_BASE_URL="https://<assistx-tailnet-gateway>"
 export DISPLAY_NAME="Ternary Bonsai 2"
 export ROUTER_DB="/path/to/auto-router/data/router.sqlite3"
-mkdir -p /tmp/kipnerter-replica-canary
-cd /tmp/kipnerter-replica-canary
+
+# These must identify the actual deployed code used for both phases.
+export ASSISTX_SHA="<deployed-auto-assist-sha>"
+export AUTO_ROUTER_SHA="<deployed-auto-router-sha>"
+
+export CANARY_DIR="/tmp/kipnerter-replica-canary-$(date -u +%Y%m%dT%H%M%SZ)"
 ~~~
 
 Use the real authenticated Tailscale/Serve path. Do not synthesize `Tailscale-User-Login` on an untrusted network path.
 
-## Capture the before state
+If an additional gateway header is required, put its value in an environment variable and pass only the environment-variable name, for example:
 
 ~~~bash
-curl -fsS "$ASSISTX_BASE_URL/api/v1/runtime/catalog" > before-catalog.json
-
-HANDLE="$(
-  jq -r --arg name "$DISPLAY_NAME" '
-    .models[]
-    | select(
-        .display_name == $name
-        and .state == "ready"
-        and (.ready_runtime_count | tonumber) >= 2
-      )
-    | .model_handle
-  ' before-catalog.json | head -n1
-)"
-test -n "$HANDLE" && test "$HANDLE" != "null"
-
-jq -n --arg handle "$HANDLE" '{
-  model_handle: $handle,
-  messages: [{role: "user", content: "Replica canary before-state probe. Reply with OK."}],
-  stream: false,
-  temperature: 0,
-  max_tokens: 16
-}' > before-request.json
-
-curl -fsS   -D before-headers.txt   -o before-response.json   -H 'Content-Type: application/json'   --data-binary @before-request.json   "$ASSISTX_BASE_URL/api/v1/model/chat/completions"
-
-BEFORE_REQUEST_ID="$(
-  awk 'BEGIN{IGNORECASE=1}
-       /^X-Kipnerter-Model-Request-ID:/ {
-         gsub("\r", "", $2); print $2
-       }' before-headers.txt | tail -n1
-)"
-test -n "$BEFORE_REQUEST_ID"
-
-sqlite3 -json "$ROUTER_DB" "
-  SELECT payload_json AS payload
-  FROM event_outbox
-  WHERE event_type = 'router.route_decision'
-    AND json_extract(payload_json, '$.assistx_mobile_request_id') = '$BEFORE_REQUEST_ID'
-  ORDER BY id DESC
-  LIMIT 1;
-" | jq '.[0] | {payload: (.payload | fromjson)}' > before-route-decision.json
-
-sqlite3 -json "$ROUTER_DB" "
-  SELECT payload_json AS payload
-  FROM event_outbox
-  WHERE event_type = 'router.execution_stage.completed'
-    AND json_extract(payload_json, '$.assistx_mobile_request_id') = '$BEFORE_REQUEST_ID'
-  ORDER BY id DESC
-  LIMIT 1;
-" | jq '.[0] | {payload: (.payload | fromjson)}' > before-route-execution.json
-
-test "$(jq -r '.payload.assistx_mobile_request_id' before-route-decision.json)" = "$BEFORE_REQUEST_ID"
-test "$(jq -r '.payload.assistx_mobile_request_id' before-route-execution.json)" = "$BEFORE_REQUEST_ID"
+export KIPNERNTER_GATEWAY_AUTH="Bearer ..."
+EXTRA_AUTH=(--header-env "Authorization=KIPNERNTER_GATEWAY_AUTH")
 ~~~
 
-The policy decision proves the request stayed in the `exact_artifact` profile. The completed execution event proves which physical replica actually served it.
+The collector explicitly rejects `Tailscale-User-Login=...` through `--header-env`.
 
-## Replica eligibility transition
+## Preferred operator flow
 
-At this point the before evidence must show at least two ready replicas.
+### 1. Capture the replicated before state
 
-Make exactly one same-artifact replica unavailable **only through the approved canary/staging or existing operational procedure**. Do not change the artifact identity, model handle, handle secret, or routing authority.
+~~~bash
+python scripts/capture_mobile_model_replica_canary.py before   --assistx-base-url "$ASSISTX_BASE_URL"   --router-db "$ROUTER_DB"   --display-name "$DISPLAY_NAME"   --assistx-sha "$ASSISTX_SHA"   --router-sha "$AUTO_ROUTER_SHA"   --out-dir "$CANARY_DIR"   "${EXTRA_AUTH[@]}"
+~~~
+
+The command fails unless:
+
+- the target row is `ready`;
+- it has at least two ready replicas;
+- AssistX returns the selected opaque handle;
+- the response contains an opaque `X-Kipnerter-Model-Request-ID: kmr:*`;
+- the matching `exact_artifact` route-decision event appears;
+- the matching completed execution event appears.
+
+The collector writes immutable before evidence and `capture-state.json`.
+
+### 2. Perform the approved replica eligibility transition
+
+Make exactly one same-artifact replica unavailable **only through the approved canary/staging or existing operational procedure**. Do not change the artifact identity, model handle, handle secret, AssistX code, Auto-Router code, or routing authority.
 
 Wait until the authoritative mobile catalog reports the same handle with a smaller positive `ready_runtime_count`.
 
-## Capture the after state
+If this is a naturally occurring replica loss, make no runtime mutation; simply continue after the catalog reflects the transition.
+
+### 3. Capture and validate the after state
 
 ~~~bash
-curl -fsS "$ASSISTX_BASE_URL/api/v1/runtime/catalog" > after-catalog.json
-
-test "$(
-  jq -r --arg handle "$HANDLE" '
-    .models[]
-    | select(.model_handle == $handle)
-    | .model_handle
-  ' after-catalog.json
-)" = "$HANDLE"
-
-jq -n --arg handle "$HANDLE" '{
-  model_handle: $handle,
-  messages: [{role: "user", content: "Replica canary after-state probe. Reply with OK."}],
-  stream: false,
-  temperature: 0,
-  max_tokens: 16
-}' > after-request.json
-
-curl -fsS   -D after-headers.txt   -o after-response.json   -H 'Content-Type: application/json'   --data-binary @after-request.json   "$ASSISTX_BASE_URL/api/v1/model/chat/completions"
-
-AFTER_REQUEST_ID="$(
-  awk 'BEGIN{IGNORECASE=1}
-       /^X-Kipnerter-Model-Request-ID:/ {
-         gsub("\r", "", $2); print $2
-       }' after-headers.txt | tail -n1
-)"
-test -n "$AFTER_REQUEST_ID"
-test "$AFTER_REQUEST_ID" != "$BEFORE_REQUEST_ID"
-
-sqlite3 -json "$ROUTER_DB" "
-  SELECT payload_json AS payload
-  FROM event_outbox
-  WHERE event_type = 'router.route_decision'
-    AND json_extract(payload_json, '$.assistx_mobile_request_id') = '$AFTER_REQUEST_ID'
-  ORDER BY id DESC
-  LIMIT 1;
-" | jq '.[0] | {payload: (.payload | fromjson)}' > after-route-decision.json
-
-sqlite3 -json "$ROUTER_DB" "
-  SELECT payload_json AS payload
-  FROM event_outbox
-  WHERE event_type = 'router.execution_stage.completed'
-    AND json_extract(payload_json, '$.assistx_mobile_request_id') = '$AFTER_REQUEST_ID'
-  ORDER BY id DESC
-  LIMIT 1;
-" | jq '.[0] | {payload: (.payload | fromjson)}' > after-route-execution.json
-
-test "$(jq -r '.payload.assistx_mobile_request_id' after-route-decision.json)" = "$AFTER_REQUEST_ID"
-test "$(jq -r '.payload.assistx_mobile_request_id' after-route-execution.json)" = "$AFTER_REQUEST_ID"
+python scripts/capture_mobile_model_replica_canary.py after   --assistx-base-url "$ASSISTX_BASE_URL"   --router-db "$ROUTER_DB"   --assistx-sha "$ASSISTX_SHA"   --router-sha "$AUTO_ROUTER_SHA"   --out-dir "$CANARY_DIR"   "${EXTRA_AUTH[@]}"
 ~~~
 
-## Build and validate the evidence bundle
+The after command automatically:
 
-~~~bash
-jq -n   --slurpfile before_catalog before-catalog.json   --slurpfile before_response before-response.json   --slurpfile before_decision before-route-decision.json   --slurpfile before_execution before-route-execution.json   --slurpfile after_catalog after-catalog.json   --slurpfile after_response after-response.json   --slurpfile after_decision after-route-decision.json   --slurpfile after_execution after-route-execution.json   --arg before_request_id "$BEFORE_REQUEST_ID"   --arg after_request_id "$AFTER_REQUEST_ID"   '{
-    before: {
-      catalog: $before_catalog[0],
-      mobile_response: $before_response[0],
-      mobile_request_id: $before_request_id,
-      route_decision_event: $before_decision[0],
-      route_execution_event: $before_execution[0]
-    },
-    after: {
-      catalog: $after_catalog[0],
-      mobile_response: $after_response[0],
-      mobile_request_id: $after_request_id,
-      route_decision_event: $after_decision[0],
-      route_execution_event: $after_execution[0]
-    }
-  }' > evidence.json
+1. reuses the before-phase opaque handle;
+2. fails if either declared exact head changed;
+3. fails unless the ready replica count decreased but remains positive;
+4. sends the second plain Fleet-model probe;
+5. captures the second `kmr:*` ID;
+6. joins that request to both route decision and completed execution evidence;
+7. builds `evidence.json`;
+8. runs `validate_mobile_model_replica_canary.py`;
+9. writes `result.json`.
 
-python /path/to/auto-assist/scripts/validate_mobile_model_replica_canary.py   evidence.json   --output result.json
+Expected result:
+
+~~~json
+{
+  "result": "PASS",
+  "authority_invariant": "same_handle_same_artifact_different_replica_no_authority_widening"
+}
 ~~~
 
-A valid run returns `"result": "PASS"` and proves all of the following simultaneously:
+## What PASS proves
 
-- mobile handle is unchanged;
-- artifact fingerprint is unchanged in trusted server-side decision and execution evidence;
-- the completed serving provider/replica changes;
+A valid run proves all of the following simultaneously:
+
+- the mobile handle is unchanged;
+- the exact artifact fingerprint is unchanged in trusted server-side decision and execution evidence;
+- the **completed serving provider/replica** changes;
 - ready replica count decreases but remains positive;
 - policy profile stays `exact_artifact`;
-- both decision and execution remain `local_only=true` and `allow_cloud=false`;
-- each mobile request is matched to its own decision and completed execution events by the AssistX-generated `kmr:*` correlation ID;
-- the mobile response contains no artifact fingerprint, runtime instance, provider identity, base URL, access URL, or other physical route coordinate.
+- decision and execution remain `local_only=true` and `allow_cloud=false`;
+- each mobile response is matched to its own decision and completed execution events by the AssistX-generated `kmr:*` correlation ID;
+- the mobile response contains no artifact fingerprint, runtime instance, provider identity, base URL, access URL, or other physical route coordinate;
+- the canary ran against one declared AssistX SHA and one declared Auto-Router SHA from before through after.
 
-The decision's initially chosen provider is **not** used as the serving-replica proof. That is intentional: if candidate A fails and the same exact-artifact stage succeeds on candidate B, only the completed execution event proves B actually served the request.
+The decision's initially chosen provider is **not** used as the serving-replica proof. If candidate A fails and the same exact-artifact stage succeeds on candidate B, only `router.execution_stage.completed` proves B actually served the request.
 
-## Evidence retention
+## Evidence emitted
 
-Retain `evidence.json`, `result.json`, both catalog snapshots, response bodies, response headers, decision events, and completed execution events together with:
+The collector preserves:
+
+~~~text
+capture-state.json
+before-catalog.json
+before-response.json
+before-response-headers.json
+before-request-metadata.json
+before-route-decision.json
+before-route-execution.json
+after-catalog.json
+after-response.json
+after-response-headers.json
+after-request-metadata.json
+after-route-decision.json
+after-route-execution.json
+evidence.json
+result.json
+~~~
+
+Retain the directory with:
 
 - exact `auto-assist` SHA;
 - exact `auto-router` SHA;
-- signed projection generation/revision/checksum from the route events when present;
+- signed projection generation/revision/checksum from route evidence when present;
 - timestamp and environment/topology identifier.
 
-Do not publish the internal evidence bundle to a client-visible endpoint. The route events intentionally contain server-side provider and artifact provenance.
+Do not publish the internal evidence bundle to a client-visible endpoint. Route events intentionally contain server-side provider and artifact provenance.
+
+## Manual fallback
+
+The collector is the normative path because it avoids request/event mismatches and accidental evidence reuse. If it cannot run in the target environment, reproduce the same steps manually:
+
+1. capture the authoritative catalog;
+2. POST one non-stream Fleet-model probe;
+3. read `X-Kipnerter-Model-Request-ID`;
+4. query the Auto-Router outbox for both `router.route_decision` and `router.execution_stage.completed` with that exact ID;
+5. repeat after the replica transition with the unchanged handle;
+6. construct the same evidence schema;
+7. run `scripts/validate_mobile_model_replica_canary.py`.
+
+Manual evidence is not acceptable if it cannot correlate each phone-safe request to its exact decision and completed execution events.
