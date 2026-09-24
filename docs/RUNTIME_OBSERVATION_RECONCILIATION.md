@@ -80,10 +80,10 @@ The output also records SHA-256 hashes of all input files.
 ### `projected`
 
 Exactly one signed provider matches node + serving port + runtime kind, the
-observation is fresh and ready, evidence was not truncated, the transport source
-does not contradict signed IP access paths, and every projected model group is
-represented by either its alias or provider-model ID with no unexpected observed
-models.
+observation is fresh and ready, evidence was not truncated, the transport-observed
+source IP positively matches one of the signed provider's literal IP access paths,
+and every projected model group is represented by either its alias or provider-model
+ID with no unexpected observed models.
 
 This means **endpoint and model-name agreement only**.
 
