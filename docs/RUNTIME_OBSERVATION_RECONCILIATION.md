@@ -134,6 +134,14 @@ Either:
 
 This is identity review, not a request to create a new admission.
 
+### `runtime_identity_unverified`
+
+The report does not provide a transport-observed IP that can be positively
+matched to one of the signed provider's literal IP access paths.
+
+A sender-supplied hostname or `reported_ip` is not enough to produce
+`projected`.
+
 ### `runtime_not_ready`
 
 The runtime reports `ready: false` or has no observed served models.
@@ -184,6 +192,7 @@ The minimum exact-head acceptance matrix is:
 | Duplicate signed physical match | `ambiguous_projection_match` |
 | Same signed node/port, different runtime kind | `runtime_identity_mismatch` |
 | Source IP contradicts signed literal IP paths | `runtime_identity_mismatch` |
+| Source IP is missing/unverifiable | `runtime_identity_unverified` |
 | Empty/unready model list | `runtime_not_ready` |
 | Old receipt/observation | `stale_observation` |
 | Truncated model evidence | `incomplete_observation` |
