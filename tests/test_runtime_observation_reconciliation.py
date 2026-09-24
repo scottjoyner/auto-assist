@@ -403,6 +403,14 @@ def _attach_verified_witness(
         "runtime_url": "http://localhost:1235",
         "runtime_kind": runtime_kind,
         "provider_model": "k2-36b",
+        "model_process_binding": "proc_maps",
+        "model_file_identity": {
+            "device": 1,
+            "inode": 2,
+            "size_bytes": 123,
+            "mtime_ns": 456,
+            "ctime_ns": 457,
+        },
         "loadout_fingerprint": "sha256:" + "1" * 64,
         "model_content_sha256": model_sha,
         "witness_signing_key_fingerprint": "SHA256:witness-key",
@@ -428,6 +436,7 @@ def _attach_verified_witness(
         "executable_basename": "llama-server",
         "model_file_valid": True,
         "model_process_binding_valid": True,
+        "model_process_binding": "proc_maps",
     }
 
 
@@ -540,6 +549,14 @@ def test_runtime_witness_signature_verification_round_trip(tmp_path) -> None:
         "runtime_url": "http://localhost:1235",
         "runtime_kind": "llama_cpp",
         "provider_model": "k2-36b",
+        "model_process_binding": "proc_maps",
+        "model_file_identity": {
+            "device": 1,
+            "inode": 2,
+            "size_bytes": 123,
+            "mtime_ns": 456,
+            "ctime_ns": 457,
+        },
         "loadout_fingerprint": "sha256:" + "1" * 64,
         "model_content_sha256": "sha256:" + "2" * 64,
         "witness_signing_key_fingerprint": "SHA256:witness",
