@@ -13,7 +13,7 @@ if [[ "$(hostname -s)" != "x1-370" ]]; then
   exit 2
 fi
 
-for cmd in curl tar gh; do
+for cmd in curl tar gh sha256sum; do
   command -v "$cmd" >/dev/null || {
     echo "missing required command: $cmd" >&2
     exit 2
