@@ -26,6 +26,40 @@ The capture tool is itself read-only with respect to fleet/runtime state. It ref
 - The operator can read Auto-Router's local SQLite outbox. Default container DB is `/data/router.sqlite3`; use the matching host-mounted path for the deployment.
 - Exact deployed AssistX and Auto-Router SHAs are known.
 
+## Zero-state x1-370 bootstrap
+
+No existing clone is required. On `x1-370`, this single command downloads only the bootstrap script first; the script then creates normal full Git clones and pinned worktrees under `~/git`:
+
+~~~bash
+curl -fsSL \
+  https://raw.githubusercontent.com/scottjoyner/auto-assist/agent/kipnerter-model-handle-resolution/scripts/bootstrap-x1-370-canary-workspace.sh \
+  | bash
+~~~
+
+It creates or safely reuses:
+
+~~~text
+~/git/auto-assist
+~/git/auto-router
+~/git/auto-assist-canary-ops
+~/git/auto-assist-canary-runtime
+~/git/auto-router-canary-runtime
+~/actions-runner-auto-assist-canary
+~~~
+
+Existing canonical clones are fetched but their checked-out branch is not changed. Existing canary worktrees must be clean or the bootstrap fails closed instead of resetting local changes.
+
+The pinned authority runtime revisions are:
+
+~~~text
+AssistX mobile route: aad657bbf4fff5bec2080ada07f5a4ad02292743
+Auto-Router authority path: 1fbb9726de46a30c0c91616c65c04dc1f35845a6
+~~~
+
+The runner package defaults to GitHub Actions Runner `v2.337.0` and verifies the published Linux x64 SHA-256 before extraction.
+
+After registration, the service is started automatically and the already-queued `Live Fleet Replica Canary Preflight` becomes eligible without a manual dispatch.
+
 ## Environment
 
 ~~~bash
@@ -46,7 +80,7 @@ If an additional gateway header is required, put its value in an environment var
 
 ~~~bash
 export KIPNERTER_GATEWAY_AUTH="Bearer ..."
-EXTRA_AUTH=(--header-env "Authorization=KIPNERNTER_GATEWAY_AUTH")
+EXTRA_AUTH=(--header-env "Authorization=KIPNERTER_GATEWAY_AUTH")
 ~~~
 
 The collector explicitly rejects `Tailscale-User-Login=...` through `--header-env`.
