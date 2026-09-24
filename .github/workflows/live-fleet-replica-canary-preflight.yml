@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   x1-370-preflight:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux, X64, x1-370, assistx-canary]
     timeout-minutes: 10
     env:
       EXPECTED_HOST: x1-370
