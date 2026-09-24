@@ -9,6 +9,7 @@ on:
       - "scripts/verify-runtime-projection-cross-repo.py"
       - "scripts/reconcile-runtime-observations.py"
       - "tests/test_runtime_observation_reconciliation.py"
+      - "docs/RUNTIME_OBSERVATION_RECONCILIATION.md"
       - "tests/contracts/fleet-llm-profiles-bfe57f9b.contract.json"
       - ".github/workflows/cross-repository-runtime-contract.yml"
   push:
@@ -20,6 +21,7 @@ on:
       - "scripts/verify-runtime-projection-cross-repo.py"
       - "scripts/reconcile-runtime-observations.py"
       - "tests/test_runtime_observation_reconciliation.py"
+      - "docs/RUNTIME_OBSERVATION_RECONCILIATION.md"
       - "tests/contracts/fleet-llm-profiles-bfe57f9b.contract.json"
       - ".github/workflows/cross-repository-runtime-contract.yml"
   workflow_dispatch:
