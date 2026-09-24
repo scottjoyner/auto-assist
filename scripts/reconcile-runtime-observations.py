@@ -447,9 +447,17 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _verify_projection(projection: dict[str, Any], verify_key_file: Path) -> None:
+def _verify_projection(
+    projection: dict[str, Any],
+    verify_key_file: Path,
+    expected_key_id: str,
+    *,
+    now_ms: int | None = None,
+) -> None:
     if str(projection.get("schema_version") or "") != "2":
         raise ValueError("operator reconciliation requires schema-v2 Ed25519 projection")
+    if str(projection.get("signature_key_id") or "") != expected_key_id:
+        raise ValueError("runtime projection signing key id is not the expected operator key")
     src = Path(__file__).resolve().parents[1] / "src"
     sys.path.insert(0, str(src))
     from assistx.runtime_projection_v2 import verify_projection_v2
@@ -458,6 +466,53 @@ def _verify_projection(projection: dict[str, Any], verify_key_file: Path) -> Non
         projection,
         verify_key_file=str(verify_key_file),
     )
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    try:
+        generated_at_ms = int(projection.get("generated_at_ms") or 0)
+        expires_at_ms = int(projection.get("expires_at_ms") or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("runtime projection timestamps are invalid") from exc
+    if generated_at_ms <= 0 or expires_at_ms <= generated_at_ms:
+        raise ValueError("runtime projection issuance/expiry timestamps are invalid")
+    if expires_at_ms <= now:
+        raise ValueError("runtime projection is expired")
+    if generated_at_ms > now + 300_000:
+        raise ValueError("runtime projection issuance is too far in the future")
+
+
+def _verify_router_status(
+    projection: dict[str, Any],
+    router_status: dict[str, Any],
+) -> dict[str, Any]:
+    if router_status.get("configured") is not True:
+        raise ValueError("Auto-Router has no configured runtime projection")
+    if router_status.get("fresh") is not True:
+        raise ValueError("Auto-Router runtime projection is not fresh")
+    current = router_status.get("current")
+    if not isinstance(current, dict):
+        raise ValueError("Auto-Router current runtime projection status is missing")
+
+    expected = {
+        "generation": projection.get("generation"),
+        "revision": projection.get("revision"),
+        "checksum": projection.get("checksum"),
+    }
+    actual = {
+        "generation": current.get("generation"),
+        "revision": current.get("revision"),
+        "checksum": current.get("checksum"),
+    }
+    if actual != expected:
+        raise ValueError(
+            "Auto-Router current runtime projection does not match the verified projection"
+        )
+    return {
+        "configured": True,
+        "fresh": True,
+        **actual,
+        "expires_at_ms": current.get("expires_at_ms"),
+        "applied_at_ms": current.get("applied_at_ms"),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -471,26 +526,36 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--nodes", type=Path, required=True)
     parser.add_argument("--projection", type=Path, required=True)
     parser.add_argument("--verify-key-file", type=Path, required=True)
+    parser.add_argument("--expected-key-id", required=True)
     parser.add_argument(
         "--max-observation-age-seconds",
         type=int,
         default=180,
     )
+    parser.add_argument("--router-status", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
 
     nodes = _load(args.nodes)
     projection = _load(args.projection)
-    _verify_projection(projection, args.verify_key_file)
+    router_status = _load(args.router_status)
+    _verify_projection(
+        projection,
+        args.verify_key_file,
+        args.expected_key_id,
+    )
+    router_projection = _verify_router_status(projection, router_status)
     result = reconcile(
         nodes,
         projection,
         max_observation_age_seconds=args.max_observation_age_seconds,
         projection_verified=True,
     )
+    result["router_projection"] = router_projection
     result["input_sha256"] = {
         "nodes": _sha256_file(args.nodes),
         "projection": _sha256_file(args.projection),
+        "router_status": _sha256_file(args.router_status),
         "verify_key": _sha256_file(args.verify_key_file),
     }
 
