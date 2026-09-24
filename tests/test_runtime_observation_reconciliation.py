@@ -326,3 +326,42 @@ def test_projection_verification_state_is_explicit() -> None:
         projection_verified=True,
     )
     assert result["projection_verified"] is True
+
+
+def test_router_status_must_match_verified_projection() -> None:
+    projection = _projection()
+    status = {
+        "configured": True,
+        "fresh": True,
+        "current": {
+            "generation": projection["generation"],
+            "revision": projection["revision"],
+            "checksum": projection["checksum"],
+            "expires_at_ms": 999_999,
+            "applied_at_ms": 100,
+        },
+    }
+
+    evidence = module._verify_router_status(projection, status)
+    assert evidence["generation"] == projection["generation"]
+    assert evidence["revision"] == projection["revision"]
+    assert evidence["checksum"] == projection["checksum"]
+    assert evidence["fresh"] is True
+
+
+def test_router_status_mismatch_is_rejected() -> None:
+    projection = _projection()
+    status = {
+        "configured": True,
+        "fresh": True,
+        "current": {
+            "generation": projection["generation"],
+            "revision": projection["revision"],
+            "checksum": "b" * 64,
+        },
+    }
+
+    import pytest
+
+    with pytest.raises(ValueError, match="does not match"):
+        module._verify_router_status(projection, status)
