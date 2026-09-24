@@ -443,6 +443,13 @@ def capture_phase(
         mobile_request_id=mobile_request_id,
         timeout_seconds=event_timeout_seconds,
     )
+    execution_payload = execution.get("payload", {})
+    serving_provider = (
+        execution_payload.get("provider_id")
+        or execution_payload.get("provider")
+    )
+    if not isinstance(serving_provider, str) or not serving_provider:
+        raise CaptureError("completed execution event lacks serving provider")
 
     _json_write(_phase_path(out_dir, phase, "catalog"), catalog)
     _json_write(_phase_path(out_dir, phase, "response"), response)
@@ -476,6 +483,11 @@ def capture_phase(
             if prior_state is not None
             else mobile_request_id
         ),
+        "before_serving_provider": (
+            prior_state.get("before_serving_provider")
+            if prior_state is not None
+            else serving_provider
+        ),
         "auto_assist_sha": assistx_sha
         or (prior_state or {}).get("auto_assist_sha"),
         "auto_router_sha": router_sha
@@ -490,15 +502,14 @@ def capture_phase(
         "ready_runtime_count": ready_count,
         "mobile_request_id": mobile_request_id,
         "route_profile": decision.get("payload", {}).get("profile"),
-        "serving_provider": (
-            execution.get("payload", {}).get("provider_id")
-            or execution.get("payload", {}).get("provider")
-        ),
+        "serving_provider": serving_provider,
         "artifact_fingerprint": execution.get("payload", {}).get(
             "artifact_fingerprint"
         ),
         "out_dir": str(out_dir),
     }
+    if phase == "before":
+        summary["transition_target_provider"] = serving_provider
 
     if phase == "after":
         bundle = _build_evidence_bundle(out_dir)
