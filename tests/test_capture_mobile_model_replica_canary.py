@@ -196,3 +196,82 @@ def test_capture_after_rejects_exact_head_drift_before_network(tmp_path: Path) -
             assistx_sha="assistx-b",
             router_sha="router-a",
         )
+
+
+
+def test_capture_before_retains_serving_node_and_transition_target(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls = {"http": 0}
+
+    def fake_http_json(method, url, *, body=None, headers=None, timeout_seconds=30.0):
+        calls["http"] += 1
+        if method == "GET":
+            return _catalog(2), {}
+        return (
+            {
+                "id": "reply",
+                "object": "chat.completion",
+                "model": HANDLE,
+                "choices": [],
+            },
+            {"x-kipnerter-model-request-id": "kmr:before"},
+        )
+
+    def fake_wait_for_event(
+        database_path,
+        *,
+        event_type,
+        mobile_request_id,
+        timeout_seconds,
+        poll_seconds=0.25,
+    ):
+        assert mobile_request_id == "kmr:before"
+        if event_type == "router.route_decision":
+            return {
+                "payload": {
+                    "profile": "exact_artifact",
+                    "assistx_mobile_request_id": mobile_request_id,
+                }
+            }
+        return {
+            "payload": {
+                "provider": "runtime-a",
+                "provider_id": "runtime-a",
+                "runtime_node_id": "x1-370",
+                "runtime_instance_id": "runtime-a-instance",
+                "runtime_kind": "lmstudio",
+                "artifact_fingerprint": "sha256:bonsai",
+                "status": "completed",
+                "status_code": 200,
+                "assistx_mobile_request_id": mobile_request_id,
+            }
+        }
+
+    monkeypatch.setattr(_MODULE, "_http_json", fake_http_json)
+    monkeypatch.setattr(_MODULE, "_wait_for_event", fake_wait_for_event)
+
+    summary = _MODULE.capture_phase(
+        phase="before",
+        assistx_base_url="https://assistx.example",
+        router_db=tmp_path / "router.sqlite3",
+        out_dir=tmp_path / "evidence",
+        display_name="Ternary Bonsai 2",
+        handle=None,
+        request_headers={},
+        event_timeout_seconds=1,
+        assistx_sha="assistx-a",
+        router_sha="router-a",
+    )
+
+    assert calls["http"] == 2
+    assert summary["transition_target_provider"] == "runtime-a"
+    assert summary["serving_provider"] == "runtime-a"
+    assert summary["serving_node_id"] == "x1-370"
+    assert summary["runtime_instance_id"] == "runtime-a-instance"
+    assert summary["runtime_kind"] == "lmstudio"
+
+    state = json.loads((tmp_path / "evidence" / "capture-state.json").read_text())
+    assert state["before_serving_provider"] == "runtime-a"
+    assert state["before_serving_node_id"] == "x1-370"
