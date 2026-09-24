@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: live-fleet-replica-canary-preflight
+  cancel-in-progress: true
+
 jobs:
   x1-370-preflight:
     runs-on: [self-hosted, Linux, X64, x1-370, assistx-canary]
