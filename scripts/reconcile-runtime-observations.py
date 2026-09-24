@@ -238,7 +238,7 @@ def _verify_runtime_identity_witness(
             raise ValueError
     except (TypeError, ValueError) as exc:
         raise ValueError("runtime identity witness process/model file identity is invalid") from exc
-    if str(witness.get("model_process_binding") or "") not in {"proc_maps", "cmdline"}:
+    if str(witness.get("model_process_binding") or "") not in {"proc_maps", "darwin_vmmap_lsof", "cmdline"}:
         raise ValueError("runtime identity witness model-process binding is invalid")
     fingerprint = str(witness.get("witness_fingerprint") or "")
     core = {key: value for key, value in witness.items() if key != "witness_fingerprint"}
@@ -896,9 +896,11 @@ def reconcile(
                         witness_problem = "signed_witness_process_continuity_failed"
                     elif (
                         str(verified_witness.get("model_process_binding") or "")
-                        != "proc_maps"
+                        not in {"proc_maps", "darwin_vmmap_lsof"}
                         or str(continuity.get("model_process_binding") or "")
-                        != "proc_maps"
+                        not in {"proc_maps", "darwin_vmmap_lsof"}
+                        or str(verified_witness.get("model_process_binding") or "")
+                        != str(continuity.get("model_process_binding") or "")
                     ):
                         witness_problem = "signed_witness_model_not_memory_mapped"
                     else:
