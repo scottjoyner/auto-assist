@@ -43,8 +43,8 @@ ensure_clone() {
   if [[ ! -e "$repo" ]]; then
     echo "Cloning $url -> $repo"
     git clone "$url" "$repo"
-  elif [[ ! -d "$repo/.git" ]]; then
-    echo "$repo exists but is not a normal Git clone; refusing to touch it" >&2
+  elif ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "$repo exists but is not a Git checkout; refusing to touch it" >&2
     exit 3
   fi
 
