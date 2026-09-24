@@ -34,8 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      AUTO_ROUTER_SHA: 5677281991a05052198bc8f396191b3e58f5872b
-      LMS_SHA: 221e8be8a17b6739f0f651e26ef8f7b799da3165
+      AUTO_ROUTER_SHA: 59738a03320f944eafc94053be1eb122b391e6ae
+      LMS_SHA: 494fdf7fa1ed2919f480efd1851f3a118e83f0d7
       FLEET_PROFILES_SHA: bfe57f9b1529c511ead14cffebcd67d70b9b469c
     steps:
       - name: Checkout AssistX candidate
