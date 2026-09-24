@@ -7,6 +7,8 @@ on:
       - "src/assistx/runtime_projection.py"
       - "src/assistx/runtime_projection_v2.py"
       - "scripts/verify-runtime-projection-cross-repo.py"
+      - "scripts/reconcile-runtime-observations.py"
+      - "tests/test_runtime_observation_reconciliation.py"
       - "tests/contracts/fleet-llm-profiles-bfe57f9b.contract.json"
       - ".github/workflows/cross-repository-runtime-contract.yml"
   push:
@@ -16,6 +18,8 @@ on:
       - "src/assistx/runtime_projection.py"
       - "src/assistx/runtime_projection_v2.py"
       - "scripts/verify-runtime-projection-cross-repo.py"
+      - "scripts/reconcile-runtime-observations.py"
+      - "tests/test_runtime_observation_reconciliation.py"
       - "tests/contracts/fleet-llm-profiles-bfe57f9b.contract.json"
       - ".github/workflows/cross-repository-runtime-contract.yml"
   workflow_dispatch:
@@ -28,8 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      AUTO_ROUTER_SHA: 22405b5c3bb3484c8f4e13770c2d363081be4ff4
-      LMS_SHA: 7635cdcbf011f1ad29b7405d60883a5481872218
+      AUTO_ROUTER_SHA: 251cdc4532041f1d0616bd95c0f939bd99be0bb9
+      LMS_SHA: 4243b24394dc6746e65c2a3716ad7823dc4b03c0
       FLEET_PROFILES_SHA: bfe57f9b1529c511ead14cffebcd67d70b9b469c
     steps:
       - name: Checkout AssistX candidate
