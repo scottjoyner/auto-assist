@@ -1,0 +1,33 @@
+name: Live Fleet Replica Canary Preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-fleet-replica-canary-preflight
+  cancel-in-progress: true
+
+jobs:
+  x1-370-preflight:
+    runs-on: [self-hosted, Linux, X64, x1-370, assistx-canary]
+    timeout-minutes: 10
+    env:
+      PREFLIGHT_OUT_DIR: ${{ github.workspace }}/artifacts/live-fleet-replica-preflight
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run guarded x1-370 live preflight
+        shell: bash
+        run: bash scripts/run-x1-370-live-fleet-preflight.sh
+
+      - name: Upload preflight evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-fleet-replica-preflight-${{ github.sha }}
+          path: artifacts/live-fleet-replica-preflight/
+          if-no-files-found: warn
+          retention-days: 14
