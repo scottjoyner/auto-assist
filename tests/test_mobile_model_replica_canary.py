@@ -40,7 +40,7 @@ def _mobile_response() -> dict:
     }
 
 
-def _route_event(provider: str, request_id: str, mobile_request_id: str) -> dict:
+def _route_decision_event(provider: str, request_id: str, mobile_request_id: str) -> dict:
     return {
         "payload": {
             "request_id": request_id,
@@ -59,19 +59,40 @@ def _route_event(provider: str, request_id: str, mobile_request_id: str) -> dict
     }
 
 
+def _route_execution_event(provider: str, request_id: str, mobile_request_id: str) -> dict:
+    return {
+        "payload": {
+            "request_id": request_id,
+            "correlation_id": f"corr-{request_id}",
+            "assistx_mobile_model_handle": HANDLE,
+            "assistx_mobile_request_id": mobile_request_id,
+            "artifact_fingerprint": ARTIFACT,
+            "local_only": True,
+            "allow_cloud": False,
+            "provider": provider,
+            "provider_id": provider,
+            "status": "completed",
+            "status_code": 200,
+        }
+    }
+
 def _bundle() -> dict:
     return {
         "before": {
             "catalog": _catalog(2),
             "mobile_response": _mobile_response(),
             "mobile_request_id": "kmr:before",
-            "route_event": _route_event("runtime-a", "before", "kmr:before"),
+            "route_decision_event": _route_decision_event("runtime-a", "before", "kmr:before"),
+            "route_execution_event": _route_execution_event("runtime-a", "before", "kmr:before"),
         },
         "after": {
             "catalog": _catalog(1),
             "mobile_response": _mobile_response(),
             "mobile_request_id": "kmr:after",
-            "route_event": _route_event("runtime-b", "after", "kmr:after"),
+            # The policy may initially choose A and then complete on B if A
+            # becomes unavailable. Serving-replica proof comes from execution.
+            "route_decision_event": _route_decision_event("runtime-a", "after", "kmr:after"),
+            "route_execution_event": _route_execution_event("runtime-b", "after", "kmr:after"),
         },
     }
 
@@ -93,7 +114,8 @@ def test_replica_canary_accepts_same_handle_artifact_and_new_provider() -> None:
 
 def test_replica_canary_rejects_artifact_drift() -> None:
     bundle = _bundle()
-    bundle["after"]["route_event"]["payload"]["artifact_fingerprint"] = "sha256:other"
+    bundle["after"]["route_decision_event"]["payload"]["artifact_fingerprint"] = "sha256:other"
+    bundle["after"]["route_execution_event"]["payload"]["artifact_fingerprint"] = "sha256:other"
 
     with pytest.raises(CanaryEvidenceError, match="artifact authority changed"):
         validate_evidence(bundle)
@@ -109,7 +131,7 @@ def test_replica_canary_rejects_mobile_runtime_coordinate_leak() -> None:
 
 def test_replica_canary_rejects_same_serving_replica() -> None:
     bundle = _bundle()
-    bundle["after"]["route_event"] = _route_event("runtime-a", "after", "kmr:after")
+    bundle["after"]["route_execution_event"] = _route_execution_event("runtime-a", "after", "kmr:after")
 
     with pytest.raises(CanaryEvidenceError, match="chosen replica did not change"):
         validate_evidence(bundle)
@@ -117,7 +139,7 @@ def test_replica_canary_rejects_same_serving_replica() -> None:
 
 def test_replica_canary_rejects_mismatched_request_correlation() -> None:
     bundle = _bundle()
-    bundle["after"]["route_event"]["payload"]["assistx_mobile_request_id"] = "kmr:other"
+    bundle["after"]["route_execution_event"]["payload"]["assistx_mobile_request_id"] = "kmr:other"
 
     with pytest.raises(CanaryEvidenceError, match="does not match mobile request ID"):
         validate_evidence(bundle)
