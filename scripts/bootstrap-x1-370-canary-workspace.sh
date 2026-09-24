@@ -144,11 +144,20 @@ echo "Running the live read-only authority/topology preflight..."
 cd "$OPS_WORKTREE"
 bash scripts/run-x1-370-live-fleet-preflight.sh
 
+runner_ready=0
 if [[ "$REGISTER_RUNNER" == "1" ]]; then
   echo
   echo "Attempting to register/start the x1-370 canary Actions runner..."
   if command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
-    if ! bash scripts/bootstrap-x1-370-canary-runner.sh; then
+    if bash scripts/bootstrap-x1-370-canary-runner.sh; then
+      runner_ready=1
+      if ! gh workflow run         live-fleet-replica-canary-preflight.yml         --repo "$REPO"         --ref "$OPS_BRANCH"
+      then
+        echo "warning: runner is online but evidence workflow dispatch failed" >&2
+      else
+        echo "Dispatched the optional GitHub Actions evidence mirror."
+      fi
+    else
       echo "warning: GitHub runner registration failed; local canary flow will continue" >&2
     fi
   else
