@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+
 import pytest
 
-from scripts.validate_mobile_model_replica_canary import (
-    CanaryEvidenceError,
-    validate_evidence,
-)
+
+_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "validate_mobile_model_replica_canary.py"
+_SPEC = importlib.util.spec_from_file_location("validate_mobile_model_replica_canary", _SCRIPT)
+assert _SPEC is not None and _SPEC.loader is not None
+_MODULE = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_MODULE)
+CanaryEvidenceError = _MODULE.CanaryEvidenceError
+validate_evidence = _MODULE.validate_evidence
 
 
 HANDLE = "model:v1:" + "a" * 32
