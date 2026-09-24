@@ -421,12 +421,21 @@ def reconcile(
             witness_loadout_fingerprint: str | None = None
             witness_model_content_sha256: str | None = None
             witness_signing_key_fingerprint: str | None = None
+            witness_error = str(
+                observation.get("_runtime_identity_witness_error") or ""
+            ).strip()
 
             if len(matches) > 1:
                 status = "ambiguous_projection_match"
                 action = "review_runtime_identity"
                 reasons.append("multiple_signed_providers_match_node_port_kind")
                 matched_runtime_ids = _runtime_ids(matches)
+            elif witness_error and not matches and endpoint_matches:
+                status = "runtime_identity_unverified"
+                action = "review_runtime_identity"
+                reasons.append("runtime_identity_witness_signature_unverified")
+                matched_runtime_ids = _runtime_ids(endpoint_matches)
+                artifact_identity_reason = "witness_signature_unverified"
             elif not matches and endpoint_matches:
                 status = "runtime_identity_mismatch"
                 action = "review_runtime_identity"
@@ -493,9 +502,6 @@ def reconcile(
                     status = "projected"
                     action = "none"
 
-                witness_error = str(
-                    observation.get("_runtime_identity_witness_error") or ""
-                ).strip()
                 continuity = observation.get("runtime_identity_continuity")
                 if witness_error and status == "projected":
                     status = "runtime_identity_unverified"
