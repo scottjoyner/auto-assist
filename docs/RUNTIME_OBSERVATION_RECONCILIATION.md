@@ -106,6 +106,11 @@ in argv is useful provenance but is insufficient for strong artifact continuity,
 because a hot-reload-capable process could retain an old launch argument while
 serving different bytes.
 
+The continuity sample must also be fresh: it must fall within the configured
+observation-age window and within 30 seconds of the runtime observation itself.
+A stale continuity claim produces `runtime_identity_unverified` and requires a
+fresh observation rather than being replayed as artifact proof.
+
 ## Smallest operator evidence package
 
 Capture four read-only inputs at approximately the same time:
