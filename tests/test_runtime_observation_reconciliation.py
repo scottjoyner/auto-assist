@@ -413,6 +413,8 @@ def _attach_verified_witness(
         },
         "loadout_fingerprint": "sha256:" + "1" * 64,
         "model_content_sha256": model_sha,
+        "witness_signer_identity": "runtime-witness-operator",
+        "witness_signature_namespace": "lms-runtime-identity-witness",
         "witness_signing_key_fingerprint": "SHA256:witness-key",
         "canary": {
             "rollback_succeeded": True,
@@ -421,7 +423,15 @@ def _attach_verified_witness(
             "pid": 42,
             "boot_id": "boot",
             "process_start_ticks": 99,
+            "executable_sha256": "sha256:" + "3" * 64,
             "executable_basename": "llama-server",
+            "executable_file_identity": {
+                "device": 10,
+                "inode": 11,
+                "size_bytes": 12,
+                "mtime_ns": 13,
+                "ctime_ns": 14,
+            },
         },
         "admission": {"admitted": False},
     }
@@ -434,6 +444,7 @@ def _attach_verified_witness(
         "boot_id": "boot",
         "process_start_ticks": 99,
         "executable_basename": "llama-server",
+        "executable_file_valid": True,
         "model_file_valid": True,
         "model_process_binding_valid": True,
         "model_process_binding": "proc_maps",
@@ -543,6 +554,18 @@ def test_runtime_witness_signature_verification_round_trip(tmp_path) -> None:
         + key.with_suffix(".pub").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    fingerprint_process = subprocess.run(
+        ["ssh-keygen", "-lf", str(key), "-E", "sha256"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert fingerprint_process.returncode == 0
+    key_fingerprint = next(
+        field
+        for field in fingerprint_process.stdout.split()
+        if field.startswith("SHA256:")
+    )
     core = {
         "schema_version": "fleet-runtime-identity-witness.v1",
         "node_id": "destroyer",
@@ -559,13 +582,23 @@ def test_runtime_witness_signature_verification_round_trip(tmp_path) -> None:
         },
         "loadout_fingerprint": "sha256:" + "1" * 64,
         "model_content_sha256": "sha256:" + "2" * 64,
-        "witness_signing_key_fingerprint": "SHA256:witness",
+        "witness_signer_identity": "runtime-witness-operator",
+        "witness_signature_namespace": "lms-runtime-identity-witness",
+        "witness_signing_key_fingerprint": key_fingerprint,
         "canary": {"rollback_succeeded": True},
         "process": {
             "pid": 42,
             "boot_id": "boot",
             "process_start_ticks": 99,
+            "executable_sha256": "sha256:" + "3" * 64,
             "executable_basename": "llama-server",
+            "executable_file_identity": {
+                "device": 10,
+                "inode": 11,
+                "size_bytes": 12,
+                "mtime_ns": 13,
+                "ctime_ns": 14,
+            },
         },
         "admission": {"admitted": False},
     }
@@ -641,3 +674,119 @@ def test_stale_signed_witness_continuity_cannot_verify_artifact() -> None:
     assert k2["action"] == "refresh_runtime_observation"
     assert k2["artifact_identity_verified"] is False
     assert "signed_witness_continuity_stale" in k2["reason_codes"]
+
+
+@pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="OpenSSH unavailable")
+def test_runtime_witness_cannot_claim_a_different_authorized_signing_key(tmp_path) -> None:
+    keys = []
+    fingerprints = []
+    for name in ("key-a", "key-b"):
+        key = tmp_path / name
+        generated = subprocess.run(
+            ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
+            capture_output=True,
+            check=False,
+        )
+        assert generated.returncode == 0
+        fp = subprocess.run(
+            ["ssh-keygen", "-lf", str(key), "-E", "sha256"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert fp.returncode == 0
+        fingerprints.append(
+            next(field for field in fp.stdout.split() if field.startswith("SHA256:"))
+        )
+        keys.append(key)
+
+    allowed = tmp_path / "allowed_signers"
+    allowed.write_text(
+        "".join(
+            "runtime-witness-operator "
+            + key.with_suffix(".pub").read_text(encoding="utf-8")
+            for key in keys
+        ),
+        encoding="utf-8",
+    )
+
+    core = {
+        "schema_version": "fleet-runtime-identity-witness.v1",
+        "node_id": "destroyer",
+        "runtime_url": "http://localhost:1235",
+        "runtime_kind": "llama_cpp",
+        "provider_model": "k2-36b",
+        "model_process_binding": "proc_maps",
+        "model_file_identity": {
+            "device": 1,
+            "inode": 2,
+            "size_bytes": 123,
+            "mtime_ns": 456,
+            "ctime_ns": 457,
+        },
+        "loadout_fingerprint": "sha256:" + "1" * 64,
+        "model_content_sha256": "sha256:" + "2" * 64,
+        "witness_signer_identity": "runtime-witness-operator",
+        "witness_signature_namespace": "lms-runtime-identity-witness",
+        # Claim key A but sign with key B.
+        "witness_signing_key_fingerprint": fingerprints[0],
+        "canary": {"rollback_succeeded": True},
+        "process": {
+            "pid": 42,
+            "boot_id": "boot",
+            "process_start_ticks": 99,
+            "executable_sha256": "sha256:" + "3" * 64,
+            "executable_basename": "llama-server",
+            "executable_file_identity": {
+                "device": 10,
+                "inode": 11,
+                "size_bytes": 12,
+                "mtime_ns": 13,
+                "ctime_ns": 14,
+            },
+        },
+        "admission": {"admitted": False},
+    }
+    document = {**core, "witness_fingerprint": module._canonical_hash(core)}
+    payload = module._canonical_witness_bytes(document)
+    source = tmp_path / "witness.json"
+    source.write_bytes(payload)
+    signed = subprocess.run(
+        [
+            "ssh-keygen",
+            "-Y",
+            "sign",
+            "-f",
+            str(keys[1]),
+            "-n",
+            "lms-runtime-identity-witness",
+            str(source),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    assert signed.returncode == 0
+    signature = Path(str(source) + ".sig").read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="signature verification failed"):
+        module._verify_runtime_identity_witness(
+            payload.decode("utf-8"),
+            signature,
+            allowed_signers=allowed,
+            identity="runtime-witness-operator",
+        )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permissions required")
+def test_runtime_witness_rejects_writable_trust_store(tmp_path) -> None:
+    allowed = tmp_path / "allowed_signers"
+    allowed.write_text("runtime-witness-operator ssh-ed25519 AAAA\n", encoding="utf-8")
+    allowed.chmod(0o666)
+
+    with pytest.raises(ValueError, match="may not be group/world writable"):
+        module._verify_runtime_identity_witness(
+            "{}",
+            "-----BEGIN SSH SIGNATURE-----\nx\n-----END SSH SIGNATURE-----\n",
+            allowed_signers=allowed,
+            identity="runtime-witness-operator",
+        )
