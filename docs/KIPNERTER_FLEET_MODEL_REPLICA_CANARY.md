@@ -36,6 +36,32 @@ curl -fsSL \
   | bash
 ~~~
 
+The command now carries the safe flow all the way to the real mutation boundary:
+
+~~~text
+create/reuse full clones in ~/git
+        |
+        v
+create clean pinned authority worktrees
+        |
+        v
+hash live AssistX + Auto-Router authority code
+against the pinned runtime revisions
+        |
+        v
+read-only live topology/catalog preflight
+        |
+        v
+optional GitHub runner registration
+(only when gh is installed + authenticated)
+        |
+        v
+automatic replicated BEFORE capture
+        |
+        v
+STOP and print transition_target_provider
+~~~
+
 It creates or safely reuses:
 
 ~~~text
@@ -44,7 +70,7 @@ It creates or safely reuses:
 ~/git/auto-assist-canary-ops
 ~/git/auto-assist-canary-runtime
 ~/git/auto-router-canary-runtime
-~/actions-runner-auto-assist-canary
+~/git/canary-evidence/
 ~~~
 
 Existing canonical clones are fetched but their checked-out branch is not changed. Existing canary worktrees must be clean or the bootstrap fails closed instead of resetting local changes.
@@ -56,9 +82,13 @@ AssistX mobile route: aad657bbf4fff5bec2080ada07f5a4ad02292743
 Auto-Router authority path: 1fbb9726de46a30c0c91616c65c04dc1f35845a6
 ~~~
 
-The runner package defaults to GitHub Actions Runner `v2.337.0` and verifies the published Linux x64 SHA-256 before extraction.
+The local preflight does not trust Docker image labels. It hashes the live AssistX `mobile_agent_routes.py` plus Auto-Router `policy.py` / `route_events.py` and compares them directly with the pinned worktrees. For AssistX it also checks that the API process was started after the current bind-mounted authority file mtime, preventing a stale Python process from masquerading as an exact-code match.
 
-After registration, the service is started automatically and the already-queued `Live Fleet Replica Canary Preflight` becomes eligible without a manual dispatch.
+GitHub runner registration is no longer required for the canary itself. If `gh` is installed and authenticated, the bootstrap also registers/starts the `x1-370,assistx-canary` runner for ongoing evidence workflows. Set `REGISTER_RUNNER=0` to skip that optional step.
+
+The official runner bootstrap defaults to GitHub Actions Runner `v2.337.0` and verifies the published Linux x64 SHA-256 before extraction.
+
+A successful bootstrap ends after the BEFORE capture and prints the exact `transition_target_provider`. That is the first point requiring an approved runtime eligibility mutation.
 
 ## Environment
 
