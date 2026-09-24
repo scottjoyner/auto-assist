@@ -46,6 +46,8 @@ _REQUIRED_ADMISSION_EVIDENCE = [
 
 _WITNESS_SCHEMA = "fleet-runtime-identity-witness.v1"
 _WITNESS_NAMESPACE = "lms-runtime-identity-witness"
+_CONTINUITY_SCHEMA = "fleet-runtime-continuity-attestation.v1"
+_CONTINUITY_NAMESPACE = "lms-runtime-continuity"
 _SIGNER_IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._-]{0,255}$")
 
 
@@ -283,11 +285,106 @@ def _verify_runtime_identity_witness(
     return witness
 
 
+def _verify_runtime_continuity_attestation(
+    payload: str,
+    signature: str,
+    *,
+    allowed_signers: Path,
+    expected_node_id: str,
+    expected_observation_id: str,
+    expected_witness_fingerprint: str,
+) -> dict[str, Any]:
+    if not _SIGNER_IDENTITY_RE.fullmatch(expected_node_id):
+        raise ValueError("runtime continuity node signer identity is invalid")
+    _validate_allowed_signers_trust_file(allowed_signers)
+    ssh_keygen = shutil.which("ssh-keygen")
+    if not ssh_keygen:
+        raise ValueError("ssh-keygen is required to verify runtime continuity")
+    if len(payload.encode("utf-8")) > 16 * 1024:
+        raise ValueError("runtime continuity attestation exceeds size bound")
+    if len(signature.encode("utf-8")) > 8 * 1024:
+        raise ValueError("runtime continuity signature exceeds size bound")
+    try:
+        document = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError("runtime continuity attestation is not valid JSON") from exc
+    if not isinstance(document, dict) or document.get("schema_version") != _CONTINUITY_SCHEMA:
+        raise ValueError("unsupported runtime continuity attestation schema")
+    if document.get("admission") != {"admitted": False}:
+        raise ValueError("runtime continuity attestation must remain non-admitted")
+    if str(document.get("node_id") or "") != expected_node_id:
+        raise ValueError("runtime continuity node identity mismatch")
+    if str(document.get("signer_identity") or "") != expected_node_id:
+        raise ValueError("runtime continuity signer identity mismatch")
+    if str(document.get("signature_namespace") or "") != _CONTINUITY_NAMESPACE:
+        raise ValueError("runtime continuity signature namespace mismatch")
+    if str(document.get("runtime_observation_id") or "") != expected_observation_id:
+        raise ValueError("runtime continuity observation ID mismatch")
+    if str(document.get("witness_fingerprint") or "") != expected_witness_fingerprint:
+        raise ValueError("runtime continuity witness fingerprint mismatch")
+    continuity = document.get("continuity")
+    if not isinstance(continuity, dict):
+        raise ValueError("runtime continuity payload is missing")
+    fingerprint = str(document.get("attestation_fingerprint") or "")
+    core = {
+        key: value
+        for key, value in document.items()
+        if key != "attestation_fingerprint"
+    }
+    if fingerprint != _canonical_hash(core):
+        raise ValueError("runtime continuity attestation fingerprint mismatch")
+    if _canonical_witness_bytes(document) != payload.encode("utf-8"):
+        raise ValueError("runtime continuity attestation is not canonical JSON")
+    if "BEGIN SSH SIGNATURE" not in signature or "END SSH SIGNATURE" not in signature:
+        raise ValueError("runtime continuity signature is malformed")
+    declared_signing_fingerprint = str(
+        document.get("signing_key_fingerprint") or ""
+    )
+
+    with tempfile.TemporaryDirectory(prefix="assistx-runtime-continuity-") as directory:
+        temp_root = Path(directory)
+        narrowed_signers = _narrow_allowed_signers(
+            allowed_signers=allowed_signers,
+            identity=expected_node_id,
+            declared_fingerprint=declared_signing_fingerprint,
+            ssh_keygen=ssh_keygen,
+            directory=temp_root,
+        )
+        signature_path = temp_root / "continuity.sig"
+        signature_path.write_text(signature, encoding="utf-8")
+        process = subprocess.run(
+            [
+                ssh_keygen,
+                "-Y",
+                "verify",
+                "-f",
+                str(narrowed_signers),
+                "-I",
+                expected_node_id,
+                "-n",
+                _CONTINUITY_NAMESPACE,
+                "-s",
+                str(signature_path),
+            ],
+            input=payload.encode("utf-8"),
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    if process.returncode != 0:
+        stderr = process.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(
+            "runtime continuity signature verification failed: " + stderr
+        )
+    return document
+
+
 def _verify_node_witnesses(
     nodes_payload: dict[str, Any],
     *,
     allowed_signers: Path,
     identity: str,
+    continuity_allowed_signers: Path,
     namespace: str = _WITNESS_NAMESPACE,
 ) -> None:
     for node_report in nodes_payload.get("nodes") or []:
@@ -316,6 +413,41 @@ def _verify_node_witnesses(
                 continue
             observation["_verified_runtime_identity_witness"] = verified
             observation["_runtime_identity_witness_signature_verified"] = True
+
+            continuity_payload = observation.get(
+                "runtime_identity_continuity_json"
+            )
+            continuity_signature = observation.get(
+                "runtime_identity_continuity_signature"
+            )
+            if not isinstance(continuity_payload, str) or not isinstance(
+                continuity_signature, str
+            ):
+                observation["_runtime_identity_continuity_error"] = (
+                    "continuity_attestation_missing"
+                )
+                continue
+            node_id = _node_id(verified.get("node_id"))
+            observation_id = str(
+                observation.get("runtime_observation_id") or ""
+            )
+            try:
+                verified_continuity = _verify_runtime_continuity_attestation(
+                    continuity_payload,
+                    continuity_signature,
+                    allowed_signers=continuity_allowed_signers,
+                    expected_node_id=node_id,
+                    expected_observation_id=observation_id,
+                    expected_witness_fingerprint=str(
+                        verified.get("witness_fingerprint") or ""
+                    ),
+                )
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                observation["_runtime_identity_continuity_error"] = str(exc)[:500]
+                continue
+            observation["_verified_runtime_identity_continuity"] = (
+                verified_continuity
+            )
 
 
 def _kind(value: Any) -> str:
@@ -970,6 +1102,11 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         required=True,
     )
+    parser.add_argument(
+        "--runtime-continuity-allowed-signers",
+        type=Path,
+        required=True,
+    )
     parser.add_argument("--runtime-witness-identity", required=True)
     parser.add_argument(
         "--runtime-witness-namespace",
@@ -985,6 +1122,7 @@ def main(argv: list[str] | None = None) -> int:
         nodes,
         allowed_signers=args.runtime_witness_allowed_signers,
         identity=args.runtime_witness_identity,
+        continuity_allowed_signers=args.runtime_continuity_allowed_signers,
         namespace=args.runtime_witness_namespace,
     )
     _verify_projection(
@@ -1007,6 +1145,9 @@ def main(argv: list[str] | None = None) -> int:
         "verify_key": _sha256_file(args.verify_key_file),
         "runtime_witness_allowed_signers": _sha256_file(
             args.runtime_witness_allowed_signers
+        ),
+        "runtime_continuity_allowed_signers": _sha256_file(
+            args.runtime_continuity_allowed_signers
         ),
     }
 
