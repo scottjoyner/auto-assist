@@ -532,7 +532,12 @@ def reconcile(
                         witness_problem = "signed_witness_canary_rollback_not_verified"
                     elif not isinstance(witness_process, dict):
                         witness_problem = "signed_witness_process_identity_missing"
-                    elif not isinstance(continuity, dict) or continuity.get("valid") is not True:
+                    elif (
+                        not isinstance(continuity, dict)
+                        or continuity.get("valid") is not True
+                        or continuity.get("model_file_valid") is not True
+                        or continuity.get("model_process_binding_valid") is not True
+                    ):
                         witness_problem = "signed_witness_process_continuity_failed"
                     else:
                         try:
@@ -563,7 +568,7 @@ def reconcile(
 
                     if witness_problem is None:
                         artifact_identity_verified = True
-                        artifact_identity_reason = "signed_loadout_and_process_match"
+                        artifact_identity_reason = "signed_model_artifact_and_process_match"
                     elif witness_problem == "signed_witness_artifact_fingerprint_mismatch":
                         status = "model_drift"
                         action = "collect_model_identity_evidence"
@@ -609,7 +614,7 @@ def reconcile(
                     "artifact_identity_verified": artifact_identity_verified,
                     "artifact_identity_reason": artifact_identity_reason,
                     "identity_evidence_level": (
-                        "signed_loadout_artifact_and_process"
+                        "signed_model_artifact_and_process"
                         if artifact_identity_verified
                         else "endpoint_and_model_names"
                     ),
