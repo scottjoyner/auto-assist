@@ -455,6 +455,16 @@ def _attach_verified_witness(
         "schema_version": "fleet-runtime-continuity-attestation.v1",
         "node_id": "destroyer",
         "runtime_observation_id": "runtime-observation:k2",
+        "observation": {
+            "runtime_observation_id": "runtime-observation:k2",
+            "observed_at": 100,
+            "runtime_kind": "openai_compatible",
+            "protocol": "openai-compatible",
+            "base_url": "http://localhost:1235",
+            "models": ["k2-36b"],
+            "ready": True,
+            "observed_model_count": 1,
+        },
         "witness_fingerprint": "sha256:" + "6" * 64,
         "runtime_url": "http://localhost:1235",
         "runtime_kind": runtime_kind,
@@ -845,11 +855,106 @@ def test_runtime_continuity_signature_verification_round_trip(tmp_path) -> None:
         signature,
         allowed_signers=allowed,
         expected_node_id="destroyer",
-        expected_observation_id="runtime-observation:k2",
+        expected_observation=_nodes()["nodes"][0]["runtimes"][0],
         expected_witness_fingerprint="sha256:" + "6" * 64,
     )
 
     assert verified == document
+
+
+@pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="OpenSSH unavailable")
+def test_runtime_continuity_signature_rejects_different_enclosing_models(tmp_path) -> None:
+    key = tmp_path / "destroyer-node-key"
+    generated = subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
+        capture_output=True,
+        check=False,
+    )
+    assert generated.returncode == 0
+    allowed = tmp_path / "node_allowed_signers"
+    allowed.write_text(
+        "destroyer " + key.with_suffix(".pub").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    fp = subprocess.run(
+        ["ssh-keygen", "-lf", str(key), "-E", "sha256"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    key_fingerprint = next(
+        field for field in fp.stdout.split() if field.startswith("SHA256:")
+    )
+    continuity = {
+        "valid": True,
+        "reason": "match",
+        "checked_at": 110,
+        "pid": 42,
+        "boot_id": "boot",
+        "process_start_ticks": 99,
+        "executable_basename": "llama-server",
+        "executable_file_valid": True,
+        "model_file_valid": True,
+        "model_process_binding_valid": True,
+        "model_process_binding": "proc_maps",
+    }
+    core = {
+        "schema_version": "fleet-runtime-continuity-attestation.v1",
+        "node_id": "destroyer",
+        "runtime_observation_id": "runtime-observation:k2",
+        "observation": {
+            "runtime_observation_id": "runtime-observation:k2",
+            "observed_at": 100,
+            "runtime_kind": "openai_compatible",
+            "protocol": "openai-compatible",
+            "base_url": "http://localhost:1235",
+            "models": ["tampered-model"],
+            "ready": True,
+            "observed_model_count": 1,
+        },
+        "witness_fingerprint": "sha256:" + "6" * 64,
+        "runtime_url": "http://localhost:1235",
+        "runtime_kind": "llama_cpp",
+        "provider_model": "k2-36b",
+        "continuity": continuity,
+        "signer_identity": "destroyer",
+        "signature_namespace": "lms-runtime-continuity",
+        "signing_key_fingerprint": key_fingerprint,
+        "admission": {"admitted": False},
+    }
+    document = {
+        **core,
+        "attestation_fingerprint": module._canonical_hash(core),
+    }
+    payload = module._canonical_witness_bytes(document)
+    source = tmp_path / "continuity.json"
+    source.write_bytes(payload)
+    signed = subprocess.run(
+        [
+            "ssh-keygen",
+            "-Y",
+            "sign",
+            "-f",
+            str(key),
+            "-n",
+            "lms-runtime-continuity",
+            str(source),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    assert signed.returncode == 0
+    signature = Path(str(source) + ".sig").read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="signed observation mismatch"):
+        module._verify_runtime_continuity_attestation(
+            payload.decode("utf-8"),
+            signature,
+            allowed_signers=allowed,
+            expected_node_id="destroyer",
+            expected_observation=_nodes()["nodes"][0]["runtimes"][0],
+            expected_witness_fingerprint="sha256:" + "6" * 64,
+        )
 
 
 @pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="OpenSSH unavailable")
