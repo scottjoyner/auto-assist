@@ -416,6 +416,7 @@ def _attach_verified_witness(
         "witness_signer_identity": "runtime-witness-operator",
         "witness_signature_namespace": "lms-runtime-identity-witness",
         "witness_signing_key_fingerprint": "SHA256:witness-key",
+        "witness_fingerprint": "sha256:" + "6" * 64,
         "canary": {
             "rollback_succeeded": True,
         },
@@ -436,7 +437,7 @@ def _attach_verified_witness(
         "admission": {"admitted": False},
     }
     observation["_runtime_identity_witness_signature_verified"] = True
-    observation["runtime_identity_continuity"] = {
+    continuity = {
         "valid": continuity_valid,
         "reason": "match" if continuity_valid else "process_identity_changed",
         "checked_at": 110,
@@ -448,6 +449,22 @@ def _attach_verified_witness(
         "model_file_valid": True,
         "model_process_binding_valid": True,
         "model_process_binding": "proc_maps",
+    }
+    observation["runtime_identity_continuity"] = continuity
+    observation["_verified_runtime_identity_continuity"] = {
+        "schema_version": "fleet-runtime-continuity-attestation.v1",
+        "node_id": "destroyer",
+        "runtime_observation_id": "runtime-observation:k2",
+        "witness_fingerprint": "sha256:" + "6" * 64,
+        "runtime_url": "http://localhost:1235",
+        "runtime_kind": runtime_kind,
+        "provider_model": "k2-36b",
+        "continuity": continuity,
+        "signer_identity": "destroyer",
+        "signature_namespace": "lms-runtime-continuity",
+        "signing_key_fingerprint": "SHA256:node-key",
+        "admission": {"admitted": False},
+        "attestation_fingerprint": "sha256:" + "7" * 64,
     }
 
 
@@ -468,6 +485,8 @@ def test_signed_witness_upgrades_projected_to_artifact_and_process_identity() ->
     assert k2["identity_evidence_level"] == "signed_model_artifact_and_process"
     assert k2["witness_model_content_sha256"] == "sha256:k2"
     assert k2["witness_signing_key_fingerprint"] == "SHA256:witness-key"
+    assert k2["continuity_signer_identity"] == "destroyer"
+    assert k2["continuity_signing_key_fingerprint"] == "SHA256:node-key"
 
 
 def test_signed_witness_artifact_mismatch_becomes_model_drift() -> None:
@@ -662,6 +681,9 @@ def test_stale_signed_witness_continuity_cannot_verify_artifact() -> None:
     _attach_verified_witness(nodes)
     observation = nodes["nodes"][0]["runtimes"][0]
     observation["runtime_identity_continuity"]["checked_at"] = 1
+    observation["_verified_runtime_identity_continuity"]["continuity"][
+        "checked_at"
+    ] = 1
 
     result = _reconcile(nodes=nodes)
     k2 = next(
@@ -674,6 +696,160 @@ def test_stale_signed_witness_continuity_cannot_verify_artifact() -> None:
     assert k2["action"] == "refresh_runtime_observation"
     assert k2["artifact_identity_verified"] is False
     assert "signed_witness_continuity_stale" in k2["reason_codes"]
+
+
+def test_unsigned_runtime_continuity_cannot_verify_artifact() -> None:
+    nodes = _nodes()
+    _attach_verified_witness(nodes)
+    observation = nodes["nodes"][0]["runtimes"][0]
+    observation.pop("_verified_runtime_identity_continuity")
+    observation["_runtime_identity_continuity_error"] = "continuity_attestation_missing"
+
+    result = _reconcile(nodes=nodes)
+    k2 = next(
+        item
+        for item in result["items"]
+        if item["runtime_observation_id"] == "runtime-observation:k2"
+    )
+
+    assert k2["status"] == "runtime_identity_unverified"
+    assert k2["action"] == "refresh_runtime_observation"
+    assert k2["artifact_identity_verified"] is False
+    assert (
+        "signed_witness_continuity_attestation_unverified"
+        in k2["reason_codes"]
+    )
+
+
+def test_ambiguous_projection_artifact_identity_cannot_verify() -> None:
+    nodes = _nodes()
+    projection = _projection()
+    projection["providers"][0]["models"].append(
+        {
+            "alias": "k2-alt",
+            "provider_model": "k2-36b",
+            "artifact_fingerprint": "sha256:other-k2",
+        }
+    )
+    _attach_verified_witness(nodes)
+
+    result = _reconcile(nodes=nodes, projection=projection)
+    k2 = next(
+        item
+        for item in result["items"]
+        if item["runtime_observation_id"] == "runtime-observation:k2"
+    )
+
+    assert k2["status"] == "artifact_identity_ambiguous"
+    assert k2["action"] == "review_projection_artifact_identity"
+    assert k2["artifact_identity_verified"] is False
+    assert "signed_projection_artifact_identity_ambiguous" in k2["reason_codes"]
+
+
+def test_missing_projection_artifact_fingerprint_cannot_verify() -> None:
+    nodes = _nodes()
+    projection = _projection()
+    projection["providers"][0]["models"][0]["artifact_fingerprint"] = ""
+    _attach_verified_witness(nodes)
+
+    result = _reconcile(nodes=nodes, projection=projection)
+    k2 = next(
+        item
+        for item in result["items"]
+        if item["runtime_observation_id"] == "runtime-observation:k2"
+    )
+
+    assert k2["status"] == "runtime_identity_unverified"
+    assert k2["action"] == "review_projection_artifact_identity"
+    assert "signed_projection_artifact_fingerprint_missing" in k2["reason_codes"]
+
+
+@pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="OpenSSH unavailable")
+def test_runtime_continuity_signature_verification_round_trip(tmp_path) -> None:
+    key = tmp_path / "destroyer-node-key"
+    generated = subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
+        capture_output=True,
+        check=False,
+    )
+    assert generated.returncode == 0
+    allowed = tmp_path / "node_allowed_signers"
+    allowed.write_text(
+        "destroyer " + key.with_suffix(".pub").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    fp = subprocess.run(
+        ["ssh-keygen", "-lf", str(key), "-E", "sha256"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert fp.returncode == 0
+    key_fingerprint = next(
+        field for field in fp.stdout.split() if field.startswith("SHA256:")
+    )
+
+    continuity = {
+        "valid": True,
+        "reason": "match",
+        "checked_at": 110,
+        "pid": 42,
+        "boot_id": "boot",
+        "process_start_ticks": 99,
+        "executable_basename": "llama-server",
+        "executable_file_valid": True,
+        "model_file_valid": True,
+        "model_process_binding_valid": True,
+        "model_process_binding": "proc_maps",
+    }
+    core = {
+        "schema_version": "fleet-runtime-continuity-attestation.v1",
+        "node_id": "destroyer",
+        "runtime_observation_id": "runtime-observation:k2",
+        "witness_fingerprint": "sha256:" + "6" * 64,
+        "runtime_url": "http://localhost:1235",
+        "runtime_kind": "llama_cpp",
+        "provider_model": "k2-36b",
+        "continuity": continuity,
+        "signer_identity": "destroyer",
+        "signature_namespace": "lms-runtime-continuity",
+        "signing_key_fingerprint": key_fingerprint,
+        "admission": {"admitted": False},
+    }
+    document = {
+        **core,
+        "attestation_fingerprint": module._canonical_hash(core),
+    }
+    payload = module._canonical_witness_bytes(document)
+    source = tmp_path / "continuity.json"
+    source.write_bytes(payload)
+    signed = subprocess.run(
+        [
+            "ssh-keygen",
+            "-Y",
+            "sign",
+            "-f",
+            str(key),
+            "-n",
+            "lms-runtime-continuity",
+            str(source),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    assert signed.returncode == 0
+    signature = Path(str(source) + ".sig").read_text(encoding="utf-8")
+
+    verified = module._verify_runtime_continuity_attestation(
+        payload.decode("utf-8"),
+        signature,
+        allowed_signers=allowed,
+        expected_node_id="destroyer",
+        expected_observation_id="runtime-observation:k2",
+        expected_witness_fingerprint="sha256:" + "6" * 64,
+    )
+
+    assert verified == document
 
 
 @pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="OpenSSH unavailable")
