@@ -11,6 +11,7 @@ Expected JSON shape:
   "before": {
     "catalog": {"models": [...]},
     "mobile_response": {...},
+    "mobile_request_id": "kmr:...",
     "route_event": {"payload": {...}}
   },
   "after": {
@@ -92,12 +93,18 @@ def _phase(
     try:
         catalog = evidence["catalog"]
         response = evidence["mobile_response"]
+        mobile_request_id = evidence["mobile_request_id"]
         event = _payload(evidence["route_event"])
     except KeyError as exc:
         raise CanaryEvidenceError(f"{phase} is missing {exc.args[0]}") from exc
 
     if not all(isinstance(item, dict) for item in (catalog, response, event)):
         raise CanaryEvidenceError(f"{phase} evidence entries must be objects")
+    if (
+        not isinstance(mobile_request_id, str)
+        or not mobile_request_id.startswith("kmr:")
+    ):
+        raise CanaryEvidenceError(f"{phase} lacks a valid mobile request correlation ID")
 
     handle = response.get("model")
     if not isinstance(handle, str) or not handle.startswith("model:v1:"):
@@ -119,6 +126,8 @@ def _phase(
         raise CanaryEvidenceError(f"{phase} route profile is not exact_artifact")
     if event.get("assistx_mobile_model_handle") != handle:
         raise CanaryEvidenceError(f"{phase} route event handle does not match mobile handle")
+    if event.get("assistx_mobile_request_id") != mobile_request_id:
+        raise CanaryEvidenceError(f"{phase} route event does not match mobile request ID")
     artifact = event.get("artifact_fingerprint")
     if not isinstance(artifact, str) or not artifact.strip():
         raise CanaryEvidenceError(f"{phase} route event lacks artifact identity")
@@ -138,6 +147,7 @@ def _phase(
         "handle": handle,
         "artifact_fingerprint": artifact,
         "provider": provider,
+        "mobile_request_id": mobile_request_id,
         "ready_runtime_count": replica_count,
         "request_id": event.get("request_id"),
         "correlation_id": event.get("correlation_id"),
@@ -161,6 +171,8 @@ def validate_evidence(bundle: dict[str, Any]) -> dict[str, Any]:
         raise CanaryEvidenceError("artifact authority changed across replica loss")
     if after["provider"] == before["provider"]:
         raise CanaryEvidenceError("chosen replica did not change")
+    if after["mobile_request_id"] == before["mobile_request_id"]:
+        raise CanaryEvidenceError("before and after requests reused one correlation ID")
     if before["ready_runtime_count"] < 2:
         raise CanaryEvidenceError("before evidence does not prove a replicated model")
     if after["ready_runtime_count"] >= before["ready_runtime_count"]:
@@ -172,6 +184,8 @@ def validate_evidence(bundle: dict[str, Any]) -> dict[str, Any]:
         "artifact_fingerprint": before["artifact_fingerprint"],
         "before_provider": before["provider"],
         "after_provider": after["provider"],
+        "before_mobile_request_id": before["mobile_request_id"],
+        "after_mobile_request_id": after["mobile_request_id"],
         "before_ready_runtime_count": before["ready_runtime_count"],
         "after_ready_runtime_count": after["ready_runtime_count"],
         "before_request_id": before["request_id"],
