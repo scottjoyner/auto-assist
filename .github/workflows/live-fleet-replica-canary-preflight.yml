@@ -1,0 +1,143 @@
+name: Live Fleet Replica Canary Preflight
+
+on:
+  push:
+    paths:
+      - ".github/workflows/live-fleet-replica-canary-preflight.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  x1-370-preflight:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 10
+    env:
+      EXPECTED_HOST: x1-370
+      EXPECTED_AUTO_ROUTER_SHA: 1fbb9726de46a30c0c91616c65c04dc1f35845a6
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard exact execution host
+        shell: bash
+        run: |
+          set -euo pipefail
+          short_host="$(hostname -s)"
+          test "$short_host" = "$EXPECTED_HOST"
+          test "$(uname -s)" = "Linux"
+          test "$(uname -m)" = "x86_64"
+          command -v tailscale >/dev/null
+          command -v docker >/dev/null
+          command -v curl >/dev/null
+          command -v python3 >/dev/null
+          tailscale status --json > /tmp/tailscale-status.json
+          python3 - <<'PY'
+          import json
+          data=json.load(open("/tmp/tailscale-status.json"))
+          self_node=data.get("Self") or {}
+          dns=(self_node.get("DNSName") or "").rstrip(".")
+          if not dns:
+              raise SystemExit("tailscale Self.DNSName missing")
+          print(dns)
+          open("/tmp/tailscale-dns.txt","w").write(dns+"\n")
+          PY
+
+      - name: Capture read-only live preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/live-fleet-replica-preflight
+          dns="$(cat /tmp/tailscale-dns.txt)"
+          base_url="https://${dns}:8443"
+
+          curl -fsS --connect-timeout 5 --max-time 20 \
+            "${base_url}/api/v1/runtime/catalog" \
+            > artifacts/live-fleet-replica-preflight/runtime-catalog.json
+
+          docker ps --format '{{.Names}}' \
+            > artifacts/live-fleet-replica-preflight/docker-running-names.txt
+
+          assistx_container="$(
+            docker ps --format '{{.Names}}' |
+              grep -E '(^|[-_])assistx-api($|[-_])|^assistx-api$' |
+              head -n1 || true
+          )"
+          router_container="$(
+            docker ps --format '{{.Names}}' |
+              grep -E '(^|[-_])auto-router($|[-_])|^auto-router$' |
+              head -n1 || true
+          )"
+
+          test -n "$assistx_container"
+          test -n "$router_container"
+
+          assistx_revision="$(
+            docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+              "$assistx_container"
+          )"
+          router_revision="$(
+            docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+              "$router_container"
+          )"
+
+          test -n "$assistx_revision"
+          test -n "$router_revision"
+          test "$assistx_revision" = "$GITHUB_SHA"
+          test "$router_revision" = "$EXPECTED_AUTO_ROUTER_SHA"
+
+          router_data_source="$(
+            docker inspect "$router_container" |
+              python3 -c '
+          import json,sys
+          obj=json.load(sys.stdin)[0]
+          matches=[m.get("Source") for m in obj.get("Mounts",[]) if m.get("Destination")=="/data"]
+          print(matches[0] if len(matches)==1 else "")
+          '
+          )"
+          test -n "$router_data_source"
+          router_db="${router_data_source%/}/router.sqlite3"
+          test -r "$router_db"
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          out = Path("artifacts/live-fleet-replica-preflight")
+          catalog = json.loads((out / "runtime-catalog.json").read_text())
+          models = catalog.get("models") if isinstance(catalog, dict) else None
+          if not isinstance(models, list):
+              raise SystemExit("runtime catalog missing models")
+          replicated = [
+              {
+                  "model_handle": row.get("model_handle"),
+                  "display_name": row.get("display_name"),
+                  "ready_runtime_count": row.get("ready_runtime_count"),
+                  "state": row.get("state"),
+              }
+              for row in models
+              if isinstance(row, dict)
+              and row.get("state") == "ready"
+              and int(row.get("ready_runtime_count") or 0) >= 2
+          ]
+          summary = {
+              "host": os.uname().nodename,
+              "assistx_sha": os.environ["GITHUB_SHA"],
+              "auto_router_sha": os.environ["EXPECTED_AUTO_ROUTER_SHA"],
+              "replicated_ready_models": replicated,
+              "replicated_ready_model_count": len(replicated),
+              "preflight": "PASS" if replicated else "NO_REPLICATED_READY_MODEL",
+          }
+          (out / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+          if not replicated:
+              raise SystemExit("no ready mobile catalog model has >=2 replicas")
+          PY
+
+      - name: Upload preflight evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-fleet-replica-preflight-${{ github.sha }}
+          path: artifacts/live-fleet-replica-preflight/
+          if-no-files-found: warn
+          retention-days: 14
