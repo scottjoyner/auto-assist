@@ -313,6 +313,12 @@ def reconcile(
                     status = "runtime_identity_mismatch"
                     action = "review_runtime_identity"
                     reasons.append("transport_source_ip_not_in_signed_access_paths")
+                elif node_source_match is None:
+                    status = "runtime_identity_unverified"
+                    action = "review_runtime_identity"
+                    reasons.append(
+                        "transport_source_ip_not_verifiable_against_signed_access_paths"
+                    )
                 elif not fresh:
                     status = "stale_observation"
                     action = "refresh_runtime_observation"
@@ -409,6 +415,7 @@ def reconcile(
         "model_drift",
         "ambiguous_projection_match",
         "runtime_identity_mismatch",
+        "runtime_identity_unverified",
         "runtime_not_ready",
         "stale_observation",
         "incomplete_observation",
@@ -574,6 +581,7 @@ def main(argv: list[str] | None = None) -> int:
         f"unprojected={summary['unprojected_runtime']} "
         f"model_drift={summary['model_drift']} "
         f"identity_mismatch={summary['runtime_identity_mismatch']} "
+        f"identity_unverified={summary['runtime_identity_unverified']} "
         f"not_ready={summary['runtime_not_ready']} "
         f"stale={summary['stale_observation']}",
         file=sys.stderr,
