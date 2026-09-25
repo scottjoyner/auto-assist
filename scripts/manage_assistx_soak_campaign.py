@@ -10,6 +10,7 @@ from assistx.inference_policy_experiment import load_matrix
 from assistx.inference_soak_campaign import (
     compile_campaign_plan,
     evaluate_campaign,
+    evaluate_target_context,
     load_campaign_config,
     load_summaries,
 )
@@ -220,6 +221,16 @@ def main() -> None:
         default="/tmp/assistx-soak-campaign-target",
     )
 
+    target_parser = sub.add_parser("evaluate-target")
+    target_parser.add_argument("--plan", required=True)
+    target_parser.add_argument("--source-evidence", required=True)
+    target_parser.add_argument(
+        "--summaries",
+        nargs="+",
+        required=True,
+    )
+    target_parser.add_argument("--output", required=True)
+
     args = parser.parse_args()
 
     if args.command == "plan":
@@ -265,6 +276,37 @@ def main() -> None:
 
     plan = _load_json(args.plan)
     summaries = load_summaries(args.summaries)
+
+    if args.command == "evaluate-target":
+        source_evidence = _load_json(args.source_evidence)
+        evidence = evaluate_target_context(
+            plan,
+            source_evidence,
+            summaries,
+        )
+        _write_json(args.output, evidence)
+        print(
+            json.dumps(
+                {
+                    "campaign_id": evidence["campaign_id"],
+                    "evaluated_target_candidates": len(
+                        evidence["evaluated_target_candidates"]
+                    ),
+                    "benchmark_complete_target_context_policies": len(
+                        evidence[
+                            "benchmark_complete_target_context_policies"
+                        ]
+                    ),
+                    "output": args.output,
+                    "production_promotion_authorized": False,
+                    "routing_authority_changed": False,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+
     evidence = evaluate_campaign(plan, summaries)
     _write_json(args.output, evidence)
     if args.advance_commands_out:
