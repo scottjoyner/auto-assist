@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,7 @@ def _write_json(path: str | Path, value: dict[str, Any]) -> None:
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
     temp = output.with_suffix(output.suffix + ".tmp")
-    temp.write_text(
+    payload = (
         json.dumps(
             value,
             ensure_ascii=False,
@@ -37,9 +38,13 @@ def _write_json(path: str | Path, value: dict[str, Any]) -> None:
             sort_keys=True,
             default=str,
         )
-        + "\n",
-        encoding="utf-8",
+        + "\n"
     )
+    with temp.open("w", encoding="utf-8") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+        os.fsync(handle.fileno())
     temp.replace(output)
 
 
