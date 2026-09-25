@@ -380,6 +380,20 @@ profile hash, policy hash, session mode, or requested turn count differs from
 the checkpoint. A fresh run also refuses to overwrite an existing checkpoint or
 result stream without explicit --overwrite.
 
+Each completed turn uses a two-phase local journal:
+
+~~~text
+stage exact result + user/assistant continuation in checkpoint
+append result row to JSONL
+finalize completed_turns + growing-prefix history
+~~~
+
+If the process stops after staging but before the JSONL append, resume appends
+the exact journaled result. If it stops after the append but before checkpoint
+finalization, resume hashes the existing row against the journal before
+finalizing it. A mismatch fails closed instead of guessing which turn is
+authoritative.
+
 Growing-prefix checkpoints retain only the synthetic conversation history
 needed to reconstruct the next request. The large immutable seed context is
 deterministically regenerated from the frozen profile rather than duplicated in
