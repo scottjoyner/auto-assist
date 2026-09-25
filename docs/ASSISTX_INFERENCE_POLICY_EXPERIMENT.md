@@ -297,10 +297,10 @@ runtime revision and process command-line hash are separate evidence fields.
 
 1. Add task-specific evaluators for code, tool calls, reviews, and long-context
    constraint retention.
-2. Join runtime telemetry for prefill, speculative acceptance, verification
-   throughput, VRAM, cache reuse/reprocess, and power.
+2. Add an integrated energy sampler and runtime-specific cache/reprocess
+   adapters where the backend exposes trustworthy counters.
 3. Add 32K/128K long-session soak with stable/growing prefixes.
-4. Add true concurrency at 2/4/8.
+4. Add true concurrency at 2/4/8 with trial-scoped telemetry attribution.
 5. Join counterfactual evidence to my-jev training/evaluation without granting
    the learned layer dispatch authority.
 
