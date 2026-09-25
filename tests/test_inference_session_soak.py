@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from assistx.inference_session_soak import (
     append_history,
+    compare_soak_summaries,
     build_seed_context,
     build_turn_case,
     check_session_runtime_identity,
@@ -349,3 +350,56 @@ def test_summary_fails_latency_drift_and_canary_loss():
     assert summary["passed"] is False
     assert summary["gates"]["canary_pass_rate"]["passed"] is False
     assert summary["gates"]["ttft_drift_ratio"]["passed"] is False
+
+def test_compare_soak_summaries_pairs_stable_and_growing_modes():
+    profile = _profile()
+    stable_plan = compile_soak_plan(
+        profile,
+        _policy(),
+        mode="stable_prefix",
+        turns=20,
+    )
+    growing_plan = compile_soak_plan(
+        profile,
+        _policy(),
+        mode="growing_prefix",
+        turns=20,
+    )
+    stable_rows = [
+        _row(
+            turn,
+            canary=is_canary_turn(profile, turn, 20),
+            ttft=100,
+            wall=300,
+            vram=100 + turn,
+        )
+        for turn in range(1, 21)
+    ]
+    growing_rows = [
+        _row(
+            turn,
+            canary=is_canary_turn(profile, turn, 20),
+            ttft=125,
+            wall=330,
+            vram=100 + (turn * 2),
+        )
+        for turn in range(1, 21)
+    ]
+
+    stable = summarize_soak_results(
+        profile,
+        stable_plan,
+        stable_rows,
+    )
+    growing = summarize_soak_results(
+        profile,
+        growing_plan,
+        growing_rows,
+    )
+    report = compare_soak_summaries([stable, growing])
+
+    assert len(report["stable_growing_pairs"]) == 1
+    pair = report["stable_growing_pairs"][0]
+    assert pair["growing_vs_stable"]["ttft_p50_ratio"] == 1.25
+    assert pair["growing_vs_stable"]["wall_p50_ratio"] == 1.1
+    assert report["routing_authority_changed"] is False
