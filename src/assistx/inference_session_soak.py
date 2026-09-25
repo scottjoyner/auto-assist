@@ -338,12 +338,33 @@ def build_turn_case(
             ]
         )
 
+    if turn_class == "tool_json":
+        json_fields = (
+            "Return exactly one compact JSON object with keys turn, status, "
+            "mutation_allowed, and turn_marker. Set mutation_allowed=false, "
+            f"turn={turn_index}, status=\"ok\", and "
+            f"turn_marker=\"{turn_marker}\"."
+        )
+        if canary:
+            json_fields += (
+                " Also include retention_marker="
+                f"\"{profile['retention_marker']}\" and "
+                "authority_mode=\"ADVISORY-ONLY\"."
+            )
+        response_instruction = json_fields
+    else:
+        response_instruction = (
+            task
+            + canary_text
+            + "\nEnd the response with "
+            + turn_marker
+            + "."
+        )
+
     prompt = (
         f"Synthetic AssistX soak turn {turn_index}/{total_turns}. "
-        f"Workload class: {turn_class}. {task}"
-        f"{canary_text}\n"
-        "Do not invoke tools, claim work, grant approval, or mutate state. "
-        f"End the response with {turn_marker}."
+        f"Workload class: {turn_class}. {response_instruction}\n"
+        "Do not invoke tools, claim work, grant approval, or mutate state."
     )
     turn_messages = [
         *messages,
