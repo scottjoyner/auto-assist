@@ -419,6 +419,11 @@ def test_summary_passes_stable_session_inside_drift_and_memory_limits():
 
     assert summary["passed"] is True
     assert summary["rates"]["canary_pass"] == 1.0
+    assert summary["runtime_identity"]["consistent"] is True
+    assert (
+        summary["runtime_identity"]["process_started_at_unix_ms"]
+        == 1000
+    )
     assert summary["context"]["prompt_tokens_first"] == 30000
     assert summary["context"]["target_ratio_first"] > 0.9
     assert summary["context"]["prompt_token_growth"] == 0
