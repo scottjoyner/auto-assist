@@ -482,6 +482,7 @@ def execute_trial(
             "model",
             "messages",
             "stream",
+            "stream_options",
         }.intersection(overrides)
         if forbidden:
             raise ValueError(
