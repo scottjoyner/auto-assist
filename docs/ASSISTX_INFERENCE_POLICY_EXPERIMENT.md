@@ -161,6 +161,138 @@ unscored candidate: null
 This is an experiment-local ranking only. It is not a production routing score
 and is never written back into the AssistX allocator.
 
+## Runtime telemetry identity + sidecar
+
+Phase 1 now requires runtime telemetry for every matrix policy. A trial is not
+eligible for counterfactual selection unless the telemetry preflight and
+postflight both prove the exact runtime identity.
+
+Each policy declares environment-variable names for:
+
+- the read-only telemetry sidecar URL;
+- the expected exact runtime revision;
+- the expected SHA-256 of the runtime process command line.
+
+The reference sidecar is:
+
+~~~bash
+PYTHONPATH=src python scripts/assistx_runtime_telemetry_sidecar.py
+~~~
+
+It serves only:
+
+~~~text
+GET /healthz
+GET /v1/telemetry/snapshot?trial_id=<trial>
+~~~
+
+POST, PUT, and DELETE return 405. It never signals, starts, stops, loads,
+unloads, or reconfigures the observed runtime.
+
+A snapshot binds:
+
+~~~text
+node_id
+model_handle
+backend
+quantization
+speculation
+runtime_revision
+sha256(/proc/<runtime-pid>/cmdline)
+runtime process start time
+~~~
+
+The runner validates that identity against the matrix and operator-provided
+expected revision/hash before it sends the inference request. It takes a second
+snapshot afterward and rejects the evidence if the process restarted, the
+launch command changed, or any cumulative counter regressed.
+
+### llama.cpp telemetry adapter
+
+When the runtime is llama-server, start it with its Prometheus metrics endpoint
+enabled and set:
+
+~~~text
+ASSISTX_TELEMETRY_LLAMA_METRICS_URL=http://127.0.0.1:<port>/metrics
+~~~
+
+The reference sidecar maps llama.cpp cumulative metrics into the AssistX
+contract:
+
+~~~text
+prompt_tokens_total                   -> prefill_tokens
+prompt_seconds_total                  -> prefill_seconds
+prompt_tokens_cached_total            -> cache_reused_tokens
+tokens_predicted_total                -> decode_tokens
+tokens_predicted_seconds_total        -> decode_seconds
+spec_decode_num_draft_tokens_total    -> spec_proposed_tokens
+spec_decode_num_accepted_tokens_total -> spec_accepted_tokens
+spec_decode_num_drafts_total          -> spec_verification_steps
+~~~
+
+It also captures the available prompt/decode throughput and queue gauges.
+
+The replay request asks llama.cpp for streamed usage/timing information. The
+result therefore records per-request prompt/decode counts and draft_n /
+draft_n_accepted when the runtime returns them. Process-wide telemetry deltas
+are cross-checked against those exact request values. If another request touched
+the same process and changed the counters, the evidence is marked invalid
+instead of being attributed to the benchmark turn.
+
+### AMD Linux GPU gauges
+
+If the host exposes the relevant DRM sysfs files, configure:
+
+~~~text
+ASSISTX_TELEMETRY_DRM_DEVICE_SYSFS=/sys/class/drm/cardN/device
+~~~
+
+The sidecar reads, when available:
+
+- current VRAM usage from mem_info_vram_used;
+- GPU utilization from gpu_busy_percent;
+- board/device power from hwmon/*/power1_average.
+
+Missing gauges remain null; they are never synthesized.
+
+The before/after join preserves raw gauge samples and derives only metrics that
+have real counters:
+
+~~~text
+spec_acceptance_rate
+prefill_tokens_per_second
+decode_tokens_per_second
+verification_tokens_per_second
+joules_per_decode_token
+cache_reuse_rate
+~~~
+
+Power is currently a point-in-time gauge, not integrated energy. Therefore
+joules_per_decode_token remains null unless a future adapter supplies a real
+cumulative energy_joules counter.
+
+### Operator bootstrap
+
+The example environment file for one R9700 Q4+DFlash endpoint is:
+
+~~~text
+examples/assistx-inference-policy-experiment/telemetry-sidecar.env.example
+~~~
+
+The critical bootstrap sequence is:
+
+1. start the intended benchmark-only runtime;
+2. record its exact source/build revision;
+3. enable the runtime metrics endpoint;
+4. start the read-only telemetry sidecar with the runtime PID;
+5. fetch one telemetry snapshot and copy its launch_config_sha256 into the
+   matching *_LAUNCH_SHA256 expectation;
+6. compile the replay plan;
+7. execute only after the exact revision and launch hash are frozen.
+
+The launch hash is not a claim that two different binaries are equivalent. The
+runtime revision and process command-line hash are separate evidence fields.
+
 ## Next slices
 
 1. Add task-specific evaluators for code, tool calls, reviews, and long-context
