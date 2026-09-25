@@ -286,6 +286,31 @@ def test_campaign_rejects_failed_or_incomplete_summary():
     assert row["checks"]["growing_turns_complete"]["passed"] is False
 
 
+def test_campaign_rejects_duplicate_summary_for_same_policy_mode():
+    plan = _plan()
+    candidate = plan["candidates"][0]
+    stable = _summary(
+        candidate,
+        "stable_prefix",
+        process_started_at=1000,
+    )
+    growing = _summary(
+        candidate,
+        "growing_prefix",
+        process_started_at=2000,
+    )
+
+    try:
+        evaluate_campaign(
+            plan,
+            [stable, stable, growing],
+        )
+    except ValueError as exc:
+        assert "duplicate soak summary" in str(exc)
+    else:
+        raise AssertionError("expected duplicate summary rejection")
+
+
 def test_campaign_missing_pair_never_advances():
     plan = _plan()
     candidate = plan["candidates"][0]
