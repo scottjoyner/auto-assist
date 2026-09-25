@@ -170,11 +170,11 @@ def _render_advance_commands(
                         f"--policy-id {json.dumps(target_policy_id)} "
                         f"--mode {json.dumps(mode)} "
                         f"--turns {int(plan['turns'])} "
-                        f"--plan-out "$OUT/{stem}.plan.json" "
+                        f'--plan-out "$OUT/{stem}.plan.json" '
                         "--execute "
-                        f"--results-out "$OUT/{stem}.results.jsonl" "
-                        f"--summary-out "$OUT/{stem}.summary.json" "
-                        f"--checkpoint-dir "$OUT/{candidate['candidate_id']}.target.checkpoints""
+                        f'--results-out "$OUT/{stem}.results.jsonl" '
+                        f'--summary-out "$OUT/{stem}.summary.json" '
+                        f'--checkpoint-dir "$OUT/{candidate["candidate_id"]}.target.checkpoints"'
                     ),
                 ]
             )
