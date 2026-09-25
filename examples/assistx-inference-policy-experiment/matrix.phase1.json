@@ -1,0 +1,389 @@
+{
+  "schema": "assistx-inference-policy-matrix-v1",
+  "phase": "phase-1-single-request",
+  "anchor_model_family": "Qwen3.8-27B",
+  "notes": [
+    "Q4 policies are enabled for the first pass. Q8/FP16 rows are staged but disabled until matching already-loaded endpoints exist.",
+    "Each endpoint must already be configured for the declared backend/quantization/speculation policy. The harness never loads, unloads, or reconfigures a runtime."
+  ],
+  "policies": [
+    {
+      "policy_id": "x1-370-vulkan-q4-none-8k-c1",
+      "node_id": "x1-370",
+      "model_handle": "qwen3.8-27b-q4",
+      "backend": "vulkan",
+      "quantization": "q4",
+      "speculation": "none",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_X1_Q4_NONE_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": true,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "x1-370-vulkan-q4-mtp-8k-c1",
+      "node_id": "x1-370",
+      "model_handle": "qwen3.8-27b-q4",
+      "backend": "vulkan",
+      "quantization": "q4",
+      "speculation": "mtp",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_X1_Q4_MTP_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": true,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "x1-370-vulkan-q4-dflash-8k-c1",
+      "node_id": "x1-370",
+      "model_handle": "qwen3.8-27b-q4",
+      "backend": "vulkan",
+      "quantization": "q4",
+      "speculation": "dflash",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_X1_Q4_DFLASH_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": true,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "x1-370-vulkan-q8-none-8k-c1",
+      "node_id": "x1-370",
+      "model_handle": "qwen3.8-27b-q8",
+      "backend": "vulkan",
+      "quantization": "q8",
+      "speculation": "none",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_X1_Q8_NONE_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": false,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "x1-370-vulkan-q8-mtp-8k-c1",
+      "node_id": "x1-370",
+      "model_handle": "qwen3.8-27b-q8",
+      "backend": "vulkan",
+      "quantization": "q8",
+      "speculation": "mtp",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_X1_Q8_MTP_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": false,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "x1-370-vulkan-q8-dflash-8k-c1",
+      "node_id": "x1-370",
+      "model_handle": "qwen3.8-27b-q8",
+      "backend": "vulkan",
+      "quantization": "q8",
+      "speculation": "dflash",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_X1_Q8_DFLASH_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": false,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "x1-370-vulkan-fp16-none-8k-c1",
+      "node_id": "x1-370",
+      "model_handle": "qwen3.8-27b-fp16",
+      "backend": "vulkan",
+      "quantization": "fp16",
+      "speculation": "none",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_X1_FP16_NONE_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": false,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "x1-370-vulkan-fp16-mtp-8k-c1",
+      "node_id": "x1-370",
+      "model_handle": "qwen3.8-27b-fp16",
+      "backend": "vulkan",
+      "quantization": "fp16",
+      "speculation": "mtp",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_X1_FP16_MTP_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": false,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "x1-370-vulkan-fp16-dflash-8k-c1",
+      "node_id": "x1-370",
+      "model_handle": "qwen3.8-27b-fp16",
+      "backend": "vulkan",
+      "quantization": "fp16",
+      "speculation": "dflash",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_X1_FP16_DFLASH_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": false,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "r9700-rocm-q4-none-8k-c1",
+      "node_id": "r9700",
+      "model_handle": "qwen3.8-27b-q4",
+      "backend": "rocm",
+      "quantization": "q4",
+      "speculation": "none",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_R9700_Q4_NONE_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": true,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "r9700-rocm-q4-mtp-8k-c1",
+      "node_id": "r9700",
+      "model_handle": "qwen3.8-27b-q4",
+      "backend": "rocm",
+      "quantization": "q4",
+      "speculation": "mtp",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_R9700_Q4_MTP_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": true,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "r9700-rocm-q4-dflash-8k-c1",
+      "node_id": "r9700",
+      "model_handle": "qwen3.8-27b-q4",
+      "backend": "rocm",
+      "quantization": "q4",
+      "speculation": "dflash",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_R9700_Q4_DFLASH_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": true,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "r9700-rocm-q8-none-8k-c1",
+      "node_id": "r9700",
+      "model_handle": "qwen3.8-27b-q8",
+      "backend": "rocm",
+      "quantization": "q8",
+      "speculation": "none",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_R9700_Q8_NONE_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": false,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "r9700-rocm-q8-mtp-8k-c1",
+      "node_id": "r9700",
+      "model_handle": "qwen3.8-27b-q8",
+      "backend": "rocm",
+      "quantization": "q8",
+      "speculation": "mtp",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_R9700_Q8_MTP_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": false,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "r9700-rocm-q8-dflash-8k-c1",
+      "node_id": "r9700",
+      "model_handle": "qwen3.8-27b-q8",
+      "backend": "rocm",
+      "quantization": "q8",
+      "speculation": "dflash",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_R9700_Q8_DFLASH_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": false,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "r9700-rocm-fp16-none-8k-c1",
+      "node_id": "r9700",
+      "model_handle": "qwen3.8-27b-fp16",
+      "backend": "rocm",
+      "quantization": "fp16",
+      "speculation": "none",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_R9700_FP16_NONE_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": false,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "r9700-rocm-fp16-mtp-8k-c1",
+      "node_id": "r9700",
+      "model_handle": "qwen3.8-27b-fp16",
+      "backend": "rocm",
+      "quantization": "fp16",
+      "speculation": "mtp",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_R9700_FP16_MTP_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": false,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    },
+    {
+      "policy_id": "r9700-rocm-fp16-dflash-8k-c1",
+      "node_id": "r9700",
+      "model_handle": "qwen3.8-27b-fp16",
+      "backend": "rocm",
+      "quantization": "fp16",
+      "speculation": "dflash",
+      "context_tokens": 8192,
+      "concurrency": 1,
+      "endpoint_env": "ASSISTX_BENCH_R9700_FP16_DFLASH_URL",
+      "execution_mode": "observe_only",
+      "allow_model_load": false,
+      "enabled": false,
+      "authority": {
+        "dispatch_allowed": false,
+        "approval_granted": false,
+        "claim_acquired": false,
+        "mutation_allowed": false,
+        "routing_authority_changed": false
+      }
+    }
+  ]
+}
