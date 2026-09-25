@@ -4,7 +4,8 @@
   "anchor_model_family": "Qwen3.8-27B",
   "notes": [
     "Q4 policies are enabled for the first pass. Q8/FP16 rows are staged but disabled until matching already-loaded endpoints exist.",
-    "Each endpoint must already be configured for the declared backend/quantization/speculation policy. The harness never loads, unloads, or reconfigures a runtime."
+    "Each endpoint must already be configured for the declared backend/quantization/speculation policy. The harness never loads, unloads, or reconfigures a runtime.",
+    "Every policy binds a read-only telemetry sidecar to the declared runtime revision and /proc command-line SHA-256; enabled phase-1 policies fail closed before inference if telemetry identity cannot be proven."
   ],
   "policies": [
     {
@@ -26,7 +27,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_X1_Q4_NONE_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_X1_Q4_NONE_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_X1_Q4_NONE_LAUNCH_SHA256"
     },
     {
       "policy_id": "x1-370-vulkan-q4-mtp-8k-c1",
@@ -47,7 +52,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_X1_Q4_MTP_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_X1_Q4_MTP_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_X1_Q4_MTP_LAUNCH_SHA256"
     },
     {
       "policy_id": "x1-370-vulkan-q4-dflash-8k-c1",
@@ -68,7 +77,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_X1_Q4_DFLASH_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_X1_Q4_DFLASH_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_X1_Q4_DFLASH_LAUNCH_SHA256"
     },
     {
       "policy_id": "x1-370-vulkan-q8-none-8k-c1",
@@ -89,7 +102,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_X1_Q8_NONE_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_X1_Q8_NONE_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_X1_Q8_NONE_LAUNCH_SHA256"
     },
     {
       "policy_id": "x1-370-vulkan-q8-mtp-8k-c1",
@@ -110,7 +127,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_X1_Q8_MTP_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_X1_Q8_MTP_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_X1_Q8_MTP_LAUNCH_SHA256"
     },
     {
       "policy_id": "x1-370-vulkan-q8-dflash-8k-c1",
@@ -131,7 +152,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_X1_Q8_DFLASH_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_X1_Q8_DFLASH_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_X1_Q8_DFLASH_LAUNCH_SHA256"
     },
     {
       "policy_id": "x1-370-vulkan-fp16-none-8k-c1",
@@ -152,7 +177,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_X1_FP16_NONE_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_X1_FP16_NONE_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_X1_FP16_NONE_LAUNCH_SHA256"
     },
     {
       "policy_id": "x1-370-vulkan-fp16-mtp-8k-c1",
@@ -173,7 +202,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_X1_FP16_MTP_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_X1_FP16_MTP_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_X1_FP16_MTP_LAUNCH_SHA256"
     },
     {
       "policy_id": "x1-370-vulkan-fp16-dflash-8k-c1",
@@ -194,7 +227,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_X1_FP16_DFLASH_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_X1_FP16_DFLASH_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_X1_FP16_DFLASH_LAUNCH_SHA256"
     },
     {
       "policy_id": "r9700-rocm-q4-none-8k-c1",
@@ -215,7 +252,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_R9700_Q4_NONE_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_R9700_Q4_NONE_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_R9700_Q4_NONE_LAUNCH_SHA256"
     },
     {
       "policy_id": "r9700-rocm-q4-mtp-8k-c1",
@@ -236,7 +277,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_R9700_Q4_MTP_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_R9700_Q4_MTP_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_R9700_Q4_MTP_LAUNCH_SHA256"
     },
     {
       "policy_id": "r9700-rocm-q4-dflash-8k-c1",
@@ -257,7 +302,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_R9700_Q4_DFLASH_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_R9700_Q4_DFLASH_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_R9700_Q4_DFLASH_LAUNCH_SHA256"
     },
     {
       "policy_id": "r9700-rocm-q8-none-8k-c1",
@@ -278,7 +327,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_R9700_Q8_NONE_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_R9700_Q8_NONE_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_R9700_Q8_NONE_LAUNCH_SHA256"
     },
     {
       "policy_id": "r9700-rocm-q8-mtp-8k-c1",
@@ -299,7 +352,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_R9700_Q8_MTP_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_R9700_Q8_MTP_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_R9700_Q8_MTP_LAUNCH_SHA256"
     },
     {
       "policy_id": "r9700-rocm-q8-dflash-8k-c1",
@@ -320,7 +377,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_R9700_Q8_DFLASH_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_R9700_Q8_DFLASH_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_R9700_Q8_DFLASH_LAUNCH_SHA256"
     },
     {
       "policy_id": "r9700-rocm-fp16-none-8k-c1",
@@ -341,7 +402,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_R9700_FP16_NONE_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_R9700_FP16_NONE_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_R9700_FP16_NONE_LAUNCH_SHA256"
     },
     {
       "policy_id": "r9700-rocm-fp16-mtp-8k-c1",
@@ -362,7 +427,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_R9700_FP16_MTP_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_R9700_FP16_MTP_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_R9700_FP16_MTP_LAUNCH_SHA256"
     },
     {
       "policy_id": "r9700-rocm-fp16-dflash-8k-c1",
@@ -383,7 +452,11 @@
         "claim_acquired": false,
         "mutation_allowed": false,
         "routing_authority_changed": false
-      }
+      },
+      "telemetry_required": true,
+      "telemetry_env": "ASSISTX_BENCH_R9700_FP16_DFLASH_TELEMETRY_URL",
+      "expected_runtime_revision_env": "ASSISTX_BENCH_R9700_FP16_DFLASH_RUNTIME_REVISION",
+      "expected_launch_config_sha256_env": "ASSISTX_BENCH_R9700_FP16_DFLASH_LAUNCH_SHA256"
     }
   ]
 }
