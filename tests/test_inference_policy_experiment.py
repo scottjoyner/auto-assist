@@ -90,6 +90,24 @@ def test_acceptance_requires_all_terms_and_json_keys():
     assert checks["json_required_keys"]["missing"] == ["node"]
 
 
+def test_acceptance_exact_terms_preserve_case():
+    passed, checks = evaluate_acceptance(
+        "Marker=ASSISTX-SOAK-7391",
+        {"required_exact_terms": ["ASSISTX-SOAK-7391"]},
+    )
+    assert passed is True
+    assert checks["required_exact_terms"]["passed"] is True
+
+    failed, checks = evaluate_acceptance(
+        "Marker=assistx-soak-7391",
+        {"required_exact_terms": ["ASSISTX-SOAK-7391"]},
+    )
+    assert failed is False
+    assert checks["required_exact_terms"]["missing"] == [
+        "ASSISTX-SOAK-7391"
+    ]
+
+
 def test_unscored_case_does_not_become_counterfactual_winner():
     summary = summarize_counterfactuals(
         [
