@@ -450,14 +450,144 @@ For clean cache comparisons, run each stable/growing session against a fresh
 dedicated runtime process with its own frozen revision and launch hash. The
 soak runner itself deliberately does not restart or clear a runtime.
 
+## 32K-to-128K campaign gate
+
+The paired soak can now be planned and evaluated as one immutable campaign
+rather than as a collection of ad hoc operator commands.
+
+The checked-in campaign config is:
+
+~~~text
+examples/assistx-inference-policy-experiment/campaign.32k-to-128k.json
+~~~
+
+It freezes:
+
+~~~text
+source context: 32K
+target context: 128K
+turns: 100
+nodes: x1-370, r9700
+speculation: none, MTP, DFlash
+fresh stable/growing process pair: required
+same runtime revision across the pair: required
+same launch configuration across the pair: required
+~~~
+
+### Compile the physical 32K campaign
+
+~~~bash
+PYTHONPATH=src python scripts/manage_assistx_soak_campaign.py plan \
+  --config examples/assistx-inference-policy-experiment/campaign.32k-to-128k.json \
+  --matrix examples/assistx-inference-policy-experiment/matrix.soak.json \
+  --profiles examples/assistx-inference-policy-experiment/session-soak.profiles.json \
+  --output /tmp/assistx-soak-campaign.plan.json \
+  --commands-out /tmp/assistx-soak-campaign-32k.sh \
+  --evidence-dir /tmp/assistx-soak-campaign
+~~~
+
+This is planning only. It creates no network requests and starts no runtimes.
+
+The resulting manifest currently contains six 32K candidates:
+
+~~~text
+x1-370 / Vulkan / Q4 / none
+x1-370 / Vulkan / Q4 / MTP
+x1-370 / Vulkan / Q4 / DFlash
+R9700 / ROCm   / Q4 / none
+R9700 / ROCm   / Q4 / MTP
+R9700 / ROCm   / Q4 / DFlash
+~~~
+
+Each candidate has a stable-prefix and growing-prefix run, for twelve physical
+32K runs total. The generated command sheet marks every run with a fresh-runtime
+boundary. It deliberately does not restart, clear, load, unload, or reconfigure
+the inference process.
+
+The operator must bind each command to the matching dedicated runtime and
+telemetry environment before executing it.
+
+### Exact campaign binding
+
+The campaign plan stores and hashes:
+
+- campaign configuration;
+- exact 32K source profile ID + SHA-256;
+- exact 128K target profile ID + SHA-256;
+- exact source policy ID + SHA-256;
+- matching target policy ID + SHA-256;
+- node/backend/quant/speculation/model signature;
+- requested turn count;
+- stable/growing run filenames and checkpoint locations;
+- all-false authority state.
+
+The evaluator recomputes the campaign-plan hash before accepting any summary.
+Editing the plan after it was frozen invalidates evaluation.
+
+### Advancement gate
+
+After the physical 32K runs finish, evaluate their summaries:
+
+~~~bash
+PYTHONPATH=src python scripts/manage_assistx_soak_campaign.py evaluate \
+  --plan /tmp/assistx-soak-campaign.plan.json \
+  --summaries /tmp/assistx-soak-campaign/*.summary.json \
+  --output /tmp/assistx-soak-campaign.evidence.json \
+  --advance-commands-out /tmp/assistx-soak-campaign-128k.sh \
+  --evidence-dir /tmp/assistx-soak-campaign-128k
+~~~
+
+A candidate advances only when both the stable and growing summaries prove all
+of the following:
+
+~~~text
+correct summary schema
+exact 32K profile ID + profile SHA
+exact 32K policy ID + policy SHA
+exact 32K target context
+exact 100-turn completion
+session gate passed
+internally consistent runtime identity
+same runtime revision across stable/growing
+same launch-config SHA across stable/growing
+different process-start identity across stable/growing
+~~~
+
+The different process-start requirement proves that the two cache/session modes
+ran on distinct fresh processes while the same revision + launch hash proves
+that the underlying runtime build/configuration stayed comparable.
+
+A reused warmed process fails the gate. A changed binary or launch
+configuration fails the gate. A changed soak profile fails the gate. Missing,
+partial, or failed summaries fail the gate.
+
+### Target-context command sheet
+
+The optional --advance-commands-out file contains only the 128K stable/growing
+runs corresponding to candidates that passed every 32K gate.
+
+That file is still an operator command sheet, not an authorization mechanism.
+It does not start runtimes and does not execute automatically.
+
+The evidence output always records:
+
+~~~text
+production_promotion_authorized=false
+routing_authority_changed=false
+~~~
+
+"Eligible" in this campaign means eligible for the next benchmark context only.
+It never means admitted to production AssistX routing, runtime discovery, model
+loading, claims, approvals, tools, or mutation authority.
+
 ## Next slices
 
-1. Add task-specific evaluators for real code, tool calls, reviews, and
+1. Run the generated physical 32K campaign and use the advancement evidence
+   to generate the bounded 128K command sheet.
+2. Add task-specific evaluators for real code, tool calls, reviews, and
    project-specific long-context constraint retention.
-2. Add an integrated energy sampler and runtime-specific cache/reprocess
+3. Add an integrated energy sampler and runtime-specific cache/reprocess
    adapters where the backend exposes trustworthy counters.
-3. Run the first physical paired 32K soak on x1-370 and R9700, then promote the
-   same accepted policies into the 128K soak.
 4. Add true concurrency at 2/4/8 with trial-scoped telemetry attribution.
 5. Join accepted counterfactual + soak evidence to my-jev training/evaluation
    without granting the learned layer dispatch authority.
