@@ -5,7 +5,10 @@ from pathlib import Path
 from typing import Any
 
 from .inference_policy_experiment import DEFAULT_AUTHORITY, canonical_sha256
-from .inference_session_soak import SOAK_SUMMARY_SCHEMA
+from .inference_session_soak import (
+    SOAK_SUMMARY_SCHEMA,
+    load_soak_profile,
+)
 
 CAMPAIGN_PLAN_SCHEMA = "assistx-inference-soak-campaign-plan-v1"
 CAMPAIGN_EVIDENCE_SCHEMA = "assistx-inference-soak-campaign-evidence-v1"
@@ -77,6 +80,25 @@ def compile_campaign_plan(
     profiles_file: str,
     matrix_file: str,
 ) -> dict[str, Any]:
+    source_profile_id = _profile_id(config["source_context_tokens"])
+    target_profile_id = _profile_id(config["target_context_tokens"])
+    source_profile = load_soak_profile(
+        profiles_file,
+        source_profile_id,
+    )
+    target_profile = load_soak_profile(
+        profiles_file,
+        target_profile_id,
+    )
+    if int(source_profile["target_context_tokens"]) != int(
+        config["source_context_tokens"]
+    ):
+        raise ValueError("source soak profile context does not match campaign")
+    if int(target_profile["target_context_tokens"]) != int(
+        config["target_context_tokens"]
+    ):
+        raise ValueError("target soak profile context does not match campaign")
+
     source_policies = _matching_policies(
         matrix,
         context_tokens=config["source_context_tokens"],
@@ -118,9 +140,8 @@ def compile_campaign_plan(
                 {
                     "run_id": run_id,
                     "mode": mode,
-                    "profile_id": _profile_id(
-                        config["source_context_tokens"]
-                    ),
+                    "profile_id": source_profile["profile_id"],
+                    "profile_sha256": source_profile["profile_sha256"],
                     "policy_id": policy["policy_id"],
                     "turns": config["turns"],
                     "fresh_runtime_required": True,
@@ -140,8 +161,12 @@ def compile_campaign_plan(
                 "signature": _signature_dict(policy),
                 "source_policy_id": policy["policy_id"],
                 "source_policy_sha256": policy["policy_sha256"],
+                "source_profile_id": source_profile["profile_id"],
+                "source_profile_sha256": source_profile["profile_sha256"],
                 "target_policy_id": target["policy_id"],
                 "target_policy_sha256": target["policy_sha256"],
+                "target_profile_id": target_profile["profile_id"],
+                "target_profile_sha256": target_profile["profile_sha256"],
                 "source_context_tokens": config[
                     "source_context_tokens"
                 ],
@@ -158,6 +183,10 @@ def compile_campaign_plan(
         "config_sha256": config["config_sha256"],
         "profiles_file": profiles_file,
         "matrix_file": matrix_file,
+        "source_profile_id": source_profile["profile_id"],
+        "source_profile_sha256": source_profile["profile_sha256"],
+        "target_profile_id": target_profile["profile_id"],
+        "target_profile_sha256": target_profile["profile_sha256"],
         "turns": config["turns"],
         "requirements": {
             "fresh_process_pair": config[
@@ -239,6 +268,10 @@ def evaluate_campaign(
                     "target_policy_sha256": candidate[
                         "target_policy_sha256"
                     ],
+                    "target_profile_id": candidate["target_profile_id"],
+                    "target_profile_sha256": candidate[
+                        "target_profile_sha256"
+                    ],
                     "target_context_tokens": candidate[
                         "target_context_tokens"
                     ],
@@ -297,6 +330,14 @@ def _candidate_checks(
         checks[f"{name}_mode"] = _value_check(
             summary.get("mode"),
             expected_mode,
+        )
+        checks[f"{name}_profile_id"] = _value_check(
+            summary.get("profile_id"),
+            candidate["source_profile_id"],
+        )
+        checks[f"{name}_profile_sha256"] = _value_check(
+            summary.get("profile_sha256"),
+            candidate["source_profile_sha256"],
         )
         checks[f"{name}_policy_id"] = _value_check(
             summary.get("policy_id"),
