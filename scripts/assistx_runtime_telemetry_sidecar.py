@@ -21,7 +21,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 SCHEMA = "assistx-runtime-telemetry-snapshot-v1"
 
@@ -116,7 +116,7 @@ def _fetch_llama_metrics() -> tuple[dict[str, float], dict[str, Any]]:
     model = os.getenv("ASSISTX_TELEMETRY_LLAMA_METRICS_MODEL", "").strip()
     if model:
         separator = "&" if "?" in url else "?"
-        url = f"{url}{separator}model={model}"
+        url = url + separator + urlencode({"model": model})
 
     request = urllib.request.Request(
         url,
