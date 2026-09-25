@@ -407,6 +407,19 @@ def evaluate_acceptance(
             "missing": missing,
         }
 
+    required_exact_terms = acceptance.get("required_exact_terms")
+    if isinstance(required_exact_terms, list) and required_exact_terms:
+        has_rule = True
+        missing_exact = [
+            str(term)
+            for term in required_exact_terms
+            if str(term) not in output_text
+        ]
+        checks["required_exact_terms"] = {
+            "passed": not missing_exact,
+            "missing": missing_exact,
+        }
+
     json_keys = acceptance.get("json_required_keys")
     if isinstance(json_keys, list) and json_keys:
         has_rule = True
