@@ -4,6 +4,7 @@ from assistx.inference_policy_experiment import load_matrix
 from assistx.inference_soak_campaign import (
     compile_campaign_plan,
     evaluate_campaign,
+    evaluate_target_context,
     validate_campaign_config,
     validate_campaign_plan,
 )
@@ -309,6 +310,166 @@ def test_campaign_rejects_duplicate_summary_for_same_policy_mode():
         assert "duplicate soak summary" in str(exc)
     else:
         raise AssertionError("expected duplicate summary rejection")
+
+
+def _target_summary(
+    candidate,
+    mode,
+    *,
+    passed=True,
+    process_started_at=3000,
+    runtime_revision="llama.cpp@abc",
+    launch_sha="c" * 64,
+):
+    return {
+        "schema": "assistx-inference-session-soak-summary-v1",
+        "session_id": (
+            candidate["candidate_id"]
+            + "-target-"
+            + mode
+        ),
+        "profile_id": candidate["target_profile_id"],
+        "profile_sha256": candidate["target_profile_sha256"],
+        "policy_id": candidate["target_policy_id"],
+        "policy_sha256": candidate["target_policy_sha256"],
+        "mode": mode,
+        "target_context_tokens": 131072,
+        "expected_turns": 100,
+        "completed_turns": 100,
+        "passed": passed,
+        "runtime_identity": {
+            "consistent": True,
+            "runtime_revision": runtime_revision,
+            "launch_config_sha256": launch_sha,
+            "process_started_at_unix_ms": process_started_at,
+        },
+        "rates": {
+            "success": 1.0,
+            "acceptance": 1.0,
+            "canary_pass": 1.0,
+            "telemetry_valid": 1.0,
+        },
+    }
+
+
+def _source_evidence_for_candidate(plan, candidate):
+    return evaluate_campaign(
+        plan,
+        [
+            _summary(
+                candidate,
+                "stable_prefix",
+                process_started_at=1000,
+            ),
+            _summary(
+                candidate,
+                "growing_prefix",
+                process_started_at=2000,
+            ),
+        ],
+    )
+
+
+def test_target_context_gate_completes_fresh_128k_pair():
+    plan = _plan()
+    candidate = plan["candidates"][0]
+    source_evidence = _source_evidence_for_candidate(
+        plan,
+        candidate,
+    )
+
+    target_evidence = evaluate_target_context(
+        plan,
+        source_evidence,
+        [
+            _target_summary(
+                candidate,
+                "stable_prefix",
+                process_started_at=3000,
+            ),
+            _target_summary(
+                candidate,
+                "growing_prefix",
+                process_started_at=4000,
+            ),
+        ],
+    )
+
+    row = target_evidence["evaluated_target_candidates"][0]
+    assert row["benchmark_complete_at_target_context"] is True
+    assert row["checks"]["fresh_process_pair"]["passed"] is True
+    assert (
+        target_evidence[
+            "benchmark_complete_target_context_policies"
+        ][0]["context_tokens"]
+        == 131072
+    )
+    assert target_evidence["production_promotion_authorized"] is False
+    assert target_evidence["routing_authority_changed"] is False
+
+
+def test_target_context_gate_rejects_reused_128k_process():
+    plan = _plan()
+    candidate = plan["candidates"][0]
+    source_evidence = _source_evidence_for_candidate(
+        plan,
+        candidate,
+    )
+
+    target_evidence = evaluate_target_context(
+        plan,
+        source_evidence,
+        [
+            _target_summary(
+                candidate,
+                "stable_prefix",
+                process_started_at=3000,
+            ),
+            _target_summary(
+                candidate,
+                "growing_prefix",
+                process_started_at=3000,
+            ),
+        ],
+    )
+
+    row = target_evidence["evaluated_target_candidates"][0]
+    assert row["benchmark_complete_at_target_context"] is False
+    assert row["checks"]["fresh_process_pair"]["passed"] is False
+
+
+def test_target_context_gate_rejects_source_evidence_plan_drift():
+    plan = _plan()
+    candidate = plan["candidates"][0]
+    source_evidence = _source_evidence_for_candidate(
+        plan,
+        candidate,
+    )
+    source_evidence["plan_sha256"] = "0" * 64
+
+    try:
+        evaluate_target_context(
+            plan,
+            source_evidence,
+            [
+                _target_summary(
+                    candidate,
+                    "stable_prefix",
+                    process_started_at=3000,
+                ),
+                _target_summary(
+                    candidate,
+                    "growing_prefix",
+                    process_started_at=4000,
+                ),
+            ],
+        )
+    except ValueError as exc:
+        assert "plan hash mismatch" in str(exc)
+    else:
+        raise AssertionError(
+            "expected target-context source-evidence rejection"
+        )
 
 
 def test_campaign_missing_pair_never_advances():
