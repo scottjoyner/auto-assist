@@ -324,14 +324,14 @@ def build_turn_case(
     )
     task = _turn_task(turn_class, turn_index)
     canary_text = ""
-    required_terms = [turn_marker]
+    required_exact_terms = [turn_marker]
     if canary:
         canary_text = (
             "\nThis is a retention canary. Include exactly the immutable "
             f"marker {profile['retention_marker']} and the text "
             "ADVISORY-ONLY in the response."
         )
-        required_terms.extend(
+        required_exact_terms.extend(
             [
                 profile["retention_marker"],
                 "ADVISORY-ONLY",
@@ -371,7 +371,9 @@ def build_turn_case(
         {"role": "user", "content": prompt},
     ]
     case_id = f"{session_id}-turn-{turn_index:04d}"
-    acceptance = {"required_terms": required_terms}
+    acceptance = {
+        "required_exact_terms": required_exact_terms,
+    }
     case = {
         "case_id": case_id,
         "task_family": (
