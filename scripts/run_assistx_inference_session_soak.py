@@ -8,18 +8,20 @@ from typing import Any
 
 from assistx.inference_policy_experiment import load_matrix
 from assistx.inference_session_soak import (
-    append_history,
     build_turn_case,
     check_session_runtime_identity,
     compile_soak_plan,
     execute_soak_turn,
+    finalize_pending_commit,
     initial_state,
     load_soak_profile,
     load_state,
     messages_for_turn,
     save_state,
+    stage_pending_commit,
     summarize_soak_results,
     validate_resume_state,
+    verify_pending_result_row,
 )
 
 
@@ -196,6 +198,29 @@ def main() -> None:
             plan,
         )
         rows = _read_jsonl(results_path)
+        completed = int(state["completed_turns"])
+        pending = state.get("pending_commit")
+        if isinstance(pending, dict):
+            if len(rows) == completed:
+                pending_result = pending.get("result")
+                if not isinstance(pending_result, dict):
+                    raise ValueError(
+                        "checkpoint pending result is missing or invalid"
+                    )
+                _append_jsonl(results_path, pending_result)
+                rows.append(pending_result)
+            elif len(rows) == completed + 1:
+                verify_pending_result_row(
+                    state,
+                    rows[-1],
+                )
+            else:
+                raise ValueError(
+                    "result stream cannot be reconciled with pending checkpoint"
+                )
+            finalize_pending_commit(state)
+            save_state(state_path, state)
+
         if len(rows) != int(state["completed_turns"]):
             raise ValueError(
                 "result row count does not match checkpoint completed_turns"
@@ -271,15 +296,18 @@ def main() -> None:
             )[:600]
             result["telemetry_valid"] = False
 
+        stage_pending_commit(
+            state,
+            result=result,
+            user_message=case["messages"][-1],
+            assistant_output=output_text,
+        )
+        save_state(state_path, state)
+
         _append_jsonl(results_path, result)
         rows.append(result)
 
-        append_history(
-            state,
-            case,
-            output_text,
-        )
-        state["completed_turns"] = turn_index
+        finalize_pending_commit(state)
         save_state(state_path, state)
 
         summary = summarize_soak_results(
