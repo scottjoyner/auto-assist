@@ -5,6 +5,7 @@ from assistx.inference_soak_campaign import (
     compile_campaign_plan,
     evaluate_campaign,
     validate_campaign_config,
+    validate_campaign_plan,
 )
 
 
@@ -104,6 +105,31 @@ def test_campaign_plan_pairs_all_32k_policies_to_128k():
         assert candidate["source_context_tokens"] == 32768
         assert candidate["target_context_tokens"] == 131072
         assert candidate["source_policy_id"] != candidate["target_policy_id"]
+
+
+def test_campaign_plan_hash_rejects_tampering():
+    plan = _plan()
+    assert validate_campaign_plan(plan) is plan
+
+    tampered = {
+        **plan,
+        "turns": 99,
+    }
+    try:
+        validate_campaign_plan(tampered)
+    except ValueError as exc:
+        assert "hash mismatch" in str(exc)
+    else:
+        raise AssertionError("expected tampered campaign plan rejection")
+
+
+def test_campaign_plan_authority_remains_all_false():
+    plan = _plan()
+    assert plan["routing_authority_changed"] is False
+    assert all(
+        value is False
+        for value in plan["authority"].values()
+    )
 
 
 def test_campaign_advances_only_fresh_same_build_pair():
