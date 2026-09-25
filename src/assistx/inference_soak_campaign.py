@@ -111,9 +111,23 @@ def compile_campaign_plan(
         nodes=set(config["nodes"]),
         speculations=set(config["speculations"]),
     )
-    target_by_signature = {
-        _policy_signature(policy): policy for policy in target_policies
-    }
+    if not source_policies:
+        raise ValueError("campaign matched no source-context policies")
+    if not target_policies:
+        raise ValueError("campaign matched no target-context policies")
+
+    target_by_signature: dict[tuple[str, ...], dict[str, Any]] = {}
+    for target in target_policies:
+        signature = _policy_signature(target)
+        if signature in target_by_signature:
+            raise ValueError(
+                "duplicate target policy signature: "
+                + json.dumps(
+                    _signature_dict(target),
+                    sort_keys=True,
+                )
+            )
+        target_by_signature[signature] = target
 
     candidates: list[dict[str, Any]] = []
     for policy in sorted(
@@ -213,10 +227,37 @@ def compile_campaign_plan(
     return plan
 
 
+def validate_campaign_plan(plan: Any) -> dict[str, Any]:
+    if not isinstance(plan, dict):
+        raise ValueError("campaign plan must be an object")
+    if plan.get("schema") != CAMPAIGN_PLAN_SCHEMA:
+        raise ValueError("campaign plan schema mismatch")
+    observed_sha = str(plan.get("plan_sha256") or "")
+    if not observed_sha:
+        raise ValueError("campaign plan_sha256 is required")
+    unsigned = {
+        key: value
+        for key, value in plan.items()
+        if key != "plan_sha256"
+    }
+    expected_sha = canonical_sha256(unsigned)
+    if observed_sha != expected_sha:
+        raise ValueError("campaign plan hash mismatch")
+    if plan.get("routing_authority_changed") is not False:
+        raise ValueError("campaign plan cannot change routing authority")
+    authority = plan.get("authority")
+    if not isinstance(authority, dict):
+        raise ValueError("campaign plan authority must be an object")
+    if any(bool(authority.get(key, False)) for key in DEFAULT_AUTHORITY):
+        raise ValueError("campaign plan authority must remain all-false")
+    return plan
+
+
 def evaluate_campaign(
     plan: dict[str, Any],
     summaries: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    plan = validate_campaign_plan(plan)
     by_key = {
         (
             str(summary.get("policy_id") or ""),
