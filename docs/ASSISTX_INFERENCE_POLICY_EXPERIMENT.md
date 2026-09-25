@@ -60,9 +60,10 @@ counts when available, acceptance result, and output hash/length.
 Generated text is stored only when --include-output is explicitly requested.
 
 The generic OpenAI-compatible stream does not expose every runtime metric.
-Speculative acceptance, verification throughput, prefill tok/s, VRAM, power,
-and cache telemetry must be joined from a runtime-side observer in a later
-slice rather than guessed.
+The runtime telemetry sidecar below joins speculative acceptance, prefill/decode
+counters, cache reuse, VRAM/utilization, and point-in-time power where the
+backend exposes trustworthy evidence. Missing metrics remain null rather than
+being guessed.
 
 ## Frozen AssistX traces
 
@@ -293,16 +294,155 @@ The critical bootstrap sequence is:
 The launch hash is not a claim that two different binaries are equivalent. The
 runtime revision and process command-line hash are separate evidence fields.
 
+## 32K / 128K long-session soak
+
+The long-session slice is implemented as a separate resumable runner rather
+than a loop around the one-turn benchmark:
+
+~~~bash
+PYTHONPATH=src python scripts/run_assistx_inference_session_soak.py \
+  --profiles examples/assistx-inference-policy-experiment/session-soak.profiles.json \
+  --profile-id assistx-32k-soak-v1 \
+  --matrix examples/assistx-inference-policy-experiment/matrix.soak.json \
+  --policy-id r9700-rocm-q4-dflash-32k-c1-soak \
+  --mode stable_prefix \
+  --plan-out /tmp/assistx-soak-stable-plan.json
+~~~
+
+Planning is still the default. No inference or telemetry request occurs until
+--execute is supplied.
+
+### Two session modes
+
+stable_prefix keeps one large immutable AssistX-style system context and sends
+only the current synthetic turn after it. This isolates repeated prefix-cache
+reuse.
+
+growing_prefix starts with a smaller immutable context and appends every prior
+synthetic user/assistant turn. This stresses growing-prefix cache reuse,
+speculative rollback, long-lived KV state, and session memory behavior.
+
+Both modes:
+
+- use the same immutable retention marker and all-false authority boundary;
+- rotate coding, JSON/tool-shaped, reasoning, and prose turns;
+- require a unique TURN-NNNN-OK marker on every response;
+- run stronger retention canaries on turn 1, every tenth turn, and the final
+  turn;
+- require the model to recover the immutable retention marker and
+  ADVISORY-ONLY from the long prefix on canary turns;
+- take telemetry snapshots before and after every turn;
+- cross-check process metrics against exact request timings;
+- stop immediately if telemetry attribution fails or the runtime process
+  identity changes.
+
+### Dedicated soak matrix
+
+The soak matrix is intentionally separate from the phase-1 8K matrix:
+
+~~~text
+examples/assistx-inference-policy-experiment/matrix.soak.json
+~~~
+
+It declares Qwen3.8-27B Q4 policies for:
+
+~~~text
+x1-370 / Vulkan / {none,MTP,DFlash} / {32K,128K}
+R9700 / ROCm   / {none,MTP,DFlash} / {32K,128K}
+~~~
+
+Every row is concurrency=1, telemetry-required, and context-specific. The plan
+compiler refuses to run a 32K or 128K profile against a runtime whose declared
+context is smaller than the profile target.
+
+### Resumable execution
+
+A physical 100-500 turn run writes each turn to append-only JSONL and updates a
+hash-bound checkpoint after the turn completes:
+
+~~~bash
+PYTHONPATH=src python scripts/run_assistx_inference_session_soak.py \
+  --profiles examples/assistx-inference-policy-experiment/session-soak.profiles.json \
+  --profile-id assistx-32k-soak-v1 \
+  --matrix examples/assistx-inference-policy-experiment/matrix.soak.json \
+  --policy-id r9700-rocm-q4-dflash-32k-c1-soak \
+  --mode growing_prefix \
+  --turns 100 \
+  --plan-out /tmp/assistx-soak-growing-plan.json \
+  --execute \
+  --results-out /tmp/assistx-soak-growing.jsonl \
+  --summary-out /tmp/assistx-soak-growing-summary.json \
+  --checkpoint-dir /tmp/assistx-soak-checkpoints
+~~~
+
+Resume uses the exact same command plus --resume. A resume is rejected if the
+profile hash, policy hash, session mode, or requested turn count differs from
+the checkpoint. A fresh run also refuses to overwrite an existing checkpoint or
+result stream without explicit --overwrite.
+
+Growing-prefix checkpoints retain only the synthetic conversation history
+needed to reconstruct the next request. The large immutable seed context is
+deterministically regenerated from the frozen profile rather than duplicated in
+the checkpoint.
+
+### Session gates
+
+The checked-in profiles default to 100 turns and allow 20-500. A completed
+summary evaluates:
+
+~~~text
+request success rate
+per-turn deterministic acceptance rate
+retention-canary pass rate
+telemetry-valid rate
+TTFT p50/p95 and late-vs-early drift ratio
+wall-time p50/p95 and late-vs-early drift ratio
+first/last/min/max prompt tokens
+cache-reuse mean
+speculative-acceptance mean
+first/last/max VRAM
+VRAM growth and simple bytes/turn slope
+per-workload-class latency, cache, and speculation evidence
+~~~
+
+The default gate requires 100% retention-canary and telemetry validity, at least
+99% request success, at least 98% deterministic acceptance, no more than 2x
+TTFT/wall drift, and no more than 2 GiB of observed VRAM growth when the gauge
+is available.
+
+Missing VRAM is reported as unavailable rather than fabricated. Missing latency
+or correctness evidence cannot pass the corresponding gate.
+
+### Stable vs growing comparison
+
+After running both modes for the same exact policy/context:
+
+~~~bash
+PYTHONPATH=src python scripts/compare_assistx_inference_session_soaks.py \
+  /tmp/assistx-soak-stable-summary.json \
+  /tmp/assistx-soak-growing-summary.json \
+  --output /tmp/assistx-soak-comparison.json
+~~~
+
+The comparison records growing-vs-stable TTFT/wall ratios plus cache-reuse,
+speculative-acceptance, VRAM-growth, and latency-drift deltas. It is evidence
+only and cannot promote a runtime or alter AssistX routing.
+
+For clean cache comparisons, run each stable/growing session against a fresh
+dedicated runtime process with its own frozen revision and launch hash. The
+soak runner itself deliberately does not restart or clear a runtime.
+
 ## Next slices
 
-1. Add task-specific evaluators for code, tool calls, reviews, and long-context
-   constraint retention.
+1. Add task-specific evaluators for real code, tool calls, reviews, and
+   project-specific long-context constraint retention.
 2. Add an integrated energy sampler and runtime-specific cache/reprocess
    adapters where the backend exposes trustworthy counters.
-3. Add 32K/128K long-session soak with stable/growing prefixes.
+3. Run the first physical paired 32K soak on x1-370 and R9700, then promote the
+   same accepted policies into the 128K soak.
 4. Add true concurrency at 2/4/8 with trial-scoped telemetry attribution.
-5. Join counterfactual evidence to my-jev training/evaluation without granting
-   the learned layer dispatch authority.
+5. Join accepted counterfactual + soak evidence to my-jev training/evaluation
+   without granting the learned layer dispatch authority.
 
 The promotion gate remains quality first: a faster policy matters only when it
 clears the task-specific acceptance threshold.
