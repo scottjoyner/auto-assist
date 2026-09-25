@@ -375,6 +375,100 @@ def join_runtime_snapshots(
     }
 
 
+def correlate_join_with_result(
+    joined: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    """Cross-check process-wide deltas against the exact request result.
+
+    This is strongest for llama.cpp, whose streamed response exposes usage and
+    timings while /metrics exposes cumulative counters. A mismatch means other
+    work may have touched the same process during the trial, so the telemetry
+    evidence is rejected rather than attributed to the benchmark request.
+    """
+    if not joined.get("valid"):
+        return joined
+
+    deltas = joined.get("counter_deltas")
+    if not isinstance(deltas, dict):
+        return joined
+
+    timings = result.get("response_timings")
+    if not isinstance(timings, dict):
+        timings = {}
+
+    checks: dict[str, dict[str, Any]] = {}
+    _add_consistency_check(
+        checks,
+        "decode_tokens",
+        deltas.get("decode_tokens"),
+        result.get("completion_tokens")
+        if result.get("completion_tokens") is not None
+        else timings.get("predicted_n"),
+    )
+    _add_consistency_check(
+        checks,
+        "prefill_tokens",
+        deltas.get("prefill_tokens"),
+        timings.get("prompt_n"),
+    )
+    _add_consistency_check(
+        checks,
+        "spec_proposed_tokens",
+        deltas.get("spec_proposed_tokens"),
+        timings.get("draft_n"),
+    )
+    _add_consistency_check(
+        checks,
+        "spec_accepted_tokens",
+        deltas.get("spec_accepted_tokens"),
+        timings.get("draft_n_accepted"),
+    )
+
+    checked = [
+        value
+        for value in checks.values()
+        if value.get("checked") is True
+    ]
+    joined["request_consistency"] = {
+        "checked": bool(checked),
+        "checks": checks,
+    }
+    failed = [
+        name
+        for name, value in checks.items()
+        if value.get("checked") is True
+        and value.get("passed") is not True
+    ]
+    if failed:
+        joined["valid"] = False
+        joined["reason"] = "process_scope_result_mismatch"
+        joined["request_consistency"]["failed"] = failed
+    return joined
+
+
+def _add_consistency_check(
+    checks: dict[str, dict[str, Any]],
+    name: str,
+    observed: Any,
+    expected: Any,
+) -> None:
+    observed_value = _number(observed)
+    expected_value = _number(expected)
+    if observed_value is None or expected_value is None:
+        checks[name] = {"checked": False}
+        return
+    # Token counters should match exactly for an isolated single request.
+    # Float conversion is used only because Prometheus numbers are float64.
+    passed = abs(observed_value - expected_value) < 1e-9
+    checks[name] = {
+        "checked": True,
+        "passed": passed,
+        "observed_process_delta": observed_value,
+        "expected_request_value": expected_value,
+    }
+
+
 def _derive_metrics(deltas: dict[str, float]) -> dict[str, float | None]:
     proposed = deltas.get("spec_proposed_tokens")
     accepted = deltas.get("spec_accepted_tokens")
