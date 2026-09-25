@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import statistics
 import time
 from pathlib import Path
@@ -569,17 +570,34 @@ def save_state(
         "updated_at_unix_ms": int(time.time() * 1000),
     }
     temp = output.with_suffix(output.suffix + ".tmp")
-    temp.write_text(
+    payload = (
         json.dumps(
             value,
             ensure_ascii=False,
             indent=2,
             sort_keys=True,
         )
-        + "\n",
-        encoding="utf-8",
+        + "\n"
     )
+    with temp.open("w", encoding="utf-8") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
     temp.replace(output)
+    _fsync_directory(output.parent)
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def load_state(path: str | Path) -> dict[str, Any]:
