@@ -12,6 +12,9 @@ from .inference_session_soak import (
 
 CAMPAIGN_PLAN_SCHEMA = "assistx-inference-soak-campaign-plan-v1"
 CAMPAIGN_EVIDENCE_SCHEMA = "assistx-inference-soak-campaign-evidence-v1"
+CAMPAIGN_TARGET_EVIDENCE_SCHEMA = (
+    "assistx-inference-soak-campaign-target-evidence-v1"
+)
 
 MODES = ("stable_prefix", "growing_prefix")
 
@@ -258,26 +261,7 @@ def evaluate_campaign(
     summaries: list[dict[str, Any]],
 ) -> dict[str, Any]:
     plan = validate_campaign_plan(plan)
-    by_key: dict[tuple[str, str], dict[str, Any]] = {}
-    for summary in summaries:
-        if not isinstance(summary, dict):
-            continue
-        key = (
-            str(summary.get("policy_id") or ""),
-            str(summary.get("mode") or ""),
-        )
-        if key in by_key:
-            raise ValueError(
-                "duplicate soak summary for policy/mode: "
-                + json.dumps(
-                    {
-                        "policy_id": key[0],
-                        "mode": key[1],
-                    },
-                    sort_keys=True,
-                )
-            )
-        by_key[key] = summary
+    by_key = _index_summaries(summaries)
 
     candidate_evidence: list[dict[str, Any]] = []
     eligible_target_policies: list[dict[str, Any]] = []
@@ -345,6 +329,162 @@ def evaluate_campaign(
             "It does not authorize production routing or runtime admission."
         ),
     }
+
+
+def evaluate_target_context(
+    plan: dict[str, Any],
+    source_evidence: dict[str, Any],
+    summaries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    plan = validate_campaign_plan(plan)
+    _validate_source_evidence(plan, source_evidence)
+
+    by_key = _index_summaries(summaries)
+    candidates = {
+        candidate["candidate_id"]: candidate
+        for candidate in plan.get("candidates") or []
+    }
+    evaluated: list[dict[str, Any]] = []
+    completed: list[dict[str, Any]] = []
+
+    for eligible in source_evidence.get(
+        "eligible_target_context_policies"
+    ) or []:
+        candidate_id = str(eligible.get("candidate_id") or "")
+        candidate = candidates.get(candidate_id)
+        if candidate is None:
+            raise ValueError(
+                f"source evidence references unknown candidate {candidate_id}"
+            )
+        if eligible.get("target_policy_id") != candidate["target_policy_id"]:
+            raise ValueError(
+                f"source evidence target policy drift for {candidate_id}"
+            )
+        if eligible.get("target_policy_sha256") != candidate[
+            "target_policy_sha256"
+        ]:
+            raise ValueError(
+                f"source evidence target policy hash drift for {candidate_id}"
+            )
+        if eligible.get("target_profile_sha256") != candidate[
+            "target_profile_sha256"
+        ]:
+            raise ValueError(
+                f"source evidence target profile hash drift for {candidate_id}"
+            )
+
+        stable = by_key.get(
+            (candidate["target_policy_id"], "stable_prefix")
+        )
+        growing = by_key.get(
+            (candidate["target_policy_id"], "growing_prefix")
+        )
+        checks = _target_candidate_checks(
+            plan,
+            candidate,
+            stable,
+            growing,
+        )
+        benchmark_complete = all(
+            value.get("passed") is True
+            for value in checks.values()
+        )
+        row = {
+            "candidate_id": candidate_id,
+            "signature": candidate["signature"],
+            "target_policy_id": candidate["target_policy_id"],
+            "benchmark_complete_at_target_context": benchmark_complete,
+            "checks": checks,
+            "stable_summary_sha256": (
+                canonical_sha256(stable) if stable else None
+            ),
+            "growing_summary_sha256": (
+                canonical_sha256(growing) if growing else None
+            ),
+        }
+        evaluated.append(row)
+        if benchmark_complete:
+            completed.append(
+                {
+                    "candidate_id": candidate_id,
+                    "policy_id": candidate["target_policy_id"],
+                    "policy_sha256": candidate["target_policy_sha256"],
+                    "profile_id": candidate["target_profile_id"],
+                    "profile_sha256": candidate[
+                        "target_profile_sha256"
+                    ],
+                    "context_tokens": candidate[
+                        "target_context_tokens"
+                    ],
+                    "signature": candidate["signature"],
+                }
+            )
+
+    return {
+        "schema": CAMPAIGN_TARGET_EVIDENCE_SCHEMA,
+        "campaign_id": plan["campaign_id"],
+        "plan_sha256": plan["plan_sha256"],
+        "source_evidence_sha256": canonical_sha256(source_evidence),
+        "evaluated_target_candidates": evaluated,
+        "benchmark_complete_target_context_policies": completed,
+        "production_promotion_authorized": False,
+        "routing_authority_changed": False,
+        "authority": dict(DEFAULT_AUTHORITY),
+        "note": (
+            "Benchmark completion is experimental evidence only. "
+            "It does not authorize production routing, runtime admission, "
+            "model loading, claims, approvals, tools, or mutation."
+        ),
+    }
+
+
+def _validate_source_evidence(
+    plan: dict[str, Any],
+    source_evidence: Any,
+) -> dict[str, Any]:
+    if not isinstance(source_evidence, dict):
+        raise ValueError("source campaign evidence must be an object")
+    if source_evidence.get("schema") != CAMPAIGN_EVIDENCE_SCHEMA:
+        raise ValueError("source campaign evidence schema mismatch")
+    if source_evidence.get("campaign_id") != plan["campaign_id"]:
+        raise ValueError("source campaign evidence campaign_id mismatch")
+    if source_evidence.get("plan_sha256") != plan["plan_sha256"]:
+        raise ValueError("source campaign evidence plan hash mismatch")
+    if source_evidence.get("production_promotion_authorized") is not False:
+        raise ValueError(
+            "source campaign evidence cannot authorize production promotion"
+        )
+    if source_evidence.get("routing_authority_changed") is not False:
+        raise ValueError(
+            "source campaign evidence cannot change routing authority"
+        )
+    return source_evidence
+
+
+def _index_summaries(
+    summaries: list[dict[str, Any]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for summary in summaries:
+        if not isinstance(summary, dict):
+            continue
+        key = (
+            str(summary.get("policy_id") or ""),
+            str(summary.get("mode") or ""),
+        )
+        if key in by_key:
+            raise ValueError(
+                "duplicate soak summary for policy/mode: "
+                + json.dumps(
+                    {
+                        "policy_id": key[0],
+                        "mode": key[1],
+                    },
+                    sort_keys=True,
+                )
+            )
+        by_key[key] = summary
+    return by_key
 
 
 def load_summaries(paths: list[str | Path]) -> list[dict[str, Any]]:
@@ -425,6 +565,100 @@ def _candidate_checks(
     stable_identity = stable.get("runtime_identity") or {}
     growing_identity = growing.get("runtime_identity") or {}
 
+    if requirements.get("same_runtime_revision"):
+        checks["same_runtime_revision"] = _value_check(
+            stable_identity.get("runtime_revision"),
+            growing_identity.get("runtime_revision"),
+        )
+    if requirements.get("same_launch_config"):
+        checks["same_launch_config"] = _value_check(
+            stable_identity.get("launch_config_sha256"),
+            growing_identity.get("launch_config_sha256"),
+        )
+    if requirements.get("fresh_process_pair"):
+        stable_started = stable_identity.get(
+            "process_started_at_unix_ms"
+        )
+        growing_started = growing_identity.get(
+            "process_started_at_unix_ms"
+        )
+        checks["fresh_process_pair"] = {
+            "passed": (
+                stable_started is not None
+                and growing_started is not None
+                and stable_started != growing_started
+            ),
+            "stable_process_started_at_unix_ms": stable_started,
+            "growing_process_started_at_unix_ms": growing_started,
+        }
+    return checks
+
+
+def _target_candidate_checks(
+    plan: dict[str, Any],
+    candidate: dict[str, Any],
+    stable: dict[str, Any] | None,
+    growing: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    requirements = plan["requirements"]
+    checks: dict[str, dict[str, Any]] = {
+        "stable_present": _bool_check(stable is not None),
+        "growing_present": _bool_check(growing is not None),
+    }
+    if stable is None or growing is None:
+        return checks
+
+    for name, summary, expected_mode in (
+        ("stable", stable, "stable_prefix"),
+        ("growing", growing, "growing_prefix"),
+    ):
+        checks[f"{name}_schema"] = _bool_check(
+            summary.get("schema") == SOAK_SUMMARY_SCHEMA
+        )
+        checks[f"{name}_mode"] = _value_check(
+            summary.get("mode"),
+            expected_mode,
+        )
+        checks[f"{name}_profile_id"] = _value_check(
+            summary.get("profile_id"),
+            candidate["target_profile_id"],
+        )
+        checks[f"{name}_profile_sha256"] = _value_check(
+            summary.get("profile_sha256"),
+            candidate["target_profile_sha256"],
+        )
+        checks[f"{name}_policy_id"] = _value_check(
+            summary.get("policy_id"),
+            candidate["target_policy_id"],
+        )
+        checks[f"{name}_policy_sha256"] = _value_check(
+            summary.get("policy_sha256"),
+            candidate["target_policy_sha256"],
+        )
+        checks[f"{name}_context"] = _value_check(
+            summary.get("target_context_tokens"),
+            candidate["target_context_tokens"],
+        )
+        checks[f"{name}_turns_complete"] = _bool_check(
+            summary.get("completed_turns")
+            == summary.get("expected_turns")
+            == plan["turns"]
+        )
+        checks[f"{name}_passed"] = _bool_check(
+            summary.get("passed") is True
+        )
+        identity = summary.get("runtime_identity")
+        checks[f"{name}_runtime_identity_consistent"] = _bool_check(
+            isinstance(identity, dict)
+            and identity.get("consistent") is True
+            and bool(identity.get("runtime_revision"))
+            and bool(identity.get("launch_config_sha256"))
+            and identity.get("process_started_at_unix_ms")
+            is not None
+        )
+
+    stable_identity = stable.get("runtime_identity") or {}
+    growing_identity = growing.get("runtime_identity") or {}
     if requirements.get("same_runtime_revision"):
         checks["same_runtime_revision"] = _value_check(
             stable_identity.get("runtime_revision"),
