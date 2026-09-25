@@ -223,6 +223,24 @@ def validate_policy(raw: Any) -> dict[str, Any]:
             f"{raw.get('policy_id')}: endpoint_env must be an environment variable name"
         )
 
+    telemetry_required = bool(raw.get("telemetry_required", False))
+    telemetry_env = str(raw.get("telemetry_env") or "").strip()
+    if telemetry_required and not telemetry_env:
+        raise ValueError(
+            f"{raw.get('policy_id')}: telemetry_env is required when telemetry_required=true"
+        )
+    for field in (
+        "telemetry_env",
+        "telemetry_token_env",
+        "expected_runtime_revision_env",
+        "expected_launch_config_sha256_env",
+    ):
+        value = str(raw.get(field) or "").strip()
+        if value and not value.replace("_", "").isalnum():
+            raise ValueError(
+                f"{raw.get('policy_id')}: {field} must be an environment variable name"
+            )
+
     response_models = raw.get("accepted_response_models")
     if response_models is None:
         response_models = [str(raw["model_handle"])]
@@ -249,6 +267,23 @@ def validate_policy(raw: Any) -> dict[str, Any]:
         "api_key_env": (
             str(raw["api_key_env"]).strip()
             if raw.get("api_key_env")
+            else None
+        ),
+        "telemetry_required": telemetry_required,
+        "telemetry_env": telemetry_env or None,
+        "telemetry_token_env": (
+            str(raw["telemetry_token_env"]).strip()
+            if raw.get("telemetry_token_env")
+            else None
+        ),
+        "expected_runtime_revision_env": (
+            str(raw["expected_runtime_revision_env"]).strip()
+            if raw.get("expected_runtime_revision_env")
+            else None
+        ),
+        "expected_launch_config_sha256_env": (
+            str(raw["expected_launch_config_sha256_env"]).strip()
+            if raw.get("expected_launch_config_sha256_env")
             else None
         ),
         "enabled": bool(raw.get("enabled", True)),
@@ -617,6 +652,10 @@ def summarize_counterfactuals(
             for row in rows
             if row.get("success") is True
             and row.get("acceptance_passed") is True
+            and (
+                row.get("telemetry_required") is not True
+                or row.get("telemetry_valid") is True
+            )
             and isinstance(row.get("wall_ms"), (int, float))
         ]
         best = min(
