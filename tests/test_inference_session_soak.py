@@ -183,7 +183,7 @@ def test_turn_case_requires_marker_on_canary():
         messages=messages,
     )
 
-    required = case["acceptance"]["required_terms"]
+    required = case["acceptance"]["required_exact_terms"]
     assert "TURN-0010-OK" in required
     assert profile["retention_marker"] in required
     assert "ADVISORY-ONLY" in required
