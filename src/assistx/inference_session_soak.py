@@ -201,6 +201,12 @@ def compile_soak_plan(
         )
     if int(policy.get("concurrency") or 0) != 1:
         raise ValueError("session soak requires concurrency=1")
+    if int(policy.get("context_tokens") or 0) < int(
+        profile["target_context_tokens"]
+    ):
+        raise ValueError(
+            "policy context_tokens is smaller than soak target_context_tokens"
+        )
     if policy.get("telemetry_required") is not True:
         raise ValueError(
             "session soak requires telemetry_required=true"
