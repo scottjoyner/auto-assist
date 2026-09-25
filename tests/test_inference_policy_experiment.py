@@ -179,3 +179,41 @@ def test_shadow_rows_become_unscored_replay_cases():
         cases[0]["baseline"]["recorded_verifications"][0]["verified"]
         is True
     )
+
+
+def test_policy_requires_telemetry_endpoint_when_fail_closed():
+    with pytest.raises(ValueError, match="telemetry_env"):
+        validate_policy(
+            _policy(
+                telemetry_required=True,
+            )
+        )
+
+
+def test_counterfactual_excludes_required_invalid_telemetry():
+    summary = summarize_counterfactuals(
+        [
+            {
+                "case_id": "a",
+                "policy_id": "fast-unproven",
+                "success": True,
+                "acceptance_passed": True,
+                "telemetry_required": True,
+                "telemetry_valid": False,
+                "wall_ms": 50,
+            },
+            {
+                "case_id": "a",
+                "policy_id": "slower-proven",
+                "success": True,
+                "acceptance_passed": True,
+                "telemetry_required": True,
+                "telemetry_valid": True,
+                "wall_ms": 100,
+            },
+        ]
+    )
+
+    row = summary["cases"][0]
+    assert row["eligible_policy_count"] == 1
+    assert row["best_observed_policy_id"] == "slower-proven"
