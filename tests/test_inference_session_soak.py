@@ -420,6 +420,8 @@ def test_summary_passes_stable_session_inside_drift_and_memory_limits():
     assert summary["passed"] is True
     assert summary["rates"]["canary_pass"] == 1.0
     assert summary["context"]["prompt_tokens_first"] == 30000
+    assert summary["context"]["target_ratio_first"] > 0.9
+    assert summary["context"]["prompt_token_growth"] == 0
     assert summary["memory"]["vram_growth_bytes"] == 19
     assert summary["cache_and_speculation"]["spec_acceptance_mean"] == 0.75
 
