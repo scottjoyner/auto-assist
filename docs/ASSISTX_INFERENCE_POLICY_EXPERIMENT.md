@@ -569,7 +569,28 @@ runs corresponding to candidates that passed every 32K gate.
 That file is still an operator command sheet, not an authorization mechanism.
 It does not start runtimes and does not execute automatically.
 
-The evidence output always records:
+After those gated 128K runs finish, close the campaign with the target-context
+evaluator:
+
+~~~bash
+PYTHONPATH=src python scripts/manage_assistx_soak_campaign.py evaluate-target \
+  --plan /tmp/assistx-soak-campaign.plan.json \
+  --source-evidence /tmp/assistx-soak-campaign.evidence.json \
+  --summaries /tmp/assistx-soak-campaign-128k/*.summary.json \
+  --output /tmp/assistx-soak-campaign-128k.evidence.json
+~~~
+
+The target-context evaluator first verifies that the source advancement evidence
+belongs to the same immutable campaign-plan hash. It then applies the same
+fresh-process, exact-profile, exact-policy, same-revision, same-launch-config,
+turn-completion, correctness, telemetry, and drift gates to each eligible 128K
+stable/growing pair.
+
+The final result names only policies with a fully completed 128K benchmark pair
+under benchmark_complete_target_context_policies. This is a benchmark evidence
+set, not a production admission list.
+
+The source and target evidence outputs always record:
 
 ~~~text
 production_promotion_authorized=false
@@ -582,15 +603,15 @@ loading, claims, approvals, tools, or mutation authority.
 
 ## Next slices
 
-1. Run the generated physical 32K campaign and use the advancement evidence
-   to generate the bounded 128K command sheet.
+1. Run the generated physical 32K campaign, the gated 128K campaign, and
+   capture both immutable campaign evidence files.
 2. Add task-specific evaluators for real code, tool calls, reviews, and
    project-specific long-context constraint retention.
 3. Add an integrated energy sampler and runtime-specific cache/reprocess
    adapters where the backend exposes trustworthy counters.
 4. Add true concurrency at 2/4/8 with trial-scoped telemetry attribution.
-5. Join accepted counterfactual + soak evidence to my-jev training/evaluation
-   without granting the learned layer dispatch authority.
+5. Join accepted counterfactual + completed campaign evidence to my-jev
+   training/evaluation without granting the learned layer dispatch authority.
 
 The promotion gate remains quality first: a faster policy matters only when it
 clears the task-specific acceptance threshold.
