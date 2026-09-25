@@ -941,6 +941,23 @@ def summarize_soak_results(
             "prompt_tokens_max": (
                 max(prompt_tokens) if prompt_tokens else None
             ),
+            "prompt_token_growth": (
+                prompt_tokens[-1] - prompt_tokens[0]
+                if len(prompt_tokens) >= 2
+                else None
+            ),
+            "target_ratio_first": _safe_ratio(
+                prompt_tokens[0] if prompt_tokens else None,
+                plan["target_context_tokens"],
+            ),
+            "target_ratio_last": _safe_ratio(
+                prompt_tokens[-1] if prompt_tokens else None,
+                plan["target_context_tokens"],
+            ),
+            "target_ratio_max": _safe_ratio(
+                max(prompt_tokens) if prompt_tokens else None,
+                plan["target_context_tokens"],
+            ),
             "completion_tokens_total": (
                 sum(completion_tokens)
                 if completion_tokens
