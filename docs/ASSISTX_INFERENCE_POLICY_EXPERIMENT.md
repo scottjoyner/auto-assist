@@ -394,6 +394,10 @@ finalization, resume hashes the existing row against the journal before
 finalizing it. A mismatch fails closed instead of guessing which turn is
 authoritative.
 
+Checkpoint journal writes and append-only result rows are fsync-backed before
+the next phase is finalized, so the recovery sequence also covers abrupt host
+or power loss rather than only clean process termination.
+
 Growing-prefix checkpoints retain only the synthetic conversation history
 needed to reconstruct the next request. The large immutable seed context is
 deterministically regenerated from the frozen profile rather than duplicated in
