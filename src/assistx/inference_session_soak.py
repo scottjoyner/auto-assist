@@ -519,6 +519,7 @@ def initial_state(
         "completed_turns": 0,
         "runtime_identity": None,
         "history": [],
+        "pending_commit": None,
         "created_at_unix_ms": now,
         "updated_at_unix_ms": now,
     }
@@ -549,6 +550,9 @@ def validate_resume_state(
     history = state.get("history")
     if not isinstance(history, list):
         raise ValueError("resume state history must be a list")
+    pending = state.get("pending_commit")
+    if pending is not None and not isinstance(pending, dict):
+        raise ValueError("resume state pending_commit must be an object or null")
     return state
 
 
@@ -607,6 +611,98 @@ def check_session_runtime_identity(
     if existing != identity:
         return False, "runtime process identity changed during soak session"
     return True, None
+
+
+def stage_pending_commit(
+    state: dict[str, Any],
+    *,
+    result: dict[str, Any],
+    user_message: dict[str, str],
+    assistant_output: str | None,
+) -> None:
+    if state.get("pending_commit") is not None:
+        raise ValueError("cannot stage a second pending soak commit")
+    turn_index = int(result.get("turn_index") or 0)
+    expected = int(state.get("completed_turns") or 0) + 1
+    if turn_index != expected:
+        raise ValueError(
+            f"pending turn {turn_index} does not follow completed turn "
+            f"{state.get('completed_turns')}"
+        )
+    pending = {
+        "turn_index": turn_index,
+        "result": result,
+        "result_sha256": canonical_sha256(result),
+        "user_message": {
+            "role": "user",
+            "content": str(user_message.get("content") or ""),
+        },
+        "assistant_output": assistant_output,
+    }
+    state["pending_commit"] = pending
+
+
+def verify_pending_result_row(
+    state: dict[str, Any],
+    row: dict[str, Any],
+) -> None:
+    pending = state.get("pending_commit")
+    if not isinstance(pending, dict):
+        raise ValueError("there is no pending soak commit")
+    if int(row.get("turn_index") or 0) != int(
+        pending["turn_index"]
+    ):
+        raise ValueError(
+            "pending result row turn does not match checkpoint journal"
+        )
+    if str(row.get("session_id") or "") != str(
+        state.get("session_id") or ""
+    ):
+        raise ValueError(
+            "pending result row session does not match checkpoint"
+        )
+    if canonical_sha256(row) != pending.get("result_sha256"):
+        raise ValueError(
+            "pending result row hash does not match checkpoint journal"
+        )
+
+
+def finalize_pending_commit(
+    state: dict[str, Any],
+) -> None:
+    pending = state.get("pending_commit")
+    if not isinstance(pending, dict):
+        raise ValueError("there is no pending soak commit")
+    turn_index = int(pending["turn_index"])
+    expected = int(state.get("completed_turns") or 0) + 1
+    if turn_index != expected:
+        raise ValueError("pending soak turn is out of sequence")
+
+    if state.get("mode") == "growing_prefix":
+        user_message = pending.get("user_message")
+        assistant_output = pending.get("assistant_output")
+        if (
+            isinstance(user_message, dict)
+            and isinstance(assistant_output, str)
+            and assistant_output
+        ):
+            state["history"].append(
+                {
+                    "role": "user",
+                    "content": str(
+                        user_message.get("content") or ""
+                    ),
+                }
+            )
+            state["history"].append(
+                {
+                    "role": "assistant",
+                    "content": assistant_output,
+                }
+            )
+
+    state["completed_turns"] = turn_index
+    state["pending_commit"] = None
 
 
 def append_history(
