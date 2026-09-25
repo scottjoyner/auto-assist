@@ -61,8 +61,8 @@ def _summary(
             + "-"
             + mode
         ),
-        "profile_id": "assistx-32k-soak-v1",
-        "profile_sha256": "p" * 64,
+        "profile_id": candidate["source_profile_id"],
+        "profile_sha256": candidate["source_profile_sha256"],
         "policy_id": candidate["source_policy_id"],
         "policy_sha256": candidate["source_policy_sha256"],
         "mode": mode,
@@ -138,6 +138,8 @@ def test_campaign_advances_only_fresh_same_build_pair():
             "candidate_id": candidate["candidate_id"],
             "target_policy_id": candidate["target_policy_id"],
             "target_policy_sha256": candidate["target_policy_sha256"],
+            "target_profile_id": candidate["target_profile_id"],
+            "target_profile_sha256": candidate["target_profile_sha256"],
             "target_context_tokens": 131072,
         }
     ]
@@ -202,6 +204,32 @@ def test_campaign_rejects_different_revision_or_launch_config():
     assert row["eligible_for_target_context_experiment"] is False
     assert row["checks"]["same_runtime_revision"]["passed"] is False
     assert row["checks"]["same_launch_config"]["passed"] is False
+
+
+def test_campaign_rejects_profile_hash_drift():
+    plan = _plan()
+    candidate = plan["candidates"][0]
+    stable = _summary(
+        candidate,
+        "stable_prefix",
+        process_started_at=1000,
+    )
+    growing = _summary(
+        candidate,
+        "growing_prefix",
+        process_started_at=2000,
+    )
+    growing["profile_sha256"] = "f" * 64
+
+    evidence = evaluate_campaign(plan, [stable, growing])
+    row = next(
+        item
+        for item in evidence["evaluated_candidates"]
+        if item["candidate_id"] == candidate["candidate_id"]
+    )
+
+    assert row["eligible_for_target_context_experiment"] is False
+    assert row["checks"]["growing_profile_sha256"]["passed"] is False
 
 
 def test_campaign_rejects_failed_or_incomplete_summary():
