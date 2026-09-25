@@ -186,6 +186,32 @@ def test_turn_case_requires_marker_on_canary():
     assert "ADVISORY-ONLY" in required
 
 
+def test_tool_json_turn_keeps_marker_inside_structured_request():
+    profile = _profile()
+    plan = compile_soak_plan(
+        profile,
+        _policy(),
+        mode="stable_prefix",
+        turns=20,
+    )
+    messages = messages_for_turn(
+        profile,
+        initial_state(plan),
+    )
+    case = build_turn_case(
+        profile,
+        session_id=plan["session_id"],
+        turn_index=2,
+        total_turns=20,
+        messages=messages,
+    )
+
+    prompt = case["messages"][-1]["content"]
+    assert "Return exactly one compact JSON object" in prompt
+    assert 'turn_marker="TURN-0002-OK"' in prompt
+    assert "End the response with TURN-0002-OK" not in prompt
+
+
 def test_growing_prefix_checkpoint_reconstructs_conversation():
     profile = _profile()
     plan = compile_soak_plan(
