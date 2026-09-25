@@ -474,6 +474,7 @@ def execute_trial(
         "max_tokens": int(max_tokens),
         "temperature": 0,
         "stream": True,
+        "stream_options": {"include_usage": True},
     }
     overrides = policy.get("request_overrides")
     if isinstance(overrides, dict):
@@ -493,6 +494,7 @@ def execute_trial(
     first_content_at: float | None = None
     chunks: list[str] = []
     usage: dict[str, Any] = {}
+    response_timings: dict[str, Any] = {}
     response_model: str | None = None
     finish_reason: str | None = None
     status_code: int | None = None
@@ -527,6 +529,8 @@ def execute_trial(
                     response_model = str(event["model"])
                 if isinstance(event.get("usage"), dict):
                     usage = event["usage"]
+                if isinstance(event.get("timings"), dict):
+                    response_timings = event["timings"]
                 choices = event.get("choices")
                 if not isinstance(choices, list):
                     continue
@@ -623,6 +627,7 @@ def execute_trial(
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "tokens_per_second": tokens_per_second,
+        "response_timings": response_timings,
         "acceptance_passed": acceptance_passed,
         "acceptance_checks": acceptance_checks,
         "output_sha256": hashlib.sha256(
