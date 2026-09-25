@@ -61,8 +61,15 @@ def _runtime_pid() -> int:
 
 def _process_started_at_unix_ms(pid: int) -> int:
     stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-    parts = stat.split()
-    start_ticks = int(parts[21])
+    # Field 2 (comm) is parenthesized and may contain spaces. Split only
+    # after its closing parenthesis so field 22 (starttime) stays aligned.
+    close_paren = stat.rfind(")")
+    if close_paren < 0:
+        raise RuntimeError("invalid /proc runtime stat")
+    remaining = stat[close_paren + 2 :].split()
+    if len(remaining) <= 19:
+        raise RuntimeError("runtime stat is missing starttime")
+    start_ticks = int(remaining[19])
     ticks = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
 
     boot_seconds = None
