@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from assistx.runtime_telemetry_observer import (
+    correlate_join_with_result,
     join_runtime_snapshots,
     validate_runtime_snapshot,
 )
@@ -227,3 +228,92 @@ def test_process_scope_detects_concurrent_request_contamination():
     assert joined["valid"] is False
     assert joined["reason"] == "process_scope_request_delta_not_one"
     assert joined["routing_authority_changed"] is False
+
+
+def test_request_consistency_rejects_process_delta_from_other_work():
+    before = _capture(
+        _snapshot(
+            counters={
+                "decode_tokens": 100,
+                "spec_proposed_tokens": 20,
+                "spec_accepted_tokens": 10,
+            }
+        )
+    )
+    after = _capture(
+        _snapshot(
+            observed_at=2000,
+            counters={
+                "decode_tokens": 130,
+                "spec_proposed_tokens": 50,
+                "spec_accepted_tokens": 28,
+            },
+        )
+    )
+    joined = join_runtime_snapshots(
+        before,
+        after,
+        _policy(),
+        trial_id="trial-1",
+    )
+
+    checked = correlate_join_with_result(
+        joined,
+        {
+            "completion_tokens": 20,
+            "response_timings": {
+                "draft_n": 20,
+                "draft_n_accepted": 15,
+            },
+        },
+    )
+
+    assert checked["valid"] is False
+    assert checked["reason"] == "process_scope_result_mismatch"
+    assert "decode_tokens" in checked["request_consistency"]["failed"]
+
+
+def test_request_consistency_accepts_exact_llama_request_counters():
+    before = _capture(
+        _snapshot(
+            counters={
+                "prefill_tokens": 100,
+                "decode_tokens": 100,
+                "spec_proposed_tokens": 20,
+                "spec_accepted_tokens": 10,
+            }
+        )
+    )
+    after = _capture(
+        _snapshot(
+            observed_at=2000,
+            counters={
+                "prefill_tokens": 112,
+                "decode_tokens": 120,
+                "spec_proposed_tokens": 40,
+                "spec_accepted_tokens": 25,
+            },
+        )
+    )
+    joined = join_runtime_snapshots(
+        before,
+        after,
+        _policy(),
+        trial_id="trial-1",
+    )
+
+    checked = correlate_join_with_result(
+        joined,
+        {
+            "completion_tokens": 20,
+            "response_timings": {
+                "prompt_n": 12,
+                "predicted_n": 20,
+                "draft_n": 20,
+                "draft_n_accepted": 15,
+            },
+        },
+    )
+
+    assert checked["valid"] is True
+    assert checked["request_consistency"]["checked"] is True
