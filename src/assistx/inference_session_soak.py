@@ -856,6 +856,164 @@ def summarize_soak_results(
     }
 
 
+def compare_soak_summaries(
+    summaries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build an evidence-only comparison across completed soak summaries."""
+    rows: list[dict[str, Any]] = []
+    for summary in summaries:
+        if not isinstance(summary, dict):
+            continue
+        if summary.get("schema") != SOAK_SUMMARY_SCHEMA:
+            raise ValueError("unexpected soak summary schema")
+        rows.append(
+            {
+                "session_id": summary.get("session_id"),
+                "profile_id": summary.get("profile_id"),
+                "policy_id": summary.get("policy_id"),
+                "mode": summary.get("mode"),
+                "target_context_tokens": summary.get(
+                    "target_context_tokens"
+                ),
+                "passed": summary.get("passed"),
+                "completed_turns": summary.get("completed_turns"),
+                "acceptance_rate": (
+                    summary.get("rates") or {}
+                ).get("acceptance"),
+                "canary_pass_rate": (
+                    summary.get("rates") or {}
+                ).get("canary_pass"),
+                "telemetry_valid_rate": (
+                    summary.get("rates") or {}
+                ).get("telemetry_valid"),
+                "ttft_p50_ms": (
+                    summary.get("latency") or {}
+                ).get("ttft_p50_ms"),
+                "ttft_p95_ms": (
+                    summary.get("latency") or {}
+                ).get("ttft_p95_ms"),
+                "ttft_drift_ratio": (
+                    summary.get("latency") or {}
+                ).get("ttft_drift_ratio"),
+                "wall_p50_ms": (
+                    summary.get("latency") or {}
+                ).get("wall_p50_ms"),
+                "wall_drift_ratio": (
+                    summary.get("latency") or {}
+                ).get("wall_drift_ratio"),
+                "prompt_tokens_first": (
+                    summary.get("context") or {}
+                ).get("prompt_tokens_first"),
+                "prompt_tokens_last": (
+                    summary.get("context") or {}
+                ).get("prompt_tokens_last"),
+                "cache_reuse_mean": (
+                    summary.get("cache_and_speculation") or {}
+                ).get("cache_reuse_mean"),
+                "spec_acceptance_mean": (
+                    summary.get("cache_and_speculation") or {}
+                ).get("spec_acceptance_mean"),
+                "vram_growth_bytes": (
+                    summary.get("memory") or {}
+                ).get("vram_growth_bytes"),
+                "vram_slope_bytes_per_turn": (
+                    summary.get("memory") or {}
+                ).get("vram_slope_bytes_per_turn"),
+            }
+        )
+
+    pairs: list[dict[str, Any]] = []
+    grouped: dict[tuple[str, str, Any], dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        key = (
+            str(row.get("profile_id") or ""),
+            str(row.get("policy_id") or ""),
+            row.get("target_context_tokens"),
+        )
+        mode = str(row.get("mode") or "")
+        grouped.setdefault(key, {})[mode] = row
+
+    for key, modes in sorted(grouped.items()):
+        stable = modes.get("stable_prefix")
+        growing = modes.get("growing_prefix")
+        if stable is None or growing is None:
+            continue
+        pairs.append(
+            {
+                "profile_id": key[0],
+                "policy_id": key[1],
+                "target_context_tokens": key[2],
+                "both_passed": (
+                    stable.get("passed") is True
+                    and growing.get("passed") is True
+                ),
+                "stable_session_id": stable.get("session_id"),
+                "growing_session_id": growing.get("session_id"),
+                "growing_vs_stable": {
+                    "ttft_p50_ratio": _safe_ratio(
+                        growing.get("ttft_p50_ms"),
+                        stable.get("ttft_p50_ms"),
+                    ),
+                    "wall_p50_ratio": _safe_ratio(
+                        growing.get("wall_p50_ms"),
+                        stable.get("wall_p50_ms"),
+                    ),
+                    "cache_reuse_delta": _safe_delta(
+                        growing.get("cache_reuse_mean"),
+                        stable.get("cache_reuse_mean"),
+                    ),
+                    "spec_acceptance_delta": _safe_delta(
+                        growing.get("spec_acceptance_mean"),
+                        stable.get("spec_acceptance_mean"),
+                    ),
+                    "vram_growth_delta_bytes": _safe_delta(
+                        growing.get("vram_growth_bytes"),
+                        stable.get("vram_growth_bytes"),
+                    ),
+                    "ttft_drift_delta": _safe_delta(
+                        growing.get("ttft_drift_ratio"),
+                        stable.get("ttft_drift_ratio"),
+                    ),
+                },
+            }
+        )
+
+    return {
+        "schema": "assistx-inference-session-soak-comparison-v1",
+        "summaries": rows,
+        "stable_growing_pairs": pairs,
+        "routing_authority_changed": False,
+        "note": (
+            "Comparison is evidence only. It does not select or promote "
+            "a production inference policy."
+        ),
+    }
+
+
+def _safe_ratio(
+    numerator: Any,
+    denominator: Any,
+) -> float | None:
+    if not isinstance(numerator, (int, float)):
+        return None
+    if not isinstance(denominator, (int, float)):
+        return None
+    if float(denominator) <= 0:
+        return None
+    return round(float(numerator) / float(denominator), 9)
+
+
+def _safe_delta(
+    left: Any,
+    right: Any,
+) -> float | None:
+    if not isinstance(left, (int, float)):
+        return None
+    if not isinstance(right, (int, float)):
+        return None
+    return round(float(left) - float(right), 9)
+
+
 def _failed_soak_result(
     profile: dict[str, Any],
     policy: dict[str, Any],
