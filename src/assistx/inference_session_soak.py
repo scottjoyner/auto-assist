@@ -920,6 +920,8 @@ def summarize_soak_results(
             ),
         }
 
+    runtime_identity = _summary_runtime_identity(rows)
+
     return {
         "schema": SOAK_SUMMARY_SCHEMA,
         "session_id": plan["session_id"],
@@ -929,6 +931,7 @@ def summarize_soak_results(
         "policy_sha256": plan["policy_sha256"],
         "mode": plan["mode"],
         "target_context_tokens": plan["target_context_tokens"],
+        "runtime_identity": runtime_identity,
         "expected_turns": expected,
         "completed_turns": total,
         "passed": passed,
@@ -1230,6 +1233,47 @@ def _turn_task(turn_class: str, turn_index: int) -> str:
         "Write one short operational note saying the benchmark is advisory "
         "and cannot change production authority."
     )
+
+
+def _summary_runtime_identity(
+    rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    identities: list[dict[str, Any]] = []
+    for row in rows:
+        telemetry = row.get("runtime_telemetry")
+        if not isinstance(telemetry, dict):
+            continue
+        if telemetry.get("valid") is not True:
+            continue
+        identity = {
+            "runtime_revision": telemetry.get("runtime_revision"),
+            "launch_config_sha256": telemetry.get(
+                "launch_config_sha256"
+            ),
+            "process_started_at_unix_ms": telemetry.get(
+                "process_started_at_unix_ms"
+            ),
+        }
+        if any(value in (None, "") for value in identity.values()):
+            continue
+        identities.append(identity)
+    if not identities:
+        return None
+    first = identities[0]
+    if any(identity != first for identity in identities[1:]):
+        return {
+            "consistent": False,
+            "observed_identity_count": len(
+                {
+                    canonical_sha256(identity)
+                    for identity in identities
+                }
+            ),
+        }
+    return {
+        "consistent": True,
+        **first,
+    }
 
 
 def _numeric_values(
