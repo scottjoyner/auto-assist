@@ -7,12 +7,15 @@ from assistx.inference_session_soak import (
     build_turn_case,
     check_session_runtime_identity,
     compile_soak_plan,
+    finalize_pending_commit,
     initial_state,
     is_canary_turn,
     messages_for_turn,
+    stage_pending_commit,
     summarize_soak_results,
     validate_resume_state,
     validate_soak_profile,
+    verify_pending_result_row,
 )
 
 
@@ -286,6 +289,81 @@ def test_resume_state_is_exact_hash_bound():
         assert "policy_sha256" in str(exc)
     else:
         raise AssertionError("expected exact-policy resume rejection")
+
+
+def test_pending_commit_recovers_append_checkpoint_crash_window():
+    profile = _profile()
+    plan = compile_soak_plan(
+        profile,
+        _policy(),
+        mode="growing_prefix",
+        turns=20,
+    )
+    state = initial_state(plan)
+    result = {
+        "session_id": plan["session_id"],
+        "turn_index": 1,
+        "success": True,
+    }
+    user = {
+        "role": "user",
+        "content": "synthetic turn one",
+    }
+
+    stage_pending_commit(
+        state,
+        result=result,
+        user_message=user,
+        assistant_output="assistant one",
+    )
+
+    assert state["completed_turns"] == 0
+    assert state["pending_commit"] is not None
+    verify_pending_result_row(state, result)
+    finalize_pending_commit(state)
+
+    assert state["completed_turns"] == 1
+    assert state["pending_commit"] is None
+    assert state["history"] == [
+        user,
+        {
+            "role": "assistant",
+            "content": "assistant one",
+        },
+    ]
+
+
+def test_pending_commit_detects_mismatched_appended_result():
+    profile = _profile()
+    plan = compile_soak_plan(
+        profile,
+        _policy(),
+        mode="stable_prefix",
+        turns=20,
+    )
+    state = initial_state(plan)
+    result = {
+        "session_id": plan["session_id"],
+        "turn_index": 1,
+        "success": True,
+    }
+    stage_pending_commit(
+        state,
+        result=result,
+        user_message={
+            "role": "user",
+            "content": "turn one",
+        },
+        assistant_output="response",
+    )
+
+    bad = {**result, "success": False}
+    try:
+        verify_pending_result_row(state, bad)
+    except ValueError as exc:
+        assert "hash" in str(exc)
+    else:
+        raise AssertionError("expected pending-row hash rejection")
 
 
 def test_session_runtime_identity_rejects_restart_between_turns():
