@@ -258,14 +258,26 @@ def evaluate_campaign(
     summaries: list[dict[str, Any]],
 ) -> dict[str, Any]:
     plan = validate_campaign_plan(plan)
-    by_key = {
-        (
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for summary in summaries:
+        if not isinstance(summary, dict):
+            continue
+        key = (
             str(summary.get("policy_id") or ""),
             str(summary.get("mode") or ""),
-        ): summary
-        for summary in summaries
-        if isinstance(summary, dict)
-    }
+        )
+        if key in by_key:
+            raise ValueError(
+                "duplicate soak summary for policy/mode: "
+                + json.dumps(
+                    {
+                        "policy_id": key[0],
+                        "mode": key[1],
+                    },
+                    sort_keys=True,
+                )
+            )
+        by_key[key] = summary
 
     candidate_evidence: list[dict[str, Any]] = []
     eligible_target_policies: list[dict[str, Any]] = []
