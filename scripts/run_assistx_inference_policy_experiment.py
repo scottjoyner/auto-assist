@@ -14,6 +14,10 @@ from assistx.inference_policy_experiment import (
     load_shadow_cases,
     summarize_counterfactuals,
 )
+from assistx.runtime_telemetry_observer import (
+    capture_runtime_snapshot,
+    join_runtime_snapshots,
+)
 
 
 def _write_jsonl(path: str | Path, rows: list[dict[str, Any]]) -> None:
@@ -94,6 +98,12 @@ def main() -> None:
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--timeout-seconds", type=float, default=180.0)
     parser.add_argument(
+        "--telemetry-timeout-seconds",
+        type=float,
+        default=5.0,
+        help="Timeout for read-only runtime telemetry snapshots.",
+    )
+    parser.add_argument(
         "--include-output",
         action="store_true",
         help=(
@@ -139,6 +149,44 @@ def main() -> None:
 
     results: list[dict[str, Any]] = []
     for trial in trials:
+        telemetry_required = bool(
+            trial.policy.get("telemetry_required", False)
+        )
+        before = capture_runtime_snapshot(
+            trial.policy,
+            trial_id=trial.trial_id,
+            timeout_s=max(1.0, args.telemetry_timeout_seconds),
+        )
+        if telemetry_required and not before.get("valid"):
+            result = {
+                "schema": "assistx-inference-policy-result-v1",
+                "trial_id": trial.trial_id,
+                "case_id": trial.case["case_id"],
+                "task_family": trial.case["task_family"],
+                "policy_id": trial.policy["policy_id"],
+                "node_id": trial.policy["node_id"],
+                "model_handle": trial.policy["model_handle"],
+                "backend": trial.policy["backend"],
+                "quantization": trial.policy["quantization"],
+                "speculation": trial.policy["speculation"],
+                "context_tokens": trial.policy["context_tokens"],
+                "concurrency": trial.policy["concurrency"],
+                "execution_mode": "observe_only",
+                "allow_model_load": False,
+                "routing_authority_changed": False,
+                "telemetry_required": True,
+                "telemetry_valid": False,
+                "runtime_telemetry": before,
+                "success": False,
+                "error": (
+                    "required telemetry preflight failed: "
+                    + str(before.get("reason") or "unknown")
+                )[:600],
+                "acceptance_passed": None,
+            }
+            results.append(result)
+            continue
+
         try:
             result = execute_trial(
                 trial,
@@ -167,6 +215,31 @@ def main() -> None:
                 "error": str(exc)[:600],
                 "acceptance_passed": None,
             }
+
+        after = capture_runtime_snapshot(
+            trial.policy,
+            trial_id=trial.trial_id,
+            timeout_s=max(1.0, args.telemetry_timeout_seconds),
+        )
+        joined = join_runtime_snapshots(
+            before,
+            after,
+            trial.policy,
+            trial_id=trial.trial_id,
+        )
+        result["telemetry_required"] = telemetry_required
+        result["telemetry_valid"] = bool(joined.get("valid"))
+        result["runtime_telemetry"] = joined
+        if telemetry_required and not joined.get("valid"):
+            result["success"] = False
+            detail = str(
+                joined.get("reason")
+                or "required telemetry join failed"
+            )
+            existing = str(result.get("error") or "").strip()
+            result["error"] = (
+                existing + ("; " if existing else "") + detail
+            )[:600]
         results.append(result)
 
     _write_jsonl(args.results_out, results)
