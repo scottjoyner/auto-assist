@@ -16,6 +16,7 @@ from assistx.inference_policy_experiment import (
 )
 from assistx.runtime_telemetry_observer import (
     capture_runtime_snapshot,
+    correlate_join_with_result,
     join_runtime_snapshots,
 )
 
@@ -226,6 +227,10 @@ def main() -> None:
             after,
             trial.policy,
             trial_id=trial.trial_id,
+        )
+        joined = correlate_join_with_result(
+            joined,
+            result,
         )
         result["telemetry_required"] = telemetry_required
         result["telemetry_valid"] = bool(joined.get("valid"))
