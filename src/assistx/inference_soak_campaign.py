@@ -417,11 +417,16 @@ def evaluate_target_context(
     plan: dict[str, Any],
     source_evidence: dict[str, Any],
     summaries: list[dict[str, Any]],
+    task_quality_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     plan = validate_campaign_plan(plan)
     _validate_source_evidence(plan, source_evidence)
 
     by_key = _index_summaries(summaries)
+    quality_by_policy = _validate_task_quality_report(
+        plan,
+        task_quality_report,
+    )
     candidates = {
         candidate["candidate_id"]: candidate
         for candidate in plan.get("candidates") or []
@@ -467,6 +472,35 @@ def evaluate_target_context(
             stable,
             growing,
         )
+        if plan["requirements"].get("task_quality_evidence"):
+            quality = quality_by_policy.get(
+                candidate["target_policy_id"]
+            )
+            checks["task_quality_evidence"] = {
+                "passed": (
+                    isinstance(quality, dict)
+                    and quality.get(
+                        "eligible_for_training_evidence"
+                    )
+                    is True
+                    and quality.get("policy_sha256")
+                    == candidate["target_policy_sha256"]
+                ),
+                "policy_id": candidate["target_policy_id"],
+                "expected_policy_sha256": candidate[
+                    "target_policy_sha256"
+                ],
+                "observed_policy_sha256": (
+                    quality.get("policy_sha256")
+                    if isinstance(quality, dict)
+                    else None
+                ),
+                "eligible_for_training_evidence": (
+                    quality.get("eligible_for_training_evidence")
+                    if isinstance(quality, dict)
+                    else None
+                ),
+            }
         benchmark_complete = all(
             value.get("passed") is True
             for value in checks.values()
@@ -507,6 +541,11 @@ def evaluate_target_context(
         "campaign_id": plan["campaign_id"],
         "plan_sha256": plan["plan_sha256"],
         "source_evidence_sha256": canonical_sha256(source_evidence),
+        "task_quality_report_sha256": (
+            canonical_sha256(task_quality_report)
+            if isinstance(task_quality_report, dict)
+            else None
+        ),
         "evaluated_target_candidates": evaluated,
         "benchmark_complete_target_context_policies": completed,
         "production_promotion_authorized": False,
