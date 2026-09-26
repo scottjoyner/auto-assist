@@ -716,6 +716,34 @@ routing_authority_changed=false
 It never means admitted to production AssistX routing, runtime discovery, model
 loading, claims, approvals, tools, or mutation authority.
 
+## Unattended physical campaign hook
+
+Generated source and target command sheets support an optional runner-local
+`ASSISTX_POLICY_RUNTIME_HOOK` executable.
+
+When configured, the sheet calls:
+
+~~~text
+$ASSISTX_POLICY_RUNTIME_HOOK prepare <policy_id> task_quality
+$ASSISTX_POLICY_RUNTIME_HOOK prepare <policy_id> stable_prefix
+$ASSISTX_POLICY_RUNTIME_HOOK prepare <policy_id> growing_prefix
+~~~
+
+immediately before the corresponding network execution.
+
+The hook is intentionally not implemented in this repository because runtime
+lifecycle ownership remains host/operator-specific. It may prepare only the
+dedicated benchmark runtime for the exact policy. It must not mutate AssistX
+routing, production runtime admission, claims, approvals, or tool authority.
+
+Endpoint, telemetry, expected runtime revision, and expected launch SHA
+environment values remain frozen independently by the matrix. The normal
+telemetry observer then proves the new process identity and rejects a stale,
+reconfigured, or mismatched runtime.
+
+When no hook is configured, generated command sheets retain their original
+manual-fresh-runtime behavior.
+
 ## Frozen my-jev policy training bundle
 
 After both the 32K and 128K quality-first campaign gates are complete, the
