@@ -305,6 +305,10 @@ def _validate_python_ast(tree: ast.AST, function_name: str) -> None:
                 f"unsafe or unsupported Python AST node: {type(node).__name__}"
             )
         if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute):
+                raise ValueError(
+                    "unsafe or unsupported Python AST node: Attribute"
+                )
             if not isinstance(node.func, ast.Name):
                 raise ValueError("only direct calls to safe builtins are allowed")
             if node.func.id not in _SAFE_CALLS:
