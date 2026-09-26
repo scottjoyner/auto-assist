@@ -191,6 +191,7 @@ def main() -> None:
                 "schema": "assistx-inference-policy-result-v1",
                 "trial_id": trial.trial_id,
                 "case_id": trial.case["case_id"],
+                "case_sha256": trial.case["case_sha256"],
                 "task_family": trial.case["task_family"],
                 "evaluation_suite": trial.case.get("evaluation_suite"),
                 "evaluator_kind": (
@@ -236,6 +237,7 @@ def main() -> None:
                 "schema": "assistx-inference-policy-result-v1",
                 "trial_id": trial.trial_id,
                 "case_id": trial.case["case_id"],
+                "case_sha256": trial.case["case_sha256"],
                 "task_family": trial.case["task_family"],
                 "evaluation_suite": trial.case.get("evaluation_suite"),
                 "evaluator_kind": (
