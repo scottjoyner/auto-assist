@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from assistx.inference_policy_experiment import load_matrix
+from assistx.inference_task_evaluator_report import (
+    TASK_EVAL_REPORT_SCHEMA,
+    load_task_evaluator_suite,
+)
 from assistx.inference_soak_campaign import (
     compile_campaign_plan,
     evaluate_campaign,
@@ -45,6 +49,84 @@ def _plan():
             "matrix.soak.json"
         ),
     )
+
+
+QUALITY_SUITE = (
+    "examples/assistx-inference-policy-experiment/"
+    "task-evaluator.suite.json"
+)
+
+
+def _quality_config():
+    return validate_campaign_config(
+        {
+            "campaign_id": "test-quality-32k-to-128k",
+            "source_context_tokens": 32768,
+            "target_context_tokens": 131072,
+            "turns": 100,
+            "nodes": ["x1-370", "r9700"],
+            "speculations": ["none", "mtp", "dflash"],
+            "require_fresh_process_pair": True,
+            "require_same_runtime_revision": True,
+            "require_same_launch_config": True,
+            "require_task_quality_evidence": True,
+        }
+    )
+
+
+def _quality_plan():
+    return compile_campaign_plan(
+        _quality_config(),
+        _matrix(),
+        profiles_file=(
+            "examples/assistx-inference-policy-experiment/"
+            "session-soak.profiles.json"
+        ),
+        matrix_file=(
+            "examples/assistx-inference-policy-experiment/"
+            "matrix.soak.json"
+        ),
+        task_quality_suite_file=QUALITY_SUITE,
+    )
+
+
+def _quality_report(plan, candidate, *, target=False, eligible=True):
+    suite = load_task_evaluator_suite(QUALITY_SUITE)
+    policy_id = (
+        candidate["target_policy_id"]
+        if target
+        else candidate["source_policy_id"]
+    )
+    policy_sha256 = (
+        candidate["target_policy_sha256"]
+        if target
+        else candidate["source_policy_sha256"]
+    )
+    return {
+        "schema": TASK_EVAL_REPORT_SCHEMA,
+        "suite_id": suite["suite_id"],
+        "suite_sha256": suite["suite_sha256"],
+        "cases_sha256": suite["cases_sha256"],
+        "required_case_ids": suite["required_case_ids"],
+        "policy_count": 1,
+        "policies": [
+            {
+                "policy_id": policy_id,
+                "policy_sha256": policy_sha256,
+                "eligible_for_training_evidence": eligible,
+            }
+        ],
+        "production_promotion_authorized": False,
+        "routing_authority_changed": False,
+        "authority": {
+            "dispatch_allowed": False,
+            "approval_granted": False,
+            "claim_acquired": False,
+            "mutation_allowed": False,
+            "routing_authority_changed": False,
+        },
+        "report_sha256": "f" * 64,
+    }
 
 
 def _summary(
@@ -172,6 +254,84 @@ def test_campaign_advances_only_fresh_same_build_pair():
     ]
     assert evidence["production_promotion_authorized"] is False
     assert evidence["routing_authority_changed"] is False
+
+
+def test_quality_campaign_plan_binds_exact_suite_and_cases():
+    plan = _quality_plan()
+    suite = load_task_evaluator_suite(QUALITY_SUITE)
+
+    assert plan["requirements"]["task_quality_evidence"] is True
+    assert plan["task_quality_suite_id"] == suite["suite_id"]
+    assert plan["task_quality_suite_sha256"] == suite["suite_sha256"]
+    assert plan["task_quality_cases_sha256"] == suite["cases_sha256"]
+
+
+def test_quality_campaign_requires_report_before_128k_advancement():
+    plan = _quality_plan()
+    candidate = plan["candidates"][0]
+    summaries = [
+        _summary(candidate, "stable_prefix", process_started_at=1000),
+        _summary(candidate, "growing_prefix", process_started_at=2000),
+    ]
+
+    try:
+        evaluate_campaign(plan, summaries)
+    except ValueError as exc:
+        assert "task quality evidence is required" in str(exc)
+    else:
+        raise AssertionError("expected missing task-quality evidence rejection")
+
+
+def test_quality_campaign_advances_only_when_quality_report_passes():
+    plan = _quality_plan()
+    candidate = plan["candidates"][0]
+    summaries = [
+        _summary(candidate, "stable_prefix", process_started_at=1000),
+        _summary(candidate, "growing_prefix", process_started_at=2000),
+    ]
+    quality = _quality_report(plan, candidate)
+
+    evidence = evaluate_campaign(
+        plan,
+        summaries,
+        task_quality_report=quality,
+    )
+    row = next(
+        item
+        for item in evidence["evaluated_candidates"]
+        if item["candidate_id"] == candidate["candidate_id"]
+    )
+
+    assert row["checks"]["task_quality_evidence"]["passed"] is True
+    assert row["eligible_for_target_context_experiment"] is True
+
+
+def test_quality_campaign_blocks_failed_quality_even_with_green_soak():
+    plan = _quality_plan()
+    candidate = plan["candidates"][0]
+    summaries = [
+        _summary(candidate, "stable_prefix", process_started_at=1000),
+        _summary(candidate, "growing_prefix", process_started_at=2000),
+    ]
+    quality = _quality_report(
+        plan,
+        candidate,
+        eligible=False,
+    )
+
+    evidence = evaluate_campaign(
+        plan,
+        summaries,
+        task_quality_report=quality,
+    )
+    row = next(
+        item
+        for item in evidence["evaluated_candidates"]
+        if item["candidate_id"] == candidate["candidate_id"]
+    )
+
+    assert row["checks"]["task_quality_evidence"]["passed"] is False
+    assert row["eligible_for_target_context_experiment"] is False
 
 
 def test_campaign_rejects_reused_process_between_modes():
@@ -406,6 +566,60 @@ def test_target_context_gate_completes_fresh_128k_pair():
     )
     assert target_evidence["production_promotion_authorized"] is False
     assert target_evidence["routing_authority_changed"] is False
+
+
+def test_quality_campaign_requires_quality_again_at_128k():
+    plan = _quality_plan()
+    candidate = plan["candidates"][0]
+    source_quality = _quality_report(plan, candidate)
+    source_evidence = evaluate_campaign(
+        plan,
+        [
+            _summary(candidate, "stable_prefix", process_started_at=1000),
+            _summary(candidate, "growing_prefix", process_started_at=2000),
+        ],
+        task_quality_report=source_quality,
+    )
+    target_summaries = [
+        _target_summary(
+            candidate,
+            "stable_prefix",
+            process_started_at=3000,
+        ),
+        _target_summary(
+            candidate,
+            "growing_prefix",
+            process_started_at=4000,
+        ),
+    ]
+
+    try:
+        evaluate_target_context(
+            plan,
+            source_evidence,
+            target_summaries,
+        )
+    except ValueError as exc:
+        assert "task quality evidence is required" in str(exc)
+    else:
+        raise AssertionError(
+            "expected missing target task-quality evidence rejection"
+        )
+
+    target_quality = _quality_report(
+        plan,
+        candidate,
+        target=True,
+    )
+    target_evidence = evaluate_target_context(
+        plan,
+        source_evidence,
+        target_summaries,
+        task_quality_report=target_quality,
+    )
+    row = target_evidence["evaluated_target_candidates"][0]
+    assert row["checks"]["task_quality_evidence"]["passed"] is True
+    assert row["benchmark_complete_at_target_context"] is True
 
 
 def test_target_context_gate_rejects_reused_128k_process():
