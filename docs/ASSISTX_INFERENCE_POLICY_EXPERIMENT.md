@@ -450,6 +450,110 @@ For clean cache comparisons, run each stable/growing session against a fresh
 dedicated runtime process with its own frozen revision and launch hash. The
 soak runner itself deliberately does not restart or clear a runtime.
 
+## Task-specific quality evaluator
+
+The replay acceptance path now supports a frozen deterministic quality suite:
+
+~~~text
+examples/assistx-inference-policy-experiment/task-evaluator.suite.json
+examples/assistx-inference-policy-experiment/task-evaluator.cases.jsonl
+~~~
+
+The checked-in suite contains eight cases, two per evaluator family:
+
+~~~text
+python_function       deterministic coding behavior
+structured_json       strict tool/action-shaped output
+review_findings       seeded defect precision + recall
+constraint_retention  exact long-context authority/runtime constraints
+~~~
+
+The suite file names the exact cases file. Loading the suite validates every
+case, records each case SHA-256, hashes the complete case map, and folds that
+cases hash into the suite SHA. Changing a prompt, evaluator specification, test
+vector, expected defect ID, or retained constraint therefore invalidates the
+quality evidence automatically.
+
+### Coding evaluator safety
+
+python_function cases do not treat arbitrary generated Python as trusted code.
+Candidate output must define exactly one requested function. Before execution,
+the evaluator rejects imports, attributes, dunder names, helper functions, and
+AST nodes outside a narrow allowlist. Direct calls are limited to a small set
+of safe builtins.
+
+Validated code then runs in an isolated Python child process with:
+
+~~~text
+python -I -S
+empty inherited environment
+1 second CPU resource limit
+256 MiB address-space limit
+2 second default wall timeout
+restricted builtin namespace
+fixed JSON-serializable test vectors
+~~~
+
+The evaluator records per-test expected/observed evidence and requires every
+test to pass.
+
+### Other evaluator families
+
+structured_json requires exact keys/values, can reject unexpected keys, and can
+forbid authority-bearing fields from becoming true.
+
+review_findings uses seeded defect IDs and records true positives, false
+positives, false negatives, precision, and recall. The current frozen cases
+require 100% precision and recall.
+
+constraint_retention requires exact case-sensitive control tokens and rejects
+forbidden authority-widening tokens.
+
+All evaluator details are stored under the existing acceptance_checks field.
+The same acceptance_passed bit therefore continues to gate counterfactual
+eligibility rather than introducing a second competing scoring system.
+
+### Run quality cases for one exact policy
+
+The replay runner accepts repeatable exact --policy-id filters. Example:
+
+~~~bash
+PYTHONPATH=src python scripts/run_assistx_inference_policy_experiment.py \
+  --cases examples/assistx-inference-policy-experiment/task-evaluator.cases.jsonl \
+  --matrix examples/assistx-inference-policy-experiment/matrix.soak.json \
+  --policy-id r9700-rocm-q4-dflash-32k-c1-soak \
+  --plan-out /tmp/r9700-dflash-32k-quality.plan.jsonl \
+  --execute \
+  --results-out /tmp/r9700-dflash-32k-quality.results.jsonl
+~~~
+
+The generated campaign command sheet performs this policy-by-policy so quality
+execution never requires all six runtimes to be simultaneously resident.
+
+### Aggregate policy quality evidence
+
+~~~bash
+PYTHONPATH=src python scripts/summarize_assistx_task_evaluator_results.py \
+  --suite examples/assistx-inference-policy-experiment/task-evaluator.suite.json \
+  --results /tmp/quality/*.results.jsonl \
+  --output /tmp/task-quality.evidence.json
+~~~
+
+A policy is eligible_for_training_evidence only when:
+
+~~~text
+all eight frozen cases are present exactly once
+every result case SHA matches the frozen suite case SHA
+the configured overall and per-evaluator pass thresholds are met
+required telemetry is valid
+execution_mode=observe_only
+allow_model_load=false
+every authority field remains false
+routing_authority_changed=false
+~~~
+
+The quality report cannot authorize production promotion or routing.
+
 ## 32K-to-128K campaign gate
 
 The paired soak can now be planned and evaluated as one immutable campaign
@@ -472,6 +576,7 @@ speculation: none, MTP, DFlash
 fresh stable/growing process pair: required
 same runtime revision across the pair: required
 same launch configuration across the pair: required
+task-specific quality evidence: required at 32K and 128K
 ~~~
 
 ### Compile the physical 32K campaign
@@ -481,6 +586,7 @@ PYTHONPATH=src python scripts/manage_assistx_soak_campaign.py plan \
   --config examples/assistx-inference-policy-experiment/campaign.32k-to-128k.json \
   --matrix examples/assistx-inference-policy-experiment/matrix.soak.json \
   --profiles examples/assistx-inference-policy-experiment/session-soak.profiles.json \
+  --task-quality-suite examples/assistx-inference-policy-experiment/task-evaluator.suite.json \
   --output /tmp/assistx-soak-campaign.plan.json \
   --commands-out /tmp/assistx-soak-campaign-32k.sh \
   --evidence-dir /tmp/assistx-soak-campaign
@@ -499,10 +605,11 @@ R9700 / ROCm   / Q4 / MTP
 R9700 / ROCm   / Q4 / DFlash
 ~~~
 
-Each candidate has a stable-prefix and growing-prefix run, for twelve physical
-32K runs total. The generated command sheet marks every run with a fresh-runtime
-boundary. It deliberately does not restart, clear, load, unload, or reconfigure
-the inference process.
+Each candidate has one eight-case task-quality run plus a stable-prefix and
+growing-prefix soak. The generated command sheet marks a fresh-runtime boundary
+before quality, stable, and growing execution. Quality execution must not warm
+the process later used for either soak mode. The sheet deliberately does not
+restart, clear, load, unload, or reconfigure the inference process itself.
 
 The operator must bind each command to the matching dedicated runtime and
 telemetry environment before executing it.
@@ -518,6 +625,8 @@ The campaign plan stores and hashes:
 - matching target policy ID + SHA-256;
 - node/backend/quant/speculation/model signature;
 - requested turn count;
+- exact task-quality suite ID + SHA-256;
+- exact validated task-quality cases SHA-256;
 - stable/growing run filenames and checkpoint locations;
 - all-false authority state.
 
@@ -532,6 +641,7 @@ After the physical 32K runs finish, evaluate their summaries:
 PYTHONPATH=src python scripts/manage_assistx_soak_campaign.py evaluate \
   --plan /tmp/assistx-soak-campaign.plan.json \
   --summaries /tmp/assistx-soak-campaign/*.summary.json \
+  --task-quality-evidence /tmp/assistx-soak-campaign/task-quality.evidence.json \
   --output /tmp/assistx-soak-campaign.evidence.json \
   --advance-commands-out /tmp/assistx-soak-campaign-128k.sh \
   --evidence-dir /tmp/assistx-soak-campaign-128k
@@ -551,6 +661,8 @@ internally consistent runtime identity
 same runtime revision across stable/growing
 same launch-config SHA across stable/growing
 different process-start identity across stable/growing
+exact frozen task-quality suite + cases hashes
+source policy quality eligible_for_training_evidence=true
 ~~~
 
 The different process-start requirement proves that the two cache/session modes
@@ -563,8 +675,10 @@ partial, or failed summaries fail the gate.
 
 ### Target-context command sheet
 
-The optional --advance-commands-out file contains only the 128K stable/growing
-runs corresponding to candidates that passed every 32K gate.
+The optional --advance-commands-out file contains only candidates that passed
+every 32K gate. For each eligible candidate it emits a fresh-process 128K
+task-quality run plus fresh stable-prefix and growing-prefix so target-context
+quality is re-proven rather than inherited from 32K.
 
 That file is still an operator command sheet, not an authorization mechanism.
 It does not start runtimes and does not execute automatically.
@@ -577,14 +691,15 @@ PYTHONPATH=src python scripts/manage_assistx_soak_campaign.py evaluate-target \
   --plan /tmp/assistx-soak-campaign.plan.json \
   --source-evidence /tmp/assistx-soak-campaign.evidence.json \
   --summaries /tmp/assistx-soak-campaign-128k/*.summary.json \
+  --task-quality-evidence /tmp/assistx-soak-campaign-128k/task-quality.evidence.json \
   --output /tmp/assistx-soak-campaign-128k.evidence.json
 ~~~
 
 The target-context evaluator first verifies that the source advancement evidence
 belongs to the same immutable campaign-plan hash. It then applies the same
 fresh-process, exact-profile, exact-policy, same-revision, same-launch-config,
-turn-completion, correctness, telemetry, and drift gates to each eligible 128K
-stable/growing pair.
+turn-completion, correctness, telemetry, drift, and exact task-quality gates to
+each eligible 128K stable/growing pair.
 
 The final result names only policies with a fully completed 128K benchmark pair
 under benchmark_complete_target_context_policies. This is a benchmark evidence
@@ -603,15 +718,15 @@ loading, claims, approvals, tools, or mutation authority.
 
 ## Next slices
 
-1. Run the generated physical 32K campaign, the gated 128K campaign, and
-   capture both immutable campaign evidence files.
-2. Add task-specific evaluators for real code, tool calls, reviews, and
-   project-specific long-context constraint retention.
-3. Add an integrated energy sampler and runtime-specific cache/reprocess
+1. Run the generated physical quality + 32K campaign, the gated quality +
+   128K campaign, and capture both immutable campaign evidence files.
+2. Add an integrated energy sampler and runtime-specific cache/reprocess
    adapters where the backend exposes trustworthy counters.
-4. Add true concurrency at 2/4/8 with trial-scoped telemetry attribution.
-5. Join accepted counterfactual + completed campaign evidence to my-jev
-   training/evaluation without granting the learned layer dispatch authority.
+3. Add true concurrency at 2/4/8 with trial-scoped telemetry attribution.
+4. Export accepted task-quality + counterfactual + completed campaign evidence
+   into a frozen my-jev training/evaluation dataset.
+5. Keep the learned layer advisory-only while measuring whether its policy
+   recommendations improve quality-adjusted latency on held-out AssistX turns.
 
 The promotion gate remains quality first: a faster policy matters only when it
 clears the task-specific acceptance threshold.
