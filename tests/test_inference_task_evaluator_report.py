@@ -44,6 +44,16 @@ def _rows(*, failed_case=None, telemetry_invalid_case=None):
                 "speculation": "dflash",
                 "success": not failed,
                 "acceptance_passed": not failed,
+                "execution_mode": "observe_only",
+                "allow_model_load": False,
+                "routing_authority_changed": False,
+                "authority": {
+                    "dispatch_allowed": False,
+                    "approval_granted": False,
+                    "claim_acquired": False,
+                    "mutation_allowed": False,
+                    "routing_authority_changed": False,
+                },
                 "telemetry_required": True,
                 "telemetry_valid": not telemetry_invalid,
             }
@@ -85,6 +95,16 @@ def test_invalid_telemetry_blocks_case_even_when_acceptance_passes():
     policy = report["policies"][0]
     assert policy["eligible_for_training_evidence"] is False
     assert "taskq-code-clamp" in policy["failed_case_ids"]
+
+
+def test_widened_authority_blocks_training_evidence():
+    suite = load_task_evaluator_suite(SUITE_PATH)
+    rows = _rows()
+    rows[0]["authority"]["mutation_allowed"] = True
+    report = summarize_task_evaluator_results(rows, suite)
+    policy = report["policies"][0]
+    assert policy["eligible_for_training_evidence"] is False
+    assert "taskq-code-sum-even" in policy["failed_case_ids"]
 
 
 def test_missing_case_blocks_complete_suite():
