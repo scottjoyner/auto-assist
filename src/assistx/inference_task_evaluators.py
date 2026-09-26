@@ -349,7 +349,19 @@ def _require_list(spec: dict[str, Any], field: str) -> list[Any]:
 def _python_runner_source() -> str:
     return r'''
 import json
+import resource
 import sys
+
+# Defense in depth for model-generated code. The parent process already
+# validates the AST; the child additionally limits CPU and address space.
+try:
+    resource.setrlimit(resource.RLIMIT_CPU, (1, 1))
+    resource.setrlimit(
+        resource.RLIMIT_AS,
+        (256 * 1024 * 1024, 256 * 1024 * 1024),
+    )
+except Exception:
+    pass
 
 payload = json.loads(sys.stdin.read())
 safe_builtin_names = payload["safe_calls"]
