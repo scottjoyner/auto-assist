@@ -234,6 +234,16 @@ def compile_campaign_plan(
             if task_quality_suite is not None
             else None
         ),
+        "task_quality_cases_file": (
+            task_quality_suite["cases_file"]
+            if task_quality_suite is not None
+            else None
+        ),
+        "task_quality_cases_sha256": (
+            task_quality_suite["cases_sha256"]
+            if task_quality_suite is not None
+            else None
+        ),
         "turns": config["turns"],
         "requirements": {
             "fresh_process_pair": config[
@@ -531,6 +541,10 @@ def _validate_task_quality_report(
         "task_quality_suite_sha256"
     ):
         raise ValueError("task quality evidence suite hash mismatch")
+    if report.get("cases_sha256") != plan.get(
+        "task_quality_cases_sha256"
+    ):
+        raise ValueError("task quality evidence cases hash mismatch")
     if report.get("production_promotion_authorized") is not False:
         raise ValueError(
             "task quality evidence cannot authorize production promotion"
