@@ -45,11 +45,19 @@ def _render_commands(plan: dict[str, Any], output_dir: str) -> str:
         "set -euo pipefail",
         "",
         "# Generated AssistX soak campaign command sheet.",
-        "# It does NOT start/restart inference runtimes.",
-        "# Before each command, bind the matching runtime/telemetry env vars",
-        "# to a freshly started dedicated process with frozen revision/launch SHA.",
+        "# A configured ASSISTX_POLICY_RUNTIME_HOOK may prepare a fresh",
+        "# benchmark-only runtime before each physical execution.",
+        "# Without that hook, the operator remains responsible for freshness.",
         "",
         f"OUT={json.dumps(output_dir)}",
+        'prepare_runtime() {',
+        '  local policy_id="$1"',
+        '  local phase="$2"',
+        '  if [[ -n "${ASSISTX_POLICY_RUNTIME_HOOK:-}" ]]; then',
+        '    test -x "${ASSISTX_POLICY_RUNTIME_HOOK}"',
+        '    "${ASSISTX_POLICY_RUNTIME_HOOK}" prepare "${policy_id}" "${phase}"',
+        '  fi',
+        '}',
         'mkdir -p "$OUT"',
         "",
     ]
@@ -80,6 +88,11 @@ def _render_commands(plan: dict[str, Any], output_dir: str) -> str:
                         + candidate["source_policy_id"]
                     ),
                     (
+                        "prepare_runtime "
+                        f"{json.dumps(candidate['source_policy_id'])} "
+                        '"task_quality"'
+                    ),
+                    (
                         "PYTHONPATH=src python "
                         "scripts/run_assistx_inference_policy_experiment.py "
                         f"--cases {json.dumps(plan['task_quality_cases_file'])} "
@@ -106,6 +119,11 @@ def _render_commands(plan: dict[str, Any], output_dir: str) -> str:
                         + mode
                         + " for policy "
                         + candidate["source_policy_id"]
+                    ),
+                    (
+                        "prepare_runtime "
+                        f"{json.dumps(candidate['source_policy_id'])} "
+                        f"{json.dumps(mode)}"
                     ),
                     (
                         "PYTHONPATH=src python "
@@ -163,9 +181,18 @@ def _render_advance_commands(
         "",
         "# Generated AssistX target-context command sheet.",
         "# Contains only candidates that cleared the source-context gate.",
-        "# It does NOT start/restart inference runtimes.",
+        "# A configured ASSISTX_POLICY_RUNTIME_HOOK may prepare a fresh",
+        "# benchmark-only runtime before each physical execution.",
         "",
         f"OUT={json.dumps(output_dir)}",
+        'prepare_runtime() {',
+        '  local policy_id="$1"',
+        '  local phase="$2"',
+        '  if [[ -n "${ASSISTX_POLICY_RUNTIME_HOOK:-}" ]]; then',
+        '    test -x "${ASSISTX_POLICY_RUNTIME_HOOK}"',
+        '    "${ASSISTX_POLICY_RUNTIME_HOOK}" prepare "${policy_id}" "${phase}"',
+        '  fi',
+        '}',
         'mkdir -p "$OUT"',
         "",
     ]
@@ -212,6 +239,11 @@ def _render_advance_commands(
                         "task-quality evaluation"
                     ),
                     (
+                        "prepare_runtime "
+                        f"{json.dumps(target_policy_id)} "
+                        '"task_quality"'
+                    ),
+                    (
                         "PYTHONPATH=src python "
                         "scripts/run_assistx_inference_policy_experiment.py "
                         f"--cases {json.dumps(plan['task_quality_cases_file'])} "
@@ -239,6 +271,11 @@ def _render_advance_commands(
                     (
                         "# FRESH TARGET-CONTEXT RUNTIME REQUIRED before "
                         + mode
+                    ),
+                    (
+                        "prepare_runtime "
+                        f"{json.dumps(target_policy_id)} "
+                        f"{json.dumps(mode)}"
                     ),
                     (
                         "PYTHONPATH=src python "
