@@ -34,6 +34,16 @@ def load_task_evaluator_suite(path: str | Path) -> dict[str, Any]:
     overall = float(raw.get("minimum_overall_pass_rate", 1.0))
     if not 0.0 <= overall <= 1.0:
         raise ValueError("minimum_overall_pass_rate must be 0..1")
+    authority = raw.get("authority")
+    if authority is not None:
+        if not isinstance(authority, dict):
+            raise ValueError("suite authority must be an object")
+        for field in DEFAULT_AUTHORITY:
+            if authority.get(field, False) is not False:
+                raise ValueError(
+                    f"suite authority.{field} must remain false"
+                )
+
     normalized = {
         **raw,
         "schema": "assistx-task-evaluator-suite-v1",
@@ -167,9 +177,21 @@ def summarize_task_evaluator_results(
 
 
 def _row_passed(row: dict[str, Any]) -> bool:
+    authority = row.get("authority")
+    authority_safe = (
+        isinstance(authority, dict)
+        and all(
+            authority.get(field, False) is False
+            for field in DEFAULT_AUTHORITY
+        )
+    )
     return (
         row.get("success") is True
         and row.get("acceptance_passed") is True
+        and row.get("execution_mode") == "observe_only"
+        and row.get("allow_model_load") is False
+        and row.get("routing_authority_changed") is False
+        and authority_safe
         and (
             row.get("telemetry_required") is not True
             or row.get("telemetry_valid") is True
