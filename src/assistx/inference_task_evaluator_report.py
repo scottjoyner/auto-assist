@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
-from .inference_policy_experiment import DEFAULT_AUTHORITY, canonical_sha256
+from .inference_policy_experiment import (
+    DEFAULT_AUTHORITY,
+    canonical_sha256,
+    load_cases,
+)
 
 TASK_EVAL_REPORT_SCHEMA = "assistx-task-evaluator-report-v1"
 
@@ -34,6 +38,29 @@ def load_task_evaluator_suite(path: str | Path) -> dict[str, Any]:
     overall = float(raw.get("minimum_overall_pass_rate", 1.0))
     if not 0.0 <= overall <= 1.0:
         raise ValueError("minimum_overall_pass_rate must be 0..1")
+    cases_file = str(raw.get("cases_file") or "").strip()
+    if not cases_file:
+        raise ValueError("task evaluator suite cases_file is required")
+    cases = load_cases(cases_file)
+    case_by_id = {
+        str(case["case_id"]): case
+        for case in cases
+    }
+    if set(case_by_id) != set(ids):
+        raise ValueError(
+            "task evaluator suite required_case_ids must exactly match "
+            "the cases file"
+        )
+    for case in cases:
+        if case.get("evaluation_suite") != suite_id:
+            raise ValueError(
+                f"{case['case_id']}: evaluation_suite must be {suite_id}"
+            )
+    case_sha256_by_id = {
+        case_id: str(case_by_id[case_id]["case_sha256"])
+        for case_id in sorted(case_by_id)
+    }
+
     authority = raw.get("authority")
     if authority is not None:
         if not isinstance(authority, dict):
@@ -51,6 +78,9 @@ def load_task_evaluator_suite(path: str | Path) -> dict[str, Any]:
         "required_case_ids": ids,
         "minimum_pass_rate_by_kind": normalized_thresholds,
         "minimum_overall_pass_rate": overall,
+        "cases_file": cases_file,
+        "case_sha256_by_id": case_sha256_by_id,
+        "cases_sha256": canonical_sha256(case_sha256_by_id),
     }
     normalized["suite_sha256"] = canonical_sha256({
         key: value
@@ -92,10 +122,21 @@ def summarize_task_evaluator_results(
             row for case_id, row in case_rows.items()
             if case_id in required_case_ids
         ]
+        case_hash_mismatches = sorted(
+            str(row.get("case_id"))
+            for row in scored
+            if row.get("case_sha256")
+            != suite["case_sha256_by_id"].get(
+                str(row.get("case_id") or "")
+            )
+        )
         failed = sorted(
             str(row.get("case_id"))
             for row in scored
-            if not _row_passed(row)
+            if (
+                not _row_passed(row)
+                or str(row.get("case_id")) in case_hash_mismatches
+            )
         )
         by_kind: dict[str, list[dict[str, Any]]] = {}
         for row in scored:
@@ -128,6 +169,7 @@ def summarize_task_evaluator_results(
         complete = not missing and not unexpected
         eligible = (
             complete
+            and not case_hash_mismatches
             and overall_rate >= float(suite["minimum_overall_pass_rate"])
             and kind_gate_passed
         )
@@ -146,6 +188,7 @@ def summarize_task_evaluator_results(
                 "missing_case_ids": missing,
                 "unexpected_case_ids": unexpected,
                 "failed_case_ids": failed,
+                "case_hash_mismatch_ids": case_hash_mismatches,
                 "overall_pass_rate": round(overall_rate, 9),
                 "required_overall_pass_rate": suite["minimum_overall_pass_rate"],
                 "by_evaluator_kind": kind_rates,
@@ -158,6 +201,7 @@ def summarize_task_evaluator_results(
         "schema": TASK_EVAL_REPORT_SCHEMA,
         "suite_id": suite_id,
         "suite_sha256": suite["suite_sha256"],
+        "cases_sha256": suite["cases_sha256"],
         "required_case_ids": sorted(required_case_ids),
         "policy_count": len(policies),
         "policies": policies,
