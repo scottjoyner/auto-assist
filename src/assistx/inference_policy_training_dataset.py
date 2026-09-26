@@ -14,6 +14,11 @@ from .inference_policy_experiment import (
 
 BUNDLE_SCHEMA = "assistx-policy-training-bundle-v1"
 RECORD_SCHEMA = "assistx-policy-decision-record-v1"
+SOURCE_CAMPAIGN_SCHEMA = "assistx-inference-soak-campaign-evidence-v1"
+TARGET_CAMPAIGN_SCHEMA = (
+    "assistx-inference-soak-campaign-target-evidence-v1"
+)
+QUALITY_REPORT_SCHEMA = "assistx-task-evaluator-report-v1"
 SPLIT_SCHEMA = "sha256-ranked-group-v1"
 DEFAULT_SPLIT_FRACTIONS = {
     "train": 0.625,
@@ -90,6 +95,8 @@ def _validate_evidence_boundary(value: dict[str, Any], name: str) -> None:
 
 
 def _quality_policy_index(report: dict[str, Any], name: str) -> dict[str, dict[str, Any]]:
+    if report.get("schema") != QUALITY_REPORT_SCHEMA:
+        raise ValueError(f"{name}: quality report schema mismatch")
     _validate_evidence_boundary(report, name)
     policies = report.get("policies")
     if not isinstance(policies, list):
@@ -108,6 +115,8 @@ def _quality_policy_index(report: dict[str, Any], name: str) -> dict[str, dict[s
 
 
 def _source_admissible_ids(evidence: dict[str, Any]) -> set[str]:
+    if evidence.get("schema") != SOURCE_CAMPAIGN_SCHEMA:
+        raise ValueError("source campaign evidence schema mismatch")
     _validate_evidence_boundary(evidence, "source_campaign_evidence")
     rows = evidence.get("evaluated_candidates")
     if not isinstance(rows, list):
@@ -122,6 +131,8 @@ def _source_admissible_ids(evidence: dict[str, Any]) -> set[str]:
 
 
 def _target_admissible_ids(evidence: dict[str, Any]) -> set[str]:
+    if evidence.get("schema") != TARGET_CAMPAIGN_SCHEMA:
+        raise ValueError("target campaign evidence schema mismatch")
     _validate_evidence_boundary(evidence, "target_campaign_evidence")
     rows = evidence.get("benchmark_complete_target_context_policies")
     if not isinstance(rows, list):
@@ -353,6 +364,7 @@ def _record_for_group(
             "task_family": case["task_family"],
             "context_tokens": int(context_tokens),
             "best_wall_ms": best_wall,
+            "label_provenance": "quality_gated_counterfactual_latency",
             "tie_ratio": tie_ratio,
             "near_best_signature_ids": sorted(near_best),
             "candidate_evidence": {
