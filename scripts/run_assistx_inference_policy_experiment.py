@@ -72,6 +72,15 @@ def main() -> None:
     )
     parser.add_argument("--matrix", required=True, help="Inference-policy matrix JSON.")
     parser.add_argument(
+        "--policy-id",
+        action="append",
+        default=[],
+        help=(
+            "Optional exact policy ID to include. Repeat to select multiple "
+            "policies; omitted means all enabled matrix policies."
+        ),
+    )
+    parser.add_argument(
         "--plan-out",
         required=True,
         help="Compiled immutable trial plan JSONL.",
@@ -120,6 +129,25 @@ def main() -> None:
         else load_shadow_cases(args.shadow_export)
     )
     matrix = load_matrix(args.matrix)
+    if args.policy_id:
+        requested = set(args.policy_id)
+        available = {
+            str(policy["policy_id"])
+            for policy in matrix["policies"]
+        }
+        unknown = sorted(requested - available)
+        if unknown:
+            parser.error(
+                "unknown --policy-id value(s): " + ", ".join(unknown)
+            )
+        matrix = {
+            **matrix,
+            "policies": [
+                policy
+                for policy in matrix["policies"]
+                if policy["policy_id"] in requested
+            ],
+        }
     trials = compile_trials(cases, matrix)
 
     _write_jsonl(args.plan_out, [trial.as_dict() for trial in trials])
@@ -164,7 +192,14 @@ def main() -> None:
                 "trial_id": trial.trial_id,
                 "case_id": trial.case["case_id"],
                 "task_family": trial.case["task_family"],
+                "evaluation_suite": trial.case.get("evaluation_suite"),
+                "evaluator_kind": (
+                    ((trial.case.get("acceptance") or {}).get(
+                        "task_evaluator"
+                    ) or {}).get("kind")
+                ),
                 "policy_id": trial.policy["policy_id"],
+                "policy_sha256": trial.policy["policy_sha256"],
                 "node_id": trial.policy["node_id"],
                 "model_handle": trial.policy["model_handle"],
                 "backend": trial.policy["backend"],
@@ -174,6 +209,7 @@ def main() -> None:
                 "concurrency": trial.policy["concurrency"],
                 "execution_mode": "observe_only",
                 "allow_model_load": False,
+                "authority": dict(trial.policy["authority"]),
                 "routing_authority_changed": False,
                 "telemetry_required": True,
                 "telemetry_valid": False,
@@ -201,7 +237,14 @@ def main() -> None:
                 "trial_id": trial.trial_id,
                 "case_id": trial.case["case_id"],
                 "task_family": trial.case["task_family"],
+                "evaluation_suite": trial.case.get("evaluation_suite"),
+                "evaluator_kind": (
+                    ((trial.case.get("acceptance") or {}).get(
+                        "task_evaluator"
+                    ) or {}).get("kind")
+                ),
                 "policy_id": trial.policy["policy_id"],
+                "policy_sha256": trial.policy["policy_sha256"],
                 "node_id": trial.policy["node_id"],
                 "model_handle": trial.policy["model_handle"],
                 "backend": trial.policy["backend"],
@@ -211,6 +254,7 @@ def main() -> None:
                 "concurrency": trial.policy["concurrency"],
                 "execution_mode": "observe_only",
                 "allow_model_load": False,
+                "authority": dict(trial.policy["authority"]),
                 "routing_authority_changed": False,
                 "success": False,
                 "error": str(exc)[:600],
