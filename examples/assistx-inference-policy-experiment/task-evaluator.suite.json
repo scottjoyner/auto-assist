@@ -1,0 +1,29 @@
+{
+  "schema": "assistx-task-evaluator-suite-v1",
+  "suite_id": "assistx_task_quality.v1",
+  "description": "Deterministic offline quality suite for coding, structured tool output, code-review defect recall, and long-context authority/constraint retention.",
+  "required_case_ids": [
+    "taskq-code-sum-even",
+    "taskq-code-clamp",
+    "taskq-tool-health-json",
+    "taskq-tool-route-json",
+    "taskq-review-http-shell",
+    "taskq-review-file-config",
+    "taskq-context-runtime-boundary",
+    "taskq-context-authority-boundary"
+  ],
+  "minimum_overall_pass_rate": 1,
+  "minimum_pass_rate_by_kind": {
+    "python_function": 1,
+    "structured_json": 1,
+    "review_findings": 1,
+    "constraint_retention": 1
+  },
+  "authority": {
+    "dispatch_allowed": false,
+    "approval_granted": false,
+    "claim_acquired": false,
+    "mutation_allowed": false,
+    "routing_authority_changed": false
+  }
+}
