@@ -15,5 +15,6 @@
   ],
   "require_fresh_process_pair": true,
   "require_same_runtime_revision": true,
-  "require_same_launch_config": true
+  "require_same_launch_config": true,
+  "require_task_quality_evidence": true
 }
