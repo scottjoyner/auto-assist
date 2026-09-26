@@ -25,5 +25,6 @@
     "claim_acquired": false,
     "mutation_allowed": false,
     "routing_authority_changed": false
-  }
+  },
+  "cases_file": "examples/assistx-inference-policy-experiment/task-evaluator.cases.jsonl"
 }
