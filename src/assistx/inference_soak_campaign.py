@@ -9,6 +9,10 @@ from .inference_session_soak import (
     SOAK_SUMMARY_SCHEMA,
     load_soak_profile,
 )
+from .inference_task_evaluator_report import (
+    TASK_EVAL_REPORT_SCHEMA,
+    load_task_evaluator_suite,
+)
 
 CAMPAIGN_PLAN_SCHEMA = "assistx-inference-soak-campaign-plan-v1"
 CAMPAIGN_EVIDENCE_SCHEMA = "assistx-inference-soak-campaign-evidence-v1"
@@ -65,6 +69,9 @@ def validate_campaign_config(raw: dict[str, Any]) -> dict[str, Any]:
         "require_same_launch_config": bool(
             raw.get("require_same_launch_config", True)
         ),
+        "require_task_quality_evidence": bool(
+            raw.get("require_task_quality_evidence", False)
+        ),
     }
     normalized["config_sha256"] = canonical_sha256(
         {
@@ -82,6 +89,7 @@ def compile_campaign_plan(
     *,
     profiles_file: str,
     matrix_file: str,
+    task_quality_suite_file: str | None = None,
 ) -> dict[str, Any]:
     source_profile_id = _profile_id(config["source_context_tokens"])
     target_profile_id = _profile_id(config["target_context_tokens"])
@@ -101,6 +109,17 @@ def compile_campaign_plan(
         config["target_context_tokens"]
     ):
         raise ValueError("target soak profile context does not match campaign")
+
+    task_quality_suite = None
+    if config["require_task_quality_evidence"]:
+        if not task_quality_suite_file:
+            raise ValueError(
+                "task_quality_suite_file is required when "
+                "require_task_quality_evidence=true"
+            )
+        task_quality_suite = load_task_evaluator_suite(
+            task_quality_suite_file
+        )
 
     source_policies = _matching_policies(
         matrix,
@@ -204,6 +223,17 @@ def compile_campaign_plan(
         "source_profile_sha256": source_profile["profile_sha256"],
         "target_profile_id": target_profile["profile_id"],
         "target_profile_sha256": target_profile["profile_sha256"],
+        "task_quality_suite_file": task_quality_suite_file,
+        "task_quality_suite_id": (
+            task_quality_suite["suite_id"]
+            if task_quality_suite is not None
+            else None
+        ),
+        "task_quality_suite_sha256": (
+            task_quality_suite["suite_sha256"]
+            if task_quality_suite is not None
+            else None
+        ),
         "turns": config["turns"],
         "requirements": {
             "fresh_process_pair": config[
@@ -214,6 +244,9 @@ def compile_campaign_plan(
             ],
             "same_launch_config": config[
                 "require_same_launch_config"
+            ],
+            "task_quality_evidence": config[
+                "require_task_quality_evidence"
             ],
             "source_context_tokens": config[
                 "source_context_tokens"
@@ -259,9 +292,14 @@ def validate_campaign_plan(plan: Any) -> dict[str, Any]:
 def evaluate_campaign(
     plan: dict[str, Any],
     summaries: list[dict[str, Any]],
+    task_quality_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     plan = validate_campaign_plan(plan)
     by_key = _index_summaries(summaries)
+    quality_by_policy = _validate_task_quality_report(
+        plan,
+        task_quality_report,
+    )
 
     candidate_evidence: list[dict[str, Any]] = []
     eligible_target_policies: list[dict[str, Any]] = []
@@ -278,6 +316,35 @@ def evaluate_campaign(
             stable,
             growing,
         )
+        if plan["requirements"].get("task_quality_evidence"):
+            quality = quality_by_policy.get(
+                candidate["source_policy_id"]
+            )
+            checks["task_quality_evidence"] = {
+                "passed": (
+                    isinstance(quality, dict)
+                    and quality.get(
+                        "eligible_for_training_evidence"
+                    )
+                    is True
+                    and quality.get("policy_sha256")
+                    == candidate["source_policy_sha256"]
+                ),
+                "policy_id": candidate["source_policy_id"],
+                "expected_policy_sha256": candidate[
+                    "source_policy_sha256"
+                ],
+                "observed_policy_sha256": (
+                    quality.get("policy_sha256")
+                    if isinstance(quality, dict)
+                    else None
+                ),
+                "eligible_for_training_evidence": (
+                    quality.get("eligible_for_training_evidence")
+                    if isinstance(quality, dict)
+                    else None
+                ),
+            }
         eligible = all(
             value.get("passed") is True
             for value in checks.values()
@@ -321,6 +388,11 @@ def evaluate_campaign(
         "plan_sha256": plan["plan_sha256"],
         "evaluated_candidates": candidate_evidence,
         "eligible_target_context_policies": eligible_target_policies,
+        "task_quality_report_sha256": (
+            canonical_sha256(task_quality_report)
+            if isinstance(task_quality_report, dict)
+            else None
+        ),
         "production_promotion_authorized": False,
         "routing_authority_changed": False,
         "authority": dict(DEFAULT_AUTHORITY),
@@ -436,6 +508,61 @@ def evaluate_target_context(
             "model loading, claims, approvals, tools, or mutation."
         ),
     }
+
+
+def _validate_task_quality_report(
+    plan: dict[str, Any],
+    report: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    required = bool(
+        plan.get("requirements", {}).get("task_quality_evidence")
+    )
+    if not required:
+        return {}
+    if not isinstance(report, dict):
+        raise ValueError(
+            "task quality evidence is required by the campaign plan"
+        )
+    if report.get("schema") != TASK_EVAL_REPORT_SCHEMA:
+        raise ValueError("task quality evidence schema mismatch")
+    if report.get("suite_id") != plan.get("task_quality_suite_id"):
+        raise ValueError("task quality evidence suite_id mismatch")
+    if report.get("suite_sha256") != plan.get(
+        "task_quality_suite_sha256"
+    ):
+        raise ValueError("task quality evidence suite hash mismatch")
+    if report.get("production_promotion_authorized") is not False:
+        raise ValueError(
+            "task quality evidence cannot authorize production promotion"
+        )
+    if report.get("routing_authority_changed") is not False:
+        raise ValueError(
+            "task quality evidence cannot change routing authority"
+        )
+    authority = report.get("authority")
+    if not isinstance(authority, dict):
+        raise ValueError("task quality evidence authority is missing")
+    if any(bool(authority.get(field, False)) for field in DEFAULT_AUTHORITY):
+        raise ValueError(
+            "task quality evidence authority must remain all-false"
+        )
+
+    policies = report.get("policies")
+    if not isinstance(policies, list):
+        raise ValueError("task quality evidence policies must be a list")
+    indexed: dict[str, dict[str, Any]] = {}
+    for policy in policies:
+        if not isinstance(policy, dict):
+            continue
+        policy_id = str(policy.get("policy_id") or "")
+        if not policy_id:
+            continue
+        if policy_id in indexed:
+            raise ValueError(
+                f"duplicate task quality policy evidence: {policy_id}"
+            )
+        indexed[policy_id] = policy
+    return indexed
 
 
 def _validate_source_evidence(
