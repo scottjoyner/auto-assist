@@ -1,0 +1,20 @@
+{
+  "schema": "assistx-inference-soak-campaign-config-v1",
+  "campaign_id": "assistx-qwen38-q4-32k-to-128k-v1",
+  "source_context_tokens": 32768,
+  "target_context_tokens": 131072,
+  "turns": 100,
+  "nodes": [
+    "x1-370",
+    "r9700"
+  ],
+  "speculations": [
+    "none",
+    "mtp",
+    "dflash"
+  ],
+  "require_fresh_process_pair": true,
+  "require_same_runtime_revision": true,
+  "require_same_launch_config": true,
+  "require_task_quality_evidence": true
+}

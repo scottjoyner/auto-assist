@@ -1,0 +1,328 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import Any
+
+from assistx.inference_policy_experiment import (
+    compile_trials,
+    execute_trial,
+    load_cases,
+    load_matrix,
+    load_shadow_cases,
+    summarize_counterfactuals,
+)
+from assistx.runtime_telemetry_observer import (
+    capture_runtime_snapshot,
+    correlate_join_with_result,
+    join_runtime_snapshots,
+)
+
+
+def _write_jsonl(path: str | Path, rows: list[dict[str, Any]]) -> None:
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(
+                json.dumps(
+                    row,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
+                + "\n"
+            )
+
+
+def _write_json(path: str | Path, value: dict[str, Any]) -> None:
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+            default=str,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Compile or execute the phase-1 AssistX inference-policy replay "
+            "experiment. Planning is the default; --execute is required for "
+            "network inference."
+        )
+    )
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--cases", help="Normalized replay cases JSONL.")
+    source.add_argument(
+        "--shadow-export",
+        help=(
+            "JSONL from scripts/export_my_jev_policy_shadow.py. "
+            "Rows are converted to unscored replay cases."
+        ),
+    )
+    parser.add_argument("--matrix", required=True, help="Inference-policy matrix JSON.")
+    parser.add_argument(
+        "--policy-id",
+        action="append",
+        default=[],
+        help=(
+            "Optional exact policy ID to include. Repeat to select multiple "
+            "policies; omitted means all enabled matrix policies."
+        ),
+    )
+    parser.add_argument(
+        "--plan-out",
+        required=True,
+        help="Compiled immutable trial plan JSONL.",
+    )
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help=(
+            "Actually call configured, already-running inference endpoints. "
+            "The harness never loads/unloads models."
+        ),
+    )
+    parser.add_argument(
+        "--results-out",
+        help="Required with --execute; result JSONL.",
+    )
+    parser.add_argument(
+        "--summary-out",
+        help="Optional counterfactual summary JSON.",
+    )
+    parser.add_argument(
+        "--baseline-policy-id",
+        help="Optional baseline policy for per-case speedup evidence.",
+    )
+    parser.add_argument("--max-tokens", type=int, default=256)
+    parser.add_argument("--timeout-seconds", type=float, default=180.0)
+    parser.add_argument(
+        "--telemetry-timeout-seconds",
+        type=float,
+        default=5.0,
+        help="Timeout for read-only runtime telemetry snapshots.",
+    )
+    parser.add_argument(
+        "--include-output",
+        action="store_true",
+        help=(
+            "Store generated text in result rows. Default stores only "
+            "hash/length and acceptance evidence."
+        ),
+    )
+    args = parser.parse_args()
+
+    cases = (
+        load_cases(args.cases)
+        if args.cases
+        else load_shadow_cases(args.shadow_export)
+    )
+    matrix = load_matrix(args.matrix)
+    if args.policy_id:
+        requested = set(args.policy_id)
+        available = {
+            str(policy["policy_id"])
+            for policy in matrix["policies"]
+        }
+        unknown = sorted(requested - available)
+        if unknown:
+            parser.error(
+                "unknown --policy-id value(s): " + ", ".join(unknown)
+            )
+        matrix = {
+            **matrix,
+            "policies": [
+                policy
+                for policy in matrix["policies"]
+                if policy["policy_id"] in requested
+            ],
+        }
+    trials = compile_trials(cases, matrix)
+
+    _write_jsonl(args.plan_out, [trial.as_dict() for trial in trials])
+
+    plan_summary = {
+        "schema": "assistx-inference-policy-plan-summary-v1",
+        "cases": len(cases),
+        "policies": len(
+            [
+                policy
+                for policy in matrix["policies"]
+                if policy.get("enabled", True)
+            ]
+        ),
+        "trials": len(trials),
+        "network_executed": False,
+        "allow_model_load": False,
+        "routing_authority_changed": False,
+        "plan_out": args.plan_out,
+    }
+
+    if not args.execute:
+        print(json.dumps(plan_summary, indent=2, sort_keys=True))
+        return
+
+    if not args.results_out:
+        parser.error("--results-out is required with --execute")
+
+    results: list[dict[str, Any]] = []
+    for trial in trials:
+        telemetry_required = bool(
+            trial.policy.get("telemetry_required", False)
+        )
+        before = capture_runtime_snapshot(
+            trial.policy,
+            trial_id=trial.trial_id,
+            timeout_s=max(1.0, args.telemetry_timeout_seconds),
+        )
+        if telemetry_required and not before.get("valid"):
+            result = {
+                "schema": "assistx-inference-policy-result-v1",
+                "trial_id": trial.trial_id,
+                "case_id": trial.case["case_id"],
+                "case_sha256": trial.case["case_sha256"],
+                "task_family": trial.case["task_family"],
+                "evaluation_suite": trial.case.get("evaluation_suite"),
+                "evaluator_kind": (
+                    ((trial.case.get("acceptance") or {}).get(
+                        "task_evaluator"
+                    ) or {}).get("kind")
+                ),
+                "policy_id": trial.policy["policy_id"],
+                "policy_sha256": trial.policy["policy_sha256"],
+                "node_id": trial.policy["node_id"],
+                "model_handle": trial.policy["model_handle"],
+                "backend": trial.policy["backend"],
+                "quantization": trial.policy["quantization"],
+                "speculation": trial.policy["speculation"],
+                "context_tokens": trial.policy["context_tokens"],
+                "concurrency": trial.policy["concurrency"],
+                "execution_mode": "observe_only",
+                "allow_model_load": False,
+                "authority": dict(trial.policy["authority"]),
+                "routing_authority_changed": False,
+                "telemetry_required": True,
+                "telemetry_valid": False,
+                "runtime_telemetry": before,
+                "success": False,
+                "error": (
+                    "required telemetry preflight failed: "
+                    + str(before.get("reason") or "unknown")
+                )[:600],
+                "acceptance_passed": None,
+            }
+            results.append(result)
+            continue
+
+        try:
+            result = execute_trial(
+                trial,
+                max_tokens=max(1, args.max_tokens),
+                timeout_s=max(1.0, args.timeout_seconds),
+                include_output=args.include_output,
+            )
+        except Exception as exc:
+            result = {
+                "schema": "assistx-inference-policy-result-v1",
+                "trial_id": trial.trial_id,
+                "case_id": trial.case["case_id"],
+                "case_sha256": trial.case["case_sha256"],
+                "task_family": trial.case["task_family"],
+                "evaluation_suite": trial.case.get("evaluation_suite"),
+                "evaluator_kind": (
+                    ((trial.case.get("acceptance") or {}).get(
+                        "task_evaluator"
+                    ) or {}).get("kind")
+                ),
+                "policy_id": trial.policy["policy_id"],
+                "policy_sha256": trial.policy["policy_sha256"],
+                "node_id": trial.policy["node_id"],
+                "model_handle": trial.policy["model_handle"],
+                "backend": trial.policy["backend"],
+                "quantization": trial.policy["quantization"],
+                "speculation": trial.policy["speculation"],
+                "context_tokens": trial.policy["context_tokens"],
+                "concurrency": trial.policy["concurrency"],
+                "execution_mode": "observe_only",
+                "allow_model_load": False,
+                "authority": dict(trial.policy["authority"]),
+                "routing_authority_changed": False,
+                "success": False,
+                "error": str(exc)[:600],
+                "acceptance_passed": None,
+            }
+
+        after = capture_runtime_snapshot(
+            trial.policy,
+            trial_id=trial.trial_id,
+            timeout_s=max(1.0, args.telemetry_timeout_seconds),
+        )
+        joined = join_runtime_snapshots(
+            before,
+            after,
+            trial.policy,
+            trial_id=trial.trial_id,
+        )
+        joined = correlate_join_with_result(
+            joined,
+            result,
+        )
+        result["telemetry_required"] = telemetry_required
+        result["telemetry_valid"] = bool(joined.get("valid"))
+        result["runtime_telemetry"] = joined
+        if telemetry_required and not joined.get("valid"):
+            result["success"] = False
+            detail = str(
+                joined.get("reason")
+                or "required telemetry join failed"
+            )
+            existing = str(result.get("error") or "").strip()
+            result["error"] = (
+                existing + ("; " if existing else "") + detail
+            )[:600]
+        results.append(result)
+
+    _write_jsonl(args.results_out, results)
+
+    summary = summarize_counterfactuals(
+        results,
+        baseline_policy_id=args.baseline_policy_id,
+    )
+    if args.summary_out:
+        _write_json(args.summary_out, summary)
+
+    print(
+        json.dumps(
+            {
+                **plan_summary,
+                "network_executed": True,
+                "results_out": args.results_out,
+                "summary_out": args.summary_out,
+                "successful_trials": sum(
+                    1 for row in results if row.get("success") is True
+                ),
+                "accepted_trials": sum(
+                    1
+                    for row in results
+                    if row.get("acceptance_passed") is True
+                ),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()
