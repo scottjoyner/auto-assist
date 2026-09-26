@@ -497,6 +497,13 @@ def build_policy_training_bundle(
     )
     for record in records:
         record["split"] = split_by_group[str(record["group_id"])]
+        record["record_sha256"] = canonical_sha256(
+            {
+                key: value
+                for key, value in record.items()
+                if key != "record_sha256"
+            }
+        )
 
     records.sort(key=lambda row: (str(row["split"]), str(row["record_id"])))
     split_counts = {
