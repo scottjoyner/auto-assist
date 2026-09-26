@@ -53,6 +53,7 @@ def _render_commands(plan: dict[str, Any], output_dir: str) -> str:
         'mkdir -p "$OUT"',
         "",
     ]
+    quality_result_files: list[str] = []
     for candidate in plan.get("candidates") or []:
         lines.extend(
             [
@@ -66,6 +67,35 @@ def _render_commands(plan: dict[str, Any], output_dir: str) -> str:
                 ),
             ]
         )
+        if plan.get("requirements", {}).get("task_quality_evidence"):
+            quality_stem = candidate["candidate_id"] + ".task-quality"
+            quality_result = quality_stem + ".results.jsonl"
+            quality_result_files.append(quality_result)
+            lines.extend(
+                [
+                    "",
+                    (
+                        "# FRESH RUNTIME REQUIRED before task-quality "
+                        "evaluation for policy "
+                        + candidate["source_policy_id"]
+                    ),
+                    (
+                        "PYTHONPATH=src python "
+                        "scripts/run_assistx_inference_policy_experiment.py "
+                        f"--cases {json.dumps(plan['task_quality_cases_file'])} "
+                        f"--matrix {json.dumps(plan['matrix_file'])} "
+                        f"--policy-id {json.dumps(candidate['source_policy_id'])} "
+                        f"--plan-out \"$OUT/{quality_stem}.plan.jsonl\" "
+                        "--execute "
+                        f"--results-out \"$OUT/{quality_result}\""
+                    ),
+                    (
+                        "# Restart/rebind a fresh runtime again before "
+                        "stable-prefix soak; quality execution must not warm "
+                        "the soak process."
+                    ),
+                ]
+            )
         for run in candidate.get("runs") or []:
             mode = run["mode"]
             lines.extend(
@@ -95,6 +125,23 @@ def _render_commands(plan: dict[str, Any], output_dir: str) -> str:
                 ]
             )
         lines.append("")
+    if quality_result_files:
+        quoted_results = " ".join(
+            f'\"$OUT/{name}\"' for name in quality_result_files
+        )
+        lines.extend(
+            [
+                "# Aggregate source-context task-quality evidence:",
+                (
+                    "PYTHONPATH=src python "
+                    "scripts/summarize_assistx_task_evaluator_results.py "
+                    f"--suite {json.dumps(plan['task_quality_suite_file'])} "
+                    f"--results {quoted_results} "
+                    '--output "$OUT/task-quality.evidence.json"'
+                ),
+                "",
+            ]
+        )
     lines.extend(
         [
             "# After every 32K pair is complete, evaluate advancement:",
@@ -200,6 +247,13 @@ def main() -> None:
     plan_parser.add_argument("--config", required=True)
     plan_parser.add_argument("--matrix", required=True)
     plan_parser.add_argument("--profiles", required=True)
+    plan_parser.add_argument(
+        "--task-quality-suite",
+        help=(
+            "Frozen task-quality suite JSON. Required when the campaign "
+            "configuration requires task-quality evidence."
+        ),
+    )
     plan_parser.add_argument("--output", required=True)
     plan_parser.add_argument("--commands-out")
     plan_parser.add_argument(
@@ -215,6 +269,10 @@ def main() -> None:
         required=True,
     )
     eval_parser.add_argument("--output", required=True)
+    eval_parser.add_argument(
+        "--task-quality-evidence",
+        help="Policy-level task-quality evidence JSON.",
+    )
     eval_parser.add_argument("--advance-commands-out")
     eval_parser.add_argument(
         "--evidence-dir",
@@ -241,6 +299,7 @@ def main() -> None:
             matrix,
             profiles_file=args.profiles,
             matrix_file=args.matrix,
+            task_quality_suite_file=args.task_quality_suite,
         )
         _write_json(args.output, plan)
         if args.commands_out:
@@ -307,7 +366,16 @@ def main() -> None:
         )
         return
 
-    evidence = evaluate_campaign(plan, summaries)
+    task_quality_report = (
+        _load_json(args.task_quality_evidence)
+        if args.task_quality_evidence
+        else None
+    )
+    evidence = evaluate_campaign(
+        plan,
+        summaries,
+        task_quality_report=task_quality_report,
+    )
     _write_json(args.output, evidence)
     if args.advance_commands_out:
         commands_path = Path(args.advance_commands_out)
