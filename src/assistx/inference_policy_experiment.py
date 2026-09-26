@@ -10,6 +10,11 @@ from typing import Any, Iterable
 
 import requests
 
+from .inference_task_evaluators import (
+    evaluate_task_output,
+    validate_task_evaluator_spec,
+)
+
 AUTHORITY_FIELDS = (
     "dispatch_allowed",
     "approval_granted",
@@ -147,6 +152,14 @@ def validate_cases(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             acceptance = {}
         if not isinstance(acceptance, dict):
             raise ValueError(f"{case_id}: acceptance must be an object")
+        task_evaluator = acceptance.get("task_evaluator")
+        if task_evaluator is not None:
+            acceptance = {
+                **acceptance,
+                "task_evaluator": validate_task_evaluator_spec(
+                    task_evaluator
+                ),
+            }
 
         result.append(
             {
@@ -440,6 +453,18 @@ def evaluate_acceptance(
             "missing": missing_keys,
         }
 
+    task_evaluator = acceptance.get("task_evaluator")
+    if isinstance(task_evaluator, dict):
+        has_rule = True
+        evaluator_passed, evaluator_details = evaluate_task_output(
+            output_text,
+            task_evaluator,
+        )
+        checks["task_evaluator"] = {
+            **evaluator_details,
+            "passed": evaluator_passed,
+        }
+
     if not has_rule:
         return None, checks
     passed = all(
@@ -616,6 +641,19 @@ def execute_trial(
         "case_id": trial.case["case_id"],
         "case_sha256": trial.case["case_sha256"],
         "task_family": trial.case["task_family"],
+        "evaluation_suite": trial.case.get("evaluation_suite"),
+        "evaluator_kind": (
+            (trial.case.get("acceptance") or {})
+            .get("task_evaluator", {})
+            .get("kind")
+            if isinstance(
+                (trial.case.get("acceptance") or {}).get(
+                    "task_evaluator"
+                ),
+                dict,
+            )
+            else None
+        ),
         "policy_id": policy["policy_id"],
         "policy_sha256": policy["policy_sha256"],
         "node_id": policy["node_id"],
