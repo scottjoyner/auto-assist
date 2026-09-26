@@ -173,6 +173,7 @@ def _render_advance_commands(
         candidate["candidate_id"]: candidate
         for candidate in plan.get("candidates") or []
     }
+    target_quality_result_files: list[str] = []
     for eligible in evidence.get(
         "eligible_target_context_policies"
     ) or []:
@@ -195,6 +196,37 @@ def _render_advance_commands(
                 ),
             ]
         )
+        if plan.get("requirements", {}).get(
+            "task_quality_evidence"
+        ):
+            quality_stem = (
+                candidate["candidate_id"] + ".target.task-quality"
+            )
+            quality_result = quality_stem + ".results.jsonl"
+            target_quality_result_files.append(quality_result)
+            lines.extend(
+                [
+                    "",
+                    (
+                        "# FRESH TARGET-CONTEXT RUNTIME REQUIRED before "
+                        "task-quality evaluation"
+                    ),
+                    (
+                        "PYTHONPATH=src python "
+                        "scripts/run_assistx_inference_policy_experiment.py "
+                        f"--cases {json.dumps(plan['task_quality_cases_file'])} "
+                        f"--matrix {json.dumps(plan['matrix_file'])} "
+                        f"--policy-id {json.dumps(target_policy_id)} "
+                        f"--plan-out \"$OUT/{quality_stem}.plan.jsonl\" "
+                        "--execute "
+                        f"--results-out \"$OUT/{quality_result}\""
+                    ),
+                    (
+                        "# Restart/rebind a fresh target-context runtime "
+                        "again before stable-prefix soak."
+                    ),
+                ]
+            )
         for mode in ("stable_prefix", "growing_prefix"):
             stem = (
                 candidate["candidate_id"]
@@ -226,6 +258,24 @@ def _render_advance_commands(
                 ]
             )
         lines.append("")
+    if target_quality_result_files:
+        quoted_results = " ".join(
+            f'\"$OUT/{name}\"'
+            for name in target_quality_result_files
+        )
+        lines.extend(
+            [
+                "",
+                "# Aggregate target-context task-quality evidence:",
+                (
+                    "PYTHONPATH=src python "
+                    "scripts/summarize_assistx_task_evaluator_results.py "
+                    f"--suite {json.dumps(plan['task_quality_suite_file'])} "
+                    f"--results {quoted_results} "
+                    '--output "$OUT/task-quality.evidence.json"'
+                ),
+            ]
+        )
     if not evidence.get("eligible_target_context_policies"):
         lines.append(
             "# No source-context candidates were eligible for target-context execution."
@@ -283,6 +333,10 @@ def main() -> None:
     target_parser.add_argument("--plan", required=True)
     target_parser.add_argument("--source-evidence", required=True)
     target_parser.add_argument(
+        "--task-quality-evidence",
+        help="Target-context policy-level task-quality evidence JSON.",
+    )
+    target_parser.add_argument(
         "--summaries",
         nargs="+",
         required=True,
@@ -338,10 +392,16 @@ def main() -> None:
 
     if args.command == "evaluate-target":
         source_evidence = _load_json(args.source_evidence)
+        task_quality_report = (
+            _load_json(args.task_quality_evidence)
+            if args.task_quality_evidence
+            else None
+        )
         evidence = evaluate_target_context(
             plan,
             source_evidence,
             summaries,
+            task_quality_report=task_quality_report,
         )
         _write_json(args.output, evidence)
         print(
