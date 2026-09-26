@@ -716,17 +716,130 @@ routing_authority_changed=false
 It never means admitted to production AssistX routing, runtime discovery, model
 loading, claims, approvals, tools, or mutation authority.
 
+## Frozen my-jev policy training bundle
+
+After both the 32K and 128K quality-first campaign gates are complete, the
+accepted raw replay evidence can be frozen into a native my-jev decision bundle.
+
+The exporter consumes:
+
+- exact validated request/case JSONL;
+- the exact 32K/128K policy matrix;
+- raw per-policy quality replay result JSONL from both contexts;
+- source campaign advancement evidence;
+- target campaign completion evidence;
+- source task-quality evidence;
+- target task-quality evidence;
+- the exact auto-assist producer git SHA.
+
+Example:
+
+~~~bash
+PYTHONPATH=src python scripts/export_assistx_policy_training_bundle.py \
+  --cases examples/assistx-inference-policy-experiment/task-evaluator.cases.jsonl \
+  --matrix examples/assistx-inference-policy-experiment/matrix.soak.json \
+  --results /tmp/assistx-soak-campaign/*.task-quality.results.jsonl \
+            /tmp/assistx-soak-campaign-128k/*.target.task-quality.results.jsonl \
+  --source-campaign-evidence /tmp/assistx-soak-campaign.evidence.json \
+  --target-campaign-evidence /tmp/assistx-soak-campaign-128k.evidence.json \
+  --source-quality-evidence /tmp/assistx-soak-campaign/task-quality.evidence.json \
+  --target-quality-evidence /tmp/assistx-soak-campaign-128k/task-quality.evidence.json \
+  --producer-git-sha "$(git rev-parse HEAD)" \
+  --output-dir /tmp/assistx-policy-training-v1
+~~~
+
+The bundle never derives a label from a failed policy. A policy is eligible as
+an option only when all of the following are true:
+
+~~~text
+campaign-admissible at that context
+task-quality eligible_for_training_evidence=true
+exact policy SHA match
+exact case SHA match
+request success=true
+deterministic acceptance=true
+required telemetry valid
+execution_mode=observe_only
+allow_model_load=false
+routing_authority_changed=false
+all authority fields false
+positive measured wall_ms
+~~~
+
+Each request/context becomes one dynamic choice question over the remaining
+execution-policy signatures. The target is the lowest observed latency among
+those accepted options. To avoid turning measurement noise into false hard
+labels, every option within the configured multiplicative near-best ratio
+(default 1.03) shares target probability mass equally.
+
+Policy IDs are normalized into context-independent execution signatures using:
+
+~~~text
+node
+opaque model handle
+backend
+quantization
+speculation mode
+concurrency
+~~~
+
+Context length remains part of the request state, so the 32K and 128K instances
+of the same execution strategy use the same option identity while retaining
+different measured outcomes.
+
+### Frozen split discipline
+
+The bundle uses a deterministic SHA-256 ranked group split:
+
+~~~text
+train       62.5%
+validation  12.5%
+calibration 12.5%
+test        12.5%
+~~~
+
+The split unit is the request/case group, not the request/context record. A
+case's 32K and 128K records therefore always stay in the same partition.
+
+The final manifest binds:
+
+- exact producer repository + git SHA;
+- exact source files and hashes;
+- source/target campaign evidence hashes;
+- source/target task-quality evidence hashes;
+- every finalized record SHA including its split assignment;
+- ordered aggregate records SHA;
+- explicit group-to-split assignments;
+- excluded-evidence counts;
+- all-false authority state.
+
+The exporter writes:
+
+~~~text
+manifest.json
+records.jsonl
+train.jsonl
+validation.jsonl
+calibration.jsonl
+test.jsonl
+receipt.json
+~~~
+
+The downstream my-jev importer is expected to independently recompute these
+identities rather than trust the filenames.
+
 ## Next slices
 
 1. Run the generated physical quality + 32K campaign, the gated quality +
    128K campaign, and capture both immutable campaign evidence files.
-2. Add an integrated energy sampler and runtime-specific cache/reprocess
+2. Export the completed campaign into the frozen my-jev policy training bundle
+   and validate/import it at an exact my-jev consumer SHA.
+3. Train/calibrate on train/validation/calibration only and evaluate policy
+   regret on the untouched test partition without live dispatch.
+4. Add an integrated energy sampler and runtime-specific cache/reprocess
    adapters where the backend exposes trustworthy counters.
-3. Add true concurrency at 2/4/8 with trial-scoped telemetry attribution.
-4. Export accepted task-quality + counterfactual + completed campaign evidence
-   into a frozen my-jev training/evaluation dataset.
-5. Keep the learned layer advisory-only while measuring whether its policy
-   recommendations improve quality-adjusted latency on held-out AssistX turns.
+5. Add true concurrency at 2/4/8 with trial-scoped telemetry attribution and
+   extend the decision target beyond single-request latency.
 
 The promotion gate remains quality first: a faster policy matters only when it
 clears the task-specific acceptance threshold.
