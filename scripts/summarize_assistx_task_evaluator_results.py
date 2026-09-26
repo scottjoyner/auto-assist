@@ -36,13 +36,21 @@ def main() -> None:
         )
     )
     parser.add_argument("--suite", required=True)
-    parser.add_argument("--results", required=True)
+    parser.add_argument(
+        "--results",
+        nargs="+",
+        required=True,
+        help="One or more task-evaluator result JSONL files.",
+    )
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
     suite = load_task_evaluator_suite(args.suite)
+    rows: list[dict[str, Any]] = []
+    for result_path in args.results:
+        rows.extend(_read_jsonl(result_path))
     report = summarize_task_evaluator_results(
-        _read_jsonl(args.results),
+        rows,
         suite,
     )
     output = Path(args.output)
