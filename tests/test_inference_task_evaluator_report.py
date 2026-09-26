@@ -26,6 +26,7 @@ KINDS = {
 
 
 def _rows(*, failed_case=None, telemetry_invalid_case=None):
+    suite = load_task_evaluator_suite(SUITE_PATH)
     rows = []
     for case_id, kind in KINDS.items():
         failed = case_id == failed_case
@@ -34,6 +35,7 @@ def _rows(*, failed_case=None, telemetry_invalid_case=None):
             {
                 "evaluation_suite": "assistx_task_quality.v1",
                 "case_id": case_id,
+                "case_sha256": suite["case_sha256_by_id"][case_id],
                 "evaluator_kind": kind,
                 "policy_id": "r9700-q4-dflash",
                 "policy_sha256": "a" * 64,
@@ -95,6 +97,18 @@ def test_invalid_telemetry_blocks_case_even_when_acceptance_passes():
     policy = report["policies"][0]
     assert policy["eligible_for_training_evidence"] is False
     assert "taskq-code-clamp" in policy["failed_case_ids"]
+
+
+def test_case_hash_drift_blocks_training_evidence():
+    suite = load_task_evaluator_suite(SUITE_PATH)
+    rows = _rows()
+    rows[0]["case_sha256"] = "0" * 64
+    report = summarize_task_evaluator_results(rows, suite)
+    policy = report["policies"][0]
+    assert policy["eligible_for_training_evidence"] is False
+    assert policy["case_hash_mismatch_ids"] == [
+        "taskq-code-sum-even"
+    ]
 
 
 def test_widened_authority_blocks_training_evidence():
