@@ -42,6 +42,7 @@ def _policy(policy_id, context_tokens, node, backend, speculation):
         "concurrency": 1,
         "endpoint_env": policy_id.upper().replace("-", "_") + "_URL",
         "telemetry_required": True,
+        "telemetry_env": policy_id.upper().replace("-", "_") + "_TELEMETRY_URL",
         "execution_mode": "observe_only",
         "allow_model_load": False,
         "enabled": True,
