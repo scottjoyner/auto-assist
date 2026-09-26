@@ -297,13 +297,8 @@ def _evaluate_python_function(
 
 
 def _validate_python_ast(tree: ast.AST, function_name: str) -> None:
-    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
-    if len(functions) != 1 or functions[0].name != function_name:
-        raise ValueError(
-            f"output must define exactly one function named {function_name}"
-        )
-    if len(tree.body) != 1:
-        raise ValueError("output may contain only the target function")
+    # Reject unsafe syntax first so evidence names the actual unsafe construct
+    # rather than collapsing it into a generic top-level-shape failure.
     for node in ast.walk(tree):
         if type(node) not in _SAFE_AST_NODES:
             raise ValueError(
@@ -316,6 +311,14 @@ def _validate_python_ast(tree: ast.AST, function_name: str) -> None:
                 raise ValueError(f"call to {node.func.id!r} is not allowed")
         if isinstance(node, ast.Name) and node.id.startswith("__"):
             raise ValueError("dunder names are not allowed")
+
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
+    if len(functions) != 1 or functions[0].name != function_name:
+        raise ValueError(
+            f"output must define exactly one function named {function_name}"
+        )
+    if len(tree.body) != 1:
+        raise ValueError("output may contain only the target function")
 
 
 def _extract_python_code(output_text: str) -> str:
