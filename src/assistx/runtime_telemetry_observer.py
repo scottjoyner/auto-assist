@@ -52,6 +52,17 @@ _GAUGE_FIELDS = (
     "busy_slots_per_decode",
 )
 
+# llama.cpp occasionally accounts prefill tokens inconsistently between
+# its process-cumulative prompt_tokens_total counter and the per-request
+# prompt_n it reports, by exactly one token (observed under
+# --no-cache-prompt on llama.cpp@c21284c: counter 23251 vs prompt_n 23250
+# for an isolated request, while ~500 other turns and 40 isolated probe
+# requests matched exactly). A single-token tolerance keeps the
+# attribution evidence usable; every other counter, including
+# decode_tokens, must still match exactly, so foreign work in the shared
+# process remains detectable.
+_PREFILL_COUNTER_TOLERANCE_TOKENS = 1.0
+
 
 def canonical_sha256(value: Any) -> str:
     encoded = json.dumps(
@@ -411,6 +422,7 @@ def correlate_join_with_result(
         "prefill_tokens",
         deltas.get("prefill_tokens"),
         timings.get("prompt_n"),
+        tolerance=_PREFILL_COUNTER_TOLERANCE_TOKENS,
     )
     _add_consistency_check(
         checks,
@@ -430,10 +442,21 @@ def correlate_join_with_result(
         for value in checks.values()
         if value.get("checked") is True
     ]
+    tolerated = [
+        name
+        for name, value in checks.items()
+        if value.get("tolerated") is True
+    ]
     joined["request_consistency"] = {
         "checked": bool(checked),
         "checks": checks,
     }
+    if tolerated:
+        # The prefill counter can be off by one token from llama.cpp's own
+        # per-request timings; every other counter still requires an exact
+        # match, so contamination detection is weakened by at most that
+        # single prefill token.
+        joined["request_consistency"]["tolerated"] = tolerated
     failed = [
         name
         for name, value in checks.items()
@@ -452,21 +475,30 @@ def _add_consistency_check(
     name: str,
     observed: Any,
     expected: Any,
+    tolerance: float = 0.0,
 ) -> None:
     observed_value = _number(observed)
     expected_value = _number(expected)
     if observed_value is None or expected_value is None:
         checks[name] = {"checked": False}
         return
-    # Token counters should match exactly for an isolated single request.
-    # Float conversion is used only because Prometheus numbers are float64.
-    passed = abs(observed_value - expected_value) < 1e-9
-    checks[name] = {
+    # Token counters should match for an isolated single request, with the
+    # documented tolerance applied only where llama.cpp is known to account
+    # tokens inconsistently. Float conversion is used only because Prometheus
+    # numbers are float64.
+    difference = observed_value - expected_value
+    passed = abs(difference) <= max(tolerance, 0.0) + 1e-9
+    entry: dict[str, Any] = {
         "checked": True,
         "passed": passed,
         "observed_process_delta": observed_value,
         "expected_request_value": expected_value,
+        "difference": difference,
     }
+    if passed and abs(difference) > 1e-9:
+        entry["tolerated"] = True
+        entry["tolerance"] = tolerance
+    checks[name] = entry
 
 
 def _derive_metrics(deltas: dict[str, float]) -> dict[str, float | None]:
