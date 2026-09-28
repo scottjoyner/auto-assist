@@ -317,3 +317,139 @@ def test_request_consistency_accepts_exact_llama_request_counters():
 
     assert checked["valid"] is True
     assert checked["request_consistency"]["checked"] is True
+
+
+@pytest.mark.parametrize("difference", [-1.0, 1.0])
+def test_request_consistency_tolerates_single_token_prefill_discrepancy(
+    difference,
+):
+    prompt_n = 12
+    before = _capture(
+        _snapshot(
+            counters={
+                "prefill_tokens": 100,
+                "decode_tokens": 100,
+            }
+        )
+    )
+    after = _capture(
+        _snapshot(
+            observed_at=2000,
+            counters={
+                "prefill_tokens": 100 + prompt_n + difference,
+                "decode_tokens": 120,
+            },
+        )
+    )
+    joined = join_runtime_snapshots(
+        before,
+        after,
+        _policy(),
+        trial_id="trial-1",
+    )
+
+    checked = correlate_join_with_result(
+        joined,
+        {
+            "completion_tokens": 20,
+            "response_timings": {
+                "prompt_n": prompt_n,
+                "predicted_n": 20,
+            },
+        },
+    )
+
+    assert checked["valid"] is True
+    prefill = checked["request_consistency"]["checks"]["prefill_tokens"]
+    assert prefill["passed"] is True
+    assert prefill["tolerated"] is True
+    assert prefill["difference"] == difference
+    assert checked["request_consistency"]["tolerated"] == ["prefill_tokens"]
+
+
+def test_request_consistency_rejects_large_prefill_drift():
+    before = _capture(
+        _snapshot(
+            counters={
+                "prefill_tokens": 100,
+                "decode_tokens": 100,
+            }
+        )
+    )
+    after = _capture(
+        _snapshot(
+            observed_at=2000,
+            counters={
+                "prefill_tokens": 117,
+                "decode_tokens": 120,
+            },
+        )
+    )
+    joined = join_runtime_snapshots(
+        before,
+        after,
+        _policy(),
+        trial_id="trial-1",
+    )
+
+    checked = correlate_join_with_result(
+        joined,
+        {
+            "completion_tokens": 20,
+            "response_timings": {
+                "prompt_n": 12,
+                "predicted_n": 20,
+            },
+        },
+    )
+
+    assert checked["valid"] is False
+    assert checked["reason"] == "process_scope_result_mismatch"
+    assert "prefill_tokens" in checked["request_consistency"]["failed"]
+    assert "tolerated" not in checked["request_consistency"]
+
+
+def test_request_consistency_tolerates_observed_prompt_scale_drift():
+    # Physical observation from the 32K no-cache growing soak: prompt_n
+    # 23362 with a prefill counter delta of 23360 (-2).
+    prompt_n = 23362
+    before = _capture(
+        _snapshot(
+            counters={
+                "prefill_tokens": 100,
+                "decode_tokens": 100,
+            }
+        )
+    )
+    after = _capture(
+        _snapshot(
+            observed_at=2000,
+            counters={
+                "prefill_tokens": 100 + prompt_n - 2,
+                "decode_tokens": 220,
+            },
+        )
+    )
+    joined = join_runtime_snapshots(
+        before,
+        after,
+        _policy(),
+        trial_id="trial-1",
+    )
+
+    checked = correlate_join_with_result(
+        joined,
+        {
+            "completion_tokens": 120,
+            "response_timings": {
+                "prompt_n": prompt_n,
+                "predicted_n": 120,
+            },
+        },
+    )
+
+    assert checked["valid"] is True
+    prefill = checked["request_consistency"]["checks"]["prefill_tokens"]
+    assert prefill["passed"] is True
+    assert prefill["tolerated"] is True
+    assert prefill["difference"] == -2.0
