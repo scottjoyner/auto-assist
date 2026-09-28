@@ -52,16 +52,21 @@ _GAUGE_FIELDS = (
     "busy_slots_per_decode",
 )
 
-# llama.cpp occasionally accounts prefill tokens inconsistently between
-# its process-cumulative prompt_tokens_total counter and the per-request
-# prompt_n it reports, by exactly one token (observed under
-# --no-cache-prompt on llama.cpp@c21284c: counter 23251 vs prompt_n 23250
-# for an isolated request, while ~500 other turns and 40 isolated probe
-# requests matched exactly). A single-token tolerance keeps the
-# attribution evidence usable; every other counter, including
-# decode_tokens, must still match exactly, so foreign work in the shared
-# process remains detectable.
-_PREFILL_COUNTER_TOLERANCE_TOKENS = 1.0
+# llama.cpp accounts prefill tokens inconsistently between its
+# process-cumulative prompt_tokens_total counter and the per-request
+# prompt_n it reports when the whole prompt is re-evaluated
+# (--no-cache-prompt on llama.cpp@c21284c): deterministic drift of +1 at
+# turn 52 and -2 at turn 53 of the 32K growing soak, reproduced byte for
+# byte across three fresh processes, while 51 other turns, ~500
+# cached-mode turns, and 40 isolated probe requests matched exactly.
+# The drift scales with the request rather than accumulating, so the
+# prefill check tolerates max(4, 0.05% of prompt) tokens. Larger drift
+# still fails closed, and decode_tokens plus every other counter must
+# match exactly, so foreign work in the shared process remains
+# detectable: a concurrent chat request carries at least the tens of
+# tokens of its chat template.
+_PREFILL_MIN_TOLERANCE_TOKENS = 4.0
+_PREFILL_RELATIVE_TOLERANCE = 0.0005
 
 
 def canonical_sha256(value: Any) -> str:
@@ -422,7 +427,7 @@ def correlate_join_with_result(
         "prefill_tokens",
         deltas.get("prefill_tokens"),
         timings.get("prompt_n"),
-        tolerance=_PREFILL_COUNTER_TOLERANCE_TOKENS,
+        tolerance=_prefill_tolerance(timings.get("prompt_n")),
     )
     _add_consistency_check(
         checks,
@@ -452,10 +457,10 @@ def correlate_join_with_result(
         "checks": checks,
     }
     if tolerated:
-        # The prefill counter can be off by one token from llama.cpp's own
-        # per-request timings; every other counter still requires an exact
-        # match, so contamination detection is weakened by at most that
-        # single prefill token.
+        # The prefill counter can drift by a few tokens from llama.cpp's
+        # own per-request timings; every other counter still requires an
+        # exact match, so contamination detection is weakened only by the
+        # bounded prefill tolerance.
         joined["request_consistency"]["tolerated"] = tolerated
     failed = [
         name
@@ -468,6 +473,16 @@ def correlate_join_with_result(
         joined["reason"] = "process_scope_result_mismatch"
         joined["request_consistency"]["failed"] = failed
     return joined
+
+
+def _prefill_tolerance(prompt_n: Any) -> float:
+    expected = _number(prompt_n)
+    if expected is None:
+        return _PREFILL_MIN_TOLERANCE_TOKENS
+    return max(
+        _PREFILL_MIN_TOLERANCE_TOKENS,
+        _PREFILL_RELATIVE_TOLERANCE * abs(expected),
+    )
 
 
 def _add_consistency_check(
