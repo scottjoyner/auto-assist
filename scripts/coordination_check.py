@@ -86,7 +86,7 @@ def get_neo4j_doc_count():
     """Query Neo4j for documentation count"""
     from neo4j import GraphDatabase
     
-    driver = GraphDatabase.driver('bolt://localhost:7687', auth=('neo4j', 'livelongandprosper'))
+    driver = GraphDatabase.driver('bolt://localhost:7687', auth=('neo4j', 'redacted-rotate-credentials'))
     
     try:
         with driver.session() as session:

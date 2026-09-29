@@ -8,6 +8,7 @@ from . import router_integration as router_integration_module
 from .api import _neo, app, auth, templates
 from .benchmark_allocation_policy import install_benchmark_allocation_policy
 from .control_room import LEGACY_UI_PATHS, build_control_room_router
+from .control_room_recovery import build_recovery_router
 from .control_room_runtime import install_control_room_runtime
 from .degraded_activation import (
     build_degraded_activation_router,
@@ -29,6 +30,9 @@ from .overlay_routes import build_overlay_router
 from .passive_agents import build_passive_agent_router
 from .passive_claims import build_passive_claim_router
 from .passive_control import build_passive_control_router
+from .coordination_routes import build_coordination_router
+from .voice_identity_routes import build_voice_identity_router
+from .doctor_routes import build_doctor_router
 from .passive_events import build_passive_event_router
 from .passive_status import build_passive_status_router
 from .recovery_island_routes import build_recovery_island_router
@@ -111,6 +115,7 @@ app.include_router(
     )
 )
 app.include_router(build_control_room_router(_neo, auth, templates))
+app.include_router(build_recovery_router(auth))
 app.include_router(build_fleet_routing_matrix_router(_neo, auth))
 app.include_router(build_router_integration_router(_neo))
 app.include_router(build_runtime_projection_router_v2(_neo, auth_dependency=auth))
@@ -118,6 +123,9 @@ app.include_router(build_overlay_router())
 app.include_router(build_passive_agent_router(_neo, auth_dependency=auth))
 app.include_router(build_passive_claim_router(_neo, auth_dependency=auth))
 app.include_router(build_passive_control_router(_neo, auth_dependency=auth))
+app.include_router(build_coordination_router(auth_dependency=auth))
+app.include_router(build_voice_identity_router(_neo, auth_dependency=auth))
+app.include_router(build_doctor_router())
 app.include_router(build_passive_status_router(_neo, auth_dependency=auth))
 app.include_router(build_passive_event_router(_neo, auth_dependency=auth))
 app.include_router(build_devices_router())
