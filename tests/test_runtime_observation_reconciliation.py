@@ -627,6 +627,7 @@ def test_runtime_witness_signature_verification_round_trip(tmp_path) -> None:
         + key.with_suffix(".pub").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    allowed.chmod(0o600)
     fingerprint_process = subprocess.run(
         ["ssh-keygen", "-lf", str(key), "-E", "sha256"],
         text=True,
@@ -832,6 +833,7 @@ def test_runtime_continuity_signature_verification_round_trip(tmp_path) -> None:
         "destroyer " + key.with_suffix(".pub").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    allowed.chmod(0o600)
     fp = subprocess.run(
         ["ssh-keygen", "-lf", str(key), "-E", "sha256"],
         text=True,
@@ -930,6 +932,7 @@ def test_runtime_continuity_signature_rejects_different_enclosing_models(tmp_pat
         "destroyer " + key.with_suffix(".pub").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    allowed.chmod(0o600)
     fp = subprocess.run(
         ["ssh-keygen", "-lf", str(key), "-E", "sha256"],
         text=True,
@@ -1044,6 +1047,7 @@ def test_runtime_witness_cannot_claim_a_different_authorized_signing_key(tmp_pat
         ),
         encoding="utf-8",
     )
+    allowed.chmod(0o600)
 
     core = {
         "schema_version": "fleet-runtime-identity-witness.v1",
