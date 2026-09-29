@@ -18,7 +18,7 @@ REPOS = {
 
 NEO4J_URI = "bolt://localhost:7687"
 NEO4J_USER = "neo4j"
-NEO4J_PASSWORD = "livelongandprosper"  # legacy phonelog app.py default
+NEO4J_PASSWORD = "${NEO4J_PASSWORD}"  # legacy phonelog app.py default
 
 
 def find_md_files(repo_path):

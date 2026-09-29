@@ -226,27 +226,43 @@ def _merge(base: dict[str, Any], telemetry: dict[str, Any]) -> dict[str, Any]:
         ]
 
     runtime_map = {str(item.get("runtime_instance_id")): item for item in base.get("runtimes") or []}
+    node_map = {
+        str(item.get("node_id")): item
+        for item in base.get("runtimes") or []
+        if item.get("node_id")
+    }
     for sample in telemetry.get("runtime_samples") or []:
         runtime_id = str(sample.get("runtime_instance_id") or "")
         if not runtime_id:
             continue
-        runtime = runtime_map.setdefault(
-            runtime_id,
-            {
-                "runtime_instance_id": runtime_id,
-                "node_id": sample.get("node_id"),
-                "loaded_models": [],
-                "access_paths": [],
-                "parallel_slots": 0,
-                "active": 0,
-                "queued": 0,
-                "queue_limit": 0,
-                "status": "unknown",
-                "runtime_mode": "UNKNOWN",
-            },
+        sample_node = str(sample.get("node_id") or "")
+        existing = runtime_map.get(runtime_id) or (
+            node_map.get(sample_node) if sample_node else None
         )
+        if existing is not None:
+            # Fold the sample into the node's canonical row — old samples carry
+            # stale instance ids and must not resurrect duplicate rows.
+            runtime = existing
+        else:
+            runtime = runtime_map.setdefault(
+                runtime_id,
+                {
+                    "runtime_instance_id": runtime_id,
+                    "node_id": sample.get("node_id"),
+                    "loaded_models": [],
+                    "access_paths": [],
+                    "parallel_slots": 0,
+                    "active": 0,
+                    "queued": 0,
+                    "queue_limit": 0,
+                    "status": "unknown",
+                    "runtime_mode": "UNKNOWN",
+                },
+            )
+            if sample_node and not runtime.get("node_id"):
+                runtime["node_id"] = sample_node
         for key, value in sample.items():
-            if value is not None:
+            if value is not None and key != "runtime_instance_id":
                 runtime[key] = value
         model_key = sample.get("model_key")
         if model_key and not runtime.get("loaded_models"):

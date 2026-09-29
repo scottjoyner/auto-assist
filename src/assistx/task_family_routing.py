@@ -137,7 +137,14 @@ def issue_executor_token(request_payload: dict[str, Any]) -> str:
         "agent_id": agent_id,
         "projection_generation": generation,
         "scopes": ["inference"],
-        "allowed_model_aliases": [model],
+        "allowed_model_aliases": (
+            [model]
+            + [
+                a.strip() for a in
+                os.getenv("ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES", "").split(",")
+                if a.strip()
+            ]
+        ),
         "allowed_tools": [],
         "max_input_tokens": max(
             1024,
