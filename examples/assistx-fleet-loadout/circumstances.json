@@ -1,0 +1,25 @@
+{
+  "schema": "assistx-fleet-loadout-circumstances-v1",
+  "circumstances": {
+    "prod_llm_uptime": {
+      "description": "Production LLM traffic must stay healthy; no drill is scheduled.",
+      "needs": {"prod_llm_endpoint": true, "prod_embedder": true}
+    },
+    "soak_drill": {
+      "description": "A task-quality or soak drill is scheduled and needs an exclusive runtime.",
+      "needs": {"soak_drill_runtime": true}
+    },
+    "prod_llm_and_studio_idle": {
+      "description": "Production LLM must stay up and an operator wants an interactive lane.",
+      "needs": {"prod_llm_endpoint": true, "prod_embedder": true, "interactive_lane": true}
+    },
+    "prod_llm_during_drill": {
+      "description": "A drill is running and production LLM must stay up; prefers co-residency.",
+      "needs": {"prod_llm_endpoint": true, "soak_drill_runtime": true}
+    },
+    "gpu_idle": {
+      "description": "No work needs the GPU; free the card.",
+      "needs": {}
+    }
+  }
+}
