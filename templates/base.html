@@ -3,10 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AssistX // Fleet Control Room</title>
+  <title>{% block title %}AssistX // Fleet Control Room{% endblock %}</title>
   <link rel="stylesheet" href="/static/css/base.css">
   <link rel="stylesheet" href="/static/css/components.css">
   <link rel="stylesheet" href="/static/css/control_room.css">
+  {% block head %}{% endblock %}
 </head>
 <body>
   <div class="control-shell">
@@ -40,6 +41,7 @@
     </nav>
 
     <main>
+      {% block content %}
       <section id="summary-strip" class="summary-strip" aria-label="Fleet summary">
         <div class="summary-cell"><span>FLEET</span><strong id="summary-fleet">--</strong><small id="summary-fleet-note">runtimes</small></div>
         <div class="summary-cell"><span>INFERENCE</span><strong id="summary-inference">LOCAL</strong><small>strict offline</small></div>
@@ -130,6 +132,7 @@
         </div>
         <div id="power-grid" class="dependency-grid"><div class="empty">PROBING PLUG GATES</div></div>
       </section>
+      {% endblock %}
     </main>
 
     <footer>
@@ -144,5 +147,6 @@
     <tr class="runtime-detail"><td colspan="8"><pre></pre></td></tr>
   </template>
   <script src="/static/js/control_room.js"></script>
+  {% block scripts %}{% endblock %}
 </body>
 </html>
