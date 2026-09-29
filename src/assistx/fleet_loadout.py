@@ -51,6 +51,11 @@ KNOWN_NEEDS = (
 #: Residency kinds that can satisfy a need.
 KNOWN_RESIDENT_KINDS = ("llm", "embedder", "runtime")
 
+#: How many measured outcomes for a circumstance are needed before the decision
+#: model may be considered for scoring, in addition to covering every feasible
+#: candidate. Until then the declared preference decides and says so.
+MODEL_EVIDENCE_THRESHOLD = 2
+
 
 class LoadoutPolicyError(ValueError):
     """Raised when a policy file is structurally invalid."""
@@ -363,6 +368,41 @@ def recommend(
     )
     best = feasible[0] if feasible else None
 
+    # Evidence readiness is data-driven: count measured outcomes for this
+    # circumstance, and require that every feasible candidate has been observed
+    # before the decision model may be scored. Until then the declared
+    # preference decides and the document says why.
+    records = [
+        record
+        for record in policy.evidence
+        if str(record.get("circumstance_id")) == circumstance_id
+        and str(record.get("provenance")) == "measured"
+    ]
+    observed_loadouts = {str(record.get("loadout_id")) for record in records}
+    uncovered = sorted(
+        item["loadout_id"]
+        for item in feasible
+        if item["loadout_id"] not in observed_loadouts
+    )
+    model_ready = (
+        len(records) >= MODEL_EVIDENCE_THRESHOLD and not uncovered and bool(feasible)
+    )
+    if model_ready:
+        model_note = (
+            f"{len(records)} measured outcomes covering every feasible candidate; "
+            "the decision model may be scored for this circumstance."
+        )
+    elif not records:
+        model_note = (
+            "No measured outcome exists for this circumstance; the declared "
+            "preference decides."
+        )
+    else:
+        model_note = (
+            f"{len(records)} measured outcome(s) but uncovered feasible "
+            f"candidates {uncovered}; the declared preference decides."
+        )
+
     return {
         "schema": RECOMMENDATION_SCHEMA,
         "policy_id": policy.policy_id,
@@ -374,7 +414,10 @@ def recommend(
         "recommended_loadout_id": best["loadout_id"] if best else None,
         "decision_basis": "feasibility+declared-preference",
         "model_scoring_active": False,
-        "evaluated_evidence_records": 0,
+        "model_ready": model_ready,
+        "model_note": model_note,
+        "evaluated_evidence_records": len(records),
+        "uncovered_feasible_candidates": uncovered,
         "candidates": evaluated,
         "note": (
             "Recommendation only. Authority is all-false; the operator applies "
