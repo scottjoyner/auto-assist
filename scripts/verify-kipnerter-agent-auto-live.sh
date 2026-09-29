@@ -16,9 +16,13 @@ note() {
   printf '%s\n' "$*"
 }
 
-for command_name in git docker curl tailscale python sha256sum; do
+for command_name in git docker curl tailscale sha256sum; do
   command -v "$command_name" >/dev/null || die "$command_name is required"
 done
+
+# Some hosts only ship python3, so resolve an interpreter explicitly.
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || command -v python || true)}"
+[[ -n "$PYTHON_BIN" ]] || die "python3 is required"
 
 EXPECTED_SHA="${EXPECTED_SHA:-}"
 [[ -n "$EXPECTED_SHA" ]] || die "EXPECTED_SHA is required"
@@ -140,7 +144,7 @@ STAGE="loopback_containment"
 note "Proving raw AssistX publication remains loopback-only"
 docker inspect --format '{{range $binding := index .NetworkSettings.Ports "8000/tcp"}}{{println $binding.HostIp $binding.HostPort}}{{end}}'   assistx-api > "$EVIDENCE_DIR/api-port-bindings.txt"
 
-python - "$EVIDENCE_DIR/api-port-bindings.txt" <<'PY'
+"$PYTHON_BIN" - "$EVIDENCE_DIR/api-port-bindings.txt" <<'PY'
 from pathlib import Path
 import sys
 
@@ -157,7 +161,7 @@ PY
 
 STAGE="credential_wiring"
 note "Checking mobile-boundary configuration without revealing credentials"
-docker exec -i assistx-api python - <<'PY' > "$EVIDENCE_DIR/api-runtime-config.json"
+docker exec -i assistx-api sh -c 'exec python - 2>/dev/null || exec python3 -' <<'PY' > "$EVIDENCE_DIR/api-runtime-config.json"
 import json
 import os
 
@@ -168,7 +172,7 @@ print(json.dumps({
 }, sort_keys=True))
 PY
 
-python - "$EVIDENCE_DIR/api-runtime-config.json" <<'PY'
+"$PYTHON_BIN" - "$EVIDENCE_DIR/api-runtime-config.json" <<'PY'
 import json
 import sys
 
@@ -196,7 +200,7 @@ whoami_status="$(
 printf '%s\n' "$whoami_status" > "$EVIDENCE_DIR/whoami-status.txt"
 [[ "$whoami_status" == "200" ]] || die "Tailnet whoami returned HTTP $whoami_status"
 
-python - "$EVIDENCE_DIR/whoami.json" <<'PY'
+"$PYTHON_BIN" - "$EVIDENCE_DIR/whoami.json" <<'PY'
 import json
 import sys
 
@@ -240,7 +244,7 @@ executor="$(
 )"
 [[ "$executor" == "hermes" ]] || die "Agent Auto response did not prove Hermes execution"
 
-python - "$EVIDENCE_DIR/agent-auto-response.json" <<'PY'
+"$PYTHON_BIN" - "$EVIDENCE_DIR/agent-auto-response.json" <<'PY'
 import json
 import sys
 

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,7 +34,7 @@ def _render(
     )
     subprocess.run(
         [
-            "python",
+            sys.executable,
             str(RENDER),
             "--evidence-dir",
             str(evidence),
@@ -176,4 +177,4 @@ def test_contract_publisher_mirrors_canonical_acceptance_doc(tmp_path: Path) -> 
 def test_publisher_and_renderer_have_valid_syntax() -> None:
     subprocess.run(["bash", "-n", str(PUBLISH)], check=True)
     subprocess.run(["bash", "-n", str(PUBLISH_CONTRACT)], check=True)
-    subprocess.run(["python", "-m", "py_compile", str(RENDER)], check=True)
+    subprocess.run([sys.executable, "-m", "py_compile", str(RENDER)], check=True)

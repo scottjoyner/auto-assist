@@ -6,6 +6,10 @@ die() {
   exit 1
 }
 
+# Some hosts only ship python3, so resolve an interpreter explicitly.
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || command -v python || true)}"
+[[ -n "$PYTHON_BIN" ]] || die "python3 is required"
+
 EVIDENCE_DIR="${1:-}"
 [[ -n "$EVIDENCE_DIR" ]] || die "usage: $0 <evidence-dir>"
 [[ -f "$EVIDENCE_DIR/validation-report.json" ]] || die "missing validation-report.json"
@@ -29,7 +33,7 @@ EXECUTION_LOG="$PROJECT_DIR/EXECUTION-LOG-2026-09-09-RC2-GATEWAY.md"
 mkdir -p "$VALIDATION_DIR"
 
 STAMP="$(
-  python - "$EVIDENCE_DIR/validation-report.json" <<'PY'
+  "$PYTHON_BIN" - "$EVIDENCE_DIR/validation-report.json" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -46,7 +50,7 @@ TARGET="$VALIDATION_DIR/AGENT-AUTO-LIVE-$STAMP.md"
 
 install -m 0644 "$EVIDENCE_DIR/knowledge-report.md" "$TARGET"
 
-python - "$EVIDENCE_DIR/validation-report.json" "$EXECUTION_LOG" "$TARGET" <<'PY'
+"$PYTHON_BIN" - "$EVIDENCE_DIR/validation-report.json" "$EXECUTION_LOG" "$TARGET" <<'PY'
 from __future__ import annotations
 
 import json
