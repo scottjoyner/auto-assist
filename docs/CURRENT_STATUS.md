@@ -72,6 +72,41 @@ also implemented. A deployment must select its intended execution authority
 and must not run two consumers against the same eligible task population
 without explicit reservation and idempotency controls.
 
+## Kipnerter Agent Auto acceptance state
+
+The authenticated Kipnerter mobile gateway and server-side Hermes credential
+mapping are implemented on the current PR #50 candidate, but repository code
+presence is not proof that x1-370 is running that exact source revision.
+
+The authoritative acceptance contract is
+[`KIPNERTER_AGENT_AUTO_ACCEPTANCE.md`](KIPNERTER_AGENT_AUTO_ACCEPTANCE.md).
+It deliberately separates:
+
+1. exact-head repository validation;
+2. exact-source API rebuild/recreate on x1-370; and
+3. one bounded live Tailnet Agent Auto request that returns HTTP 200 with
+   `X-Kipnerter-Agent-Executor: hermes`.
+
+The live verifier must preserve the existing route-scoped Tailscale Serve
+configuration, loopback-only raw AssistX listener, and server-side credential
+boundary. It must not use the Auto-Router admin token, add credentials to the
+phone, perform direct router probes, or broaden the runtime-catalog surface.
+
+The operational result vocabulary is `NOT_RUN`, `BLOCKED`, `FAIL`, or `PASS`.
+Only a live `PASS` for the exact accepted SHA, paired with an explicitly
+accepted repository-validation classification, permits the statement
+**Agent Auto live path verified**. The live verifier requires
+`REPO_VALIDATION_RESULT=PASS` or
+`PASS_WITH_NAMED_BASELINE_EXCEPTIONS`; the latter also requires the exact
+exception names. Named mainline/baseline CI exceptions are not converted into
+passing tests and must be shown separately from the live result.
+
+Every live attempt produces a sanitized machine-readable validation report and
+a knowledge-base markdown report. The latter is published under the existing
+Kipnerter knowledge project and summarized in the existing RC2 gateway execution
+log with `scripts/publish-kipnerter-agent-auto-report.sh`. Report publication is
+documentation only; it cannot promote `BLOCKED` or `FAIL` to `PASS`.
+
 ## Remaining gaps
 
 The repository contracts are substantially implemented. The highest-priority
