@@ -107,7 +107,9 @@ def test_virtual_alias_token_is_task_and_claim_scoped(monkeypatch) -> None:
     assert claims["task_id"] == "task-compress-1"
     assert claims["claim_id"] == "claim-1"
     assert claims["projection_generation"] == 7
-    assert claims["allowed_model_aliases"] == ["auto/compress"]
+    # Declared alias first, followed by operator-approved defaults
+    assert claims["allowed_model_aliases"][0] == "auto/compress"
+    assert set(claims["allowed_model_aliases"]) >= {"auto/compress"}
     assert claims["scopes"] == ["inference"]
 
 

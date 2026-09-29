@@ -191,11 +191,17 @@ def _is_embedding_model(model_id: str) -> bool:
     return any(kw in ml for kw in _EMBED_KEYWORDS)
 
 
-def _probe_loaded_models(base_url: str) -> Optional[List[str]]:
-    """Return the list of model IDs actually loaded on a node, or None if down.
+def _probe_on_device_models(base_url: str) -> Optional[List[str]]:
+    """Return the FULL model library present on a node (on-device), or None if down.
 
-    Embedding models are excluded from the returned list so they never appear
-    as candidates for chat/tool-call routing.
+    This is the OpenAI-compatible /v1/models listing, which for LM Studio nodes
+    returns every cached model — loaded OR cold. Use this for DISCOVERY ("what
+    could be loaded here"). Embedding models are excluded so they never appear as
+    candidates for chat/tool-call routing.
+
+    NOTE: do NOT use this to determine residency. A model listed here may be a
+    cold library entry; see _probe_loaded_models() for the authoritative
+    "physically in VRAM right now" signal.
     """
     try:
         r = requests.get(f"{base_url}/models", timeout=8)
@@ -203,6 +209,51 @@ def _probe_loaded_models(base_url: str) -> Optional[List[str]]:
             return None
         data = r.json()
         out: List[str] = []
+        for m in data.get("data", []):
+            mid = m.get("id") or m.get("name") or m.get("model")
+            if mid and not _is_embedding_model(mid):
+                out.append(mid)
+        return out
+    except Exception:
+        return None
+
+
+def _probe_loaded_models(base_url: str) -> Optional[List[str]]:
+    """Return the model IDs physically resident (loaded in VRAM) on a node.
+
+    Authoritative signal = LM Studio native /api/v1/models with non-empty
+    ``loaded_instances`` — i.e. weights actually in memory right now. The
+    OpenAI-compatible /v1/models listing is deliberately NOT used here because it
+    returns the full on-device library (loaded + cold), which would conflate
+    "available" with "resident".
+
+    Fallback for bare llama-server nodes (no native API): their /v1/models lists
+    only what's loaded in the server process, so that listing IS the resident set.
+
+    Returns None if the node is down/unreachable; [] if reachable but nothing
+    loaded. Embedding models are excluded from routing candidates.
+    """
+    # Preferred: native LM Studio API with per-model instance state.
+    try:
+        r = requests.get(_native_models_url(base_url), timeout=8)
+        if r.status_code == 200:
+            out: List[str] = []
+            for m in r.json().get("models", []):
+                mid = m.get("key") or m.get("id")
+                if not mid or _is_embedding_model(mid):
+                    continue
+                if m.get("loaded_instances"):
+                    out.append(mid)
+            return out
+    except Exception:
+        pass
+    # Fallback: bare llama-server — /v1/models lists only loaded models.
+    try:
+        r = requests.get(f"{base_url}/models", timeout=8)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        out = []
         for m in data.get("data", []):
             mid = m.get("id") or m.get("name") or m.get("model")
             if mid and not _is_embedding_model(mid):
@@ -256,8 +307,109 @@ _loader_user_configs: Dict[tuple, dict] = {}
 _loader_demand: set = set()
 _loader_state: Dict[str, Any] = {
     "running": False, "last_run_ts": 0.0, "last_action": "",
-    "cycle": 0, "discovered_models": [], "per_node": {}, "owners": {},
 }
+
+# --- Inference session tracking -----------------------------------------
+# Tracks active model inference sessions so the fleet can know which
+# models are currently serving requests and for how long.  This lets
+# the dashboard and routing reflect real-time inference load, not just
+# "loaded in VRAM" state.  The UI can call register_inference_start /
+# stop_inference to record when a model begins or ends serving work.
+_inference_sessions: Dict[str, Dict[str, Any]] = {}
+_inference_lock = threading.Lock()
+_inference_session_id = 0
+
+def register_inference_start(model_id: str, base_url: str, node_id: str = "",
+                              request_id: str = "", task_id: str = "") -> str:
+    """Register that a model has started serving inference requests.
+
+    Returns a session_id that can be passed to stop_inference.
+    """
+    global _inference_session_id
+    with _inference_lock:
+        _inference_session_id += 1
+        session_id = f"inf_{_inference_session_id}_{int(time.time())}"
+        _inference_sessions[session_id] = {
+            "session_id": session_id,
+            "model_id": model_id,
+            "base_url": base_url,
+            "node_id": node_id,
+            "request_id": request_id,
+            "task_id": task_id,
+            "started_at": time.time(),
+            "started_at_ts": int(time.time() * 1000),
+            "status": "active",
+        }
+    return session_id
+
+def stop_inference(session_id: str, status: str = "completed") -> Dict[str, Any]:
+    """Register that an inference session has ended.
+
+    Returns the session record with duration info, or an error dict.
+    """
+    with _inference_lock:
+        session = _inference_sessions.get(session_id)
+        if not session:
+            return {"ok": False, "reason": f"session {session_id} not found"}
+        ended = time.time()
+        session["ended_at"] = ended
+        session["ended_at_ts"] = int(ended * 1000)
+        session["status"] = status
+        session["duration_s"] = round(ended - session["started_at"], 2)
+        return {"ok": True, "session": session}
+
+def stop_inference_for_model(model_id: str, base_url: str, status: str = "completed") -> int:
+    """Stop all active inference sessions for a given model on a base_url.
+
+    Returns the count of sessions stopped.
+    """
+    count = 0
+    with _inference_lock:
+        for sid, session in list(_inference_sessions.items()):
+            if (session.get("model_id") == model_id and
+                session.get("base_url") == base_url and
+                session.get("status") == "active"):
+                ended = time.time()
+                session["ended_at"] = ended
+                session["ended_at_ts"] = int(ended * 1000)
+                session["status"] = status
+                session["duration_s"] = round(ended - session["started_at"], 2)
+                count += 1
+    return count
+
+def get_inference_sessions(filter_model: str = None, filter_base_url: str = None,
+                           only_active: bool = True) -> List[Dict[str, Any]]:
+    """Return inference sessions, optionally filtered."""
+    with _inference_lock:
+        sessions = []
+        for session in _inference_sessions.values():
+            if only_active and session.get("status") != "active":
+                continue
+            if filter_model and session.get("model_id") != filter_model:
+                continue
+            if filter_base_url and session.get("base_url") != filter_base_url:
+                continue
+            sessions.append(dict(session))
+        return sessions
+
+def get_active_inference_models() -> List[Dict[str, Any]]:
+    """Return a summary of which models currently have active inference."""
+    with _inference_lock:
+        models = {}
+        for session in _inference_sessions.values():
+            if session.get("status") != "active":
+                continue
+            key = (session.get("model_id"), session.get("base_url"))
+            if key not in models:
+                models[key] = {
+                    "model_id": session["model_id"],
+                    "base_url": session["base_url"],
+                    "node_id": session.get("node_id", ""),
+                    "active_sessions": 0,
+                    "total_duration_s": 0.0,
+                }
+            models[key]["active_sessions"] += 1
+        return list(models.values())
 _loader_lock = threading.Lock()
 
 
@@ -1078,11 +1230,16 @@ def _loader_neo():
 
 
 def _loader_discover_models() -> List[str]:
-    """All distinct model ids available on any online fleet node (on-disk)."""
+    """All distinct model ids available on any online fleet node (on-device).
+
+    Uses the full library listing (_probe_on_device_models), NOT the resident
+    set — discovery is about what COULD be loaded, so cold library models must
+    count. Residency itself is tracked separately by _fleet_model_inventory().
+    """
     _refresh_fleet_nodes()
     seen: Dict[str, int] = {}
     for base in _fleet_nodes:
-        ids = _probe_loaded_models(base)
+        ids = _probe_on_device_models(base)
         if not ids:
             continue
         for mid in ids:
