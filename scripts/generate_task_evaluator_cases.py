@@ -25,7 +25,11 @@ TAXONOMY_ORDER = list(TAXONOMY)
 CODE_PROMPT = (
     "Return only Python source defining exactly one function named "
     "{name}. {rule} Do not import modules, define helpers, print, "
-    "or include Markdown."
+    "or include Markdown. Use only assignments, for-loops, "
+    "if-statements, comprehensions, and builtin functions. "
+    "Attribute access and method calls are forbidden: no .append, "
+    ".sort, .keys, or any other dot access — build lists with "
+    "comprehensions or +. No while loops, try/except, or lambda."
 )
 STRUCTURED_RULES = {
     "health_check": "Represent a read-only health observation.",
@@ -87,8 +91,9 @@ def _code_templates() -> list[dict[str, Any]]:
         },
         {
             "name": "clamp_total",
-            "rule": "It must return the sum of values clamped into the "
-                    "inclusive range [low, high].",
+            "rule": "It must return the sum of all elements of values, "
+                    "with that total clamped into the inclusive range "
+                    "[low, high].",
             "source": (
                 "def clamp_total(values, low, high):\n"
                 "    total = sum(values)\n"
@@ -563,12 +568,15 @@ def main() -> None:
     suite["required_case_ids"] = [
         str(row["case_id"]) for row in merged
     ]
-    if GENERATOR_MARKER not in suite.get("description", ""):
-        suite["description"] = (
-            suite.get("description", "").rstrip(".")
-            + " Expanded deterministically by "
-            "scripts/generate_task_evaluator_cases.py."
-        )
+    description = str(suite.get("description") or "")
+    base_description = description.split(
+        " Expanded deterministically by "
+    )[0].rstrip(".")
+    suite["description"] = (
+        base_description
+        + ". Expanded deterministically by "
+        "scripts/generate_task_evaluator_cases.py."
+    )
 
     cases_out.write_text(
         "".join(
