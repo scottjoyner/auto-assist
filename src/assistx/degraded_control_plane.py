@@ -186,8 +186,12 @@ class DegradedControlPlaneRuntime:
         secret: str,
     ) -> dict[str, Any]:
         projection = dict(document)
-        if not secret:
-            raise ValueError("runtime projection HMAC secret is required")
+        is_ed25519 = (
+            str(projection.get("signature_algorithm") or "")
+            .strip()
+            .upper()
+            == "ED25519"
+        )
         try:
             generation = int(projection.get("generation") or 0)
             generated_at_ms = int(projection.get("generated_at_ms") or 0)
@@ -201,16 +205,23 @@ class DegradedControlPlaneRuntime:
         expected_checksum = projection_checksum(projection)
         if not supplied_checksum or supplied_checksum != expected_checksum:
             raise ValueError("runtime projection checksum mismatch")
-        supplied_signature = str(projection.get("signature") or "")
-        expected_signature = projection_signature(
-            generation,
-            expected_checksum,
-            generated_at_ms,
-            expires_at_ms,
-            secret,
-        )
-        if not supplied_signature or supplied_signature != expected_signature:
-            raise ValueError("runtime projection signature mismatch")
+        if is_ed25519:
+            from .runtime_projection_v2 import verify_projection_v2
+
+            verify_projection_v2(projection)
+        else:
+            if not secret:
+                raise ValueError("runtime projection HMAC secret is required")
+            supplied_signature = str(projection.get("signature") or "")
+            expected_signature = projection_signature(
+                generation,
+                expected_checksum,
+                generated_at_ms,
+                expires_at_ms,
+                secret,
+            )
+            if not supplied_signature or supplied_signature != expected_signature:
+                raise ValueError("runtime projection signature mismatch")
         providers = projection.get("providers") or []
         if not providers or not all(
             isinstance(provider, dict) and _is_local_provider(provider)
@@ -551,7 +562,7 @@ def build_default_runtime(
                 "ASSISTX_OPERATIONAL_STATE_URL",
                 "redis://falkordb:6379/0",
             ),
-            decode_responses=False,
+            decode_responses=True,
         )
         store = OperationalStateStore(
             client,
@@ -583,21 +594,50 @@ def install_degraded_route_fence(app: Any) -> None:
 
     @app.middleware("http")
     async def degraded_route_fence(request: Request, call_next):
-        if not degraded_control_plane_enabled() or request.method == "OPTIONS":
+        path = request.url.path.rstrip("/") or "/"
+        is_degraded = (
+            path == "/api/degraded" or path.startswith("/api/degraded/")
+        )
+        if request.method == "OPTIONS":
             return await call_next(request)
-        key = (request.method.upper(), request.url.path.rstrip("/") or "/")
-        if key not in _ALLOWED_ROUTES:
+        # While degraded control-plane mode is enabled this node serves only
+        # the allowlisted control-plane surface (/health, /metrics, and the
+        # /api/degraded/* operations); every ordinary application route is
+        # fenced with a clean 503. With the flag unset, ordinary routes keep
+        # serving and /api/degraded/* stays best-effort with a structured 503
+        # when the operational store is unreachable.
+        if degraded_control_plane_enabled():
+            key = (request.method.upper(), path)
+            if key not in _ALLOWED_ROUTES:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "detail": "route unavailable in degraded control-plane mode",
+                        "method": key[0],
+                        "path": key[1],
+                        "durable_authority": "neo4j",
+                        "operational_store": "falkordb",
+                    },
+                )
+        if not is_degraded:
+            return await call_next(request)
+        try:
+            return await call_next(request)
+        except HTTPException:
+            raise
+        except Exception:
             return JSONResponse(
                 status_code=503,
                 content={
-                    "detail": "route unavailable in degraded control-plane mode",
-                    "method": key[0],
-                    "path": key[1],
+                    "detail": (
+                        "degraded operational state store unreachable on "
+                        "this node"
+                    ),
+                    "method": request.method.upper(),
+                    "path": path,
                     "durable_authority": "neo4j",
-                    "operational_store": "falkordb",
                 },
             )
-        return await call_next(request)
 
 
 def build_degraded_control_router(

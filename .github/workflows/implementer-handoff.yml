@@ -45,7 +45,7 @@ jobs:
       - name: Test evidence gates
         env:
           BASIC_AUTH_USER: neo4j
-          BASIC_AUTH_PASS: livelongandprosper
+          BASIC_AUTH_PASS: ${{ secrets.BASIC_AUTH_PASS }}
         run: |
           pytest -q tests/test_implementer_evidence.py
 

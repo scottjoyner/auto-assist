@@ -11,6 +11,8 @@ from typing import Any
 
 import requests
 
+from .evaluation_registry import suite_for_family
+
 BENCHMARK_CASES: dict[str, list[dict[str, Any]]] = {
     "coding": [
         {"prompt": "Return only the Python expression that sums even integers in values.", "required_terms": ["sum", "values"], "min_chars": 12},
@@ -97,6 +99,7 @@ class BenchmarkController:
         node, model = str(request.get("node_id") or ""), str(request.get("model_id") or "")
         if family not in BENCHMARK_CASES or not node or not model or request.get("requires_model_load") is not False or request.get("execution_mode") != "dry_run":
             return None
+        suite = suite_for_family(family)
         digest = hashlib.sha256(f"{node}|{model}|{family}".encode()).hexdigest()[:16]
         return {
             "title": f"Benchmark {model} on {node}: {family}",
@@ -110,6 +113,7 @@ class BenchmarkController:
             "payload": {
                 "queue_class": "batch", "benchmark": True,
                 "benchmark_id": request.get("benchmark_id"), "task_family": family,
+                "suite_id": suite.id if suite else None,
                 "model": model, "target_node": node, "cases": BENCHMARK_CASES[family],
                 "max_tokens_per_case": self.max_tokens_per_case, "deadline_seconds": 900,
                 "allow_model_load": False, "source": "auto-router-benchmark-plan",
