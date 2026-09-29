@@ -428,6 +428,9 @@ def build_runtime_projection(
         providers.append(
             {
                 "name": f"assistx-{_slug(node_id)}-{_slug(runtime_id)}",
+                # hostname is the dashboard/routing identity key; node_id doubles
+                # as it so inference providers surface alongside agent runtimes.
+                "hostname": str(node_id),
                 "type": provider_type,
                 "node_id": node_id,
                 "runtime_instance_id": runtime_id,

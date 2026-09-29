@@ -194,6 +194,12 @@ def install_strict_executor_adapter(adapter: Any) -> None:
                 # Hermes's provider prefers HERMES_LM_API_KEY when configured;
                 # strict execution must use the same claim-scoped JWT there too.
                 os.environ["HERMES_LM_API_KEY"] = token
+            logger.info(
+                "executor token claims: aliases=%r generation=%r task=%s",
+                claims.get("allowed_model_aliases"),
+                claims.get("projection_generation"),
+                task_id,
+            )
             start_heartbeat(self, task_id, session_id, claim_id)
             return result
         except requests.HTTPError as exc:

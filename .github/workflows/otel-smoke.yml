@@ -1,0 +1,54 @@
+name: otel-smoke
+
+on:
+  push:
+    branches: ["agent/trace-eval-poc"]
+  pull_request:
+    paths:
+      - "src/assistx/evaluation/otel_projection.py"
+      - "src/assistx/evaluation/otel_sdk_adapter.py"
+      - "tests/test_otel_projection.py"
+      - "tests/test_otel_sdk_adapter.py"
+      - "scripts/otel-smoke.py"
+      - ".github/workflows/otel-smoke.yml"
+
+jobs:
+  emit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          pip install "opentelemetry-sdk==1.44.0"
+
+      - name: Run projection and adapter tests
+        run: |
+          pytest -q tests/test_otel_projection.py tests/test_otel_sdk_adapter.py
+
+      - name: Emit through real OpenTelemetry SDK
+        env:
+          PYTHONPATH: src
+        run: |
+          python scripts/otel-smoke.py | tee otel-smoke.json
+          python -m json.tool otel-smoke.json >/dev/null
+
+      - name: Upload OTel smoke result
+        uses: actions/upload-artifact@v4
+        with:
+          name: otel-smoke-result
+          path: otel-smoke.json
+          if-no-files-found: error
+          retention-days: 30
