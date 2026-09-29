@@ -226,3 +226,77 @@ def test_circumstance_normalizes_and_rejects_unknown_needs():
     assert load_circumstance({"needs": {}}) == {}
     with pytest.raises(LoadoutPolicyError):
         load_circumstance({})
+
+
+def test_model_stays_unready_without_measured_evidence():
+    result = recommend(
+        _policy(),
+        circumstance={"prod_llm_endpoint": True},
+        circumstance_id="prod",
+    )
+    assert result["model_ready"] is False
+    assert result["model_scoring_active"] is False
+    assert result["evaluated_evidence_records"] == 0
+    assert "No measured outcome" in result["model_note"]
+
+
+def test_partial_evidence_keeps_declared_preference_and_names_the_gap():
+    policy = _policy()
+    policy.evidence = [
+        {
+            "circumstance_id": "prod",
+            "loadout_id": "prod",
+            "provenance": "measured",
+            "outcomes": {"llm_endpoint_healthy": True},
+        }
+    ]
+    result = recommend(
+        policy,
+        circumstance={"prod_llm_endpoint": True},
+        circumstance_id="prod",
+    )
+    assert result["evaluated_evidence_records"] == 1
+    assert result["model_ready"] is False
+    assert result["uncovered_feasible_candidates"]
+    assert result["recommended_loadout_id"] == "prod"
+
+
+def test_full_measured_coverage_makes_the_model_ready():
+    policy = _policy()
+    policy.evidence = [
+        {
+            "circumstance_id": "prod",
+            "loadout_id": loadout_id,
+            "provenance": "measured",
+            "outcomes": {"llm_endpoint_healthy": True},
+        }
+        for loadout_id in ("prod", "prod_embed")
+    ]
+    result = recommend(
+        policy,
+        circumstance={"prod_llm_endpoint": True},
+        circumstance_id="prod",
+    )
+    assert result["model_ready"] is True
+    assert result["uncovered_feasible_candidates"] == []
+    # Scoring is still the operator's to enable; readiness is a precondition.
+    assert result["model_scoring_active"] is False
+
+
+def test_declared_provenance_evidence_does_not_count_as_measured():
+    policy = _policy()
+    policy.evidence = [
+        {
+            "circumstance_id": "prod",
+            "loadout_id": loadout_id,
+            "provenance": "declared",
+        }
+        for loadout_id in ("prod", "prod_embed")
+    ]
+    result = recommend(
+        policy,
+        circumstance={"prod_llm_endpoint": True},
+        circumstance_id="prod",
+    )
+    assert result["evaluated_evidence_records"] == 0
+    assert result["model_ready"] is False

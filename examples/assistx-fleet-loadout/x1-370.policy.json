@@ -12,7 +12,30 @@
       "vram_used_bytes": 0
     }
   ],
-  "evidence": [],
+  "evidence": [
+    {
+      "captured_at": "2026-09-29T23:38:06Z",
+      "circumstance_id": "prod_llm_uptime",
+      "loadout_id": "prod_llm_only",
+      "notes": "First loadout evidence record. Applied from the recommender's advisory output; operator applied it. Cards 1+2 = 33.9 GiB total, so drill co-residency remains feasible (20.4 GiB) but unmeasured.",
+      "outcomes": {
+        "api_health_llm_status": "ok",
+        "completion_latency_max_s": 0.3,
+        "completion_latency_median_s": 0.283,
+        "completion_samples": 3,
+        "hermes_adapter_reachable_api": true,
+        "llm_endpoint_healthy": true,
+        "model_load_seconds": 9.72,
+        "models_resident": [
+          "toolcall-v5-3b-combined-r2",
+          "text-embedding-nomic-embed-text-v1.5"
+        ],
+        "resident_vram_bytes": 6262765056,
+        "vram_used_bytes_after": 13359181824
+      },
+      "provenance": "measured"
+    }
+  ],
   "exclusivity": {
     "port_1234": "prod-llm",
     "port_8125": "drill"
