@@ -1,0 +1,71 @@
+schema_version: assistx.edge-exposure.v1
+status: candidate_only
+
+# This file is a versioned contract template, not proof of live deployment.
+# The local agent must populate an ignored operator-owned copy from captured
+# evidence before any edge exposure is considered reconciled.
+
+edge:
+  owner: operator
+  reverse_proxy:
+    implementation: caddy
+    config_source: unknown
+    config_path: null
+    deployment_mode: unknown   # host-systemd | docker | compose-service
+    container_name: null
+    image: null
+    service_unit: null
+    reload_command: null
+    validate_command: null
+  tls:
+    mode: unknown              # public-acme | tailscale-cert | internal | none
+    public_dns_required: false
+    certificate_storage: unknown
+  tailscale:
+    host_participates: true
+    docker_mode: routed_host   # routed_host | sidecar | host_network | unknown
+    magicdns_required_in_containers: false
+    candidate_discovery_artifact: artifacts/reconciliation-tailnet-candidates.json
+
+services:
+  assistx_api:
+    internal_url: http://127.0.0.1:8000
+    public_hostname: null
+    tailnet_hostname: null
+    exposure: private_only
+    tls_terminated_by: caddy
+    health_path: /health
+  auto_router:
+    internal_url: http://127.0.0.1:8088
+    public_hostname: null
+    tailnet_hostname: null
+    exposure: private_only
+    tls_terminated_by: caddy
+    health_path: /health
+  neo4j_http:
+    internal_url: http://127.0.0.1:7474
+    public_hostname: null
+    tailnet_hostname: null
+    exposure: loopback_only
+    tls_terminated_by: none
+    health_path: /
+
+requirements:
+  - proxy config is captured from the working host before replacement
+  - Caddy validation passes before reload/restart
+  - public inference remains disabled unless separately operator-approved
+  - tailnet reachability does not imply runtime admission
+  - Docker services remain on bridge networks unless a documented exception exists
+  - MagicDNS failure inside containers must not trigger blanket host networking
+  - every exposed hostname maps to one explicit upstream and health probe
+  - rollback command and previous config checksum are captured before cutover
+
+evidence:
+  caddy_version: null
+  caddy_config_sha256: null
+  caddy_validate_result: unknown
+  active_listeners_snapshot: null
+  tailscale_status_sha256: null
+  docker_network_snapshot: null
+  last_verified_at: null
+  verified_by: null

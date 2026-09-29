@@ -1,0 +1,47 @@
+{
+  "schema": "assistx-inference-session-soak-profiles-v1",
+  "profiles": [
+    {
+      "profile_id": "assistx-32k-soak-v1",
+      "target_context_tokens": 32768,
+      "default_turns": 100,
+      "min_turns": 20,
+      "max_turns": 500,
+      "canary_every": 10,
+      "retention_marker": "ASSISTX-32K-SOAK-7391",
+      "prefix_chars_per_token": 4.2,
+      "stable_prefix_fraction": 0.9,
+      "growing_prefix_fraction": 0.68,
+      "thresholds": {
+        "min_success_rate": 0.99,
+        "min_acceptance_rate": 0.98,
+        "min_canary_pass_rate": 1,
+        "min_telemetry_valid_rate": 1,
+        "max_ttft_drift_ratio": 2,
+        "max_wall_drift_ratio": 2,
+        "max_vram_growth_bytes": 2147483648
+      }
+    },
+    {
+      "profile_id": "assistx-128k-soak-v1",
+      "target_context_tokens": 131072,
+      "default_turns": 100,
+      "min_turns": 20,
+      "max_turns": 500,
+      "canary_every": 10,
+      "retention_marker": "ASSISTX-128K-SOAK-7391",
+      "prefix_chars_per_token": 4.2,
+      "stable_prefix_fraction": 0.9,
+      "growing_prefix_fraction": 0.68,
+      "thresholds": {
+        "min_success_rate": 0.99,
+        "min_acceptance_rate": 0.98,
+        "min_canary_pass_rate": 1,
+        "min_telemetry_valid_rate": 1,
+        "max_ttft_drift_ratio": 2,
+        "max_wall_drift_ratio": 2,
+        "max_vram_growth_bytes": 2147483648
+      }
+    }
+  ]
+}
