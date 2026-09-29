@@ -12,6 +12,7 @@ import requests
 
 from .inference_task_evaluators import (
     evaluate_task_output,
+    parse_json_object,
     validate_task_evaluator_spec,
 )
 
@@ -436,10 +437,7 @@ def evaluate_acceptance(
     json_keys = acceptance.get("json_required_keys")
     if isinstance(json_keys, list) and json_keys:
         has_rule = True
-        try:
-            parsed = json.loads(output_text)
-        except json.JSONDecodeError:
-            parsed = None
+        parsed, _parse_error = parse_json_object(output_text)
         missing_keys = (
             [
                 str(key)
@@ -665,6 +663,7 @@ def execute_trial(
         "concurrency": policy["concurrency"],
         "execution_mode": "observe_only",
         "allow_model_load": False,
+        "routing_authority_changed": False,
         "authority": dict(DEFAULT_AUTHORITY),
         "endpoint_env": policy["endpoint_env"],
         "http_status": status_code,

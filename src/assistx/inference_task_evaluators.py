@@ -26,8 +26,8 @@ _SAFE_AST_NODES = {
 }
 
 _SAFE_CALLS = {
-    "abs", "all", "any", "bool", "enumerate", "float", "int", "len",
-    "list", "max", "min", "range", "reversed", "set", "sorted", "str",
+    "abs", "all", "any", "bool", "enumerate", "float", "int", "isinstance",
+    "len", "list", "max", "min", "range", "reversed", "set", "sorted", "str",
     "sum", "tuple", "zip",
 }
 
@@ -137,7 +137,7 @@ def _evaluate_structured_json(
     output_text: str,
     spec: dict[str, Any],
 ) -> tuple[bool, dict[str, Any]]:
-    parsed, error = _parse_json_object(output_text)
+    parsed, error = parse_json_object(output_text)
     if error:
         return False, {"kind": "structured_json", "passed": False, "parse_error": error}
     required = [str(key) for key in spec.get("required_keys", [])]
@@ -176,7 +176,7 @@ def _evaluate_review_findings(
     output_text: str,
     spec: dict[str, Any],
 ) -> tuple[bool, dict[str, Any]]:
-    parsed, error = _parse_json_object(output_text)
+    parsed, error = parse_json_object(output_text)
     if error:
         return False, {"kind": "review_findings", "passed": False, "parse_error": error}
     findings = parsed.get("findings")
@@ -327,23 +327,43 @@ def _validate_python_ast(tree: ast.AST, function_name: str) -> None:
 
 def _extract_python_code(output_text: str) -> str:
     stripped = output_text.strip()
-    parsed, error = _parse_json_object(output_text)
+    parsed, error = parse_json_object(output_text)
     if error is None and isinstance(parsed.get("code"), str):
         return parsed["code"].strip()
     return stripped
 
 
-def _parse_json_object(
+def _strip_markdown_fence(text: str) -> str:
+    if not text.startswith("```"):
+        return text
+    first_newline = text.find("\n")
+    if first_newline == -1:
+        return text
+    closing = text.rfind("```")
+    if closing <= first_newline:
+        return text
+    return text[first_newline + 1 : closing].strip()
+
+
+def parse_json_object(
     output_text: str,
 ) -> tuple[dict[str, Any], str | None]:
     text = output_text.strip()
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        return {}, f"invalid JSON: {exc.msg}"
-    if not isinstance(parsed, dict):
-        return {}, "expected a JSON object"
-    return parsed, None
+    candidates = [text]
+    unwrapped = _strip_markdown_fence(text)
+    if unwrapped != text:
+        candidates.append(unwrapped)
+    last_error: str | None = None
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = f"invalid JSON: {exc.msg}"
+            continue
+        if not isinstance(parsed, dict):
+            return {}, "expected a JSON object"
+        return parsed, None
+    return {}, last_error or "invalid JSON"
 
 
 def _require_list(spec: dict[str, Any], field: str) -> list[Any]:
