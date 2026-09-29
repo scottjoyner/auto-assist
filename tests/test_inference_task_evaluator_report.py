@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from assistx.inference_task_evaluator_report import (
@@ -13,22 +16,26 @@ SUITE_PATH = (
     "task-evaluator.suite.json"
 )
 
-KINDS = {
-    "taskq-code-sum-even": "python_function",
-    "taskq-code-clamp": "python_function",
-    "taskq-tool-health-json": "structured_json",
-    "taskq-tool-route-json": "structured_json",
-    "taskq-review-http-shell": "review_findings",
-    "taskq-review-file-config": "review_findings",
-    "taskq-context-runtime-boundary": "constraint_retention",
-    "taskq-context-authority-boundary": "constraint_retention",
-}
+CASES_PATH = (
+    "examples/assistx-inference-policy-experiment/"
+    "task-evaluator.cases.jsonl"
+)
+
+
+def _kinds() -> dict[str, str]:
+    kinds: dict[str, str] = {}
+    for line in Path(CASES_PATH).read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        kinds[row["case_id"]] = row["acceptance"]["task_evaluator"]["kind"]
+    return kinds
 
 
 def _rows(*, failed_case=None, telemetry_invalid_case=None):
     suite = load_task_evaluator_suite(SUITE_PATH)
     rows = []
-    for case_id, kind in KINDS.items():
+    for case_id, kind in _kinds().items():
         failed = case_id == failed_case
         telemetry_invalid = case_id == telemetry_invalid_case
         rows.append(
@@ -102,7 +109,10 @@ def test_invalid_telemetry_blocks_case_even_when_acceptance_passes():
 def test_case_hash_drift_blocks_training_evidence():
     suite = load_task_evaluator_suite(SUITE_PATH)
     rows = _rows()
-    rows[0]["case_sha256"] = "0" * 64
+    drifted = next(
+        row for row in rows if row["case_id"] == "taskq-code-sum-even"
+    )
+    drifted["case_sha256"] = "0" * 64
     report = summarize_task_evaluator_results(rows, suite)
     policy = report["policies"][0]
     assert policy["eligible_for_training_evidence"] is False
@@ -114,7 +124,10 @@ def test_case_hash_drift_blocks_training_evidence():
 def test_widened_authority_blocks_training_evidence():
     suite = load_task_evaluator_suite(SUITE_PATH)
     rows = _rows()
-    rows[0]["authority"]["mutation_allowed"] = True
+    widened = next(
+        row for row in rows if row["case_id"] == "taskq-code-sum-even"
+    )
+    widened["authority"]["mutation_allowed"] = True
     report = summarize_task_evaluator_results(rows, suite)
     policy = report["policies"][0]
     assert policy["eligible_for_training_evidence"] is False
