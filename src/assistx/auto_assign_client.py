@@ -51,7 +51,12 @@ def notify_task_created(
             "required_capabilities": required_capabilities or [],
         },
         "correlation_id": cid,
-        "links": {"correlation_id": cid, "task_id": task_id},
+        # Canonical contract: links is a list[EventLink] ({rel, target_type,
+        # target_id}); auto-assign's EventEnvelope rejects a bare dict with 422.
+        "links": [
+            {"rel": "FOR_TASK", "target_type": "Task", "target_id": task_id},
+            {"rel": "FOR_TRACE", "target_type": "TraceGroup", "target_id": cid},
+        ],
     }
     try:
         # W-24: enqueue into the durable outbox; the outbox thread retries

@@ -57,10 +57,15 @@ def embed(text: str, timeout: int = 30) -> Optional[List[float]]:
     last_err = None
     for attempt in range(3):
         try:
+            headers = {}
+            internal_token = os.getenv("ASSISTX_INTERNAL_SERVICE_TOKEN", "").strip()
+            if internal_token:
+                headers["Authorization"] = f"Bearer {internal_token}"
             resp = requests.post(
                 ROUTER_EMBED_URL,
                 json={"model": EMBED_MODEL, "input": text},
                 timeout=timeout,
+                headers=headers,
             )
             if resp.status_code == 200:
                 return resp.json().get("data", [{}])[0].get("embedding")

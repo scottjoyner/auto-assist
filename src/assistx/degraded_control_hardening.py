@@ -43,6 +43,16 @@ def _private_local_provider(provider: Mapping[str, Any]) -> bool:
 
 def _secure_publish(self, document: Mapping[str, Any], *, secret: str) -> dict[str, Any]:
     projection = dict(document)
+    if (
+        str(projection.get("signature_algorithm") or "")
+        .strip()
+        .upper()
+        == "ED25519"
+    ):
+        from .runtime_projection_v2 import verify_projection_v2
+
+        verify_projection_v2(projection)
+        return _ORIGINAL_PUBLISH(self, projection, secret=secret)
     if not secret:
         raise ValueError("runtime projection HMAC secret is required")
     expected_checksum = projection_checksum(projection)

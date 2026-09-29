@@ -230,7 +230,7 @@ If the repository intentionally carries legacy Ruff exceptions, run the exact bl
 
 ```bash
 export BASIC_AUTH_USER=neo4j
-export BASIC_AUTH_PASS=livelongandprosper
+export BASIC_AUTH_PASS=`<redacted - rotate>`
 pytest -q -m 'not integration' --ignore=tests/integration \
   --junitxml="$EVIDENCE_ROOT/auto-assist-unit.xml" \
   2>&1 | tee "$EVIDENCE_ROOT/auto-assist-unit.log"

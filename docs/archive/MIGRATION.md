@@ -1036,7 +1036,7 @@ test_ensure_schema_declares_migration_constraints_and_indexes PASSED
 - Ephemeral Docker container per test session (`test_session`-scoped `neo4j_container` fixture).
 - Session-scoped `neo4j_client` with schema ensured once.
 - Function-scoped `seeded_neo4j` with DETACH DELETE cleanup + re-seed.
-- Default auth: `neo4j` / `livelongandprosper`.
+- Default auth: `neo4j` / ``<redacted - rotate>``.
 - Run: `python -m pytest tests/test_migration_api.py -v`
 
 #### Immediate next steps (in priority order)

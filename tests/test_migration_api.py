@@ -1,10 +1,33 @@
 import os
 
+import pytest
 from fastapi.testclient import TestClient
 # Import the fully-assembled app (``assistx.api_router:app`` is the deployed
 # entrypoint per the Dockerfile), which registers the router-integration,
 # overlay, and passive routers on top of the base ``assistx.api`` app.
 from assistx.api_router import app
+
+
+@pytest.fixture(autouse=True)
+def _isolate_routers_from_production_neo4j(neo4j_client, seeded_neo4j, monkeypatch):
+    """Route EVERY ``_neo`` binding to the ephemeral test database.
+
+    Router modules (assistx.routers.*) bind ``_neo`` from assistx.api at import
+    time, so patching only ``assistx.api._neo`` leaves them pointed at the
+    environment default — i.e. production Neo4j. Patch every module that holds
+    a ``_neo`` reference so tests can never read or write live graph state.
+    The high-concurrency fleet endpoints (``GET /api/agent/tasks``, ``POST
+    /api/tasks/{id}/claim``, ``POST /api/tasks/{id}/complete``) use the separate
+    ``_neo_fleet`` pool, so that factory is pinned too.
+    """
+    import sys
+
+    fake = lambda: seeded_neo4j  # noqa: E731
+    monkeypatch.setattr("assistx.api._neo", fake)
+    monkeypatch.setattr("assistx.api._neo_fleet", fake)
+    for name, module in list(sys.modules.items()):
+        if name.startswith("assistx.routers.") and hasattr(module, "_neo"):
+            monkeypatch.setattr(module, "_neo", fake)
 
 
 def test_api_intent_and_context_packet(seeded_neo4j, monkeypatch):
@@ -13,7 +36,7 @@ def test_api_intent_and_context_packet(seeded_neo4j, monkeypatch):
     monkeypatch.setattr(seeded_neo4j, "close", lambda: None)
 
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     intent_payload = {
         "source": "voice",
@@ -47,7 +70,7 @@ def test_api_intent_and_context_packet(seeded_neo4j, monkeypatch):
     context_payload = {
         "query": "Need bounded context for task review",
         "task_id": seeded_neo4j.get_ready_tasks()[0]["id"],
-        "include_sources": ["memory", "knowledge"],
+        "include_sources": ["memory", "knowledge", "orchestration"],
     }
     r2 = client.post("/api/brain/context", json=context_payload, auth=auth)
     assert r2.status_code == 200, r2.text
@@ -70,7 +93,7 @@ def test_intent_outcome_policy_variants(seeded_neo4j, monkeypatch):
     monkeypatch.setattr(seeded_neo4j, "close", lambda: None)
 
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     cancel = client.post(
         "/api/intents",
@@ -100,7 +123,7 @@ def test_dispatch_and_session_endpoints(seeded_neo4j, monkeypatch):
     monkeypatch.setattr("assistx.api._neo", lambda: neo)
     monkeypatch.setattr(neo, "close", lambda: None)
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     task = seeded_neo4j.get_ready_tasks()[0]
     dispatch_payload = {
@@ -192,7 +215,7 @@ def test_voice_event_ingestion(seeded_neo4j, monkeypatch):
         s.run("CREATE (:SophiaCapture {capture_id:'sophia-capture-1'})").consume()
 
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
     payload = {
         "event_id": "voice-evt-1",
         "event_type": "task_created",
@@ -347,7 +370,7 @@ def test_ops_status_endpoint(seeded_neo4j, monkeypatch):
     monkeypatch.setattr(neo, "close", lambda: None)
 
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
     r = client.get("/api/ops/status", auth=auth)
     assert r.status_code == 200, r.text
     body = r.json()
@@ -445,7 +468,7 @@ def test_task_trigger_lifecycle(seeded_neo4j, monkeypatch):
         )
 
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     r = client.get(
         "/api/agent/tasks",
@@ -534,9 +557,15 @@ def test_ticket_hierarchy_and_paperclip_dispatch(seeded_neo4j, monkeypatch):
             return "paperclip-issue-1"
 
     monkeypatch.setattr("assistx.api.get_paperclip_client", lambda: FakePaperclip())
+    # routers/dispatch.py binds ``get_paperclip_client`` by name at import
+    # time, so patch that module's reference too or the dispatch is created
+    # without a paperclip issue.
+    monkeypatch.setattr(
+        "assistx.routers.dispatch.get_paperclip_client", lambda: FakePaperclip()
+    )
 
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     epic = client.post(
         "/api/tickets",
@@ -624,7 +653,7 @@ def test_api_ask_auto_accepts_punctuation_and_whitespace(seeded_neo4j, monkeypat
     )
 
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
     body = {
         "question": "  How many READY tasks are in the graph?\nInclude counts by kind, please.  ",
         "mode": "auto",
@@ -640,7 +669,7 @@ def test_api_ask_auto_accepts_punctuation_and_whitespace(seeded_neo4j, monkeypat
 
 def test_api_validation_errors_are_structured():
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     r = client.post("/api/ask", json={"question": ""}, auth=auth)
 
@@ -659,7 +688,7 @@ def test_api_validation_errors_are_structured():
 
 def test_api_paperclip_event_validation_errors_are_structured():
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     r = client.post("/api/paperclip/events", json={"event_type": "task.created"}, auth=auth)
 
@@ -672,7 +701,7 @@ def test_api_paperclip_event_validation_errors_are_structured():
 
 def test_api_voice_event_validation_errors_are_structured():
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     r = client.post("/api/voice/events", json={"event_type": "task_created"}, auth=auth)
 
@@ -688,7 +717,7 @@ def test_api_workflow_control_rejects_invalid_action(seeded_neo4j, monkeypatch):
     monkeypatch.setattr(seeded_neo4j, "close", lambda: None)
 
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     r = client.post("/api/workflows/control", json={"action": "invalid"}, auth=auth)
 
@@ -698,7 +727,7 @@ def test_api_workflow_control_rejects_invalid_action(seeded_neo4j, monkeypatch):
 
 def test_api_dispatch_validation_errors_are_structured():
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     r = client.post("/api/dispatch", json={"task_id": "task-1"}, auth=auth)
 
@@ -711,7 +740,7 @@ def test_api_dispatch_validation_errors_are_structured():
 
 def test_api_intent_validation_errors_are_structured():
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     r = client.post("/api/intents", json={"source": "voice"}, auth=auth)
 
@@ -727,7 +756,7 @@ def test_api_ask_rejects_invalid_mode(seeded_neo4j, monkeypatch):
     monkeypatch.setattr(seeded_neo4j, "close", lambda: None)
 
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     r = client.post(
         "/api/ask",
@@ -772,7 +801,7 @@ def test_api_ask_async_enqueues_normalized_question(seeded_neo4j, monkeypatch):
     monkeypatch.setattr("assistx.api.idemp_save", lambda *args, **kwargs: None)
 
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     r = client.post(
         "/api/ask_async",
@@ -792,7 +821,7 @@ def test_api_get_answer_not_found(monkeypatch):
     monkeypatch.setattr("assistx.api.answers_store.get_answer", lambda *_: None)
 
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     r = client.get("/api/answers/missing-answer", auth=auth)
 
@@ -826,7 +855,7 @@ def test_api_ask_sync_idempotency(seeded_neo4j, monkeypatch):
     monkeypatch.setattr("assistx.api.idemp_save", lambda key, value: store.__setitem__(key, value))
 
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
     body = {
         "question": "How many tasks are ready?",
         "mode": "sync",
@@ -846,7 +875,7 @@ def test_command_center_intents(seeded_neo4j, monkeypatch):
     monkeypatch.setattr("assistx.api._neo", lambda: neo)
     monkeypatch.setattr(neo, "close", lambda: None)
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     client.post("/api/intents", json={"source": "voice", "text": "Intent one", "idempotency_key": "cc-intent-1"}, auth=auth)
     client.post("/api/intents", json={"source": "ui", "text": "Intent two", "idempotency_key": "cc-intent-2"}, auth=auth)
@@ -870,7 +899,7 @@ def test_command_center_memory(seeded_neo4j, monkeypatch):
     monkeypatch.setattr("assistx.api._neo", lambda: neo)
     monkeypatch.setattr(neo, "close", lambda: None)
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     client.post("/api/memory/items", json={"kind": "note", "text": "Memory one", "source": "hermes"}, auth=auth)
     client.post("/api/memory/items", json={"kind": "fact", "text": "Memory two", "source": "voice"}, auth=auth)
@@ -898,7 +927,7 @@ def test_command_center_devices(seeded_neo4j, monkeypatch):
     neo.upsert_agent_device("device-cc-2", hostname="host2", platform="macos", capabilities=["web"])
 
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     r = client.get("/api/devices", auth=auth)
     assert r.status_code == 200
@@ -915,7 +944,7 @@ def test_command_center_task_controls(seeded_neo4j, monkeypatch):
     monkeypatch.setattr("assistx.api._neo", lambda: neo)
     monkeypatch.setattr(neo, "close", lambda: None)
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     task = neo.get_ready_tasks()[0]
 
@@ -931,7 +960,7 @@ def test_command_center_reassign(seeded_neo4j, monkeypatch):
     monkeypatch.setattr("assistx.api._neo", lambda: neo)
     monkeypatch.setattr(neo, "close", lambda: None)
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     task = neo.get_ready_tasks()[0]
     dispatch = client.post(
@@ -952,7 +981,7 @@ def test_command_center_reassign(seeded_neo4j, monkeypatch):
 
 def test_command_center_fleet_proxy_and_page(monkeypatch):
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
     monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://router.example")
 
     class FakeResponse:
@@ -1008,7 +1037,7 @@ def test_routing_overlay_page_and_status(seeded_neo4j, monkeypatch):
     monkeypatch.setattr("assistx.api._neo", lambda: neo)
     monkeypatch.setattr(neo, "close", lambda: None)
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     page = client.get("/routing", auth=auth)
     assert page.status_code == 200, page.text
@@ -1024,7 +1053,7 @@ def test_routing_overlay_page_and_status(seeded_neo4j, monkeypatch):
 
 def test_trading_page_and_links(monkeypatch):
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     page = client.get("/trading", auth=auth)
     assert page.status_code == 200, page.text
@@ -1039,7 +1068,7 @@ def test_phase9_feeds_and_evaluations_api(seeded_neo4j, monkeypatch):
     monkeypatch.setattr("assistx.api._neo", lambda: neo)
     monkeypatch.setattr(neo, "close", lambda: None)
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     feeds = client.get("/api/feeds", auth=auth)
     assert feeds.status_code == 200, feeds.text
@@ -1134,7 +1163,7 @@ def test_sophia_event_ingestion(seeded_neo4j, monkeypatch):
     monkeypatch.setattr("assistx.api.get_paperclip_client", lambda: FakePaperclip())
     monkeypatch.setattr("assistx.api.PAPERCLIP_AGENT_ID", "Hermes Agent")
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     payload = {
         "event_id": "sophia-evt-1",
@@ -1152,8 +1181,13 @@ def test_sophia_event_ingestion(seeded_neo4j, monkeypatch):
     body = r.json()
     assert body["signal_event_id"] == "sophia-evt-1"
     assert body["intent_id"]
-    assert body["queue_class"] == "interactive"
-    assert body["routing_policy_fingerprint"]
+    # Strict-executor voice contract: authorization decision replaces queue_class.
+    assert body["accepted"] is True
+    assert body["authorization_action"] == "auto_dispatch_allowed"
+    assert body["review_required"] is False
+    assert body["audit_only"] is False
+    assert body["legacy_endpoint"] is True
+    assert body["contract_fingerprint"]
     assert created_issues
     assert created_issues[0]["assignee_id"] == "Hermes Agent"
     assert any(
@@ -1175,17 +1209,72 @@ def test_sophia_event_ingestion(seeded_neo4j, monkeypatch):
     r2 = client.post("/api/sophia/events", json=anomaly, auth=auth)
     assert r2.status_code == 200, r2.text
     b2 = r2.json()
-    assert b2["queue_class"] == "critical"
-    assert b2["incident_id"]
+    # Ratified policy: transport authentication is trusted identity, so a
+    # basic-auth operator posting an unknown speaker gets the admin voice
+    # override and the trusted auto-dispatch path instead of an audit reject.
+    assert b2["accepted"] is True
+    assert b2["authorization_action"] == "auto_dispatch_allowed"
+    assert b2["review_required"] is False
+    assert b2["audit_only"] is False
+    assert b2["auth_state"] == "admin_voice_override"
 
+    # Without a trusted operator transport the same unknown speaker is never
+    # auto-dispatched: the signed-webhook event is demoted to a review task.
+    import hashlib
+    import hmac
+    import json as _json
+
+    webhook_anomaly = dict(anomaly, event_id="sophia-evt-3")
+    secret = "sophia-anomaly-secret"
+    monkeypatch.setattr("assistx.api.VOICE_WEBHOOK_SECRET", secret)
+    raw = _json.dumps(webhook_anomaly).encode("utf-8")
+    sig = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    r3 = client.post(
+        "/api/sophia/events",
+        content=raw,
+        headers={
+            "Content-Type": "application/json",
+            "X-Voice-Signature": f"sha256={sig}",
+        },
+    )
+    assert r3.status_code == 202, r3.text
+    b3 = r3.json()
+    assert b3["accepted"] is True
+    assert b3["authorization_action"] == "review_required"
+    assert b3["review_required"] is True
+    assert b3["audit_only"] is False
+    assert b3["incident_id"]
+    assert b3["task_id"] is None
+
+    # The strict-executor contract replaced queue_class summaries; verify the
+    # ingested signal events (and their authorization decisions) in the graph.
+    with neo.driver.session() as s:
+        rows = s.run(
+            "MATCH (e:SignalEvent) WHERE e.id IN $ids "
+            "RETURN e.id AS id, e.event_type AS event_type, "
+            "       e.payload_json AS payload_json",
+            {"ids": ["sophia-evt-1", "sophia-evt-2", "sophia-evt-3"]},
+        ).data()
+    by_id = {row["id"]: row for row in rows}
+    assert set(by_id) == {"sophia-evt-1", "sophia-evt-2", "sophia-evt-3"}
+    evt1 = _json.loads(by_id["sophia-evt-1"]["payload_json"])
+    assert by_id["sophia-evt-1"]["event_type"] == "intent"
+    assert evt1["authorization"]["policy_action"] == "auto_dispatch_allowed"
+    evt2 = _json.loads(by_id["sophia-evt-2"]["payload_json"])
+    assert evt2["authorization"]["trusted"] is True
+    assert evt2["metadata"]["transport_identity_override"] is True
+    evt3 = _json.loads(by_id["sophia-evt-3"]["payload_json"])
+    # Untrusted executable events are stored under their review event type.
+    assert by_id["sophia-evt-3"]["event_type"] == "task_proposed"
+    assert evt3["authorization"]["review_required"] is True
+
+    # The deprecated aggregate endpoint still serves its summary shape even
+    # though canonical ingestion no longer writes sophia_-prefixed events.
     summary = client.get("/api/sophia/summary?limit=50", auth=auth)
     assert summary.status_code == 200, summary.text
     sj = summary.json()
-    assert sj["sample_size"] >= 2
-    assert sj["auth_states"]["authenticated_scott"] >= 1
-    assert sj["auth_states"]["unknown_unverified"] >= 1
-    assert sj["by_queue_class"]["critical"] >= 1
-    assert "routing_policy" in sj
+    assert "sample_size" in sj and "auth_states" in sj and "by_event_type" in sj
+    assert sj["routing_policy"]
     assert sj["routing_policy_fingerprint"]
 
 
@@ -1198,7 +1287,16 @@ def test_sophia_routing_policy_override(seeded_neo4j, monkeypatch):
         '{"default_queue_class":"batch","by_auth_state":{"authenticated_scott":"interactive","unknown_unverified":"critical"},"by_event_type_prefix":{"intent":"interactive","meeting":"batch"}}',
     )
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
+
+    # The operator-configured routing policy stays loadable and fingerprinted.
+    policy = client.get("/api/sophia/policy", auth=auth)
+    assert policy.status_code == 200, policy.text
+    pj = policy.json()
+    assert pj["routing_policy"]["default_queue_class"] == "batch"
+    assert pj["routing_policy"]["by_auth_state"]["authenticated_scott"] == "interactive"
+    assert pj["routing_policy"]["by_event_type_prefix"]["intent"] == "interactive"
+    assert pj["routing_policy_fingerprint"]
 
     r1 = client.post(
         "/api/sophia/events",
@@ -1212,7 +1310,17 @@ def test_sophia_routing_policy_override(seeded_neo4j, monkeypatch):
         auth=auth,
     )
     assert r1.status_code == 200, r1.text
-    assert r1.json()["queue_class"] == "interactive"
+    b1 = r1.json()
+    # Strict-executor voice contract: routing decisions surface as the
+    # authorization envelope; queue_class / routing_policy fields are gone.
+    assert b1["accepted"] is True
+    assert b1["authorization_action"] == "auto_dispatch_allowed"
+    assert b1["review_required"] is False
+    assert b1["audit_only"] is False
+    assert b1["legacy_endpoint"] is True
+    assert b1["contract_fingerprint"]
+    assert "queue_class" not in b1
+    assert "routing_policy_fingerprint" not in b1
 
     r2 = client.post(
         "/api/sophia/events",
@@ -1226,12 +1334,14 @@ def test_sophia_routing_policy_override(seeded_neo4j, monkeypatch):
         auth=auth,
     )
     assert r2.status_code == 200, r2.text
-    assert r2.json()["queue_class"] == "interactive"  # auth-state override takes precedence
-
-    policy = client.get("/api/sophia/policy", auth=auth)
-    assert policy.status_code == 200, policy.text
-    assert policy.json()["routing_policy"]["default_queue_class"] == "batch"
-    assert policy.json()["routing_policy_fingerprint"]
+    b2 = r2.json()
+    # Non-actionable event types are recorded without task admission even for
+    # trusted speakers — trust, not queue class, drives the decision now.
+    assert b2["accepted"] is True
+    assert b2["authorization_action"] == "record_only"
+    assert b2["review_required"] is False
+    assert b2["audit_only"] is False
+    assert b2["task_id"] is None
 
 
 def test_sophia_policy_change_incident_tracking(seeded_neo4j, monkeypatch):
@@ -1239,7 +1349,7 @@ def test_sophia_policy_change_incident_tracking(seeded_neo4j, monkeypatch):
     monkeypatch.setattr("assistx.api._neo", lambda: neo)
     monkeypatch.setattr(neo, "close", lambda: None)
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     monkeypatch.setenv(
         "ASSISTX_SOPHIA_ROUTING_POLICY",
@@ -1269,7 +1379,7 @@ def test_phase8_workflow_ops_endpoints(seeded_neo4j, monkeypatch):
     monkeypatch.setattr("assistx.api._neo", lambda: neo)
     monkeypatch.setattr(neo, "close", lambda: None)
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     # Seed some queue-class tasks
     batch_id = neo.upsert_ticket(
@@ -1386,7 +1496,7 @@ def test_phase8_retry_budget_dead_letter(seeded_neo4j, monkeypatch):
     monkeypatch.setattr("assistx.api._neo", lambda: neo)
     monkeypatch.setattr(neo, "close", lambda: None)
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     task_id = neo.upsert_ticket(
         title="Retry budget bounded workflow step",
@@ -1427,7 +1537,7 @@ def test_review_queue_actions(seeded_neo4j, monkeypatch):
     monkeypatch.setattr("assistx.api._neo", lambda: neo)
     monkeypatch.setattr(neo, "close", lambda: None)
     client = TestClient(app)
-    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "livelongandprosper"))
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     review_id = neo.upsert_ticket(
         title="Review intent: build weekly status dashboard",

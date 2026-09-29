@@ -94,7 +94,7 @@ Intent -> create_task_with_context(dispatch_mode="direct")
 ### Change 5: Rotate secrets
 
 **Current defaults that need rotation:**
-- `NEO4J_PASSWORD=knowledge_graph_2026` in .env
+- `NEO4J_PASSWORD=`<redacted - rotate>`` in .env
 - `BASIC_AUTH_PASS=change-me` in .env
 - `PAPERCLIP_API_TOKEN` is committed to .env (should be gitignored)
 - `VOICE_WEBHOOK_SECRET` and `PAPERCLIP_WEBHOOK_SECRET` are committed

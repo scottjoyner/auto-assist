@@ -22,6 +22,7 @@ from .neo4j_client import Neo4jClient
 from .paperclip_client import PaperclipClient
 from .swarm_core import record_trace_event as _default_record_trace_event
 from .voice_contract import (
+    AUTHENTICATED_SCOTT,
     ADMIN_VOICE_OVERRIDE,
     UNKNOWN_SPEAKER,
     CanonicalVoiceEventIn,
@@ -323,14 +324,57 @@ def _apply_transport_identity(
         event["metadata"]["transport_identity_override"] = True
 
 
+def _apply_verified_speaker_identity(
+    event: dict[str, Any],
+    *,
+    speaker_lookup,
+) -> None:
+    """Upgrade trust when the speaker matches a graph-backed verified profile.
+
+    Sophia's voice-agent performs biometric verification (ECAPA embeddings);
+    successful verdicts are registered in the assistx graph as Speaker nodes.
+    When the claimed speaker resolves to a recent high-confidence profile we
+    honor it even when the self-claimed auth_state was untrusted - this is the
+    fix for voice auth "failing a lot": enroll once, then prove identity by
+    voice instead of arguing with confidence strings.
+
+    ``speaker_lookup(source_id) -> bool`` is injected by the caller so this
+    module stays storage-agnostic; lookup failures fail open to prior behavior.
+    """
+    actor = event["actor"]
+    claimed = (
+        event.get("metadata", {}).get("speaker_identity")
+        or actor.get("user_id")
+        or ""
+    )
+    if not claimed:
+        return
+    try:
+        verified = bool(speaker_lookup(claimed))
+    except Exception:  # noqa: BLE001 - identity enrichment must never break ingestion
+        return
+    if not verified:
+        return
+    event["metadata"]["speaker_profile_verified"] = True
+    event["metadata"]["verified_speaker"] = claimed
+    current = actor.get("auth_state")
+    if current in {UNKNOWN_SPEAKER, "not_scott_known", "unverified"}:
+        actor["auth_state"] = AUTHENTICATED_SCOTT
+        actor["user_id"] = claimed
+        event["metadata"]["auth_state"] = AUTHENTICATED_SCOTT
+
+
 def _process_voice_event(
     body: CanonicalVoiceEventIn,
     *,
     transport_user: str,
     legacy_endpoint: bool = False,
+    speaker_lookup=None,
 ) -> dict[str, Any]:
     event = normalize_voice_event(body)
     _apply_transport_identity(event, transport_user)
+    if speaker_lookup is not None:
+        _apply_verified_speaker_identity(event, speaker_lookup=speaker_lookup)
     decision = authorize_voice_event(
         event["event_type"],
         event["actor"]["auth_state"],
@@ -656,7 +700,22 @@ def register_voice_routes(
             signature=x_voice_signature,
         )
         body = _parse_model(raw_body, CanonicalVoiceEventIn)
-        result = _process_voice_event(body, transport_user=transport_user)
+        def _verified_speaker_lookup(source_id: str) -> bool:
+            from .voice_profile import is_trusted_speaker
+
+            neo = _neo()
+            try:
+                return is_trusted_speaker(
+                    neo, source="sophia-voice-agent", source_id=source_id
+                )
+            finally:
+                neo.close()
+
+        result = _process_voice_event(
+            body,
+            transport_user=transport_user,
+            speaker_lookup=_verified_speaker_lookup,
+        )
         status_code = (
             202 if result["review_required"] or result["audit_only"] else 200
         )
