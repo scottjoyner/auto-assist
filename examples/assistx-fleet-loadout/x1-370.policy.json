@@ -1,0 +1,200 @@
+{
+  "captured_at": "2026-09-29T23:31:05Z",
+  "devices": [
+    {
+      "name": "card1",
+      "vram_total_bytes": 33285996544,
+      "vram_used_bytes": 1073741824
+    },
+    {
+      "name": "card2",
+      "vram_total_bytes": 2147483648,
+      "vram_used_bytes": 0
+    }
+  ],
+  "evidence": [],
+  "exclusivity": {
+    "port_1234": "prod-llm",
+    "port_8125": "drill"
+  },
+  "loadouts": [
+    {
+      "description": "Smallest loadout that keeps the production LLM path healthy.",
+      "loadout_id": "prod_llm_only",
+      "preferred_when": [
+        "prod_llm_uptime",
+        "default"
+      ],
+      "provenance": "measured",
+      "residents": [
+        {
+          "kind": "llm",
+          "model_key": "toolcall-v5-3b-combined-r2",
+          "port": 1234,
+          "role": "prod-llm"
+        },
+        {
+          "kind": "embedder",
+          "model_key": "text-embedding-nomic-embed-text-v1.5",
+          "role": "prod-embed"
+        }
+      ]
+    },
+    {
+      "description": "Production LLM plus a capable interactive resident; both share card1.",
+      "loadout_id": "prod_llm_plus_interactive",
+      "preferred_when": [
+        "prod_llm_and_studio_idle"
+      ],
+      "provenance": "declared",
+      "residents": [
+        {
+          "kind": "llm",
+          "model_key": "toolcall-v5-3b-combined-r2",
+          "port": 1234,
+          "role": "prod-llm"
+        },
+        {
+          "kind": "embedder",
+          "model_key": "text-embedding-nomic-embed-text-v1.5",
+          "role": "prod-embed"
+        },
+        {
+          "kind": "llm",
+          "model_key": "k2-horizon-7b",
+          "role": "interactive"
+        }
+      ]
+    },
+    {
+      "description": "Drill runtime owns the GPU; the production LLM path yields its card.",
+      "loadout_id": "soak_drill_exclusive",
+      "preferred_when": [
+        "soak_drill",
+        "task_quality_drill"
+      ],
+      "provenance": "measured",
+      "residents": [
+        {
+          "exclusive": true,
+          "kind": "runtime",
+          "model_key": "qwen3.8-27b-rocmfp4-strix",
+          "port": 8125,
+          "role": "drill"
+        }
+      ]
+    },
+    {
+      "description": "Drill runtime plus the small production model, if VRAM allows.",
+      "loadout_id": "soak_drill_with_prod_llm",
+      "preferred_when": [],
+      "provenance": "declared",
+      "residents": [
+        {
+          "exclusive": true,
+          "kind": "runtime",
+          "model_key": "qwen3.8-27b-rocmfp4-strix",
+          "port": 8125,
+          "role": "drill"
+        },
+        {
+          "kind": "llm",
+          "model_key": "toolcall-v5-3b-combined-r2",
+          "port": 1234,
+          "role": "prod-llm"
+        }
+      ]
+    },
+    {
+      "description": "Interactive lane only; production LLM path is degraded.",
+      "loadout_id": "studio_only",
+      "preferred_when": [],
+      "provenance": "declared",
+      "residents": [
+        {
+          "kind": "llm",
+          "model_key": "ornith-1.5-35b-a3b-apex-mtp",
+          "role": "interactive"
+        }
+      ]
+    },
+    {
+      "description": "Nothing resident: maximum headroom, every LLM-need unmet.",
+      "loadout_id": "empty",
+      "preferred_when": [
+        "gpu_idle",
+        "maintenance"
+      ],
+      "provenance": "measured",
+      "residents": []
+    }
+  ],
+  "models": [
+    {
+      "display_name": "Toolcall v5 3B (prod LLM path)",
+      "kind": "llm",
+      "model_key": "toolcall-v5-3b-combined-r2",
+      "vram_bytes": 6178316512
+    },
+    {
+      "display_name": "Nomic Embed Text v1.5",
+      "kind": "embedder",
+      "model_key": "text-embedding-nomic-embed-text-v1.5",
+      "vram_bytes": 84106624
+    },
+    {
+      "display_name": "Qwen3.8 27B ROCmFP4 (soak/TQ runtime)",
+      "kind": "runtime",
+      "model_key": "qwen3.8-27b-rocmfp4-strix",
+      "vram_bytes": 15691215360
+    },
+    {
+      "display_name": "Qwen3.8 27B Q4 (alternate soak runtime)",
+      "kind": "runtime",
+      "model_key": "qwen/qwen3.8-27b",
+      "vram_bytes": 17742040464
+    },
+    {
+      "display_name": "K2 Horizon 7B (interactive lane)",
+      "kind": "llm",
+      "model_key": "k2-horizon-7b",
+      "vram_bytes": 18010413440
+    },
+    {
+      "display_name": "Ornith 1.5 35B A3B MTP Compact (interactive lane)",
+      "kind": "llm",
+      "model_key": "ornith-1.5-35b-a3b-apex-mtp",
+      "vram_bytes": 17437861152
+    }
+  ],
+  "needs": [
+    {
+      "description": "Production AssistX LLM traffic needs an OpenAI-compatible endpoint on :1234.",
+      "need": "prod_llm_endpoint",
+      "resident_kind": "llm"
+    },
+    {
+      "description": "Embeddings for AssistX request paths need a resident embedder.",
+      "need": "prod_embedder",
+      "resident_kind": "embedder"
+    },
+    {
+      "description": "Task-quality/soak drills bind an exclusive llama-server runtime.",
+      "need": "soak_drill_runtime",
+      "resident_kind": "runtime"
+    },
+    {
+      "description": "Benchmark/eval replays need the same exclusive runtime as a drill.",
+      "need": "evals_runtime",
+      "resident_kind": "runtime"
+    },
+    {
+      "description": "An operator-facing interactive studio lane wants a capable resident model.",
+      "need": "interactive_lane",
+      "resident_kind": "llm"
+    }
+  ],
+  "note": "Devices and model VRAM figures are measured facts. Loadout preferences are declared by an operator until measured outcomes for (circumstance, loadout) pairs exist.",
+  "policy_id": "assistx-fleet-loadout-x1-370-v1",
+  "schema": "assistx-fleet-loadout-policy-v1"
+}
