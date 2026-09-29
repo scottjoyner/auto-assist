@@ -1,0 +1,51 @@
+name: headroom-smoke
+
+on:
+  push:
+    branches: ["agent/context-compression-baseline"]
+  pull_request:
+    paths:
+      - "src/assistx/headroom_adapter.py"
+      - "scripts/headroom-smoke.py"
+      - ".github/workflows/headroom-smoke.yml"
+
+jobs:
+  compress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install AssistX and pinned Headroom
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          pip install "headroom-ai==0.32.1"
+
+      - name: Run adapter tests
+        run: |
+          pytest -q tests/test_headroom_adapter.py
+
+      - name: Run real local Headroom compression smoke
+        env:
+          PYTHONPATH: src
+        run: |
+          python scripts/headroom-smoke.py | tee headroom-smoke.json
+          python -m json.tool headroom-smoke.json >/dev/null
+
+      - name: Upload Headroom smoke result
+        uses: actions/upload-artifact@v4
+        with:
+          name: headroom-smoke-result
+          path: headroom-smoke.json
+          if-no-files-found: error
+          retention-days: 30
