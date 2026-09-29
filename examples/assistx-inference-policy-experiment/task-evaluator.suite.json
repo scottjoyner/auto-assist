@@ -7,7 +7,7 @@
     "routing_authority_changed": false
   },
   "cases_file": "examples/assistx-inference-policy-experiment/task-evaluator.cases.jsonl",
-  "description": "Deterministic offline quality suite for coding, structured tool output, code-review defect recall, and long-context authority/constraint retention Expanded deterministically by scripts/generate_task_evaluator_cases.py Expanded deterministically by scripts/generate_task_evaluator_cases.py Expanded deterministically by scripts/generate_task_evaluator_cases.py.",
+  "description": "Deterministic offline quality suite for coding, structured tool output, code-review defect recall, and long-context authority/constraint retention. Expanded deterministically by scripts/generate_task_evaluator_cases.py.",
   "minimum_overall_pass_rate": 1,
   "minimum_pass_rate_by_kind": {
     "constraint_retention": 1,
