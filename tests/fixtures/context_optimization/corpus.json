@@ -1,0 +1,20 @@
+[
+  {
+    "id": "pretty-json",
+    "content_type": "application/json",
+    "content": "{\n  \"node\": \"x1-370\",\n  \"model\": \"qwen\",\n  \"metrics\": {\n    \"tps\": 22.5,\n    \"port\": 8088\n  }\n}",
+    "must_preserve": ["x1-370", "qwen", "22.5", "8088"]
+  },
+  {
+    "id": "tool-json",
+    "content_type": "tool/json",
+    "content": "{\n  \"results\": [\n    {\"path\": \"src/assistx/runtime_projection.py\", \"line\": 42},\n    {\"path\": \"tests/test_runtime_projection.py\", \"line\": 17}\n  ]\n}",
+    "must_preserve": ["src/assistx/runtime_projection.py", "42", "tests/test_runtime_projection.py", "17"]
+  },
+  {
+    "id": "plain-instruction",
+    "content_type": "text/plain",
+    "content": "Do not alter this exact user instruction   including spacing.",
+    "must_preserve": ["Do not alter this exact user instruction   including spacing."]
+  }
+]

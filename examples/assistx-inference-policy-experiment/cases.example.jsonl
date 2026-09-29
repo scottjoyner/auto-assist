@@ -1,0 +1,3 @@
+{"case_id":"coding-expression-1","task_family":"coding","prompt":"Return only the Python expression that sums even integers in values.","acceptance":{"required_terms":["sum","values"]}}
+{"case_id":"tool-json-1","task_family":"tool_use","prompt":"Return JSON for a read-only health check of node xwing using keys tool and node.","acceptance":{"required_terms":["xwing"],"json_required_keys":["tool","node"]}}
+{"case_id":"reasoning-queue-1","task_family":"reasoning","prompt":"If all loaded models are busy, explain one reason queueing may be safer than loading another model.","acceptance":{"required_terms":["load"]}}
