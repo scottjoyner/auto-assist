@@ -5,6 +5,8 @@ import hashlib
 import hmac
 import json
 import os
+import time
+import uuid
 from email.header import decode_header, make_header
 from typing import Any, Callable, Iterable, Optional
 
@@ -12,6 +14,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
+import httpx
 
 
 _TAILSCALE_LOGIN_HEADER = "Tailscale-User-Login"
@@ -31,6 +34,16 @@ class MobileAgentChatIn(BaseModel):
     model: str = Field(default="hermes-agent", max_length=256)
     messages: list[MobileAgentMessageIn] = Field(min_length=1, max_length=80)
     stream: bool = True
+
+
+class MobileModelChatIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    model_handle: str = Field(pattern=r"^model:v1:[0-9a-f]{32}$")
+    messages: list[MobileAgentMessageIn] = Field(min_length=1, max_length=80)
+    stream: bool = True
+    temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=4096, ge=1, le=32768)
 
 
 def _decode_identity_header(value: str) -> str:
@@ -350,7 +363,7 @@ def _sanitize_runtime_projection_for_mobile(
     }
 
 
-def _mobile_runtime_catalog() -> dict[str, Any]:
+def _current_runtime_projection() -> dict[str, Any]:
     from .api import _neo
     from .runtime_projection_v2 import build_runtime_projection_v2
 
@@ -360,11 +373,183 @@ def _mobile_runtime_catalog() -> dict[str, Any]:
         )
     except ValueError:
         ttl_seconds = 900
-    projection = build_runtime_projection_v2(
+    return build_runtime_projection_v2(
         _neo,
         ttl_seconds=max(30, min(ttl_seconds, 3600)),
     )
-    return _sanitize_runtime_projection_for_mobile(projection)
+
+
+def _mobile_runtime_catalog() -> dict[str, Any]:
+    return _sanitize_runtime_projection_for_mobile(_current_runtime_projection())
+
+
+def _resolve_mobile_model_handle(
+    projection: dict[str, Any],
+    model_handle: str,
+    *,
+    handle_secret: str | None = None,
+) -> dict[str, Any] | None:
+    """Resolve one opaque handle against the *current* admitted projection.
+
+    The returned artifact fingerprint is internal-only and is never serialized
+    to the phone. A stale projection or missing/rotated handle fails closed.
+    """
+
+    now_ms = int(time.time() * 1000)
+    try:
+        expires_at_ms = int(projection.get("expires_at_ms") or 0)
+    except (TypeError, ValueError):
+        return None
+    if expires_at_ms <= now_ms:
+        return None
+
+    matches: list[dict[str, Any]] = []
+    for provider in projection.get("providers") or []:
+        if not isinstance(provider, dict) or provider.get("enabled") is False:
+            continue
+        for model in provider.get("models") or []:
+            if not isinstance(model, dict):
+                continue
+            candidate_handle = _mobile_model_handle(
+                model,
+                secret=handle_secret,
+            )
+            if candidate_handle != model_handle:
+                continue
+            fingerprint = str(model.get("artifact_fingerprint") or "").strip()
+            if not fingerprint:
+                continue
+            matches.append(
+                {
+                    "artifact_fingerprint": fingerprint,
+                    "display_name": str(model.get("alias") or "").strip(),
+                    "capabilities": {
+                        str(value)
+                        for value in (model.get("capabilities") or [])
+                        if str(value).strip()
+                    },
+                }
+            )
+
+    if not matches:
+        return None
+    fingerprints = {item["artifact_fingerprint"] for item in matches}
+    if len(fingerprints) != 1:
+        # A keyed-handle collision or inconsistent projection must never choose
+        # a physical route ambiguously.
+        return None
+    names = sorted(
+        {item["display_name"] for item in matches if item["display_name"]},
+        key=str.casefold,
+    )
+    capabilities = sorted(
+        {
+            capability
+            for item in matches
+            for capability in item["capabilities"]
+        }
+    )
+    return {
+        "model_handle": model_handle,
+        "artifact_fingerprint": next(iter(fingerprints)),
+        "display_name": names[0] if names else "Fleet model",
+        "ready_runtime_count": len(matches),
+        "capabilities": capabilities,
+    }
+
+
+def _mobile_router_config() -> tuple[str, str]:
+    base_url = os.getenv("FLEET_ROUTER_URL", "").strip().rstrip("/")
+    token = os.getenv("FLEET_ROUTER_BEARER_TOKEN", "").strip()
+    if not base_url or not token:
+        raise RuntimeError("mobile fleet-model router is not configured")
+    return base_url, token
+
+
+def _mobile_model_router_payload(
+    body: MobileModelChatIn,
+    resolved: dict[str, Any],
+    *,
+    mobile_request_id: str | None = None,
+) -> dict[str, Any]:
+    metadata = {
+        "assistx_source": True,
+        "privacy": "local_only",
+        "local_only": True,
+        "assistx_mobile_model_handle": body.model_handle,
+        "assistx_artifact_fingerprint": resolved["artifact_fingerprint"],
+    }
+    if mobile_request_id:
+        metadata["assistx_mobile_request_id"] = mobile_request_id
+    return {
+        "model": "auto/local",
+        "messages": [
+            message.model_dump()
+            for message in body.messages
+        ],
+        "temperature": body.temperature,
+        "max_tokens": body.max_tokens,
+        "stream": body.stream,
+        "local_only": True,
+        "allow_cloud": False,
+        "metadata": metadata,
+    }
+
+
+def _sanitize_router_completion(
+    payload: dict[str, Any],
+    model_handle: str,
+) -> dict[str, Any]:
+    """Keep OpenAI response semantics without leaking backend coordinates."""
+
+    sanitized: dict[str, Any] = {
+        "id": str(payload.get("id") or "kipnerter-fleet-model"),
+        "object": str(payload.get("object") or "chat.completion"),
+        "model": model_handle,
+        "choices": payload.get("choices") if isinstance(payload.get("choices"), list) else [],
+    }
+    if isinstance(payload.get("created"), (int, float)):
+        sanitized["created"] = payload["created"]
+    if isinstance(payload.get("usage"), dict):
+        sanitized["usage"] = payload["usage"]
+    return sanitized
+
+
+async def _sanitized_router_stream(
+    response: httpx.Response,
+    stream_context: Any,
+    client: httpx.AsyncClient,
+    model_handle: str,
+):
+    try:
+        async for line in response.aiter_lines():
+            if not line:
+                yield "\n"
+                continue
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                yield "data: [DONE]\n\n"
+                continue
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            yield (
+                "data: "
+                + json.dumps(
+                    _sanitize_router_completion(payload, model_handle),
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
+    finally:
+        await stream_context.__aexit__(None, None, None)
+        await client.aclose()
+
 
 def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..., str]) -> None:
     def mobile_auth(
@@ -427,6 +612,122 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
                 status_code=503,
                 detail={"error": "runtime_catalog_unavailable"},
             ) from exc
+
+    @router.post("/api/v1/model/chat/completions", tags=["kipnerter-mobile"])
+    async def mobile_model_chat(
+        body: MobileModelChatIn,
+        request: Request,
+        user: str = Depends(mobile_auth),
+    ):
+        _tailnet_identity(request)
+
+        try:
+            projection = _current_runtime_projection()
+            resolved = _resolve_mobile_model_handle(
+                projection,
+                body.model_handle,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "runtime_projection_unavailable"},
+            ) from exc
+        if resolved is None:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "model_handle_not_ready"},
+            )
+
+        try:
+            router_url, router_token = _mobile_router_config()
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "fleet_model_router_unavailable"},
+            ) from exc
+
+        mobile_request_id = f"kmr:{uuid.uuid4().hex}"
+        payload = _mobile_model_router_payload(
+            body,
+            resolved,
+            mobile_request_id=mobile_request_id,
+        )
+        response_headers = {
+            "Cache-Control": "no-store",
+            "X-Kipnerter-Model-Authority": "assistx-runtime-projection",
+            "X-Kipnerter-Model-Request-ID": mobile_request_id,
+        }
+        headers = {
+            "Authorization": f"Bearer {router_token}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream" if body.stream else "application/json",
+        }
+        client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=5.0))
+        endpoint = f"{router_url}/v1/chat/completions"
+
+        if not body.stream:
+            try:
+                response = await client.post(endpoint, headers=headers, json=payload)
+            except httpx.HTTPError as exc:
+                await client.aclose()
+                raise HTTPException(
+                    status_code=503,
+                    detail={"error": "fleet_model_unavailable"},
+                ) from exc
+            try:
+                if response.status_code >= 400:
+                    raise HTTPException(
+                        status_code=503,
+                        detail={"error": "fleet_model_unavailable"},
+                    )
+                decoded = response.json()
+                if not isinstance(decoded, dict):
+                    raise HTTPException(
+                        status_code=502,
+                        detail={"error": "invalid_fleet_model_response"},
+                    )
+                return JSONResponse(
+                    content=_sanitize_router_completion(
+                        decoded,
+                        body.model_handle,
+                    ),
+                    headers=response_headers,
+                )
+            finally:
+                await client.aclose()
+
+        stream_context = client.stream(
+            "POST",
+            endpoint,
+            headers=headers,
+            json=payload,
+        )
+        try:
+            response = await stream_context.__aenter__()
+        except httpx.HTTPError as exc:
+            await client.aclose()
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "fleet_model_unavailable"},
+            ) from exc
+        if response.status_code >= 400:
+            await response.aread()
+            await stream_context.__aexit__(None, None, None)
+            await client.aclose()
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "fleet_model_unavailable"},
+            )
+        return StreamingResponse(
+            _sanitized_router_stream(
+                response,
+                stream_context,
+                client,
+                body.model_handle,
+            ),
+            media_type="text/event-stream",
+            headers=response_headers,
+        )
 
     @router.post("/api/v1/agent/chat/completions", tags=["kipnerter-mobile"])
     async def mobile_agent_chat(
