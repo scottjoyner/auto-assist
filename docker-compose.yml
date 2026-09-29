@@ -110,6 +110,9 @@ services:
       - FLEET_BASIC_AUTH_PASS=${FLEET_BASIC_AUTH_PASS:-change-me}
       - FLEET_ROUTER_URL=${FLEET_ROUTER_URL:-http://router:8088}
       - FLEET_ROUTER_BEARER_TOKEN=${AUTO_ROUTER_INTERNAL_SERVICE_TOKEN:?set AssistX-only router inference token}
+      # Dedicated keyed namespace for opaque mobile model handles. Keep stable
+      # across routine redeploys so saved selections remain valid.
+      - KIPNERTER_MOBILE_MODEL_HANDLE_SECRET=${KIPNERTER_MOBILE_MODEL_HANDLE_SECRET:-}
       # Nodes that don't register with the router (git-router-1 only learns
       # about hosts that send node-report). Seed them directly so the executor
       # probes + routes LLM work to them. Resolved via Tailscale magic DNS.

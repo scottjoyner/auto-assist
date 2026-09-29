@@ -595,22 +595,32 @@ def install_degraded_route_fence(app: Any) -> None:
     @app.middleware("http")
     async def degraded_route_fence(request: Request, call_next):
         path = request.url.path.rstrip("/") or "/"
-        if request.method == "OPTIONS" or not degraded_control_plane_enabled():
+        is_degraded = (
+            path == "/api/degraded" or path.startswith("/api/degraded/")
+        )
+        if request.method == "OPTIONS":
             return await call_next(request)
-
-        key = (request.method.upper(), path)
-        if key not in _ALLOWED_ROUTES:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "detail": "route unavailable in degraded control-plane mode",
-                    "method": key[0],
-                    "path": key[1],
-                    "durable_authority": "neo4j",
-                    "operational_store": "falkordb",
-                },
-            )
-
+        # While degraded control-plane mode is enabled this node serves only
+        # the allowlisted control-plane surface (/health, /metrics, and the
+        # /api/degraded/* operations); every ordinary application route is
+        # fenced with a clean 503. With the flag unset, ordinary routes keep
+        # serving and /api/degraded/* stays best-effort with a structured 503
+        # when the operational store is unreachable.
+        if degraded_control_plane_enabled():
+            key = (request.method.upper(), path)
+            if key not in _ALLOWED_ROUTES:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "detail": "route unavailable in degraded control-plane mode",
+                        "method": key[0],
+                        "path": key[1],
+                        "durable_authority": "neo4j",
+                        "operational_store": "falkordb",
+                    },
+                )
+        if not is_degraded:
+            return await call_next(request)
         try:
             return await call_next(request)
         except HTTPException:

@@ -11,8 +11,8 @@ if [ ! -f "${HERMES_HOME}/config.yaml" ] && [ -f "${DEFAULTS}/config.yaml" ]; th
     cp "${DEFAULTS}/config.yaml" "${HERMES_HOME}/config.yaml"
 fi
 
-# A missing config makes provider selection fail as "Unknown provider". Fail
-# closed instead of allowing the API to start with a dangling Hermes home.
+# A missing config makes provider selection fail later as an opaque runtime
+# error. Fail closed at container startup instead.
 test -f "${HERMES_HOME}/config.yaml"
 
 # Ensure ~/.hermes/config.yaml exists

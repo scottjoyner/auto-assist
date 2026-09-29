@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Harness evolution — AssistX</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="stylesheet" href="{{ url_for('static', path='css/control_room.css') }}">
+  <style>
+    .evo-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 12px;
+      margin-top: 12px;
+    }
+    @media (min-width: 1280px) {
+      .evo-grid { grid-template-columns: minmax(0, 1fr) 420px; }
+      .evo-main { grid-column: 1; }
+      .evo-side { grid-column: 2; }
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px 14px;
+    }
+    .panel h2 {
+      margin: 0 0 10px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--steel);
+    }
+    .panel h2 .count {
+      color: var(--cyan);
+      font-family: var(--mono);
+      margin-left: 6px;
+    }
+    .chain {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+      background: var(--panel-alt, #0c1215);
+    }
+    .chain-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 8px 14px;
+      margin-bottom: 8px;
+    }
+    .chain-id { font-family: var(--mono); color: var(--cyan); font-size: 13px; }
+    .chain-meta { color: var(--muted); font-size: 12px; }
+    .chain-meta b { color: var(--text); font-weight: 600; }
+    .stages { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .stage {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--mono);
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      background: rgba(70, 231, 255, 0.02);
+    }
+    .stage .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+    .stage.done { color: var(--green); border-color: rgba(67, 240, 138, 0.35); }
+    .stage.done .dot { background: var(--green); }
+    .stage.running { color: var(--amber); border-color: rgba(255, 200, 87, 0.35); }
+    .stage.running .dot { background: var(--amber); }
+    .stage.failed { color: var(--red); border-color: rgba(255, 77, 94, 0.4); }
+    .stage.failed .dot { background: var(--red); }
+    .stage .score { color: var(--cyan); }
+    .arrow { color: var(--line-hot, #2e6974); font-family: var(--mono); font-size: 11px; }
+    table.evo { width: 100%; border-collapse: collapse; font-size: 12px; }
+    table.evo th {
+      text-align: left; color: var(--steel); font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.06em; font-size: 10.5px;
+      padding: 4px 8px; border-bottom: 1px solid var(--line);
+    }
+    table.evo td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    table.evo tr:hover td { background: rgba(70, 231, 255, 0.03); }
+    .kind {
+      font-family: var(--mono); font-size: 11px; color: var(--cyan);
+      white-space: nowrap;
+    }
+    .status { font-family: var(--mono); font-size: 11px; }
+    .status.DONE, .status.COMPLETED { color: var(--green); }
+    .status.RUNNING, .status.CLAIMED { color: var(--amber); }
+    .status.FAILED, .status.ERROR { color: var(--red); }
+    .objective { color: var(--text); max-width: 320px; }
+    .resp { font-family: var(--mono); font-size: 11px; color: var(--muted); max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mistake { border-left: 3px solid var(--red); padding: 8px 10px; margin-bottom: 8px; background: rgba(255, 77, 94, 0.04); border-radius: 0 8px 8px 0; }
+    .mistake-head { display: flex; gap: 10px; align-items: baseline; margin-bottom: 4px; flex-wrap: wrap; }
+    .mistake-task { font-family: var(--mono); color: var(--red); font-size: 12px; }
+    .mistake-chain { font-family: var(--mono); color: var(--cyan); font-size: 11px; }
+    .diff { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-family: var(--mono); font-size: 11.5px; }
+    .diff .expected { color: var(--green); white-space: pre-wrap; }
+    .diff .actual { color: var(--red); white-space: pre-wrap; }
+    .diff-label { color: var(--steel); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .empty { color: var(--muted); font-size: 12px; padding: 8px 2px; }
+    .live-dot {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      background: var(--green); margin-right: 6px;
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+    .filterbar { display: flex; gap: 8px; margin: 10px 0 0; flex-wrap: wrap; align-items: center; }
+    .filterbar input {
+      background: var(--panel-alt, #0c1215); border: 1px solid var(--line);
+      color: var(--text); border-radius: 6px; padding: 5px 9px; font-family: var(--mono);
+      font-size: 12px; min-width: 220px;
+    }
+  </style>
+</head>
+<body>
+  <div class="control-shell">
+    <header class="topbar">
+      <div>
+        <h1 style="margin:0; font-size:18px;">Harness evolution</h1>
+        <div style="color: var(--muted); font-size:12px;">
+          reflect → train → deploy → rescore · every mistake, chain, and live response traceable
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span style="color: var(--muted); font-size:12px;">
+          <span class="live-dot" id="live-dot"></span><span id="refresh-note">polling…</span>
+        </span>
+        <a href="/control-room" style="color: var(--steel); font-size:12px; border:1px solid var(--line); border-radius:6px; padding:5px 10px;">← control room</a>
+      </div>
+    </header>
+
+    <div class="filterbar">
+      <input id="evo-filter" type="text" placeholder="filter by chain / suite / endpoint / model…" />
+      <span style="color: var(--muted); font-size: 11px;" id="snapshot-meta"></span>
+    </div>
+
+    <div class="evo-grid">
+      <div class="evo-main">
+        <div class="panel">
+          <h2>Evolution chains <span class="count" id="chains-count">0</span></h2>
+          <div id="chains"><div class="empty">loading…</div></div>
+        </div>
+
+        <div class="panel" style="margin-top:12px;">
+          <h2>Mistakes <span class="count" id="mistakes-count">0</span></h2>
+          <div id="mistakes"><div class="empty">loading…</div></div>
+        </div>
+      </div>
+
+      <div class="evo-side">
+        <div class="panel">
+          <h2>Live tasks <span class="count" id="live-count">0</span></h2>
+          <div id="live"><div class="empty">loading…</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', path='js/harness.js') }}"></script>
+</body>
+</html>
