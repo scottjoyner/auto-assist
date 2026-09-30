@@ -83,6 +83,9 @@
         score: dep.status === 'healthy' ? 100 : dep.status === 'degraded' ? 50 : 0,
         issues: dep.status === 'degraded' ? 'degraded' : dep.status === 'failed' ? 'failed' : 'none',
         category: dep.category,
+        // The DETAILS column is only useful if it says *why* a component is
+        // unhealthy; it rendered empty for every row until now.
+        detail: dep.detail || '',
         required: dep.required
       });
     }
@@ -575,7 +578,7 @@
           <span class="component-score">${comp.score}</span>
           <span class="component-issues">${comp.issues}</span>
           ${comp.category ? `<span class="component-category">${comp.category}</span>` : ''}
-          ${comp.runtime ? `<span class="component-runtime">${comp.runtime}</span>` : ''}
+          <span class="component-details">${esc(comp.detail || comp.runtime || '--')}</span>
         </div>
       `).join('');
     }
