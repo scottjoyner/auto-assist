@@ -720,3 +720,18 @@ def test_verification_provenance_is_recorded_per_model():
     assert "LM Studio" in drill["load_note"], "must not imply LM Studio proof"
     prod = policy.models["toolcall-v5-3b-combined-r2"]
     assert prod["verified_in"] == "lm-studio"
+
+
+def test_cheap_model_is_recorded_as_failing_the_quality_gate():
+    """The obvious cost lever for the ladder was measured, not assumed.
+
+    A 0.8B model loads instantly and serves completions, but passed 1 of 8
+    representative cases. The suite gate requires every case to pass, so it is
+    not a viable policy. The policy file must keep that fact, with its reason,
+    so nobody re-proposes the cheap runtime without the quality caveat.
+    """
+    policy = Policy.load(POLICY_PATH)
+    small = policy.models["qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled"]
+    assert small["load_status"] == "verified", "it does load; that is not the issue"
+    assert "1 of 8" in small["load_note"]
+    assert "not a viable policy" in small["load_note"].lower()
