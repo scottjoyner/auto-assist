@@ -234,6 +234,7 @@
       "load_note": "Loaded in 9.72s; 5.75 GiB resident; completion median 0.478s over 5 samples.",
       "load_status": "verified",
       "model_key": "toolcall-v5-3b-combined-r2",
+      "verified_in": "lm-studio",
       "vram_bytes": 6178316512,
       "vram_note": "5.75 GiB resident as measured by lms after load."
     },
@@ -243,14 +244,16 @@
       "load_note": "Loaded instantly; 84 MiB resident.",
       "load_status": "verified",
       "model_key": "text-embedding-nomic-embed-text-v1.5",
+      "verified_in": "lm-studio",
       "vram_bytes": 84106624
     },
     {
       "display_name": "Qwen3.8 27B ROCmFP4 (soak/TQ runtime)",
       "kind": "runtime",
-      "load_note": "",
-      "load_status": "unverified",
+      "load_note": "Bound repeatedly by bind-soak-runtime.sh and measured across 32 cases at 32K and 128K context, including a 72025-token prompt, with and without the production model resident. LM Studio loadability of this file has not been tested and is not implied.",
+      "load_status": "verified",
       "model_key": "qwen3.8-27b-rocmfp4-strix",
+      "verified_in": "soak-binder (32-case task-quality campaign, 32K and 128K)",
       "vram_bytes": 15691215360
     },
     {
@@ -259,6 +262,7 @@
       "load_note": "`lms load k2-horizon-7b` (BF16 18.0 GB, arch k2-horizon) hung >600s and never appeared in `lms ps`; VRAM unchanged. Do not retry blindly on this runtime.",
       "load_status": "failed",
       "model_key": "k2-horizon-7b",
+      "verified_in": "lm-studio (failed)",
       "vram_bytes": 18010413440
     },
     {
@@ -268,6 +272,7 @@
       "load_note": "Loads alone in ~15s (22.09 GiB resident -- far above the 16.2 GB file size, which is what a size-based estimate would assume). Loading it alongside the 5.75 GiB prod model FAILS on this card: 'unable to allocate ROCm0 buffer'. It therefore requires the device to itself (exclusive_gpu).",
       "load_status": "verified",
       "model_key": "ornith-1.5-35b-a3b-apex-mtp",
+      "verified_in": "lm-studio (alone only)",
       "vram_bytes": 23718956892
     }
   ],

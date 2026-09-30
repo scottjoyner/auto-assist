@@ -681,3 +681,42 @@ def test_infeasible_recommendation_lists_what_each_option_would_break():
     for item in result["blocking"]:
         assert item["reasons"], f"{item['loadout_id']} blocked with no reason"
     assert "relax" in result["note"]
+
+
+def test_forced_decision_is_reported_separately_from_readiness():
+    """One feasible option means the model has nothing to choose between.
+
+    prod_llm_uptime has exactly one feasible loadout (the interactive
+    co-residency is measured infeasible), so no amount of evidence would hand
+    the decision to the model. That should be visible, not look like a gate
+    still waiting on data.
+    """
+    result = recommend(
+        Policy.load(POLICY_PATH),
+        circumstance={"prod_llm_endpoint": True, "prod_embedder": True},
+        circumstance_id="prod_llm_uptime",
+    )
+    assert result["decision_is_forced"] is True
+    assert "forced by feasibility" in result["model_note"]
+    assert result["model_scoring_active"] is False
+
+
+def test_multiple_feasible_options_are_not_forced():
+    policy = _policy()
+    result = recommend(
+        policy,
+        circumstance={},
+        circumstance_id="gpu_idle",
+    )
+    assert result["decision_is_forced"] is False
+
+
+def test_verification_provenance_is_recorded_per_model():
+    """Loadability in one runtime is not proof for another."""
+    policy = Policy.load(POLICY_PATH)
+    drill = policy.models["qwen3.8-27b-rocmfp4-strix"]
+    assert drill["load_status"] == "verified"
+    assert "soak-binder" in drill["verified_in"]
+    assert "LM Studio" in drill["load_note"], "must not imply LM Studio proof"
+    prod = policy.models["toolcall-v5-3b-combined-r2"]
+    assert prod["verified_in"] == "lm-studio"
