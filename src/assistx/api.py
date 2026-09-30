@@ -58,6 +58,8 @@ from .self_healing import SelfHealingController
 CONTENT_TYPE_LATEST, generate_latest = load_prometheus_client()
 redis = load_redis_module()
 aioredis = load_aioredis_module()
+# Canonical redis endpoint (single source of truth for the answers pubsub).
+from .answers_store import REDIS_URL  # noqa: E402  (module-level import kept adjacent to redis setup)
 Queue = load_queue_class()
 from .metrics import QA_REQUESTS, JOBS_ENQUEUED, TASK_CLAIMS, TASK_COMPLETIONS, TASK_HEARTBEATS, CONTEXT_PACKETS
 from .metrics import RQ_JOBS_IN_QUEUE, RQ_JOBS_RUNNING, RQ_JOBS_FAILED
@@ -3630,14 +3632,16 @@ def api_live_strategy(user: str = Depends(auth)):
 
 
 def _normalize_priority(value: object) -> str:
-    """Coerce a stored priority into the canonical uppercase label."""
-    if isinstance(value, str):
-        text = value.strip().upper()
-    elif value is None:
-        text = ""
-    else:
-        text = str(value).strip().upper()
-    return text or "UNSET"
+    """Coerce a stored priority into a canonical label.
+
+    Task.priority is not schema-constrained, and the graph holds at least one
+    Task with an integer priority. A non-string is malformed, not a new bucket:
+    it lands in UNSET (the task is still counted) rather than rendering a
+    "100" priority in the UI.
+    """
+    if not isinstance(value, str):
+        return "UNSET"
+    return value.strip().upper() or "UNSET"
 
 
 def _priority_sort_key(item):

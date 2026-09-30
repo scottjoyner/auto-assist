@@ -94,7 +94,7 @@ def test_critical_alert_derivation_handles_an_empty_snapshot():
         ("HIGH", "HIGH"),
         ("background", "BACKGROUND"),
         (" critical ", "CRITICAL"),
-        (100, "100"),
+        (100, "UNSET"),  # malformed value, not a priority label
         (None, "UNSET"),
         ("", "UNSET"),
     ],
@@ -105,7 +105,7 @@ def test_priority_is_normalized_before_it_reaches_the_payload(stored, expected):
 
 def test_priority_sort_key_survives_non_string_values():
     """The int priority (100) in the graph used to 500 the strategy page."""
-    assert _priority_sort_key({"priority": 100}) == 9
+    assert _priority_sort_key({"priority": 100}) == 9  # UNSET rank
     assert _priority_sort_key({"priority": None}) == 9
     assert _priority_sort_key({"priority": "CRITICAL"}) == 0
     assert _priority_sort_key({"priority": "background"}) == 4
@@ -150,3 +150,19 @@ def test_no_api_route_is_shadowed_by_an_earlier_parameterized_route():
                         break
         seen.append((path, methods))
     assert not shadowed, f"unreachable API routes (registration order): {shadowed}"
+
+def test_answers_sse_handler_resolves_its_redis_url():
+    """The four answers SSE handlers referenced an undefined REDIS_URL.
+
+    Route shadowing hid this: the endpoint answered 404 before the handler body
+    ever ran, so the NameError (500) only appeared once the route was reachable.
+    """
+    from assistx import api
+
+    assert hasattr(api, "REDIS_URL"), "api.py must expose REDIS_URL for the SSE handlers"
+    assert api.REDIS_URL.startswith("redis://")
+    for name in (
+        "api_answers_events",
+        "api_answer_events",
+    ):
+        assert callable(getattr(api, name))
