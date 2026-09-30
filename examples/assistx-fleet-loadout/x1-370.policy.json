@@ -78,6 +78,37 @@
         "vram_used_bytes": 13170683904
       },
       "provenance": "measured"
+    },
+    {
+      "captured_at": "2026-09-30T05:12:53Z",
+      "circumstance_id": "prod_llm_and_studio_idle",
+      "loadout_id": "prod_llm_plus_interactive",
+      "notes": "Measured co-residency attempt: 35B interactive + 5.75 GiB prod model.",
+      "outcomes": {
+        "completion_error": null,
+        "completion_healthy": true,
+        "completion_last_content": "<tool_call name=\"terminal\" call_id=\"call_00_581342769d5f0a4e0",
+        "completion_median_ms": 523.9,
+        "completion_samples_ms": [
+          572.7,
+          523.9,
+          479.9
+        ],
+        "declared_file_size_gap": "model is 16.2 GB on disk but 22.09 GiB resident",
+        "device_capacity_bytes": 36356227072,
+        "device_choice_not_sum": true,
+        "endpoint": "http://127.0.0.1:1234",
+        "interactive_load_alone": true,
+        "interactive_load_alone_seconds": 15.4,
+        "interactive_load_error": "unable to allocate ROCm0 buffer",
+        "interactive_load_with_prod_resident": false,
+        "interactive_model_key": "ornith-1.5-35b-a3b-apex-mtp",
+        "interactive_resident_vram_bytes_alone": 23714786394,
+        "prod_model_vram_bytes": 6178316512,
+        "vram_total_bytes": 36356227072,
+        "vram_used_bytes": 13968101376
+      },
+      "provenance": "measured"
     }
   ],
   "exclusivity": {
@@ -108,12 +139,12 @@
       ]
     },
     {
-      "description": "Production LLM plus a 27B interactive resident; the 27B has not been load-verified on the LM Studio runtime yet.",
+      "description": "Production LLM plus the 35B interactive resident. Measured infeasible on x1-370: the runtime cannot allocate the 35B while the prod model is resident, so the device is a choice, not a sum. Use studio_only when the operator wants the big model.",
       "loadout_id": "prod_llm_plus_interactive",
       "preferred_when": [
         "prod_llm_and_studio_idle"
       ],
-      "provenance": "unverified-candidate",
+      "provenance": "measured-infeasible",
       "residents": [
         {
           "kind": "llm",
@@ -176,7 +207,7 @@
       "description": "Interactive lane only; production LLM path is degraded.",
       "loadout_id": "studio_only",
       "preferred_when": [],
-      "provenance": "declared",
+      "provenance": "measured",
       "residents": [
         {
           "kind": "llm",
@@ -203,7 +234,8 @@
       "load_note": "Loaded in 9.72s; 5.75 GiB resident; completion median 0.478s over 5 samples.",
       "load_status": "verified",
       "model_key": "toolcall-v5-3b-combined-r2",
-      "vram_bytes": 6178316512
+      "vram_bytes": 6178316512,
+      "vram_note": "5.75 GiB resident as measured by lms after load."
     },
     {
       "display_name": "Nomic Embed Text v1.5",
@@ -231,18 +263,20 @@
     },
     {
       "display_name": "Ornith 1.5 35B A3B MTP Compact (interactive lane)",
+      "exclusive_gpu": true,
       "kind": "llm",
-      "load_note": "",
-      "load_status": "unverified",
+      "load_note": "Loads alone in ~15s (22.09 GiB resident -- far above the 16.2 GB file size, which is what a size-based estimate would assume). Loading it alongside the 5.75 GiB prod model FAILS on this card: 'unable to allocate ROCm0 buffer'. It therefore requires the device to itself (exclusive_gpu).",
+      "load_status": "verified",
       "model_key": "ornith-1.5-35b-a3b-apex-mtp",
-      "vram_bytes": 17437861152
+      "vram_bytes": 23718956892
     }
   ],
   "needs": [
     {
-      "description": "Production AssistX LLM traffic needs an OpenAI-compatible endpoint on :1234.",
+      "description": "Production AssistX LLM traffic needs the configured production model served on :1234 (role prod-llm). Any other large model is not a substitute: the app expects its configured LLM_MODEL.",
       "need": "prod_llm_endpoint",
-      "resident_kind": "llm"
+      "resident_kind": "llm",
+      "role": "prod-llm"
     },
     {
       "description": "Embeddings for AssistX request paths need a resident embedder.",
@@ -260,12 +294,16 @@
       "resident_kind": "runtime"
     },
     {
-      "description": "An operator-facing interactive studio lane wants a capable resident model.",
+      "description": "An operator-facing interactive studio lane wants a capable resident model serving the interactive role (not the small production model).",
       "need": "interactive_lane",
-      "resident_kind": "llm"
+      "resident_kind": "llm",
+      "role": "interactive"
     }
   ],
   "note": "Devices and model VRAM figures are measured facts. Loadout preferences are declared by an operator until measured outcomes for (circumstance, loadout) pairs exist.",
+  "notes": [
+    "Device capacity is a choice, not arithmetic: on x1-370 (31.9 GiB) the 35B interactive model (22.09 GiB resident) and the 5.75 GiB production model cannot both be resident -- the runtime refuses the allocation even though the totals fit on paper. Models that need the device alone carry exclusive_gpu."
+  ],
   "policy_id": "assistx-fleet-loadout-x1-370-v1",
   "schema": "assistx-fleet-loadout-policy-v1"
 }

@@ -495,3 +495,189 @@ def test_recommendation_commands_are_advisory_and_name_the_loadout():
     drill_text = module.render_commands(drill, policy)
     assert "bind-soak-runtime.sh" in drill_text
     assert "lms load qwen3.8-27b-rocmfp4-strix" not in drill_text
+
+
+def _device_exclusive_policy():
+    raw = build_policy(
+        policy_id="exclusive-policy",
+        captured_at="2026-09-30T00:00:00Z",
+        devices=[{"name": "card1", "vram_total_bytes": 32 * GiB}],
+        models=[
+            {"model_key": "prod", "kind": "llm", "vram_bytes": 6 * GiB},
+            {
+                "model_key": "big",
+                "kind": "llm",
+                "vram_bytes": 22 * GiB,
+                "exclusive_gpu": True,
+            },
+        ],
+        needs=[{"need": "prod_llm_endpoint", "resident_kind": "llm"}],
+        loadouts=[
+            _loadout("prod", residents=[{"kind": "llm", "model_key": "prod"}]),
+            _loadout(
+                "prod_plus_big",
+                residents=[
+                    {"kind": "llm", "model_key": "prod"},
+                    {"kind": "llm", "model_key": "big"},
+                ],
+            ),
+            _loadout("big_only", residents=[{"kind": "llm", "model_key": "big"}]),
+        ],
+    )
+    return Policy(raw)
+
+
+def test_device_exclusive_resident_cannot_share_the_gpu():
+    """22 + 6 GiB fits inside 32 GiB, and the runtime still refuses it.
+
+    Capacity arithmetic said the combined loadout was fine; loading the big
+    model next to the production model failed with "unable to allocate
+    ROCm0 buffer". That constraint is a device property, not a sum.
+    """
+    policy = _device_exclusive_policy()
+    result = recommend(
+        policy,
+        circumstance={"prod_llm_endpoint": True},
+        circumstance_id="prod",
+    )
+    combined = next(
+        c for c in result["candidates"] if c["loadout_id"] == "prod_plus_big"
+    )
+    assert combined["feasible"] is False
+    assert any("require the device to themselves" in r for r in combined["reasons"])
+
+
+def test_device_exclusive_resident_alone_is_feasible():
+    policy = _device_exclusive_policy()
+    result = recommend(
+        policy,
+        circumstance={"prod_llm_endpoint": True},
+        circumstance_id="prod",
+    )
+    alone = next(c for c in result["candidates"] if c["loadout_id"] == "big_only")
+    assert alone["feasible"] is True
+
+
+def test_official_policy_encodes_the_measured_exclusivity():
+    policy = Policy.load(POLICY_PATH)
+    big = policy.models["ornith-1.5-35b-a3b-apex-mtp"]
+    assert big["load_status"] == "verified", "the 35B does load, alone"
+    assert big["exclusive_gpu"] is True
+    assert big["vram_bytes"] > 20 * GiB, "resident cost, not file size"
+
+
+def _role_policy():
+    raw = build_policy(
+        policy_id="role-policy",
+        captured_at="2026-09-30T00:00:00Z",
+        devices=[{"name": "card1", "vram_total_bytes": 32 * GiB}],
+        models=[
+            {"model_key": "prod", "kind": "llm", "vram_bytes": 6 * GiB},
+            {
+                "model_key": "big",
+                "kind": "llm",
+                "vram_bytes": 22 * GiB,
+                "exclusive_gpu": True,
+            },
+        ],
+        needs=[
+            {
+                "need": "prod_llm_endpoint",
+                "resident_kind": "llm",
+                "role": "prod-llm",
+            },
+            {
+                "need": "interactive_lane",
+                "resident_kind": "llm",
+                "role": "interactive",
+            },
+        ],
+        loadouts=[
+            _loadout(
+                "prod_only",
+                residents=[
+                    {"kind": "llm", "model_key": "prod", "role": "prod-llm"}
+                ],
+                preferred_when=["prod"],
+            ),
+            _loadout(
+                "interactive_only",
+                residents=[
+                    {"kind": "llm", "model_key": "big", "role": "interactive"}
+                ],
+            ),
+        ],
+    )
+    return Policy(raw)
+
+
+def test_role_pinned_need_is_not_satisfied_by_the_wrong_role():
+    """The production model is an `llm`, but it is not an interactive lane.
+
+    Matching needs on kind alone made the recommender answer
+    "prod_llm_only" for a circumstance that explicitly wanted a studio lane.
+    """
+    policy = _role_policy()
+    result = recommend(
+        policy,
+        circumstance={"prod_llm_endpoint": True, "interactive_lane": True},
+        circumstance_id="prod",
+    )
+    prod_only = next(
+        c for c in result["candidates"] if c["loadout_id"] == "prod_only"
+    )
+    assert prod_only["feasible"] is False
+    assert any("role 'interactive'" in reason for reason in prod_only["reasons"])
+    assert result["recommended_loadout_id"] is None, (
+        "no loadout serves both role-pinned needs on one card; the "
+        "recommender must say so rather than drop a need silently"
+    )
+    # And the big model must not masquerade as the production endpoint.
+    interactive = next(
+        c for c in result["candidates"] if c["loadout_id"] == "interactive_only"
+    )
+    assert interactive["feasible"] is False
+    assert any("role 'prod-llm'" in reason for reason in interactive["reasons"])
+
+
+def test_unpinned_need_still_matches_on_kind_alone():
+    policy = _role_policy()
+    result = recommend(
+        policy,
+        circumstance={"prod_llm_endpoint": True},
+        circumstance_id="prod",
+    )
+    prod_only = next(
+        c for c in result["candidates"] if c["loadout_id"] == "prod_only"
+    )
+    assert prod_only["feasible"] is True
+
+
+def test_official_interactive_need_is_role_pinned():
+    policy = Policy.load(POLICY_PATH)
+    assert policy.needs["interactive_lane"]["role"] == "interactive"
+    # Every loadout claiming to serve an interactive lane must say so by role.
+    pinned = {name for name, spec in policy.needs.items() if spec.get("role")}
+    assert "interactive_lane" in pinned
+    assert "prod_llm_endpoint" in pinned
+    # A loadout that claims an interactive lane must actually label one.
+    for loadout in policy.loadouts:
+        roles = {r.get("role") for r in loadout["residents"]}
+        assert roles - {"prod-llm", "prod-embed", "drill", "interactive"} == set()
+
+
+def test_infeasible_recommendation_lists_what_each_option_would_break():
+    """A null answer is only useful if it is actionable."""
+    result = recommend(
+        _role_policy(),
+        circumstance={"prod_llm_endpoint": True, "interactive_lane": True},
+        circumstance_id="prod",
+    )
+    assert result["recommended_loadout_id"] is None
+    assert result["decision_basis"] == "infeasible"
+    assert result["blocking"], "an infeasible verdict must explain itself"
+    blocked = {item["loadout_id"] for item in result["blocking"]}
+    assert blocked == {"prod_only", "interactive_only"}
+    for item in result["blocking"]:
+        assert item["reasons"], f"{item['loadout_id']} blocked with no reason"
+    assert "relax" in result["note"]
