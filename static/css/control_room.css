@@ -549,3 +549,12 @@ footer {
   .activity-row { grid-template-columns: 62px 1fr; }
   .activity-route, .activity-metrics { grid-column: 2; }
 }
+
+/* DETAILS column: says why a component is unhealthy, so it must be readable
+   and allowed to wrap rather than collapsing to an empty cell. */
+.component-details {
+  color: var(--text-dim, #9aa4b2);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
