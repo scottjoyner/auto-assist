@@ -14,24 +14,68 @@
   ],
   "evidence": [
     {
-      "captured_at": "2026-09-29T23:38:06Z",
+      "captured_at": "2026-09-30T00:25:27Z",
       "circumstance_id": "prod_llm_uptime",
       "loadout_id": "prod_llm_only",
-      "notes": "First loadout evidence record. Applied from the recommender's advisory output; operator applied it. Cards 1+2 = 33.9 GiB total, so drill co-residency remains feasible (20.4 GiB) but unmeasured.",
+      "notes": "Steady-state prod-only loadout. Baseline for all co-residency comparisons.",
       "outcomes": {
-        "api_health_llm_status": "ok",
-        "completion_latency_max_s": 0.3,
-        "completion_latency_median_s": 0.283,
-        "completion_samples": 3,
-        "hermes_adapter_reachable_api": true,
-        "llm_endpoint_healthy": true,
-        "model_load_seconds": 9.72,
-        "models_resident": [
-          "toolcall-v5-3b-combined-r2",
-          "text-embedding-nomic-embed-text-v1.5"
+        "completion_error": null,
+        "completion_healthy": true,
+        "completion_last_content": "<tool_call name=\"terminal\" call_id=\"call_00_581342769d5f0a4e0",
+        "completion_median_ms": 493.3,
+        "completion_samples_ms": [
+          574.5,
+          528.0,
+          493.3,
+          483.0,
+          484.5
         ],
-        "resident_vram_bytes": 6262765056,
-        "vram_used_bytes_after": 13359181824
+        "endpoint": "http://127.0.0.1:1234",
+        "vram_total_bytes": 36356227072,
+        "vram_used_bytes": 13170683904
+      },
+      "provenance": "measured"
+    },
+    {
+      "captured_at": "2026-09-30T00:26:03Z",
+      "circumstance_id": "prod_llm_during_drill",
+      "loadout_id": "soak_drill_with_prod_llm",
+      "notes": "Drill runtime bound alongside the resident prod LLM: the previously paper-only co-residency question, now measured. Both sides served correctly; the 128K runtime completed a 72025-token prompt; VRAM headroom ~0.5%.",
+      "outcomes": {
+        "completion_error": null,
+        "completion_healthy": true,
+        "completion_last_content": "<tool_call name=\"terminal\" call_id=\"call_00_581342769d5f0a4e0",
+        "completion_median_ms": 498.5,
+        "completion_samples_ms": [
+          571.5,
+          521.7,
+          498.5,
+          473.1,
+          471.6
+        ],
+        "drill_completion_median_ms": 691.0,
+        "drill_completion_samples_ms": [
+          978.1,
+          709.0,
+          673.1,
+          651.1
+        ],
+        "drill_ctx_tokens": 131072,
+        "drill_endpoint": "http://127.0.0.1:8125",
+        "drill_health": "ok",
+        "drill_long_context_correct": true,
+        "drill_long_context_prompt_tokens": 72025,
+        "drill_long_context_seconds": 807.4,
+        "endpoint": "http://127.0.0.1:1234",
+        "prod_degradation_pct": 2.2,
+        "prod_median_ms_baseline": 477.8,
+        "prod_median_ms_under_drill": 488.2,
+        "prod_responsive_during_drill_http": 200,
+        "prod_responsive_during_drill_ms": 134,
+        "vram_headroom_pct_under_drill": 0.5,
+        "vram_peak_used_bytes_under_drill": 34082914304,
+        "vram_total_bytes": 2147483648,
+        "vram_used_bytes": 13170683904
       },
       "provenance": "measured"
     }
@@ -64,12 +108,12 @@
       ]
     },
     {
-      "description": "Production LLM plus a capable interactive resident; both share card1.",
+      "description": "Production LLM plus a 27B interactive resident; the 27B has not been load-verified on the LM Studio runtime yet.",
       "loadout_id": "prod_llm_plus_interactive",
       "preferred_when": [
         "prod_llm_and_studio_idle"
       ],
-      "provenance": "declared",
+      "provenance": "unverified-candidate",
       "residents": [
         {
           "kind": "llm",
@@ -84,7 +128,7 @@
         },
         {
           "kind": "llm",
-          "model_key": "k2-horizon-7b",
+          "model_key": "ornith-1.5-35b-a3b-apex-mtp",
           "role": "interactive"
         }
       ]
@@ -156,36 +200,40 @@
     {
       "display_name": "Toolcall v5 3B (prod LLM path)",
       "kind": "llm",
+      "load_note": "Loaded in 9.72s; 5.75 GiB resident; completion median 0.478s over 5 samples.",
+      "load_status": "verified",
       "model_key": "toolcall-v5-3b-combined-r2",
       "vram_bytes": 6178316512
     },
     {
       "display_name": "Nomic Embed Text v1.5",
       "kind": "embedder",
+      "load_note": "Loaded instantly; 84 MiB resident.",
+      "load_status": "verified",
       "model_key": "text-embedding-nomic-embed-text-v1.5",
       "vram_bytes": 84106624
     },
     {
       "display_name": "Qwen3.8 27B ROCmFP4 (soak/TQ runtime)",
       "kind": "runtime",
+      "load_note": "",
+      "load_status": "unverified",
       "model_key": "qwen3.8-27b-rocmfp4-strix",
       "vram_bytes": 15691215360
     },
     {
-      "display_name": "Qwen3.8 27B Q4 (alternate soak runtime)",
-      "kind": "runtime",
-      "model_key": "qwen/qwen3.8-27b",
-      "vram_bytes": 17742040464
-    },
-    {
       "display_name": "K2 Horizon 7B (interactive lane)",
       "kind": "llm",
+      "load_note": "`lms load k2-horizon-7b` (BF16 18.0 GB, arch k2-horizon) hung >600s and never appeared in `lms ps`; VRAM unchanged. Do not retry blindly on this runtime.",
+      "load_status": "failed",
       "model_key": "k2-horizon-7b",
       "vram_bytes": 18010413440
     },
     {
       "display_name": "Ornith 1.5 35B A3B MTP Compact (interactive lane)",
       "kind": "llm",
+      "load_note": "",
+      "load_status": "unverified",
       "model_key": "ornith-1.5-35b-a3b-apex-mtp",
       "vram_bytes": 17437861152
     }
