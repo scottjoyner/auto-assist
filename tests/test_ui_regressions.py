@@ -26,6 +26,7 @@ from assistx.api import _normalize_priority, _priority_sort_key
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTROL_ROOM_JS = ROOT / "static" / "js" / "control_room.js"
+SHELL_JS = ROOT / "static" / "js" / "shell.js"
 BASE_HTML = ROOT / "templates" / "base.html"
 
 # Globals the browser provides; anything else called as a bare function must be
@@ -40,8 +41,20 @@ JS_GLOBALS = {
 }
 
 
-def test_every_bare_function_call_in_the_control_room_script_is_defined():
-    script = CONTROL_ROOM_JS.read_text(encoding="utf-8")
+@pytest.mark.parametrize("script_path", [SHELL_JS, CONTROL_ROOM_JS], ids=["shell", "control_room"])
+def test_every_bare_function_call_is_defined_in_the_same_file(script_path):
+    """A call to an undefined function aborts the file at runtime.
+
+    ``getCriticalAlerts`` was called inside render() but never defined, which
+    threw on every page. Definitions do not cross file boundaries, so each
+    script is checked against itself.
+
+    Limitation: this catches *calls* to undefined functions. A helper deleted
+    while it is still passed by reference (for example
+    ``list.filter(renderActivity)``) stays invisible to it -- that shows up as
+    a runtime error in the browser instead.
+    """
+    script = script_path.read_text(encoding="utf-8")
     body = re.sub(r"/\*.*?\*/", " ", script, flags=re.S)
     body = re.sub(r"//[^\n]*", " ", body)
     # Strip string/template literals so text inside them is not parsed as code.
@@ -59,6 +72,11 @@ def test_every_bare_function_call_in_the_control_room_script_is_defined():
     defined |= set(
         re.findall(r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b|\()", body)
     )
+    # Object-literal method shorthand is a definition too: `onSnapshot(cb) {`
+    # declares a method, it is not a call. A call is never followed by `{`.
+    defined |= set(
+        re.findall(r"^\s*([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{", body, flags=re.M)
+    )
     # Callback/function parameters are definitions too (they are local names,
     # e.g. destructured pair elements inside forEach).
     for params in re.findall(r"\(([^()]*)\)\s*(?:=>|\{)", body):
@@ -66,24 +84,24 @@ def test_every_bare_function_call_in_the_control_room_script_is_defined():
             defined.add(token)
     undefined = sorted(called - defined - JS_GLOBALS)
     assert not undefined, (
-        "control_room.js calls functions that are never defined: "
+        f"{script_path.name} calls functions that are never defined: "
         f"{undefined} (an undefined call aborts the script at runtime)"
     )
 
 
-def test_shell_loads_navigation_before_the_control_room_script():
+def test_shell_loads_navigation_before_the_shell_script():
     html = BASE_HTML.read_text(encoding="utf-8")
     nav = html.index("/static/js/navigation.js")
-    control_room = html.index("/static/js/control_room.js")
-    assert nav < control_room, (
-        "navigation.js must load before control_room.js, which calls "
+    shell = html.index("/static/js/shell.js")
+    assert nav < shell, (
+        "navigation.js must load before shell.js, which calls "
         "Navigation.init(); otherwise the browser's built-in Navigation API "
         "shadows it and init() is not a function"
     )
 
 
-def test_critical_alert_derivation_handles_an_empty_snapshot():
-    script = CONTROL_ROOM_JS.read_text(encoding="utf-8")
+def test_critical_alert_derivation_lives_with_the_shell_widgets():
+    script = SHELL_JS.read_text(encoding="utf-8")
     assert "const getCriticalAlerts = (snapshot)" in script
     assert "state.criticalAlerts = getCriticalAlerts(snapshot);" in script
 
@@ -197,7 +215,7 @@ def test_nav_key_block_value_is_not_printed_on_the_page():
     assert 'class=" active" href="/control-room"' in html
 
 
-def test_control_room_script_selectors_exist_in_the_template():
+def test_shell_script_selectors_exist_in_the_template():
     """Selector drift: the script queried classes the template no longer has.
 
     ``.component-health`` and ``.trend-data`` were renamed to
@@ -210,7 +228,7 @@ def test_control_room_script_selectors_exist_in_the_template():
     template = (ROOT / "templates" / "base.html").read_text(encoding="utf-8") + (
         ROOT / "templates" / "control_room.html"
     ).read_text(encoding="utf-8")
-    script = (ROOT / "static" / "js" / "control_room.js").read_text(encoding="utf-8")
+    script = SHELL_JS.read_text(encoding="utf-8")
     selectors = set(
         _re.findall(r"document\.querySelector\('\.([a-z-]+)'\)", script)
     )
