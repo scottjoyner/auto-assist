@@ -142,15 +142,23 @@ def test_control_room_page_keeps_its_sections():
     assert "Fleet Control Room" in html
 
 
-def test_shell_loads_the_control_room_script_once():
-    """Inheriting pages get the script; pages that override scripts opt out."""
+def test_shell_scripts_load_once_on_every_page():
+    """Shell scripts sit outside {% block scripts %}.
+
+    Pages that define their own scripts block replace the block default, so
+    shell code inside the block ran on only a handful of pages and every other
+    topbar stayed on CONNECTING forever.
+    """
     env = _env()
-    assert env.get_template("base.html").render().count("/static/js/control_room.js") == 1
-    assert env.get_template("ready.html").render().count("/static/js/control_room.js") == 1
-    assert env.get_template("control_room.html").render().count("/static/js/control_room.js") == 1
-    # fleet_dashboard ships its own scripts and must not double-load ours.
+    for name in _children() + ["base.html"]:
+        html = env.get_template(name).render()
+        assert html.count("/static/js/control_room.js") == 1, (
+            f"{name} must load the control-room shell script exactly once"
+        )
+        assert html.count("/static/js/navigation.js") == 1, (
+            f"{name} must load navigation.js exactly once"
+        )
     dashboard = env.get_template("fleet_dashboard.html").render()
-    assert dashboard.count("/static/js/control_room.js") == 0
     assert "fleet_dashboard.js" in dashboard
 
 
