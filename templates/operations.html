@@ -82,7 +82,8 @@
 {% block scripts %}
 <script>
 (() => {
-  const esc = window.UIUtils.escapeHtml;
+  const esc = (window.UIUtils && window.UIUtils.escapeHtml) ||
+    ((v) => (v == null ? '' : String(v)).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])));
   let fleet = {};
   let tasks = [];
   let recovery = {};

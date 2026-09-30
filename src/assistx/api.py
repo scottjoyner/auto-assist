@@ -3459,7 +3459,10 @@ def api_live_strategy(user: str = Depends(auth)):
                 ORDER BY priority, status
             """)
             for row in res:
-                p = row["priority"]
+                # Task.priority is not schema-constrained: the graph currently
+                # holds at least one Task with an integer priority, which used
+                # to reach the sort key and 500 the whole strategy page.
+                p = _normalize_priority(row["priority"])
                 st = row["status"]
                 cnt = row["cnt"]
                 if p not in work_by_priority:
@@ -3542,7 +3545,7 @@ def api_live_strategy(user: str = Depends(auth)):
                     "type": row.get("type"),
                     "target": row.get("target"),
                     "message": row.get("message"),
-                    "priority": row.get("priority"),
+                    "priority": _normalize_priority(row.get("priority")),
                     "created_at_ts": row.get("created_at_ts"),
                     "created_by": row.get("created_by"),
                 })
@@ -3626,9 +3629,20 @@ def api_live_strategy(user: str = Depends(auth)):
     }
 
 
+def _normalize_priority(value: object) -> str:
+    """Coerce a stored priority into the canonical uppercase label."""
+    if isinstance(value, str):
+        text = value.strip().upper()
+    elif value is None:
+        text = ""
+    else:
+        text = str(value).strip().upper()
+    return text or "UNSET"
+
+
 def _priority_sort_key(item):
     order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "BACKGROUND": 4, "BATCH": 5, "UNSET": 9}
-    return order.get(item["priority"].upper(), 9)
+    return order.get(_normalize_priority(item.get("priority")), 9)
 
 
 # ---------------------------------------------------------------------------
@@ -5554,6 +5568,58 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
     return JSONResponse(status_code=202, content={"answer_id": answer_id, "job_id": job.get_id(), "status": "PENDING", "status_url": f"/api/answers/{answer_id}", **deliverable})
 
 
+# NOTE: this literal route must stay registered above /api/answers/{answer_id}.
+# Starlette matches in registration order, so a parameterized route declared
+# first would swallow /api/answers/events and answer "Answer not found".
+@app.get("/api/answers/events")
+async def api_answers_events(
+    request: Request,
+    status: str | None = Query(None, description="Optional filter hint; client can also filter"),
+    user: str = Depends(auth),
+):
+    r = aioredis.from_url(REDIS_URL, decode_responses=True)
+    pubsub = r.pubsub()
+    chan = answers_store._global_chan()
+    await pubsub.subscribe(chan)
+
+    async def event_stream():
+        # initial hello
+        yield _sse("welcome", {"channel": chan})
+        last_ping = asyncio.get_event_loop().time()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                now = asyncio.get_event_loop().time()
+
+                if msg and msg.get("type") == "message":
+                    try:
+                        data = json.loads(msg["data"])  # {"type":"new|update","data":{...}}
+                    except Exception:
+                        data = {"type": "update", "data": msg["data"]}
+                    if status and data.get("data", {}).get("status") != status:
+                        pass
+                    else:
+                        yield _sse(data.get("type", "update"), data.get("data", {}))
+
+                # keepalive (outside if msg so it fires even when idle)
+                if now - last_ping > 15:
+                    yield _sse("ping", {"ts": int(now)})
+                    last_ping = now
+
+                await asyncio.sleep(0.2)
+        finally:
+            try:
+                await pubsub.unsubscribe(chan)
+            except Exception:
+                pass
+            await pubsub.close()
+            await r.aclose()
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
 @app.get("/api/answers/{answer_id}")
 def api_get_answer(answer_id: str, user: str = Depends(auth)):
     obj = answers_store.get_answer(answer_id)
@@ -5658,55 +5724,6 @@ async def ws_answers(websocket: WebSocket, token: Optional[str] = Query(None)):
         await r.aclose()
         try: await websocket.close()
         except Exception: pass
-
-@app.get("/api/answers/events")
-async def api_answers_events(
-    request: Request,
-    status: str | None = Query(None, description="Optional filter hint; client can also filter"),
-    user: str = Depends(auth),
-):
-    r = aioredis.from_url(REDIS_URL, decode_responses=True)
-    pubsub = r.pubsub()
-    chan = answers_store._global_chan()
-    await pubsub.subscribe(chan)
-
-    async def event_stream():
-        # initial hello
-        yield _sse("welcome", {"channel": chan})
-        last_ping = asyncio.get_event_loop().time()
-        try:
-            while True:
-                if await request.is_disconnected():
-                    break
-                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                now = asyncio.get_event_loop().time()
-
-                if msg and msg.get("type") == "message":
-                    try:
-                        data = json.loads(msg["data"])  # {"type":"new|update","data":{...}}
-                    except Exception:
-                        data = {"type": "update", "data": msg["data"]}
-                    if status and data.get("data", {}).get("status") != status:
-                        pass
-                    else:
-                        yield _sse(data.get("type", "update"), data.get("data", {}))
-
-                # keepalive (outside if msg so it fires even when idle)
-                if now - last_ping > 15:
-                    yield _sse("ping", {"ts": int(now)})
-                    last_ping = now
-
-                await asyncio.sleep(0.2)
-        finally:
-            try:
-                await pubsub.unsubscribe(chan)
-            except Exception:
-                pass
-            await pubsub.close()
-            await r.aclose()
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
-
 
 @app.get("/api/answers/{answer_id}/events")
 async def api_answer_events(answer_id: str, request: Request, user: str = Depends(auth)):
