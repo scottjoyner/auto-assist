@@ -69,6 +69,12 @@
   <template id="runtime-detail-template">
     <tr class="runtime-detail"><td colspan="8"><pre></pre></td></tr>
   </template>
-  {% block scripts %}<script src="/static/js/navigation.js"></script><script src="/static/js/control_room.js"></script>{% endblock %}
+  {# Shell scripts are emitted unconditionally, *outside* the scripts block.
+     Every page that defines its own {% block scripts %} replaces the block's
+     default, so shell code placed there silently never ran on 16 of 21 pages
+     and their topbar stayed on CONNECTING forever. #}
+  <script src="/static/js/navigation.js"></script>
+  <script src="/static/js/control_room.js"></script>
+  {% block scripts %}{% endblock %}
 </body>
 </html>
