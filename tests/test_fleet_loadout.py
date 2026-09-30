@@ -300,3 +300,198 @@ def test_declared_provenance_evidence_does_not_count_as_measured():
     )
     assert result["evaluated_evidence_records"] == 0
     assert result["model_ready"] is False
+
+
+def _loadout_policy_with_status(*, interactive_status, note="no detail"):
+    raw = build_policy(
+        policy_id="status-policy",
+        captured_at="2026-09-29T00:00:00Z",
+        devices=[{"name": "card1", "vram_total_bytes": 8 * GiB}],
+        models=[
+            {
+                "model_key": "small",
+                "kind": "llm",
+                "vram_bytes": 2 * GiB,
+                "load_status": "verified",
+            },
+            {
+                "model_key": "studio",
+                "kind": "llm",
+                "vram_bytes": 3 * GiB,
+                "load_status": interactive_status,
+                "load_note": note,
+            },
+        ],
+        needs=[{"need": "prod_llm_endpoint", "resident_kind": "llm"}],
+        loadouts=[
+            _loadout(
+                "prod",
+                residents=[{"kind": "llm", "model_key": "small"}],
+            ),
+            _loadout(
+                "prod_plus_studio",
+                residents=[
+                    {"kind": "llm", "model_key": "small"},
+                    {"kind": "llm", "model_key": "studio"},
+                ],
+            ),
+        ],
+    )
+    return Policy(raw)
+
+
+def test_failed_model_rejects_its_loadout_even_though_it_fits():
+    policy = _loadout_policy_with_status(
+        interactive_status="failed",
+        note="lms load hung 600s and the model never appeared",
+    )
+    result = recommend(
+        policy,
+        circumstance={"prod_llm_endpoint": True},
+        circumstance_id="prod",
+    )
+    studio = next(
+        c for c in result["candidates"] if c["loadout_id"] == "prod_plus_studio"
+    )
+    assert studio["feasible"] is False
+    assert any("marked failed to load" in reason for reason in studio["reasons"])
+    assert result["recommended_loadout_id"] == "prod"
+
+
+def test_unverified_model_is_allowed_but_flagged_in_the_model_note():
+    policy = _loadout_policy_with_status(interactive_status="unverified")
+    result = recommend(
+        policy,
+        circumstance={"prod_llm_endpoint": True},
+        circumstance_id="prod",
+    )
+    studio = next(
+        c for c in result["candidates"] if c["loadout_id"] == "prod_plus_studio"
+    )
+    assert studio["feasible"] is True
+
+
+def test_official_policy_marks_the_failed_interactive_model():
+    policy = Policy.load(POLICY_PATH)
+    assert policy.models["k2-horizon-7b"]["load_status"] == "failed"
+    assert policy.models["k2-horizon-7b"]["load_note"]
+    # A loadout depending on a failed model must not be recommendable.
+    for loadout in policy.loadouts:
+        failed = [
+            r["model_key"]
+            for r in loadout["residents"]
+            if policy.models[r["model_key"]]["load_status"] == "failed"
+        ]
+        assert not failed, f"{loadout['loadout_id']} depends on failed {failed}"
+
+
+def test_capture_script_writes_a_measured_record(tmp_path):
+    """The capture path is what makes the evidence loop repeatable."""
+    import json as _json
+    import subprocess
+    import sys
+
+    from pathlib import Path
+
+    policy_path = Path(POLICY_PATH)
+    target = tmp_path / "policy.json"
+    target.write_text(policy_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path("scripts") / "capture_fleet_loadout_evidence.py"),
+            "--policy",
+            str(target),
+            "--circumstance-id",
+            "prod_llm_uptime",
+            "--loadout-id",
+            "prod_llm_only",
+            "--endpoint",
+            "http://127.0.0.1:1",  # unreachable: proves failures are recorded
+            "--samples",
+            "1",
+            "--timeout",
+            "0.2",
+            "--extra",
+            '{"note": "synthetic"}',
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    record = _json.loads(result.stdout)
+    assert record["provenance"] == "measured"
+    assert record["outcomes"]["completion_healthy"] is False
+    assert record["outcomes"]["completion_error"]
+    assert record["outcomes"]["note"] == "synthetic"
+
+    written = _json.loads(target.read_text(encoding="utf-8"))
+    matching = [
+        item
+        for item in written["evidence"]
+        if item["circumstance_id"] == "prod_llm_uptime"
+        and item["loadout_id"] == "prod_llm_only"
+    ]
+    assert len(matching) == 1, "capture must replace, not duplicate"
+    assert matching[0]["provenance"] == "measured"
+
+
+def test_capture_script_rejects_unknown_loadout(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path("scripts") / "capture_fleet_loadout_evidence.py"),
+            "--policy",
+            str(Path(POLICY_PATH)),
+            "--circumstance-id",
+            "prod_llm_uptime",
+            "--loadout-id",
+            "not_a_loadout",
+            "--samples",
+            "1",
+            "--output",
+            str(tmp_path / "out.json"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "unknown loadout_id" in (result.stdout + result.stderr)
+
+
+def test_recommendation_commands_are_advisory_and_name_the_loadout():
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "recommend_fleet_loadout", Path("scripts/recommend_fleet_loadout.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    policy = Policy.load(POLICY_PATH)
+    recommendation = recommend(
+        policy,
+        circumstance={"prod_llm_endpoint": True, "prod_embedder": True},
+        circumstance_id="prod_llm_uptime",
+    )
+    rendered = module.render_commands(recommendation, policy)
+    assert "advisory" in rendered
+    assert '"dispatch_allowed": false' in rendered
+    assert "lms load toolcall-v5-3b-combined-r2" in rendered
+    # Runtime residents must be routed to the soak harness, not LM Studio.
+    drill = recommend(
+        policy,
+        circumstance={"soak_drill_runtime": True},
+        circumstance_id="soak_drill",
+    )
+    drill_text = module.render_commands(drill, policy)
+    assert "bind-soak-runtime.sh" in drill_text
+    assert "lms load qwen3.8-27b-rocmfp4-strix" not in drill_text

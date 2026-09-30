@@ -106,6 +106,48 @@ def observe(*, lms: str = "lms") -> dict[str, Any]:
     }
 
 
+def render_commands(recommendation: dict[str, Any], policy: Policy) -> str:
+    """Render the operator commands that would realize the recommendation.
+
+    The recommender never applies anything. These commands are the operator's
+    to read and run; the ``echo``/``review`` framing keeps that boundary
+    explicit.
+    """
+    loadout_id = recommendation.get("recommended_loadout_id")
+    lines = [
+        "# Operator commands for the recommended fleet loadout.",
+        f"# policy: {recommendation['policy_id']}",
+        f"# circumstance: {recommendation['circumstance_id']}",
+        f"# recommended: {loadout_id}",
+        f"# authority: {json.dumps(recommendation['authority'], sort_keys=True)}",
+        "# This file is advisory. Review before running anything.",
+    ]
+    if not loadout_id:
+        lines.append("# No feasible loadout for this circumstance; nothing to apply.")
+        return "\n".join(lines) + "\n"
+    loadout = next(
+        item for item in policy.loadouts if item["loadout_id"] == loadout_id
+    )
+    lines.append(f"# {loadout['description'] or loadout_id}")
+    for resident in loadout["residents"]:
+        if resident["kind"] == "runtime":
+            lines.append(
+                f"# runtime resident {resident['model_key']}: bind via the soak "
+                "harness, not LM Studio:"
+            )
+            lines.append(
+                f"#   bash $SOAK_DIR/bind-soak-runtime.sh <PREFIX_FOR_{resident['port']}>"
+            )
+        else:
+            lines.append(f"lms load {resident['model_key']}")
+    if not any(r["kind"] != "runtime" for r in loadout["residents"]):
+        lines.append("lms unload --all   # nothing to hold resident")
+    lines.append(
+        "# Verify: curl -s $ENDPOINT/v1/models | jq '.data[].id'  (prod: :1234)"
+    )
+    return "\n".join(lines) + "\n"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -117,21 +159,19 @@ def main() -> None:
     parser.add_argument("--circumstance", required=True)
     parser.add_argument("--lms", default="lms")
     parser.add_argument("--output")
+    parser.add_argument("--commands-out")
     args = parser.parse_args()
 
     policy = Policy.load(args.policy)
-    circumstance = load_circumstance(
-        json.loads(Path(args.circumstance).read_text(encoding="utf-8"))
+    circumstance_raw = json.loads(
+        Path(args.circumstance).read_text(encoding="utf-8")
     )
+    circumstance = load_circumstance(circumstance_raw)
     observation = observe(lms=args.lms)
     recommendation = recommend(
         policy,
         circumstance=circumstance,
-        circumstance_id=str(
-            json.loads(Path(args.circumstance).read_text(encoding="utf-8")).get(
-                "circumstance_id", "unspecified"
-            )
-        ),
+        circumstance_id=str(circumstance_raw.get("circumstance_id", "unspecified")),
         vram_headroom_bytes=0,
         held_exclusive_ports=observation["listening_ports"],
     )
@@ -141,6 +181,10 @@ def main() -> None:
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(text + "\n", encoding="utf-8")
+    if args.commands_out:
+        commands = Path(args.commands_out)
+        commands.parent.mkdir(parents=True, exist_ok=True)
+        commands.write_text(render_commands(recommendation, policy), encoding="utf-8")
     print(text)
 
 

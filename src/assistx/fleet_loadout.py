@@ -56,6 +56,11 @@ KNOWN_RESIDENT_KINDS = ("llm", "embedder", "runtime")
 #: candidate. Until then the declared preference decides and says so.
 MODEL_EVIDENCE_THRESHOLD = 2
 
+#: Whether a model has been proven loadable on the local runtime. ``failed`` is
+#: a hard feasibility rejection: a loadout that needs a model the runtime cannot
+#: load is not a plan, no matter how well it fits in VRAM.
+KNOWN_LOAD_STATUSES = ("verified", "unverified", "failed")
+
 
 class LoadoutPolicyError(ValueError):
     """Raised when a policy file is structurally invalid."""
@@ -121,6 +126,11 @@ class Policy:
             if not isinstance(model, dict):
                 raise LoadoutPolicyError(f"{where}: expected object")
             key = str(_require(model, "model_key", where))
+            status = str(model.get("load_status") or "unverified")
+            if status not in KNOWN_LOAD_STATUSES:
+                raise LoadoutPolicyError(
+                    f"{where}.{key}.load_status: unknown status {status!r}"
+                )
             self.models[key] = {
                 "kind": str(_require(model, "kind", f"{where}.{key}")),
                 "vram_bytes": _as_int(
@@ -128,6 +138,8 @@ class Policy:
                     f"{where}.{key}.vram_bytes",
                 ),
                 "display_name": str(model.get("display_name") or key),
+                "load_status": status,
+                "load_note": str(model.get("load_note") or ""),
             }
         if not self.models:
             raise LoadoutPolicyError("policy.models: at least one model required")
@@ -260,6 +272,14 @@ def evaluate_feasibility(
             f"resident vram {total_vram} exceeds budget {budget} "
             f"(capacity {capacity} + headroom {vram_headroom_bytes})"
         )
+
+    for resident in loadout["residents"]:
+        model = policy.models.get(resident.get("model_key", ""), {})
+        if model.get("load_status") == "failed":
+            reasons.append(
+                f"resident model {resident.get('model_key')} is marked failed to "
+                f"load: {model.get('load_note') or 'no detail recorded'}"
+            )
 
     held = {int(port) for port in held_exclusive_ports}
     for resident in loadout["residents"]:
