@@ -565,7 +565,7 @@
         alertsBanner.style.display = 'none';
       }
     }
-    const componentHealthElement = document.querySelector('.component-health');
+    const componentHealthElement = document.querySelector('.component-health-body');
     if (componentHealthElement) {
       const components = getComponentHealth(snapshot);
       componentHealthElement.innerHTML = components.map(comp => `
@@ -579,7 +579,7 @@
         </div>
       `).join('');
     }
-    const trendDataElement = document.querySelector('.trend-data');
+    const trendDataElement = document.querySelector('.trend-body');
     if (trendDataElement) {
       const trends = getTrendData(snapshot);
       trendDataElement.innerHTML = trends.map(trend => `
