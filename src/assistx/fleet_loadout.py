@@ -145,6 +145,10 @@ class Policy:
                 # 22.1 + 5.8 GiB fits inside 31.9 GiB on paper, and the runtime
                 # still refuses the allocation.
                 "exclusive_gpu": bool(model.get("exclusive_gpu", False)),
+                # Where the load was actually verified. The drill runtime is
+                # proven by real task-quality campaigns; LM Studio loadability
+                # is a separate question and is not implied by it.
+                "verified_in": str(model.get("verified_in") or ""),
             }
         if not self.models:
             raise LoadoutPolicyError("policy.models: at least one model required")
@@ -439,6 +443,10 @@ def recommend(
     model_ready = (
         len(records) >= MODEL_EVIDENCE_THRESHOLD and not uncovered and bool(feasible)
     )
+    # With a single feasible option there is nothing to choose between, so no
+    # amount of evidence would hand the decision to the model. Say that plainly
+    # instead of leaving the gate looking like it is still waiting on data.
+    decision_is_forced = len(feasible) <= 1
     if model_ready:
         model_note = (
             f"{len(records)} measured outcomes covering every feasible candidate; "
@@ -453,6 +461,11 @@ def recommend(
         model_note = (
             f"{len(records)} measured outcome(s) but uncovered feasible "
             f"candidates {uncovered}; the declared preference decides."
+        )
+    if decision_is_forced:
+        model_note += (
+            " Only one loadout is feasible here, so the decision is already "
+            "forced by feasibility and no model would be consulted."
         )
 
     if best is None:
@@ -493,6 +506,7 @@ def recommend(
         "blocking": blocking,
         "model_scoring_active": False,
         "model_ready": model_ready,
+        "decision_is_forced": decision_is_forced,
         "model_note": model_note,
         "evaluated_evidence_records": len(records),
         "uncovered_feasible_candidates": uncovered,
