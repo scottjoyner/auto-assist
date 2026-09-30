@@ -140,6 +140,11 @@ class Policy:
                 "display_name": str(model.get("display_name") or key),
                 "load_status": status,
                 "load_note": str(model.get("load_note") or ""),
+                # A model whose measured resident cost means it must hold the
+                # device alone. Capacity arithmetic alone cannot express this:
+                # 22.1 + 5.8 GiB fits inside 31.9 GiB on paper, and the runtime
+                # still refuses the allocation.
+                "exclusive_gpu": bool(model.get("exclusive_gpu", False)),
             }
         if not self.models:
             raise LoadoutPolicyError("policy.models: at least one model required")
@@ -159,6 +164,11 @@ class Policy:
                 "resident_kind": str(
                     _require(need, "resident_kind", f"{where}.{name}")
                 ),
+                # An optional role pin. Without it, any resident of that kind
+                # satisfies the need -- which is wrong for needs like
+                # "interactive_lane": the small production model is an `llm`,
+                # but it is not an interactive lane.
+                "role": str(need.get("role") or ""),
             }
 
         self.loadouts: list[dict[str, Any]] = []
@@ -193,6 +203,7 @@ class Policy:
                     resident.get("vram_bytes", self.models[model_key]["vram_bytes"]),
                     f"{r_where}.vram_bytes",
                 )
+                role = str(resident.get("role") or "")
                 parsed_residents.append(
                     {
                         "kind": kind,
@@ -200,7 +211,7 @@ class Policy:
                         "vram_bytes": vram_bytes,
                         "port": int(resident["port"]) if resident.get("port") else None,
                         "exclusive": bool(resident.get("exclusive", False)),
-                        "role": str(resident.get("role") or ""),
+                        "role": role,
                     }
                 )
             self.loadouts.append(
@@ -273,6 +284,23 @@ def evaluate_feasibility(
             f"(capacity {capacity} + headroom {vram_headroom_bytes})"
         )
 
+    exclusive_residents = [
+        resident
+        for resident in loadout["residents"]
+        if policy.models.get(resident.get("model_key", ""), {}).get("exclusive_gpu")
+    ]
+    if exclusive_residents and len(loadout["residents"]) > len(exclusive_residents):
+        others = sorted(
+            r.get("model_key")
+            for r in loadout["residents"]
+            if r not in exclusive_residents
+        )
+        reasons.append(
+            "resident(s) "
+            f"{[r.get('model_key') for r in exclusive_residents]} require the "
+            f"device to themselves and cannot share it with {others}"
+        )
+
     for resident in loadout["residents"]:
         model = policy.models.get(resident.get("model_key", ""), {})
         if model.get("load_status") == "failed":
@@ -300,14 +328,18 @@ def _satisfies(
     if spec is None:
         raise LoadoutPolicyError(f"need {need!r} is not declared in the policy")
     kind = spec["resident_kind"]
-    satisfied_by = [
-        resident
-        for resident in loadout["residents"]
-        if resident.get("kind") == kind
+    role = spec.get("role") or ""
+    matching = [
+        resident for resident in loadout["residents"] if resident.get("kind") == kind
     ]
-    if satisfied_by:
+    if role:
+        matching = [r for r in matching if r.get("role") == role]
+    if matching:
         return True, []
-    return False, [f"need {need} requires a resident of kind {kind}"]
+    requirement = f"a resident of kind {kind}"
+    if role:
+        requirement += f" with role {role!r}"
+    return False, [f"need {need} requires {requirement}"]
 
 
 def _preference_rank(
@@ -423,6 +455,31 @@ def recommend(
             f"candidates {uncovered}; the declared preference decides."
         )
 
+    if best is None:
+        # A null answer is only useful if it says what each option would break.
+        blocking = [
+            {
+                "loadout_id": item["loadout_id"],
+                "reasons": item["reasons"],
+            }
+            for item in evaluated
+            if item["reasons"]
+        ]
+        note = (
+            "No loadout can serve this circumstance on the measured device; "
+            "the operator must choose which requirement to relax. Every "
+            "candidate's blocking reasons are listed."
+        )
+        basis = "infeasible"
+    else:
+        blocking = []
+        note = (
+            "Recommendation only. Authority is all-false; the operator applies "
+            "the loadout. Model scoring stays inactive until measured "
+            "(circumstance, loadout) outcomes exist."
+        )
+        basis = "feasibility+declared-preference"
+
     return {
         "schema": RECOMMENDATION_SCHEMA,
         "policy_id": policy.policy_id,
@@ -432,18 +489,15 @@ def recommend(
         "vram_headroom_bytes": vram_headroom_bytes,
         "held_exclusive_ports": sorted({int(p) for p in held_exclusive_ports}),
         "recommended_loadout_id": best["loadout_id"] if best else None,
-        "decision_basis": "feasibility+declared-preference",
+        "decision_basis": basis,
+        "blocking": blocking,
         "model_scoring_active": False,
         "model_ready": model_ready,
         "model_note": model_note,
         "evaluated_evidence_records": len(records),
         "uncovered_feasible_candidates": uncovered,
         "candidates": evaluated,
-        "note": (
-            "Recommendation only. Authority is all-false; the operator applies "
-            "the loadout. Model scoring stays inactive until measured "
-            "(circumstance, loadout) outcomes exist."
-        ),
+        "note": note,
         "authority": dict(DEFAULT_AUTHORITY),
     }
 
