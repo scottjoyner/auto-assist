@@ -1,10 +1,8 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8"/>
-  <title>Harness evolution — AssistX</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <link rel="stylesheet" href="{{ url_for('static', path='css/control_room.css') }}">
+{% extends "base.html" %}
+{% block title %}Harness evolution — AssistX{% endblock %}
+{% block nav_active %}control_room{% endblock %}
+{% block heading %}Harness evolution{% endblock %}
+{% block head %}
   <style>
     .evo-grid {
       display: grid;
@@ -115,51 +113,38 @@
       font-size: 12px; min-width: 220px;
     }
   </style>
-</head>
-<body>
-  <div class="control-shell">
-    <header class="topbar">
-      <div>
-        <h1 style="margin:0; font-size:18px;">Harness evolution</h1>
-        <div style="color: var(--muted); font-size:12px;">
-          reflect → train → deploy → rescore · every mistake, chain, and live response traceable
-        </div>
-      </div>
-      <div class="topbar-actions">
-        <span style="color: var(--muted); font-size:12px;">
-          <span class="live-dot" id="live-dot"></span><span id="refresh-note">polling…</span>
-        </span>
-        <a href="/control-room" style="color: var(--steel); font-size:12px; border:1px solid var(--line); border-radius:6px; padding:5px 10px;">← control room</a>
-      </div>
-    </header>
+{% endblock %}
+{% block content %}
+  <div class="filterbar">
+    <input id="evo-filter" type="text" placeholder="filter by chain / suite / endpoint / model…" />
+    <span style="color: var(--muted); font-size: 11px;">
+        {# harness.js writes this on every poll; it used to live in the bespoke
+           topbar this page had before it joined the shell. #}
+        <span class="live-dot" id="live-dot"></span><span id="refresh-note">polling…</span>
+        <span id="snapshot-meta"></span>
+      </span>
+  </div>
 
-    <div class="filterbar">
-      <input id="evo-filter" type="text" placeholder="filter by chain / suite / endpoint / model…" />
-      <span style="color: var(--muted); font-size: 11px;" id="snapshot-meta"></span>
+  <div class="evo-grid">
+    <div class="evo-main">
+      <div class="panel">
+        <h2>Evolution chains <span class="count" id="chains-count">0</span></h2>
+        <div id="chains"><div class="empty">loading…</div></div>
+      </div>
+
+      <div class="panel" style="margin-top:12px;">
+        <h2>Mistakes <span class="count" id="mistakes-count">0</span></h2>
+        <div id="mistakes"><div class="empty">loading…</div></div>
+      </div>
     </div>
 
-    <div class="evo-grid">
-      <div class="evo-main">
-        <div class="panel">
-          <h2>Evolution chains <span class="count" id="chains-count">0</span></h2>
-          <div id="chains"><div class="empty">loading…</div></div>
-        </div>
-
-        <div class="panel" style="margin-top:12px;">
-          <h2>Mistakes <span class="count" id="mistakes-count">0</span></h2>
-          <div id="mistakes"><div class="empty">loading…</div></div>
-        </div>
-      </div>
-
-      <div class="evo-side">
-        <div class="panel">
-          <h2>Live tasks <span class="count" id="live-count">0</span></h2>
-          <div id="live"><div class="empty">loading…</div></div>
-        </div>
+    <div class="evo-side">
+      <div class="panel">
+        <h2>Live tasks <span class="count" id="live-count">0</span></h2>
+        <div id="live"><div class="empty">loading…</div></div>
       </div>
     </div>
   </div>
-
-  <script src="{{ url_for('static', path='js/harness.js') }}"></script>
-</body>
-</html>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', path='js/harness.js') }}"></script>{% endblock %}
