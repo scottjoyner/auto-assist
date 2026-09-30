@@ -12,6 +12,11 @@
   };
 
   const $ = (id) => document.getElementById(id);
+  // The shell (topbar/footer) is rendered on every page, but the control-room
+  // sections are not. Anything page-scoped must no-op when its container is
+  // absent so this script can be loaded once, globally, without breaking the
+  // other pages.
+  const has = (id) => Boolean($(id));
   const esc = (value) => {
     const node = document.createElement('span');
     node.textContent = value == null ? '' : String(value);
@@ -465,24 +470,33 @@
     });
   }
 
+  // (container id, renderer) pairs that only run when the page owns them.
+  const PAGE_SECTIONS = [
+    ['summary-strip', renderSummary],
+    ['runtime-body', renderRuntimes],
+    ['dependency-grid', renderDependencies],
+    ['performance-body', renderPerformance],
+    ['recovery-grid', renderRecovery],
+    ['fleet-nodes-body', renderFleetNodes],
+    ['power-grid', renderPower],
+    ['activity-feed', renderActivity],
+  ];
+
   function render(snapshot) {
     state.snapshot = snapshot;
     state.lastReceivedAt = Date.now();
     state.lastDataUpdate = Date.now();
     state.healthScore = healthScore(snapshot);
     state.criticalAlerts = getCriticalAlerts(snapshot);
-    renderSummary(snapshot);
-    renderRuntimes(snapshot);
-    renderDependencies(snapshot);
-    renderPerformance(snapshot);
-    renderRecovery(snapshot);
-    renderFleetNodes(snapshot);
-    renderPower(snapshot);
-    renderActivity(snapshot);
+    PAGE_SECTIONS.forEach(([containerId, renderSection]) => {
+      if (has(containerId)) renderSection(snapshot);
+    });
     const streamState = $('stream-state');
     const overall = snapshot.overall_status || 'unknown';
-    streamState.className = `state state-${overall}`;
-    streamState.textContent = overall.toUpperCase();
+    if (streamState) {
+      streamState.className = `state state-${overall}`;
+      streamState.textContent = overall.toUpperCase();
+    }
     const dataAge = state.lastReceivedAt ? Date.now() - state.lastReceivedAt : 0;
     const dataAgeElement = $('data-age');
     if (dataAgeElement) {
@@ -497,7 +511,10 @@
         dataAgeElement.className = 'mono stale-indicator';
       }
     }
-    $('collected-at').textContent = `snapshot ${compactTime(snapshot.collected_at_ts)}`;
+    const collectedAt = $('collected-at');
+    if (collectedAt) {
+      collectedAt.textContent = `snapshot ${compactTime(snapshot.collected_at_ts)}`;
+    }
     const healthScoreElement = document.querySelector('.health-score');
     if (healthScoreElement) {
       healthScoreElement.textContent = `${state.healthScore}`;
@@ -783,18 +800,27 @@
       render(JSON.parse(event.data));
     });
     source.addEventListener('error', () => {
-      $('stream-state').className = 'state state-degraded';
-      $('stream-state').textContent = 'RECONNECTING';
+      const badge = $('stream-state');
+      if (badge) {
+        badge.className = 'state state-degraded';
+        badge.textContent = 'RECONNECTING';
+      }
       source.close();
       state.reconnects += 1;
       window.setTimeout(connectStream, Math.min(15000, 1000 * (2 ** state.reconnects)));
     });
   }
 
-  $('manual-refresh').addEventListener('click', () => fetchOnce().catch((error) => {
-    $('stream-state').className = 'state state-unhealthy';
-    $('stream-state').textContent = error.message;
-  }));
+  const refreshButton = $('manual-refresh');
+  if (refreshButton) {
+    refreshButton.addEventListener('click', () => fetchOnce().catch((error) => {
+      const badge = $('stream-state');
+      if (badge) {
+        badge.className = 'state state-unhealthy';
+        badge.textContent = error.message;
+      }
+    }));
+  }
   const quickActionsBtn = document.getElementById('quick-actions');
   if (quickActionsBtn) {
     quickActionsBtn.addEventListener('click', (e) => {
@@ -802,17 +828,24 @@
       showQuickActions();
     });
   }
-  $('only-active').addEventListener('change', () => {
-    if (state.snapshot) renderActivity(state.snapshot);
-  });
+  const onlyActiveToggle = $('only-active');
+  if (onlyActiveToggle) {
+    onlyActiveToggle.addEventListener('change', () => {
+      if (state.snapshot && has('activity-feed')) renderActivity(state.snapshot);
+    });
+  }
 
   window.setInterval(() => {
     if (!state.lastReceivedAt) return;
     const ageSeconds = Math.max(0, Math.round((Date.now() - state.lastReceivedAt) / 1000));
-    $('data-age').textContent = `age ${ageSeconds}s`;
+    const ageElement = $('data-age');
+    if (ageElement) ageElement.textContent = `age ${ageSeconds}s`;
     if (ageSeconds > 10) {
-      $('stream-state').className = 'state state-degraded';
-      $('stream-state').textContent = 'STALE';
+      const badge = $('stream-state');
+      if (badge) {
+        badge.className = 'state state-degraded';
+        badge.textContent = 'STALE';
+      }
     }
   }, 1000);
 
