@@ -166,3 +166,56 @@ def test_answers_sse_handler_resolves_its_redis_url():
         "api_answer_events",
     ):
         assert callable(getattr(api, name))
+
+
+def test_nav_key_block_value_is_not_printed_on_the_page():
+    """A bare {% block %} emits its value into the body.
+
+    The nav_active block was declared as a text node, so pages rendered a stray
+    "control_room" label above the navigation bar.
+    """
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+    env = Environment(
+        loader=FileSystemLoader(str(ROOT / "templates")),
+        autoescape=select_autoescape(["html", "xml"]),
+    )
+
+    def url_for(name: str, **kwargs: object) -> str:
+        path = kwargs.get("path")
+        return "/" + (path.lstrip("/") if isinstance(path, str) else str(name))
+
+    env.globals["url_for"] = url_for
+    # Only a bare text node is the bug; the key legitimately appears inside
+    # asset URLs such as /static/js/control_room.js.
+    nav_keys = ("control_room", "tasks", "approvals", "metrics")
+    for name in ("control_room.html", "ready.html", "review.html", "fleet_dashboard.html"):
+        html = env.get_template(name).render()
+        leaked = [k for k in nav_keys if re.search(rf">\s*{k}\s*<", html)]
+        assert not leaked, f"{name} printed the raw nav key as page text: {leaked}"
+    html = env.get_template("control_room.html").render()
+    assert 'class=" active" href="/control-room"' in html
+
+
+def test_control_room_script_selectors_exist_in_the_template():
+    """Selector drift: the script queried classes the template no longer has.
+
+    ``.component-health`` and ``.trend-data`` were renamed to
+    ``.component-health-body`` / ``.trend-body``, so two panels rendered their
+    "Loading ..." placeholder forever with no console error to show for it.
+    """
+    import re as _re
+
+    # The script legitimately queries both shell (base) and page containers.
+    template = (ROOT / "templates" / "base.html").read_text(encoding="utf-8") + (
+        ROOT / "templates" / "control_room.html"
+    ).read_text(encoding="utf-8")
+    script = (ROOT / "static" / "js" / "control_room.js").read_text(encoding="utf-8")
+    selectors = set(
+        _re.findall(r"document\.querySelector\('\.([a-z-]+)'\)", script)
+    )
+    assert selectors, "expected the script to query class selectors"
+    template_classes = set(_re.findall(r'class="([^"]+)"', template))
+    flat = {token for group in template_classes for token in group.split()}
+    missing = sorted(s for s in selectors if s not in flat)
+    assert not missing, f"script queries classes absent from the page: {missing}"

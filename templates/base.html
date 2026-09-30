@@ -41,13 +41,14 @@
        overrides this block with its own key (control_room, tasks, approvals,
        metrics) so the active marker follows the operator instead of sticking
        to CONTROL ROOM. #}
-    {% block nav_active %}control_room{% endblock %}
+    {# Captured, not printed: a bare {% block %} emits its value into the page. #}
+    {% set nav_key %}{% block nav_active %}control_room{% endblock %}{% endset %}
     <nav class="command-nav" aria-label="Operator navigation">
-      <a class="{{ nav_class('control_room', self.nav_active()) }}" href="/control-room">CONTROL ROOM</a>
-      <a class="{{ nav_class('tasks', self.nav_active()) }}" href="/tasks/ready">TASKS</a>
-      <a class="{{ nav_class('approvals', self.nav_active()) }}" href="/review">APPROVALS</a>
+      <a class="{{ nav_class('control_room', nav_key) }}" href="/control-room">CONTROL ROOM</a>
+      <a class="{{ nav_class('tasks', nav_key) }}" href="/tasks/ready">TASKS</a>
+      <a class="{{ nav_class('approvals', nav_key) }}" href="/review">APPROVALS</a>
       <a href="#dependencies">DEPENDENCIES</a>
-      <a class="{{ nav_class('metrics', self.nav_active()) }}" href="/metrics">METRICS</a>
+      <a class="{{ nav_class('metrics', nav_key) }}" href="/metrics">METRICS</a>
     </nav>
 
     <main>
