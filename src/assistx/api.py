@@ -888,13 +888,69 @@ def _verify_voice_signature(body: BaseModel, signature: Optional[str]) -> None:
     if not any(hmac.compare_digest(signature, candidate) for candidate in accepted):
         raise HTTPException(status_code=401, detail="Invalid voice signature")
 
+WS_TOKEN_TTL_SECONDS = int(os.getenv("WS_TOKEN_TTL_SECONDS", "300"))
+# Domain separator: a minted token must never be accepted by anything other
+# than a WebSocket handshake, even if the same secret is reused elsewhere.
+_WS_TOKEN_PURPOSE = "assistx.ws.v1"
+
+
+def _mint_ws_token(now: Optional[float] = None) -> dict:
+    """Mint a short-lived WebSocket token for an authenticated browser.
+
+    The static ``WS_AUTH_TOKEN`` is a server-side secret and must never be
+    handed to a browser, but browsers cannot complete a WebSocket handshake
+    without *some* credential. This issues a short-lived, domain-separated
+    HMAC token instead: ``<expiry>.<hmac_sha256(expiry|WS_TOKEN_PURPOSE)>``.
+    """
+    if not WS_AUTH_TOKEN:
+        raise HTTPException(status_code=503, detail="WebSocket auth token not configured")
+    issued_at = int(_time.time() if now is None else now)
+    expires_at = issued_at + WS_TOKEN_TTL_SECONDS
+    signature = hmac.new(
+        WS_AUTH_TOKEN.encode("utf-8"),
+        f"{expires_at}|{_WS_TOKEN_PURPOSE}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return {
+        "token": f"{expires_at}.{signature}",
+        "expires_at": expires_at,
+        "expires_in": WS_TOKEN_TTL_SECONDS,
+    }
+
+
+def _ws_token_is_valid(token: str, now: Optional[float] = None) -> bool:
+    if not token or "." not in token:
+        return False
+    expires_raw, _, signature = token.partition(".")
+    try:
+        expires_at = int(expires_raw)
+    except ValueError:
+        return False
+    current = int(_time.time() if now is None else now)
+    if current >= expires_at:
+        return False
+    expected = hmac.new(
+        WS_AUTH_TOKEN.encode("utf-8"),
+        f"{expires_at}|{_WS_TOKEN_PURPOSE}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(signature, expected)
+
+
 def _require_ws_auth(token: Optional[str]) -> None:
     if not WS_AUTH_REQUIRED:
         return
     if not WS_AUTH_TOKEN:
         raise HTTPException(status_code=503, detail="WebSocket auth token not configured")
-    if not token or not hmac.compare_digest(token, WS_AUTH_TOKEN):
+    if not token:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    # Server-side clients may present the static token; browsers use a minted,
+    # short-lived one. Both are constant-time compared.
+    if hmac.compare_digest(token, WS_AUTH_TOKEN):
+        return
+    if _ws_token_is_valid(token):
+        return
+    raise HTTPException(status_code=401, detail="Unauthorized")
 
 def _cancel_tasks_for_intent(neo: Neo4jClient, intent_id: str, reason: str) -> int:
     with neo._session() as s:
@@ -5630,6 +5686,22 @@ def api_get_answer(answer_id: str, user: str = Depends(auth)):
     if not obj:
         raise HTTPException(status_code=404, detail="Answer not found")
     return obj
+
+@app.get("/api/ws-token")
+def api_ws_token(user: str = Depends(auth)):
+    """Mint a short-lived WebSocket token for this authenticated session.
+
+    Browser WebSocket handshakes cannot send custom headers, and the static
+    WS_AUTH_TOKEN is a server-side secret. The minted token is scoped to
+    WebSocket handshakes and expires in WS_TOKEN_TTL_SECONDS.
+    """
+    minted = _mint_ws_token()
+    return {
+        **minted,
+        "query_parameter": "token",
+        "note": "WebSocket handshake only; not accepted by HTTP API auth.",
+    }
+
 
 @app.get("/api/answers")
 def api_list_answers(
