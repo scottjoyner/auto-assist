@@ -350,7 +350,8 @@
   "note": "Devices and model VRAM figures are measured facts. Loadout preferences are declared by an operator until measured outcomes for (circumstance, loadout) pairs exist.",
   "notes": [
     "Device capacity is a choice, not arithmetic: on x1-370 (31.9 GiB) the 35B interactive model (22.09 GiB resident) and the 5.75 GiB production model cannot both be resident -- the runtime refuses the allocation even though the totals fit on paper. Models that need the device alone carry exclusive_gpu.",
-    "Ladder cost probe: the cheap runtime is not a shortcut. A 0.8B model serves the suite at a fraction of the cost and still fails the quality gate (1/8 representative cases), so scaling states means more cases or fewer options per state -- not a smaller model."
+    "Ladder cost probe: the cheap runtime is not a shortcut. A 0.8B model serves the suite at a fraction of the cost and still fails the quality gate (1/8 representative cases), so scaling states means more cases or fewer options per state -- not a smaller model.",
+    "Co-residency at 128K is node-specific, not just model-specific. Measured 2026-09-29/30: x1-370 (vulkan) ran the 128K drill beside the 3B production model and served a 72025-token prompt; r9700 (ROCm) fails to allocate the KV cache in the same configuration and the bind hangs. The r9700 128K drill therefore needs the card to itself."
   ],
   "policy_id": "assistx-fleet-loadout-x1-370-v1",
   "schema": "assistx-fleet-loadout-policy-v1"

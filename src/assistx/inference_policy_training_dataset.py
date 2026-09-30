@@ -179,6 +179,53 @@ def _validate_result_row(
     return True, None
 
 
+def task_spec_group_id(
+    case: dict[str, Any],
+    *,
+    anchors: dict[str, str] | None = None,
+) -> str:
+    """Group cases that ask for the same thing.
+
+    Two cases with an identical task evaluator spec are the same task wearing a
+    different prompt, so they must never be split across train/validation/
+    calibration/test: the held-out split would otherwise contain a task the
+    model trained on. A declared group always wins. Otherwise the case is
+    anchored on the lexicographically first case id sharing its spec, which
+    keeps the group of a corpus without duplicates exactly where it was before.
+    """
+    declared = case.get("dataset_group") or case.get("source_group_id")
+    if declared:
+        return str(declared)
+    evaluator = case.get("acceptance", {}).get("task_evaluator")
+    if evaluator is None:
+        return str(case["case_id"])
+    spec = canonical_sha256(evaluator)
+    if anchors is not None and spec in anchors:
+        return anchors[spec]
+    return str(case["case_id"])
+
+
+def task_spec_anchors(cases: Iterable[dict[str, Any]]) -> dict[str, str]:
+    """Map each duplicated task-evaluator spec to its anchor case id."""
+    first: dict[str, str] = {}
+    duplicated: set[str] = set()
+    for case in cases:
+        if case.get("dataset_group") or case.get("source_group_id"):
+            continue
+        evaluator = case.get("acceptance", {}).get("task_evaluator")
+        if evaluator is None:
+            continue
+        spec = canonical_sha256(evaluator)
+        case_id = str(case["case_id"])
+        if spec in first:
+            if first[spec] != case_id:
+                duplicated.add(spec)
+                first[spec] = min(first[spec], case_id)
+        else:
+            first[spec] = case_id
+    return {spec: first[spec] for spec in duplicated}
+
+
 def _state_text(case: dict[str, Any], context_tokens: int) -> str:
     payload = {
         "task_family": case["task_family"],
@@ -265,6 +312,7 @@ def _record_for_group(
     campaign_evidence_sha256: str,
     quality_report_sha256: str,
     tie_ratio: float,
+    spec_anchors: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     candidates: list[dict[str, Any]] = []
     for row in rows:
@@ -316,11 +364,7 @@ def _record_for_group(
         (1.0 / len(near_best)) if option in near_best else 0.0
         for option in options
     ]
-    group_id = str(
-        case.get("dataset_group")
-        or case.get("source_group_id")
-        or case["case_id"]
-    )
+    group_id = task_spec_group_id(case, anchors=spec_anchors)
     record = {
         "schema": RECORD_SCHEMA,
         "record_id": "assistx-policy-" + canonical_sha256(
@@ -463,6 +507,7 @@ def build_policy_training_bundle(
         grouped.setdefault((case_id, context_tokens), []).append(row)
 
     records: list[dict[str, Any]] = []
+    spec_anchors = task_spec_anchors(cases)
     contexts = sorted({int(policy["context_tokens"]) for policy in policies.values()})
     if len(contexts) < 2:
         raise ValueError("training bundle requires source and target contexts")
@@ -495,6 +540,7 @@ def build_policy_training_bundle(
             campaign_evidence_sha256=campaign_sha,
             quality_report_sha256=quality_sha,
             tie_ratio=tie_ratio,
+            spec_anchors=spec_anchors,
         )
         if record is None:
             exclusions["insufficient_admissible_options"] = (
