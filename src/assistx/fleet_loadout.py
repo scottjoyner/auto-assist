@@ -49,7 +49,7 @@ KNOWN_NEEDS = (
 )
 
 #: Residency kinds that can satisfy a need.
-KNOWN_RESIDENT_KINDS = ("llm", "embedder", "runtime")
+KNOWN_RESIDENT_KINDS = ("llm", "embedder", "runtime", "draft")
 
 #: How many measured outcomes for a circumstance are needed before the decision
 #: model may be considered for scoring, in addition to covering every feasible

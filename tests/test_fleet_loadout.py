@@ -663,7 +663,13 @@ def test_official_interactive_need_is_role_pinned():
     # A loadout that claims an interactive lane must actually label one.
     for loadout in policy.loadouts:
         roles = {r.get("role") for r in loadout["residents"]}
-        assert roles - {"prod-llm", "prod-embed", "drill", "interactive"} == set()
+        assert roles - {
+            "prod-llm",
+            "prod-embed",
+            "drill",
+            "drill-draft",
+            "interactive",
+        } == set()
 
 
 def test_infeasible_recommendation_lists_what_each_option_would_break():
@@ -735,3 +741,39 @@ def test_cheap_model_is_recorded_as_failing_the_quality_gate():
     assert small["load_status"] == "verified", "it does load; that is not the issue"
     assert "1 of 8" in small["load_note"]
     assert "not a viable policy" in small["load_note"].lower()
+
+
+def test_dflash_drill_reserves_its_speculative_draft():
+    """A speculative draft is a real resident with its own cost.
+
+    Binding the dflash drill next to a resident 3B production model failed to
+    load its draft ('unable to allocate') and the bind hung until timeout. The
+    run then reported 128 identical preflight errors, which read as a policy
+    scoring 0/128 rather than a capacity failure. The draft must therefore be
+    modelled, and the drill that uses it must hold the device.
+    """
+    policy = Policy.load(POLICY_PATH)
+    draft_key = next(k for k, m in policy.models.items() if m["kind"] == "draft")
+    draft = policy.models[draft_key]
+    assert draft["kind"] == "draft"
+    # The draft lives with the speculative drill only.
+    dflash = next(
+        lo for lo in policy.loadouts if lo["loadout_id"] == "soak_drill_dflash_exclusive"
+    )
+    assert any(r["model_key"] == draft_key for r in dflash["residents"])
+    for loadout in policy.loadouts:
+        carries_draft = any(r["model_key"] == draft_key for r in loadout["residents"])
+        carries_prod = any(
+            r["model_key"] == "toolcall-v5-3b-combined-r2" for r in loadout["residents"]
+        )
+        assert not (carries_draft and carries_prod), (
+            f"{loadout['loadout_id']} pairs a speculative draft with the "
+            "production model, which the runtime refuses to allocate"
+        )
+    # Non-speculative drill + prod is the measured-feasible co-residency.
+    result = recommend(
+        policy,
+        circumstance={"prod_llm_endpoint": True, "soak_drill_runtime": True},
+        circumstance_id="prod_llm_during_drill",
+    )
+    assert result["recommended_loadout_id"] == "soak_drill_mtp_with_prod_llm"

@@ -165,12 +165,9 @@
       ]
     },
     {
-      "description": "Drill runtime owns the GPU; the production LLM path yields its card.",
-      "loadout_id": "soak_drill_exclusive",
-      "preferred_when": [
-        "soak_drill",
-        "task_quality_drill"
-      ],
+      "description": "Drill runtime without speculation, alone: the production LLM yields the card.",
+      "loadout_id": "soak_drill_mtp_exclusive",
+      "preferred_when": [],
       "provenance": "measured",
       "residents": [
         {
@@ -183,10 +180,37 @@
       ]
     },
     {
-      "description": "Drill runtime plus the small production model, if VRAM allows.",
-      "loadout_id": "soak_drill_with_prod_llm",
-      "preferred_when": [],
-      "provenance": "declared",
+      "description": "Speculative drill runtime plus its draft model. The draft is a real resident: with the 3B production model loaded, binding this drill fails to allocate the draft and the runtime never starts.",
+      "loadout_id": "soak_drill_dflash_exclusive",
+      "preferred_when": [
+        "soak_drill",
+        "task_quality_drill"
+      ],
+      "provenance": "measured",
+      "residents": [
+        {
+          "exclusive": true,
+          "kind": "runtime",
+          "model_key": "qwen3.8-27b-rocmfp4-strix",
+          "port": 8125,
+          "role": "drill"
+        },
+        {
+          "exclusive": true,
+          "kind": "draft",
+          "model_key": "qwen3.8-27b-dflash2-q8-0-draft",
+          "port": 8125,
+          "role": "drill-draft"
+        }
+      ]
+    },
+    {
+      "description": "Non-speculative drill runtime beside the production model. Measured: both served, including a 72025-token prompt on the 128K runtime.",
+      "loadout_id": "soak_drill_mtp_with_prod_llm",
+      "preferred_when": [
+        "prod_llm_during_drill"
+      ],
+      "provenance": "measured",
       "residents": [
         {
           "exclusive": true,
@@ -283,6 +307,15 @@
       "model_key": "qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled",
       "verified_in": "lm-studio",
       "vram_bytes": 811842643
+    },
+    {
+      "display_name": "Qwen3.8 27B DFlash2 Q8 draft (speculative)",
+      "kind": "draft",
+      "load_note": "Speculative draft for the dflash runtime. With the 3B production model resident, binding r9700 dflash fails to load this draft ('unable to allocate') and the bind hangs until timeout, which is why the run looked like a policy failure and was in fact a capacity one. Its resident cost is estimated from file size and should be measured.",
+      "load_status": "verified",
+      "model_key": "qwen3.8-27b-dflash2-q8-0-draft",
+      "verified_in": "soak-binder (fails to load alongside a resident prod model)",
+      "vram_bytes": 16320875724
     }
   ],
   "needs": [
