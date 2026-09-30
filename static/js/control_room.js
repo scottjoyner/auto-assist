@@ -470,6 +470,30 @@
     });
   }
 
+  // Critical alerts are derived from the snapshot: required dependencies that
+  // are not healthy, runtimes that are failing, and error rates worth waking
+  // someone for. Previously this function was *called* but never defined, so
+  // render() threw on every page and no panel ever populated.
+  const getCriticalAlerts = (snapshot) => {
+    const alerts = [];
+    const dependencies = snapshot?.dependencies || [];
+    dependencies
+      .filter((item) => item && item.required && item.status !== 'healthy' && item.status !== 'disabled')
+      .forEach((item) => {
+        alerts.push(`Required dependency ${item.name || item.key || 'unknown'}: ${item.status || 'unknown'}`);
+      });
+    const runtimes = snapshot?.runtimes || [];
+    const failing = runtimes.filter((item) => item && item.status === 'failing');
+    if (failing.length) {
+      alerts.push(`${failing.length} runtime(s) reporting failures`);
+    }
+    const errorPercent = Number((snapshot?.summary || {}).error_percent);
+    if (Number.isFinite(errorPercent) && errorPercent >= 25) {
+      alerts.push(`Error rate ${errorPercent.toFixed(1)}% across measured runs`);
+    }
+    return alerts;
+  };
+
   // (container id, renderer) pairs that only run when the page owns them.
   const PAGE_SECTIONS = [
     ['summary-strip', renderSummary],
@@ -680,7 +704,12 @@
   }
 
   function init() {
-    Navigation.init();
+    // Guard: without navigation.js this resolves to the browser's built-in
+    // Navigation API, which has no init(), and throws before the rest of the
+    // quick-actions wiring runs.
+    if (window.Navigation && typeof window.Navigation.init === 'function') {
+      window.Navigation.init();
+    }
     fetchOnce();
     connectStream();
     const quickActionsBtn = document.getElementById('quick-actions');
