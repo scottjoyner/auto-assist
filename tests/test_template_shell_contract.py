@@ -152,14 +152,24 @@ def test_shell_scripts_load_once_on_every_page():
     env = _env()
     for name in _children() + ["base.html"]:
         html = env.get_template(name).render()
-        assert html.count("/static/js/control_room.js") == 1, (
-            f"{name} must load the control-room shell script exactly once"
+        assert html.count("/static/js/shell.js") == 1, (
+            f"{name} must load the shell script exactly once"
         )
         assert html.count("/static/js/navigation.js") == 1, (
             f"{name} must load navigation.js exactly once"
         )
     dashboard = env.get_template("fleet_dashboard.html").render()
     assert "fleet_dashboard.js" in dashboard
+
+
+def test_only_the_control_room_loads_the_page_renderer():
+    """control_room.js renders control-room panels; it is not a shell script."""
+    env = _env()
+    assert env.get_template("control_room.html").render().count("/static/js/control_room.js") == 1
+    for name in ("ready.html", "review.html", "memory.html", "runs.html"):
+        assert env.get_template(name).render().count("/static/js/control_room.js") == 0, (
+            f"{name} should not load the control-room page renderer"
+        )
 
 
 def test_control_room_script_guards_page_scoped_elements():
@@ -169,7 +179,10 @@ def test_control_room_script_guards_page_scoped_elements():
     element aborted the whole script before its bootstrap fetch, so the shared
     topbar was dead on every page except the control room.
     """
-    script = (ROOT / "static" / "js" / "control_room.js").read_text(encoding="utf-8")
+    script = (
+        (ROOT / "static" / "js" / "control_room.js").read_text(encoding="utf-8")
+        + (ROOT / "static" / "js" / "shell.js").read_text(encoding="utf-8")
+    )
     # Section rendering is dispatched through a guarded table.
     assert "PAGE_SECTIONS.forEach" in script
     # Listeners on page-scoped controls must be optional.
