@@ -237,3 +237,37 @@ def test_shell_script_selectors_exist_in_the_template():
     flat = {token for group in template_classes for token in group.split()}
     missing = sorted(s for s in selectors if s not in flat)
     assert not missing, f"script queries classes absent from the page: {missing}"
+
+
+def test_harness_page_uses_the_shell():
+    """harness.html was a standalone document with its own topbar.
+
+    That gave it no operator navigation and no live topbar. It now extends the
+    shell; the bespoke header was removed in favour of the shared one.
+    """
+    harness = (ROOT / "templates" / "harness.html").read_text(encoding="utf-8")
+    assert 'extends "base.html"' in harness
+    assert "<!doctype" not in harness.lower(), "no second document wrapper"
+    # (a comment may still mention it; what must be gone is the markup)
+    assert 'class="topbar"' not in harness, "the bespoke topbar markup should be gone"
+    assert "{% block scripts %}" in harness, "harness.js must still load"
+
+
+def test_page_scripts_only_reference_ids_that_exist():
+    """Every element a page script writes to must exist in the page.
+
+    ``harness.js`` wrote to ``refresh-note`` unguarded; when the bespoke topbar
+    was removed the element went with it, and the script would have thrown on
+    every poll. This is the same class as the control-room selector drift.
+    """
+    pairs = {
+        "harness.js": "harness.html",
+        "control_room.js": "control_room.html",
+    }
+    for script_name, template_name in pairs.items():
+        script = (ROOT / "static" / "js" / script_name).read_text(encoding="utf-8")
+        page = (ROOT / "templates" / template_name).read_text(encoding="utf-8")
+        page_ids = set(re.findall(r'id="([A-Za-z0-9_-]+)"', page))
+        refs = set(re.findall(r"getElementById\(['\"]([A-Za-z0-9_-]+)['\"]\)", script))
+        missing = sorted(refs - page_ids)
+        assert not missing, f"{script_name} references ids absent from {template_name}: {missing}"
