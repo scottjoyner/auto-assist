@@ -12,6 +12,8 @@ from assistx.inference_policy_experiment import (
 )
 from assistx.inference_policy_training_dataset import (
     assign_group_splits,
+    task_spec_anchors,
+    task_spec_group_id,
     build_policy_training_bundle,
 )
 
@@ -50,21 +52,46 @@ def _policy(policy_id, context_tokens, node, backend, speculation):
     }
 
 
-def _fixture(tmp_path: Path):
+def _fixture(tmp_path: Path, duplicates: bool = False):
     cases = [
         {
             "case_id": "case-a",
             "task_family": "coding",
             "prompt": "Return a safe implementation.",
-            "acceptance": {"required_terms": ["safe"]},
+            "acceptance": {
+                "required_terms": ["safe"],
+                "task_evaluator": {
+                    "kind": "python_function",
+                    "function_name": "double_all",
+                    "tests": [{"args": [[1, 2]], "expected": [2, 4]}],
+                },
+            },
         },
         {
             "case_id": "case-b",
             "task_family": "tool_use",
             "prompt": "Return a read-only observation.",
-            "acceptance": {"required_terms": ["read-only"]},
+            "acceptance": {
+                "required_terms": ["read-only"],
+                "task_evaluator": {
+                    "kind": "python_function",
+                    "function_name": "halve_all",
+                    "tests": [{"args": [[2, 4]], "expected": [1, 2]}],
+                },
+            },
         },
     ]
+    if duplicates:
+        # Same task, different prompt: a naive split puts these two in
+        # different splits and hands the model the held-out task in training.
+        cases.append(
+            {
+                "case_id": "case-a2",
+                "task_family": "coding",
+                "prompt": "Return a safe implementation, phrased differently.",
+                "acceptance": dict(cases[0]["acceptance"]),
+            }
+        )
     cases_path = tmp_path / "cases.jsonl"
     _write_jsonl(cases_path, cases)
 
@@ -198,6 +225,15 @@ def _fixture(tmp_path: Path):
             "r9-df-128k": 130.0,
         },
     }
+    if duplicates:
+        walls["case-a2"] = {
+            "x1-none-32k": 110.0,
+            "r9-none-32k": 108.0,
+            "r9-df-32k": 66.0,
+            "x1-none-128k": 214.0,
+            "r9-none-128k": 166.0,
+            "r9-df-128k": 126.0,
+        }
     for case_id, per_policy in walls.items():
         for policy_id, wall_ms in per_policy.items():
             policy = by_id[policy_id]
@@ -305,6 +341,76 @@ def test_same_request_group_never_leaks_across_context_splits(tmp_path):
         by_case.setdefault(row["metadata"]["case_id"], set()).add(row["split"])
 
     assert all(len(splits) == 1 for splits in by_case.values())
+
+
+def test_duplicate_task_specs_never_straddle_splits(tmp_path):
+    paths = _fixture(tmp_path, duplicates=True)
+    bundle = _build(paths)
+
+    splits_by_case = {}
+    for row in bundle["records"]:
+        splits_by_case.setdefault(row["metadata"]["case_id"], set()).add(row["split"])
+
+    by_spec = {}
+    for line in paths["cases"].read_text().splitlines():
+        case = json.loads(line)
+        spec = json.dumps(case["acceptance"]["task_evaluator"], sort_keys=True)
+        by_spec.setdefault(spec, set()).update(splits_by_case[case["case_id"]])
+
+    assert len(by_spec) == 2, "case-a and case-a2 share one spec, case-b another"
+    for spec, splits in by_spec.items():
+        assert len(splits) == 1, f"task spec leaked across splits: {sorted(splits)}"
+
+
+def test_duplicate_specs_anchor_on_the_first_case_id():
+    spec = {"kind": "python_function", "function_name": "f", "tests": []}
+    cases = [
+        {"case_id": "case-b", "acceptance": {"task_evaluator": spec}},
+        {"case_id": "case-a", "acceptance": {"task_evaluator": spec}},
+    ]
+    anchors = task_spec_anchors(cases)
+
+    assert len(anchors) == 1, "only duplicated specs need an anchor"
+    assert task_spec_group_id(cases[1], anchors=anchors) == "case-a"
+    assert task_spec_group_id(cases[0], anchors=anchors) == "case-a"
+
+
+def test_distinct_specs_keep_their_own_group():
+    cases = [
+        {
+            "case_id": case_id,
+            "acceptance": {
+                "task_evaluator": {"function_name": case_id, "tests": []},
+            },
+        }
+        for case_id in ("case-a", "case-b")
+    ]
+
+    assert task_spec_anchors(cases) == {}
+    for case in cases:
+        assert task_spec_group_id(case, anchors={}) == case["case_id"]
+
+
+def test_declared_group_beats_spec_anchoring():
+    spec = {"kind": "python_function", "function_name": "f", "tests": []}
+    cases = [
+        {"case_id": "case-a", "acceptance": {"task_evaluator": spec}},
+        {
+            "case_id": "case-b",
+            "dataset_group": "hand-written",
+            "acceptance": {"task_evaluator": spec},
+        },
+    ]
+
+    assert task_spec_group_id(cases[1], anchors=task_spec_anchors(cases)) == (
+        "hand-written"
+    )
+
+
+def test_case_without_a_task_evaluator_is_its_own_group():
+    case = {"case_id": "case-a", "acceptance": {"required_terms": ["safe"]}}
+
+    assert task_spec_group_id(case) == "case-a"
 
 
 def test_target_campaign_must_bind_exact_source_evidence(tmp_path):
