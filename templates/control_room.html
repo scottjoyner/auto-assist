@@ -1,17 +1,8 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AssistX // Fleet Control Room</title>
-  <link rel="stylesheet" href="/static/css/base.css">
-  <link rel="stylesheet" href="/static/css/components.css">
-  <link rel="stylesheet" href="/static/css/control_room.css">
-</head>
-<body>
-  {% extends "base.html" %}
-  {% block content %}
-  <main>
+{% extends "base.html" %}
+{% block title %}AssistX // Fleet Control Room{% endblock %}
+{% block nav_active %}control_room{% endblock %}
+{% block heading %}Fleet Control Room{% endblock %}
+{% block content %}
     <section id="summary-strip" class="summary-strip" aria-label="Fleet summary">
       <div class="summary-cell"><span>FLEET</span><strong id="summary-fleet">--</strong><small id="summary-fleet-note">runtimes</small></div>
       <div class="summary-cell"><span>INFERENCE</span><strong id="summary-inference">LOCAL</strong><small>strict offline</small></div>
@@ -140,8 +131,4 @@
       </div>
       <div id="power-grid" class="dependency-grid"><div class="empty">PROBING PLUG GATES</div></div>
     </section>
-  </main>
-  {% endblock %}
-  <script src="/static/js/control_room.js"></script>
-</body>
-</html>
+{% endblock %}
