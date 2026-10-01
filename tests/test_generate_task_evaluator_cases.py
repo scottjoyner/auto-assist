@@ -19,7 +19,7 @@ SUITE = (
 )
 
 
-def _run(tmp_path: Path, seed: int, count: int) -> dict:
+def _run(tmp_path: Path, seed: int, count: int, **extra) -> dict:
     cases = tmp_path / "cases.jsonl"
     suite = tmp_path / "suite.json"
     report = tmp_path / "report.json"
@@ -41,6 +41,9 @@ def _run(tmp_path: Path, seed: int, count: int) -> dict:
             str(count),
             "--seed",
             str(seed),
+            *(
+                [arg for key, value in extra.items() for arg in (f"--{key.replace('_', '-')}", str(value))]
+            ),
         ],
         capture_output=True,
         text=True,
@@ -59,10 +62,32 @@ def test_generator_is_deterministic(tmp_path):
     first = _run(tmp_path / "a", seed=20260929, count=2)
     second = _run(tmp_path / "b", seed=20260929, count=2)
     assert first["cases"] == second["cases"]
-    assert first["suite"] == second["suite"]
+    # The suite records the absolute path of the corpus it was written beside,
+    # so two runs to different directories differ in exactly that field.
+    def _without_path(document: bytes, path: Path) -> bytes:
+        return document.replace(str(path.resolve()).encode(), b"")
+
+    assert _without_path(
+        first["suite"], tmp_path / "a" / "cases.jsonl"
+    ) == _without_path(second["suite"], tmp_path / "b" / "cases.jsonl")
     assert first["report"]["generated_case_ids"] == (
         second["report"]["generated_case_ids"]
     )
+
+
+def test_suite_binds_the_corpus_it_was_written_beside(tmp_path):
+    """A suite pointing at another corpus is a silent binding error."""
+    _run(tmp_path, seed=20260929, count=2)
+    suite = json.loads((tmp_path / "suite.json").read_text())
+    cases_path = (tmp_path / "cases.jsonl").resolve()
+
+    assert suite["cases_file"] == str(cases_path)
+    assert Path(suite["cases_file"]).exists()
+    written = {
+        json.loads(line)["case_id"]
+        for line in (tmp_path / "cases.jsonl").read_text().splitlines()
+    }
+    assert set(suite["required_case_ids"]) == written
 
 
 def test_generator_validates_ground_truths_and_suite_ids(tmp_path):
@@ -237,3 +262,57 @@ def test_every_diversity_pool_is_wide_enough():
     # A structured case varies its required key set, which multiplies the
     # tool x node combinations rather than just reusing them.
     assert len(generator.STRUCTURED_OPTIONAL_FIELDS) >= 4
+
+
+def test_gate_floors_are_recorded_with_the_corpus(tmp_path):
+    """A bar that lives only in someone's shell history is not a gate.
+
+    The eligibility floors are corpus policy: they decide which policies may
+    produce training evidence, so the generated suite has to carry them.
+    """
+    report = _run(
+        tmp_path,
+        seed=5,
+        count=2,
+        minimum_overall_pass_rate=0.95,
+        minimum_pass_rate_by_kind='{"python_function": 0.98}',
+    )
+    suite = json.loads((tmp_path / "suite.json").read_text())
+
+    assert suite["minimum_overall_pass_rate"] == 0.95
+    # Merged over the base suite, so kinds we did not name keep their floor.
+    assert suite["minimum_pass_rate_by_kind"]["python_function"] == 0.98
+    assert "constraint_retention" in suite["minimum_pass_rate_by_kind"]
+    assert report["report"]["minimum_overall_pass_rate"] == 0.95
+    assert report["report"]["minimum_pass_rate_by_kind"]["python_function"] == 0.98
+
+
+def test_gate_floors_default_to_the_base_suite(tmp_path):
+    report = _run(tmp_path, seed=5, count=2)
+    suite = json.loads((tmp_path / "suite.json").read_text())
+
+    assert suite["minimum_overall_pass_rate"] == 1
+    assert report["report"]["minimum_overall_pass_rate"] == 1
+
+
+def test_invalid_gate_floors_are_rejected(tmp_path):
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--base", str(BASE),
+            "--suite", str(SUITE),
+            "--output-cases", str(tmp_path / "cases.jsonl"),
+            "--output-suite", str(tmp_path / "suite.json"),
+            "--count-per-kind", "2",
+            "--seed", "5",
+            "--minimum-overall-pass-rate", "1.5",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "0..1" in completed.stderr
