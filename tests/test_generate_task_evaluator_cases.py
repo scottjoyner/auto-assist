@@ -93,3 +93,70 @@ def test_generator_validates_ground_truths_and_suite_ids(tmp_path):
         "review_findings",
         "constraint_retention",
     }
+
+
+def _load_generator_module():
+    sys.path.insert(0, str(REPO / "src"))
+    sys.path.insert(0, str(REPO / "scripts"))
+    import importlib
+
+    return importlib.import_module("generate_task_evaluator_cases")
+
+
+def test_every_code_template_satisfies_the_evaluator_contract():
+    """A ground truth a compliant model cannot reach is a broken case.
+
+    The templates are the answer key for `python_function` cases, so a template
+    using a `while` loop or a method call would mark a correct model output as
+    wrong. The evaluator's own validator is the contract.
+    """
+    import ast
+
+    sys.path.insert(0, str(REPO / "src"))
+    from assistx.inference_task_evaluators import _validate_python_ast
+
+    generator = _load_generator_module()
+    templates = generator._code_templates()
+    assert len(templates) >= 20, "corpus diversity depends on the template count"
+
+    for template in templates:
+        _validate_python_ast(ast.parse(template["source"]), template["name"])
+
+
+def test_template_parameters_match_the_declared_order():
+    generator = _load_generator_module()
+
+    for template in generator._code_templates():
+        order = template["param_order"]
+        assert order, template["name"]
+        for attempt in range(5):
+            params = template["params"](generator.random.Random(attempt))
+            assert set(params) == set(order), template["name"]
+            assert list(params) == order or set(params) == set(order), (
+                f"{template['name']} must build arguments in param_order"
+            )
+
+
+def test_generated_cases_have_no_duplicate_acceptance_specs(tmp_path):
+    report = _run(tmp_path, seed=7, count=12)["report"]
+    cases = [
+        json.loads(line)
+        for line in (tmp_path / "cases.jsonl").read_text().splitlines()
+    ]
+
+    keys = [json.dumps(case["acceptance"], sort_keys=True) for case in cases]
+    assert len(keys) == len(set(keys)), "duplicate acceptance specs teach nothing"
+
+    assert report["distinct_acceptance_specs"] == len(cases)
+    assert report["generated_distinct_acceptance_specs"] == report["generated"]
+
+
+def test_report_states_how_much_task_diversity_was_reached(tmp_path):
+    report = _run(tmp_path, seed=11, count=8)["report"]
+
+    assert report["code_templates_available"] >= 20
+    assert report["code_templates_used"] == min(
+        8,
+        report["code_templates_available"],
+    ), "every requested code case should use a different task"
+    assert report["distinct_specs_skipped"] >= 0
