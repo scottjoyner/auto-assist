@@ -12,6 +12,19 @@ from assistx.inference_policy_experiment import validate_cases
 from assistx.inference_task_evaluators import evaluate_task_output
 
 GENERATOR_MARKER = "assistx-task-evaluator-case-generator@v1"
+# A repeated acceptance spec is the same task in different clothes: the exporter
+# anchors duplicates into one split group so they cannot leak, which also means
+# every duplicate is a corpus slot that teaches nothing. Draw again instead.
+DISTINCT_ATTEMPTS = 24
+
+
+def _spec_key(case: dict[str, Any]) -> str:
+    return json.dumps(
+        case.get("acceptance", {}),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 EVALUATION_SUITE = "assistx_task_quality.v1"
 TAXONOMY = {
@@ -54,6 +67,7 @@ def _code_templates() -> list[dict[str, Any]]:
     return [
         {
             "name": "count_above",
+            "param_order": ["values", "threshold"],
             "rule": "It must return how many elements of values are "
                     "strictly greater than threshold.",
             "source": (
@@ -71,6 +85,7 @@ def _code_templates() -> list[dict[str, Any]]:
         },
         {
             "name": "alternating_sum",
+            "param_order": ["values"],
             "rule": "It must return values[0] - values[1] + values[2] - "
                     "... (empty input returns 0).",
             "source": (
@@ -91,6 +106,7 @@ def _code_templates() -> list[dict[str, Any]]:
         },
         {
             "name": "clamp_total",
+            "param_order": ["values", "low", "high"],
             "rule": "It must return the sum of all elements of values, "
                     "with that total clamped into the inclusive range "
                     "[low, high].",
@@ -111,6 +127,7 @@ def _code_templates() -> list[dict[str, Any]]:
         },
         {
             "name": "sorted_unique",
+            "param_order": ["values"],
             "rule": "It must return the distinct elements of values in "
                     "ascending order.",
             "source": (
@@ -123,6 +140,7 @@ def _code_templates() -> list[dict[str, Any]]:
         },
         {
             "name": "rotate_left",
+            "param_order": ["values", "k"],
             "rule": "It must return values shifted left by k positions "
                     "with wrap-around (empty input returns an empty list).",
             "source": (
@@ -140,6 +158,7 @@ def _code_templates() -> list[dict[str, Any]]:
         },
         {
             "name": "count_equal_pairs",
+            "param_order": ["values"],
             "rule": "It must return the number of index pairs (i, j) with "
                     "i < j and values[i] == values[j].",
             "source": (
@@ -157,6 +176,7 @@ def _code_templates() -> list[dict[str, Any]]:
         },
         {
             "name": "mean_or_zero",
+            "param_order": ["values"],
             "rule": "It must return the arithmetic mean of values, or 0 "
                     "when values is empty.",
             "source": (
@@ -171,6 +191,7 @@ def _code_templates() -> list[dict[str, Any]]:
         },
         {
             "name": "count_in_range",
+            "param_order": ["values", "low", "high"],
             "rule": "It must return how many elements of values lie in the "
                     "inclusive range [low, high].",
             "source": (
@@ -189,6 +210,7 @@ def _code_templates() -> list[dict[str, Any]]:
         },
         {
             "name": "max_gap",
+            "param_order": ["values"],
             "rule": "It must return the largest difference between "
                     "consecutive elements of values after sorting ascending; "
                     "return 0 when fewer than two values are given.",
@@ -210,6 +232,7 @@ def _code_templates() -> list[dict[str, Any]]:
         },
         {
             "name": "negated_total",
+            "param_order": ["values"],
             "rule": "It must return the sum of the absolute values of every "
                     "negative element in values (0 when there are none).",
             "source": (
@@ -222,6 +245,366 @@ def _code_templates() -> list[dict[str, Any]]:
             ),
             "params": lambda rng: {
                 "values": [rng.randint(-30, 30) for _ in range(rng.randint(0, 12))],
+            },
+        },
+        {
+            "name": "count_below",
+            "param_order": ["values", "threshold"],
+            "rule": "It must return how many elements of values are "
+                    "strictly less than threshold.",
+            "source": (
+                "def count_below(values, threshold):\n"
+                "    total = 0\n"
+                "    for value in values:\n"
+                "        if value < threshold:\n"
+                "            total = total + 1\n"
+                "    return total\n"
+            ),
+            "params": lambda rng: {
+                "values": [rng.randint(-20, 20) for _ in range(rng.randint(0, 12))],
+                "threshold": rng.randint(-10, 10),
+            },
+        },
+        {
+            "name": "second_largest",
+            "param_order": ["values"],
+            "rule": "It must return the second largest element of values, or 0 "
+                    "when values holds fewer than two elements. Duplicates "
+                    "count, so a repeated maximum is returned as-is.",
+            "source": (
+                "def second_largest(values):\n"
+                "    if len(values) < 2:\n"
+                "        return 0\n"
+                "    ranked = sorted(values)\n"
+                "    return ranked[len(ranked) - 2]\n"
+            ),
+            "params": lambda rng: {
+                "values": [rng.randint(-20, 20) for _ in range(rng.randint(0, 10))],
+            },
+        },
+        {
+            "name": "longest_equal_run",
+            "param_order": ["values"],
+            "rule": "It must return the length of the longest run of equal "
+                    "consecutive elements in values, or 0 when values is empty.",
+            "source": (
+                "def longest_equal_run(values):\n"
+                "    best = 0\n"
+                "    current = 0\n"
+                "    previous = 0\n"
+                "    for index in range(len(values)):\n"
+                "        value = values[index]\n"
+                "        if index > 0 and value == previous:\n"
+                "            current = current + 1\n"
+                "        else:\n"
+                "            current = 1\n"
+                "        if current > best:\n"
+                "            best = current\n"
+                "        previous = value\n"
+                "    return best\n"
+            ),
+            "params": lambda rng: {
+                "values": [rng.randint(-3, 3) for _ in range(rng.randint(0, 14))],
+            },
+        },
+        {
+            "name": "total_span",
+            "param_order": ["values"],
+            "rule": "It must return the difference between the largest and "
+                    "smallest element of values, or 0 when values is empty.",
+            "source": (
+                "def total_span(values):\n"
+                "    if len(values) == 0:\n"
+                "        return 0\n"
+                "    return max(values) - min(values)\n"
+            ),
+            "params": lambda rng: {
+                "values": [rng.randint(-30, 30) for _ in range(rng.randint(0, 12))],
+            },
+        },
+        {
+            "name": "even_index_sum",
+            "param_order": ["values"],
+            "rule": "It must return the sum of the elements of values that sit "
+                    "at an even index, where indexing starts at 0.",
+            "source": (
+                "def even_index_sum(values):\n"
+                "    total = 0\n"
+                "    for index in range(len(values)):\n"
+                "        if index % 2 == 0:\n"
+                "            total = total + values[index]\n"
+                "    return total\n"
+            ),
+            "params": lambda rng: {
+                "values": [rng.randint(-20, 20) for _ in range(rng.randint(0, 12))],
+            },
+        },
+        {
+            "name": "index_of_max",
+            "param_order": ["values"],
+            "rule": "It must return the index of the first occurrence of the "
+                    "largest element of values, or -1 when values is empty.",
+            "source": (
+                "def index_of_max(values):\n"
+                "    best = -1\n"
+                "    best_index = -1\n"
+                "    for index in range(len(values)):\n"
+                "        if best_index == -1 or values[index] > best:\n"
+                "            best = values[index]\n"
+                "            best_index = index\n"
+                "    return best_index\n"
+            ),
+            "params": lambda rng: {
+                "values": [rng.randint(-20, 20) for _ in range(rng.randint(0, 12))],
+            },
+        },
+        {
+            "name": "clamped_total",
+            "param_order": ["values", "low", "high"],
+            "rule": "It must return the sum of values after clamping each "
+                    "element into the inclusive range low to high.",
+            "source": (
+                "def clamped_total(values, low, high):\n"
+                "    total = 0\n"
+                "    for value in values:\n"
+                "        if value < low:\n"
+                "            value = low\n"
+                "        if value > high:\n"
+                "            value = high\n"
+                "        total = total + value\n"
+                "    return total\n"
+            ),
+            "params": lambda rng: {
+                "values": [rng.randint(-30, 30) for _ in range(rng.randint(0, 12))],
+                "low": rng.randint(-5, 0),
+                "high": rng.randint(0, 5),
+            },
+        },
+        {
+            "name": "distinct_count",
+            "param_order": ["values"],
+            "rule": "It must return how many distinct integers appear in "
+                    "values.",
+            "source": (
+                "def distinct_count(values):\n"
+                "    return len(set(values))\n"
+            ),
+            "params": lambda rng: {
+                "values": [rng.randint(-6, 6) for _ in range(rng.randint(0, 14))],
+            },
+        },
+        {
+            "name": "total_drift",
+            "param_order": ["values"],
+            "rule": "It must return the sum of the absolute differences "
+                    "between consecutive elements of values, or 0 when values "
+                    "holds fewer than two elements.",
+            "source": (
+                "def total_drift(values):\n"
+                "    total = 0\n"
+                "    for index in range(1, len(values)):\n"
+                "        difference = values[index] - values[index - 1]\n"
+                "        if difference < 0:\n"
+                "            difference = -difference\n"
+                "        total = total + difference\n"
+                "    return total\n"
+            ),
+            "params": lambda rng: {
+                "values": [rng.randint(-20, 20) for _ in range(rng.randint(0, 12))],
+            },
+        },
+        {
+            "name": "mean_of_evens",
+            "param_order": ["values"],
+            "rule": "It must return the arithmetic mean of the even elements "
+                    "of values, or 0 when values holds no even element.",
+            "source": (
+                "def mean_of_evens(values):\n"
+                "    total = 0\n"
+                "    count = 0\n"
+                "    for value in values:\n"
+                "        if value % 2 == 0:\n"
+                "            total = total + value\n"
+                "            count = count + 1\n"
+                "    if count == 0:\n"
+                "        return 0\n"
+                "    return total / count\n"
+            ),
+            "params": lambda rng: {
+                "values": [rng.randint(-20, 20) for _ in range(rng.randint(0, 12))],
+            },
+        },
+        {
+            "name": "first_above",
+            "param_order": ["values", "threshold"],
+            "rule": "It must return the first element of values that is "
+                    "strictly greater than threshold, or 0 when no element "
+                    "qualifies.",
+            "source": (
+                "def first_above(values, threshold):\n"
+                "    for value in values:\n"
+                "        if value > threshold:\n"
+                "            return value\n"
+                "    return 0\n"
+            ),
+            "params": lambda rng: {
+                "values": [rng.randint(-20, 20) for _ in range(rng.randint(0, 12))],
+                "threshold": rng.randint(-10, 10),
+            },
+        },
+        {
+            "name": "local_maxima_count",
+            "param_order": ["values"],
+            "rule": "It must return how many interior elements of values are "
+                    "strictly greater than both neighbours. Sequences shorter "
+                    "than three elements have no interior elements.",
+            "source": (
+                "def local_maxima_count(values):\n"
+                "    total = 0\n"
+                "    for index in range(1, len(values) - 1):\n"
+                "        if values[index] > values[index - 1] and "
+                "values[index] > values[index + 1]:\n"
+                "            total = total + 1\n"
+                "    return total\n"
+            ),
+            "params": lambda rng: {
+                "values": [rng.randint(-10, 10) for _ in range(rng.randint(0, 12))],
+            },
+        },
+        {
+            "name": "chunk_totals",
+            "param_order": ["values", "k"],
+            "rule": "It must return the list of totals of consecutive chunks of "
+                    "k elements of values, in order. A trailing chunk shorter "
+                    "than k is included as-is. It must return an empty list "
+                    "when k is not positive.",
+            "source": (
+                "def chunk_totals(values, k):\n"
+                "    if k <= 0:\n"
+                "        return []\n"
+                "    totals = []\n"
+                "    for start in range(0, len(values), k):\n"
+                "        total = 0\n"
+                "        for index in range(start, start + k):\n"
+                "            if index < len(values):\n"
+                "                total = total + values[index]\n"
+                "        totals = totals + [total]\n"
+                "    return totals\n"
+            ),
+            "params": lambda rng: {
+                "values": [rng.randint(-10, 10) for _ in range(rng.randint(0, 12))],
+                "k": rng.randint(1, 4),
+            },
+        },
+        {
+            "name": "digit_sum",
+            "param_order": ["value"],
+            "rule": "It must return the sum of the decimal digits of value, "
+                    "ignoring any sign. It must return 0 for 0.",
+            "source": (
+                "def digit_sum(value):\n"
+                "    if value < 0:\n"
+                "        value = -value\n"
+                "    total = 0\n"
+                "    for digit in str(value):\n"
+                "        total = total + int(digit)\n"
+                "    return total\n"
+            ),
+            "params": lambda rng: {"value": rng.randint(0, 100000)},
+        },
+        {
+            "name": "word_count",
+            "param_order": ["words"],
+            "rule": "It must return how many items words holds.",
+            "source": (
+                "def word_count(words):\n"
+                "    return len(words)\n"
+            ),
+            "params": lambda rng: {
+                "words": [
+                    "".join(rng.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(rng.randint(1, 8)))
+                    for _ in range(rng.randint(0, 6))
+                ],
+            },
+        },
+        {
+            "name": "longest_word_length",
+            "param_order": ["words"],
+            "rule": "It must return the length of the longest item of words, or "
+                    "0 when words is empty.",
+            "source": (
+                "def longest_word_length(words):\n"
+                "    best = 0\n"
+                "    for word in words:\n"
+                "        if len(word) > best:\n"
+                "            best = len(word)\n"
+                "    return best\n"
+            ),
+            "params": lambda rng: {
+                "words": [
+                    "".join(rng.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(rng.randint(1, 12)))
+                    for _ in range(rng.randint(0, 6))
+                ],
+            },
+        },
+        {
+            "name": "count_shorter_words",
+            "param_order": ["words", "k"],
+            "rule": "It must return how many items of words are strictly "
+                    "shorter than k characters.",
+            "source": (
+                "def count_shorter_words(words, k):\n"
+                "    total = 0\n"
+                "    for word in words:\n"
+                "        if len(word) < k:\n"
+                "            total = total + 1\n"
+                "    return total\n"
+            ),
+            "params": lambda rng: {
+                "words": [
+                    "".join(rng.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(rng.randint(1, 10)))
+                    for _ in range(rng.randint(0, 6))
+                ],
+                "k": rng.randint(1, 10),
+            },
+        },
+        {
+            "name": "is_palindrome_word",
+            "param_order": ["word"],
+            "rule": "It must return 1 when word reads exactly the same "
+                    "forwards and backwards, and 0 otherwise. An empty word is "
+                    "a palindrome.",
+            "source": (
+                "def is_palindrome_word(word):\n"
+                "    length = len(word)\n"
+                "    for index in range(length // 2):\n"
+                "        if word[index] != word[length - 1 - index]:\n"
+                "            return 0\n"
+                "    return 1\n"
+            ),
+            "params": lambda rng: {
+                "word": "".join(rng.choice("abcba") for _ in range(rng.randint(1, 6))),
+            },
+        },
+        {
+            "name": "count_above_average",
+            "param_order": ["values"],
+            "rule": "It must return how many elements of values are strictly "
+                    "greater than the arithmetic mean of values, or 0 when "
+                    "values is empty.",
+            "source": (
+                "def count_above_average(values):\n"
+                "    if len(values) == 0:\n"
+                "        return 0\n"
+                "    average = sum(values) / len(values)\n"
+                "    total = 0\n"
+                "    for value in values:\n"
+                "        if value > average:\n"
+                "            total = total + 1\n"
+                "    return total\n"
+            ),
+            "params": lambda rng: {
+                "values": [rng.randint(-20, 20) for _ in range(rng.randint(0, 12))],
             },
         },
     ]
@@ -238,34 +621,23 @@ def _generate_code_case(
     template: dict[str, Any],
     ordinal: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    order = list(template["param_order"])
     params = template["params"](rng)
-    # Build argument lists in the template's declared parameter order.
-    if set(params) == {"values"}:
-        arg_sets = [{"args": [params["values"]]}]
-    elif set(params) == {"values", "threshold"}:
-        arg_sets = [{"args": [params["values"], params["threshold"]]}]
-    elif set(params) == {"values", "low", "high"}:
-        arg_sets = [{"args": [params["values"], params["low"], params["high"]]}]
-    elif set(params) == {"values", "k"}:
-        arg_sets = [{"args": [params["values"], params["k"]]}]
-    else:
-        raise AssertionError(f"unsupported parameter set: {sorted(params)}")
+    # Arguments follow the template's declared order, so a new task shape needs
+    # no change here. The reference run below proves the shape is usable.
+    if set(params) != set(order):
+        raise AssertionError(
+            f"{template['name']} produced {sorted(params)}, "
+            f"expected {sorted(order)}"
+        )
+    arg_sets = [{"args": [params[key] for key in order]}]
     # Add a couple of extra random vectors of the same shape for coverage.
     extra = []
     for _ in range(2):
         clone = template["params"](rng)
-        if set(clone) != set(params):
+        if set(clone) != set(order):
             continue
-        if set(params) == {"values"}:
-            extra.append({"args": [clone["values"]]})
-        elif "threshold" in params:
-            extra.append({"args": [clone["values"], clone["threshold"]]})
-        elif set(params) == {"values", "k"}:
-            extra.append({"args": [clone["values"], clone["k"]]})
-        else:
-            extra.append(
-                {"args": [clone["values"], clone["low"], clone["high"]]}
-            )
+        extra.append({"args": [clone[key] for key in order]})
     tests = []
     for arg_set in arg_sets + extra:
         expected = _run_reference(
@@ -293,14 +665,17 @@ def _generate_code_case(
     return case, {"answer": template["source"]}
 
 
+def _template_index() -> dict[str, dict[str, Any]]:
+    return {t["name"]: t for t in _code_templates()}
+
+
 def _params_from_args(name: str, args: list[Any]) -> dict[str, Any]:
-    if name in {"count_above"}:
-        return {"values": args[0], "threshold": args[1]}
-    if name in {"clamp_total", "count_in_range"}:
-        return {"values": args[0], "low": args[1], "high": args[2]}
-    if name == "rotate_left":
-        return {"values": args[0], "k": args[1]}
-    return {"values": args[0]}
+    order = _template_index()[name]["param_order"]
+    if len(args) != len(order):
+        raise AssertionError(
+            f"{name} got {len(args)} arguments, expected {len(order)}"
+        )
+    return dict(zip(order, args, strict=True))
 
 
 def _generate_structured_case(
@@ -532,24 +907,33 @@ def main() -> None:
     answers: dict[str, str] = {}
     validations: list[dict[str, Any]] = []
 
+    seen_specs = {_spec_key(row) for row in base_rows}
+    duplicates_skipped = 0
+
+    def emit(build) -> None:
+        nonlocal duplicates_skipped
+        for attempt in range(DISTINCT_ATTEMPTS):
+            case, meta = build()
+            key = _spec_key(case)
+            if key in seen_specs:
+                continue
+            seen_specs.add(key)
+            case["case_id"] = f"{case['case_id']}-{attempt:02d}" if attempt else case["case_id"]
+            generated.append(case)
+            answers[case["case_id"]] = meta["answer"]
+            return
+        duplicates_skipped += 1
+
     templates = _code_templates()
     for ordinal in range(1, args.count_per_kind + 1):
         template = templates[(ordinal - 1) % len(templates)]
-        case, meta = _generate_code_case(rng, template, ordinal)
-        generated.append(case)
-        answers[case["case_id"]] = meta["answer"]
+        emit(lambda t=template, o=ordinal: _generate_code_case(rng, t, o))
     for ordinal in range(1, args.count_per_kind + 1):
-        case, meta = _generate_structured_case(rng, ordinal, used_ids)
-        generated.append(case)
-        answers[case["case_id"]] = meta["answer"]
+        emit(lambda o=ordinal: _generate_structured_case(rng, o, used_ids))
     for ordinal in range(1, args.count_per_kind + 1):
-        case, meta = _generate_review_case(rng, ordinal)
-        generated.append(case)
-        answers[case["case_id"]] = meta["answer"]
+        emit(lambda o=ordinal: _generate_review_case(rng, o))
     for ordinal in range(1, args.count_per_kind + 1):
-        case, meta = _generate_context_case(rng, ordinal)
-        generated.append(case)
-        answers[case["case_id"]] = meta["answer"]
+        emit(lambda o=ordinal: _generate_context_case(rng, o))
 
     generated_ids = [str(case["case_id"]) for case in generated]
     if len(generated_ids) != len(set(generated_ids)):
@@ -590,11 +974,36 @@ def main() -> None:
         encoding="utf-8",
     )
 
+    generated_specs = {_spec_key(case) for case in generated}
+    code_generated = [
+        case
+        for case in generated
+        if case["task_family"] == "coding"
+        and isinstance(
+            case.get("acceptance", {}).get("task_evaluator"),
+            dict,
+        )
+        and "function_name" in case["acceptance"]["task_evaluator"]
+    ]
     report = {
         "seed": args.seed,
         "count_per_kind": args.count_per_kind,
         "generated": len(generated),
         "replaced": len(replaced_rows),
+        # Diversity is the ceiling on what a larger corpus can teach, so the
+        # report states it instead of leaving it to be inferred from row count.
+        "distinct_acceptance_specs": len(
+            {_spec_key(row) for row in merged}
+        ),
+        "generated_distinct_acceptance_specs": len(generated_specs),
+        "code_templates_available": len(templates),
+        "code_templates_used": len(
+            {
+                case["acceptance"]["task_evaluator"]["function_name"]
+                for case in code_generated
+            }
+        ),
+        "distinct_specs_skipped": duplicates_skipped,
         "total_cases": len(base_rows) + len(generated),
         "validated": len(validations),
         "cases_output": str(cases_out),
