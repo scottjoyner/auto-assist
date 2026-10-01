@@ -959,6 +959,25 @@ def main() -> None:
     parser.add_argument("--output-cases")
     parser.add_argument("--output-suite")
     parser.add_argument("--report")
+    parser.add_argument(
+        "--minimum-overall-pass-rate",
+        type=float,
+        default=None,
+        help=(
+            "Overall pass rate a policy must reach to be eligible for training "
+            "evidence. Defaults to the base suite's value. Recorded in the "
+            "generated suite so the bar is versioned with the corpus."
+        ),
+    )
+    parser.add_argument(
+        "--minimum-pass-rate-by-kind",
+        default=None,
+        help=(
+            "JSON object of per-evaluator-kind pass-rate floors, e.g. "
+            '\'{"python_function": 0.98}\'. Merged over the base suite\'s '
+            "floors; unspecified kinds keep the base value."
+        ),
+    )
     args = parser.parse_args()
 
     base_path = Path(args.base)
@@ -1031,9 +1050,39 @@ def main() -> None:
     merged = validate_cases(base_rows + generated)
 
     suite = json.loads(suite_path.read_text(encoding="utf-8"))
+    if args.minimum_overall_pass_rate is not None:
+        rate = float(args.minimum_overall_pass_rate)
+        if not 0.0 <= rate <= 1.0:
+            raise SystemExit("--minimum-overall-pass-rate must be 0..1")
+        suite["minimum_overall_pass_rate"] = rate
+    if args.minimum_pass_rate_by_kind:
+        try:
+            by_kind = json.loads(args.minimum_pass_rate_by_kind)
+        except json.JSONDecodeError as error:
+            raise SystemExit(
+                f"--minimum-pass-rate-by-kind is not valid JSON: {error}"
+            ) from error
+        if not isinstance(by_kind, dict):
+            raise SystemExit(
+                "--minimum-pass-rate-by-kind must be a JSON object"
+            )
+        for kind, value in by_kind.items():
+            number = float(value)
+            if not 0.0 <= number <= 1.0:
+                raise SystemExit(
+                    f"pass rate for {kind} must be 0..1, got {value}"
+                )
+        floors = dict(suite.get("minimum_pass_rate_by_kind") or {})
+        floors.update({str(k): float(v) for k, v in by_kind.items()})
+        suite["minimum_pass_rate_by_kind"] = floors
     suite["required_case_ids"] = [
         str(row["case_id"]) for row in merged
     ]
+    # Point the suite at the file we just wrote. Leaving the base path here is a
+    # silent binding error: the suite then validates against a different corpus
+    # than the one whose case ids it lists, and the mismatch only surfaces
+    # later as "required_case_ids must exactly match the cases file".
+    suite["cases_file"] = str(cases_out.resolve())
     description = str(suite.get("description") or "")
     base_description = description.split(
         " Expanded deterministically by "
@@ -1070,6 +1119,10 @@ def main() -> None:
     report = {
         "seed": args.seed,
         "count_per_kind": args.count_per_kind,
+        "minimum_overall_pass_rate": suite["minimum_overall_pass_rate"],
+        "minimum_pass_rate_by_kind": dict(
+            sorted(suite.get("minimum_pass_rate_by_kind", {}).items())
+        ),
         "generated": len(generated),
         "replaced": len(replaced_rows),
         # Diversity is the ceiling on what a larger corpus can teach, so the
