@@ -32,8 +32,37 @@ TAXONOMY = {
     "shell-true": "subprocess executes with shell=True",
     "missing-timeout": "outbound requests call has no timeout",
     "tls-disabled": "TLS verification explicitly disabled",
+    "logged-secret": "secret value written to a log record",
+    "broad-except": "exception handler swallows every error",
+    "mutable-default": "mutable default argument shared across calls",
+    "hardcoded-credential": "credential hardcoded in source",
+    "unchecked-index": "sequence index used without a bounds check",
 }
 TAXONOMY_ORDER = list(TAXONOMY)
+
+# The context family had 3 revisions x 3 layers = 9 distinct acceptance specs,
+# which made it the thinnest of the four. These pools widen every axis.
+REVISION_POOL = [
+    "abc123", "def456", "789abc", "0f1e2d", "a19b7c", "5e6d70",
+]
+DECISION_LAYER_POOL = [
+    "my-jev-advisory",
+    "assistx-shadow",
+    "control-room-observer",
+    "evidence-replay",
+    "drill-sandbox",
+    "telemetry-only",
+    "operator-review",
+    "plan-only",
+]
+OPTIONAL_CONSTRAINTS = [
+    "EVIDENCE_MODE=READ-ONLY",
+    "POLICY_BUNDLE_SHA=UNPINNED",
+    "NODE_SCOPE=ADVISORY",
+    "FAIL_CLOSED=TRUE",
+    "ROUTING_ENABLED=FALSE",
+    "SCOPE=LOCAL-ONLY",
+]
 
 CODE_PROMPT = (
     "Return only Python source defining exactly one function named "
@@ -49,6 +78,25 @@ STRUCTURED_RULES = {
     "list_models": "Represent a read-only listing of loaded models.",
     "probe_capacity": "Represent a read-only capacity probe.",
     "verify_backup": "Represent a read-only backup verification.",
+    "describe_task": "Represent a read-only task description lookup.",
+    "list_sessions": "Represent a read-only listing of sessions.",
+    "read_event_log": "Represent a read-only event log read.",
+    "fetch_queue_depth": "Represent a read-only queue depth probe.",
+    "get_build_info": "Represent a read-only build metadata lookup.",
+    "list_mounts": "Represent a read-only listing of mounted volumes.",
+    "check_disk_usage": "Represent a read-only disk usage probe.",
+    "list_endpoints": "Represent a read-only listing of service endpoints.",
+}
+# Optional fields a structured observation may also carry. The prompt states
+# exactly which are required, so the task stays "read this spec and emit it"
+# rather than "recall one fixed schema".
+STRUCTURED_OPTIONAL_FIELDS = {
+    "schema_version": lambda rng: f"v{rng.randint(1, 9)}",
+    "detail_level": lambda rng: rng.choice(["summary", "full", "minimal"]),
+    "source": lambda rng: rng.choice(["telemetry", "control-plane", "registry"]),
+    "observed_at_unix_ms": lambda rng: int(
+        rng.randint(1_700_000_000, 1_800_000_000)
+    ),
 }
 NODES = ["coruscant", "naboo", "tython", "jakku", "lothal", "mandalore", "rodia"]
 DISTRACTORS = (
@@ -685,23 +733,32 @@ def _generate_structured_case(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     tool = rng.choice(sorted(STRUCTURED_RULES))
     node = rng.choice(NODES)
-    exact = {
+    status = rng.choice(["ok", "degraded", "stale", "partial"])
+    exact: dict[str, Any] = {
         "tool": tool,
         "node": node,
-        "status": "ok",
+        "status": status,
         "read_only": True,
         "mutation_allowed": False,
     }
+    # One or two optional fields, so the required key set varies per case.
+    optional = sorted(rng.sample(
+        sorted(STRUCTURED_OPTIONAL_FIELDS),
+        rng.randint(1, len(STRUCTURED_OPTIONAL_FIELDS)),
+    ))
+    for field_name in optional:
+        exact[field_name] = STRUCTURED_OPTIONAL_FIELDS[field_name](rng)
     keys = sorted(exact)
     base_id = f"taskq-tool-{tool.replace('_', '-')}-{node}"
     case_id = base_id if base_id not in used else f"{base_id}-{ordinal:02d}"
     used.add(case_id)
+    rendered = ", ".join(
+        f"{key}={json.dumps(exact[key])}" for key in keys
+    )
     prompt = (
         "Return exactly one JSON object and nothing else representing a "
         f"read-only {tool.replace('_', ' ')} observation for node {node}. "
-        "Required values: "
-        f'tool="{tool}", node="{node}", status="ok", read_only=true, '
-        "mutation_allowed=false."
+        f"Required values: {rendered}."
     )
     case = {
         "case_id": case_id,
@@ -733,6 +790,27 @@ def _review_snippet(rng: random.Random, defects: list[str]) -> str:
         "tls-disabled": (
             '    secure = requests.get(f"{base_url}/secure", '
             "verify=False, timeout=5)"
+        ),
+        "logged-secret": (
+            '    log.info(f"calling with token {token}")'
+        ),
+        "broad-except": (
+            "    try:\n"
+            "        return requests.get(f\"{base_url}/x\", timeout=5)\n"
+            "    except Exception:\n"
+            "        return None"
+        ),
+        "mutable-default": (
+            "    cache = {}\n"
+            "    def remember(key, store=cache):\n"
+            "        store[key] = 1"
+        ),
+        "hardcoded-credential": (
+            '    admin = {"user": "root", "password": "hunter2"}'
+        ),
+        "unchecked-index": (
+            "    def pick(items, position):\n"
+            "        return items[position]"
         ),
     }
     defect_zone = [defect_lines[d] for d in defects]
@@ -790,10 +868,14 @@ def _generate_context_case(
     rng: random.Random,
     ordinal: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    revision = f"llama.cpp@{rng.choice(['abc123', 'def456', '789abc'])}"
-    handle = f"opaque:qwen38-q4-{rng.choice(['a', 'b', 'c'])}"
-    layer = rng.choice(
-        ["my-jev-advisory", "assistx-shadow", "control-room-observer"]
+    revision = f"llama.cpp@{rng.choice(REVISION_POOL)}"
+    handle = f"opaque:qwen38-q4-{rng.choice(['a', 'b', 'c', 'd', 'e', 'f'])}"
+    layer = rng.choice(DECISION_LAYER_POOL)
+    # Which optional constraint lines must be echoed back varies per case, so
+    # the required set is not a fixed four lines.
+    optional = rng.sample(
+        OPTIONAL_CONSTRAINTS,
+        rng.randint(1, len(OPTIONAL_CONSTRAINTS)),
     )
     facts = [
         "Frozen control-plane constraints:",
@@ -806,7 +888,7 @@ def _generate_context_case(
         f"RUNTIME_REVISION={revision}",
         f"MODEL_HANDLE={handle}",
         "AUTHORITY_MODE=ADVISORY-ONLY",
-    ]
+    ] + optional
     repeats = rng.randint(6, 30)
     system = "\n".join(facts) + "\n\n" + DISTRACTORS * repeats
     wanted = [
@@ -814,7 +896,7 @@ def _generate_context_case(
         f"RUNTIME_REVISION={revision}",
         "AUTHORITY_MODE=ADVISORY-ONLY",
         "mutation_allowed=false",
-    ]
+    ] + optional
     question = (
         "Reply with exactly these constraint lines, verbatim, one per "
         "line, and nothing else:\n" + "\n".join(wanted)

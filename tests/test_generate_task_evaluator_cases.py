@@ -160,3 +160,80 @@ def test_report_states_how_much_task_diversity_was_reached(tmp_path):
         report["code_templates_available"],
     ), "every requested code case should use a different task"
     assert report["distinct_specs_skipped"] >= 0
+
+
+def test_every_family_can_reach_the_requested_count(tmp_path):
+    """No family may be the diversity ceiling.
+
+    The corpus is only useful if each family can supply the number of distinct
+    cases asked for. Structured was 4 tools x 7 nodes = 28, context was
+    3 revisions x 3 layers = 9, and review was subsets of 4 defect kinds, so a
+    run requesting 60 per family silently produced 30/11/7.
+    """
+    count = 20
+    report = _run(tmp_path, seed=20260930, count=count)["report"]
+    cases = [
+        json.loads(line)
+        for line in (tmp_path / "cases.jsonl").read_text().splitlines()
+    ]
+    generated = [case for case in cases if case.get("generator")]
+
+    assert report["distinct_specs_skipped"] == 0, (
+        "a family ran out of distinct specs before reaching the requested count"
+    )
+    assert len(generated) == 4 * count
+    # Count by case kind, not task_family: the family taxonomy deliberately
+    # folds code review into "coding", so the label cannot distinguish them.
+    kinds = {
+        "code": "taskq-code-gen-",
+        "tool": "taskq-tool-",
+        "review": "taskq-review-gen-",
+        "context": "taskq-context-gen-",
+    }
+    for kind, prefix in kinds.items():
+        assert sum(1 for c in generated if c["case_id"].startswith(prefix)) == count, (
+            f"{kind} family did not reach {count} distinct cases"
+        )
+
+
+def test_structured_cases_require_the_fields_they_state(tmp_path):
+    report = _run(tmp_path, seed=3, count=20)["report"]
+    cases = [
+        json.loads(line)
+        for line in (tmp_path / "cases.jsonl").read_text().splitlines()
+    ]
+    structured = [
+        case
+        for case in cases
+        if case["task_family"] == "tool_use" and case.get("generator")
+    ]
+    assert len(structured) >= 20
+    assert len({case["acceptance"]["task_evaluator"]["exact_values"]["tool"]
+                for case in structured}) > 4, "expected more than the original four tools"
+    key_counts = {
+        len(case["acceptance"]["task_evaluator"]["required_keys"])
+        for case in structured
+    }
+    assert len(key_counts) > 1, "the required key set must vary between cases"
+    assert report["distinct_acceptance_specs"] == len(cases)
+
+
+def test_every_diversity_pool_is_wide_enough():
+    """Pin the pools, not just the outcome.
+
+    A per-family count can stay satisfied by luck when the pools are small
+    (3 revisions x 7 layers still covers 20 cases), so the widths are asserted
+    directly: each is the ceiling on how many distinct tasks a family can ever
+    produce.
+    """
+    generator = _load_generator_module()
+
+    assert len(generator.STRUCTURED_RULES) >= 12
+    assert len(generator.TAXONOMY) >= 9
+    assert len(generator.REVISION_POOL) >= 6
+    assert len(generator.DECISION_LAYER_POOL) >= 8
+    assert len(generator.OPTIONAL_CONSTRAINTS) >= 6
+    assert len(generator._code_templates()) >= 20
+    # A structured case varies its required key set, which multiplies the
+    # tool x node combinations rather than just reusing them.
+    assert len(generator.STRUCTURED_OPTIONAL_FIELDS) >= 4
