@@ -59,7 +59,7 @@ services:
       - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS:-*}
 
       # --- Datastores (defaults assume containerized infra) ---
-      - NEO4J_URI=${NEO4J_URI:-bolt://host.docker.internal:7687}
+      - NEO4J_URI=${NEO4J_URI:-bolt://host.docker.internal:7688}
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-change-me}
       - NEO4J_DATABASE=${NEO4J_DATABASE:-assistx}
@@ -69,7 +69,7 @@ services:
       - LLM_BACKEND=${LLM_BACKEND:-openai}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://host.docker.internal:1234/v1}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-not-needed}
-      - LLM_MODEL=${LLM_MODEL:-llama3.1:8b}
+      - LLM_MODEL=${LLM_MODEL:-toolcall-v5-3b-combined-r2}
       - EMBED_MODEL=${EMBED_MODEL:-nomic-embed-text}
 
       # --- Optional advisory draft endpoint ---
@@ -128,7 +128,7 @@ services:
       # declares none (comma-separated).
       - AUTO_ROUTER_ADMIN_TOKEN=${AUTO_ROUTER_ADMIN_TOKEN:?set in .env}
       - CONTROL_ROOM_ISLAND_TOKEN=${CONTROL_ROOM_ISLAND_TOKEN:-}
-      - ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES=${ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES:-local/reasoning-large,qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled}
+      - ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES=${ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES:-ornith-1.5-35b-a3b-apex-mtp,liquid/lfm2-24b-a2b,lfm2.5-8b-a1b,google/gemma-4-12b-qat,qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled,qwen3.5-2b,liquid/lfm2.5-1.2b,google/gemma-3-1b,toolcall-v5-3b-combined-r2,mradermacher/vibethinker-3b-hermes,vibethinker-3b-i1}
       # Fleet coordination guardrail: shared lock file visible to every node
       # that mounts SSD_4TB/hermes-home (see /api/coordination).
       - FLEET_COORDINATION_FILE=/app/fleet-state/FLEET-COORDINATION.json
@@ -182,14 +182,14 @@ services:
       - REDIS_URL=${REDIS_URL:-redis://assistx-redis:6379/0}
       - RQ_QUEUE=${RQ_QUEUE:-assistx}
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-32}
-      - NEO4J_URI=${NEO4J_URI:-bolt://host.docker.internal:7687}
+      - NEO4J_URI=${NEO4J_URI:-bolt://host.docker.internal:7688}
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-change-me}
       - NEO4J_DATABASE=${NEO4J_DATABASE:-assistx}
       - LLM_BACKEND=${LLM_BACKEND:-openai}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://host.docker.internal:1234/v1}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-not-needed}
-      - LLM_MODEL=${LLM_MODEL:-llama3.1:8b}
+      - LLM_MODEL=${LLM_MODEL:-toolcall-v5-3b-combined-r2}
       - EMBED_MODEL=${EMBED_MODEL:-nomic-embed-text}
       - CACHE_PATH=/app/.assistx_cache.sqlite
       - WHISPER_DEVICE=${WHISPER_DEVICE:-auto}
@@ -272,23 +272,23 @@ services:
       - HERMES_TASK_TIMEOUT=${HERMES_TASK_TIMEOUT:-300}
       - HERMES_MAX_TASKS_PER_LOOP=${HERMES_MAX_TASKS_PER_LOOP:-3}
       - HERMES_BIN=${HERMES_BIN:-hermes}
-      - HERMES_SMOKE_MODEL=${HERMES_SMOKE_MODEL:-refinedtoolcallv5-3b}
+      - HERMES_SMOKE_MODEL=${HERMES_SMOKE_MODEL:-toolcall-v5-3b-combined-r2}
       - HERMES_LOG_LEVEL=${HERMES_LOG_LEVEL:-INFO}
       - AUTO_ASSIGN_BASE_URL=${AUTO_ASSIGN_BASE_URL:-http://host.docker.internal:8090}
       - HERMES_PROVIDER=${HERMES_PROVIDER:-assistx-router}
       - HERMES_LM_BASE_URL=${HERMES_LM_BASE_URL:-http://host.docker.internal:8088/v1}
       - OPENAI_API_KEY=${AUTO_ROUTER_INTERNAL_SERVICE_TOKEN:?set router internal service token}
       - HERMES_LM_API_KEY=${AUTO_ROUTER_INTERNAL_SERVICE_TOKEN:?set router internal service token}
-      - HERMES_MODEL=${HERMES_MODEL:-refinedtoolcallv5-3b}
+      - HERMES_MODEL=${HERMES_MODEL:-toolcall-v5-3b-combined-r2}
       - HERMES_LEASE_SECONDS=${HERMES_LEASE_SECONDS:-900}
       - HERMES_SELFTASK_ENABLED=true
-      - ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES=${ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES:-local/reasoning-large,qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled}
+      - ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES=${ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES:-ornith-1.5-35b-a3b-apex-mtp,liquid/lfm2-24b-a2b,lfm2.5-8b-a1b,google/gemma-4-12b-qat,qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled,qwen3.5-2b,liquid/lfm2.5-1.2b,google/gemma-3-1b,toolcall-v5-3b-combined-r2,mradermacher/vibethinker-3b-hermes,vibethinker-3b-i1}
       - HERMES_SELFTASK_DIR=${HERMES_SELFTASK_DIR:-/app/hermes-home/harvest}
       - HERMES_SELFTASK_KIND=${HERMES_SELFTASK_KIND:-harvest}
       - HERMES_SELFTASK_TIMEOUT=${HERMES_SELFTASK_TIMEOUT:-180}
-      - HERMES_SELFTASK_MODEL=${HERMES_SELFTASK_MODEL:-refinedtoolcallv5-3b}
-      - HERMES_SELFTASK_MODELS=${HERMES_SELFTASK_MODELS:-refinedtoolcallv5-3b}
-      - HERMES_SELFTASK_BULK_MODELS=${HERMES_SELFTASK_BULK_MODELS:-qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled,refinedtoolcallv5-3b}
+      - HERMES_SELFTASK_MODEL=${HERMES_SELFTASK_MODEL:-toolcall-v5-3b-combined-r2}
+      - HERMES_SELFTASK_MODELS=${HERMES_SELFTASK_MODELS:-toolcall-v5-3b-combined-r2}
+      - HERMES_SELFTASK_BULK_MODELS=${HERMES_SELFTASK_BULK_MODELS:-qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled,toolcall-v5-3b-combined-r2}
       - HERMES_DELEGATE_OPENCODE_TIERS=${HERMES_DELEGATE_OPENCODE_TIERS:-tool-small,reasoning-mid,reasoning-large}
       - HERMES_DELEGATE_RETURN_FORMAT=${HERMES_DELEGATE_RETURN_FORMAT:-verbatim}
       - HERMES_HOME=${HERMES_HOME:-/app/hermes-home}
@@ -296,7 +296,7 @@ services:
       - HERMES_EVAL_PATH=${HERMES_EVAL_PATH:-/app/hermes-home/model-profiles.json}
       - FLEET_EXECUTOR_LLM_CONCURRENCY=${FLEET_EXECUTOR_LLM_CONCURRENCY:-4}
       - FLEET_EXECUTOR_SCRIPT_CONCURRENCY=${FLEET_EXECUTOR_SCRIPT_CONCURRENCY:-2}
-      - NEO4J_URI=${NEO4J_URI:-bolt://host.docker.internal:7687}
+      - NEO4J_URI=${NEO4J_URI:-bolt://host.docker.internal:7688}
       - NEO4J_USER=${NEO4J_USER:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-change-me}
       - NEO4J_DATABASE=${NEO4J_DATABASE:-assistx}

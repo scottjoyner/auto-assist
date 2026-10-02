@@ -190,6 +190,42 @@ def _check_neo4j() -> Dict[str, Any]:
         }
 
 
+def _model_ids(resp: Any) -> list[str]:
+    """Model ids from an OpenAI-compatible /models response, or [] if unparseable."""
+    try:
+        payload = resp.json()
+    except Exception:
+        return []
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        return []
+    ids: list[str] = []
+    for entry in data:
+        if isinstance(entry, dict) and entry.get("id"):
+            ids.append(str(entry["id"]))
+    return ids
+
+
+def _llm_fleet_fallback(base_url: str, backend: str, reason: str) -> Dict[str, Any]:
+    """The host LM Studio cannot serve, but the operator drives the fleet: models loaded
+    on remote LM Studio nodes still count, so report degraded rather than down."""
+    try:
+        from .llm import client as _lc
+
+        inv = _lc._fleet_model_inventory()
+        if inv:
+            return {
+                "status": "degraded",
+                "backend": backend,
+                "endpoint": base_url,
+                "reason": f"{reason}; {len(inv)} model(s) resident on fleet",
+                "fleet_models": len(inv),
+            }
+    except Exception:
+        pass
+    return {"status": "degraded", "backend": backend, "endpoint": base_url, "reason": reason}
+
+
 def _check_llm() -> Dict[str, Any]:
     backend = os.getenv("LLM_BACKEND", "openai").strip().lower()
     timeout = float(os.getenv("LLM_HEALTH_TIMEOUT_S", "3"))
@@ -203,7 +239,23 @@ def _check_llm() -> Dict[str, Any]:
         base_url = os.getenv("OPENAI_BASE_URL", "http://host.docker.internal:1234/v1").rstrip("/")
         resp = requests.get(f"{base_url}/models", timeout=timeout)
         if resp.ok:
-            return {"status": "ok", "backend": backend, "endpoint": base_url}
+            # A reachable /models is not a usable LLM. An OpenAI-compatible server
+            # answers 200 with an empty data list when nothing is loaded, which is the
+            # state this host sits in whenever the soak holds the card. Reporting ok
+            # there let a genuine LLM outage read as healthy.
+            models = _model_ids(resp)
+            if models:
+                return {
+                    "status": "ok",
+                    "backend": backend,
+                    "endpoint": base_url,
+                    "models": len(models),
+                }
+            return _llm_fleet_fallback(
+                base_url,
+                backend,
+                "no models resident on local LM Studio",
+            )
         # The host/local LM Studio is the default probe target, but the
         # operator drives the fleet: models are loaded on remote LM Studio
         # nodes, not necessarily on the host.  If the local probe is down but

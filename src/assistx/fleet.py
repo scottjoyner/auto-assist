@@ -712,7 +712,12 @@ def node_health() -> Dict[str, dict]:
                 continue
             total += 1
             du = p.get("down_until", 0.0) or 0.0
-            if (du and now < du) or (p.get("fail_streak", 0) or 0) >= FAIL_DEMOTE:
+            # Judge liveness the same way routing does. Scoring a model DOWN purely on
+            # fail_streak made that verdict permanent: the streak only clears on a
+            # success, and a node routing avoids is the one least likely to serve one,
+            # so a reachable node stayed DOWN forever and the watchdog kept poking it.
+            # The down window is the whole truth here, and it expires.
+            if du and now < du:
                 down += 1
                 worst = max(worst, du)
         if total:
