@@ -52,6 +52,7 @@ SERVICE_CONTRACTS = {
         "port": "8000",
         "tailnet": "no",
         "active_required": "yes",
+        "expected_accessibility": "local-only via x1-370",
     },
     "auto-assign": {
         "url": "http://100.64.43.123:8090/health",
@@ -62,6 +63,7 @@ SERVICE_CONTRACTS = {
         "port": "8090",
         "tailnet": "no",
         "active_required": "effective-profile-dependent",
+        "expected_accessibility": "x1-370 internal only",
     },
     "auto-ingest": {
         "url": "http://100.64.43.123:8766/api/health",
@@ -72,6 +74,7 @@ SERVICE_CONTRACTS = {
         "port": "8766",
         "tailnet": "unknown",
         "active_required": "unknown",
+        "expected_accessibility": "unknown until owner/profile proven",
     },
     "auto-router": {
         "url": "http://100.64.43.123:8088/health",
@@ -82,6 +85,7 @@ SERVICE_CONTRACTS = {
         "port": "8088",
         "tailnet": "yes",
         "active_required": "yes",
+        "expected_accessibility": "tailnet HTTP",
     },
     "lmstudio-x1": {
         "url": "http://100.64.43.123:1234/v1/models",
@@ -92,6 +96,7 @@ SERVICE_CONTRACTS = {
         "port": "1234",
         "tailnet": "yes",
         "active_required": "yes",
+        "expected_accessibility": "tailnet HTTP",
     },
     "neo4j-http": {
         "url": "http://100.64.43.123:7474",
@@ -102,6 +107,7 @@ SERVICE_CONTRACTS = {
         "port": "7474",
         "tailnet": "no",
         "active_required": "no",
+        "expected_accessibility": "not in Bolt-primary profile",
     },
     "sophia-node-3100": {
         "url": "http://100.64.43.123:3100",
@@ -112,6 +118,7 @@ SERVICE_CONTRACTS = {
         "port": "3100",
         "tailnet": "unknown",
         "active_required": "unknown",
+        "expected_accessibility": "unknown until owner/profile proven",
     },
 }
 SERVICES = {name: contract["url"] for name, contract in SERVICE_CONTRACTS.items()}
@@ -261,7 +268,7 @@ def effective_assistx_profile() -> dict[str, str]:
 
 
 def classify_service(name: str, status: str, body: str, live_profile: dict[str, str]) -> tuple[str, str, str]:
-    """Separate transport, application, and profile-aware readiness."""
+    """Separate transport, application, and allowed profile-aware classification."""
     contract = SERVICE_CONTRACTS[name]
     if status in {"000", "ERR", "TIMEOUT"} or not status.isdigit():
         transport, application = "TRANSPORT_FAIL", "NOT_PROBED"
@@ -287,27 +294,27 @@ def classify_service(name: str, status: str, body: str, live_profile: dict[str, 
 
     if name == "auto-assist":
         if live_profile.get("bind") == "127.0.0.1" and transport == "TRANSPORT_OK" and application == "APPLICATION_OK":
-            readiness = "LOCAL_ONLY_OK"
+            classification = "EXPECTED_PRIVATE"
         elif live_profile.get("bind") == "UNKNOWN":
-            readiness = "UNKNOWN"
+            classification = "UNKNOWN"
         else:
-            readiness = "PROFILE_DRIFT" if live_profile.get("profile") != "production.reconciled" else "REQUIRED_SERVICE_DEGRADED"
+            classification = "REQUIRED_DEGRADED"
     elif name == "auto-assign":
         if live_profile.get("profile") in {"production.reconciled", "reconciliation", "direct"} or not live_profile.get("auto_assign_url"):
-            readiness = "NOT_IN_ACTIVE_PROFILE"
+            classification = "NOT_IN_ACTIVE_PROFILE"
         elif transport == "TRANSPORT_OK" and application == "APPLICATION_OK":
-            readiness = "REQUIRED_SERVICE_HEALTHY"
+            classification = "REQUIRED_HEALTHY"
         else:
-            readiness = "REQUIRED_SERVICE_MISSING"
+            classification = "UNEXPECTED_MISSING"
     elif name in {"auto-router", "lmstudio-x1"}:
-        readiness = "REQUIRED_SERVICE_HEALTHY" if transport == "TRANSPORT_OK" and application == "APPLICATION_OK" else "REQUIRED_SERVICE_DEGRADED"
+        classification = "REQUIRED_HEALTHY" if transport == "TRANSPORT_OK" and application == "APPLICATION_OK" else "REQUIRED_DEGRADED"
     elif name == "auto-ingest":
-        readiness = "UNKNOWN" if transport != "TRANSPORT_OK" else "UNKNOWN_PROFILE_HEALTHY"
+        classification = "UNKNOWN"
     elif contract["active_required"] == "no":
-        readiness = "EXPECTED_INACTIVE_PROFILE"
+        classification = "NOT_IN_ACTIVE_PROFILE"
     else:
-        readiness = "UNKNOWN" if transport != "TRANSPORT_OK" else "APPLICATION_HEALTHY_NOT_REQUIRED"
-    return transport, application, readiness
+        classification = "UNKNOWN"
+    return transport, application, classification
 
 
 def host_blockers(r: dict) -> list[str]:
@@ -382,23 +389,27 @@ def main() -> int:
         f"- Effective AUTO_ASSIGN_BASE_URL: `{live_profile.get('auto_assign_url', 'UNKNOWN') or '(empty)'}`",
         "- Desired reconciled production overlay is not inferred as active; live container environment is authoritative.",
         "",
-        "| Service | Canonical owner | Host | Profile | Bind | Port | Tailnet | Required | Probe URL | HTTP | Transport | Application | Readiness | Response preview |",
-        "|---|---|---|---|---|---:|---|---|---|---:|---|---|---|---|",
+        "| Service | Canonical owner | Host | Active profile | Expected bind | Expected accessibility | Required | Remediation | Probe URL | HTTP | Transport | Application | Classification | Response preview |",
+        "|---|---|---|---|---|---|---|---|---|---:|---|---|---|---|",
     ]
-    for name, url, status, transport, application, readiness, body in service_rows:
+    for name, url, status, transport, application, classification, body in service_rows:
         contract = SERVICE_CONTRACTS[name]
         safe_body = body.replace("|", "\\|")
-        lines.append(f"| {name} | `{contract['owner']}` | {contract['host']} | {contract['profile']} | {contract['bind']} | {contract['port']} | {contract['tailnet']} | {contract['active_required']} | `{url}` | {status} | {transport} | {application} | {readiness} | {safe_body} |")
+        required = "yes" if (name in {"auto-assist", "auto-router", "lmstudio-x1"} or (name == "auto-assign" and live_profile.get("profile") == "router_plus_assign" and live_profile.get("auto_assign_url"))) else "no"
+        remediation = "yes" if classification in {"REQUIRED_DEGRADED", "UNEXPECTED_MISSING"} else "no"
+        active_profile = live_profile.get("profile") if name == "auto-assist" else contract["profile"]
+        expected_bind = live_profile.get("bind") if name == "auto-assist" else contract["bind"]
+        lines.append(f"| {name} | `{contract['owner']}` | {contract['host']} | {active_profile} | {expected_bind} | {contract['expected_accessibility']} | {required} | {remediation} | `{url}` | {status} | {transport} | {application} | {classification} | {safe_body} |")
 
     control_plane = {
-        name: readiness
-        for name, _url, _status, _transport, _application, readiness, _body in service_rows
+        name: classification
+        for name, _url, _status, _transport, _application, classification, _body in service_rows
         if name in {"auto-assist", "auto-assign", "auto-ingest", "auto-router"}
     }
     required_services = ["auto-assist", "auto-router"]
     if live_profile.get("profile") == "router_plus_assign" and live_profile.get("auto_assign_url"):
         required_services.append("auto-assign")
-    required_ready = {"REQUIRED_SERVICE_HEALTHY", "LOCAL_ONLY_OK"}
+    required_ready = {"REQUIRED_HEALTHY", "EXPECTED_PRIVATE"}
     control_plane_ready = all(control_plane.get(name) in required_ready for name in required_services)
     lines += [
         "", "## Control-plane readiness", "",
