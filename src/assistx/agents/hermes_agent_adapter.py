@@ -116,7 +116,7 @@ MODEL_PROFILE_DEFAULTS = {
     "tool-small": {
         "tier": "tool-small",
         "profile": "tool-small",
-        "model": "refinedtoolcallv5-3b",
+        "model": "toolcall-v5-3b-combined-r2",
         "provider": "assistx-router",
         "context_length": 131072,
     },
