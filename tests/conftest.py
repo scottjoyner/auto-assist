@@ -3,6 +3,17 @@ import os
 os.environ["ASSISTX_RUNTIME_PROFILE"] = "test"
 os.environ["ASSISTX_DEPENDENCY_MODE"] = "compat"
 
+# assistx.api reads BASIC_AUTH_USER/PASS at import time, and with neither set every
+# auth-required route answers 401. The tests authenticate with exactly these
+# credentials as their fallback, so pin them here the way the profile and dependency
+# mode are pinned. Without this the suite only passes on a machine that happens to
+# have a .env exporting matching values, which is how 32 tests in test_migration_api
+# came to fail on a clean checkout.
+_TEST_AUTH_USER = "neo4j"
+_TEST_AUTH_PASS = "redacted-rotate-credentials"
+os.environ.setdefault("BASIC_AUTH_USER", _TEST_AUTH_USER)
+os.environ.setdefault("BASIC_AUTH_PASS", _TEST_AUTH_PASS)
+
 # Ensure the ``src`` layout is importable from subprocesses spawned by the code
 # under test (e.g. the analysis sandbox runs ``python3 -m assistx.sandbox_runner``).
 # pytest's ``pythonpath`` ini option only adjusts the in-process ``sys.path`` and is
