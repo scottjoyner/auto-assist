@@ -7,6 +7,8 @@ from typing import Any
 
 import requests
 
+from .system_one_receipt import bind_shadow_receipt
+
 DEFAULT_POLICY_URL = "http://my-jev:8088/v1/agent-policy"
 
 
@@ -229,12 +231,33 @@ def request_policy_shadow(
             "unexpected my-jev policy contract"
         )
 
+    receipt_value = body.get("decision_receipt")
+    receipt_evidence = None
+    if receipt_value is None:
+        if _env_bool(
+            "MY_JEV_POLICY_REQUIRE_DECISION_RECEIPT",
+            False,
+        ):
+            raise ValueError(
+                "my-jev response is missing required decision receipt"
+            )
+    elif not isinstance(receipt_value, dict):
+        raise ValueError(
+            "my-jev decision receipt must be a JSON object"
+        )
+    else:
+        receipt_evidence = bind_shadow_receipt(
+            request_payload=request_payload,
+            receipt_value=receipt_value,
+        )
+
     metadata = _metadata(intent)
     return {
         "shadow": True,
         "recorded_at_ts": time.time(),
         "request": request_payload,
         "response": body,
+        "receipt_evidence": receipt_evidence,
         "legacy": {
             "classification": str(
                 intent.get("classification")
