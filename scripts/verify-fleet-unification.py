@@ -77,15 +77,14 @@ SERVICE_CONTRACTS = {
         "expected_accessibility": "unknown until owner/profile proven",
     },
     "auto-router": {
-        "url": "http://100.64.43.123:8088/health",
+        "url": "http://127.0.0.1:8088/health",
         "owner": "auto-router repository",
         "host": "x1-370",
         "profile": "production",
-        "bind": "tailnet/reachable",
+        "bind": "127.0.0.1/local-only",
         "port": "8088",
-        "tailnet": "yes",
         "active_required": "yes",
-        "expected_accessibility": "tailnet HTTP",
+        "expected_accessibility": "local-only from x1-370/AssistX",
     },
     "lmstudio-x1": {
         "url": "http://100.64.43.123:1234/v1/models",
