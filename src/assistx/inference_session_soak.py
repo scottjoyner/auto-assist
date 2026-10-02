@@ -13,7 +13,6 @@ from .inference_policy_experiment import (
     DEFAULT_AUTHORITY,
     Trial,
     canonical_sha256,
-    evaluate_acceptance,
     execute_trial,
 )
 from .runtime_telemetry_observer import (
@@ -306,6 +305,26 @@ def is_canary_turn(
         or turn_index == total_turns
         or turn_index % int(profile["canary_every"]) == 0
     )
+
+
+def attach_output_text(
+    result: dict[str, Any],
+    output_text: str,
+    *,
+    include_output: bool,
+) -> dict[str, Any]:
+    """Optionally keep the model text on a turn result.
+
+    Without it a failing turn is undiagnosable: the row records
+    `output_sha256` and `output_chars`, so "the model did not echo the marker"
+    and "the model echoed TURN-60-OK instead of TURN-0060-OK" look identical.
+    That distinction decides whether a growing-prefix failure is a context limit
+    or a brittle acceptance check, and it is the difference between changing a
+    workload and changing a conclusion.
+    """
+    if include_output:
+        result["output_text"] = output_text
+    return result
 
 
 def build_turn_case(
