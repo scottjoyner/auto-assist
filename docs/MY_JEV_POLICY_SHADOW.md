@@ -60,6 +60,7 @@ Disabled by default:
 MY_JEV_POLICY_SHADOW_ENABLED=false
 MY_JEV_POLICY_URL=http://my-jev:8088/v1/agent-policy
 MY_JEV_POLICY_SHADOW_TIMEOUT_S=0.75
+MY_JEV_POLICY_REQUIRE_DECISION_RECEIPT=false
 ```
 
 The shadow resolver also receives conservative runtime authority flags. Keep
@@ -87,6 +88,18 @@ Each observed Intent stores:
 - `policy_shadow_disposition`;
 - `policy_shadow_policy_action`;
 - shadow timestamp.
+
+When a sidecar response includes `system-one-decision-receipt-v1`, AssistX
+strictly validates its provider/model identity, question distributions, response
+hash and literal-false authority fields. It then stores an observation-only
+binding between the exact AssistX request hash and the provider's model-visible
+input/question/candidate/response hashes. The two input hashes are deliberately
+kept distinct because the sidecar owns model-state normalization.
+
+Set `MY_JEV_POLICY_REQUIRE_DECISION_RECEIPT=true` only after all configured
+shadow producers emit the stable receipt contract. With the default `false`,
+older shadow producers remain compatible; any receipt that is present must still
+validate.
 
 The evidence includes the current legacy classification/policy action alongside
 the model route. The operator-run exporter now enriches each row with a
