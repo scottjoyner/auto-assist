@@ -548,3 +548,50 @@ def test_including_output_does_not_change_the_verdict():
     assert without["acceptance_passed"] == with_text["acceptance_passed"]
     assert without["output_chars"] == with_text["output_chars"]
     assert set(with_text) - set(without) == {"output_text"}
+
+
+def test_historical_turns_do_not_accumulate_the_terminal_instruction():
+    """32 accumulated terminal clauses make the runtime stop early.
+
+    The growing prefix re-emits history verbatim, so every turn's verification
+    clause stacks up in the context. At 32 copies the model obeys the terminal
+    instruction it read there and ends its answer mid-prose, reporting
+    finish_reason=stop under the token cap. Historical turns are rewritten;
+    the live turn keeps its clause or the soak stops testing marker emission.
+    """
+    history = [
+        {
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": (
+                f"Synthetic AssistX soak turn {index // 2 + 1}/40. Explain briefly."
+                f" End the response with TURN-{index // 2 + 1:04d}-OK."
+                " Do not invoke tools."
+                if index % 2 == 0
+                else f"Body text ending with TURN-{index // 2 + 1:04d}-OK"
+            ),
+        }
+        for index in range(80)
+    ]
+    state = {"mode": "growing_prefix", "history": history}
+    profile = _profile()
+
+    messages = messages_for_turn(profile, state)
+    historical = messages[1:]
+
+    assert len(historical) == 80, "the prefix must still carry every prior turn"
+    assert not any(
+        "End the response with TURN-" in message["content"] for message in historical
+    ), "the terminal instruction must not accumulate in the context"
+    assert sum(
+        1 for message in historical if message["role"] == "assistant"
+    ) == 40, "the model's own markers are left alone"
+
+    live = build_turn_case(
+        profile,
+        session_id="soak-test",
+        turn_index=41,
+        total_turns=40,
+        messages=messages,
+    )
+    assert live["messages"][:-1] == messages
+    assert "End the response with TURN-0041-OK." in live["messages"][-1]["content"]

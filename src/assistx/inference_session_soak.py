@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import statistics
 import time
 from pathlib import Path
@@ -768,6 +769,30 @@ def append_history(
     )
 
 
+_TERMINAL_INSTRUCTION = re.compile(
+    r"[ \t]*End the response with TURN-\d{4}-OK\."
+)
+
+
+def strip_terminal_instruction(content: str) -> str:
+    """Remove the per-turn verification clause from a *historical* prompt.
+
+    The clause is scaffolding for the model under test, not conversation. Kept in
+    the growing prefix it accumulates once per turn, and at 32 accumulated
+    copies the model obeys the terminal instruction it read in context and ends
+    its answer early, mid-prose, before reaching the live turn's marker - while
+    reporting finish_reason=stop under the token cap. Measured: 31 accumulated
+    copies answer correctly, 32 stop early; replacing them fixes it, and so does
+    a prefix of the same length made of repeated prose or of one exchange
+    repeated, so the trigger is the repeated imperative rather than repetition,
+    length, or message count.
+
+    Only historical turns are rewritten. The live turn keeps its clause, or the
+    soak would no longer be testing marker emission at all.
+    """
+    return _TERMINAL_INSTRUCTION.sub("", content).rstrip()
+
+
 def messages_for_turn(
     profile: dict[str, Any],
     state: dict[str, Any],
@@ -785,6 +810,8 @@ def messages_for_turn(
                 continue
             role = str(item.get("role") or "")
             content = str(item.get("content") or "")
+            if role == "user" and content:
+                content = strip_terminal_instruction(content)
             if role in {"user", "assistant"} and content:
                 messages.append(
                     {"role": role, "content": content}
