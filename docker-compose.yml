@@ -128,7 +128,7 @@ services:
       # declares none (comma-separated).
       - AUTO_ROUTER_ADMIN_TOKEN=${AUTO_ROUTER_ADMIN_TOKEN:?set in .env}
       - CONTROL_ROOM_ISLAND_TOKEN=${CONTROL_ROOM_ISLAND_TOKEN:-}
-      - ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES=${ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES:-local/reasoning-large,qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled}
+      - ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES=${ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES:-ornith-1.5-35b-a3b-apex-mtp,liquid/lfm2-24b-a2b,lfm2.5-8b-a1b,google/gemma-4-12b-qat,qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled,qwen3.5-2b,liquid/lfm2.5-1.2b,google/gemma-3-1b,toolcall-v5-3b-combined-r2,mradermacher/vibethinker-3b-hermes,vibethinker-3b-i1}
       # Fleet coordination guardrail: shared lock file visible to every node
       # that mounts SSD_4TB/hermes-home (see /api/coordination).
       - FLEET_COORDINATION_FILE=/app/fleet-state/FLEET-COORDINATION.json
@@ -282,7 +282,7 @@ services:
       - HERMES_MODEL=${HERMES_MODEL:-toolcall-v5-3b-combined-r2}
       - HERMES_LEASE_SECONDS=${HERMES_LEASE_SECONDS:-900}
       - HERMES_SELFTASK_ENABLED=true
-      - ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES=${ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES:-local/reasoning-large,qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled}
+      - ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES=${ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES:-ornith-1.5-35b-a3b-apex-mtp,liquid/lfm2-24b-a2b,lfm2.5-8b-a1b,google/gemma-4-12b-qat,qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled,qwen3.5-2b,liquid/lfm2.5-1.2b,google/gemma-3-1b,toolcall-v5-3b-combined-r2,mradermacher/vibethinker-3b-hermes,vibethinker-3b-i1}
       - HERMES_SELFTASK_DIR=${HERMES_SELFTASK_DIR:-/app/hermes-home/harvest}
       - HERMES_SELFTASK_KIND=${HERMES_SELFTASK_KIND:-harvest}
       - HERMES_SELFTASK_TIMEOUT=${HERMES_SELFTASK_TIMEOUT:-180}
