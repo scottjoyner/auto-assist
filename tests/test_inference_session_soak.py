@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from assistx.inference_session_soak import (
     append_history,
-    compare_soak_summaries,
+    attach_output_text,
     build_seed_context,
     build_turn_case,
     check_session_runtime_identity,
+    compare_soak_summaries,
     compile_soak_plan,
     finalize_pending_commit,
     initial_state,
@@ -514,3 +515,36 @@ def test_compare_soak_summaries_pairs_stable_and_growing_modes():
     assert pair["growing_vs_stable"]["ttft_p50_ratio"] == 1.25
     assert pair["growing_vs_stable"]["wall_p50_ratio"] == 1.1
     assert report["routing_authority_changed"] is False
+
+
+def test_output_text_is_dropped_unless_requested():
+    """A failing turn must be diagnosable, but evidence must not bloat by default."""
+    result = attach_output_text(
+        {"acceptance_passed": False, "output_sha256": "abc", "output_chars": 12},
+        "here is the near-miss text",
+        include_output=False,
+    )
+
+    assert "output_text" not in result
+    assert result["output_sha256"] == "abc"
+
+
+def test_output_text_is_kept_when_requested():
+    result = attach_output_text(
+        {"acceptance_passed": False, "output_chars": 22},
+        "here is the near-miss text",
+        include_output=True,
+    )
+
+    assert result["output_text"] == "here is the near-miss text"
+
+
+def test_including_output_does_not_change_the_verdict():
+    """The flag is a diagnostic, never an input to the measurement."""
+    base = {"acceptance_passed": False, "output_chars": 4}
+    without = attach_output_text(dict(base), "text", include_output=False)
+    with_text = attach_output_text(dict(base), "text", include_output=True)
+
+    assert without["acceptance_passed"] == with_text["acceptance_passed"]
+    assert without["output_chars"] == with_text["output_chars"]
+    assert set(with_text) - set(without) == {"output_text"}

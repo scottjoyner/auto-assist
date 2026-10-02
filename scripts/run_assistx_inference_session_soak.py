@@ -9,6 +9,7 @@ from typing import Any
 
 from assistx.inference_policy_experiment import load_matrix
 from assistx.inference_session_soak import (
+    attach_output_text,
     build_turn_case,
     check_session_runtime_identity,
     compile_soak_plan,
@@ -146,6 +147,15 @@ def main() -> None:
         action="store_true",
         help="Replace local soak result/checkpoint files for a fresh run.",
     )
+    parser.add_argument(
+        "--include-output",
+        action="store_true",
+        help=(
+            "Keep each turn's model text on the result row. Off by default; "
+            "without it a failing turn cannot be told apart from one where the "
+            "model answered in a near-miss format."
+        ),
+    )
     parser.add_argument("--max-tokens", type=int, default=192)
     parser.add_argument("--timeout-seconds", type=float, default=240.0)
     parser.add_argument(
@@ -280,6 +290,11 @@ def main() -> None:
                 1.0,
                 args.telemetry_timeout_seconds,
             ),
+        )
+        attach_output_text(
+            result,
+            output_text,
+            include_output=args.include_output,
         )
         result["mode"] = plan["mode"]
         result["target_context_tokens"] = plan[
