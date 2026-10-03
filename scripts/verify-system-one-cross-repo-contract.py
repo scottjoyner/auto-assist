@@ -2,14 +2,31 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import pathlib
+import sys
 
-from assistx.system_one_receipt import (
-    RECEIPT_SCHEMA as ASSISTX_RECEIPT_SCHEMA,
-    canonical_json_bytes as assistx_canonical_json_bytes,
-    sha256_json as assistx_sha256_json,
-    validate_decision_receipt,
+_ASSISTX_RECEIPT_PATH = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "src"
+    / "assistx"
+    / "system_one_receipt.py"
 )
+_ASSISTX_SPEC = importlib.util.spec_from_file_location(
+    "_assistx_system_one_receipt_contract",
+    _ASSISTX_RECEIPT_PATH,
+)
+if _ASSISTX_SPEC is None or _ASSISTX_SPEC.loader is None:
+    raise RuntimeError("could not load AssistX receipt module")
+_assistx_receipt = importlib.util.module_from_spec(_ASSISTX_SPEC)
+sys.modules[_ASSISTX_SPEC.name] = _assistx_receipt
+_ASSISTX_SPEC.loader.exec_module(_assistx_receipt)
+
+ASSISTX_RECEIPT_SCHEMA = _assistx_receipt.RECEIPT_SCHEMA
+assistx_canonical_json_bytes = _assistx_receipt.canonical_json_bytes
+assistx_sha256_json = _assistx_receipt.sha256_json
+validate_decision_receipt = _assistx_receipt.validate_decision_receipt
 from my_jev.decision_receipt import (
     RECEIPT_SCHEMA as PRODUCER_RECEIPT_SCHEMA,
     DecisionReceipt as ProducerDecisionReceipt,
