@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import importlib.util
 import json
 import pathlib
@@ -27,11 +28,10 @@ ASSISTX_RECEIPT_SCHEMA = _assistx_receipt.RECEIPT_SCHEMA
 assistx_canonical_json_bytes = _assistx_receipt.canonical_json_bytes
 assistx_sha256_json = _assistx_receipt.sha256_json
 validate_decision_receipt = _assistx_receipt.validate_decision_receipt
-from my_jev.decision_receipt import (
-    RECEIPT_SCHEMA as PRODUCER_RECEIPT_SCHEMA,
-    DecisionReceipt as ProducerDecisionReceipt,
-    deterministic_receipt_bytes as producer_receipt_bytes,
-)
+_producer_receipt = importlib.import_module("my_jev.decision_receipt")
+PRODUCER_RECEIPT_SCHEMA = _producer_receipt.RECEIPT_SCHEMA
+ProducerDecisionReceipt = _producer_receipt.DecisionReceipt
+producer_receipt_bytes = _producer_receipt.deterministic_receipt_bytes
 
 CONTRACT_SCHEMA = "assistx-my-jev-system-one-receipt-contract-v1"
 _AUTHORITY_FIELDS = (
