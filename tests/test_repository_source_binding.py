@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from enum import Enum
 from pathlib import Path
 
 import pytest
@@ -383,3 +384,55 @@ def test_any_dirty_expectation_admits_a_dirty_worktree(tmp_path):
 
     verification = verify_source_binding(binding, observe_source(worktree))
     assert verification.state is SourceBindingState.MATCH
+
+
+# --- the contract stays inside the merge-gate lint gate --------------------
+
+
+def _merge_gate_lint_step() -> str:
+    """Return the merge-gate ruff step body, parsed as plain text (no yaml dep)."""
+    repo_root = Path(__file__).resolve().parents[1]
+    workflow = (repo_root / ".github/workflows/ci.yml").read_text()
+    _, _, after = workflow.partition("Lint merge-gate control modules (ruff)")
+    assert after, "merge-gate lint step disappeared from ci.yml"
+    body, _, _ = after.partition("Formatting audit")
+    return body
+
+
+def test_source_binding_modules_are_lint_gated():
+    """The contract is merge-gate code, so it must stay in the gate's file list.
+
+    Dropping these paths from ci.yml would leave a source-integrity contract
+    that silently rots, which is how the wrong-checkout failure stayed invisible
+    in the first place.
+    """
+    step = _merge_gate_lint_step()
+
+    for gated in (
+        "src/assistx/repository_source_binding.py",
+        "src/assistx/contracts/schemas/repository_source_binding.py",
+        "tests/test_repository_source_binding.py",
+    ):
+        assert gated in step, f"{gated} is not covered by the merge-gate lint"
+
+
+def test_str_enum_modernization_rule_stays_waived():
+    """`class X(str, Enum)` must not fail the gate.
+
+    UP042 would demand StrEnum, which is Python 3.11+, while auto-ingest declares
+    requires-python >=3.10 and imports this contract. The rule is waived in the
+    same spirit as the other UP modernization rules already in the ignore list.
+    """
+    step = _merge_gate_lint_step()
+    ignore_line = next(
+        line for line in step.splitlines() if "ruff check --ignore" in line
+    )
+
+    assert "UP042" in ignore_line
+
+
+def test_contract_enums_use_the_shared_str_enum_style():
+    """Pin the `str, Enum` contract style so UP042 stays a conscious waiver."""
+    for enum_class in (DirtyStateExpectation, SourceBindingState):
+        assert issubclass(enum_class, str)
+        assert issubclass(enum_class, Enum)

@@ -32,7 +32,12 @@ jobs:
 
       - name: Lint merge-gate control modules (ruff)
         run: |
-          ruff check --ignore I001,E501,F401,B023,UP012,UP018,UP037 \
+          # UP012/UP018/UP037 are waivable modernization rules. UP042 is waived
+          # for the same reason as the others: `class X(str, Enum)` is the
+          # contract style shared with task_authority/node_registry, and
+          # StrEnum is Python 3.11+ while auto-ingest declares requires-python
+          # >=3.10. Switching would break a cross-repo contract consumer.
+          ruff check --ignore I001,E501,F401,B023,UP012,UP018,UP037,UP042 \
             src/assistx/allocation_engine.py \
             src/assistx/control_room.py \
             src/assistx/control_room_runtime.py \
