@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import copy
+import json
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -306,3 +310,102 @@ def test_non_object_receipt_fails_closed_inside_observer_job(
     )
 
     assert neo.recorded == []
+
+
+def test_offline_acceptance_harness_validates_expected_identity(
+    tmp_path,
+):
+    request = {
+        "state": {"utterance": "hello"},
+        "constraints": {"actions_allowed": False},
+    }
+    response = {
+        "contract": "assistx-agent-policy-v1",
+        "decision_receipt": receipt(),
+    }
+    request_path = tmp_path / "request.json"
+    response_path = tmp_path / "response.json"
+    request_path.write_text(
+        json.dumps(request),
+        encoding="utf-8",
+    )
+    response_path.write_text(
+        json.dumps(response),
+        encoding="utf-8",
+    )
+
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/validate-system-one-shadow-receipt.py",
+            "--request",
+            str(request_path),
+            "--response",
+            str(response_path),
+            "--expected-provider-id",
+            "my-jev",
+            "--expected-model-id",
+            "checkpoint-fixture",
+            "--expected-model-artifact-sha256",
+            "4" * 64,
+            "--require-model-artifact",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    accepted = json.loads(result.stdout)
+    assert accepted["status"] == "pass"
+    assert accepted["provider"]["provider_id"] == "my-jev"
+    assert accepted["authority"]["dispatch_allowed"] is False
+    assert accepted["authoritative_behavior_changed"] is False
+
+
+def test_offline_acceptance_harness_blocks_identity_mismatch(
+    tmp_path,
+):
+    request_path = tmp_path / "request.json"
+    response_path = tmp_path / "response.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "state": {"utterance": "hello"},
+                "constraints": {"actions_allowed": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    response_path.write_text(
+        json.dumps(
+            {
+                "contract": "assistx-agent-policy-v1",
+                "decision_receipt": receipt(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/validate-system-one-shadow-receipt.py",
+            "--request",
+            str(request_path),
+            "--response",
+            str(response_path),
+            "--expected-provider-id",
+            "not-my-jev",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "provider_id does not match expected identity" in result.stderr
