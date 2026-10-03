@@ -61,6 +61,9 @@ MY_JEV_POLICY_SHADOW_ENABLED=false
 MY_JEV_POLICY_URL=http://my-jev:8088/v1/agent-policy
 MY_JEV_POLICY_SHADOW_TIMEOUT_S=0.75
 MY_JEV_POLICY_REQUIRE_DECISION_RECEIPT=false
+MY_JEV_POLICY_EXPECTED_PROVIDER_ID=
+MY_JEV_POLICY_EXPECTED_MODEL_ID=
+MY_JEV_POLICY_EXPECTED_MODEL_ARTIFACT_SHA256=
 ```
 
 The shadow resolver also receives conservative runtime authority flags. Keep
@@ -100,6 +103,13 @@ Set `MY_JEV_POLICY_REQUIRE_DECISION_RECEIPT=true` only after all configured
 shadow producers emit the stable receipt contract. With the default `false`,
 older shadow producers remain compatible; any receipt that is present must still
 validate.
+
+For a pinned benchmark or physical acceptance, set any of the optional expected
+identity values. A configured provider ID, model ID, or model artifact SHA-256
+must match the validated receipt exactly or the observer rejects the evidence.
+Leaving all three blank preserves provider-neutral compatibility. Identity
+mismatch remains contained to the shadow observer and cannot reopen a live
+decision.
 
 The evidence includes the current legacy classification/policy action alongside
 the model route. The operator-run exporter now enriches each row with a

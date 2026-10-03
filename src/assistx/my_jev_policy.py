@@ -51,6 +51,64 @@ def shadow_enabled() -> bool:
     )
 
 
+def _validate_expected_receipt_identity(
+    receipt_evidence: dict[str, Any],
+) -> None:
+    provider = receipt_evidence.get("provider")
+    if not isinstance(provider, dict):
+        raise ValueError(
+            "my-jev decision receipt provider identity is missing"
+        )
+
+    expected_provider = os.getenv(
+        "MY_JEV_POLICY_EXPECTED_PROVIDER_ID",
+        "",
+    ).strip()
+    expected_model = os.getenv(
+        "MY_JEV_POLICY_EXPECTED_MODEL_ID",
+        "",
+    ).strip()
+    expected_artifact = os.getenv(
+        "MY_JEV_POLICY_EXPECTED_MODEL_ARTIFACT_SHA256",
+        "",
+    ).strip()
+
+    if (
+        expected_provider
+        and provider.get("provider_id") != expected_provider
+    ):
+        raise ValueError(
+            "my-jev decision receipt provider_id does not match expected identity"
+        )
+    if (
+        expected_model
+        and provider.get("model_id") != expected_model
+    ):
+        raise ValueError(
+            "my-jev decision receipt model_id does not match expected identity"
+        )
+    if expected_artifact:
+        if (
+            len(expected_artifact) != 64
+            or any(
+                char not in "0123456789abcdef"
+                for char in expected_artifact
+            )
+        ):
+            raise ValueError(
+                "MY_JEV_POLICY_EXPECTED_MODEL_ARTIFACT_SHA256 "
+                "must be 64 lowercase hex characters"
+            )
+        if (
+            provider.get("model_artifact_sha256")
+            != expected_artifact
+        ):
+            raise ValueError(
+                "my-jev decision receipt model_artifact_sha256 "
+                "does not match expected identity"
+            )
+
+
 def _metadata(intent: dict[str, Any]) -> dict[str, Any]:
     raw = intent.get("metadata_json")
     if isinstance(raw, dict):
@@ -249,6 +307,9 @@ def request_policy_shadow(
         receipt_evidence = bind_shadow_receipt(
             request_payload=request_payload,
             receipt_value=receipt_value,
+        )
+        _validate_expected_receipt_identity(
+            receipt_evidence
         )
 
     metadata = _metadata(intent)

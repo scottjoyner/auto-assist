@@ -409,3 +409,166 @@ def test_offline_acceptance_harness_blocks_identity_mismatch(
 
     assert result.returncode == 1
     assert "provider_id does not match expected identity" in result.stderr
+
+
+def test_shadow_policy_accepts_matching_configured_receipt_identity(
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "MY_JEV_POLICY_SHADOW_ENABLED",
+        "true",
+    )
+    monkeypatch.setenv(
+        "MY_JEV_POLICY_EXPECTED_PROVIDER_ID",
+        "my-jev",
+    )
+    monkeypatch.setenv(
+        "MY_JEV_POLICY_EXPECTED_MODEL_ID",
+        "checkpoint-fixture",
+    )
+    monkeypatch.setenv(
+        "MY_JEV_POLICY_EXPECTED_MODEL_ARTIFACT_SHA256",
+        "4" * 64,
+    )
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "contract": "assistx-agent-policy-v1",
+                "decision_receipt": receipt(),
+            }
+
+    monkeypatch.setattr(
+        my_jev_policy.requests,
+        "post",
+        lambda *args, **kwargs: _Response(),
+    )
+    evidence = my_jev_policy.request_policy_shadow(
+        {
+            "id": "intent-matching-identity",
+            "text": "hello",
+        }
+    )
+
+    assert evidence is not None
+    assert (
+        evidence["receipt_evidence"]["provider"]["provider_id"]
+        == "my-jev"
+    )
+
+
+@pytest.mark.parametrize(
+    ("env_name", "env_value", "message"),
+    [
+        (
+            "MY_JEV_POLICY_EXPECTED_PROVIDER_ID",
+            "other-provider",
+            "provider_id",
+        ),
+        (
+            "MY_JEV_POLICY_EXPECTED_MODEL_ID",
+            "other-model",
+            "model_id",
+        ),
+        (
+            "MY_JEV_POLICY_EXPECTED_MODEL_ARTIFACT_SHA256",
+            "5" * 64,
+            "model_artifact_sha256",
+        ),
+    ],
+)
+def test_shadow_policy_rejects_configured_receipt_identity_mismatch(
+    monkeypatch,
+    env_name,
+    env_value,
+    message,
+):
+    monkeypatch.setenv(
+        "MY_JEV_POLICY_SHADOW_ENABLED",
+        "true",
+    )
+    monkeypatch.setenv(
+        env_name,
+        env_value,
+    )
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "contract": "assistx-agent-policy-v1",
+                "decision_receipt": receipt(),
+            }
+
+    monkeypatch.setattr(
+        my_jev_policy.requests,
+        "post",
+        lambda *args, **kwargs: _Response(),
+    )
+    with pytest.raises(
+        ValueError,
+        match=message,
+    ):
+        my_jev_policy.request_policy_shadow(
+            {
+                "id": "intent-identity-mismatch",
+                "text": "hello",
+            }
+        )
+
+
+def test_receipt_identity_mismatch_is_contained_inside_observer_job(
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "MY_JEV_POLICY_SHADOW_ENABLED",
+        "true",
+    )
+    monkeypatch.setenv(
+        "MY_JEV_POLICY_EXPECTED_PROVIDER_ID",
+        "expected-provider",
+    )
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "contract": "assistx-agent-policy-v1",
+                "decision_receipt": receipt(),
+            }
+
+    class _Neo:
+        def __init__(self):
+            self.recorded = []
+
+        def record_intent_policy_shadow(
+            self,
+            intent_id,
+            evidence,
+        ):
+            self.recorded.append(
+                (intent_id, evidence)
+            )
+
+    monkeypatch.setattr(
+        my_jev_policy.requests,
+        "post",
+        lambda *args, **kwargs: _Response(),
+    )
+    neo = _Neo()
+    io._record_my_jev_policy_shadow(
+        neo,
+        {
+            "id": "intent-identity-observer",
+            "text": "hello",
+        },
+    )
+
+    assert neo.recorded == []
