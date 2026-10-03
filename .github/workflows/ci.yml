@@ -68,6 +68,8 @@ jobs:
             src/assistx/fleet_node_agent.py \
             src/assistx/tools/web_search.py \
             src/assistx/operations_readiness.py \
+            src/assistx/my_jev_policy.py \
+            src/assistx/system_one_receipt.py \
             scripts/init-canary-env.py \
             scripts/approve-runtime-projection.py \
             scripts/reconciliation-image-bundle.py \
@@ -118,7 +120,8 @@ jobs:
             tests/test_fleet_node_kv_cache.py \
             tests/test_fleet_node_recovery.py \
             tests/test_fleet_node_shell_gate.py \
-            tests/test_operations_readiness.py
+            tests/test_operations_readiness.py \
+            tests/test_system_one_receipt.py
 
       - name: Formatting audit
         continue-on-error: true
