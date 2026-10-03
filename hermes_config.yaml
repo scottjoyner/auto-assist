@@ -120,7 +120,13 @@ providers:
   assistx-router:
     type: openai
     base_url: http://host.docker.internal:8088/v1
-    # Resolve the existing AssistX-only router inference credential from the process
+    # Resolve the existing AssistX-only inference credential from the process
     # environment. The secret value is never persisted in Hermes config.
     key_env: FLEET_ROUTER_BEARER_TOKEN
+    # Belt-and-suspenders: auth.py's credential resolver (provider_env_vars) iterates
+    # api_key_env_vars, which is never populated from provider blocks by config.py.
+    # Declaring it here lets that resolver attach the Bearer header too, so STEP 5
+    # works whether hermes routes through runtime_provider._getenv() or auth.py.
+    api_key_env_vars:
+      - FLEET_ROUTER_BEARER_TOKEN
     default_model: local/reasoning-large

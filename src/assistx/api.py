@@ -58,8 +58,6 @@ from .self_healing import SelfHealingController
 CONTENT_TYPE_LATEST, generate_latest = load_prometheus_client()
 redis = load_redis_module()
 aioredis = load_aioredis_module()
-# Canonical redis endpoint (single source of truth for the answers pubsub).
-from .answers_store import REDIS_URL  # noqa: E402  (module-level import kept adjacent to redis setup)
 Queue = load_queue_class()
 from .metrics import QA_REQUESTS, JOBS_ENQUEUED, TASK_CLAIMS, TASK_COMPLETIONS, TASK_HEARTBEATS, CONTEXT_PACKETS
 from .metrics import RQ_JOBS_IN_QUEUE, RQ_JOBS_RUNNING, RQ_JOBS_FAILED
@@ -888,69 +886,13 @@ def _verify_voice_signature(body: BaseModel, signature: Optional[str]) -> None:
     if not any(hmac.compare_digest(signature, candidate) for candidate in accepted):
         raise HTTPException(status_code=401, detail="Invalid voice signature")
 
-WS_TOKEN_TTL_SECONDS = int(os.getenv("WS_TOKEN_TTL_SECONDS", "300"))
-# Domain separator: a minted token must never be accepted by anything other
-# than a WebSocket handshake, even if the same secret is reused elsewhere.
-_WS_TOKEN_PURPOSE = "assistx.ws.v1"
-
-
-def _mint_ws_token(now: Optional[float] = None) -> dict:
-    """Mint a short-lived WebSocket token for an authenticated browser.
-
-    The static ``WS_AUTH_TOKEN`` is a server-side secret and must never be
-    handed to a browser, but browsers cannot complete a WebSocket handshake
-    without *some* credential. This issues a short-lived, domain-separated
-    HMAC token instead: ``<expiry>.<hmac_sha256(expiry|WS_TOKEN_PURPOSE)>``.
-    """
-    if not WS_AUTH_TOKEN:
-        raise HTTPException(status_code=503, detail="WebSocket auth token not configured")
-    issued_at = int(_time.time() if now is None else now)
-    expires_at = issued_at + WS_TOKEN_TTL_SECONDS
-    signature = hmac.new(
-        WS_AUTH_TOKEN.encode("utf-8"),
-        f"{expires_at}|{_WS_TOKEN_PURPOSE}".encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    return {
-        "token": f"{expires_at}.{signature}",
-        "expires_at": expires_at,
-        "expires_in": WS_TOKEN_TTL_SECONDS,
-    }
-
-
-def _ws_token_is_valid(token: str, now: Optional[float] = None) -> bool:
-    if not token or "." not in token:
-        return False
-    expires_raw, _, signature = token.partition(".")
-    try:
-        expires_at = int(expires_raw)
-    except ValueError:
-        return False
-    current = int(_time.time() if now is None else now)
-    if current >= expires_at:
-        return False
-    expected = hmac.new(
-        WS_AUTH_TOKEN.encode("utf-8"),
-        f"{expires_at}|{_WS_TOKEN_PURPOSE}".encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(signature, expected)
-
-
 def _require_ws_auth(token: Optional[str]) -> None:
     if not WS_AUTH_REQUIRED:
         return
     if not WS_AUTH_TOKEN:
         raise HTTPException(status_code=503, detail="WebSocket auth token not configured")
-    if not token:
+    if not token or not hmac.compare_digest(token, WS_AUTH_TOKEN):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    # Server-side clients may present the static token; browsers use a minted,
-    # short-lived one. Both are constant-time compared.
-    if hmac.compare_digest(token, WS_AUTH_TOKEN):
-        return
-    if _ws_token_is_valid(token):
-        return
-    raise HTTPException(status_code=401, detail="Unauthorized")
 
 def _cancel_tasks_for_intent(neo: Neo4jClient, intent_id: str, reason: str) -> int:
     with neo._session() as s:
@@ -3517,10 +3459,7 @@ def api_live_strategy(user: str = Depends(auth)):
                 ORDER BY priority, status
             """)
             for row in res:
-                # Task.priority is not schema-constrained: the graph currently
-                # holds at least one Task with an integer priority, which used
-                # to reach the sort key and 500 the whole strategy page.
-                p = _normalize_priority(row["priority"])
+                p = row["priority"]
                 st = row["status"]
                 cnt = row["cnt"]
                 if p not in work_by_priority:
@@ -3603,7 +3542,7 @@ def api_live_strategy(user: str = Depends(auth)):
                     "type": row.get("type"),
                     "target": row.get("target"),
                     "message": row.get("message"),
-                    "priority": _normalize_priority(row.get("priority")),
+                    "priority": row.get("priority"),
                     "created_at_ts": row.get("created_at_ts"),
                     "created_by": row.get("created_by"),
                 })
@@ -3687,22 +3626,9 @@ def api_live_strategy(user: str = Depends(auth)):
     }
 
 
-def _normalize_priority(value: object) -> str:
-    """Coerce a stored priority into a canonical label.
-
-    Task.priority is not schema-constrained, and the graph holds at least one
-    Task with an integer priority. A non-string is malformed, not a new bucket:
-    it lands in UNSET (the task is still counted) rather than rendering a
-    "100" priority in the UI.
-    """
-    if not isinstance(value, str):
-        return "UNSET"
-    return value.strip().upper() or "UNSET"
-
-
 def _priority_sort_key(item):
     order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "BACKGROUND": 4, "BATCH": 5, "UNSET": 9}
-    return order.get(_normalize_priority(item.get("priority")), 9)
+    return order.get(item["priority"].upper(), 9)
 
 
 # ---------------------------------------------------------------------------
@@ -5628,80 +5554,12 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
     return JSONResponse(status_code=202, content={"answer_id": answer_id, "job_id": job.get_id(), "status": "PENDING", "status_url": f"/api/answers/{answer_id}", **deliverable})
 
 
-# NOTE: this literal route must stay registered above /api/answers/{answer_id}.
-# Starlette matches in registration order, so a parameterized route declared
-# first would swallow /api/answers/events and answer "Answer not found".
-@app.get("/api/answers/events")
-async def api_answers_events(
-    request: Request,
-    status: str | None = Query(None, description="Optional filter hint; client can also filter"),
-    user: str = Depends(auth),
-):
-    r = aioredis.from_url(REDIS_URL, decode_responses=True)
-    pubsub = r.pubsub()
-    chan = answers_store._global_chan()
-    await pubsub.subscribe(chan)
-
-    async def event_stream():
-        # initial hello
-        yield _sse("welcome", {"channel": chan})
-        last_ping = asyncio.get_event_loop().time()
-        try:
-            while True:
-                if await request.is_disconnected():
-                    break
-                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                now = asyncio.get_event_loop().time()
-
-                if msg and msg.get("type") == "message":
-                    try:
-                        data = json.loads(msg["data"])  # {"type":"new|update","data":{...}}
-                    except Exception:
-                        data = {"type": "update", "data": msg["data"]}
-                    if status and data.get("data", {}).get("status") != status:
-                        pass
-                    else:
-                        yield _sse(data.get("type", "update"), data.get("data", {}))
-
-                # keepalive (outside if msg so it fires even when idle)
-                if now - last_ping > 15:
-                    yield _sse("ping", {"ts": int(now)})
-                    last_ping = now
-
-                await asyncio.sleep(0.2)
-        finally:
-            try:
-                await pubsub.unsubscribe(chan)
-            except Exception:
-                pass
-            await pubsub.close()
-            await r.aclose()
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-
 @app.get("/api/answers/{answer_id}")
 def api_get_answer(answer_id: str, user: str = Depends(auth)):
     obj = answers_store.get_answer(answer_id)
     if not obj:
         raise HTTPException(status_code=404, detail="Answer not found")
     return obj
-
-@app.get("/api/ws-token")
-def api_ws_token(user: str = Depends(auth)):
-    """Mint a short-lived WebSocket token for this authenticated session.
-
-    Browser WebSocket handshakes cannot send custom headers, and the static
-    WS_AUTH_TOKEN is a server-side secret. The minted token is scoped to
-    WebSocket handshakes and expires in WS_TOKEN_TTL_SECONDS.
-    """
-    minted = _mint_ws_token()
-    return {
-        **minted,
-        "query_parameter": "token",
-        "note": "WebSocket handshake only; not accepted by HTTP API auth.",
-    }
-
 
 @app.get("/api/answers")
 def api_list_answers(
@@ -5800,6 +5658,55 @@ async def ws_answers(websocket: WebSocket, token: Optional[str] = Query(None)):
         await r.aclose()
         try: await websocket.close()
         except Exception: pass
+
+@app.get("/api/answers/events")
+async def api_answers_events(
+    request: Request,
+    status: str | None = Query(None, description="Optional filter hint; client can also filter"),
+    user: str = Depends(auth),
+):
+    r = aioredis.from_url(REDIS_URL, decode_responses=True)
+    pubsub = r.pubsub()
+    chan = answers_store._global_chan()
+    await pubsub.subscribe(chan)
+
+    async def event_stream():
+        # initial hello
+        yield _sse("welcome", {"channel": chan})
+        last_ping = asyncio.get_event_loop().time()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                now = asyncio.get_event_loop().time()
+
+                if msg and msg.get("type") == "message":
+                    try:
+                        data = json.loads(msg["data"])  # {"type":"new|update","data":{...}}
+                    except Exception:
+                        data = {"type": "update", "data": msg["data"]}
+                    if status and data.get("data", {}).get("status") != status:
+                        pass
+                    else:
+                        yield _sse(data.get("type", "update"), data.get("data", {}))
+
+                # keepalive (outside if msg so it fires even when idle)
+                if now - last_ping > 15:
+                    yield _sse("ping", {"ts": int(now)})
+                    last_ping = now
+
+                await asyncio.sleep(0.2)
+        finally:
+            try:
+                await pubsub.unsubscribe(chan)
+            except Exception:
+                pass
+            await pubsub.close()
+            await r.aclose()
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
 
 @app.get("/api/answers/{answer_id}/events")
 async def api_answer_events(answer_id: str, request: Request, user: str = Depends(auth)):

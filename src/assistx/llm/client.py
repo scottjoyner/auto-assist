@@ -306,9 +306,7 @@ _loader_node_configs: Dict[tuple, dict] = {}
 _loader_user_configs: Dict[tuple, dict] = {}
 _loader_demand: set = set()
 _loader_state: Dict[str, Any] = {
-    "running": False, "last_run_ts": 0.0, "last_action": "",
-    "cycle": 0, "discovered_models": [], "owners": {}, "per_node": {},
-    "pinned": [],
+    "running": False, "last_run_ts": 0.0, "last_action": "", "cycle": 0,
 }
 
 # --- Inference session tracking -----------------------------------------
