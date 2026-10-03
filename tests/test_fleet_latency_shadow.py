@@ -276,3 +276,58 @@ def test_agent_runtime_requirement_is_a_hard_gate() -> None:
     assert ("xwing/k2", "agent_runtime_not_allowed") in {
         (row["candidate"], row["reason"]) for row in plan["rejected"]
     }
+
+
+def test_end_to_end_endpoint_timing_does_not_double_count_network() -> None:
+    value = _map()
+    endpoint = value["endpoints"][1]
+    endpoint["measurement_scope"] = "end_to_end"
+    endpoint["measurement_origin_node_id"] = "x1-370"
+
+    plan = build_shadow_latency_plan(
+        latency_map=value,
+        candidates=[_candidates()[1]],
+        task_family="decision_judge",
+        expected_prompt_tokens=128,
+        expected_output_tokens=16,
+        now=NOW,
+    )
+
+    assert plan["recommended"]["measurement_scope"] == "end_to_end"
+    assert plan["recommended"]["network_ms"] == 0.0
+
+
+def test_end_to_end_endpoint_from_wrong_origin_is_not_reused() -> None:
+    value = _map()
+    endpoint = value["endpoints"][1]
+    endpoint["measurement_scope"] = "end_to_end"
+    endpoint["measurement_origin_node_id"] = "deathstar"
+
+    plan = build_shadow_latency_plan(
+        latency_map=value,
+        candidates=[_candidates()[1]],
+        task_family="decision_judge",
+        now=NOW,
+    )
+
+    assert plan["recommended"] is None
+    assert plan["rejected"] == [
+        {"candidate": "xwing/k2", "reason": "missing_fresh_latency_evidence"}
+    ]
+
+
+def test_candidate_runtime_identity_filters_same_model_observations() -> None:
+    candidates = [_candidates()[1]]
+    candidates[0]["runtime_id"] = "llama.cpp@different"
+
+    plan = build_shadow_latency_plan(
+        latency_map=_map(),
+        candidates=candidates,
+        task_family="decision_judge",
+        now=NOW,
+    )
+
+    assert plan["recommended"] is None
+    assert plan["rejected"] == [
+        {"candidate": "xwing/k2", "reason": "missing_fresh_latency_evidence"}
+    ]
