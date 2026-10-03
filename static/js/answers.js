@@ -123,31 +123,9 @@
       }
     }
   
-    // A WebSocket handshake cannot send an Authorization header, and the
-    // server's static WS token is a server-side secret. Fetch a short-lived,
-    // WebSocket-scoped token instead; on any failure we fall back to SSE.
-    async function fetchWSToken() {
-      try {
-        const response = await fetch("/api/ws-token", {
-          headers: { Accept: "application/json" },
-          credentials: "same-origin",
-        });
-        if (!response.ok) return null;
-        const payload = await response.json();
-        return payload && payload.token ? payload.token : null;
-      } catch {
-        return null;
-      }
-    }
-
-    async function connectWS() {
+    function connectWS() {
       const proto = location.protocol === "https:" ? "wss" : "ws";
-      const token = await fetchWSToken();
-      if (!token) {
-        connectSSE();
-        return false;
-      }
-      const url = `${proto}://${location.host}/ws/answers?token=${encodeURIComponent(token)}`;
+      const url = `${proto}://${location.host}/ws/answers`;
       try {
         ws = new WebSocket(url);
       } catch (e) {
@@ -174,7 +152,7 @@
           setLiveBadge("reconnect");
           ws = null;
           setTimeout(() => {
-            connectWS();
+            if (!connectWS()) connectSSE();
           }, reconnectDelay);
           reconnectDelay = Math.min(reconnectDelay * 2, 8000);
         }
@@ -213,7 +191,7 @@
         setLiveBadge("reconnect");
         setTimeout(() => {
           // try WS again first (maybe network changed)
-          connectWS();
+          if (!connectWS()) connectSSE();
         }, reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 2, 8000);
       };
@@ -221,8 +199,7 @@
       return true;
     }
   
-    // Start: try the WebSocket (it falls back to SSE by itself when no token
-    // can be minted, so this never needs a return-value check).
-    connectWS();
+    // Start: try WS, fallback to SSE
+    if (!connectWS()) connectSSE();
   })();
   
