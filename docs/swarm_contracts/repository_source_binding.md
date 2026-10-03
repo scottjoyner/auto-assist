@@ -144,6 +144,23 @@ distinguishes a non-zero return from empty output and returns
 
 ---
 
+### Two comparison modes
+
+| function | use | path compared? |
+|---|---|---|
+| `verify_workspace(binding, path)` | a worker claiming to have read the bound tree | **yes** - a different worktree is a mismatch |
+| `verify_derived_source(binding, observed)` | an isolated workspace *derived* from the bound tree | **no** - a fresh path is the point |
+
+`prepare_repository` creates its workspace with `git worktree add --detach`, so
+every legitimate derived workspace is at a new path **and** `DETACHED`.
+Comparing paths there would reject every correct execution, and comparing
+branches would too. The derived check therefore compares repository, HEAD SHA,
+and cleanliness, and reports the path without treating it as a criterion.
+
+An earlier draft of `verify_derived_source` *did* compare branches. Three tests
+failed at once, which is what exposed the flaw: a branch check that rejects
+every real derived workspace is a check that gets disabled.
+
 ## Provenance
 
 Repository-bound task payloads now carry `source_binding`, so a reviewer result

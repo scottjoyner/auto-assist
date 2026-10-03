@@ -337,6 +337,69 @@ def verify_source_binding(
     return _verdict(binding, observed, SourceBindingState.MATCH, [])
 
 
+def verify_derived_source(
+    binding: RepositorySourceBinding,
+    observed: ObservedSourceState,
+) -> SourceBindingVerdict:
+    """Verify a workspace *derived* from the bound one, such as an isolated
+    execution worktree.
+
+    This is deliberately not :func:`verify_workspace`. ``prepare_repository``
+    creates a throwaway worktree at a fresh path, so comparing paths would fail
+    every legitimate execution and train the check to be ignored. What must still
+    match is identity: the same repository, the same revision, the same branch,
+    and a clean tree.
+
+    The worktree path is still reported in the verdict so an operator can see
+    *where* the work happened; it is just not an acceptance criterion here.
+    """
+
+    if not observed.available:
+        return _verdict(
+            binding,
+            observed,
+            SourceBindingState.SOURCE_UNAVAILABLE,
+            [str(observed.unavailable_reason or "source_unavailable")],
+        )
+
+    if observed.repo_realpath != binding.repo_realpath:
+        return _verdict(
+            binding,
+            observed,
+            SourceBindingState.REPOSITORY_MISMATCH,
+            [
+                "derived workspace belongs to a different repository "
+                f"({observed.repo_realpath} != {binding.repo_realpath})"
+            ],
+        )
+
+    # Branch is deliberately NOT compared here. prepare_repository creates the
+    # workspace with `git worktree add --detach`, so every legitimate derived
+    # workspace is DETACHED and would fail a branch comparison. The HEAD SHA is
+    # the identity that matters, and it is checked immediately below.
+
+    if observed.head_sha != binding.head_sha:
+        return _verdict(
+            binding,
+            observed,
+            SourceBindingState.HEAD_MISMATCH,
+            [
+                f"derived workspace HEAD {observed.head_sha} does not match bound "
+                f"HEAD {binding.head_sha}"
+            ],
+        )
+
+    if observed.dirty:
+        return _verdict(
+            binding,
+            observed,
+            SourceBindingState.DIRTY_STATE_MISMATCH,
+            ["derived workspace was not clean before work began"],
+        )
+
+    return _verdict(binding, observed, SourceBindingState.MATCH, [])
+
+
 def verify_workspace(
     binding: RepositorySourceBinding,
     workspace_path: str | Path | None,
@@ -370,6 +433,7 @@ def binding_from_payload(payload: Mapping[str, Any] | None) -> RepositorySourceB
 
 
 __all__ = [
+    "verify_derived_source",
     "FORBIDDEN_MIRROR",
     "REPOSITORY_ROOTS_ENV",
     "binding_from_payload",

@@ -28,6 +28,7 @@ from assistx.repository_source_verifier import (
     build_binding,
     configured_repository_roots,
     observe_source,
+    verify_derived_source,
     verify_source_binding,
     verify_workspace,
 )
@@ -751,3 +752,165 @@ def test_package_import_is_documented_as_unsafe_for_isolation():
     import sys
 
     assert "assistx.strict_claims" in sys.modules
+
+
+# --- derived (isolated) workspaces ---------------------------------------
+#
+# prepare_repository creates a throwaway worktree at a fresh path, so comparing
+# paths would fail every legitimate execution. These pin that the derived check
+# compares identity instead, and that it still fails closed on a real mismatch.
+
+
+def test_derived_worktree_at_a_new_path_is_accepted(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    head = git("rev-parse", "HEAD", cwd=repo)
+    derived = tmp_path / "isolated-exec-worktree"
+    git("worktree", "add", "--detach", str(derived), head, cwd=repo)
+    binding = binding_for(repo)
+
+    verdict = verify_derived_source(binding, observe_source(derived))
+
+    assert verdict.state is SourceBindingState.MATCH
+    # The path is still reported, it just is not an acceptance criterion.
+    assert verdict.observed_worktree_realpath == str(derived.resolve())
+
+
+def test_derived_source_from_a_different_repository_is_rejected(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    other = make_repo(tmp_path / "embed_x1")
+    binding = binding_for(repo)
+
+    verdict = verify_derived_source(binding, observe_source(other))
+
+    assert verdict.state is SourceBindingState.REPOSITORY_MISMATCH
+
+
+def test_derived_source_at_a_different_revision_is_rejected(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    bound_head = git("rev-parse", "HEAD", cwd=repo)
+    binding = binding_for(repo)
+
+    # Move the repository on, then derive a workspace from the *new* revision.
+    # The binding is still on the old one, so this is a real mismatch rather
+    # than a stale checkout of the revision that was actually bound.
+    (repo / "service.py").write_text("moved on\n", encoding="utf-8")
+    git("add", ".", cwd=repo)
+    git("commit", "-m", "second", cwd=repo)
+    derived = tmp_path / "isolated-exec-worktree"
+    git("worktree", "add", "--detach", str(derived), "HEAD", cwd=repo)
+
+    verdict = verify_derived_source(binding, observe_source(derived))
+
+    assert verdict.state is SourceBindingState.HEAD_MISMATCH
+    assert bound_head in verdict.reasons[0]
+
+
+def test_derived_source_that_is_dirty_is_rejected(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    head = git("rev-parse", "HEAD", cwd=repo)
+    derived = tmp_path / "isolated-exec-worktree"
+    git("worktree", "add", "--detach", str(derived), head, cwd=repo)
+    binding = binding_for(repo)
+    (derived / "service.py").write_text("edited\n", encoding="utf-8")
+
+    assert verify_derived_source(binding, observe_source(derived)).state is (
+        SourceBindingState.DIRTY_STATE_MISMATCH
+    )
+
+
+def test_derived_check_reports_unavailable_rather_than_guessing(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    binding = binding_for(repo)
+
+    verdict = verify_derived_source(binding, ObservedSourceState.unavailable("gone"))
+
+    assert verdict.state is SourceBindingState.SOURCE_UNAVAILABLE
+
+
+# --- the wiring into executor evidence -----------------------------------
+
+
+def test_executor_evidence_records_source_verification(tmp_path, monkeypatch):
+    import assistx.improvement_runtime as runtime
+
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    binding = binding_for(repo)
+    head = git("rev-parse", "HEAD", cwd=repo)
+    derived = tmp_path / "isolated-exec-worktree"
+    git("worktree", "add", "--detach", str(derived), head, cwd=repo)
+
+    evidence = runtime.collect_executor_evidence(
+        {"allowed_paths": ["service.py"], "source_binding": binding.provenance()},
+        {"ok": True, "root": str(derived), "base_root": str(repo), "head": head,
+         "clean_before": True, "isolated": True, "workspace_id": "w1"},
+        None,
+        executor_id="executor-1",
+    )
+
+    verification = evidence["source_binding_verification"]
+    assert verification is not None
+    assert verification["state"] == "MATCH"
+    # The orphan SHA now carries provenance beside it.
+    assert evidence["head_before"] == head
+    assert verification["expected_head_sha"] == head
+
+
+def test_executor_evidence_records_a_mismatch_without_raising(tmp_path):
+    import assistx.improvement_runtime as runtime
+
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    other = make_repo(tmp_path / "embed_x1")
+    binding = binding_for(repo)
+
+    evidence = runtime.collect_executor_evidence(
+        {"allowed_paths": ["service.py"], "source_binding": binding.provenance()},
+        {"ok": True, "root": str(other), "base_root": str(other), "head": "deadbeef",
+         "clean_before": True, "isolated": True, "workspace_id": "w1"},
+        None,
+        executor_id="executor-1",
+    )
+
+    verification = evidence["source_binding_verification"]
+    assert verification["state"] in {
+        "REPOSITORY_MISMATCH",
+        "HEAD_MISMATCH",
+        "SOURCE_UNAVAILABLE",
+    }
+    assert verification["reasons"]
+
+
+def test_executor_evidence_without_a_binding_is_unchanged(tmp_path):
+    """A contract built before this field existed must behave exactly as before."""
+
+    import assistx.improvement_runtime as runtime
+
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    head = git("rev-parse", "HEAD", cwd=repo)
+
+    evidence = runtime.collect_executor_evidence(
+        {"allowed_paths": ["service.py"]},
+        {"ok": True, "root": str(repo), "base_root": str(repo), "head": head,
+         "clean_before": True, "isolated": True, "workspace_id": "w1"},
+        None,
+        executor_id="executor-1",
+    )
+
+    assert evidence["source_binding_verification"] is None
+    assert evidence["head_before"] == head
+
+
+def test_failed_preparation_still_records_the_verification_as_absent(tmp_path):
+    import assistx.improvement_runtime as runtime
+
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    binding = binding_for(repo)
+
+    evidence = runtime.collect_executor_evidence(
+        {"allowed_paths": ["service.py"], "source_binding": binding.provenance()},
+        {"ok": False, "reason": "git_head_failed"},
+        None,
+        executor_id="executor-1",
+    )
+
+    assert evidence["source_binding_verification"] is None
+    assert evidence["executor_error"] == "git_head_failed"
