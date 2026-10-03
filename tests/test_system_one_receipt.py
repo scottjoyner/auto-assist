@@ -5,6 +5,7 @@ import copy
 import pytest
 from pydantic import ValidationError
 
+from assistx import intent_orchestrator as io
 from assistx import my_jev_policy
 from assistx.system_one_receipt import (
     SHADOW_BINDING_SCHEMA,
@@ -222,3 +223,86 @@ def test_receipt_requirement_is_opt_in(monkeypatch):
                 "text": "hello",
             }
         )
+
+
+def test_missing_receipt_is_compatible_by_default(monkeypatch):
+    monkeypatch.setenv(
+        "MY_JEV_POLICY_SHADOW_ENABLED",
+        "true",
+    )
+    monkeypatch.delenv(
+        "MY_JEV_POLICY_REQUIRE_DECISION_RECEIPT",
+        raising=False,
+    )
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "contract": "assistx-agent-policy-v1",
+            }
+
+    monkeypatch.setattr(
+        my_jev_policy.requests,
+        "post",
+        lambda *args, **kwargs: _Response(),
+    )
+    evidence = my_jev_policy.request_policy_shadow(
+        {
+            "id": "intent-legacy-no-receipt",
+            "text": "hello",
+        }
+    )
+
+    assert evidence is not None
+    assert evidence["receipt_evidence"] is None
+
+
+def test_non_object_receipt_fails_closed_inside_observer_job(
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "MY_JEV_POLICY_SHADOW_ENABLED",
+        "true",
+    )
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "contract": "assistx-agent-policy-v1",
+                "decision_receipt": "not-an-object",
+            }
+
+    class _Neo:
+        def __init__(self):
+            self.recorded = []
+
+        def record_intent_policy_shadow(
+            self,
+            intent_id,
+            evidence,
+        ):
+            self.recorded.append(
+                (intent_id, evidence)
+            )
+
+    monkeypatch.setattr(
+        my_jev_policy.requests,
+        "post",
+        lambda *args, **kwargs: _Response(),
+    )
+    neo = _Neo()
+    io._record_my_jev_policy_shadow(
+        neo,
+        {
+            "id": "intent-malformed-receipt",
+            "text": "hello",
+        },
+    )
+
+    assert neo.recorded == []
