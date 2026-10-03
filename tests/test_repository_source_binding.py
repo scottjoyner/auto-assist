@@ -552,3 +552,84 @@ def test_source_binding_payload_returns_none_when_identity_is_unusable():
     import assistx.repo_task_generator as generator
 
     assert generator._source_binding_payload({"alias": "", "path": ""}, "task-1") is None
+
+
+# --- a failed git command must never be mistaken for a good value ---------
+#
+# ``repo_task_generator._get_repo_info`` used to collapse a non-zero git return
+# into "empty", so a broken repository looked clean. observe_source must
+# distinguish the two; these tests pin that every git failure fails closed
+# rather than degrading into a plausible-looking value.
+
+
+def _fail_only(monkeypatch, verifier, failing: list[str]):
+    real_git = verifier._git
+
+    def patched(args, cwd):
+        if args[: len(failing)] == failing:
+            return 1, ""
+        return real_git(args, cwd)
+
+    monkeypatch.setattr(verifier, "_git", patched)
+
+
+@pytest.mark.parametrize(
+    ("failing", "reason"),
+    [
+        (["status", "--porcelain"], "git_status_unreadable"),
+        (["rev-parse", "HEAD"], "git_head_unreadable"),
+        (["rev-parse", "--git-common-dir"], "repository_common_dir_unresolvable"),
+    ],
+)
+def test_failed_git_command_is_source_unavailable_not_a_default_value(
+    tmp_path, monkeypatch, failing, reason
+):
+    import assistx.repository_source_verifier as verifier
+
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    binding = binding_for(repo)
+    _fail_only(monkeypatch, verifier, failing)
+
+    verdict = verifier.verify_workspace(binding, repo)
+
+    assert verdict.state is SourceBindingState.SOURCE_UNAVAILABLE
+    assert verdict.reasons == [reason]
+    # Never a silently-passing observation.
+    assert verdict.accepted is False
+
+
+def test_failed_head_read_does_not_reuse_the_bound_sha(tmp_path, monkeypatch):
+    """Regression: an unreadable HEAD must not fall back to the expected SHA."""
+
+    import assistx.repository_source_verifier as verifier
+
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    binding = binding_for(repo)
+    _fail_only(monkeypatch, verifier, ["rev-parse", "HEAD"])
+
+    verdict = verifier.verify_workspace(binding, repo)
+
+    assert verdict.observed_head_sha is None
+    assert verdict.state is SourceBindingState.SOURCE_UNAVAILABLE
+
+
+def test_hostile_workspace_path_fails_closed_rather_than_raising(tmp_path):
+    """A NUL byte must be a SOURCE_UNAVAILABLE, not an uncaught ValueError."""
+
+    import assistx.repository_source_verifier as verifier
+
+    binding = RepositorySourceBinding(
+        repository="auto-ingest-swarm",
+        repo_realpath=str(tmp_path),
+        worktree_realpath=str(tmp_path / "wt"),
+        branch="main",
+        head_sha="a" * 40,
+        task_id="t",
+        work_id="w",
+    )
+
+    verdict = verifier.verify_workspace(binding, "\x00invalid")
+
+    assert verdict.state is SourceBindingState.SOURCE_UNAVAILABLE
+    assert verdict.reasons == ["workspace_path_contains_control_characters"]
+    assert verdict.accepted is False

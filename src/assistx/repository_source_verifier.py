@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
@@ -41,6 +42,7 @@ from .contracts.schemas.repository_source_binding import (
 )
 
 GIT_TIMEOUT_SECONDS = 30
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 REPOSITORY_ROOTS_ENV = "ASSISTX_REPOSITORY_ROOTS_JSON"
 
 #: The concrete stale mirror from the incident this contract exists to prevent.
@@ -136,9 +138,13 @@ def observe_source(path: str | Path | None) -> ObservedSourceState:
 
     if path is None or not str(path).strip():
         return ObservedSourceState.unavailable("no_workspace_path_supplied")
+    # A hostile path (embedded NUL, over-long component, bad encoding) must fail
+    # closed like any other unusable source, not raise out of the verifier.
+    if _CONTROL.search(str(path)):
+        return ObservedSourceState.unavailable("workspace_path_contains_control_characters")
     try:
         candidate = Path(str(path)).resolve()
-    except OSError:
+    except (OSError, ValueError):
         return ObservedSourceState.unavailable("workspace_path_unresolvable")
     if not candidate.is_dir():
         return ObservedSourceState.unavailable("workspace_path_is_not_a_directory")
