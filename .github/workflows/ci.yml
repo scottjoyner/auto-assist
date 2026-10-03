@@ -71,6 +71,7 @@ jobs:
             src/assistx/my_jev_policy.py \
             src/assistx/system_one_receipt.py \
             scripts/init-canary-env.py \
+            scripts/validate-system-one-shadow-receipt.py \
             scripts/approve-runtime-projection.py \
             scripts/reconciliation-image-bundle.py \
             scripts/validate-executor-containment.py \
