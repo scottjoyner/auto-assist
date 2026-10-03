@@ -153,3 +153,28 @@ tool authorization, mutation authority or recovery control.
 A checkpoint should never advance phases merely because top-1 route accuracy is
 high. Promotion also needs calibration, shuffled-state degradation, low-risk
 false-action analysis, and replay against real user corrections.
+
+
+### Offline physical-receipt acceptance
+
+Before using System-One receipts as fleet benchmark provenance, capture one harmless
+policy request and its `/v1/agent-policy` response from the physical producer as
+JSON files. Validate those files offline; do not route the captured recommendation
+or persist it as authoritative state.
+
+```bash
+python scripts/validate-system-one-shadow-receipt.py \
+  --request artifacts/system-one/request.json \
+  --response artifacts/system-one/response.json \
+  --expected-provider-id my-jev \
+  --expected-model-id '<exact-checkpoint-id>' \
+  --expected-model-artifact-sha256 '<64-lowercase-hex>' \
+  --require-model-artifact \
+  --output artifacts/system-one/acceptance.json
+```
+
+The validator performs no network access. It revalidates the receipt, recomputes
+the AssistX request and normalized response hashes, checks the expected
+provider/model/artifact identity, and requires the complete literal-false authority
+block. Keep `MY_JEV_POLICY_REQUIRE_DECISION_RECEIPT=false` during initial fleet
+acceptance so legacy shadow producers remain compatible.
