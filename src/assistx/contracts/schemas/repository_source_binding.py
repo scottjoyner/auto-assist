@@ -210,7 +210,7 @@ class ObservedSourceState(BaseModel):
     dirty: bool | None = None
 
     @classmethod
-    def unavailable(cls, reason: str) -> "ObservedSourceState":
+    def unavailable(cls, reason: str) -> ObservedSourceState:
         return cls(available=False, unavailable_reason=str(reason)[:256])
 
 

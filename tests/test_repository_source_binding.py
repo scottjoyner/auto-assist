@@ -501,3 +501,54 @@ def test_unavailable_observation_short_circuits_before_identity_checks(tmp_path)
 
     assert verdict.state is SourceBindingState.SOURCE_UNAVAILABLE
     assert verdict.reasons == ["gone"]
+
+# --- call site: repository tasks record the tree they were generated from --
+
+
+def test_repo_analysis_task_payload_carries_a_source_binding(tmp_path):
+    import assistx.repo_task_generator as generator
+
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    source = repo / "service.py"
+    source.write_text(source.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    info = generator._get_repo_info(repo, "auto-ingest-swarm")
+    assert info is not None
+
+    tasks = generator._create_tasks_for_repo(repo, max_per_repo=1)
+    analysis = next(t for t in tasks if t["kind"].startswith("repo_"))
+
+    binding = binding_from_payload(analysis["payload"])
+    assert binding is not None
+    assert binding.repository == "auto-ingest-swarm"
+    assert binding.worktree_realpath == str(repo.resolve())
+    assert binding.head_sha == info["commit"]
+    assert binding.task_id == analysis["id"]
+    # A reviewer can now prove which tree the task was generated against.
+    assert verify_workspace(binding, repo).accepted is True
+    # Carrying a binding changed no authority surface: the task still declares
+    # its own execution mode and approval gate exactly as before.
+    assert analysis["payload"]["execution_mode"] == "analysis_only"
+    assert analysis["payload"]["requires_approval"] is False
+    assert analysis["requires_approval"] is (not generator.REPO_TASK_AUTO_READY)
+    assert "dispatch_allowed" not in analysis["payload"]
+    assert "claim_acquired" not in analysis["payload"]
+    assert "routing_authority_changed" not in analysis["payload"]
+
+
+def test_source_binding_payload_survives_a_missing_repo_root(tmp_path):
+    import assistx.repo_task_generator as generator
+
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    info = dict(generator._get_repo_info(repo, "auto-ingest-swarm"))
+    info.pop("repo_root")
+
+    payload = generator._source_binding_payload(info, "task-1")
+
+    assert payload is not None
+    assert payload["repo_realpath"] == payload["worktree_realpath"]
+
+
+def test_source_binding_payload_returns_none_when_identity_is_unusable():
+    import assistx.repo_task_generator as generator
+
+    assert generator._source_binding_payload({"alias": "", "path": ""}, "task-1") is None
