@@ -7,6 +7,8 @@ from typing import Any
 
 import requests
 
+from .system_one_receipt import bind_shadow_receipt
+
 DEFAULT_POLICY_URL = "http://my-jev:8088/v1/agent-policy"
 
 
@@ -47,6 +49,64 @@ def shadow_enabled() -> bool:
         "MY_JEV_POLICY_SHADOW_ENABLED",
         False,
     )
+
+
+def _validate_expected_receipt_identity(
+    receipt_evidence: dict[str, Any],
+) -> None:
+    provider = receipt_evidence.get("provider")
+    if not isinstance(provider, dict):
+        raise ValueError(
+            "my-jev decision receipt provider identity is missing"
+        )
+
+    expected_provider = os.getenv(
+        "MY_JEV_POLICY_EXPECTED_PROVIDER_ID",
+        "",
+    ).strip()
+    expected_model = os.getenv(
+        "MY_JEV_POLICY_EXPECTED_MODEL_ID",
+        "",
+    ).strip()
+    expected_artifact = os.getenv(
+        "MY_JEV_POLICY_EXPECTED_MODEL_ARTIFACT_SHA256",
+        "",
+    ).strip()
+
+    if (
+        expected_provider
+        and provider.get("provider_id") != expected_provider
+    ):
+        raise ValueError(
+            "my-jev decision receipt provider_id does not match expected identity"
+        )
+    if (
+        expected_model
+        and provider.get("model_id") != expected_model
+    ):
+        raise ValueError(
+            "my-jev decision receipt model_id does not match expected identity"
+        )
+    if expected_artifact:
+        if (
+            len(expected_artifact) != 64
+            or any(
+                char not in "0123456789abcdef"
+                for char in expected_artifact
+            )
+        ):
+            raise ValueError(
+                "MY_JEV_POLICY_EXPECTED_MODEL_ARTIFACT_SHA256 "
+                "must be 64 lowercase hex characters"
+            )
+        if (
+            provider.get("model_artifact_sha256")
+            != expected_artifact
+        ):
+            raise ValueError(
+                "my-jev decision receipt model_artifact_sha256 "
+                "does not match expected identity"
+            )
 
 
 def _metadata(intent: dict[str, Any]) -> dict[str, Any]:
@@ -229,12 +289,36 @@ def request_policy_shadow(
             "unexpected my-jev policy contract"
         )
 
+    receipt_value = body.get("decision_receipt")
+    receipt_evidence = None
+    if receipt_value is None:
+        if _env_bool(
+            "MY_JEV_POLICY_REQUIRE_DECISION_RECEIPT",
+            False,
+        ):
+            raise ValueError(
+                "my-jev response is missing required decision receipt"
+            )
+    elif not isinstance(receipt_value, dict):
+        raise ValueError(
+            "my-jev decision receipt must be a JSON object"
+        )
+    else:
+        receipt_evidence = bind_shadow_receipt(
+            request_payload=request_payload,
+            receipt_value=receipt_value,
+        )
+        _validate_expected_receipt_identity(
+            receipt_evidence
+        )
+
     metadata = _metadata(intent)
     return {
         "shadow": True,
         "recorded_at_ts": time.time(),
         "request": request_payload,
         "response": body,
+        "receipt_evidence": receipt_evidence,
         "legacy": {
             "classification": str(
                 intent.get("classification")
