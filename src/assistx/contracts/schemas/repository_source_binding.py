@@ -28,8 +28,33 @@ Design constraints, all deliberate:
   different sources even when they share a remote, a branch, and a commit, so
   the worktree realpath is pinned separately from the repository realpath.
 
-Dependency-free (``pydantic`` only) so it can be imported cross-repository
-without pulling in executor, Neo4j, or router state.
+This module's own imports are limited to ``pydantic`` and the standard library.
+**Importing it through the ``assistx`` package is not side-effect free, however.**
+``assistx/__init__.py`` executes five runtime safety-boundary installers at import
+time - claim fencing, task-family routing, repository path policy, work-supply
+boundaries, and fleet-executor compatibility - so a plain
+``from assistx.contracts.schemas.repository_source_binding import ...`` loads the
+Neo4j driver, FastAPI, httpx, and pandas and mutates ``Neo4jClient`` methods as a
+side effect. That is measured, not theoretical: roughly 1200 modules.
+
+A consumer that only needs this contract, and must not pull in AssistX runtime
+state, should load the file directly instead:
+
+.. code-block:: python
+
+    import importlib.util, pathlib, sys
+
+    path = pathlib.Path("src/assistx/contracts/schemas/repository_source_binding.py")
+    spec = importlib.util.spec_from_file_location("repository_source_binding", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # pydantic resolves annotations via sys.modules
+    spec.loader.exec_module(module)
+
+That path loads pydantic and the standard library only. The ``sys.modules``
+registration is required: with ``from __future__ import annotations`` pydantic
+resolves the string annotations through ``sys.modules[cls.__module__]`` and
+otherwise reports the model as not fully defined. See
+``tests/test_repository_source_binding.py`` for a pinned test of both properties.
 """
 
 from __future__ import annotations

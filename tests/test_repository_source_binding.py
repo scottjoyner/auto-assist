@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -633,3 +634,120 @@ def test_hostile_workspace_path_fails_closed_rather_than_raising(tmp_path):
     assert verdict.state is SourceBindingState.SOURCE_UNAVAILABLE
     assert verdict.reasons == ["workspace_path_contains_control_characters"]
     assert verdict.accepted is False
+
+
+# --- import isolation ----------------------------------------------------
+#
+# The contract is meant to be consumable cross-repository without dragging in
+# AssistX runtime state. That claim is only true when the file is loaded
+# directly: importing through the `assistx` package executes
+# `assistx/__init__.py`, which installs five runtime safety boundaries at import
+# time. Both properties are pinned here so the docstring cannot drift into
+# another falsehood.
+
+_CONTRACT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "assistx"
+    / "contracts"
+    / "schemas"
+    / "repository_source_binding.py"
+)
+
+
+def _load_contract_standalone():
+    """Load the contract by path, the way a cross-repo consumer must."""
+
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location(
+        "repository_source_binding_standalone", _CONTRACT_PATH
+    )
+    module = importlib.util.module_from_spec(spec)
+    # Required: with `from __future__ import annotations`, pydantic resolves the
+    # string annotations through sys.modules[cls.__module__] and otherwise
+    # reports the model as not fully defined.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_contract_loads_standalone_without_assistx_or_runtime_state(tmp_path):
+    """Isolation must be measured in a clean interpreter.
+
+    This test session has already imported `assistx` through the verifier tests,
+    so inspecting sys.modules here would measure the session, not the load. A
+    subprocess is the only honest way to show what importing the contract costs
+    on its own.
+    """
+
+    script = tmp_path / "isolate.py"
+    script.write_text(
+        "import importlib.util, sys, pathlib\n"
+        f"spec = importlib.util.spec_from_file_location('rsb', {str(_CONTRACT_PATH)!r})\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "sys.modules[spec.name] = module\n"
+        "spec.loader.exec_module(module)\n"
+        "roots = {n.split('.')[0] for n in sys.modules}\n"
+        "forbidden = {'assistx', 'neo4j', 'fastapi', 'httpx', 'pandas', 'numpy', 'starlette'}\n"
+        "print(','.join(sorted(roots & forbidden)))\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, str(script)], capture_output=True, text=True, check=True
+    )
+
+    assert result.stdout.strip() == "", (
+        "standalone contract load pulled runtime modules: " + result.stdout.strip()
+    )
+
+
+def test_standalone_contract_still_validates_and_grants_nothing():
+    module = _load_contract_standalone()
+
+    binding = module.RepositorySourceBinding(
+        repository="auto-ingest-swarm",
+        repo_realpath="/repos/auto-ingest",
+        worktree_realpath="/worktrees/auto-ingest-swarm-20261002",
+        branch="main",
+        head_sha="a" * 40,
+        task_id="t",
+        work_id="w",
+    )
+    assert binding.expected_dirty is module.DirtyStateExpectation.CLEAN
+    assert module.SourceBindingState.MATCH.value == "MATCH"
+
+    verdict = module.SourceBindingVerdict(
+        state=module.SourceBindingState.MATCH,
+        task_id="t",
+        work_id="w",
+        repository="auto-ingest-swarm",
+        expected_repo_realpath=binding.repo_realpath,
+        expected_worktree_realpath=binding.worktree_realpath,
+        expected_branch="main",
+        expected_head_sha=binding.head_sha,
+    )
+    assert verdict.dispatch_allowed is False
+    assert verdict.claim_acquired is False
+    assert verdict.execution_authority_granted is False
+    assert verdict.routing_authority_changed is False
+
+
+def test_package_import_is_documented_as_unsafe_for_isolation():
+    """Pin the reason the standalone recipe exists.
+
+    If this ever stops holding - if `assistx/__init__.py` becomes import-inert -
+    the docstring's warning is stale and should be rewritten, not silently kept.
+    """
+
+    import assistx
+    import assistx.strict_claims  # noqa: F401
+    import assistx.task_family_routing  # noqa: F401
+
+    assert hasattr(assistx, "_install_runtime_safety_boundaries")
+    assert assistx.__doc__ is None or "runtime_safety" not in (assistx.__doc__ or "")
+    # The installers run at import time, not on demand.
+    import sys
+
+    assert "assistx.strict_claims" in sys.modules

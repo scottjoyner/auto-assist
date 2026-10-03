@@ -21,6 +21,12 @@ implemented.
 
 The verifier holds no authority. It reads git state and returns a verdict; it
 never claims, executes, writes, dispatches, approves, or routes.
+
+Importing this module runs ``assistx/__init__.py``, which installs the runtime
+safety boundaries. Use it from inside AssistX, or load the contract module
+directly as described in
+``contracts/schemas/repository_source_binding.py`` when only the contract is
+needed.
 """
 
 from __future__ import annotations
