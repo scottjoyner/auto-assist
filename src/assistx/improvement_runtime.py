@@ -10,7 +10,28 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from .contracts.repository_source_verifier import (
+    ObservedSource,
+    SourceBindingVerification,
+    observe_source_workspace,
+    verify_repository_source,
+)
+from .contracts.schemas.repository_source_binding import RepositorySourceBinding
+
 MAX_PATCH_BYTES = 524_288
+
+
+def contract_source_binding(contract: dict[str, Any]) -> RepositorySourceBinding | None:
+    """Read the optional source binding out of an execution contract.
+
+    ``None`` means "no binding declared" (legacy or non-repository task) and is
+    explicitly *not* a pass: callers decide how to treat unbound contracts. A
+    malformed binding raises rather than degrading to unbound.
+    """
+
+    return RepositorySourceBinding.from_contract_payload(
+        contract.get("source_binding")
+    )
 
 
 def prepare_repository(
@@ -21,6 +42,7 @@ def prepare_repository(
     env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     environment = env if env is not None else os.environ
+    binding = contract_source_binding(contract)
     base_root, reason = _resolve_repository(contract, environment)
     if not base_root:
         return {
@@ -31,6 +53,24 @@ def prepare_repository(
     head = _run(["git", "rev-parse", "HEAD"], base_root)
     if head["returncode"] != 0:
         return {"ok": False, "reason": "git_head_failed"}
+
+    source_verification: SourceBindingVerification | None = None
+    if binding is not None:
+        source_verification = verify_repository_source(binding, _observe(base_root))
+        if not source_verification.accepted:
+            # Fail closed. Do not look for another checkout, another worktree of
+            # this repository, $HOME, or any mirror: the bound source is the only
+            # acceptable source.
+            return {
+                "ok": False,
+                "reason": (
+                    "repository_source_binding_rejected:"
+                    f"{source_verification.state.value}"
+                ),
+                "repository": contract.get("repository"),
+                "source_binding_verification": source_verification.to_provenance(),
+            }
+
     workspace_id = hashlib.sha256(
         (
             f"{contract.get('repository')}:{task_id}:{execution_attempt}:"
@@ -73,6 +113,9 @@ def prepare_repository(
         "clean_before": True,
         "isolated": True,
         "workspace_id": workspace_id,
+        "source_binding_verification": (
+            source_verification.to_provenance() if source_verification else None
+        ),
     }
 
 
@@ -97,6 +140,9 @@ def collect_executor_evidence(
             "verification": [],
             "summary": prepared.get("reason"),
             "executor_error": prepared.get("reason"),
+            "source_binding_verification": prepared.get(
+                "source_binding_verification"
+            ),
         }
     root = Path(prepared["root"])
     status = _run(["git", "status", "--porcelain", "--untracked-files=all"], root)
@@ -141,6 +187,8 @@ def collect_executor_evidence(
         "isolated_worktree": bool(prepared.get("isolated")),
         "workspace_id": prepared.get("workspace_id"),
         "head_before": prepared.get("head"),
+        "observed_source": _observe(prepared.get("root")).to_provenance(),
+        "source_binding_verification": prepared.get("source_binding_verification"),
         "changed_files": changed_files,
         "diff_lines": diff_lines,
         "tools_used": list((reported or {}).get("tools_used") or []),
@@ -259,6 +307,18 @@ def promote_patch(
     base_root, resolve_reason = _resolve_repository(contract, environment)
     if not base_root:
         return {"promoted": False, "reason": resolve_reason}
+    binding = contract_source_binding(contract)
+    if binding is not None:
+        verification = verify_repository_source(binding, _observe(base_root))
+        if not verification.accepted:
+            return {
+                "promoted": False,
+                "reason": (
+                    "repository_source_binding_rejected:"
+                    f"{verification.state.value}"
+                ),
+                "source_binding_verification": verification.to_provenance(),
+            }
     head = _run(["git", "rev-parse", "HEAD"], base_root)
     if head["stdout"].strip() != evidence.get("head_before"):
         return {"promoted": False, "reason": "repository_head_drifted"}
@@ -315,10 +375,18 @@ def promote_patch(
         "promoted": True,
         "repository": contract.get("repository"),
         "head_before": evidence.get("head_before"),
+        "observed_source": _observe(base_root).to_provenance(),
+        "source_binding_verification": evidence.get("source_binding_verification"),
         "patch_sha256": fingerprint,
         "changed_files": sorted(patch_paths),
         "verification": verification,
     }
+
+
+def _observe(candidate: Any) -> ObservedSource:
+    """Read source facts for ``candidate`` without searching for alternatives."""
+
+    return observe_source_workspace(candidate)
 
 
 def _resolve_repository(
@@ -333,6 +401,8 @@ def _resolve_repository(
     configured = roots.get(repository) if isinstance(roots, dict) else None
     if not configured:
         return None, "repository_root_not_configured"
+    if isinstance(configured, dict):
+        configured = configured.get("path") or configured.get("root")
     root = Path(str(configured)).resolve()
     if not root.is_dir() or not (root / ".git").exists():
         return None, "configured_repository_is_not_a_git_worktree"

@@ -26,6 +26,7 @@ from .controller_runtime import (
     Neo4jControllerStore,
     start_durable_controller_loop,
 )
+from .contracts.repository_source_verifier import build_source_binding
 from .neo4j_client import Neo4jClient
 
 logger = logging.getLogger(__name__)
@@ -304,6 +305,31 @@ def _selector(alias: str, relative_path: str, commit: str) -> str:
     return TASK_KINDS[digest[0] % len(TASK_KINDS)]
 
 
+def _source_binding(repo_info: dict[str, Any]) -> dict[str, Any] | None:
+    """Mint the provenance binding for a repository analysis task.
+
+    The alias comes from the configured repository map, so the binding describes a
+    source the platform already trusts. It records *which* source the task was cut
+    from so a reviewer result can later prove what it examined; it confers no
+    execution, write or routing authority.
+    """
+
+    try:
+        binding = build_source_binding(
+            repository=str(repo_info["alias"]),
+            worktree_path=repo_info["path"],
+            base_repository_path=repo_info["path"],
+        )
+    except (ValueError, OSError) as exc:
+        logger.error(
+            "repo task generator: cannot bind source for %s: %s",
+            repo_info.get("alias"),
+            exc,
+        )
+        return None
+    return binding.to_contract_payload()
+
+
 def _create_task_payload(
     kind: str,
     repo_info: dict[str, Any],
@@ -330,6 +356,7 @@ def _create_task_payload(
         "repository": repo_info["alias"],
         "repository_path": repo_info["path"],
         "source_commit": repo_info["commit"],
+        "source_binding": _source_binding(repo_info),
         "file": relative,
         "language": language,
         "prompt": prompt,

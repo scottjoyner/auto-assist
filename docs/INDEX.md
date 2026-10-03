@@ -30,6 +30,7 @@ operating instructions.
 | [`EXECUTION_AUTHORITY.md`](EXECUTION_AUTHORITY.md) | Which actor may claim, execute, recover, approve, and promote |
 | [`fleet-recovery-rollout.md`](fleet-recovery-rollout.md) | Recovery keys, adapters, controller fencing, migration, canary, and shutdown |
 | [`self-improvement-cycle.md`](self-improvement-cycle.md) | Design and invariants of evidence-gated repository improvement |
+| [`REPOSITORY_SOURCE_BINDING.md`](REPOSITORY_SOURCE_BINDING.md) | Repository source-binding contract, fail-closed verifier states, why stale mirrors are forbidden, and enforcement points |
 | [`self-improvement-rollout.md`](self-improvement-rollout.md) | Deployment, canary, key rotation, rollback, and troubleshooting |
 | [`kv-cache-control-plane.md`](kv-cache-control-plane.md) | Opaque prefix identity, model/quant compatibility, cache-aware allocation, node adapters, security, and rollout |
 | [`end-to-end-deployment.md`](end-to-end-deployment.md) | Isolated branch-image deployment, staged canaries, evidence capture, and rollback |

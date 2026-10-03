@@ -6,6 +6,10 @@ import json
 import posixpath
 from typing import Any
 
+from .contracts.schemas.repository_source_binding import (
+    RepositorySourceBinding,
+    SourceBindingState,
+)
 from .improvement_runtime import verify_executor_evidence
 
 TIER_LIMITS = {
@@ -72,6 +76,7 @@ def build_execution_contract(
     verification_commands: list[list[str]],
     recommended_tier: str = "tool-small",
     iteration: int = 0,
+    source_binding: RepositorySourceBinding | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if recommended_tier not in TIER_LIMITS:
         raise ValueError(f"unsupported improvement tier: {recommended_tier}")
@@ -92,7 +97,12 @@ def build_execution_contract(
     commands = [_verification_command(command) for command in verification_commands]
     if not commands:
         raise ValueError("at least one verification command is required")
-    return {
+    binding = RepositorySourceBinding.from_contract_payload(source_binding)
+    if binding is not None and binding.repository != repository:
+        raise ValueError(
+            "source binding repository does not match the execution contract repository"
+        )
+    contract = {
         "version": 2,
         "kind": "bounded_code_change",
         "repository": repository,
@@ -111,6 +121,11 @@ def build_execution_contract(
         "max_patch_bytes": 524288,
         "requires_review": True,
     }
+    if binding is not None:
+        # Repository-bound tasks carry the one accepted source. Tasks without a
+        # binding are unchanged and stay repository-unpinned by design.
+        contract["source_binding"] = binding.to_contract_payload()
+    return contract
 
 
 def task_contract(task: dict[str, Any]) -> dict[str, Any] | None:
@@ -128,7 +143,7 @@ def build_work_packet(
     contract = task_contract(task)
     if not contract:
         return None
-    return {
+    packet: dict[str, Any] = {
         "objective": contract.get("objective") or task.get("title"),
         "repository": contract.get("repository"),
         "scope": {
@@ -177,6 +192,17 @@ def build_work_packet(
             "next_candidate": "optional next bounded improvement",
         },
     }
+    binding = contract.get("source_binding")
+    if isinstance(binding, dict) and binding:
+        # The worker is told the one acceptable source and must echo the observed
+        # workspace back; a different worktree or HEAD is rejected.
+        packet["source_binding"] = binding
+        packet["source_binding_requirement"] = (
+            "Inspect exactly the bound worktree at the bound HEAD. Do not substitute "
+            "another checkout, another worktree, a mirror, or $HOME. Report the "
+            "observed worktree realpath and HEAD so provenance can be verified."
+        )
+    return packet
 
 
 def extract_completion_envelope(output: str) -> dict[str, Any] | None:
@@ -237,6 +263,20 @@ def evaluate_completion(
         reasons.append("execution_not_isolated")
     if evidence.get("scope_validated") is not True:
         reasons.append("scope_not_executor_validated")
+    binding = contract.get("source_binding")
+    if isinstance(binding, dict) and binding:
+        verification = evidence.get("source_binding_verification")
+        state = (
+            str((verification or {}).get("state") or "")
+            if isinstance(verification, dict)
+            else ""
+        )
+        if not isinstance(verification, dict):
+            reasons.append("repository_source_binding_unverified")
+        elif state != SourceBindingState.MATCH.value:
+            reasons.append(
+                f"repository_source_binding_rejected:{state or 'UNKNOWN'}"
+            )
     patch = evidence.get("patch")
     if not isinstance(patch, str) or not patch:
         reasons.append("missing_patch_artifact")
@@ -419,6 +459,8 @@ class ImprovementCycle:
             verification_commands=contract.get("verification_commands") or [],
             recommended_tier=recommended_tier,
             iteration=iteration + 1,
+            # The repair must target the same source, not a fresh lookup.
+            source_binding=contract.get("source_binding"),
         )
         return neo.upsert_ticket(
             title=f"Repair: {task.get('title')}",
