@@ -60,6 +60,8 @@ class EndpointLatencyObservation(BaseModel):
     context_bucket: int = Field(default=4096, ge=1)
     concurrency: int = Field(default=1, ge=1)
     warm_state: Literal["warm", "cold", "unknown"] = "unknown"
+    measurement_scope: Literal["runtime_local", "end_to_end"] = "runtime_local"
+    measurement_origin_node_id: str | None = None
     ttft_ms_p50: float = Field(ge=0)
     ttft_ms_p95: float = Field(ge=0)
     prompt_tok_s: float = Field(gt=0)
@@ -88,6 +90,10 @@ class EndpointLatencyObservation(BaseModel):
             raise ValueError("ttft_ms_p95 must be >= ttft_ms_p50")
         if self.wall_ms_p95 < self.wall_ms_p50:
             raise ValueError("wall_ms_p95 must be >= wall_ms_p50")
+        if self.measurement_scope == "end_to_end" and not self.measurement_origin_node_id:
+            raise ValueError(
+                "end_to_end endpoint evidence requires measurement_origin_node_id"
+            )
         return self
 
 
@@ -187,6 +193,9 @@ def _endpoint_for(
     node_id: str,
     model_id: str,
     task_family: str,
+    runtime_id: str | None,
+    model_artifact_sha256: str | None,
+    quantization: str | None,
     now: datetime,
 ) -> EndpointLatencyObservation | None:
     rows = [
@@ -195,6 +204,16 @@ def _endpoint_for(
         if row.node_id == node_id
         and row.model_id == model_id
         and row.task_family.lower() == task_family.lower()
+        and (runtime_id is None or row.runtime_id == runtime_id)
+        and (
+            model_artifact_sha256 is None
+            or row.model_artifact_sha256 == model_artifact_sha256.lower()
+        )
+        and (quantization is None or row.quantization == quantization)
+        and (
+            row.measurement_scope != "end_to_end"
+            or row.measurement_origin_node_id == document.origin_node_id
+        )
         and _fresh(
             row.observed_at,
             now=now,
@@ -260,7 +279,11 @@ def estimate_time_to_useful_result_ms(
     elif endpoint.warm_state == "cold":
         warm_penalty_ms = endpoint.cold_start_ms_p50
 
-    network_ms = network.rtt_ms_p95
+    # End-to-end endpoint timing already includes transport from its declared
+    # origin. Runtime-local timing does not, so only then add the network path.
+    network_ms = (
+        0.0 if endpoint.measurement_scope == "end_to_end" else network.rtt_ms_p95
+    )
     total = network_ms + queue_ms + warm_penalty_ms + first_token_ms + decode_ms
 
     return {
@@ -324,6 +347,19 @@ def build_shadow_latency_plan(
             node_id=node_id,
             model_id=model_id,
             task_family=task_family,
+            runtime_id=(
+                str(row.get("runtime_id")) if row.get("runtime_id") is not None else None
+            ),
+            model_artifact_sha256=(
+                str(row.get("model_artifact_sha256"))
+                if row.get("model_artifact_sha256") is not None
+                else None
+            ),
+            quantization=(
+                str(row.get("quantization"))
+                if row.get("quantization") is not None
+                else None
+            ),
             now=now,
         )
         if network is None or endpoint is None:
@@ -354,6 +390,8 @@ def build_shadow_latency_plan(
                 "quality_score": float(row.get("quality_score") or 0.0),
                 "quality_confidence": float(row.get("quality_confidence") or 0.0),
                 "runtime_id": endpoint.runtime_id,
+                "measurement_scope": endpoint.measurement_scope,
+                "measurement_origin_node_id": endpoint.measurement_origin_node_id,
                 "transport": network.transport,
                 "runtime_warm": (
                     pressure.runtime_warm if pressure is not None else endpoint.warm_state == "warm"
