@@ -331,3 +331,74 @@ def test_candidate_runtime_identity_filters_same_model_observations() -> None:
     assert plan["rejected"] == [
         {"candidate": "xwing/k2", "reason": "missing_fresh_latency_evidence"}
     ]
+
+
+
+def test_reasoning_aware_ttft_requires_semantic_timing_evidence() -> None:
+    value = _map()
+    endpoint = value["endpoints"][0]
+    endpoint["ttft_basis"] = "reasoning_or_content"
+    with pytest.raises(ValidationError, match="reasoning or content timing"):
+        FleetLatencyMapV1.model_validate(value)
+
+
+def test_reasoning_aware_ttft_accepts_first_reasoning_before_content() -> None:
+    value = _map()
+    endpoint = value["endpoints"][0]
+    endpoint.update(
+        {
+            "ttft_basis": "reasoning_or_content",
+            "ttft_ms_p50": 90,
+            "ttft_ms_p95": 130,
+            "first_sse_event_ms_p50": 70,
+            "first_sse_event_ms_p95": 100,
+            "first_reasoning_ms_p50": 90,
+            "first_reasoning_ms_p95": 130,
+            "first_content_ms_p50": 300,
+            "first_content_ms_p95": 450,
+        }
+    )
+
+    document = FleetLatencyMapV1.model_validate(value)
+    row = document.endpoints[0]
+    assert row.ttft_basis == "reasoning_or_content"
+    assert row.first_reasoning_ms_p50 == 90
+    assert row.first_content_ms_p50 == 300
+
+
+def test_optional_latency_percentiles_must_be_paired_and_ordered() -> None:
+    value = _map()
+    value["endpoints"][0]["first_content_ms_p50"] = 300
+    with pytest.raises(ValidationError, match="p50/p95"):
+        FleetLatencyMapV1.model_validate(value)
+
+    value = _map()
+    value["endpoints"][0]["first_content_ms_p50"] = 300
+    value["endpoints"][0]["first_content_ms_p95"] = 200
+    with pytest.raises(ValidationError, match="must be >="):
+        FleetLatencyMapV1.model_validate(value)
+
+
+def test_shadow_plan_surfaces_reasoning_and_visible_latency_separately() -> None:
+    value = _map()
+    endpoint = value["endpoints"][0]
+    endpoint.update(
+        {
+            "ttft_basis": "reasoning_or_content",
+            "first_reasoning_ms_p50": 90,
+            "first_reasoning_ms_p95": 130,
+            "first_content_ms_p50": 300,
+            "first_content_ms_p95": 450,
+        }
+    )
+
+    plan = build_shadow_latency_plan(
+        latency_map=value,
+        candidates=[_candidates()[0]],
+        task_family="decision_judge",
+        now=NOW,
+    )
+
+    assert plan["recommended"]["ttft_basis"] == "reasoning_or_content"
+    assert plan["recommended"]["first_reasoning_ms_p50"] == 90
+    assert plan["recommended"]["first_content_ms_p50"] == 300
