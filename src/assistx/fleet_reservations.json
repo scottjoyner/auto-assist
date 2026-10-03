@@ -1,0 +1,20 @@
+{
+  "beelink-ryzen-7-mini-pc:1234": {
+    "by": "nas-recovery-duty",
+    "until": 1787823752.2845042,
+    "purpose": "Exclude Beelink while NAS recovery duty is active",
+    "set_at": 1787794952.2845051
+  },
+  "joyner:1234": {
+    "by": "nas-recovery-duty",
+    "until": 1787823752.3010943,
+    "purpose": "Exclude Joyner while NAS recovery duty is active",
+    "set_at": 1787794952.3010952
+  },
+  "scott-optiplex-9030-aio:1234": {
+    "by": "hermes-benchmark",
+    "until": 1787844249.4412954,
+    "purpose": "Contain stale OptiPlex routing while restoring node and running Optimax benchmark",
+    "set_at": 1787841549.4412966
+  }
+}

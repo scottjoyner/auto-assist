@@ -1,0 +1,1311 @@
+{
+  "authority": "candidate_reachability_only",
+  "captured_at": "2026-08-26T23:12:28.051259+00:00",
+  "lan_preferred": true,
+  "nodes": [
+    {
+      "active": true,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.85.72.121:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::f93b:487a]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://beelink-ryzen-7-mini-pc.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "beelink-ryzen-7-mini-pc.tailcb8954.ts.net",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "BEELINK-RYZEN-7-MINI-PC",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.85.72.121",
+        "fd7a:115c:a1e0::f93b:487a"
+      ],
+      "tailscale_node_id": "nvrg4fiVXv11CNTRL"
+    },
+    {
+      "active": true,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.78.106.121:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::8901:6a89]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://deathstar-xps-8920.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "deathstar-xps-8920.tailcb8954.ts.net",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "deathstar-XPS-8920",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.78.106.121",
+        "fd7a:115c:a1e0::8901:6a89"
+      ],
+      "tailscale_node_id": "nbhTPZ6Zi121CNTRL"
+    },
+    {
+      "active": true,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.81.57.77:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::1c01:3990]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://destroyer.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "destroyer.tailcb8954.ts.net",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "destroyer",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.81.57.77",
+        "fd7a:115c:a1e0::1c01:3990"
+      ],
+      "tailscale_node_id": "ndeQfPitL511CNTRL"
+    },
+    {
+      "active": true,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::a801:26ab]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::a801:26ab"
+      ],
+      "tailscale_node_id": "ntUjTr6YFk11CNTRL"
+    },
+    {
+      "active": true,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::3901:8ebc]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::3901:8ebc"
+      ],
+      "tailscale_node_id": "nTHnBkfDVn11CNTRL"
+    },
+    {
+      "active": true,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::af01:ada1]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::af01:ada1"
+      ],
+      "tailscale_node_id": "nWVWgpGhNZ11CNTRL"
+    },
+    {
+      "active": true,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::9d01:a6ac]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::9d01:a6ac"
+      ],
+      "tailscale_node_id": "n5LEYQXkju11CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0:ab12:4843:cd96:626f:140a]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0:ab12:4843:cd96:626f:140a"
+      ],
+      "tailscale_node_id": "n71dpJ2CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::5201:b0a3]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::5201:b0a3"
+      ],
+      "tailscale_node_id": "neARD1o4n111CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::401:c29f]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::401:c29f"
+      ],
+      "tailscale_node_id": "ndWrQdZ6K421CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::f701:f79c]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::f701:f79c"
+      ],
+      "tailscale_node_id": "nD9zcd7Knn11CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::1e01:7098]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::1e01:7098"
+      ],
+      "tailscale_node_id": "ndz5GaTW9A11CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::b601:dd8b]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::b601:dd8b"
+      ],
+      "tailscale_node_id": "niDa3wMftw11CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::3f01:58a5]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::3f01:58a5"
+      ],
+      "tailscale_node_id": "neeN6jK4ru11CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::5c01:d68c]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::5c01:d68c"
+      ],
+      "tailscale_node_id": "nvdzc211dP11CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0:ab12:4843:cd96:6259:5f05]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0:ab12:4843:cd96:6259:5f05"
+      ],
+      "tailscale_node_id": "nSDheG4CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0:ab12:4843:cd96:625f:d761]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0:ab12:4843:cd96:625f:d761"
+      ],
+      "tailscale_node_id": "njDmJW3CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::ac01:85a5]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::ac01:85a5"
+      ],
+      "tailscale_node_id": "nS742NkU7111CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::c001:f7a7]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::c001:f7a7"
+      ],
+      "tailscale_node_id": "naJii1WhTr11CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0:ab12:4843:cd96:625a:9516]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0:ab12:4843:cd96:625a:9516"
+      ],
+      "tailscale_node_id": "n2BPqj6CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::c301:f2b1]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::c301:f2b1"
+      ],
+      "tailscale_node_id": "nZCiKEVX2S11CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0:ab12:4843:cd96:6268:d02b]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0:ab12:4843:cd96:6268:d02b"
+      ],
+      "tailscale_node_id": "n4Fc7i4CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::5a01:aea3]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::5a01:aea3"
+      ],
+      "tailscale_node_id": "nZpNSkbWoU11CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0:ab12:4843:cd96:6249:ba61]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0:ab12:4843:cd96:6249:ba61"
+      ],
+      "tailscale_node_id": "ntjt1V2CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::df01:50c9]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::df01:50c9"
+      ],
+      "tailscale_node_id": "n3MHdfwCfY11CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://[fd7a:115c:a1e0::4b01:bda1]:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "funnel-ingress-node",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "fd7a:115c:a1e0::4b01:bda1"
+      ],
+      "tailscale_node_id": "nLiLgUjPPz11CNTRL"
+    },
+    {
+      "active": true,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.83.215.83:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::be3b:d754]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://joyner.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "joyner.tailcb8954.ts.net",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "joyner",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.83.215.83",
+        "fd7a:115c:a1e0::be3b:d754"
+      ],
+      "tailscale_node_id": "nBorB3E2pX11CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.82.144.33:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::d33b:9022]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://kipnerter-prod-01-1.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "kipnerter-prod-01-1.tailcb8954.ts.net",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "kipnerter-prod-01",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.82.144.33",
+        "fd7a:115c:a1e0::d33b:9022"
+      ],
+      "tailscale_node_id": "nXLtiFe1cR11CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.96.196.106:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::fc01:c485]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://iphone-12-pro-max.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "iphone-12-pro-max.tailcb8954.ts.net",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "localhost",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.96.196.106",
+        "fd7a:115c:a1e0::fc01:c485"
+      ],
+      "tailscale_node_id": "nkDLn1fpn611CNTRL"
+    },
+    {
+      "active": true,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.114.88.89:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::3201:585b]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://raspberrypi.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "raspberrypi.tailcb8954.ts.net",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "raspberrypi",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.114.88.89",
+        "fd7a:115c:a1e0::3201:585b"
+      ],
+      "tailscale_node_id": "nWqe7QUhH211CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.115.175.49:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::3a3b:af32]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://scott-dell-dm051.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "scott-dell-dm051.tailcb8954.ts.net",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "scott-Dell-DM051",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.115.175.49",
+        "fd7a:115c:a1e0::3a3b:af32"
+      ],
+      "tailscale_node_id": "ngDbiT3mTD11CNTRL"
+    },
+    {
+      "active": true,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.105.137.98:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::bf3b:8963]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://scott-lenovo-ideapad-330s-15ikb.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "scott-lenovo-ideapad-330s-15ikb.tailcb8954.ts.net",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "scott-Lenovo-ideapad-330S-15IKB",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.105.137.98",
+        "fd7a:115c:a1e0::bf3b:8963"
+      ],
+      "tailscale_node_id": "n4DqFVeUEg11CNTRL"
+    },
+    {
+      "active": true,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.69.158.114:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::c73b:9e72]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://scott-optiplex-9030-aio.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "scott-optiplex-9030-aio.tailcb8954.ts.net",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "scott-OptiPlex-9030-AIO",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.69.158.114",
+        "fd7a:115c:a1e0::c73b:9e72"
+      ],
+      "tailscale_node_id": "nNTqmifCaB11CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.94.254.45:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::501:fe31]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://scotts-mbp.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "scotts-mbp.tailcb8954.ts.net",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "Scotts-MBP",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.94.254.45",
+        "fd7a:115c:a1e0::501:fe31"
+      ],
+      "tailscale_node_id": "nAhCQw6KsZ11CNTRL"
+    },
+    {
+      "active": true,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.85.64.117:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::bd01:4075]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://scotts-macbook-air.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "scotts-macbook-air.tailcb8954.ts.net",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "Scott\u2019s MacBook Air",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.85.64.117",
+        "fd7a:115c:a1e0::bd01:4075"
+      ],
+      "tailscale_node_id": "nmMGwLCeMU11CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.93.66.45:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::a43b:422e]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://scotts-macbook-pro-2.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "scotts-macbook-pro-2.tailcb8954.ts.net",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "Scott\u2019s MacBook Pro",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.93.66.45",
+        "fd7a:115c:a1e0::a43b:422e"
+      ],
+      "tailscale_node_id": "n2uVpX5EJC21CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.64.43.123:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::13b:2b7b]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://x1-370.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "x1-370.tailcb8954.ts.net",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "x1-370",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.64.43.123",
+        "fd7a:115c:a1e0::13b:2b7b"
+      ],
+      "tailscale_node_id": "nMUcwkoaJq11CNTRL"
+    },
+    {
+      "active": true,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.108.99.47:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::ea01:6383]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://xwing.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "xwing.tailcb8954.ts.net",
+      "last_seen": "0001-01-01T00:00:00Z",
+      "node_id": "xwing",
+      "online": true,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.108.99.47",
+        "fd7a:115c:a1e0::ea01:6383"
+      ],
+      "tailscale_node_id": "nGY7Xfmr4V11CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.68.6.52:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::3f3b:635]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://avbells-macbook-pro-1.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "avbells-macbook-pro-1.tailcb8954.ts.net",
+      "last_seen": "2026-07-23T03:38:23.1Z",
+      "node_id": "avbell\u2019s MacBook Pro",
+      "online": false,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.68.6.52",
+        "fd7a:115c:a1e0::3f3b:635"
+      ],
+      "tailscale_node_id": "nKbHYgEeq511CNTRL"
+    },
+    {
+      "active": false,
+      "admission_status": "candidate_only",
+      "candidate_access_paths": [
+        {
+          "base_url": "http://100.75.249.111:1234/v1",
+          "priority": 100,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://[fd7a:115c:a1e0::9e3b:f970]:1234/v1",
+          "priority": 101,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        },
+        {
+          "base_url": "http://avbells-macbook-pro.tailcb8954.ts.net:1234/v1",
+          "priority": 102,
+          "source_kind": "tailscale_status",
+          "transport": "tailscale"
+        }
+      ],
+      "dns_name": "avbells-macbook-pro.tailcb8954.ts.net",
+      "last_seen": "2026-07-18T01:58:58.1Z",
+      "node_id": "avbell\u2019s MacBook Pro",
+      "online": false,
+      "required_before_admission": [
+        "physical_runtime_identity",
+        "loaded_model_instance",
+        "official_lms_process_evidence",
+        "explicit_parallel_slots",
+        "completion_canary"
+      ],
+      "tailscale_ips": [
+        "100.75.249.111",
+        "fd7a:115c:a1e0::9e3b:f970"
+      ],
+      "tailscale_node_id": "nhwjkDgwMd11CNTRL"
+    }
+  ],
+  "schema_version": 1,
+  "source": "tailscale status --json",
+  "tailscale_fallback": true
+}
