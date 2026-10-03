@@ -14,6 +14,13 @@ from .auto_ingest_memory_enrichment import (
     AutoIngestMemoryEnrichment,
     EnrichmentKind,
 )
+from .repository_source_binding import (
+    RepositorySourceBinding,
+    ObservedSourceState,
+    SourceBindingState,
+    SourceBindingVerdict,
+    DirtyStateExpectation,
+)
 
 __all__ = [
     "RegisteredSpeaker",
@@ -29,4 +36,9 @@ __all__ = [
     "EndpointStatus",
     "AutoIngestMemoryEnrichment",
     "EnrichmentKind",
+    "RepositorySourceBinding",
+    "ObservedSourceState",
+    "SourceBindingState",
+    "SourceBindingVerdict",
+    "DirtyStateExpectation",
 ]

@@ -1,0 +1,503 @@
+"""Contract tests for repository source binding.
+
+These encode the incident that motivated the contract: a swarm reviewer read
+``/home/scott/embed_x1`` instead of the authoritative worktree, produced a
+well-formed review of stale source, and the error was only discoverable after
+the fact. Each test below pins one way that must fail closed.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from assistx.contracts.schemas.repository_source_binding import (
+    BINDING_AUTHORITY_SOURCE,
+    DirtyStateExpectation,
+    ObservedSourceState,
+    RepositorySourceBinding,
+    SourceBindingState,
+)
+from assistx.repository_source_verifier import (
+    FORBIDDEN_MIRROR,
+    binding_from_payload,
+    build_binding,
+    configured_repository_roots,
+    observe_source,
+    verify_source_binding,
+    verify_workspace,
+)
+
+
+def git(*args: str, cwd: Path) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def make_repo(root: Path, name: str = "auto-ingest-swarm") -> Path:
+    """Create a real git repository with one commit and return its path."""
+
+    root.mkdir(parents=True, exist_ok=True)
+    git("init", "-b", "main", cwd=root)
+    git("config", "user.email", "test@example.invalid", cwd=root)
+    git("config", "user.name", "Source Binding Test", cwd=root)
+    (root / "service.py").write_text(
+        "def healthy(status: str) -> bool:\n    return status == 'online'\n",
+        encoding="utf-8",
+    )
+    git("add", ".", cwd=root)
+    git("commit", "-m", "initial", cwd=root)
+    return root
+
+
+def binding_for(repo: Path, **overrides) -> RepositorySourceBinding:
+    observed = observe_source(repo)
+    assert observed.available, observed.unavailable_reason
+    payload = {
+        "repository": "auto-ingest-swarm",
+        "repo_realpath": observed.repo_realpath,
+        "worktree_realpath": observed.worktree_realpath,
+        "branch": observed.branch,
+        "head_sha": observed.head_sha,
+        "task_id": "task-1",
+        "work_id": "work-1",
+    }
+    payload.update(overrides)
+    return RepositorySourceBinding(**payload)
+
+
+# --- required case 1: exact requested worktree + HEAD -> accepted ---------
+
+
+def test_exact_requested_worktree_and_head_is_accepted(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    binding = binding_for(repo)
+
+    verdict = verify_workspace(binding, repo)
+
+    assert verdict.state is SourceBindingState.MATCH
+    assert verdict.accepted is True
+    assert verdict.reasons == []
+    assert verdict.fallback_candidates_considered == []
+
+
+# --- required case 2: same repo / different worktree -> rejected ----------
+
+
+def test_same_repository_different_worktree_is_rejected(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    sibling = make_repo(tmp_path / "auto-ingest-swarm-review")
+    binding = binding_for(repo)
+
+    verdict = verify_workspace(binding, sibling)
+
+    # The two directories are separate repositories, so identity fails first.
+    assert verdict.state is SourceBindingState.REPOSITORY_MISMATCH
+    assert verdict.accepted is False
+
+
+def test_real_sibling_worktree_of_the_same_repository_is_rejected(tmp_path):
+    """A genuine ``git worktree`` of the bound repo is still not the bound tree."""
+
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    head = git("rev-parse", "HEAD", cwd=repo)
+    sibling = tmp_path / "auto-ingest-swarm-review"
+    git("worktree", "add", "--detach", str(sibling), head, cwd=repo)
+
+    binding = binding_for(repo)
+    verdict = verify_workspace(binding, sibling)
+
+    assert verdict.state is SourceBindingState.WORKTREE_MISMATCH
+    assert verdict.accepted is False
+    assert verdict.observed_repo_realpath == binding.repo_realpath
+    assert "not an accepted substitute" in verdict.reasons[0]
+
+
+# --- required case 3: same worktree / stale HEAD -> rejected -------------
+
+
+def test_same_worktree_with_stale_head_is_rejected(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    binding = binding_for(repo)
+    (repo / "service.py").write_text("def healthy(s): return True\n", encoding="utf-8")
+    git("add", ".", cwd=repo)
+    git("commit", "-m", "second", cwd=repo)
+
+    verdict = verify_workspace(binding, repo)
+
+    assert verdict.state is SourceBindingState.HEAD_MISMATCH
+    assert verdict.accepted is False
+    assert "stale" in verdict.reasons[0]
+
+
+def test_detached_head_that_matches_the_bound_sha_is_accepted(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    head = git("rev-parse", "HEAD", cwd=repo)
+    detached = tmp_path / "auto-ingest-swarm-detached"
+    git("worktree", "add", "--detach", str(detached), head, cwd=repo)
+
+    binding = binding_for(detached)
+    verdict = verify_workspace(binding, detached)
+
+    assert verdict.state is SourceBindingState.MATCH
+
+
+# --- required case 4: different mirror with same repo name -> rejected ----
+
+
+def test_different_mirror_with_the_same_repository_name_is_rejected(tmp_path):
+    authoritative = make_repo(tmp_path / "worktrees" / "auto-ingest-swarm-20261002")
+    stale_mirror = make_repo(tmp_path / "embed_x1")
+
+    binding = binding_for(authoritative)
+    verdict = verify_workspace(binding, stale_mirror)
+
+    assert verdict.accepted is False
+    assert verdict.state is SourceBindingState.REPOSITORY_MISMATCH
+    assert verdict.observed_worktree_realpath == str(stale_mirror.resolve())
+
+
+def test_stale_mirror_is_never_silently_substituted(tmp_path):
+    """The verifier must not walk away from a missing bound worktree."""
+
+    authoritative = make_repo(tmp_path / "worktrees" / "auto-ingest-swarm-20261002")
+    make_repo(tmp_path / "embed_x1")
+    binding = binding_for(authoritative)
+
+    # The bound worktree is gone. A mirror with a similar name exists.
+    import shutil
+
+    shutil.rmtree(authoritative)
+    verdict = verify_workspace(binding, authoritative)
+
+    assert verdict.state is SourceBindingState.SOURCE_UNAVAILABLE
+    assert verdict.fallback_candidates_considered == []
+    assert verdict.observed_worktree_realpath is None
+
+
+# --- required case 5: missing worktree -> rejected -----------------------
+
+
+def test_missing_worktree_is_rejected(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    binding = binding_for(repo)
+    gone = tmp_path / "not-a-checkout"
+
+    verdict = verify_workspace(binding, gone)
+
+    assert verdict.state is SourceBindingState.SOURCE_UNAVAILABLE
+    assert verdict.accepted is False
+    assert verdict.reasons == ["workspace_path_is_not_a_directory"]
+
+
+def test_none_workspace_is_source_unavailable(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    verdict = verify_workspace(binding_for(repo), None)
+
+    assert verdict.state is SourceBindingState.SOURCE_UNAVAILABLE
+    assert verdict.reasons == ["no_workspace_path_supplied"]
+
+
+def test_non_git_directory_is_source_unavailable(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    verdict = verify_workspace(binding_for(repo), plain)
+
+    assert verdict.state is SourceBindingState.SOURCE_UNAVAILABLE
+    assert verdict.reasons == ["workspace_is_not_a_git_worktree"]
+
+
+# --- required case 6: non-repository task -> unaffected ------------------
+
+
+def test_non_repository_task_is_unaffected():
+    payload = {
+        "kind": "voice_task",
+        "execution_mode": "analysis_only",
+        "repository": None,
+    }
+
+    assert binding_from_payload(payload) is None
+    assert binding_from_payload(None) is None
+    assert binding_from_payload({}) is None
+    assert binding_from_payload({"source_binding": None}) is None
+
+
+def test_binding_is_not_authority(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    verdict = verify_workspace(binding_for(repo), repo)
+
+    assert verdict.dispatch_allowed is False
+    assert verdict.approval_granted is False
+    assert verdict.claim_acquired is False
+    assert verdict.mutation_allowed is False
+    assert verdict.execution_authority_granted is False
+    assert verdict.routing_authority_changed is False
+
+
+# --- fail-closed validation of the contract itself -----------------------
+
+
+def test_binding_rejects_home_directory_as_a_source(tmp_path):
+    with pytest.raises(ValueError, match="home directory"):
+        RepositorySourceBinding(
+            repository="auto-ingest-swarm",
+            repo_realpath=str(tmp_path),
+            worktree_realpath=str(Path.home()),
+            branch="main",
+            head_sha="a" * 40,
+            task_id="t",
+            work_id="w",
+        )
+
+
+@pytest.mark.parametrize("bad", ["relative/path", "~/repo", "/a/../b", "/a//b"])
+def test_binding_rejects_non_canonical_paths(bad):
+    with pytest.raises(ValueError):
+        RepositorySourceBinding(
+            repository="auto-ingest-swarm",
+            repo_realpath=bad,
+            worktree_realpath=bad,
+            branch="main",
+            head_sha="a" * 40,
+            task_id="t",
+            work_id="w",
+        )
+
+
+def test_binding_rejects_a_path_smuggled_in_as_repository_identity():
+    with pytest.raises(ValueError, match="not a host path"):
+        RepositorySourceBinding(
+            repository="/home/scott/embed_x1",
+            repo_realpath="/repos/auto-ingest",
+            worktree_realpath="/worktrees/auto-ingest",
+            branch="main",
+            head_sha="a" * 40,
+            task_id="t",
+            work_id="w",
+        )
+
+
+def test_binding_rejects_arbitrary_authority_source():
+    with pytest.raises(ValueError, match="never authoritative on its own"):
+        RepositorySourceBinding(
+            authority_source="caller_supplied",
+            repository="auto-ingest-swarm",
+            repo_realpath="/repos/auto-ingest",
+            worktree_realpath="/worktrees/auto-ingest",
+            branch="main",
+            head_sha="a" * 40,
+            task_id="t",
+            work_id="w",
+        )
+
+
+def test_binding_defaults_to_the_pinned_authority_source():
+    binding = RepositorySourceBinding(
+        repository="auto-ingest-swarm",
+        repo_realpath="/repos/auto-ingest",
+        worktree_realpath="/worktrees/auto-ingest",
+        branch="main",
+        head_sha="a" * 40,
+        task_id="t",
+        work_id="w",
+    )
+    assert binding.authority_source == BINDING_AUTHORITY_SOURCE
+
+
+def test_binding_rejects_malformed_head_and_manifest():
+    with pytest.raises(ValueError):
+        RepositorySourceBinding(
+            repository="auto-ingest-swarm",
+            repo_realpath="/repos/auto-ingest",
+            worktree_realpath="/worktrees/auto-ingest",
+            branch="main",
+            head_sha="not-a-sha",
+            task_id="t",
+            work_id="w",
+        )
+    with pytest.raises(ValueError):
+        RepositorySourceBinding(
+            repository="auto-ingest-swarm",
+            repo_realpath="/repos/auto-ingest",
+            worktree_realpath="/worktrees/auto-ingest",
+            branch="main",
+            head_sha="a" * 40,
+            source_manifest_sha256="short",
+            task_id="t",
+            work_id="w",
+        )
+
+
+def test_malformed_binding_raises_rather_than_degrading_to_unbound(tmp_path):
+    payload = {"source_binding": {"repository": "auto-ingest-swarm"}}
+
+    with pytest.raises(ValueError):
+        binding_from_payload(payload)
+
+
+def test_binding_round_trips_through_a_payload(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    binding = binding_for(repo)
+
+    restored = binding_from_payload({"source_binding": binding.provenance()})
+
+    assert restored is not None
+    assert restored == binding
+
+
+# --- configuration is the only authority for repository identity --------
+
+
+def test_build_binding_requires_a_configured_alias(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+
+    with pytest.raises(ValueError, match="not configured"):
+        build_binding(
+            repository="auto-ingest-swarm",
+            worktree_path=repo,
+            task_id="t",
+            work_id="w",
+            env={},
+        )
+
+
+def test_build_binding_rejects_a_worktree_from_another_repository(tmp_path):
+    configured = make_repo(tmp_path / "repos" / "auto-ingest-swarm")
+    impostor = make_repo(tmp_path / "embed_x1")
+    env = {"ASSISTX_REPOSITORY_ROOTS_JSON": json.dumps({"auto-ingest-swarm": str(configured)})}
+
+    with pytest.raises(ValueError, match="does not belong to the configured repository"):
+        build_binding(
+            repository="auto-ingest-swarm",
+            worktree_path=impostor,
+            task_id="t",
+            work_id="w",
+            env=env,
+        )
+
+
+def test_build_binding_succeeds_for_the_configured_worktree(tmp_path):
+    repo = make_repo(tmp_path / "repos" / "auto-ingest-swarm")
+    env = {"ASSISTX_REPOSITORY_ROOTS_JSON": json.dumps({"auto-ingest-swarm": str(repo)})}
+
+    binding = build_binding(
+        repository="auto-ingest-swarm",
+        worktree_path=repo,
+        task_id="t",
+        work_id="w",
+        env=env,
+    )
+
+    assert binding.repository == "auto-ingest-swarm"
+    assert binding.repo_realpath == str(repo.resolve())
+    assert verify_workspace(binding, repo).accepted is True
+
+
+def test_configured_repository_roots_ignores_tilde_and_malformed_entries():
+    roots = configured_repository_roots(
+        {
+            "ASSISTX_REPOSITORY_ROOTS_JSON": json.dumps(
+                {
+                    "good": "/repos/good",
+                    "tilde": "~/repos/tilde",
+                    "blank": "   ",
+                    "empty": "",
+                }
+            )
+        }
+    )
+
+    assert set(roots) == {"good"}
+
+
+def test_configured_repository_roots_fails_closed_on_bad_json():
+    assert configured_repository_roots({"ASSISTX_REPOSITORY_ROOTS_JSON": "{oops"}) == {}
+    assert configured_repository_roots({"ASSISTX_REPOSITORY_ROOTS_JSON": "[]"}) == {}
+
+
+# --- dirty-state expectation and provenance -----------------------------
+
+
+def test_dirty_worktree_is_rejected_when_a_clean_tree_was_bound(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    binding = binding_for(repo)
+    (repo / "service.py").write_text("dirty\n", encoding="utf-8")
+
+    verdict = verify_workspace(binding, repo)
+
+    assert verdict.state is SourceBindingState.DIRTY_STATE_MISMATCH
+    assert verdict.observed_dirty is True
+
+
+def test_dirty_expectation_any_accepts_a_dirty_tree(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    binding = binding_for(repo, expected_dirty=DirtyStateExpectation.ANY)
+    (repo / "service.py").write_text("dirty\n", encoding="utf-8")
+
+    assert verify_workspace(binding, repo).accepted is True
+
+
+def test_verdict_provenance_proves_what_was_examined(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    binding = binding_for(repo)
+    (repo / "service.py").write_text("dirty\n", encoding="utf-8")
+
+    provenance = verify_workspace(binding, repo).provenance()
+
+    assert provenance["state"] == "DIRTY_STATE_MISMATCH"
+    assert provenance["observed_worktree_realpath"] == str(repo.resolve())
+    assert provenance["expected_head_sha"] == binding.head_sha
+    assert provenance["fallback_candidates_considered"] == []
+    assert json.dumps(provenance)
+
+
+# --- the forbidden mirror is named but never used ------------------------
+
+
+def test_verifier_never_offers_the_incident_mirror_as_a_fallback(tmp_path):
+    authoritative = make_repo(tmp_path / "worktrees" / "auto-ingest-swarm-20261002")
+    binding = binding_for(authoritative)
+
+    verdict = verify_workspace(binding, tmp_path / "definitely-absent")
+
+    assert verdict.state is SourceBindingState.SOURCE_UNAVAILABLE
+    assert verdict.fallback_candidates_considered == []
+    assert FORBIDDEN_MIRROR not in json.dumps(verdict.provenance())
+
+
+def test_verify_source_binding_accepts_a_hand_built_observation(tmp_path):
+    """The verifier takes any observed state, so an executor can supply one."""
+
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    binding = binding_for(repo)
+    observed = ObservedSourceState(
+        repo_realpath=binding.repo_realpath,
+        worktree_realpath=binding.worktree_realpath,
+        branch=binding.branch,
+        head_sha=binding.head_sha,
+        dirty=False,
+    )
+
+    assert verify_source_binding(binding, observed).state is SourceBindingState.MATCH
+
+
+def test_unavailable_observation_short_circuits_before_identity_checks(tmp_path):
+    repo = make_repo(tmp_path / "auto-ingest-swarm")
+    binding = binding_for(repo)
+
+    verdict = verify_source_binding(binding, ObservedSourceState.unavailable("gone"))
+
+    assert verdict.state is SourceBindingState.SOURCE_UNAVAILABLE
+    assert verdict.reasons == ["gone"]
