@@ -1,4 +1,17 @@
 .env
+# Environment files other than `.env` itself: override files and pre-deploy
+# snapshots (.env.override, .env.pre-<change>.<timestamp>). These are copies of
+# a live environment and carry real values -- Neo4j password, paperclip tokens,
+# the projection HMAC secret, the signing key, node tokens.
+#
+# `.env` alone was matched, so every one of those variants was untracked but NOT
+# ignored, and a routine `git add -A` would have committed them. Per
+# docs/SECURITY_SECRETS_AND_FLEET_IDENTITY_PLAN.md, secret values must never
+# enter Git.
+#
+# `.env.example` stays trackable: it is the documented template, not a copy.
+.env.*
+!.env.example
 deploy/canary.env
 deploy/canary-*.env
 deploy/reconciliation.env
