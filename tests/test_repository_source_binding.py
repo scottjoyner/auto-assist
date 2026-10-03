@@ -9,6 +9,7 @@ into a silent fallback to some other checkout.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from enum import Enum
 from pathlib import Path
@@ -32,11 +33,23 @@ from assistx.repository_source_binding import (
 )
 
 
-def git(repo: Path, *args: str) -> str:
+def git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
     result = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, **(env or {})},
     )
     return result.stdout.strip()
+
+
+#: Pinned so two identically-seeded repos always produce the same commit SHA.
+#: Wall-clock timestamps made the "identical HEAD, different directory" cases
+#: depend on both commits landing in the same second, which is why they
+#: intermittently failed for no reason connected to the behaviour under test.
+FIXED_DATE = "2026-01-01T00:00:00+00:00"
 
 
 def make_repo(root: Path, name: str = "project") -> Path:
@@ -47,7 +60,13 @@ def make_repo(root: Path, name: str = "project") -> Path:
     git(repo, "config", "user.name", "Canary")
     (repo / "README.md").write_text("seed\n")
     git(repo, "add", "README.md")
-    git(repo, "commit", "-m", "seed")
+    git(
+        repo,
+        "commit",
+        "-m",
+        "seed",
+        env={"GIT_AUTHOR_DATE": FIXED_DATE, "GIT_COMMITTER_DATE": FIXED_DATE},
+    )
     git(repo, "branch", "-M", "main")
     return repo
 
@@ -138,7 +157,13 @@ def test_same_worktree_with_stale_head_is_rejected(tmp_path):
     # is identical, so only a HEAD comparison catches it.
     (worktree / "README.md").write_text("moved on\n")
     git(worktree, "add", "README.md")
-    git(worktree, "commit", "-m", "later work")
+    git(
+        worktree,
+        "commit",
+        "-m",
+        "later work",
+        env={"GIT_AUTHOR_DATE": FIXED_DATE, "GIT_COMMITTER_DATE": FIXED_DATE},
+    )
 
     verification = verify_source_binding(binding, observe_source(worktree))
 
