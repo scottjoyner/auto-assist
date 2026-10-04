@@ -357,9 +357,32 @@ def _sanitize_runtime_projection_for_mobile(
         "fleet_unique_model_count": len(mobile_models),
         "agent_runtime_count": agent_total,
         "code_runtime_count": code_total,
-        "agent_auto_available": runtime_total > 0,
+        "agent_auto_available": agent_total > 0,
         "models": mobile_models,
         "runtimes": runtimes,
+    }
+
+
+def _unavailable_mobile_runtime_catalog() -> dict[str, Any]:
+    """Represent an expected fail-closed projection state without transport ambiguity.
+
+    This is deliberately not a stale projection and carries no backend detail.
+    The phone can keep Agent Auto selected while showing it as temporarily
+    unavailable, but it still has zero approved runtimes to execute against.
+    """
+    return {
+        "schema_version": "2",
+        "source": "assistx-runtime-projection",
+        "generated_at_ms": None,
+        "expires_at_ms": None,
+        "fleet_runtime_count": 0,
+        "fleet_model_count": 0,
+        "fleet_unique_model_count": 0,
+        "agent_runtime_count": 0,
+        "code_runtime_count": 0,
+        "agent_auto_available": False,
+        "models": [],
+        "runtimes": [],
     }
 
 
@@ -608,6 +631,18 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
         try:
             return _mobile_runtime_catalog()
         except Exception as exc:
+            # Projection expiry or signing unavailability is an expected
+            # fail-closed admission state, not a broken mobile transport.
+            # Return a sanitized zero-runtime catalog so clients can represent
+            # the degraded state without ever treating stale runtimes as usable.
+            from .runtime_projection import RuntimeProjectionBlocked
+            from .runtime_projection_v2 import RuntimeProjectionSigningError
+
+            if isinstance(
+                exc,
+                (RuntimeProjectionBlocked, RuntimeProjectionSigningError),
+            ):
+                return _unavailable_mobile_runtime_catalog()
             raise HTTPException(
                 status_code=503,
                 detail={"error": "runtime_catalog_unavailable"},
