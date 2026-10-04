@@ -3,6 +3,25 @@ import os
 os.environ["ASSISTX_RUNTIME_PROFILE"] = "test"
 os.environ["ASSISTX_DEPENDENCY_MODE"] = "compat"
 
+#: Credentials the tests authenticate with. Declared before the setdefault calls
+#: below so there is one source for both sides of the handshake.
+NEO4J_DEFAULT_USER = os.getenv("TEST_NEO4J_USER", "neo4j")
+NEO4J_DEFAULT_PASSWORD = os.getenv("TEST_NEO4J_PASSWORD", "redacted-rotate-credentials")
+
+# The API reads BASIC_AUTH_USER / BASIC_AUTH_PASS with *no* defaults
+# (``src/assistx/api.py``: ``os.getenv("BASIC_AUTH_USER")``), so both are None on
+# a host that has not exported them and every authenticated request is refused.
+# The tests send the same values they would default to, so without these the
+# suite silently depends on ambient credentials: 35 tests failed with 401 on a
+# clean checkout and 2 passed once the variables were set.
+#
+# Thirty-five red for anyone running the suite hermetically is how a suite learns
+# to be ignored, so the dependency is declared here rather than left to whoever
+# happens to have the variables exported. ``setdefault`` so a real deployment's
+# values still win -- this is a test default, not an override.
+os.environ.setdefault("BASIC_AUTH_USER", NEO4J_DEFAULT_USER)
+os.environ.setdefault("BASIC_AUTH_PASS", NEO4J_DEFAULT_PASSWORD)
+
 # Ensure the ``src`` layout is importable from subprocesses spawned by the code
 # under test (e.g. the analysis sandbox runs ``python3 -m assistx.sandbox_runner``).
 # pytest's ``pythonpath`` ini option only adjusts the in-process ``sys.path`` and is
@@ -23,8 +42,8 @@ import pytest
 from assistx.neo4j_client import Neo4jClient
 
 NEO4J_IMAGE = os.getenv("TEST_NEO4J_IMAGE", "neo4j:5.23.0")
-NEO4J_USER = os.getenv("TEST_NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("TEST_NEO4J_PASSWORD", "redacted-rotate-credentials")
+NEO4J_USER = NEO4J_DEFAULT_USER
+NEO4J_PASSWORD = NEO4J_DEFAULT_PASSWORD
 NEO4J_FIXTURES = {"neo4j_container", "neo4j_client", "seeded_neo4j"}
 
 
