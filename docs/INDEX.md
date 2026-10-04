@@ -37,9 +37,12 @@ operating instructions.
 
 ## Operator interface
 
-The canonical operator UI is `/control-room`.
+The canonical fleet/operator overview remains `/control-room`. The additive
+chat-first `/workbench` surface is documented in
+[`CHAT_FIRST_WORKBENCH.md`](CHAT_FIRST_WORKBENCH.md); it reuses the existing
+Hermes Agent Auto boundary and keeps its context drawer read-only.
 
-It replaces the overlapping legacy dashboard pages and provides:
+The control room replaces the overlapping legacy dashboard pages and provides:
 
 - one row per physical runtime rather than one row per endpoint alias;
 - explicit `LM_STUDIO`, `HEADLESS`, or `UNKNOWN` runtime mode;
