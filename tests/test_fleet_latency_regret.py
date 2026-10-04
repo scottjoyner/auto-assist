@@ -243,6 +243,7 @@ def test_regret_evidence_cannot_grant_authority() -> None:
     )
     assert set(result["authority"].values()) == {False}
 
+
 def test_artifact_identity_prevents_same_runtime_alias_collision() -> None:
     row = _outcome(
         node="deathstar",
