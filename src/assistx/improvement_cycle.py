@@ -151,9 +151,25 @@ def build_work_packet(
     contract = task_contract(task)
     if not contract:
         return None
+    # Carry the recorded provenance into the packet.
+    #
+    # The binding is written onto the contract and read back by
+    # task_source_binding, whose purpose is to let a later reviewer prove which
+    # checkout was actually examined. But the work packet -- the thing the
+    # executing side receives -- dropped it: the packet copied repository,
+    # allowed_paths, max_files and the rest, and silently omitted the one field
+    # that says which commit was inspected. So the provenance was recorded and
+    # then never reached anyone able to use it.
+    #
+    # Evidence only, deliberately. The binding carries no authority and gates
+    # nothing here; that is the documented design ("grants nothing on its own"),
+    # not an oversight. This only makes the record reachable.
+    binding = task_source_binding(task)
+
     return {
         "objective": contract.get("objective") or task.get("title"),
         "repository": contract.get("repository"),
+        "source_binding": binding_to_document(binding) if binding else None,
         "scope": {
             "allowed_paths": contract.get("allowed_paths", []),
             "max_files": contract.get("max_files"),

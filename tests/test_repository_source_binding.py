@@ -23,10 +23,12 @@ from assistx.contracts.schemas.repository_source_binding import (
 )
 from assistx.improvement_cycle import (
     build_execution_contract,
+    build_work_packet,
     task_source_binding,
 )
 from assistx.repository_source_binding import (
     SourceBindingState,
+    binding_to_document,
     bind_repository_source,
     observe_source,
     verify_source_binding,
@@ -461,3 +463,49 @@ def test_contract_enums_use_the_shared_str_enum_style():
     for enum_class in (DirtyStateExpectation, SourceBindingState):
         assert issubclass(enum_class, str)
         assert issubclass(enum_class, Enum)
+
+
+def test_work_packet_carries_the_recorded_provenance(tmp_path):
+    """The binding must reach the party that could use it.
+
+    `bind_repository_source` records the binding on the contract and
+    `task_source_binding` reads it back, so the evident purpose is a later
+    reviewer proving which checkout was examined. But `build_work_packet` copied
+    repository, allowed_paths, max_files and the rest while silently omitting the
+    one field naming the commit -- so the provenance was recorded and then never
+    reached anyone.
+
+    Asserted as presence in the packet rather than as a gate, because a gate is
+    not what this is: the contract builder documents the binding as optional
+    provenance that "grants nothing on its own", and inventing a gate there would
+    manufacture enforcement that was never designed.
+    """
+    repo = make_repo(tmp_path)
+    worktree = make_worktree(repo, tmp_path / "wt")
+    binding = binding_for(repo, worktree)
+
+    contract = build_execution_contract(
+        repository=str(repo),
+        objective="do a bounded thing",
+        allowed_paths=["src/a.py"],
+        verification_commands=[["pytest"]],
+        source_binding=binding,
+    )
+    packet = build_work_packet({"payload": {"execution_contract": contract}})
+    assert packet is not None, "a contract with an objective must still build"
+    assert packet["source_binding"] is not None, (
+        "the work packet dropped the recorded provenance, so the commit actually "
+        "inspected never reaches the executing side"
+    )
+    assert packet["source_binding"]["head_sha"] == binding.head_sha
+
+    # A contract without one stays without one: absent is legitimate for
+    # non-repository tasks, and this must not invent provenance.
+    plain = build_execution_contract(
+        repository=str(repo),
+        objective="do a bounded thing",
+        allowed_paths=["src/a.py"],
+        verification_commands=[["pytest"]],
+    )
+    plain_packet = build_work_packet({"payload": {"execution_contract": plain}})
+    assert plain_packet["source_binding"] is None
