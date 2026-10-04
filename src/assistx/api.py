@@ -801,6 +801,11 @@ def auth(
 # Inject the auth dependency into swarm routes
 set_auth_dependency(auth)
 
+# Fleet latency is an evidence-only projection. Missing/invalid artifacts affect
+# only these endpoints and do not participate in startup or authoritative routing.
+from .fleet_latency_api import build_fleet_latency_router
+app.include_router(build_fleet_latency_router(auth))
+
 
 _neo_instance: Optional[Neo4jClient] = None
 
