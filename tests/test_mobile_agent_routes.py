@@ -226,3 +226,42 @@ def test_agent_chat_returns_gateway_failure_when_hermes_fails(monkeypatch):
 
     assert response.status_code == 503
     assert response.json()["detail"]["executor"] == "hermes"
+    assert response.json()["detail"]["error"] == "timeout"
+
+
+def test_agent_chat_maps_projection_failure_to_stable_mobile_error(monkeypatch):
+    monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.delenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", raising=False)
+    monkeypatch.setattr(
+        mobile,
+        "_run_hermes",
+        lambda prompt, *, timeout, model, provider: {
+            "success": False,
+            "error": "exit_code_1",
+            "output": (
+                'API call failed: {"detail":{"error":"all providers failed",'
+                '"details":["signed AssistX runtime projection is not configured"]}}'
+            ),
+            "stderr": "internal executor trace that must not reach mobile",
+        },
+    )
+    client = TestClient(_app())
+
+    response = client.post(
+        "/api/v1/agent/chat/completions",
+        headers={"Tailscale-User-Login": "scott@example.com"},
+        json={
+            "model": "hermes-agent",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": {
+            "error": "runtime_projection_unavailable",
+            "executor": "hermes",
+        }
+    }
+    assert "signed AssistX" not in response.text
+    assert "internal executor trace" not in response.text
