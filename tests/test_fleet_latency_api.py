@@ -67,9 +67,9 @@ def _document() -> FleetLatencyMapV1:
     )
 
 
-def _app(loader, auth=lambda: "operator") -> FastAPI:
+def _app(loader, auth=lambda: "operator", clock=lambda: NOW) -> FastAPI:
     app = FastAPI()
-    app.include_router(build_fleet_latency_router(auth, loader=loader))
+    app.include_router(build_fleet_latency_router(auth, loader=loader, clock=clock))
     return app
 
 
@@ -137,6 +137,7 @@ def test_shadow_plan_endpoint_is_computation_only() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["recommended"]["node_id"] == "deathstar"
+    assert body["recommended"]["model_artifact_sha256"] == "a" * 64
     assert body["executable"] is False
     assert set(body["authority"].values()) == {False}
 
