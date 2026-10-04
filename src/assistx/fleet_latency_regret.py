@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class RegretAuthority(BaseModel):
@@ -29,15 +29,28 @@ class CandidateOutcome(BaseModel):
     node_id: str = Field(min_length=1, max_length=300)
     model_id: str = Field(min_length=1, max_length=500)
     runtime_id: str = Field(min_length=1, max_length=500)
+    model_artifact_sha256: str
+    quantization: str | None = Field(default=None, max_length=200)
     task_pass: bool
     completion_ms: float = Field(ge=0)
     peak_memory_bytes: int | None = Field(default=None, ge=0)
     evidence_ref: str | None = Field(default=None, max_length=2000)
     replayed: bool = False
 
+    @field_validator("model_artifact_sha256")
+    @classmethod
+    def validate_artifact_hash(cls, value: str) -> str:
+        lowered = value.lower()
+        if len(lowered) != 64 or any(ch not in "0123456789abcdef" for ch in lowered):
+            raise ValueError("model_artifact_sha256 must be a 64-character hex digest")
+        return lowered
+
     @property
     def handle(self) -> str:
-        return f"{self.node_id}/{self.model_id}/{self.runtime_id}"
+        return (
+            f"{self.node_id}/{self.model_id}/{self.runtime_id}/"
+            f"{self.model_artifact_sha256}"
+        )
 
 
 def _plan_handle(row: Mapping[str, Any] | None) -> str | None:
@@ -46,9 +59,16 @@ def _plan_handle(row: Mapping[str, Any] | None) -> str | None:
     node_id = str(row.get("node_id") or "")
     model_id = str(row.get("model_id") or "")
     runtime_id = str(row.get("runtime_id") or "")
-    if not node_id or not model_id or not runtime_id:
+    artifact = str(row.get("model_artifact_sha256") or "").lower()
+    if (
+        not node_id
+        or not model_id
+        or not runtime_id
+        or len(artifact) != 64
+        or any(ch not in "0123456789abcdef" for ch in artifact)
+    ):
         return None
-    return f"{node_id}/{model_id}/{runtime_id}"
+    return f"{node_id}/{model_id}/{runtime_id}/{artifact}"
 
 
 def _validate_shadow_plan(plan: Mapping[str, Any]) -> None:
@@ -61,6 +81,12 @@ def _validate_shadow_plan(plan: Mapping[str, Any]) -> None:
         raise ValueError("shadow plan authority block is required")
     if any(bool(value) for value in authority.values()):
         raise ValueError("shadow plan widens authority")
+    recommended = plan.get("recommended")
+    if recommended is not None:
+        if not isinstance(recommended, Mapping) or _plan_handle(recommended) is None:
+            raise ValueError(
+                "shadow recommendation requires exact node/model/runtime/artifact identity"
+            )
 
 
 def build_latency_regret_evidence(
@@ -147,7 +173,11 @@ def build_latency_regret_evidence(
         "task_family": task_family,
         "origin_node_id": shadow_plan.get("origin_node_id"),
         "actual_authoritative_route": authoritative_handle,
+        "actual_model_artifact_sha256": actual.model_artifact_sha256,
         "shadow_latency_route": shadow_handle,
+        "shadow_model_artifact_sha256": (
+            shadow.model_artifact_sha256 if shadow is not None else None
+        ),
         "oracle_passing_handles": oracle_handles,
         "oracle_fastest_passing_handle": oracle_fastest,
         "actual_task_pass": actual.task_pass,
