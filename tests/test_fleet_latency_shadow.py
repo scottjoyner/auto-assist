@@ -162,6 +162,7 @@ def test_shadow_plan_is_non_executable_and_authority_false() -> None:
         now=NOW,
     )
     assert plan["recommended"] is not None
+    assert plan["recommended"]["model_artifact_sha256"] in {"a" * 64, "b" * 64}
     assert plan["executable"] is False
     assert set(plan["authority"].values()) == {False}
 
