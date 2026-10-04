@@ -414,6 +414,8 @@ def build_shadow_latency_plan(
                 "quality_score": float(row.get("quality_score") or 0.0),
                 "quality_confidence": float(row.get("quality_confidence") or 0.0),
                 "runtime_id": endpoint.runtime_id,
+                "model_artifact_sha256": endpoint.model_artifact_sha256,
+                "quantization": endpoint.quantization,
                 "measurement_scope": endpoint.measurement_scope,
                 "measurement_origin_node_id": endpoint.measurement_origin_node_id,
                 "ttft_basis": endpoint.ttft_basis,
