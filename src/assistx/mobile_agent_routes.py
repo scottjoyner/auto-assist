@@ -145,6 +145,21 @@ def _run_hermes(
     return run_hermes(prompt, timeout=timeout, model=model, provider=provider)
 
 
+def _mobile_agent_failure_code(result: dict[str, Any]) -> str:
+    """Map known fleet-admission failures to stable mobile-safe error codes."""
+    diagnostic = "\n".join(
+        str(result.get(key) or "") for key in ("output", "stderr")
+    ).lower()
+    projection_markers = (
+        "runtime_projection_unavailable",
+        "signed assistx runtime projection is not configured",
+        "runtime projection approval evidence is expired",
+    )
+    if any(marker in diagnostic for marker in projection_markers):
+        return "runtime_projection_unavailable"
+    return str(result.get("error") or "hermes_execution_failed")[:240]
+
+
 def _openai_response(output: str, model: str, session_id: str) -> dict[str, Any]:
     return {
         "id": session_id,
@@ -787,8 +802,11 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
             provider=os.getenv("HERMES_PROVIDER", "assistx-router").strip() or "assistx-router",
         )
         if not result.get("success"):
-            error = str(result.get("error") or "hermes_execution_failed")[:240]
-            raise HTTPException(status_code=503, detail={"error": error, "executor": "hermes"})
+            error = _mobile_agent_failure_code(result)
+            raise HTTPException(
+                status_code=503,
+                detail={"error": error, "executor": "hermes"},
+            )
 
         output = str(result.get("output") or "").strip()
         if not output:
