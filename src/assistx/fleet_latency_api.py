@@ -76,10 +76,15 @@ def latency_map_projection(
     }
 
 
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
 def build_fleet_latency_router(
     auth_dependency: Any,
     *,
     loader: Callable[[], FleetLatencyMapV1] = load_latency_map_file,
+    clock: Callable[[], datetime] = _utcnow,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/fleet/latency-map", tags=["fleet-latency"])
 
@@ -99,7 +104,7 @@ def build_fleet_latency_router(
 
     @router.get("", dependencies=[Depends(auth_dependency)])
     def get_latency_map() -> dict[str, Any]:
-        return latency_map_projection(_load())
+        return latency_map_projection(_load(), now=clock())
 
     @router.post("/shadow-plan", dependencies=[Depends(auth_dependency)])
     def post_shadow_plan(body: ShadowPlanRequest) -> dict[str, Any]:
@@ -111,6 +116,7 @@ def build_fleet_latency_router(
             expected_output_tokens=body.expected_output_tokens,
             requires_agent_runtime=body.requires_agent_runtime,
             requires_code_execution=body.requires_code_execution,
+            now=clock(),
         )
 
     return router

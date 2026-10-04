@@ -62,8 +62,17 @@ class EndpointLatencyObservation(BaseModel):
     warm_state: Literal["warm", "cold", "unknown"] = "unknown"
     measurement_scope: Literal["runtime_local", "end_to_end"] = "runtime_local"
     measurement_origin_node_id: str | None = None
+    # For new measurements TTFT means the first generated semantic token:
+    # reasoning_content OR ordinary content, whichever arrives first.
+    ttft_basis: Literal["reasoning_or_content", "content_only", "unknown"] = "unknown"
     ttft_ms_p50: float = Field(ge=0)
     ttft_ms_p95: float = Field(ge=0)
+    first_sse_event_ms_p50: float | None = Field(default=None, ge=0)
+    first_sse_event_ms_p95: float | None = Field(default=None, ge=0)
+    first_reasoning_ms_p50: float | None = Field(default=None, ge=0)
+    first_reasoning_ms_p95: float | None = Field(default=None, ge=0)
+    first_content_ms_p50: float | None = Field(default=None, ge=0)
+    first_content_ms_p95: float | None = Field(default=None, ge=0)
     prompt_tok_s: float = Field(gt=0)
     decode_tok_s: float = Field(gt=0)
     wall_ms_p50: float = Field(gt=0)
@@ -90,9 +99,24 @@ class EndpointLatencyObservation(BaseModel):
             raise ValueError("ttft_ms_p95 must be >= ttft_ms_p50")
         if self.wall_ms_p95 < self.wall_ms_p50:
             raise ValueError("wall_ms_p95 must be >= wall_ms_p50")
+        for label in ("first_sse_event", "first_reasoning", "first_content"):
+            p50 = getattr(self, f"{label}_ms_p50")
+            p95 = getattr(self, f"{label}_ms_p95")
+            if (p50 is None) != (p95 is None):
+                raise ValueError(f"{label} p50/p95 must be supplied together")
+            if p50 is not None and p95 is not None and p95 < p50:
+                raise ValueError(f"{label}_ms_p95 must be >= {label}_ms_p50")
         if self.measurement_scope == "end_to_end" and not self.measurement_origin_node_id:
             raise ValueError(
                 "end_to_end endpoint evidence requires measurement_origin_node_id"
+            )
+        if (
+            self.ttft_basis == "reasoning_or_content"
+            and self.first_reasoning_ms_p50 is None
+            and self.first_content_ms_p50 is None
+        ):
+            raise ValueError(
+                "reasoning_or_content TTFT requires reasoning or content timing evidence"
             )
         return self
 
@@ -390,8 +414,14 @@ def build_shadow_latency_plan(
                 "quality_score": float(row.get("quality_score") or 0.0),
                 "quality_confidence": float(row.get("quality_confidence") or 0.0),
                 "runtime_id": endpoint.runtime_id,
+                "model_artifact_sha256": endpoint.model_artifact_sha256,
+                "quantization": endpoint.quantization,
                 "measurement_scope": endpoint.measurement_scope,
                 "measurement_origin_node_id": endpoint.measurement_origin_node_id,
+                "ttft_basis": endpoint.ttft_basis,
+                "first_sse_event_ms_p50": endpoint.first_sse_event_ms_p50,
+                "first_reasoning_ms_p50": endpoint.first_reasoning_ms_p50,
+                "first_content_ms_p50": endpoint.first_content_ms_p50,
                 "transport": network.transport,
                 "runtime_warm": (
                     pressure.runtime_warm if pressure is not None else endpoint.warm_state == "warm"
