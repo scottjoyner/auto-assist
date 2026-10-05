@@ -51,7 +51,7 @@ assistx_container="$(
 )"
 router_container="$(
   docker ps --format '{{.Names}}' |
-    grep -E '(^|[-_])auto-router($|[-_])|^auto-router$' |
+    grep -E '(^|[-_])(auto|git)-router($|[-_])|^(auto|git)-router$' |
     head -n1 || true
 )"
 test -n "$assistx_container"
