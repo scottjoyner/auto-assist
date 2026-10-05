@@ -120,7 +120,5 @@ providers:
   assistx-router:
     type: openai
     base_url: http://host.docker.internal:8088/v1
-    # Resolve the existing AssistX-only router inference credential from the process
-    # environment. The secret value is never persisted in Hermes config.
-    key_env: FLEET_ROUTER_BEARER_TOKEN
+    api_key: dummy
     default_model: local/reasoning-large

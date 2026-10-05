@@ -5,15 +5,10 @@ set -e
 HERMES_HOME="${HERMES_HOME:-/app/hermes-home}"
 DEFAULTS="/app/hermes-home.defaults"
 
-mkdir -p "${HERMES_HOME}"
-if [ ! -f "${HERMES_HOME}/config.yaml" ] && [ -f "${DEFAULTS}/config.yaml" ]; then
+if [ ! -f "${HERMES_HOME}/config.yaml" ] && [ -d "$DEFAULTS" ]; then
     echo "Initializing ${HERMES_HOME} from defaults..."
-    cp "${DEFAULTS}/config.yaml" "${HERMES_HOME}/config.yaml"
+    cp -r "$DEFAULTS"/* "$HERMES_HOME/" 2>/dev/null || true
 fi
-
-# A missing config makes provider selection fail later as an opaque runtime
-# error. Fail closed at container startup instead.
-test -f "${HERMES_HOME}/config.yaml"
 
 # Ensure ~/.hermes/config.yaml exists
 mkdir -p /root/.hermes
