@@ -131,6 +131,26 @@ def test_mobile_catalog_redacts_internal_runtime_coordinates():
         assert forbidden not in serialized
 
 
+def test_mobile_catalog_requires_agent_capable_runtime_for_agent_auto():
+    projection = _projection()
+    for provider in projection["providers"]:
+        if not isinstance(provider, dict):
+            continue
+        provider["allow_agent_runtime"] = False
+        for model in provider.get("models") or []:
+            if isinstance(model, dict):
+                model["allow_agent_runtime"] = False
+
+    catalog = mobile._sanitize_runtime_projection_for_mobile(
+        projection,
+        handle_secret="test-mobile-handle-secret",
+    )
+
+    assert catalog["fleet_runtime_count"] == 2
+    assert catalog["agent_runtime_count"] == 0
+    assert catalog["agent_auto_available"] is False
+
+
 def test_mobile_model_handle_survives_runtime_migration():
     first = {
         "artifact_fingerprint": "sha256:same-artifact",
@@ -440,6 +460,32 @@ def test_mobile_model_chat_resolves_handle_and_sanitizes_router_response(monkeyp
     assert captured["payload"]["metadata"]["assistx_artifact_fingerprint"] == "sha256:qwen-artifact"
     assert captured["payload"]["metadata"]["assistx_mobile_request_id"] == mobile_request_id
     assert captured["payload"]["local_only"] is True
+
+
+def test_mobile_runtime_catalog_route_returns_safe_empty_catalog_for_expired_projection(
+    monkeypatch,
+):
+    from assistx.runtime_projection import RuntimeProjectionBlocked
+
+    monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+
+    def fail_closed():
+        raise RuntimeProjectionBlocked(
+            "canonical projection approval evidence is expired"
+        )
+
+    monkeypatch.setattr(mobile, "_mobile_runtime_catalog", fail_closed)
+    response = TestClient(_app()).get(
+        "/api/v1/runtime/catalog",
+        headers={"Tailscale-User-Login": "scott@example.com"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["fleet_runtime_count"] == 0
+    assert response.json()["agent_runtime_count"] == 0
+    assert response.json()["agent_auto_available"] is False
+    assert response.json()["runtimes"] == []
+    assert "expired" not in response.text.lower()
 
 
 def test_mobile_runtime_catalog_route_sanitizes_backend_failure(monkeypatch):
