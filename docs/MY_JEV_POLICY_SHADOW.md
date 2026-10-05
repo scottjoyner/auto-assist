@@ -60,6 +60,10 @@ Disabled by default:
 MY_JEV_POLICY_SHADOW_ENABLED=false
 MY_JEV_POLICY_URL=http://my-jev:8088/v1/agent-policy
 MY_JEV_POLICY_SHADOW_TIMEOUT_S=0.75
+MY_JEV_POLICY_REQUIRE_DECISION_RECEIPT=false
+MY_JEV_POLICY_EXPECTED_PROVIDER_ID=
+MY_JEV_POLICY_EXPECTED_MODEL_ID=
+MY_JEV_POLICY_EXPECTED_MODEL_ARTIFACT_SHA256=
 ```
 
 The shadow resolver also receives conservative runtime authority flags. Keep
@@ -87,6 +91,25 @@ Each observed Intent stores:
 - `policy_shadow_disposition`;
 - `policy_shadow_policy_action`;
 - shadow timestamp.
+
+When a sidecar response includes `system-one-decision-receipt-v1`, AssistX
+strictly validates its provider/model identity, question distributions, response
+hash and literal-false authority fields. It then stores an observation-only
+binding between the exact AssistX request hash and the provider's model-visible
+input/question/candidate/response hashes. The two input hashes are deliberately
+kept distinct because the sidecar owns model-state normalization.
+
+Set `MY_JEV_POLICY_REQUIRE_DECISION_RECEIPT=true` only after all configured
+shadow producers emit the stable receipt contract. With the default `false`,
+older shadow producers remain compatible; any receipt that is present must still
+validate.
+
+For a pinned benchmark or physical acceptance, set any of the optional expected
+identity values. A configured provider ID, model ID, or model artifact SHA-256
+must match the validated receipt exactly or the observer rejects the evidence.
+Leaving all three blank preserves provider-neutral compatibility. Identity
+mismatch remains contained to the shadow observer and cannot reopen a live
+decision.
 
 The evidence includes the current legacy classification/policy action alongside
 the model route. The operator-run exporter now enriches each row with a
@@ -140,3 +163,28 @@ tool authorization, mutation authority or recovery control.
 A checkpoint should never advance phases merely because top-1 route accuracy is
 high. Promotion also needs calibration, shuffled-state degradation, low-risk
 false-action analysis, and replay against real user corrections.
+
+
+### Offline physical-receipt acceptance
+
+Before using System-One receipts as fleet benchmark provenance, capture one harmless
+policy request and its `/v1/agent-policy` response from the physical producer as
+JSON files. Validate those files offline; do not route the captured recommendation
+or persist it as authoritative state.
+
+```bash
+python scripts/validate-system-one-shadow-receipt.py \
+  --request artifacts/system-one/request.json \
+  --response artifacts/system-one/response.json \
+  --expected-provider-id my-jev \
+  --expected-model-id '<exact-checkpoint-id>' \
+  --expected-model-artifact-sha256 '<64-lowercase-hex>' \
+  --require-model-artifact \
+  --output artifacts/system-one/acceptance.json
+```
+
+The validator performs no network access. It revalidates the receipt, recomputes
+the AssistX request and normalized response hashes, checks the expected
+provider/model/artifact identity, and requires the complete literal-false authority
+block. Keep `MY_JEV_POLICY_REQUIRE_DECISION_RECEIPT=false` during initial fleet
+acceptance so legacy shadow producers remain compatible.

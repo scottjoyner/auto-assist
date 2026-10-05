@@ -1,0 +1,63 @@
+name: system-one-receipt-contract
+
+on:
+  pull_request:
+    paths:
+      - "src/assistx/system_one_receipt.py"
+      - "scripts/verify-system-one-cross-repo-contract.py"
+      - ".github/workflows/system-one-receipt-contract.yml"
+  push:
+    branches: ["**"]
+    paths:
+      - "src/assistx/system_one_receipt.py"
+      - "scripts/verify-system-one-cross-repo-contract.py"
+      - ".github/workflows/system-one-receipt-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pinned-producer-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PRODUCER_SHA: 683e0e02353823fae4645c48c9bc6a7d02da5047
+
+    steps:
+      - name: Checkout auto-assist
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned my-jev producer
+        uses: actions/checkout@v4
+        with:
+          repository: scottjoyner/my-jev
+          ref: ${{ env.PRODUCER_SHA }}
+          path: vendor/my-jev
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install lightweight contract dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pydantic>=2.8" "ruff>=0.6"
+
+      - name: Verify pinned producer checkout
+        run: |
+          test "$(git -C vendor/my-jev rev-parse HEAD)" = "$PRODUCER_SHA"
+
+      - name: Lint contract verifier
+        run: |
+          ruff check --ignore I001,E501,F401,B023,UP012,UP018,UP037 \
+            src/assistx/system_one_receipt.py \
+            scripts/verify-system-one-cross-repo-contract.py
+
+      - name: Verify producer-consumer receipt contract
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src:${{ github.workspace }}/vendor/my-jev/src
+        run: |
+          python scripts/verify-system-one-cross-repo-contract.py \
+            --producer-sha "$PRODUCER_SHA"
