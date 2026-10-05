@@ -4,21 +4,23 @@ Each module is a self-contained contract that auto-assist (hub) owns and the
 other repos import. See docs/LLD_UNIFIED_FLEET.md §1 / HLD §5.
 """
 
+from .registered_speaker import RegisteredSpeaker, SpeakerStatus
+from .voice_auth_decision import VoiceAuthDecision, AuthOutcome
+from .task_authority import TaskAuthority, AuthorityMode
 from .artifact_paths import ArtifactPaths
+from .node_registry import NodeRegistryEntry, NodeStatus
+from .model_endpoint_registry import ModelEndpointRegistryEntry, EndpointStatus
 from .auto_ingest_memory_enrichment import (
     AutoIngestMemoryEnrichment,
     EnrichmentKind,
 )
-from .model_endpoint_registry import EndpointStatus, ModelEndpointRegistryEntry
-from .node_registry import NodeRegistryEntry, NodeStatus
-from .registered_speaker import RegisteredSpeaker, SpeakerStatus
 from .repository_source_binding import (
-    SOURCE_BINDING_SCHEMA,
-    DirtyStateExpectation,
     RepositorySourceBinding,
+    ObservedSourceState,
+    SourceBindingState,
+    SourceBindingVerdict,
+    DirtyStateExpectation,
 )
-from .task_authority import AuthorityMode, TaskAuthority
-from .voice_auth_decision import AuthOutcome, VoiceAuthDecision
 
 __all__ = [
     "RegisteredSpeaker",
@@ -27,9 +29,6 @@ __all__ = [
     "AuthOutcome",
     "TaskAuthority",
     "AuthorityMode",
-    "SOURCE_BINDING_SCHEMA",
-    "DirtyStateExpectation",
-    "RepositorySourceBinding",
     "ArtifactPaths",
     "NodeRegistryEntry",
     "NodeStatus",
@@ -37,4 +36,9 @@ __all__ = [
     "EndpointStatus",
     "AutoIngestMemoryEnrichment",
     "EnrichmentKind",
+    "RepositorySourceBinding",
+    "ObservedSourceState",
+    "SourceBindingState",
+    "SourceBindingVerdict",
+    "DirtyStateExpectation",
 ]

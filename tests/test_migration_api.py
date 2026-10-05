@@ -1027,29 +1027,44 @@ def test_command_center_fleet_proxy_and_page(monkeypatch):
     assert body["summary"]["success"] == 12
     assert body["loadouts"][0]["task_profile_id"] == "coding_review_strict"
 
-    page = client.get("/fleet", auth=auth)
+    # /fleet was consolidated into the control room on 2026-07-30 (0ebd32f1); the
+    # old fleet.html page no longer serves here. Follow the redirect the app now
+    # issues and assert on what it renders.
+    page = client.get("/fleet", auth=auth, follow_redirects=True)
     assert page.status_code == 200
-    # These pages render through the app shell and fetch their content in the
-    # browser, so there is no server-rendered heading to assert on. This used to
-    # check for "Fleet view", a string that no longer appears anywhere in src/ --
-    # the page was migrated to the shell and the assertion was never updated.
-    # Asserting the shell instead keeps the route covered without pretending the
-    # server still renders content. The data these pages display is asserted
-    # through the API endpoints above.
-    assert "/static/js/shell.js" in page.text
+    assert str(page.url).endswith("/control-room")
+    assert "Fleet Control Room" in page.text
 
 
-def test_routing_overlay_page_and_status(seeded_neo4j, monkeypatch):
+def test_routing_overlay_page_and_status(seeded_neo4j, monkeypatch, request):
     neo = seeded_neo4j
     monkeypatch.setattr("assistx.api._neo", lambda: neo)
+    monkeypatch.setattr("assistx.api_router._neo", lambda: neo)
+    # build_router_integration_router closes over the factory it was handed at import
+    # time, so patching any module attribute cannot redirect it and the graph read hits
+    # the live Neo4j. Re-register that one router against the fixture, then drop the
+    # stale routes it added.
+    from assistx import router_integration as router_module
+
+    stale = [r for r in app.routes if getattr(r, "path", "").startswith("/api/router/")]
+    for route in stale:
+        app.router.routes.remove(route)
+    app.include_router(router_module.build_router_integration_router(lambda: neo))
+
+    def _restore() -> None:
+        for route in [r for r in app.routes if getattr(r, "path", "").startswith("/api/router/")]:
+            app.router.routes.remove(route)
+        for route in stale:
+            app.router.routes.append(route)
+
+    request.addfinalizer(_restore)
     monkeypatch.setattr(neo, "close", lambda: None)
     client = TestClient(app)
     auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
 
     page = client.get("/routing", auth=auth)
     assert page.status_code == 200, page.text
-    # Same shell migration as /fleet: "Routing / overlay" is not in src/ either.
-    assert "/static/js/shell.js" in page.text
+    assert "Routing / overlay" in page.text
 
     status = client.get("/api/router/status", auth=auth)
     assert status.status_code == 200, status.text

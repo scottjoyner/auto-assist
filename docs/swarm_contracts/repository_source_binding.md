@@ -2,154 +2,213 @@
 
 _Last updated: 2026-10-02_
 
-## Core decision
+## Purpose
 
-A repository-bound task or delegation records **which checkout it is about**, and
-that source is verified against the workspace actually used **before** the work is
-accepted.
+A repository-bound task is only meaningful if the worker that ends up reading
+the source reads the *same tree* the task was created against.
 
-A source binding is a *description*. It grants no task claim, no execution, no
-dispatch, no approval, and no routing authority. Nothing in this contract may be
-used to widen an execution-authority fence. See `EXECUTION_AUTHORITY.md`.
+A recent Hermes swarm reviewer inspected:
+
+```text
+/home/scott/embed_x1
+```
+
+instead of the authoritative dedicated worktree:
+
+```text
+/media/scott/SSD_4TB/worktrees/auto-ingest-swarm-20261002
+```
+
+Its review therefore evaluated stale source and had to be rejected. Nothing in
+the task payload recorded *which tree was examined*, so the error was only
+discoverable after the work was done — and the review itself was
+indistinguishable from a correct one until a human checked.
+
+This contract makes that class of error fail closed at the task/delegation
+boundary instead of at review time.
+
+---
+
+## Core rule
+
+**A binding records identity, never authority.**
+
+A `RepositorySourceBinding` proves where source came from. It grants no task
+claim, no execution, no write, no dispatch, no approval, and no routing
+authority. `SourceBindingVerdict` pins all six of those flags to `False` with
+`Literal[False]`, so the boundary is machine-checkable rather than a code
+review convention.
 
 ## Why stale mirrors are forbidden
 
-A Hermes swarm reviewer was handed a repository-bound review and silently
-inspected the wrong checkout:
+Two checkouts of the same repository are *different sources*, even when they
+share a remote, a branch, and a commit:
 
-```text
-observed:  /home/scott/embed_x1
-expected:  the authoritative dedicated worktree
+| Checkout | What it actually is |
+|---|---|
+| `/media/scott/SSD_4TB/worktrees/auto-ingest-swarm-20261002` | the authoritative worktree for the campaign |
+| `/home/scott/embed_x1` | an unrelated local mirror, months behind |
+| `<repo>/../other-worktree` | a sibling worktree at a different revision |
+
+Accepting "some checkout of the right repository" is what produced the incident.
+A stale mirror does not fail loudly; it returns plausible, well-formed findings
+about code that is not the code that was asked about. The only defence is to pin
+the *exact* tree and reject everything else.
+
+---
+
+## Schema
+
+```yaml
+authority_source: configured_repository_roots   # pinned, see below
+repository: string          # configured identity alias, never a path
+repo_realpath: string       # canonical realpath of the owning repository
+worktree_realpath: string   # canonical realpath of the exact worktree
+branch: string              # "DETACHED" when the binding is commit-only
+head_sha: string            # ^[0-9a-f]{40}$
+expected_dirty: clean | dirty | any
+task_id: string
+work_id: string             # attempt/execution identifier
+source_manifest_sha256: optional string   # ^[0-9a-f]{64}$
 ```
 
-The review evaluated stale source, produced a confident and internally consistent
-verdict, and had to be rejected.
+### `repo_realpath` vs `worktree_realpath`
 
-The dangerous property is not that it read the wrong directory. It is that **a
-stale mirror produces a plausible answer**. Every correctness signal downstream —
-a coherent review, a passing test summary, a confident recommendation — is
-perfectly consistent with source that is months out of date. Nothing in the result
-distinguished "correct" from "correct about the wrong thing". So source identity
-has to be pinned *before* work starts and re-checked at use time. A wrong checkout
-is a contract failure, not a nuisance.
+Both are pinned, and they are not redundant. `repo_realpath` is derived from
+`git rev-parse --git-common-dir`, which follows a worktree link back to the
+shared repository. That is what lets the verifier distinguish *same repository,
+different worktree* (`WORKTREE_MISMATCH`) from *different repository entirely*
+(`REPOSITORY_MISMATCH`).
 
-This host is unusually prone to that error: the same repository exists as a
-canonical clone, symlinked clones, detached worktrees, dated reconciliation
-branches, review copies, NAS mirrors, dated knowledge-backups, and a Tailscale
-mirror on another node. They share a project name. They differ in content.
+### `authority_source` is pinned
 
-## What a binding records
+`authority_source` may only be `configured_repository_roots`. This exists so
+that a caller-supplied host path is never authoritative on its own: both
+realpaths must have been resolved through the operator-controlled alias map
 
-`src/assistx/contracts/schemas/repository_source_binding.py` —
-`RepositorySourceBinding`, `schema_version = assistx-repository-source-binding-v1`.
+```text
+ASSISTX_REPOSITORY_ROOTS_JSON={"auto-ingest":"..."}
+```
 
-| Field | Meaning |
-|---|---|
-| `repository` | Registry key for the project (never a filesystem path) |
-| `repository_realpath` | Canonical realpath of the repository's **primary** checkout |
-| `worktree_realpath` | Canonical realpath of the **worktree the work runs in** |
-| `branch` | Branch name, or `DETACHED` when pinned to a commit |
-| `head_sha` | Expected 40-char lowercase HEAD |
-| `expect_dirty` | `clean` (default), `dirty`, or `any` |
-| `work_id` | Task / delegation / work identifier |
-| `source_manifest_sha256` | Optional digest proving which files were in scope |
+which `build_binding()` enforces. An alias absent from that map has no
+authority.
 
-`repository_realpath` and `worktree_realpath` are deliberately distinct. A
-worktree belongs to a repository but is not the repository's primary checkout, and
-"right repository, wrong worktree" is a real failure mode.
+### Path validation is fail-closed
 
-All path fields must already be canonical (`os.path.realpath` output): absolute,
-normalized, no `..`, no trailing separator. The validator does **not** resolve
-paths itself. Resolving inside the contract would hide a symlinked or relocated
-checkout behind a path that looks trustworthy.
+`RepositorySourceBinding` rejects, at validation time:
 
-## Trust boundary: a supplied path is an assertion, not authority
+- relative paths;
+- `~` prefixes (unresolved);
+- `..` traversal segments;
+- non-canonical paths (`/a//b`);
+- **the home directory** — `$HOME` is never a legitimate repository or
+  worktree root, and treating it as one is the specific silent-fallback failure
+  this contract exists to stop;
+- a host path smuggled in as the `repository` identity.
 
-A caller-supplied host path never becomes authoritative by appearing in a binding.
-The only trusted anchor is the operator-configured `ASSISTX_REPOSITORY_ROOTS_JSON`
-registry.
-
-`bind_repository_source(repository, worktree, ...)`
-(`src/assistx/repository_source_binding.py`):
-
-1. refuses any repository absent from the registry → `repository_root_not_configured`;
-2. observes `worktree` empirically with `git`;
-3. refuses if the observed repository's common git dir is not the registered root
-   → `registered_repository_root_mismatch`;
-4. only then mints a binding.
-
-Identity is derived from `git` running **inside** the directory, never from the
-caller's label for it.
+---
 
 ## Verification states
 
-`verify_source_binding(expected, observed) -> SourceBindingVerification`
-
 | State | Meaning |
 |---|---|
-| `MATCH` | Repository realpath, worktree realpath, HEAD and dirty expectation all agree |
-| `WORKTREE_MISMATCH` | Different worktree than the one pinned |
-| `HEAD_MISMATCH` | Right worktree, wrong commit |
-| `REPOSITORY_MISMATCH` | Wrong repository entirely (e.g. a same-named mirror) |
-| `SOURCE_UNAVAILABLE` | Pinned source is missing, unreadable, or not a git checkout |
-| `DIRTY_STATE_MISMATCH` | Identity agrees; dirty state disagrees with the expectation |
+| `MATCH` | the observed workspace is the bound tree at the bound HEAD |
+| `REPOSITORY_MISMATCH` | a different repository (e.g. the stale mirror) |
+| `WORKTREE_MISMATCH` | right repository, wrong worktree |
+| `HEAD_MISMATCH` | right tree, stale or moved revision |
+| `DIRTY_STATE_MISMATCH` | right tree and revision, wrong cleanliness |
+| `SOURCE_UNAVAILABLE` | the named workspace is missing or unreadable |
 
-Precedence is fixed so one cause is always reported first:
+Checks run most-fundamental identity first, so the reported state names the real
+problem rather than a downstream symptom. Every non-`MATCH` value is a
+rejection. There is no partial acceptance.
 
-```text
-SOURCE_UNAVAILABLE > REPOSITORY_MISMATCH > WORKTREE_MISMATCH > HEAD_MISMATCH > DIRTY_STATE_MISMATCH
-```
+## What the verifier will never do
 
-Dirty state is judged only after identity agrees, because "you examined a
-different directory" is more actionable than "there are uncommitted changes".
+`observe_source(path)` reads exactly the path it is given. If it is missing,
+unreadable, or not a git checkout, the answer is `SOURCE_UNAVAILABLE`. It does
+not:
 
-## No fallback, ever
+- search for another checkout of the same repository name;
+- fall back to `$HOME`;
+- accept a sibling worktree of the same repository;
+- substitute `/home/scott/embed_x1` or any other path.
 
-On any mismatch the verifier returns a rejection. It does not:
+`SourceBindingVerdict.fallback_candidates_considered` is recorded as always
+empty so a reader can confirm no fallback was taken. Tests assert it.
 
-* resolve a different checkout of the same repository;
-* fall back to `$HOME`;
-* search by repository name;
-* accept `/home/scott/embed_x1` or any other stale mirror;
-* substitute another worktree belonging to the same repository.
+Note that `repo_task_generator._get_repo_info` previously collapsed a failed
+`git status` into "clean" (`bool(_git_text(...) or "")`). `observe_source`
+distinguishes a non-zero return from empty output and returns
+`SOURCE_UNAVAILABLE` instead of guessing.
 
-A fallback is the defect, not the remedy. When the pinned source is unavailable the
-correct answer is `SOURCE_UNAVAILABLE` and the caller decides what to do.
+---
 
-`SourceBindingVerification.fallback_attempted` is always `False` and exists so tests
-can pin that invariant.
+### Two comparison modes
 
-`grants_authority` is always `False` and exists for the same reason.
+| function | use | path compared? |
+|---|---|---|
+| `verify_workspace(binding, path)` | a worker claiming to have read the bound tree | **yes** - a different worktree is a mismatch |
+| `verify_derived_source(binding, observed)` | an isolated workspace *derived* from the bound tree | **no** - a fresh path is the point |
+
+`prepare_repository` creates its workspace with `git worktree add --detach`, so
+every legitimate derived workspace is at a new path **and** `DETACHED`.
+Comparing paths there would reject every correct execution, and comparing
+branches would too. The derived check therefore compares repository, HEAD SHA,
+and cleanliness, and reports the path without treating it as a criterion.
+
+An earlier draft of `verify_derived_source` *did* compare branches. Three tests
+failed at once, which is what exposed the flaw: a branch check that rejects
+every real derived workspace is a check that gets disabled.
 
 ## Provenance
 
-`build_execution_contract(..., source_binding=<binding>)` records the binding under
-`execution_contract.source_binding`. `task_source_binding(task)` reads it back.
+Repository-bound task payloads now carry `source_binding`, so a reviewer result
+can later prove what it examined. `SourceBindingVerdict.provenance()` returns a
+compact block suitable for embedding in a task result:
 
-This is **optional and additive**. Tasks without a `source_binding` are unaffected,
-which is what keeps non-repository tasks working unchanged. Recording the binding
-lets a later reviewer prove which source it examined — the thing that was missing
-when the original review had to be thrown out.
+```json
+{
+  "state": "MATCH",
+  "repository": "auto-ingest-swarm",
+  "task_id": "repo-analysis-…",
+  "work_id": "repo-analysis-…",
+  "expected_worktree_realpath": "/media/scott/SSD_4TB/worktrees/auto-ingest-swarm-20261002",
+  "expected_head_sha": "…",
+  "observed_worktree_realpath": "/media/scott/SSD_4TB/worktrees/auto-ingest-swarm-20261002",
+  "observed_head_sha": "…",
+  "reasons": [],
+  "fallback_candidates_considered": []
+}
+```
 
-## Tests
+`binding_from_payload()` returns `None` for tasks with no binding, which keeps
+non-repository tasks entirely unaffected. It **raises** when a binding is
+present but malformed: a corrupt binding must never be silently downgraded to
+"unbound" and thereby skip verification.
 
-`tests/test_repository_source_binding.py` covers:
+## `expected_dirty`
 
-| Case | Expected |
-|---|---|
-| Exact requested worktree + HEAD | `MATCH` |
-| Same repository, different worktree | `WORKTREE_MISMATCH` |
-| Same worktree, stale HEAD | `HEAD_MISMATCH` |
-| Different mirror, same repository name | `REPOSITORY_MISMATCH` |
-| Missing worktree | `SOURCE_UNAVAILABLE` |
-| Non-repository task | unaffected, no `source_binding` |
+Repository analysis tasks are read-only over whatever state the operator's
+checkout happens to be in, so their generated tasks use `expected_dirty: any`.
+That relaxes the cleanliness requirement **only**. The worktree realpath, the
+repository realpath, and the HEAD are still pinned — which is exactly what the
+wrong-checkout review needed and lacked.
 
-Plus: an unregistered repository is refused; a caller path outside the registry is
-refused; a mirror at an identical HEAD is still rejected; a same-named checkout
-under `$HOME` is not adopted; a clean-expectation violation is reported as
-`DIRTY_STATE_MISMATCH`; and malformed or unknown contract fields raise.
+## Compatibility
 
-## Scope
+`SCHEMA_VERSION` is deliberately unchanged. Adding a schema module is additive
+and not a breaking change to `EventEnvelope` or any existing schema; the
+version is pinned cross-repository and bumping it for an additive module would
+break every consumer's contract test for no benefit.
 
-This contract is a source-integrity fix. It does not change execution authority,
-scheduling, or dispatch.
+## Implementation
+
+- Contract: `src/assistx/contracts/schemas/repository_source_binding.py`
+  (dependency-free: `pydantic` only, so it is cross-repo importable without
+  pulling in executor, Neo4j, or router state)
+- Verifier: `src/assistx/repository_source_verifier.py`
+- Call site: `src/assistx/repo_task_generator.py`
+  (`_repository_root_for_worktree`, `_source_binding_payload`, and the analysis
+  and improvement-proposal payloads)
+- Tests: `tests/test_repository_source_binding.py`

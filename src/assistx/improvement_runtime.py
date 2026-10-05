@@ -12,6 +12,12 @@ from typing import Any
 
 MAX_PATCH_BYTES = 524_288
 
+from .repository_source_verifier import (  # noqa: E402 - keeps MAX_PATCH_BYTES first
+    binding_from_payload,
+    observe_source,
+    verify_derived_source,
+)
+
 
 def prepare_repository(
     contract: dict[str, Any],
@@ -95,6 +101,30 @@ def prepare_repository(
     }
 
 
+def _verify_prepared_source(
+    contract: dict[str, Any],
+    prepared: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Check the prepared workspace against the contract's source binding.
+
+    Returns ``None`` when the contract carries no binding, so a contract built
+    before this field existed is unaffected. Never raises: a verification
+    problem must not become an executor crash.
+    """
+
+    binding = binding_from_payload(contract)
+    if binding is None or not prepared.get("ok"):
+        return None
+    try:
+        observed = observe_source(prepared.get("root"))
+        # A derived isolated worktree sits at a fresh path by design, so the
+        # comparison is on repository, revision, branch and cleanliness.
+        verdict = verify_derived_source(binding, observed)
+    except Exception as exc:  # noqa: BLE001 - evidence must not break execution
+        return {"state": "SOURCE_UNAVAILABLE", "reasons": [f"verification_error: {exc}"]}
+    return verdict.provenance()
+
+
 def collect_executor_evidence(
     contract: dict[str, Any],
     prepared: dict[str, Any],
@@ -116,6 +146,7 @@ def collect_executor_evidence(
             "verification": [],
             "summary": prepared.get("reason"),
             "executor_error": prepared.get("reason"),
+            "source_binding_verification": _verify_prepared_source(contract, prepared),
         }
     root = Path(prepared["root"])
     status = _run(["git", "status", "--porcelain", "--untracked-files=all"], root)
@@ -160,6 +191,13 @@ def collect_executor_evidence(
         "isolated_worktree": bool(prepared.get("isolated")),
         "workspace_id": prepared.get("workspace_id"),
         "head_before": prepared.get("head"),
+        # The bare head_before above proves a revision but not *which* tree, so
+        # it cannot be checked against the task later. When the execution
+        # contract carries a source binding, record whether the tree this
+        # executor actually worked in was the bound one. This is evidence only:
+        # it gates nothing, because whether a mismatch should block promotion is
+        # an authority decision, not a verification one.
+        "source_binding_verification": _verify_prepared_source(contract, prepared),
         "changed_files": changed_files,
         "diff_lines": diff_lines,
         "tools_used": list((reported or {}).get("tools_used") or []),
