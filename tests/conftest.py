@@ -23,7 +23,8 @@ os.environ.setdefault("BASIC_AUTH_USER", NEO4J_DEFAULT_USER)
 os.environ.setdefault("BASIC_AUTH_PASS", NEO4J_DEFAULT_PASSWORD)
 
 # Ensure the ``src`` layout is importable from subprocesses spawned by the code
-# under test (e.g. the analysis sandbox runs ``python3 -m assistx.sandbox_runner``).
+# under test. Most subprocesses import AssistX modules; the analysis sandbox
+# intentionally executes its runner file directly to avoid package startup side effects.
 # pytest's ``pythonpath`` ini option only adjusts the in-process ``sys.path`` and is
 # not propagated to child processes, so export it explicitly here.
 _SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))

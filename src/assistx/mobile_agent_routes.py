@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 import time
 import uuid
@@ -16,6 +17,8 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
 import httpx
 
+
+logger = logging.getLogger(__name__)
 
 _TAILSCALE_LOGIN_HEADER = "Tailscale-User-Login"
 _mobile_security = HTTPBasic(auto_error=False)
@@ -130,6 +133,32 @@ def _agent_timeout() -> int:
     return max(30, min(value, 900))
 
 
+def _require_agent_runtime_projection() -> dict[str, Any]:
+    """Fail fast when Agent Auto's authoritative runtime evidence is unavailable.
+
+    Hermes ultimately reaches Auto-Router, which enforces this same signed
+    AssistX projection. Checking it before spawning the Hermes subprocess keeps
+    an expired admission lease from turning into an opaque delayed exit-code
+    failure and does not widen routing or admission authority.
+    """
+
+    try:
+        return _current_runtime_projection()
+    except Exception as exc:
+        logger.warning(
+            "Kipnerter Agent Auto preflight blocked: runtime projection unavailable (%s)",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "runtime_projection_unavailable",
+                "executor": "hermes",
+                "retryable": True,
+            },
+        ) from exc
+
+
 def _run_hermes(
     prompt: str,
     *,
@@ -143,6 +172,21 @@ def _run_hermes(
     from .agents.hermes_agent_adapter import run_hermes
 
     return run_hermes(prompt, timeout=timeout, model=model, provider=provider)
+
+
+def _mobile_agent_failure_code(result: dict[str, Any]) -> str:
+    """Map known fleet-admission failures to stable mobile-safe error codes."""
+    diagnostic = "\n".join(
+        str(result.get(key) or "") for key in ("output", "stderr")
+    ).lower()
+    projection_markers = (
+        "runtime_projection_unavailable",
+        "signed assistx runtime projection is not configured",
+        "runtime projection approval evidence is expired",
+    )
+    if any(marker in diagnostic for marker in projection_markers):
+        return "runtime_projection_unavailable"
+    return str(result.get("error") or "hermes_execution_failed")[:240]
 
 
 def _openai_response(output: str, model: str, session_id: str) -> dict[str, Any]:
@@ -357,9 +401,32 @@ def _sanitize_runtime_projection_for_mobile(
         "fleet_unique_model_count": len(mobile_models),
         "agent_runtime_count": agent_total,
         "code_runtime_count": code_total,
-        "agent_auto_available": runtime_total > 0,
+        "agent_auto_available": agent_total > 0,
         "models": mobile_models,
         "runtimes": runtimes,
+    }
+
+
+def _unavailable_mobile_runtime_catalog() -> dict[str, Any]:
+    """Represent an expected fail-closed projection state without transport ambiguity.
+
+    This is deliberately not a stale projection and carries no backend detail.
+    The phone can keep Agent Auto selected while showing it as temporarily
+    unavailable, but it still has zero approved runtimes to execute against.
+    """
+    return {
+        "schema_version": "2",
+        "source": "assistx-runtime-projection",
+        "generated_at_ms": None,
+        "expires_at_ms": None,
+        "fleet_runtime_count": 0,
+        "fleet_model_count": 0,
+        "fleet_unique_model_count": 0,
+        "agent_runtime_count": 0,
+        "code_runtime_count": 0,
+        "agent_auto_available": False,
+        "models": [],
+        "runtimes": [],
     }
 
 
@@ -608,6 +675,18 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
         try:
             return _mobile_runtime_catalog()
         except Exception as exc:
+            # Projection expiry or signing unavailability is an expected
+            # fail-closed admission state, not a broken mobile transport.
+            # Return a sanitized zero-runtime catalog so clients can represent
+            # the degraded state without ever treating stale runtimes as usable.
+            from .runtime_projection import RuntimeProjectionBlocked
+            from .runtime_projection_v2 import RuntimeProjectionSigningError
+
+            if isinstance(
+                exc,
+                (RuntimeProjectionBlocked, RuntimeProjectionSigningError),
+            ):
+                return _unavailable_mobile_runtime_catalog()
             raise HTTPException(
                 status_code=503,
                 detail={"error": "runtime_catalog_unavailable"},
@@ -742,6 +821,11 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
         # auth remains available as an explicit legacy operator fallback.
         _tailnet_identity(request)
 
+        # Agent Auto is only meaningful while the same signed runtime
+        # projection required by Auto-Router is fresh. Fail closed before
+        # launching Hermes if that governed evidence has expired or drifted.
+        _require_agent_runtime_projection()
+
         prompt = _prompt_from_messages(body.messages)
         model_override = _requested_hermes_model(body.model)
         result = await asyncio.to_thread(
@@ -752,8 +836,11 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
             provider=os.getenv("HERMES_PROVIDER", "assistx-router").strip() or "assistx-router",
         )
         if not result.get("success"):
-            error = str(result.get("error") or "hermes_execution_failed")[:240]
-            raise HTTPException(status_code=503, detail={"error": error, "executor": "hermes"})
+            error = _mobile_agent_failure_code(result)
+            detail: dict[str, Any] = {"error": error, "executor": "hermes"}
+            if error == "runtime_projection_unavailable":
+                detail["retryable"] = True
+            raise HTTPException(status_code=503, detail=detail)
 
         output = str(result.get("output") or "").strip()
         if not output:

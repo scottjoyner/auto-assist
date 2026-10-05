@@ -9,31 +9,50 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from uuid import uuid4
 
-from .config import settings
 from .outbox_client import OutboxClient
 
 logger = logging.getLogger(__name__)
 
 _outbox = OutboxClient(
     db_path=os.getenv("ASSISTX_OUTBOX_DB", os.path.expanduser("~/.assistx_outbox.db")),
-    api_url=settings.auto_assign_base_url,
-    api_user=os.getenv("AUTO_INGEST_AUTH_USER", ""),
-    api_pass=os.getenv("AUTO_INGEST_AUTH_PASS", ""),
+    # Auto-ingest events are consumed by the canonical AssistX event sink. Do
+    # not route them through the retired/optional auto-assign endpoint.
+    api_url=os.getenv("ASSISTX_API_URL", ""),
+    api_user=os.getenv("ASSISTX_AUTH_USER", os.getenv("AUTO_INGEST_AUTH_USER", "")),
+    api_pass=os.getenv("ASSISTX_AUTH_PASS", os.getenv("AUTO_INGEST_AUTH_PASS", "")),
 )
 
 
 def _enqueue(event_type: str, payload: dict, correlation_id: str | None = None) -> bool:
-    cid = correlation_id or uuid4().hex
+    cid = correlation_id or str(uuid4())
+    event_id = f"evt_{uuid4().hex}"
+    node_id = str(payload.get("node_id") or os.getenv("ASSISTX_NODE_ID", "auto-ingest"))
+    links = []
+    if payload.get("node_id"):
+        links.append({"rel": "FOR_NODE", "target_type": "Node", "target_id": str(payload["node_id"])})
+    if payload.get("evidence_ref"):
+        links.append({"rel": "REFERENCES", "target_type": "Evidence", "target_id": str(payload["evidence_ref"])})
+    if payload.get("context_packet_id"):
+        links.append({"rel": "REFERENCES", "target_type": "ContextPacket", "target_id": str(payload["context_packet_id"])})
     body = {
-        "event_id": f"evt_{uuid4().hex}",
+        "event_id": event_id,
         "event_type": event_type,
         "source_repo": "auto-assist",
         "source_service": "assistx",
-        "correlation_id": cid,
+        "node_id": node_id,
+        "occurred_at": datetime.now(timezone.utc).isoformat(),
+        "idempotency_key": f"{event_type}:{cid}",
+        "schema_version": "2026-08.v1",
+        "subject": {"kind": "event", "id": event_id},
         "payload": payload,
-        "links": {"correlation_id": cid},
+        "artifact_refs": [],
+        "metadata": {},
+        "privacy": {"pii": False, "privacy_class": "internal", "retention_class": "keep"},
+        "correlation_id": cid,
+        "links": links,
     }
     try:
         _outbox.enqueue(body)

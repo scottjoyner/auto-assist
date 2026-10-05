@@ -1,6 +1,6 @@
 import pytest
 
-from assistx.agents.analyst import run_user_code
+from assistx.agents.analyst import _sandbox_command, run_user_code
 
 
 def test_analysis_sandbox_allows_basic_computation():
@@ -50,3 +50,20 @@ def main(rows):
     with pytest.raises(RuntimeError) as exc:
         run_user_code(code, [])
     assert "timed out" in str(exc.value).lower() or "sandbox failed" in str(exc.value).lower()
+
+
+def test_analysis_sandbox_executes_runner_without_importing_assistx_package():
+    cmd = _sandbox_command()
+    assert cmd[0]
+    assert cmd[-1].endswith("/assistx/sandbox_runner.py")
+    assert "-m" not in cmd
+
+
+def test_analysis_sandbox_small_incremental_memory_budget_still_allows_basic_code(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_MEM_MB", "64")
+    result, stdout = run_user_code(
+        "def main(rows):\n    return {\"count\": len(rows)}\n",
+        [{"n": 1}],
+    )
+    assert result == {"count": 1}
+    assert stdout == ""

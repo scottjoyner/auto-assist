@@ -45,6 +45,7 @@ def test_serve_helper_exposes_only_mobile_surface_and_preserves_other_roots() ->
     assert '--https="${SERVE_PORT}"' in text
     assert "--set-path=/health" in text
     assert "--set-path=/api/v1/auth/whoami" in text
+    assert "--set-path=/api/v1/runtime/catalog" in text
     assert "--set-path=/api/v1/agent/chat/completions" in text
     assert 'serve --https=443 --set-path' not in text
     assert "Existing unrelated Serve roots and Funnel mappings were not reset or replaced" in text
@@ -59,6 +60,9 @@ def test_verifier_proves_scope_identity_and_hermes_marker() -> None:
     assert 'KIPNERTER_GATEWAY_SERVE_PORT:-8443' in text
     assert 'gateway_url="https://${dns_name}:${SERVE_PORT}"' in text
     assert "/api/v1/auth/whoami" in text
+    assert "/api/v1/runtime/catalog" in text
+    assert 'value.get("schema_version") != "2"' in text
+    assert "agent_auto_available" in text
     assert "/api/v1/agent/chat/completions" in text
     assert "/api/degraded/status" in text
     assert "X-Kipnerter-Agent-Executor" in text
