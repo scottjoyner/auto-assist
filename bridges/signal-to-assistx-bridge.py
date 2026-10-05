@@ -40,6 +40,7 @@ import time
 import urllib.request
 import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from collections.abc import Mapping
 
 PORT = int(os.environ.get("PORT", "8900"))
 ASSISTX_URL = os.environ.get("ASSISTX_URL", "http://host.docker.internal:8000").rstrip("/")
@@ -48,6 +49,10 @@ ASSISTX_PASS = os.environ.get("ASSISTX_PASS", "change-me")
 TARGET_AGENT = os.environ.get("ASSISTX_TARGET_AGENT", "hermes-local")
 SIGNAL_FROM = os.environ.get("SIGNAL_FROM", "")
 REQUIRED_CAPS = [c.strip() for c in os.environ.get("REQUIRED_CAPS", "terminal,web,mcp,kg").split(",") if c.strip()]
+GROUP_CONTEXT_KEYS = frozenset({
+    "groupInfo", "groupId", "group_id", "groupV2", "groupV2Id",
+    "groupContext", "groupContextV2", "group_context",
+})
 
 
 def _post_json(url, payload, auth=None):
@@ -94,16 +99,32 @@ def create_assistx_task(text, signal_ts, source):
     return {"ok": status < 400, "status": status, "response": resp[:400]}
 
 
+def has_group_context(value):
+    """Fail closed for group metadata anywhere in a Signal envelope."""
+    if isinstance(value, Mapping):
+        if any(key in value for key in GROUP_CONTEXT_KEYS):
+            return True
+        return any(has_group_context(child) for child in value.values())
+    if isinstance(value, list):
+        return any(has_group_context(child) for child in value)
+    return False
+
+
 def parse_envelope(env):
     """Extract (text, timestamp, source) from a signal-cli REST webhook envelope.
     Returns None if not a note-to-self / direct-to-us message we care about.
     """
+    if has_group_context(env):
+        return None
     source = env.get("source") or env.get("sourceNumber") or ""
     data_msg = env.get("dataMessage") or {}
     sync_msg = env.get("syncMessage") or {}
+    sync_data_msg = (sync_msg.get("sentMessage") or {}).get("dataMessage") or {}
+    message_msg = data_msg or sync_data_msg
     timestamp = (env.get("timestamp") or data_msg.get("timestamp")
-                 or sync_msg.get("timestamp") or int(time.time() * 1000))
-    text = data_msg.get("message") or data_msg.get("body") or ""
+                 or sync_data_msg.get("timestamp") or sync_msg.get("timestamp")
+                 or int(time.time() * 1000))
+    text = message_msg.get("message") or message_msg.get("body") or ""
 
     # A note-to-self: source is our own registered number, OR it's a syncMessage
     # (sent from another device of the same account). Both mean "Scott wrote this".
@@ -152,6 +173,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         # signal-cli-rest-api wraps the envelope; support both raw envelope and {envelope:...}
         env = event.get("envelope", event)
+        if has_group_context(env):
+            self._send(200, {"ok": True, "action": "ignored", "reason": "group_message"})
+            return
         parsed = parse_envelope(env)
         if not parsed:
             self._send(200, {"ok": True, "action": "ignored", "reason": "not a note-to-self"})

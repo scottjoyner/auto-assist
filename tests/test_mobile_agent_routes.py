@@ -152,6 +152,11 @@ def test_non_tailscale_trusted_header_configuration_fails_closed(monkeypatch):
 
 
 def test_agent_chat_invokes_hermes_server_side_and_streams_openai_sse(monkeypatch):
+    monkeypatch.setattr(
+        mobile,
+        "_current_runtime_projection",
+        lambda: {"runtimes": [{"runtime_instance_id": "test"}]},
+    )
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
     monkeypatch.delenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", raising=False)
     captured = {}
@@ -202,6 +207,11 @@ def test_agent_chat_invokes_hermes_server_side_and_streams_openai_sse(monkeypatc
 
 
 def test_agent_chat_returns_gateway_failure_when_hermes_fails(monkeypatch):
+    monkeypatch.setattr(
+        mobile,
+        "_current_runtime_projection",
+        lambda: {"runtimes": [{"runtime_instance_id": "test"}]},
+    )
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
     monkeypatch.delenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", raising=False)
     monkeypatch.setattr(
@@ -226,3 +236,82 @@ def test_agent_chat_returns_gateway_failure_when_hermes_fails(monkeypatch):
 
     assert response.status_code == 503
     assert response.json()["detail"]["executor"] == "hermes"
+    assert response.json()["detail"]["error"] == "timeout"
+
+
+def test_agent_chat_maps_projection_failure_to_stable_mobile_error(monkeypatch):
+    monkeypatch.setattr(
+        mobile,
+        "_current_runtime_projection",
+        lambda: {"runtimes": [{"runtime_instance_id": "test"}]},
+    )
+    monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.delenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", raising=False)
+    monkeypatch.setattr(
+        mobile,
+        "_run_hermes",
+        lambda prompt, *, timeout, model, provider: {
+            "success": False,
+            "error": "exit_code_1",
+            "output": (
+                'API call failed: {"detail":{"error":"all providers failed",'
+                '"details":["signed AssistX runtime projection is not configured"]}}'
+            ),
+            "stderr": "internal executor trace that must not reach mobile",
+        },
+    )
+    client = TestClient(_app())
+
+    response = client.post(
+        "/api/v1/agent/chat/completions",
+        headers={"Tailscale-User-Login": "scott@example.com"},
+        json={
+            "model": "hermes-agent",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": {
+            "error": "runtime_projection_unavailable",
+            "executor": "hermes",
+            "retryable": True,
+        }
+    }
+    assert "signed AssistX" not in response.text
+    assert "internal executor trace" not in response.text
+
+
+def test_agent_chat_fails_fast_when_runtime_projection_is_unavailable(monkeypatch):
+    monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.delenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", raising=False)
+
+    calls = {"hermes": 0}
+
+    def blocked_projection():
+        raise RuntimeError("canonical projection approval evidence is expired")
+
+    def should_not_run(*args, **kwargs):
+        calls["hermes"] += 1
+        raise AssertionError("Hermes must not run without an authoritative projection")
+
+    monkeypatch.setattr(mobile, "_current_runtime_projection", blocked_projection)
+    monkeypatch.setattr(mobile, "_run_hermes", should_not_run)
+
+    response = TestClient(_app()).post(
+        "/api/v1/agent/chat/completions",
+        headers={"Tailscale-User-Login": "scott@example.com"},
+        json={
+            "model": "hermes-agent",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "error": "runtime_projection_unavailable",
+        "executor": "hermes",
+        "retryable": True,
+    }
+    assert calls["hermes"] == 0

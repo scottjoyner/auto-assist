@@ -43,6 +43,16 @@ def main() -> None:
         help="One or more task-evaluator result JSONL files.",
     )
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--noise-tolerance-sd",
+        type=float,
+        default=0.0,
+        help=(
+            "How many binomial standard errors a floor may be missed by before "
+            "the gate calls it a failure. 0 keeps the strict rule. Recorded in "
+            "the report so the tolerance is versioned with the evidence."
+        ),
+    )
     args = parser.parse_args()
 
     suite = load_task_evaluator_suite(args.suite)
@@ -52,6 +62,7 @@ def main() -> None:
     report = summarize_task_evaluator_results(
         rows,
         suite,
+        noise_tolerance_sd=args.noise_tolerance_sd,
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
