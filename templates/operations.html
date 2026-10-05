@@ -1,6 +1,4 @@
 {% extends "base.html" %}
-{% block nav_active %}control_room{% endblock %}
-
 {% block title %}AssistX – Operations{% endblock %}
 {% block head %}<link rel="stylesheet" href="{{ url_for('static', path='css/operations.css') }}">{% endblock %}
 
@@ -82,8 +80,7 @@
 {% block scripts %}
 <script>
 (() => {
-  const esc = (window.UIUtils && window.UIUtils.escapeHtml) ||
-    ((v) => (v == null ? '' : String(v)).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])));
+  const esc = window.UIUtils.escapeHtml;
   let fleet = {};
   let tasks = [];
   let recovery = {};

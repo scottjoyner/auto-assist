@@ -41,3 +41,7 @@ __pycache__/
 
 *.assistx_cache.sqlite
 .assistx_cache.sqlite
+
+# --- coverage artifacts (additive: not covered above) ---
+.coverage
+htmlcov/
