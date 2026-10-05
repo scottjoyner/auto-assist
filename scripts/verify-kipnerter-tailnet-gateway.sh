@@ -136,14 +136,24 @@ import sys
 
 with open(sys.argv[1], encoding="utf-8") as handle:
     value = json.load(handle)
-if value.get("schema_version") != "1":
+if value.get("schema_version") != "2":
     raise SystemExit(f"unexpected runtime catalog schema: {value}")
 if value.get("source") != "assistx-runtime-projection":
     raise SystemExit(f"unexpected runtime catalog source: {value}")
-for key in ("fleet_runtime_count", "fleet_model_count", "agent_runtime_count", "code_runtime_count"):
+for key in (
+    "fleet_runtime_count",
+    "fleet_model_count",
+    "fleet_unique_model_count",
+    "agent_runtime_count",
+    "code_runtime_count",
+):
     item = value.get(key)
     if not isinstance(item, int) or item < 0:
         raise SystemExit(f"invalid {key}: {item!r}")
+if not isinstance(value.get("agent_auto_available"), bool):
+    raise SystemExit("runtime catalog agent_auto_available must be a bool")
+if not isinstance(value.get("models"), list):
+    raise SystemExit("runtime catalog models must be a list")
 if not isinstance(value.get("runtimes"), list):
     raise SystemExit("runtime catalog runtimes must be a list")
 serialized = json.dumps(value, sort_keys=True).lower()

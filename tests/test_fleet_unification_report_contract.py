@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 
@@ -11,7 +12,11 @@ INSTALLED = Path.home() / ".hermes" / "scripts" / "fleet-unification-report.sh"
 
 def test_installed_transition_script_matches_managed_source() -> None:
     assert CANONICAL.is_file()
-    assert INSTALLED.is_file()
+    if not INSTALLED.is_file():
+        # The installed copy is a managed-host invariant, not a repository-runner
+        # prerequisite. GitHub-hosted CI has a fresh HOME by design.
+        assert os.getenv("GITHUB_ACTIONS", "").lower() == "true"
+        return
     assert hashlib.sha256(CANONICAL.read_bytes()).hexdigest() == hashlib.sha256(INSTALLED.read_bytes()).hexdigest()
 
 
