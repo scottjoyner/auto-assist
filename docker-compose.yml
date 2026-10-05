@@ -1,6 +1,10 @@
 services:
   neo4j:
-    image: neo4j:5-community
+    # Enterprise is required, not preferred. The api/worker/hermes-adapter services
+    # all set NEO4J_DATABASE=assistx, a non-default database; Community supports
+    # only "neo4j" and "system". Pinned to the minor that production runs so a
+    # local stack cannot silently diverge from the deployed kernel.
+    image: neo4j:5.26-enterprise
     container_name: assistx-neo4j
     profiles:
       - neo4j
@@ -8,6 +12,13 @@ services:
       - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-change-me}
       - NEO4J_dbms_memory_pagecache_size=${NEO4J_CACHE_SIZE:-512M}
       - NEO4J_dbms_memory_heap_max__size=${NEO4J_HEAP_SIZE:-1G}
+      # "eval" for a self-hosted evaluation build, matching production's
+      # /home/scott/docker/neo4j-ssd.yml. Must become "yes" for a paid licence.
+      - NEO4J_ACCEPT_LICENSE_AGREEMENT=${NEO4J_LICENSE:-eval}
+      # Allowlist, not an install. Kept so dropping an APOC jar into the volume
+      # works without a config change; APOC itself is optional and the one
+      # unguarded call site is guarded separately.
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
     ports:
       - "${ASSISTX_NEO4J_BIND:-0.0.0.0}:${ASSISTX_NEO4J_BOLT_PORT:-7687}:7687"
     volumes:

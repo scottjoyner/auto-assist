@@ -112,16 +112,43 @@ def sync_to_neo4j():
                             word_count=metadata['word_count']
                         )
                         
-                        # Index key concepts for search
-                        session.run("""
-                            MATCH (doc:Documentation {repo: $repo, path: $path})
-                            CALL apoc.create.addLabels(doc, ['Doc_' + toUpper(split($title, ' ')[0])]) YIELD node
-                            RETURN node
-                        """,
-                            repo=repo_name,
-                            path=str(rel_path),
-                            title=metadata['title']
-                        )
+                        # Index key concepts for search.
+                        # APOC is optional: it is not installed in production
+                        # (0 apoc procedures), and an unguarded apoc.create.addLabels
+                        # raises ProcedureNotFound. Labels are a convenience index,
+                        # so fall back to plain SET, which needs no plugin. Mirrors the
+                        # _has_apoc() convention already used in src/assistx/swarm_core.py.
+                        try:
+                            session.run("""
+                                CALL dbms.procedures() YIELD name
+                                WHERE name STARTS WITH 'apoc' RETURN count(name) AS c
+                            """).single()
+                            has_apoc = True
+                        except Exception:
+                            has_apoc = False
+
+                        if has_apoc:
+                            session.run("""
+                                MATCH (doc:Documentation {repo: $repo, path: $path})
+                                CALL apoc.create.addLabels(doc, ['Doc_' + toUpper(split($title, ' ')[0])]) YIELD node
+                                RETURN node
+                            """,
+                                repo=repo_name,
+                                path=str(rel_path),
+                                title=metadata['title']
+                            )
+                        else:
+                            session.run("""
+                                MATCH (doc:Documentation {repo: $repo, path: $path})
+                                SET doc:Documentation
+                                FOREACH (_ IN CASE WHEN $first_word <> '' THEN [1] ELSE [] END |
+                                  SET doc:$( 'Doc_' + toUpper($first_word) )
+                                )
+                            """,
+                                repo=repo_name,
+                                path=str(rel_path),
+                                first_word=(metadata['title'] or '').split(' ')[0]
+                            )
                         
                         total_files += 1
                         

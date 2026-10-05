@@ -34,7 +34,7 @@ import time
 import pytest
 from assistx.neo4j_client import Neo4jClient
 
-NEO4J_IMAGE = os.getenv("TEST_NEO4J_IMAGE", "neo4j:5.23.0")
+NEO4J_IMAGE = os.getenv("TEST_NEO4J_IMAGE", "neo4j:5.26-enterprise")
 NEO4J_USER = os.getenv("TEST_NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("TEST_NEO4J_PASSWORD", "redacted-rotate-credentials")
 NEO4J_FIXTURES = {"neo4j_container", "neo4j_client", "seeded_neo4j"}
