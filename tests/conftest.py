@@ -3,16 +3,24 @@ import os
 os.environ["ASSISTX_RUNTIME_PROFILE"] = "test"
 os.environ["ASSISTX_DEPENDENCY_MODE"] = "compat"
 
-# assistx.api reads BASIC_AUTH_USER/PASS at import time, and with neither set every
-# auth-required route answers 401. The tests authenticate with exactly these
-# credentials as their fallback, so pin them here the way the profile and dependency
-# mode are pinned. Without this the suite only passes on a machine that happens to
-# have a .env exporting matching values, which is how 32 tests in test_migration_api
-# came to fail on a clean checkout.
-_TEST_AUTH_USER = "neo4j"
-_TEST_AUTH_PASS = "redacted-rotate-credentials"
-os.environ.setdefault("BASIC_AUTH_USER", _TEST_AUTH_USER)
-os.environ.setdefault("BASIC_AUTH_PASS", _TEST_AUTH_PASS)
+#: Credentials the tests authenticate with. Declared before the setdefault calls
+#: below so there is one source for both sides of the handshake.
+NEO4J_DEFAULT_USER = os.getenv("TEST_NEO4J_USER", "neo4j")
+NEO4J_DEFAULT_PASSWORD = os.getenv("TEST_NEO4J_PASSWORD", "redacted-rotate-credentials")
+
+# The API reads BASIC_AUTH_USER / BASIC_AUTH_PASS with *no* defaults
+# (``src/assistx/api.py``: ``os.getenv("BASIC_AUTH_USER")``), so both are None on
+# a host that has not exported them and every authenticated request is refused.
+# The tests send the same values they would default to, so without these the
+# suite silently depends on ambient credentials: 35 tests failed with 401 on a
+# clean checkout and 2 passed once the variables were set.
+#
+# Thirty-five red for anyone running the suite hermetically is how a suite learns
+# to be ignored, so the dependency is declared here rather than left to whoever
+# happens to have the variables exported. ``setdefault`` so a real deployment's
+# values still win -- this is a test default, not an override.
+os.environ.setdefault("BASIC_AUTH_USER", NEO4J_DEFAULT_USER)
+os.environ.setdefault("BASIC_AUTH_PASS", NEO4J_DEFAULT_PASSWORD)
 
 # Ensure the ``src`` layout is importable from subprocesses spawned by the code
 # under test. Most subprocesses import AssistX modules; the analysis sandbox
@@ -35,8 +43,8 @@ import pytest
 from assistx.neo4j_client import Neo4jClient
 
 NEO4J_IMAGE = os.getenv("TEST_NEO4J_IMAGE", "neo4j:5.23.0")
-NEO4J_USER = os.getenv("TEST_NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("TEST_NEO4J_PASSWORD", "redacted-rotate-credentials")
+NEO4J_USER = NEO4J_DEFAULT_USER
+NEO4J_PASSWORD = NEO4J_DEFAULT_PASSWORD
 NEO4J_FIXTURES = {"neo4j_container", "neo4j_client", "seeded_neo4j"}
 
 

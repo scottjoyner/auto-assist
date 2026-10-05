@@ -5,6 +5,7 @@ from typing import Any, Callable
 from . import api as api_module
 from . import control_room as control_room_module
 from . import router_integration as router_integration_module
+from . import api as _api_module
 from .api import _neo, app, auth, templates
 from .benchmark_allocation_policy import install_benchmark_allocation_policy
 from .control_room import LEGACY_UI_PATHS, build_control_room_router
@@ -114,13 +115,24 @@ app.include_router(
         legacy_recovery_execute=_legacy_recovery_execute,
     )
 )
-app.include_router(build_control_room_router(_neo, auth, templates))
+# Late-bound Neo4j accessors: `lambda: _api_module._neo()` rather than `_neo`.
+#
+# Passing `_neo` hands each router the function object as it exists at import, so
+# every router holds a frozen reference. Nothing can rebind it afterwards -- least
+# of all a test, which is why `monkeypatch.setattr("assistx.api._neo", ...)` had no
+# effect and the router reported neo4j "degraded" while a perfectly healthy seeded
+# container sat there unused.
+#
+# The lambda resolves the module attribute per call, so behaviour is unchanged
+# unless `_neo` is rebound, in which case the routers now see the new value instead
+# of a stale client. It also gives the whole app one testable seam.
+app.include_router(build_control_room_router(lambda: _api_module._neo(), auth, templates))
 app.include_router(build_recovery_router(auth))
-app.include_router(build_fleet_routing_matrix_router(_neo, auth))
-app.include_router(build_router_integration_router(_neo))
-app.include_router(build_runtime_projection_router_v2(_neo, auth_dependency=auth))
+app.include_router(build_fleet_routing_matrix_router(lambda: _api_module._neo(), auth))
+app.include_router(build_router_integration_router(lambda: _api_module._neo()))
+app.include_router(build_runtime_projection_router_v2(lambda: _api_module._neo(), auth_dependency=auth))
 app.include_router(build_overlay_router())
-app.include_router(build_passive_agent_router(_neo, auth_dependency=auth))
+app.include_router(build_passive_agent_router(lambda: _api_module._neo(), auth_dependency=auth))
 app.include_router(build_passive_claim_router(_neo, auth_dependency=auth))
 app.include_router(build_passive_control_router(_neo, auth_dependency=auth))
 app.include_router(build_coordination_router(auth_dependency=auth))
