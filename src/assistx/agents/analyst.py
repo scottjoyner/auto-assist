@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import List, Dict, Any, Tuple
 from .llm import tool_json
 
@@ -25,6 +26,15 @@ def generate_analysis_code(question: str, rows: List[Dict[str, Any]]) -> Dict[st
     ]
     return tool_json(msg)
 
+def _sandbox_command() -> list[str]:
+    # Execute the sandbox file directly rather than `python -m assistx...`.
+    # Importing the package first runs AssistX startup hooks and pulls a large
+    # application graph into the child process before the sandbox memory limit
+    # is applied. That is both unnecessary and host-dependent.
+    sandbox_path = Path(__file__).resolve().parents[1] / "sandbox_runner.py"
+    return [sys.executable, str(sandbox_path)]
+
+
 def run_user_code(code: str, rows: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], str]:
     """
     Executes analysis code in an isolated subprocess sandbox.
@@ -32,7 +42,7 @@ def run_user_code(code: str, rows: List[Dict[str, Any]]) -> Tuple[Dict[str, Any]
     Expects a function main(rows)->dict.
     """
     timeout_s = float(os.getenv("ANALYSIS_TIMEOUT_S", "8"))
-    cmd = [sys.executable, "-m", "assistx.sandbox_runner"]
+    cmd = _sandbox_command()
     payload = json.dumps({"code": code, "rows": rows}, ensure_ascii=False).encode("utf-8")
     try:
         proc = subprocess.run(
