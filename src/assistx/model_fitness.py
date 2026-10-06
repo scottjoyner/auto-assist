@@ -8,10 +8,10 @@ model identities are excluded from model fitness.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import statistics
-from typing import Any, Iterable
-
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from typing import Any
 
 PROVIDER_FAILURE_CLASSES = frozenset(
     {

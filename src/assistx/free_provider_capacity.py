@@ -8,9 +8,8 @@ fallback or changing routing authority.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
-
 
 FREE_SEMANTICS = frozenset(
     {
