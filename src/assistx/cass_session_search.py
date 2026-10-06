@@ -93,7 +93,7 @@ class CassSessionSearch:
 
     def search(self, query: str, *, workspace: str, evidence_dir: str,
                days: int = 7, limit: int = 5, max_tokens: int = 2000,
-               query_timeout_ms: int = 2000) -> CassSearchEvidence:
+               query_timeout_ms: int = 2000, data_dir: str | None = None) -> CassSearchEvidence:
         if not query.strip():
             raise ValueError("query is required")
         work = Path(workspace).resolve()
@@ -112,6 +112,11 @@ class CassSessionSearch:
             "--max-tokens", str(int(max_tokens)),
             "--timeout", str(int(query_timeout_ms)),
         ]
+        if data_dir is not None:
+            index_dir = Path(data_dir).resolve()
+            if not index_dir.is_dir():
+                raise ValueError(f"CASS data_dir does not exist: {index_dir}")
+            command.extend(["--data-dir", str(index_dir)])
         return self._run_search(
             query=query, workspace=str(work), command=command,
             evidence_dir=evidence_dir, binary=binary,
