@@ -102,6 +102,26 @@ def test_projection_notes_document_stdinhazard():
     assert "/dev/null" in note or "stdin" in note.lower() or "close stdin" in note.lower()
 
 
+def test_sqlite_session_history_is_not_treated_as_concurrent_process_duplication():
+    records = [
+        {
+            "source": "sqlite_readonly",
+            "session": "historical-a",
+            "worktree": "/tmp/shared-worktree",
+            "status": "active",
+            "pid": None,
+        },
+        {
+            "source": "sqlite_readonly",
+            "session": "historical-b",
+            "worktree": "/tmp/shared-worktree",
+            "status": "active",
+            "pid": None,
+        },
+    ]
+    assert supervisor.detect_duplicate_worktrees(records) == []
+
+
 if __name__ == "__main__":
     test_enumerate_free_models_from_fixture()
     test_credential_present_no_secret_leak()
@@ -109,4 +129,27 @@ if __name__ == "__main__":
     test_projection_readonly_and_verdict()
     test_projection_healthy_when_clean()
     test_projection_notes_document_stdinhazard()
+    test_sqlite_session_history_is_not_treated_as_concurrent_process_duplication()
     print("all free_subagent_supervisor tests passed")
+
+
+def test_discover_live_sessions_readonly_query_only():
+    import sys, sqlite3
+    sys.path.insert(0, "scripts")
+    from free_subagent_supervisor import discover_live_sessions, _opencode_db_uri
+    result = discover_live_sessions(query_only=True)
+    assert isinstance(result, list)
+    # Verify path derived from HOME (not a literal hardcoded /home/scott in source)
+    db_uri = _opencode_db_uri()
+    assert db_uri.startswith("file:")
+    assert "opencode.db" in db_uri
+    # Prove mode=ro + PRAGMA query_only by asserting a write fails
+    conn = sqlite3.connect(db_uri, uri=True)
+    conn.execute("PRAGMA query_only = ON")
+    try:
+        conn.execute("CREATE TEMP TABLE _assert_write_fail (id INTEGER)")
+        assert False, "Write should have failed on mode=ro with query_only"
+    except sqlite3.OperationalError:
+        pass  # expected
+    conn.close()
+

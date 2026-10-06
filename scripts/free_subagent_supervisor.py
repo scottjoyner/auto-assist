@@ -226,7 +226,7 @@ def discover_live_sessions(query_only: bool = True) -> list[dict[str, Any]]:
         now_ms = int(time.time() * 1000)
         seven_days_ms = 7 * 24 * 60 * 60 * 1000
         cur.execute(
-            "SELECT id, slug, directory, agent, model, time_updated, time_archived FROM session WHERE time_updated > ? ORDER BY time_updated DESC LIMIT 50",
+            "SELECT id, title, slug, directory, agent, model, time_updated, time_archived FROM session WHERE time_updated > ? ORDER BY time_updated DESC LIMIT 50",
             (now_ms - seven_days_ms,),
         )
         cols = [d[0] for d in cur.description]
@@ -279,7 +279,11 @@ def discover_live_sessions(query_only: bool = True) -> list[dict[str, Any]]:
 def detect_duplicate_worktrees(records: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Detect active records with conflicting worktrees."""
     recs = records if records is not None else load_state()
-    active = [r for r in recs if str(r.get("status") or "").lower() in ("active", "running", "in_progress")]
+    active = [
+        r for r in recs
+        if str(r.get("status") or "").lower() in ("active", "running", "in_progress")
+        and not (r.get("source") == "sqlite_readonly" and not r.get("pid"))
+    ]
     conflicts: list[dict[str, Any]] = []
     worktree_map: dict[str, list[dict[str, Any]]] = {}
     for r in active:
