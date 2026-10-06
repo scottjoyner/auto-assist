@@ -1,4 +1,7 @@
+import pytest
+
 from assistx.repository_source_binding import (
+    RepositorySourceBinding,
     binding_to_document,
     document_to_binding,
 )
