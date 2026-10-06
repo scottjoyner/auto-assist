@@ -25,13 +25,13 @@ FREE_SEMANTICS = frozenset(
 
 OBSERVED_STATES = frozenset(
     {
+        "unqualified",
         "usable",
         "rate_limited",
         "quota_exhausted",
         "payment_required",
         "provider_overloaded",
         "auth_error",
-        "unqualified",
         "unknown",
     }
 )
@@ -229,6 +229,7 @@ def project_capacity_state(
         if observed_state not in OBSERVED_STATES:
             return "unknown"
         if observed_state in {
+            "unqualified",
             "rate_limited",
             "quota_exhausted",
             "payment_required",

@@ -101,6 +101,7 @@ def test_observed_runtime_failures_are_preserved():
     spec = PROVIDER_SPECS["groq"]
     presence = {"GROQ_API_KEY": True}
     for state in (
+        "unqualified",
         "rate_limited",
         "quota_exhausted",
         "payment_required",
@@ -113,6 +114,17 @@ def test_observed_runtime_failures_are_preserved():
             qualified=True,
             observed_state=state,
         ) == state
+
+
+def test_observed_usable_is_preserved():
+    spec = PROVIDER_SPECS["groq"]
+    presence = {"GROQ_API_KEY": True}
+    assert project_capacity_state(
+        spec,
+        credential_presence=presence,
+        qualified=True,
+        observed_state="usable",
+    ) == "usable"
 
 
 def test_paid_fallback_policy_does_not_mean_payment_required():
