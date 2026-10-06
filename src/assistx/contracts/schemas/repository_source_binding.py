@@ -1,223 +1,312 @@
-"""Repository source-binding contract.
+"""Repository source-binding contract (which tree a task must examine).
 
-Answers exactly one question: *which source was (or must be) under examination?*
+A repository-bound task is only meaningful if the executor, reviewer, or
+delegate that ends up reading the source reads the *same tree* the task was
+created against. A recent swarm reviewer inspected ``/home/scott/embed_x1``
+instead of the authoritative worktree
+``/media/scott/SSD_4TB/worktrees/auto-ingest-swarm-20261002``; its review
+evaluated stale source and had to be rejected. Nothing in the task payload
+recorded that the wrong checkout had been used, so the error was only visible
+after the fact.
 
-A repository-bound task or delegation carries a ``RepositorySourceBinding`` so a
-worker cannot silently satisfy it from a stale mirror. The binding is
-**identity only** -- it grants no claim, execution, write, dispatch, approval or
-routing authority. It exists so that an observed workspace can be compared
-against an expected source and *fails closed* on any difference.
+``RepositorySourceBinding`` closes that gap. It carries exactly the identity a
+worker must be able to prove it examined.
 
-Why stale mirrors are forbidden
--------------------------------
-The fleet historically accepted "some checkout of the right repository". That
-is not enough: a reviewer that inspects a stale mirror produces confident,
-well-formed findings about code that is not the requested code, and nothing in
-the result distinguishes that from a real review. Binding the *worktree
-realpath* together with the HEAD commit collapses that ambiguity -- there is
-exactly one accepted source and everything else is a mismatch, never a fallback.
+Design constraints, all deliberate:
+
+* The binding records *identity*, never *authority*. Constructing, validating,
+  or verifying one grants no task claim, no execution, no write, no dispatch,
+  no approval, and no routing authority. ``SourceBindingVerdict`` pins every
+  authority flag to ``False`` so the boundary is machine-checkable.
+* Caller-supplied host paths are not authoritative on their own. The binding
+  must declare ``authority_source``, meaning both realpaths were resolved
+  through the operator-controlled repository alias map rather than taken on
+  trust from whoever called.
+* Paths must be canonical realpaths. Relative paths, ``~`` prefixes, ``..``
+  traversal, and the home directory itself are rejected at validation time.
+* Stale mirrors are forbidden. Two checkouts of the same repository are
+  different sources even when they share a remote, a branch, and a commit, so
+  the worktree realpath is pinned separately from the repository realpath.
+
+This module's own imports are limited to ``pydantic`` and the standard library.
+**Importing it through the ``assistx`` package is not side-effect free, however.**
+``assistx/__init__.py`` executes five runtime safety-boundary installers at import
+time - claim fencing, task-family routing, repository path policy, work-supply
+boundaries, and fleet-executor compatibility - so a plain
+``from assistx.contracts.schemas.repository_source_binding import ...`` loads the
+Neo4j driver, FastAPI, httpx, and pandas and mutates ``Neo4jClient`` methods as a
+side effect. That is measured, not theoretical: roughly 1200 modules.
+
+A consumer that only needs this contract, and must not pull in AssistX runtime
+state, should load the file directly instead:
+
+.. code-block:: python
+
+    import importlib.util, pathlib, sys
+
+    path = pathlib.Path("src/assistx/contracts/schemas/repository_source_binding.py")
+    spec = importlib.util.spec_from_file_location("repository_source_binding", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # pydantic resolves annotations via sys.modules
+    spec.loader.exec_module(module)
+
+That path loads pydantic and the standard library only. The ``sys.modules``
+registration is required: with ``from __future__ import annotations`` pydantic
+resolves the string annotations through ``sys.modules[cls.__module__]`` and
+otherwise reports the model as not fully defined. See
+``tests/test_repository_source_binding.py`` for a pinned test of both properties.
 """
 
 from __future__ import annotations
 
 import os
-import posixpath
 import re
 from enum import Enum
-from typing import Any
+from pathlib import PurePosixPath
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-# A repository identity is an opaque alias (``auto-assist``), never a path.
-_IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-_SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_CONTROL = ("\x00", "\n", "\r")
-_BAD_REF_CHARS = (" ", "~", "^", ":", "?", "*", "[", "\\")
+HEAD_SHA_PATTERN = r"^[0-9a-f]{40}$"
+SHA256_PATTERN = r"^[0-9a-f]{64}$"
+
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+#: The only accepted provenance for a binding's two realpaths. Anything else
+#: would let a caller nominate an arbitrary host path as authoritative.
+BINDING_AUTHORITY_SOURCE = "configured_repository_roots"
+
+
+def _validate_canonical_path(value: str, *, field: str) -> str:
+    """Reject anything that is not an absolute, canonical realpath."""
+
+    text = str(value or "")
+    if not text.strip():
+        raise ValueError(f"{field} must not be empty")
+    if _CONTROL.search(text):
+        raise ValueError(f"{field} must not contain control characters")
+    if text.startswith("~"):
+        raise ValueError(f"{field} must be a resolved realpath, not a ~ path")
+    if not text.startswith("/"):
+        raise ValueError(f"{field} must be an absolute path, not {text!r}")
+    if ".." in PurePosixPath(text).parts:
+        raise ValueError(f"{field} must not contain '..' traversal segments")
+    if text != os.path.normpath(text):
+        raise ValueError(f"{field} must be canonical, not {text!r}")
+    try:
+        home = os.path.normpath(os.path.realpath(os.path.expanduser("~")))
+    except (OSError, RuntimeError):
+        home = ""
+    # $HOME is never a legitimate repository or worktree root. Treating it as
+    # one is the specific silent-fallback failure this contract exists to stop.
+    if home and os.path.normpath(text) == home:
+        raise ValueError(f"{field} must not be the home directory")
+    return text
 
 
 class DirtyStateExpectation(str, Enum):
-    """What the bound source is allowed to look like before work begins."""
+    """What the bound worktree's dirty state must be for the binding to hold.
 
+    ``ANY`` exists for read-only analysis of an already-dirty operator
+    checkout. It relaxes cleanliness only; it never relaxes path or HEAD
+    identity.
+    """
+
+    CLEAN = "clean"
     CLEAN_REQUIRED = "clean_required"
-    DIRTY_ALLOWED = "dirty_allowed"
+    DIRTY = "dirty"
+    ANY = "any"
 
 
 class SourceBindingState(str, Enum):
-    """Explicit verification outcome. Anything other than MATCH is a rejection."""
+    """Outcome of comparing an observed workspace against an expected binding.
+
+    Every value other than ``MATCH`` is a fail-closed rejection. There is no
+    "close enough" and no "try another checkout" state, by construction.
+    """
 
     MATCH = "MATCH"
     REPOSITORY_MISMATCH = "REPOSITORY_MISMATCH"
     WORKTREE_MISMATCH = "WORKTREE_MISMATCH"
-    BRANCH_MISMATCH = "BRANCH_MISMATCH"
     HEAD_MISMATCH = "HEAD_MISMATCH"
     DIRTY_STATE_MISMATCH = "DIRTY_STATE_MISMATCH"
     SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
-    UNBOUND = "UNBOUND"
-
-
-def _reject_home(candidate: str, field_name: str) -> None:
-    """Refuse the home directory as a bound source.
-
-    ``$HOME`` is the classic silent fallback when a caller cannot resolve the
-    requested worktree, so it must never be an accepted binding.
-    """
-
-    try:
-        home = os.path.expanduser("~")
-    except Exception:  # pragma: no cover - defensive
-        return
-    if not home or home == "~" or not os.path.isabs(home):
-        return
-    if os.path.realpath(candidate) == os.path.realpath(home):
-        raise ValueError(f"{field_name} must not be the home directory")
-
-
-def _validate_realpath(value: str, field_name: str) -> str:
-    raw = str(value)
-    if not raw:
-        raise ValueError(f"{field_name} is required")
-    if raw != raw.strip():
-        raise ValueError(f"{field_name} must not be padded with whitespace")
-    if any(mark in raw for mark in _CONTROL):
-        raise ValueError(f"{field_name} contains control characters")
-    if raw != posixpath.normpath(raw):
-        raise ValueError(f"{field_name} must be normalized")
-    if not posixpath.isabs(raw):
-        raise ValueError(f"{field_name} must be an absolute path")
-    if any(part == ".." for part in raw.split("/")):
-        raise ValueError(f"{field_name} must not contain '..'")
-    if len([part for part in raw.split("/") if part]) < 2:
-        raise ValueError(f"{field_name} must not be a filesystem root")
-    _reject_home(raw, field_name)
-    return raw
 
 
 class RepositorySourceBinding(BaseModel):
-    """Fail-closed description of the one accepted source for a repository task.
+    """The tree a repository-bound task is expected to read.
 
-    Validation is deliberately strict: a caller-supplied host path is never
-    authoritative on its own, so every path must already be a canonical
-    absolute realpath and cannot be relative, traversable, the home directory,
-    or a filesystem root.
+    This is an integrity record, not a capability. Holding one proves nothing
+    about who may execute. See ``docs/swarm_contracts/repository_source_binding.md``.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid")
 
-    repository: str = Field(
-        ..., description="Repository identity/alias (opaque, never a path)."
+    authority_source: str = Field(
+        default=BINDING_AUTHORITY_SOURCE,
+        description=(
+            "Declares how the two realpaths were resolved. Pinned so a "
+            "caller-supplied path is never authoritative on its own."
+        ),
     )
-    repository_realpath: str = Field(
-        ..., description="Canonical realpath of the repository (main) checkout."
+
+    repository: str = Field(..., description="Configured repository identity alias.")
+    repo_realpath: str = Field(
+        ...,
+        description="Canonical realpath of the repository the worktree belongs to.",
     )
     worktree_realpath: str = Field(
-        ..., description="Canonical realpath of the exact worktree under work."
+        ...,
+        description="Canonical realpath of the exact worktree to be examined.",
     )
-    branch: str | None = Field(
-        None, description="Expected branch ref name; None means branch-agnostic."
+    branch: str = Field(..., min_length=1, max_length=512)
+    head_sha: str = Field(..., pattern=HEAD_SHA_PATTERN)
+    expected_dirty: DirtyStateExpectation = DirtyStateExpectation.CLEAN
+    task_id: str = Field(..., min_length=1, max_length=256)
+    work_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=256,
+        description="Attempt/execution identifier the binding is scoped to.",
     )
-    head_sha: str = Field(..., description="Expected full HEAD commit SHA.")
-    dirty_expectation: DirtyStateExpectation = Field(
-        default=DirtyStateExpectation.CLEAN_REQUIRED,
-        description="Whether the bound worktree must be clean.",
-    )
-    task_id: str | None = Field(
-        None, description="Task id this binding was minted for."
-    )
-    work_id: str | None = Field(
-        None, description="Delegation/work identifier this binding was minted for."
-    )
-    source_manifest_sha256: str | None = Field(
-        None,
-        description="Optional digest of a source manifest covering the bound tree.",
-    )
+    source_manifest_sha256: str | None = Field(default=None, pattern=SHA256_PATTERN)
+
+    @field_validator("authority_source")
+    @classmethod
+    def _pinned_authority_source(cls, value: str) -> str:
+        if value != BINDING_AUTHORITY_SOURCE:
+            raise ValueError(
+                f"authority_source must be {BINDING_AUTHORITY_SOURCE!r}; a "
+                "caller-supplied path is never authoritative on its own"
+            )
+        return value
 
     @field_validator("repository")
     @classmethod
-    def _validate_identity(cls, value: str) -> str:
-        identity = str(value).strip()
-        if not _IDENTITY_RE.match(identity):
+    def _identity_is_not_a_path(cls, value: str) -> str:
+        text = str(value or "")
+        if not text.strip():
+            raise ValueError("repository must not be empty")
+        if _CONTROL.search(text):
+            raise ValueError("repository must not contain control characters")
+        if text.startswith(("/", "~")):
             raise ValueError(
-                "repository identity must be an opaque alias "
-                "(letters, digits, dot, dash, underscore); paths are not allowed"
+                "repository must be a configured identity alias, not a host path"
             )
-        return identity
+        if ".." in PurePosixPath(text).parts:
+            raise ValueError("repository must not contain '..' segments")
+        return text
 
-    @field_validator("repository_realpath", "worktree_realpath")
+    @field_validator("repo_realpath", "worktree_realpath")
     @classmethod
-    def _validate_paths(cls, value: str, info: ValidationInfo) -> str:
-        return _validate_realpath(value, info.field_name)
-
-    @field_validator("head_sha")
-    @classmethod
-    def _validate_head(cls, value: str) -> str:
-        head = str(value).strip().lower()
-        if not (_SHA1_RE.match(head) or _SHA256_RE.match(head)):
-            raise ValueError("head_sha must be a full lowercase hexadecimal commit SHA")
-        return head
-
-    @field_validator("branch")
-    @classmethod
-    def _validate_branch(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        branch = str(value).strip()
-        if not branch or branch in {"HEAD", "detached"}:
-            return None
-        if any(mark in branch for mark in (*_CONTROL, *_BAD_REF_CHARS)):
-            raise ValueError("branch contains characters that are not allowed in a ref")
-        return branch
-
-    @field_validator("source_manifest_sha256")
-    @classmethod
-    def _validate_manifest(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        digest = str(value).strip().lower()
-        if not _SHA256_RE.match(digest):
-            raise ValueError("source_manifest_sha256 must be a sha-256 hex digest")
-        return digest
+    def _realpath_is_canonical(cls, value: str, info) -> str:
+        return _validate_canonical_path(value, field=info.field_name)
 
     @field_validator("task_id", "work_id")
     @classmethod
-    def _validate_identifier(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        identifier = str(value).strip()
-        if not identifier:
-            return None
-        if len(identifier) > 256 or any(mark in identifier for mark in _CONTROL):
-            raise ValueError("identifier must be short and free of control characters")
-        return identifier
+    def _identifier_is_clean(cls, value: str) -> str:
+        if _CONTROL.search(str(value or "")):
+            raise ValueError("task_id/work_id must not contain control characters")
+        return value
 
-    def to_contract_payload(self) -> dict[str, Any]:
-        """Serialize for embedding in a task or delegation payload."""
+    def provenance(self) -> dict[str, object]:
+        """Compact payload safe to embed in a task or result."""
 
-        return self.model_dump(mode="json", exclude_none=True)
+        return self.model_dump(mode="json")
+
+
+class ObservedSourceState(BaseModel):
+    """What one specific executor/reviewer workspace actually looks like.
+
+    Produced by observing exactly one named directory. There is deliberately no
+    constructor that accepts a *search root*: a verifier must be told which
+    workspace to inspect, and if that workspace is not a usable git checkout
+    the answer is ``SOURCE_UNAVAILABLE`` rather than a different directory.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    available: bool = True
+    unavailable_reason: str | None = Field(default=None, max_length=256)
+    repository: str | None = Field(default=None, max_length=512)
+    repo_realpath: str | None = Field(default=None, max_length=4096)
+    worktree_realpath: str | None = Field(default=None, max_length=4096)
+    branch: str | None = Field(default=None, max_length=512)
+    head_sha: str | None = Field(default=None, max_length=64)
+    dirty: bool | None = None
 
     @classmethod
-    def from_contract_payload(cls, payload: Any) -> RepositorySourceBinding | None:
-        """Parse a binding out of an untrusted payload, failing closed.
+    def unavailable(cls, reason: str) -> ObservedSourceState:
+        return cls(available=False, unavailable_reason=str(reason)[:256])
 
-        Returns ``None`` when no binding is present at all (legacy or
-        non-repository tasks). Raises when a binding *is* present but invalid,
-        because a malformed binding must never be silently downgraded to
-        "unbound" and thereby skip verification.
+
+class SourceBindingVerdict(BaseModel):
+    """Fail-closed comparison of an observed workspace against a binding."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: SourceBindingState
+    task_id: str
+    work_id: str
+    repository: str
+
+    expected_repo_realpath: str
+    expected_worktree_realpath: str
+    expected_branch: str
+    expected_head_sha: str
+
+    observed_repo_realpath: str | None = None
+    observed_worktree_realpath: str | None = None
+    observed_branch: str | None = None
+    observed_head_sha: str | None = None
+    observed_dirty: bool | None = None
+
+    reasons: list[str] = Field(default_factory=list)
+
+    #: Always empty. It is recorded so a reader can confirm no fallback was
+    #: taken; the implementation has no code path that could populate it.
+    fallback_candidates_considered: list[str] = Field(default_factory=list)
+
+    #: A source binding is an integrity check. It grants nothing.
+    dispatch_allowed: Literal[False] = False
+    approval_granted: Literal[False] = False
+    claim_acquired: Literal[False] = False
+    mutation_allowed: Literal[False] = False
+    execution_authority_granted: Literal[False] = False
+    routing_authority_changed: Literal[False] = False
+
+    @property
+    def accepted(self) -> bool:
+        return self.state is SourceBindingState.MATCH
+
+    def provenance(self) -> dict[str, object]:
+        """Proof of which source was examined, embeddable in a task result.
+
+        A later reviewer can use this to tell whether an analysis was actually
+        performed against the tree it claimed to analyse.
         """
 
-        if payload is None:
-            return None
-        if isinstance(payload, RepositorySourceBinding):
-            return payload
-        if not isinstance(payload, dict):
-            raise ValueError("source binding must be an object")
-        if not payload:
-            return None
-        return cls.model_validate(payload)
+        return {
+            "state": self.state.value,
+            "repository": self.repository,
+            "task_id": self.task_id,
+            "work_id": self.work_id,
+            "expected_worktree_realpath": self.expected_worktree_realpath,
+            "expected_head_sha": self.expected_head_sha,
+            "observed_worktree_realpath": self.observed_worktree_realpath,
+            "observed_head_sha": self.observed_head_sha,
+            "reasons": list(self.reasons),
+            "fallback_candidates_considered": list(self.fallback_candidates_considered),
+        }
 
 
 __all__ = [
+    "BINDING_AUTHORITY_SOURCE",
+    "HEAD_SHA_PATTERN",
+    "SHA256_PATTERN",
     "DirtyStateExpectation",
+    "ObservedSourceState",
     "RepositorySourceBinding",
     "SourceBindingState",
+    "SourceBindingVerdict",
 ]
