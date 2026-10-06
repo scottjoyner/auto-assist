@@ -1,0 +1,3 @@
+{"title":"A","objective":"test","model":"openrouter/anthropic/claude-3.5-sonnet","worktree":"/tmp/wt-a","pid":1001,"session":"s1","status":"active","created_at":"2026-10-06T08:00:00Z","updated_at":"2026-10-06T08:05:00Z"}
+{"title":"B","objective":"test2","model":"openrouter/google/gemini-2.5-flash-preview","worktree":"/tmp/wt-a","pid":1002,"session":"s2","status":"active","created_at":"2026-10-06T08:10:00Z","updated_at":"2026-10-06T08:15:00Z"}
+{"title":"C","objective":"done","model":"openrouter/deepseek/deepseek-r1","worktree":"/tmp/wt-c","pid":999,"session":"s3","status":"completed","created_at":"2026-10-06T07:00:00Z","updated_at":"2026-10-06T07:30:00Z"}

@@ -1,0 +1,3 @@
+{"id":"openrouter/anthropic/claude-3.5-sonnet","provider":"openrouter","pricing":{"prompt":"0","completion":"0"},"tags":["free"]}
+{"id":"openrouter/google/gemini-2.5-flash-preview","provider":"openrouter","pricing":{"prompt":"0","completion":"0"},"tags":["free"]}
+{"id":"openrouter/deepseek/deepseek-r1","provider":"openrouter","pricing":{"prompt":"0.54","completion":"2.19"},"tags":[]}
