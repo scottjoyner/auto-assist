@@ -13,6 +13,19 @@ from .event_envelope import (
     AuthState,
     EventLink,
 )
+from .schemas.repository_source_binding import (
+    RepositorySourceBinding,
+    DirtyStateExpectation,
+    SourceBindingState,
+)
+from .repository_source_verifier import (
+    ObservedSource,
+    SourceBindingVerification,
+    build_source_binding,
+    observe_source_workspace,
+    verify_repository_source,
+    verify_source_workspace,
+)
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -22,4 +35,13 @@ __all__ = [
     "Actor",
     "AuthState",
     "EventLink",
+    "RepositorySourceBinding",
+    "DirtyStateExpectation",
+    "SourceBindingState",
+    "ObservedSource",
+    "SourceBindingVerification",
+    "build_source_binding",
+    "observe_source_workspace",
+    "verify_repository_source",
+    "verify_source_workspace",
 ]

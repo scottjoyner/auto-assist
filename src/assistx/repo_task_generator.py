@@ -21,16 +21,12 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from .contracts.schemas.repository_source_binding import (
-    DirtyStateExpectation,
-    RepositorySourceBinding,
-)
-
 from .controller_runtime import (
     DurableController,
     Neo4jControllerStore,
     start_durable_controller_loop,
 )
+from .contracts.repository_source_verifier import build_source_binding
 from .neo4j_client import Neo4jClient
 
 logger = logging.getLogger(__name__)
@@ -192,24 +188,6 @@ def _git_text(args: list[str], cwd: Path, timeout: int = 30) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def _repository_root_for_worktree(root_path: Path) -> Path:
-    """Resolve the repository that owns a worktree.
-
-    ``git rev-parse --git-common-dir`` follows a worktree link back to the
-    shared repository, which is what distinguishes "the same repository in a
-    different worktree" from "the same worktree". Falls back to the toplevel
-    for a non-worktree checkout.
-    """
-
-    common_dir = _git_text(["rev-parse", "--git-common-dir"], root_path)
-    if not common_dir:
-        return root_path
-    common = Path(common_dir)
-    if not common.is_absolute():
-        common = root_path / common
-    return common.parent.resolve()
-
-
 def _get_repo_info(repo_path: Path, alias: str | None = None) -> dict[str, Any] | None:
     """Read fresh repository/worktree state; no permanent metadata cache."""
 
@@ -226,7 +204,6 @@ def _get_repo_info(repo_path: Path, alias: str | None = None) -> dict[str, Any] 
     return {
         "alias": alias or root_path.name,
         "path": str(root_path),
-        "repo_root": str(_repository_root_for_worktree(root_path)),
         "name": root_path.name,
         "url": origin,
         "branch": branch,
@@ -328,33 +305,29 @@ def _selector(alias: str, relative_path: str, commit: str) -> str:
     return TASK_KINDS[digest[0] % len(TASK_KINDS)]
 
 
-def _source_binding_payload(repo_info: dict[str, Any], task_id: str) -> dict[str, Any] | None:
-    """Record which tree this task was generated against.
+def _source_binding(repo_info: dict[str, Any]) -> dict[str, Any] | None:
+    """Mint the provenance binding for a repository analysis task.
 
-    Repository analysis tasks are read-only over whatever state the operator's
-    checkout is in, so the dirty-state expectation is ``ANY``. That relaxes
-    cleanliness only: the worktree realpath and HEAD are still pinned, which is
-    precisely what the wrong-checkout review incident needed and lacked.
-
-    Returns ``None`` rather than raising, because a task that cannot describe
-    its own source should still be creatable; verification then fails closed at
-    the worker rather than at task generation.
+    The alias comes from the configured repository map, so the binding describes a
+    source the platform already trusts. It records *which* source the task was cut
+    from so a reviewer result can later prove what it examined; it confers no
+    execution, write or routing authority.
     """
 
     try:
-        binding = RepositorySourceBinding(
-            repository=str(repo_info.get("alias") or ""),
-            repo_realpath=str(repo_info.get("repo_root") or repo_info["path"]),
-            worktree_realpath=str(repo_info["path"]),
-            branch=str(repo_info.get("branch") or "DETACHED"),
-            head_sha=str(repo_info["commit"]),
-            expected_dirty=DirtyStateExpectation.ANY,
-            task_id=task_id,
-            work_id=task_id,
+        binding = build_source_binding(
+            repository=str(repo_info["alias"]),
+            worktree_path=repo_info["path"],
+            base_repository_path=repo_info["path"],
         )
-    except (ValueError, KeyError):
+    except (ValueError, OSError) as exc:
+        logger.error(
+            "repo task generator: cannot bind source for %s: %s",
+            repo_info.get("alias"),
+            exc,
+        )
         return None
-    return binding.provenance()
+    return binding.to_contract_payload()
 
 
 def _create_task_payload(
@@ -362,8 +335,6 @@ def _create_task_payload(
     repo_info: dict[str, Any],
     file_path: Path,
     code: str,
-    *,
-    source_binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     repo = Path(str(repo_info["path"]))
     relative = str(file_path.relative_to(repo))
@@ -385,6 +356,7 @@ def _create_task_payload(
         "repository": repo_info["alias"],
         "repository_path": repo_info["path"],
         "source_commit": repo_info["commit"],
+        "source_binding": _source_binding(repo_info),
         "file": relative,
         "language": language,
         "prompt": prompt,
@@ -392,7 +364,6 @@ def _create_task_payload(
         "harvester": "repo_task_generator",
         "execution_mode": "analysis_only",
         "requires_approval": False,
-        "source_binding": source_binding,
     }
 
 
@@ -411,13 +382,7 @@ def _analysis_task(
             "utf-8"
         )
     ).hexdigest()[:24]
-    payload = _create_task_payload(
-        kind,
-        repo_info,
-        file_path,
-        code,
-        source_binding=_source_binding_payload(repo_info, f"repo-analysis-{identity}"),
-    )
+    payload = _create_task_payload(kind, repo_info, file_path, code)
     return {
         "id": f"repo-analysis-{identity}",
         "title": f"[{kind}] {repo_info['alias']}: {relative}",
@@ -444,9 +409,8 @@ def _mutation_proposal(
             "utf-8"
         )
     ).hexdigest()[:24]
-    task_id = f"repo-improvement-proposal-{identity}"
     return {
-        "id": task_id,
+        "id": f"repo-improvement-proposal-{identity}",
         "title": f"Review improvement candidates for {repo_info['alias']}@{str(repo_info['commit'])[:12]}",
         "kind": "repo_improvement_proposal",
         "status": "PROPOSED",
@@ -460,7 +424,6 @@ def _mutation_proposal(
             "allowed_paths": relative_paths,
             "execution_mode": "bounded_improvement_proposal",
             "requires_approval": True,
-            "source_binding": _source_binding_payload(repo_info, task_id),
             "prompt": (
                 "Synthesize the read-only findings for these changed files into a "
                 "bounded improvement proposal. Do not edit files, commit, push, or "

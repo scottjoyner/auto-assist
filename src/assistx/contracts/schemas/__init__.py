@@ -7,6 +7,11 @@ other repos import. See docs/LLD_UNIFIED_FLEET.md §1 / HLD §5.
 from .registered_speaker import RegisteredSpeaker, SpeakerStatus
 from .voice_auth_decision import VoiceAuthDecision, AuthOutcome
 from .task_authority import TaskAuthority, AuthorityMode
+from .repository_source_binding import (
+    RepositorySourceBinding,
+    DirtyStateExpectation,
+    SourceBindingState,
+)
 from .artifact_paths import ArtifactPaths
 from .node_registry import NodeRegistryEntry, NodeStatus
 from .model_endpoint_registry import ModelEndpointRegistryEntry, EndpointStatus
@@ -29,6 +34,9 @@ __all__ = [
     "AuthOutcome",
     "TaskAuthority",
     "AuthorityMode",
+    "RepositorySourceBinding",
+    "DirtyStateExpectation",
+    "SourceBindingState",
     "ArtifactPaths",
     "NodeRegistryEntry",
     "NodeStatus",

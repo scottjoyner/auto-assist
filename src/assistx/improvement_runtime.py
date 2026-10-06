@@ -10,13 +10,28 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from .contracts.repository_source_verifier import (
+    ObservedSource,
+    SourceBindingVerification,
+    observe_source_workspace,
+    verify_repository_source,
+)
+from .contracts.schemas.repository_source_binding import RepositorySourceBinding
+
 MAX_PATCH_BYTES = 524_288
 
-from .repository_source_verifier import (  # noqa: E402 - keeps MAX_PATCH_BYTES first
-    binding_from_payload,
-    observe_source,
-    verify_derived_source,
-)
+
+def contract_source_binding(contract: dict[str, Any]) -> RepositorySourceBinding | None:
+    """Read the optional source binding out of an execution contract.
+
+    ``None`` means "no binding declared" (legacy or non-repository task) and is
+    explicitly *not* a pass: callers decide how to treat unbound contracts. A
+    malformed binding raises rather than degrading to unbound.
+    """
+
+    return RepositorySourceBinding.from_contract_payload(
+        contract.get("source_binding")
+    )
 
 
 def prepare_repository(
@@ -27,6 +42,7 @@ def prepare_repository(
     env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     environment = env if env is not None else os.environ
+    binding = contract_source_binding(contract)
     base_root, reason = _resolve_repository(contract, environment)
     if not base_root:
         return {
@@ -37,6 +53,24 @@ def prepare_repository(
     head = _run(["git", "rev-parse", "HEAD"], base_root)
     if head["returncode"] != 0:
         return {"ok": False, "reason": "git_head_failed"}
+
+    source_verification: SourceBindingVerification | None = None
+    if binding is not None:
+        source_verification = verify_repository_source(binding, _observe(base_root))
+        if not source_verification.accepted:
+            # Fail closed. Do not look for another checkout, another worktree of
+            # this repository, $HOME, or any mirror: the bound source is the only
+            # acceptable source.
+            return {
+                "ok": False,
+                "reason": (
+                    "repository_source_binding_rejected:"
+                    f"{source_verification.state.value}"
+                ),
+                "repository": contract.get("repository"),
+                "source_binding_verification": source_verification.to_provenance(),
+            }
+
     workspace_id = hashlib.sha256(
         (
             f"{contract.get('repository')}:{task_id}:{execution_attempt}:"
@@ -71,58 +105,18 @@ def prepare_repository(
     if status["returncode"] != 0 or status["stdout"].strip():
         cleanup_worktree({"base_root": str(base_root), "root": str(root)})
         return {"ok": False, "reason": "isolated_worktree_not_clean"}
-    # Does the commit actually executed match the one the task was bound to?
-    #
-    # Reported, not enforced. A source binding is documented as evidence that
-    # "grants nothing on its own", so making a mismatch block would be inventing
-    # a gate the design deliberately does not have.
-    #
-    # It still has to be compared, though. The work packet now carries the
-    # binding, so a task bound to commit X executing against Y would assert X
-    # while the work happened at Y. Evidence that can be false is worse than
-    # evidence that is merely incomplete: an unreviewed packet that says which
-    # commit it examined is useful, and a packet that says the wrong one is not.
-    executed_head = head["stdout"].strip()
-    binding = (contract.get("source_binding") or {})
-    bound_head = binding.get("head_sha") if isinstance(binding, dict) else None
-
     return {
         "ok": True,
         "root": str(root),
         "base_root": str(base_root),
-        "head": executed_head,
+        "head": head["stdout"].strip(),
         "clean_before": True,
         "isolated": True,
         "workspace_id": workspace_id,
-        # None when the task carries no binding -- a non-repository task is
-        # unaffected, and absence must not read as a mismatch.
-        "source_binding_head_sha": bound_head,
-        "source_binding_matches": None if not bound_head else bound_head == executed_head,
+        "source_binding_verification": (
+            source_verification.to_provenance() if source_verification else None
+        ),
     }
-
-
-def _verify_prepared_source(
-    contract: dict[str, Any],
-    prepared: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Check the prepared workspace against the contract's source binding.
-
-    Returns ``None`` when the contract carries no binding, so a contract built
-    before this field existed is unaffected. Never raises: a verification
-    problem must not become an executor crash.
-    """
-
-    binding = binding_from_payload(contract)
-    if binding is None or not prepared.get("ok"):
-        return None
-    try:
-        observed = observe_source(prepared.get("root"))
-        # A derived isolated worktree sits at a fresh path by design, so the
-        # comparison is on repository, revision, branch and cleanliness.
-        verdict = verify_derived_source(binding, observed)
-    except Exception as exc:  # noqa: BLE001 - evidence must not break execution
-        return {"state": "SOURCE_UNAVAILABLE", "reasons": [f"verification_error: {exc}"]}
-    return verdict.provenance()
 
 
 def collect_executor_evidence(
@@ -146,7 +140,9 @@ def collect_executor_evidence(
             "verification": [],
             "summary": prepared.get("reason"),
             "executor_error": prepared.get("reason"),
-            "source_binding_verification": _verify_prepared_source(contract, prepared),
+            "source_binding_verification": prepared.get(
+                "source_binding_verification"
+            ),
         }
     root = Path(prepared["root"])
     status = _run(["git", "status", "--porcelain", "--untracked-files=all"], root)
@@ -191,13 +187,8 @@ def collect_executor_evidence(
         "isolated_worktree": bool(prepared.get("isolated")),
         "workspace_id": prepared.get("workspace_id"),
         "head_before": prepared.get("head"),
-        # The bare head_before above proves a revision but not *which* tree, so
-        # it cannot be checked against the task later. When the execution
-        # contract carries a source binding, record whether the tree this
-        # executor actually worked in was the bound one. This is evidence only:
-        # it gates nothing, because whether a mismatch should block promotion is
-        # an authority decision, not a verification one.
-        "source_binding_verification": _verify_prepared_source(contract, prepared),
+        "observed_source": _observe(prepared.get("root")).to_provenance(),
+        "source_binding_verification": prepared.get("source_binding_verification"),
         "changed_files": changed_files,
         "diff_lines": diff_lines,
         "tools_used": list((reported or {}).get("tools_used") or []),
@@ -316,6 +307,18 @@ def promote_patch(
     base_root, resolve_reason = _resolve_repository(contract, environment)
     if not base_root:
         return {"promoted": False, "reason": resolve_reason}
+    binding = contract_source_binding(contract)
+    if binding is not None:
+        verification = verify_repository_source(binding, _observe(base_root))
+        if not verification.accepted:
+            return {
+                "promoted": False,
+                "reason": (
+                    "repository_source_binding_rejected:"
+                    f"{verification.state.value}"
+                ),
+                "source_binding_verification": verification.to_provenance(),
+            }
     head = _run(["git", "rev-parse", "HEAD"], base_root)
     if head["stdout"].strip() != evidence.get("head_before"):
         return {"promoted": False, "reason": "repository_head_drifted"}
@@ -372,10 +375,18 @@ def promote_patch(
         "promoted": True,
         "repository": contract.get("repository"),
         "head_before": evidence.get("head_before"),
+        "observed_source": _observe(base_root).to_provenance(),
+        "source_binding_verification": evidence.get("source_binding_verification"),
         "patch_sha256": fingerprint,
         "changed_files": sorted(patch_paths),
         "verification": verification,
     }
+
+
+def _observe(candidate: Any) -> ObservedSource:
+    """Read source facts for ``candidate`` without searching for alternatives."""
+
+    return observe_source_workspace(candidate)
 
 
 def _resolve_repository(
@@ -390,6 +401,8 @@ def _resolve_repository(
     configured = roots.get(repository) if isinstance(roots, dict) else None
     if not configured:
         return None, "repository_root_not_configured"
+    if isinstance(configured, dict):
+        configured = configured.get("path") or configured.get("root")
     root = Path(str(configured)).resolve()
     if not root.is_dir() or not (root / ".git").exists():
         return None, "configured_repository_is_not_a_git_worktree"
