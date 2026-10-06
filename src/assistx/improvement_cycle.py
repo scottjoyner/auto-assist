@@ -6,7 +6,9 @@ import json
 import posixpath
 from typing import Any
 
+from .contracts.schemas.repository_source_binding import RepositorySourceBinding
 from .improvement_runtime import verify_executor_evidence
+from .repository_source_binding import binding_to_document
 
 TIER_LIMITS = {
     "tool-small": {"max_files": 2, "max_diff_lines": 160},
@@ -72,6 +74,7 @@ def build_execution_contract(
     verification_commands: list[list[str]],
     recommended_tier: str = "tool-small",
     iteration: int = 0,
+    source_binding: RepositorySourceBinding | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if recommended_tier not in TIER_LIMITS:
         raise ValueError(f"unsupported improvement tier: {recommended_tier}")
@@ -92,7 +95,7 @@ def build_execution_contract(
     commands = [_verification_command(command) for command in verification_commands]
     if not commands:
         raise ValueError("at least one verification command is required")
-    return {
+    contract = {
         "version": 2,
         "kind": "bounded_code_change",
         "repository": repository,
@@ -111,6 +114,26 @@ def build_execution_contract(
         "max_patch_bytes": 524288,
         "requires_review": True,
     }
+    # Optional source provenance. Absent for non-repository tasks, which are
+    # unaffected. Recording it lets a later reviewer prove which checkout it
+    # actually examined; it grants nothing on its own.
+    if source_binding is not None:
+        binding = (
+            source_binding
+            if isinstance(source_binding, RepositorySourceBinding)
+            else RepositorySourceBinding.model_validate(source_binding)
+        )
+        contract["source_binding"] = binding_to_document(binding)
+    return contract
+
+
+def task_source_binding(task: dict[str, Any]) -> RepositorySourceBinding | None:
+    """Return the source binding recorded on a task, or None if it has none."""
+    contract = task_contract(task)
+    binding = contract.get("source_binding") if contract else None
+    if not isinstance(binding, dict):
+        return None
+    return RepositorySourceBinding.model_validate(binding)
 
 
 def task_contract(task: dict[str, Any]) -> dict[str, Any] | None:
@@ -128,9 +151,25 @@ def build_work_packet(
     contract = task_contract(task)
     if not contract:
         return None
+    # Carry the recorded provenance into the packet.
+    #
+    # The binding is written onto the contract and read back by
+    # task_source_binding, whose purpose is to let a later reviewer prove which
+    # checkout was actually examined. But the work packet -- the thing the
+    # executing side receives -- dropped it: the packet copied repository,
+    # allowed_paths, max_files and the rest, and silently omitted the one field
+    # that says which commit was inspected. So the provenance was recorded and
+    # then never reached anyone able to use it.
+    #
+    # Evidence only, deliberately. The binding carries no authority and gates
+    # nothing here; that is the documented design ("grants nothing on its own"),
+    # not an oversight. This only makes the record reachable.
+    binding = task_source_binding(task)
+
     return {
         "objective": contract.get("objective") or task.get("title"),
         "repository": contract.get("repository"),
+        "source_binding": binding_to_document(binding) if binding else None,
         "scope": {
             "allowed_paths": contract.get("allowed_paths", []),
             "max_files": contract.get("max_files"),

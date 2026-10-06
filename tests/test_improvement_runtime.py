@@ -80,6 +80,53 @@ def build_evidence(repo, tmp_path):
     return value, env, prepared, evidence
 
 
+def test_workspace_records_whether_the_binding_matches_the_executed_head(tmp_path):
+    """The provenance the work packet carries has to be falsifiable.
+
+    `prepare_repository` resolves HEAD itself and creates the worktree there. The
+    contract's source binding names the commit the task was derived from. Nothing
+    compared the two, so a task bound to commit X could execute against commit Y
+    while the packet asserted X -- and the packet now carries that binding, so
+    unreviewed provenance that is wrong is worse than none at all.
+
+    Reported, not enforced: a binding is documented as evidence that "grants
+    nothing on its own", so blocking on a mismatch would invent a gate the design
+    deliberately does not have. The point is that the record says which commit ran
+    and whether it is the one that was bound.
+    """
+    repo = initialized_repo(tmp_path)
+    env = runtime_env(repo, tmp_path)
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    # No binding at all: absence is legitimate for non-repository tasks and must
+    # not read as a mismatch.
+    plain = prepare_repository(contract(), task_id="t-plain", env=env)
+    assert plain["ok"] is True
+    assert plain["source_binding_head_sha"] is None
+    assert plain["source_binding_matches"] is None
+
+    # Bound to the commit that will actually run: matches.
+    matching = dict(contract())
+    matching["source_binding"] = {"head_sha": head}
+    same = prepare_repository(matching, task_id="t-same", env=env)
+    assert same["ok"] is True
+    assert same["head"] == head
+    assert same["source_binding_matches"] is True
+
+    # Bound to some other commit: reported as a mismatch, still executed.
+    other = "b" * 40
+    bound_elsewhere = dict(contract())
+    bound_elsewhere["source_binding"] = {"head_sha": other}
+    different = prepare_repository(bound_elsewhere, task_id="t-diff", env=env)
+    assert different["ok"] is True, "a mismatch is reported, not enforced"
+    assert different["source_binding_head_sha"] == other
+    assert different["source_binding_matches"] is False
+    assert different["head"] == head
+
+
 def test_executor_uses_isolated_worktree_and_exports_signed_patch(tmp_path):
     repo = initialized_repo(tmp_path)
     value, _, prepared, evidence = build_evidence(repo, tmp_path)

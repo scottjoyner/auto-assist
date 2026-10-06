@@ -71,14 +71,33 @@ def prepare_repository(
     if status["returncode"] != 0 or status["stdout"].strip():
         cleanup_worktree({"base_root": str(base_root), "root": str(root)})
         return {"ok": False, "reason": "isolated_worktree_not_clean"}
+    # Does the commit actually executed match the one the task was bound to?
+    #
+    # Reported, not enforced. A source binding is documented as evidence that
+    # "grants nothing on its own", so making a mismatch block would be inventing
+    # a gate the design deliberately does not have.
+    #
+    # It still has to be compared, though. The work packet now carries the
+    # binding, so a task bound to commit X executing against Y would assert X
+    # while the work happened at Y. Evidence that can be false is worse than
+    # evidence that is merely incomplete: an unreviewed packet that says which
+    # commit it examined is useful, and a packet that says the wrong one is not.
+    executed_head = head["stdout"].strip()
+    binding = (contract.get("source_binding") or {})
+    bound_head = binding.get("head_sha") if isinstance(binding, dict) else None
+
     return {
         "ok": True,
         "root": str(root),
         "base_root": str(base_root),
-        "head": head["stdout"].strip(),
+        "head": executed_head,
         "clean_before": True,
         "isolated": True,
         "workspace_id": workspace_id,
+        # None when the task carries no binding -- a non-repository task is
+        # unaffected, and absence must not read as a mismatch.
+        "source_binding_head_sha": bound_head,
+        "source_binding_matches": None if not bound_head else bound_head == executed_head,
     }
 
 
