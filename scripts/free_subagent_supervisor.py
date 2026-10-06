@@ -222,6 +222,78 @@ def detect_duplicate_worktrees(records: list[dict[str, Any]] | None = None) -> l
     return conflicts
 
 
+def detect_looping_records(records: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Detect records with repeated session identifiers (looping registration)."""
+    recs = records if records is not None else load_state()
+    session_counts: dict[str, int] = {}
+    for r in recs:
+        sess = str(r.get("session") or "").strip()
+        if sess:
+            session_counts[sess] = session_counts.get(sess, 0) + 1
+    loops = []
+    for r in recs:
+        sess = str(r.get("session") or "").strip()
+        if sess and session_counts.get(sess, 0) > 1:
+            loops.append({
+                "session": sess,
+                "record_title": r.get("title"),
+                "record_pid": r.get("pid"),
+                "record_status": r.get("status"),
+                "occurrences": session_counts[sess],
+            })
+            # Deduplicate loop entries per session by removing after first
+            # but keep structure simple: return unique loop groups
+    # Deduplicate by session
+    seen = set()
+    deduped = []
+    for item in loops:
+        if item["session"] not in seen:
+            seen.add(item["session"])
+            deduped.append({
+                "session": item["session"],
+                "occurrences": item["occurrences"],
+                "titles": [rec.get("title") for rec in recs if str(rec.get("session") or "") == item["session"]],
+                "pids": [rec.get("pid") for rec in recs if str(rec.get("session") or "") == item["session"]],
+            })
+    return deduped
+
+
+def detect_stale_records(records: list[dict[str, Any]] | None = None, max_age_minutes: int = 30) -> list[dict[str, Any]]:
+    """Detect subagent records whose updated_at is older than max_age_minutes."""
+    recs = records if records is not None else load_state()
+    stale: list[dict[str, Any]] = []
+    now = datetime.now(timezone.utc)
+    for r in recs:
+        ts_str = str(r.get("updated_at") or r.get("created_at") or "").strip()
+        if not ts_str:
+            continue
+        try:
+            # Handle Z suffix
+            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_minutes = (now - ts).total_seconds() / 60.0
+            if age_minutes > max_age_minutes:
+                stale.append({
+                    "session": r.get("session"),
+                    "worktree": r.get("worktree"),
+                    "updated_at": ts_str,
+                    "status": r.get("status"),
+                    "age_minutes": round(age_minutes, 2),
+                })
+        except Exception:
+            continue
+    # Deduplicate by session+worktree
+    seen = set()
+    deduped = []
+    for item in stale:
+        key = (str(item.get("session") or ""), str(item.get("worktree") or ""))
+        if key not in seen:
+            seen.add(key)
+            deduped.append(item)
+    return deduped
+
+
 def emit_projection(
     free_models: list[dict[str, Any]] | None = None,
     state_path: pathlib.Path | None = None,
@@ -231,10 +303,12 @@ def emit_projection(
     models = free_models if free_models is not None else enumerate_free_models()
     records = inspect_subagents(state_path)
     duplicates = detect_duplicate_worktrees(records)
+    loops = detect_looping_records(records)
+    stale = detect_stale_records(records)
     cred = credential_present()
-    # Suggested-but-not-enforced verdict: healthy when no duplicates, cred present, at least one free model.
+    # Suggested-but-not-enforced verdict: healthy when clean, cred present, at least one free model.
     verdict = "healthy"
-    if duplicates or not cred or not models:
+    if duplicates or loops or stale or not cred or not models:
         verdict = "hold"
     projection = {
         "supervision_slice": "free_subagent_supervisor",
@@ -245,12 +319,15 @@ def emit_projection(
         "credential_present": cred,
         "subagent_records": len(records),
         "duplicate_worktrees": duplicates,
-        "free_model_ids": [m.get("id") for m in models],
+        "looping_records": loops,
+        "stale_records": stale,
+        "free_model_ids": sorted([m.get("id") for m in models if m.get("id")]),
         "projections_note": (
             "Projection is read-only and advisory. It does not approve, admit, "
             "dispatch, or terminate subagent processes. Scale verdict is suggested, "
             "not enforced. Close stdin (< /dev/null) for noninteractive launches to "
-            "avoid init waits."
+            "avoid init waits. Free-cost gating requires both prompt and completion "
+            "pricing to be zero; stale/duplicate/looping classifications are advisory."
             + (" " + extra_note if extra_note else "")
         ),
     }
@@ -264,6 +341,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--inspect-state", action="store_true", help="Show subagent records (JSON lines)")
     parser.add_argument("--register-subagent", type=str, default="", help="JSON record to register")
     parser.add_argument("--detect-duplicates", action="store_true", help="Detect duplicate worktrees")
+    parser.add_argument("--detect-looping", action="store_true", help="Detect looping session registrations")
+    parser.add_argument("--detect-stale", action="store_true", help="Detect stale subagent records")
     parser.add_argument("--projection", action="store_true", help="Emit supervision projection")
     parser.add_argument("--fixture", type=str, default=str(DEFAULT_FIXTURE_PATH), help="Fixture path")
     parser.add_argument("--state", type=str, default=str(DEFAULT_STATE_PATH), help="State file path")
@@ -300,6 +379,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.detect_duplicates:
         dups = detect_duplicate_worktrees(inspect_subagents(state_path))
         print(json.dumps({"duplicates": dups}, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+        return 0
+
+    if args.detect_looping:
+        loops = detect_looping_records(inspect_subagents(state_path))
+        print(json.dumps({"looping": loops}, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+        return 0
+
+    if args.detect_stale:
+        stale = detect_stale_records(inspect_subagents(state_path))
+        print(json.dumps({"stale": stale}, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         return 0
 
     if args.projection:

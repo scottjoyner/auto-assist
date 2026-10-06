@@ -1,0 +1,56 @@
+{
+  "credential_present": true,
+  "duplicate_worktrees": [
+    {
+      "conflicting_records": 2,
+      "pids": [
+        1001,
+        1002
+      ],
+      "sessions": [
+        "s1",
+        "s2"
+      ],
+      "titles": [
+        "A",
+        "B"
+      ],
+      "worktree": "/tmp/wt-a"
+    }
+  ],
+  "free_model_ids": [
+    "openrouter/anthropic/claude-3.5-sonnet",
+    "openrouter/google/gemini-2.5-flash-preview"
+  ],
+  "free_models_found": 2,
+  "looping_records": [],
+  "observed_at": "2026-10-06T14:30:34Z",
+  "projections_note": "Projection is read-only and advisory. It does not approve, admit, dispatch, or terminate subagent processes. Scale verdict is suggested, not enforced. Close stdin (< /dev/null) for noninteractive launches to avoid init waits. Free-cost gating requires both prompt and completion pricing to be zero; stale/duplicate/looping classifications are advisory.",
+  "read_only": true,
+  "stale_records": [
+    {
+      "age_minutes": 385.57,
+      "session": "s1",
+      "status": "active",
+      "updated_at": "2026-10-06T08:05:00Z",
+      "worktree": "/tmp/wt-a"
+    },
+    {
+      "age_minutes": 375.57,
+      "session": "s2",
+      "status": "active",
+      "updated_at": "2026-10-06T08:15:00Z",
+      "worktree": "/tmp/wt-a"
+    },
+    {
+      "age_minutes": 420.57,
+      "session": "s3",
+      "status": "completed",
+      "updated_at": "2026-10-06T07:30:00Z",
+      "worktree": "/tmp/wt-c"
+    }
+  ],
+  "subagent_records": 3,
+  "suggested_scale_verdict": "hold",
+  "supervision_slice": "free_subagent_supervisor"
+}
