@@ -85,13 +85,19 @@ class RTKAdapter:
             raise ValueError(f"cwd does not exist: {working_dir}")
 
         started = time.monotonic()
-        result = subprocess.run(
-            command, cwd=str(working_dir), capture_output=True,
-            timeout=self.timeout_seconds, check=False,
-        )
+        try:
+            result = subprocess.run(
+                command, cwd=str(working_dir), capture_output=True,
+                timeout=self.timeout_seconds, check=False,
+            )
+            exit_code = result.returncode
+            raw_stdout = result.stdout
+            raw_stderr = result.stderr
+        except subprocess.TimeoutExpired as exc:
+            exit_code = 124
+            raw_stdout = exc.stdout or b""
+            raw_stderr = exc.stderr or b""
         duration_ms = int((time.monotonic() - started) * 1000)
-        raw_stdout = result.stdout
-        raw_stderr = result.stderr
 
         binary: RTKBinary | None = None
         compact = raw_stdout
@@ -113,7 +119,7 @@ class RTKAdapter:
                 compaction_status = "fallback:rtk-unavailable"
 
         return self._persist(
-            tuple(command), str(working_dir), result.returncode, duration_ms,
+            tuple(command), str(working_dir), exit_code, duration_ms,
             filter_name, compaction_status, raw_stdout, raw_stderr, compact,
             evidence_dir, binary,
         )

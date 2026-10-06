@@ -79,3 +79,18 @@ def test_missing_rtk_still_returns_raw_model_output(tmp_path):
     assert (tmp_path / "counter.txt").read_text() == "1"
     assert result.compaction_status == "fallback:rtk-unavailable"
     assert Path(result.model_output_path).read_bytes() == b"hello world\n"
+
+
+def test_command_timeout_still_persists_partial_raw_output(tmp_path):
+    script = tmp_path / "slow.py"
+    script.write_text(
+        'import sys, time\nprint("before timeout", flush=True)\nprint("err line", file=sys.stderr, flush=True)\ntime.sleep(2)\n'
+    )
+    result = RTKAdapter(str(tmp_path / "missing-rtk"), timeout_seconds=1).run_command(
+        [sys.executable, str(script)], cwd=str(tmp_path),
+        evidence_dir=str(tmp_path / "evidence"), filter_name=None,
+    )
+    assert result.exit_code == 124
+    assert b"before timeout" in Path(result.raw_stdout_path).read_bytes()
+    assert b"err line" in Path(result.raw_stderr_path).read_bytes()
+    assert Path(result.model_output_path).read_bytes() == Path(result.raw_stdout_path).read_bytes()
