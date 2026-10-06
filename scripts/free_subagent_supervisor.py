@@ -58,8 +58,30 @@ def _now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _price_is_zero(value: Any) -> bool:
+    try:
+        return float(value) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_clearly_free_model(record: dict[str, Any]) -> bool:
+    model_id = str(record.get("id") or "")
+    if ":free" in model_id:
+        return True
+
+    tags = record.get("tags") or []
+    if isinstance(tags, list) and any(str(tag).lower() == "free" for tag in tags):
+        return True
+
+    pricing = record.get("pricing") or {}
+    if not isinstance(pricing, dict):
+        return False
+    return _price_is_zero(pricing.get("prompt")) and _price_is_zero(pricing.get("completion"))
+
+
 def enumerate_free_models(fixture_path: pathlib.Path | None = None) -> list[dict[str, Any]]:
-    """Return free-model records (id, provider, tags)."""
+    """Return models that are explicitly free or zero-cost in both directions."""
     results: list[dict[str, Any]] = []
     # Try authoritative command first; if unavailable/offline, fall back.
     try:
@@ -79,20 +101,12 @@ def enumerate_free_models(fixture_path: pathlib.Path | None = None) -> list[dict
                     # Basic extraction; if JSON, parse; else treat as id
                     try:
                         obj = json.loads(line)
-                        if isinstance(obj, dict) and obj.get("id"):
-                            if any(t == "free" or ":free" in str(obj.get("id", "")) for t in obj.get("tags", []) + [str(obj.get("pricing") or "")]):
-                                results.append(obj)
-                            elif ":free" in str(obj.get("id", "")):
-                                results.append(obj)
-                            else:
-                                # include if pricing is zero-like; but only include if clearly free-ish
-                                pricing = obj.get("pricing") or {}
-                                prompt = pricing.get("prompt") if isinstance(pricing, dict) else None
-                                if prompt == "0" or prompt == 0:
-                                    results.append(obj)
+                        if isinstance(obj, dict) and obj.get("id") and _is_clearly_free_model(obj):
+                            results.append(obj)
                     except json.JSONDecodeError:
-                        # plain id line with free marker
-                        if ":free" in line or "free" in line.lower():
+                        # Plain model listings have no pricing metadata, so require the
+                        # provider's explicit :free suffix instead of guessing by name.
+                        if ":free" in line:
                             results.append({"id": line, "provider": "openrouter", "tags": ["free"]})
             # Deduplicate by id
             seen = set()
@@ -115,20 +129,8 @@ def enumerate_free_models(fixture_path: pathlib.Path | None = None) -> list[dict
                     continue
                 try:
                     obj = json.loads(line)
-                    if isinstance(obj, dict) and obj.get("id"):
-                        # Only include if clearly free:
-                        id_str = str(obj.get("id") or "")
-                        pricing = obj.get("pricing") or {}
-                        is_free = False
-                        if ":free" in id_str:
-                            is_free = True
-                        tags = obj.get("tags") or []
-                        if isinstance(tags, list) and "free" in tags:
-                            is_free = True
-                        if isinstance(pricing, dict) and (pricing.get("prompt") == "0" or pricing.get("prompt") == 0):
-                            is_free = True
-                        if is_free:
-                            results.append(obj)
+                    if isinstance(obj, dict) and obj.get("id") and _is_clearly_free_model(obj):
+                        results.append(obj)
                 except json.JSONDecodeError:
                     continue
     # Deduplicate

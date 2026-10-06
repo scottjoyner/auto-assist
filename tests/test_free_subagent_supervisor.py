@@ -20,8 +20,12 @@ def test_enumerate_free_models_from_fixture():
     assert any("claude-3.5-sonnet" in s for s in ids), f"expected claude in {ids}"
     assert any("gemini-2.5-flash" in s for s in ids), f"expected gemini in {ids}"
     deepseek_in_models = any("deepseek-r1" in (m.get("id") or "") for m in models)
-    # Deepseek is not free in fixture (pricing non-zero, no free tag), so should be absent
+    # Deepseek is not free in fixture (pricing non-zero, no free tag), so should be absent.
     assert not deepseek_in_models, f"expected deepseek excluded from free models: {models}"
+    paid_completion = any("zero-prompt-paid-completion" in (m.get("id") or "") for m in models)
+    assert not paid_completion, (
+        "zero prompt price alone must never qualify a paid-completion model as free"
+    )
 
 
 def test_credential_present_no_secret_leak():
