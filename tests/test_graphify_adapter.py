@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from assistx.graphify_adapter import GraphifyAdapter
+from assistx.graphify_adapter import GraphifyAdapter, normalize_graphify_graph
 
 
 def _fake_graphify(tmp_path: Path) -> Path:
@@ -80,3 +80,27 @@ def test_graphify_digest_mismatch_fails_closed(tmp_path):
     binary = _fake_graphify(tmp_path)
     with pytest.raises(RuntimeError, match="SHA-256"):
         GraphifyAdapter(str(binary), expected_sha256="0" * 64).verify_binary()
+
+
+def test_normalizer_rejects_duplicate_node_ids():
+    graph = {"nodes": [{"id": "a"}, {"id": "a"}], "links": []}
+    with pytest.raises(ValueError, match="duplicate Graphify node id"):
+        normalize_graphify_graph(graph, repository="repo", commit_sha="abc")
+
+
+def test_normalizer_rejects_edges_to_unknown_nodes():
+    graph = {
+        "nodes": [{"id": "a"}],
+        "links": [{"source": "a", "target": "missing", "relation": "calls"}],
+    }
+    with pytest.raises(ValueError, match="unknown node"):
+        normalize_graphify_graph(graph, repository="repo", commit_sha="abc")
+
+
+def test_normalizer_rejects_unknown_confidence_values():
+    graph = {
+        "nodes": [{"id": "a"}, {"id": "b"}],
+        "links": [{"source": "a", "target": "b", "confidence": "guess"}],
+    }
+    with pytest.raises(ValueError, match="unsupported edge confidence"):
+        normalize_graphify_graph(graph, repository="repo", commit_sha="abc")
