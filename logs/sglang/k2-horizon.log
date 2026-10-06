@@ -1,0 +1,51 @@
+aiter MXFP4 kernels not available: No module named 'aiter'
+[1;33m'--disable-cuda-graph' is deprecated and will be removed in a future release. Use '--cuda-graph-backend-{decode,prefill}=disabled' instead.[0m
+[2026-09-17 12:11:52] kill_process_tree called: parent_pid=1570638, include_parent=False, pid=1570638
+Traceback (most recent call last):
+  File "/home/scott/.local/bin/sglang", line 8, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/media/scott/SSD_4TB/sglang/python/sglang/cli/main.py", line 40, in main
+    serve(args, extra_argv)
+  File "/media/scott/SSD_4TB/sglang/python/sglang/cli/serve.py", line 205, in serve
+    registered.backend.run(request)
+  File "/media/scott/SSD_4TB/sglang/python/sglang/cli/serve.py", line 99, in _run_llm
+    run_server(server_args)
+  File "/media/scott/SSD_4TB/sglang/python/sglang/launch_server.py", line 21, in run_server
+    server_args.resolve_once()
+  File "/media/scott/SSD_4TB/sglang/python/sglang/srt/server_args.py", line 3674, in resolve_once
+    self._run_resolution_pipeline()
+  File "/media/scott/SSD_4TB/sglang/python/sglang/srt/server_args.py", line 3844, in _run_resolution_pipeline
+    self._apply_inkling_prefill_cuda_graph_default()
+  File "/media/scott/SSD_4TB/sglang/python/sglang/srt/server_args.py", line 4745, in _apply_inkling_prefill_cuda_graph_default
+    arch = self.get_model_config().hf_config.architectures[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/media/scott/SSD_4TB/sglang/python/sglang/srt/server_args.py", line 9893, in get_model_config
+    model_config = ModelConfig.from_server_args(self)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/media/scott/SSD_4TB/sglang/python/sglang/srt/configs/model_config.py", line 620, in from_server_args
+    return ModelConfig(
+           ^^^^^^^^^^^^
+  File "/media/scott/SSD_4TB/sglang/python/sglang/srt/configs/model_config.py", line 334, in __init__
+    get_config(
+  File "/media/scott/SSD_4TB/sglang/python/sglang/srt/utils/common.py", line 4196, in wrapper
+    result = func(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/media/scott/SSD_4TB/sglang/python/sglang/srt/utils/hf_transformers/config.py", line 262, in get_config
+    config = parser.parse(
+             ^^^^^^^^^^^^^
+  File "/media/scott/SSD_4TB/sglang/python/sglang/srt/utils/hf_transformers/config.py", line 86, in parse
+    config = _try_load_longcat_config(model, revision, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/media/scott/SSD_4TB/sglang/python/sglang/srt/utils/hf_transformers/config.py", line 65, in _try_load_longcat_config
+    config_dict, _ = PretrainedConfig.get_config_dict(
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/.local/lib/python3.12/site-packages/transformers/configuration_utils.py", line 687, in get_config_dict
+    config_dict, kwargs = cls._get_config_dict(pretrained_model_name_or_path, **kwargs)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/.local/lib/python3.12/site-packages/transformers/configuration_utils.py", line 773, in _get_config_dict
+    config_dict = load_gguf_checkpoint(resolved_config_file, return_tensors=False)["config"]
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/.local/lib/python3.12/site-packages/transformers/modeling_gguf_pytorch_utils.py", line 650, in load_gguf_checkpoint
+    raise ValueError(f"GGUF model with architecture {architecture} is not supported yet.")
+ValueError: GGUF model with architecture k2-horizon is not supported yet.
