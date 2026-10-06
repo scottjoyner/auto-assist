@@ -138,6 +138,7 @@ def _aggregate_group(records: list[SubagentTraceRecord]) -> dict[str, Any]:
     provider_failures = [row for row in included if row["outcome"] == "provider_failure"]
     quality = [row for row in included if row["outcome"] != "provider_failure"]
 
+    # successful runs are those with outcome "success" that are not provider failures
     successful = [row for row in quality if row["outcome"] == "success"]
     no_progress = [row for row in quality if row["outcome"] == "no_progress"]
     model_failures = [row for row in quality if row["outcome"] == "model_failure"]
