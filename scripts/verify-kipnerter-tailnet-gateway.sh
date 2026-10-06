@@ -67,7 +67,8 @@ for path in \
   /health \
   /api/v1/auth/whoami \
   /api/v1/runtime/catalog \
-  /api/v1/agent/chat/completions; do
+  /api/v1/agent/chat/completions \
+  /api/v1/model/chat/completions; do
   grep -Fq "$path" <<<"$serve_status" || \
     fail "Tailscale Serve is missing required Kipnerter path ${path}"
 done
