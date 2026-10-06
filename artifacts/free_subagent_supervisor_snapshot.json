@@ -2,55 +2,608 @@
   "credential_present": true,
   "duplicate_worktrees": [
     {
-      "conflicting_records": 2,
+      "conflicting_records": 7,
       "pids": [
-        1001,
-        1002
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
       ],
       "sessions": [
-        "s1",
-        "s2"
+        "ses_eee2ad435ffer8Jkaw4Zl6HLnv",
+        "ses_eee2c6f07ffe7zWly7cBP6rQY2",
+        "ses_eee2d7ec1ffeoT7EGbKYlj9Sf1",
+        "ses_eee644570ffesZGRu2Z3kr1AmL",
+        "ses_eeeab7e50ffeAqurd2hWQ0yjG8",
+        "ses_eeeae0d16ffeSf8gPiVfKWVEoc",
+        "ses_eeeb578ffffeaxiR9VaqkFbUKs"
       ],
       "titles": [
-        "A",
-        "B"
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
       ],
-      "worktree": "/tmp/wt-a"
+      "worktree": "/home/scott/git/wt-auto-assist-free-subagent-routing-20261006"
+    },
+    {
+      "conflicting_records": 9,
+      "pids": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "sessions": [
+        "ses_eee631806ffe8Sqh0WgSQwh47I",
+        "ses_eee64cf44ffeCP9HematLCDXjf",
+        "ses_eeea61fffffeQZoYA6Ly1Pyz7Z",
+        "ses_eeeaf3937ffedlzbxJhia3j4q5",
+        "ses_eeeb58e52ffe6Yk0pcgGB229ro",
+        "ses_eef0173e3ffe6R8Jgp9YsM0FaK",
+        "ses_eef03d602ffe1SrSGGNTQnbm0L",
+        "ses_eef0bda59ffeRvOdFipTWH7YwW",
+        "ses_eef0c20f2ffeRlrmN9mQ53pSBa"
+      ],
+      "titles": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "worktree": "/home/scott/git/wt-vitrial-client-readiness"
+    },
+    {
+      "conflicting_records": 3,
+      "pids": [
+        null,
+        null,
+        null
+      ],
+      "sessions": [
+        "ses_eee63f3afffei368IrsTuEmGWJ",
+        "ses_eeea91c1bffeDMg4d3RG2091qt",
+        "ses_eeeb4bd3fffeedrEe71sD1mJq1"
+      ],
+      "titles": [
+        null,
+        null,
+        null
+      ],
+      "worktree": "/home/scott/git/wt-local-studio-free-provider-qualification-20261006"
+    },
+    {
+      "conflicting_records": 2,
+      "pids": [
+        null,
+        null
+      ],
+      "sessions": [
+        "ses_eee641934ffe6Rk7zJDM1xOuy3",
+        "ses_eeeb2f4c5ffejNZhAceRk3RihC"
+      ],
+      "titles": [
+        null,
+        null
+      ],
+      "worktree": "/home/scott/git/wt-auto-assist-latency-shadow-20261006"
+    },
+    {
+      "conflicting_records": 5,
+      "pids": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "sessions": [
+        "ses_eee6477feffeTov3XxxVyoR9ld",
+        "ses_eeeaaa551ffexT9JKhcIJCEgJ2",
+        "ses_eeea65d90ffeq0TgCx8wyT25s6",
+        "ses_eeeaf2144ffeqdIED624WBc8W4",
+        "ses_eeeb4ec45ffe727mZkd6i9A62E"
+      ],
+      "titles": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "worktree": "/home/scott/git/wt-kipnerter-photo-resilience-20261006"
+    },
+    {
+      "conflicting_records": 2,
+      "pids": [
+        null,
+        null
+      ],
+      "sessions": [
+        "ses_eee649b3cffeCiTxRZtJP9dRwv",
+        "ses_eeeb4d62cffeoQMLFeC45eWUkL"
+      ],
+      "titles": [
+        null,
+        null
+      ],
+      "worktree": "/home/scott/git/wt-vitrial-geometry-proof-20261006"
+    },
+    {
+      "conflicting_records": 3,
+      "pids": [
+        null,
+        null,
+        null
+      ],
+      "sessions": [
+        "ses_eeea5fee7ffexnhDKhSJetpSiO",
+        "ses_eeeb30f63ffeJmKvdAZdnAN71Z",
+        "ses_eeeb2cca6ffeAEXGoyJiQkMirB"
+      ],
+      "titles": [
+        null,
+        null,
+        null
+      ],
+      "worktree": "/home/scott/git/wt-kipnerter-provider-ux-20261006"
+    },
+    {
+      "conflicting_records": 2,
+      "pids": [
+        null,
+        null
+      ],
+      "sessions": [
+        "ses_eeea90519ffelBEoaNjYE49WKC",
+        "ses_eeeb2ded2ffefIdtlwfd6CeIZE"
+      ],
+      "titles": [
+        null,
+        null
+      ],
+      "worktree": "/home/scott/git/wt-nas5-readonly-next-20261006"
+    },
+    {
+      "conflicting_records": 3,
+      "pids": [
+        null,
+        null,
+        null
+      ],
+      "sessions": [
+        "ses_eef015a35ffe3OVydcNabO7OZh",
+        "ses_eef0b6e0cffe5GHXA07z58Jcjs",
+        "ses_ef05cfacaffeKaqtcEVeQS884n"
+      ],
+      "titles": [
+        null,
+        null,
+        null
+      ],
+      "worktree": "/tmp/opencode/nas-recovery-pressure"
+    },
+    {
+      "conflicting_records": 3,
+      "pids": [
+        null,
+        null,
+        null
+      ],
+      "sessions": [
+        "ses_eef0191e7ffezwb5xQOAy2YAg3",
+        "ses_eef044d9affeukByZGuUjuStuw",
+        "ses_eef09c8bcffeaLEXd3JfdkyL80"
+      ],
+      "titles": [
+        null,
+        null,
+        null
+      ],
+      "worktree": "/home/scott/git/wt-kipnerter-release-forward-port"
+    },
+    {
+      "conflicting_records": 4,
+      "pids": [
+        null,
+        null,
+        null,
+        null
+      ],
+      "sessions": [
+        "ses_eef01c407ffe6f3tNGQ3VG4Svu",
+        "ses_eef046d48ffeAifTwjmGeinYMm",
+        "ses_eef0b9286ffeMoYSessg2Ry0H4",
+        "ses_eef0c09bdffeLMilzQKUEfqHVO"
+      ],
+      "titles": [
+        null,
+        null,
+        null,
+        null
+      ],
+      "worktree": "/home/scott/git/wt-auto-assist-opencode-observability"
+    },
+    {
+      "conflicting_records": 5,
+      "pids": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "sessions": [
+        "ses_eef01e995ffeL6QtIOVei9iBD4",
+        "ses_eef02138bffeWfMRKjQfvBMILn",
+        "ses_eef048c75ffeR7oac8r3BOIXMg",
+        "ses_eef0bba34ffeMyY2xzy9NRMpN3",
+        "ses_eef0c1568ffedwbshJKarvWm4x"
+      ],
+      "titles": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "worktree": "/home/scott/git/kipnerter-ios"
     }
   ],
-  "free_model_ids": [
-    "openrouter/anthropic/claude-3.5-sonnet",
-    "openrouter/google/gemini-2.5-flash-preview"
-  ],
-  "free_models_found": 2,
+  "free_model_ids": [],
+  "free_models_found": 0,
   "looping_records": [],
-  "observed_at": "2026-10-06T14:30:34Z",
+  "observed_at": "2026-10-06T15:54:52Z",
   "projections_note": "Projection is read-only and advisory. It does not approve, admit, dispatch, or terminate subagent processes. Scale verdict is suggested, not enforced. Close stdin (< /dev/null) for noninteractive launches to avoid init waits. Free-cost gating requires both prompt and completion pricing to be zero; stale/duplicate/looping classifications are advisory.",
   "read_only": true,
   "stale_records": [
     {
-      "age_minutes": 385.57,
-      "session": "s1",
+      "age_minutes": 87.24,
+      "session": "ses_eee631806ffe8Sqh0WgSQwh47I",
       "status": "active",
-      "updated_at": "2026-10-06T08:05:00Z",
-      "worktree": "/tmp/wt-a"
+      "updated_at": "2026-10-06T14:27:38Z",
+      "worktree": "/home/scott/git/wt-vitrial-client-readiness"
     },
     {
-      "age_minutes": 375.57,
-      "session": "s2",
+      "age_minutes": 87.66,
+      "session": "ses_eee644570ffesZGRu2Z3kr1AmL",
       "status": "active",
-      "updated_at": "2026-10-06T08:15:00Z",
-      "worktree": "/tmp/wt-a"
+      "updated_at": "2026-10-06T14:27:13Z",
+      "worktree": "/home/scott/git/wt-auto-assist-free-subagent-routing-20261006"
     },
     {
-      "age_minutes": 420.57,
-      "session": "s3",
-      "status": "completed",
-      "updated_at": "2026-10-06T07:30:00Z",
-      "worktree": "/tmp/wt-c"
+      "age_minutes": 88.18,
+      "session": "ses_eee63f3afffei368IrsTuEmGWJ",
+      "status": "active",
+      "updated_at": "2026-10-06T14:26:42Z",
+      "worktree": "/home/scott/git/wt-local-studio-free-provider-qualification-20261006"
+    },
+    {
+      "age_minutes": 88.34,
+      "session": "ses_eee641934ffe6Rk7zJDM1xOuy3",
+      "status": "active",
+      "updated_at": "2026-10-06T14:26:32Z",
+      "worktree": "/home/scott/git/wt-auto-assist-latency-shadow-20261006"
+    },
+    {
+      "age_minutes": 88.74,
+      "session": "ses_eee6477feffeTov3XxxVyoR9ld",
+      "status": "active",
+      "updated_at": "2026-10-06T14:26:08Z",
+      "worktree": "/home/scott/git/wt-kipnerter-photo-resilience-20261006"
+    },
+    {
+      "age_minutes": 88.89,
+      "session": "ses_eee649b3cffeCiTxRZtJP9dRwv",
+      "status": "active",
+      "updated_at": "2026-10-06T14:25:59Z",
+      "worktree": "/home/scott/git/wt-vitrial-geometry-proof-20261006"
+    },
+    {
+      "age_minutes": 89.11,
+      "session": "ses_eee64cf44ffeCP9HematLCDXjf",
+      "status": "active",
+      "updated_at": "2026-10-06T14:25:46Z",
+      "worktree": "/home/scott/git/wt-vitrial-client-readiness"
+    },
+    {
+      "age_minutes": 149.94,
+      "session": "ses_eeeaaa551ffexT9JKhcIJCEgJ2",
+      "status": "active",
+      "updated_at": "2026-10-06T13:24:56Z",
+      "worktree": "/home/scott/git/wt-kipnerter-photo-resilience-20261006"
+    },
+    {
+      "age_minutes": 150.23,
+      "session": "ses_eeeb2f4c5ffejNZhAceRk3RihC",
+      "status": "active",
+      "updated_at": "2026-10-06T13:24:39Z",
+      "worktree": "/home/scott/git/wt-auto-assist-latency-shadow-20261006"
+    },
+    {
+      "age_minutes": 150.66,
+      "session": "ses_eeea61fffffeQZoYA6Ly1Pyz7Z",
+      "status": "active",
+      "updated_at": "2026-10-06T13:24:13Z",
+      "worktree": "/home/scott/git/wt-vitrial-client-readiness"
+    },
+    {
+      "age_minutes": 153.48,
+      "session": "ses_eeea65d90ffeq0TgCx8wyT25s6",
+      "status": "active",
+      "updated_at": "2026-10-06T13:21:24Z",
+      "worktree": "/home/scott/git/wt-kipnerter-photo-resilience-20261006"
+    },
+    {
+      "age_minutes": 154.11,
+      "session": "ses_eeea5fee7ffexnhDKhSJetpSiO",
+      "status": "active",
+      "updated_at": "2026-10-06T13:20:46Z",
+      "worktree": "/home/scott/git/wt-kipnerter-provider-ux-20261006"
+    },
+    {
+      "age_minutes": 155.43,
+      "session": "ses_eeea91c1bffeDMg4d3RG2091qt",
+      "status": "active",
+      "updated_at": "2026-10-06T13:19:27Z",
+      "worktree": "/home/scott/git/wt-local-studio-free-provider-qualification-20261006"
+    },
+    {
+      "age_minutes": 160.26,
+      "session": "ses_eeeb4d62cffeoQMLFeC45eWUkL",
+      "status": "active",
+      "updated_at": "2026-10-06T13:14:37Z",
+      "worktree": "/home/scott/git/wt-vitrial-geometry-proof-20261006"
+    },
+    {
+      "age_minutes": 160.43,
+      "session": "ses_eeeb5a79fffep44NhIDi14f6UO",
+      "status": "active",
+      "updated_at": "2026-10-06T13:14:27Z",
+      "worktree": "/home/scott/git/wt-kipnerter-next-release-candidate"
+    },
+    {
+      "age_minutes": 163.61,
+      "session": "ses_eeea90519ffelBEoaNjYE49WKC",
+      "status": "active",
+      "updated_at": "2026-10-06T13:11:16Z",
+      "worktree": "/home/scott/git/wt-nas5-readonly-next-20261006"
+    },
+    {
+      "age_minutes": 164.44,
+      "session": "ses_eeeb30f63ffeJmKvdAZdnAN71Z",
+      "status": "active",
+      "updated_at": "2026-10-06T13:10:26Z",
+      "worktree": "/home/scott/git/wt-kipnerter-provider-ux-20261006"
+    },
+    {
+      "age_minutes": 165.49,
+      "session": "ses_eeeab7e50ffeAqurd2hWQ0yjG8",
+      "status": "active",
+      "updated_at": "2026-10-06T13:09:23Z",
+      "worktree": "/home/scott/git/wt-auto-assist-free-subagent-routing-20261006"
+    },
+    {
+      "age_minutes": 165.61,
+      "session": "ses_eeeaf2144ffeqdIED624WBc8W4",
+      "status": "active",
+      "updated_at": "2026-10-06T13:09:16Z",
+      "worktree": "/home/scott/git/wt-kipnerter-photo-resilience-20261006"
+    },
+    {
+      "age_minutes": 165.76,
+      "session": "ses_eeeaf3937ffedlzbxJhia3j4q5",
+      "status": "active",
+      "updated_at": "2026-10-06T13:09:07Z",
+      "worktree": "/home/scott/git/wt-vitrial-client-readiness"
+    },
+    {
+      "age_minutes": 166.23,
+      "session": "ses_eeeb2ded2ffefIdtlwfd6CeIZE",
+      "status": "active",
+      "updated_at": "2026-10-06T13:08:39Z",
+      "worktree": "/home/scott/git/wt-nas5-readonly-next-20261006"
+    },
+    {
+      "age_minutes": 167.03,
+      "session": "ses_eeeb4bd3fffeedrEe71sD1mJq1",
+      "status": "active",
+      "updated_at": "2026-10-06T13:07:51Z",
+      "worktree": "/home/scott/git/wt-local-studio-free-provider-qualification-20261006"
+    },
+    {
+      "age_minutes": 168.56,
+      "session": "ses_eeeb2cca6ffeAEXGoyJiQkMirB",
+      "status": "active",
+      "updated_at": "2026-10-06T13:06:19Z",
+      "worktree": "/home/scott/git/wt-kipnerter-provider-ux-20261006"
+    },
+    {
+      "age_minutes": 168.96,
+      "session": "ses_eeeae0d16ffeSf8gPiVfKWVEoc",
+      "status": "active",
+      "updated_at": "2026-10-06T13:05:55Z",
+      "worktree": "/home/scott/git/wt-auto-assist-free-subagent-routing-20261006"
+    },
+    {
+      "age_minutes": 173.58,
+      "session": "ses_eeeb578ffffeaxiR9VaqkFbUKs",
+      "status": "active",
+      "updated_at": "2026-10-06T13:01:18Z",
+      "worktree": "/home/scott/git/wt-auto-assist-free-subagent-routing-20261006"
+    },
+    {
+      "age_minutes": 176.61,
+      "session": "ses_eeeb4ec45ffe727mZkd6i9A62E",
+      "status": "active",
+      "updated_at": "2026-10-06T12:58:16Z",
+      "worktree": "/home/scott/git/wt-kipnerter-photo-resilience-20261006"
+    },
+    {
+      "age_minutes": 176.99,
+      "session": "ses_eeeb58e52ffe6Yk0pcgGB229ro",
+      "status": "active",
+      "updated_at": "2026-10-06T12:57:53Z",
+      "worktree": "/home/scott/git/wt-vitrial-client-readiness"
+    },
+    {
+      "age_minutes": 260.09,
+      "session": "ses_eef015a35ffe3OVydcNabO7OZh",
+      "status": "active",
+      "updated_at": "2026-10-06T11:34:47Z",
+      "worktree": "/tmp/opencode/nas-recovery-pressure"
+    },
+    {
+      "age_minutes": 260.21,
+      "session": "ses_eef0173e3ffe6R8Jgp9YsM0FaK",
+      "status": "active",
+      "updated_at": "2026-10-06T11:34:40Z",
+      "worktree": "/home/scott/git/wt-vitrial-client-readiness"
+    },
+    {
+      "age_minutes": 260.34,
+      "session": "ses_eef0191e7ffezwb5xQOAy2YAg3",
+      "status": "active",
+      "updated_at": "2026-10-06T11:34:32Z",
+      "worktree": "/home/scott/git/wt-kipnerter-release-forward-port"
+    },
+    {
+      "age_minutes": 260.54,
+      "session": "ses_eef01c407ffe6f3tNGQ3VG4Svu",
+      "status": "active",
+      "updated_at": "2026-10-06T11:34:20Z",
+      "worktree": "/home/scott/git/wt-auto-assist-opencode-observability"
+    },
+    {
+      "age_minutes": 260.71,
+      "session": "ses_eef01e995ffeL6QtIOVei9iBD4",
+      "status": "active",
+      "updated_at": "2026-10-06T11:34:10Z",
+      "worktree": "/home/scott/git/kipnerter-ios"
+    },
+    {
+      "age_minutes": 260.89,
+      "session": "ses_eef02138bffeWfMRKjQfvBMILn",
+      "status": "active",
+      "updated_at": "2026-10-06T11:33:59Z",
+      "worktree": "/home/scott/git/kipnerter-ios"
+    },
+    {
+      "age_minutes": 262.36,
+      "session": "ses_eef048c75ffeR7oac8r3BOIXMg",
+      "status": "active",
+      "updated_at": "2026-10-06T11:32:31Z",
+      "worktree": "/home/scott/git/kipnerter-ios"
+    },
+    {
+      "age_minutes": 262.39,
+      "session": "ses_eef0b6e0cffe5GHXA07z58Jcjs",
+      "status": "active",
+      "updated_at": "2026-10-06T11:32:29Z",
+      "worktree": "/tmp/opencode/nas-recovery-pressure"
+    },
+    {
+      "age_minutes": 262.58,
+      "session": "ses_eef03d602ffe1SrSGGNTQnbm0L",
+      "status": "active",
+      "updated_at": "2026-10-06T11:32:18Z",
+      "worktree": "/home/scott/git/wt-vitrial-client-readiness"
+    },
+    {
+      "age_minutes": 262.74,
+      "session": "ses_eef044d9affeukByZGuUjuStuw",
+      "status": "active",
+      "updated_at": "2026-10-06T11:32:08Z",
+      "worktree": "/home/scott/git/wt-kipnerter-release-forward-port"
+    },
+    {
+      "age_minutes": 262.74,
+      "session": "ses_eef046d48ffeAifTwjmGeinYMm",
+      "status": "active",
+      "updated_at": "2026-10-06T11:32:08Z",
+      "worktree": "/home/scott/git/wt-auto-assist-opencode-observability"
+    },
+    {
+      "age_minutes": 263.46,
+      "session": "ses_eef0bda59ffeRvOdFipTWH7YwW",
+      "status": "active",
+      "updated_at": "2026-10-06T11:31:25Z",
+      "worktree": "/home/scott/git/wt-vitrial-client-readiness"
+    },
+    {
+      "age_minutes": 264.28,
+      "session": "ses_eef09c8bcffeaLEXd3JfdkyL80",
+      "status": "active",
+      "updated_at": "2026-10-06T11:30:36Z",
+      "worktree": "/home/scott/git/wt-kipnerter-release-forward-port"
+    },
+    {
+      "age_minutes": 267.01,
+      "session": "ses_eef0b9286ffeMoYSessg2Ry0H4",
+      "status": "active",
+      "updated_at": "2026-10-06T11:27:52Z",
+      "worktree": "/home/scott/git/wt-auto-assist-opencode-observability"
+    },
+    {
+      "age_minutes": 267.66,
+      "session": "ses_eef0bba34ffeMyY2xzy9NRMpN3",
+      "status": "active",
+      "updated_at": "2026-10-06T11:27:13Z",
+      "worktree": "/home/scott/git/kipnerter-ios"
+    },
+    {
+      "age_minutes": 270.86,
+      "session": "ses_eef0c09bdffeLMilzQKUEfqHVO",
+      "status": "active",
+      "updated_at": "2026-10-06T11:24:01Z",
+      "worktree": "/home/scott/git/wt-auto-assist-opencode-observability"
+    },
+    {
+      "age_minutes": 270.89,
+      "session": "ses_eef0c20f2ffeRlrmN9mQ53pSBa",
+      "status": "active",
+      "updated_at": "2026-10-06T11:23:59Z",
+      "worktree": "/home/scott/git/wt-vitrial-client-readiness"
+    },
+    {
+      "age_minutes": 271.04,
+      "session": "ses_eef0c1568ffedwbshJKarvWm4x",
+      "status": "active",
+      "updated_at": "2026-10-06T11:23:50Z",
+      "worktree": "/home/scott/git/kipnerter-ios"
+    },
+    {
+      "age_minutes": 633.41,
+      "session": "ses_ef05be79affezMbxemgJxL788b",
+      "status": "active",
+      "updated_at": "2026-10-06T05:21:28Z",
+      "worktree": "/tmp/opencode"
+    },
+    {
+      "age_minutes": 634.74,
+      "session": "ses_ef05cfacaffeKaqtcEVeQS884n",
+      "status": "active",
+      "updated_at": "2026-10-06T05:20:08Z",
+      "worktree": "/tmp/opencode/nas-recovery-pressure"
     }
   ],
-  "subagent_records": 3,
+  "subagent_records": 50,
   "suggested_scale_verdict": "hold",
   "supervision_slice": "free_subagent_supervisor"
 }

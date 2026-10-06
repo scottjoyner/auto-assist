@@ -32,6 +32,7 @@ import argparse
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -52,6 +53,10 @@ _PROJECTION_KEYS = [
 
 DEFAULT_STATE_PATH = pathlib.Path("local_subagent_state.jsonl")
 DEFAULT_FIXTURE_PATH = pathlib.Path("tests/fixtures/openrouter_models_sample.jsonl")
+
+
+def _opencode_binary() -> str:
+    return os.environ.get("OPENCODE_BIN") or shutil.which("opencode") or str(pathlib.Path.home() / ".opencode" / "bin" / "opencode")
 
 
 def _now_utc() -> str:
@@ -86,7 +91,7 @@ def enumerate_free_models(fixture_path: pathlib.Path | None = None) -> list[dict
     # Try authoritative command first; if unavailable/offline, fall back.
     try:
         proc = subprocess.run(
-            ["opencode", "models", "openrouter"],
+            [_opencode_binary(), "models"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -199,6 +204,77 @@ def register_subagent(
 def inspect_subagents(state_path: pathlib.Path | None = None) -> list[dict[str, Any]]:
     return load_state(state_path)
 
+def _opencode_db_uri() -> str:
+    db_path = os.path.join(os.path.expanduser("~"), ".local", "share", "opencode", "opencode.db")
+    return f"file:{db_path}?mode=ro"
+
+def discover_live_sessions(query_only: bool = True) -> list[dict[str, Any]]:
+    """SQLite read-only / query_only session discovery; no mutation.
+    OpenCode time_updated is milliseconds; derived path from HOME."""
+    import sqlite3, time
+    db_uri = _opencode_db_uri()
+    conn = sqlite3.connect(db_uri, uri=True, check_same_thread=False)
+    try:
+        conn.execute("PRAGMA query_only = ON")
+        # Prove mode=ro + PRAGMA query_only: a write must fail.
+        try:
+            conn.execute("CREATE TEMP TABLE _assert_write_fail (id INTEGER)")
+            raise AssertionError("Write succeeded despite mode=ro and PRAGMA query_only")
+        except sqlite3.OperationalError:
+            pass  # expected failure
+        cur = conn.cursor()
+        now_ms = int(time.time() * 1000)
+        seven_days_ms = 7 * 24 * 60 * 60 * 1000
+        cur.execute(
+            "SELECT id, slug, directory, agent, model, time_updated, time_archived FROM session WHERE time_updated > ? ORDER BY time_updated DESC LIMIT 50",
+            (now_ms - seven_days_ms,),
+        )
+        cols = [d[0] for d in cur.description]
+        rows = []
+        for row in cur.fetchall():
+            raw = dict(zip(cols, row))
+            # Map to duplicate/stale fields used by supervisor logic.
+            session_id = raw.get("id") or raw.get("slug") or ""
+            worktree = raw.get("directory") or ""
+            agent = raw.get("agent") or ""
+            model_raw = raw.get("model")
+            model_name = ""
+            provider = agent
+            try:
+                if isinstance(model_raw, str) and model_raw:
+                    parsed = json.loads(model_raw)
+                    if isinstance(parsed, dict):
+                        model_name = parsed.get("id") or parsed.get("name") or ""
+                        if parsed.get("providerID"):
+                            provider = parsed.get("providerID")
+                        elif parsed.get("provider"):
+                            provider = parsed.get("provider")
+            except Exception:
+                model_name = str(model_raw) if model_raw is not None else ""
+            updated_at_ms = raw.get("time_updated")
+            updated_at = ""
+            if updated_at_ms is not None:
+                try:
+                    ts = datetime.fromtimestamp(updated_at_ms / 1000.0, tz=timezone.utc)
+                    updated_at = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+                except Exception:
+                    updated_at = str(updated_at_ms)
+            status = "archived" if raw.get("time_archived") is not None else "active"
+            rows.append({
+                "session": session_id,
+                "worktree": worktree,
+                "model": model_name,
+                "provider": provider,
+                "updated_at": updated_at,
+                "status": status,
+                "slug": raw.get("slug"),
+                "title": raw.get("title"),
+            })
+        return rows
+    finally:
+        conn.close()
+
+
 
 def detect_duplicate_worktrees(records: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Detect active records with conflicting worktrees."""
@@ -302,6 +378,13 @@ def emit_projection(
     """Read-only supervision projection; never enforced."""
     models = free_models if free_models is not None else enumerate_free_models()
     records = inspect_subagents(state_path)
+    if not records:
+        try:
+            live = discover_live_sessions(query_only=True)
+            if live:
+                records = [{"source": "sqlite_readonly", **r} for r in live]
+        except Exception:
+            pass
     duplicates = detect_duplicate_worktrees(records)
     loops = detect_looping_records(records)
     stale = detect_stale_records(records)
