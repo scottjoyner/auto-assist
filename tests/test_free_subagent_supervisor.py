@@ -68,6 +68,57 @@ def test_register_inspect_duplicates():
         path.unlink(missing_ok=True)
 
 
+
+
+def test_register_rejects_unresolved_router_alias_and_records_exact_model():
+    with tempfile.NamedTemporaryFile("w+", suffix=".jsonl", delete=False) as tf:
+        path = pathlib.Path(tf.name)
+    try:
+        alias = {
+            "title": "alias-real-work",
+            "objective": "must be attributable",
+            "model": "openrouter/free",
+            "worktree": "/tmp/wt-alias",
+            "pid": 1,
+            "session": "sess-alias",
+            "status": "running",
+        }
+        try:
+            supervisor.register_subagent(alias, path)
+            raise AssertionError("unresolved router alias should be rejected")
+        except ValueError as exc:
+            assert "resolved_model" in str(exc)
+
+        exact = {
+            "title": "exact-real-work",
+            "objective": "attributable anonymous run",
+            "model": "stepfun/step-3.7-flash:free",
+            "worktree": "/tmp/wt-exact",
+            "pid": 2,
+            "session": "sess-exact",
+            "status": "running",
+        }
+        recs = supervisor.register_subagent(exact, path)
+        row = recs[-1]
+        assert row["route_kind"] == "exact"
+        assert row["effective_model"] == "stepfun/step-3.7-flash:free"
+        assert row["model_attribution"] == "exact-request"
+        assert row["model_identity_complete"] is True
+
+        canary = {
+            **alias,
+            "title": "alias-canary",
+            "session": "sess-canary",
+            "allow_unresolved_alias": True,
+        }
+        recs = supervisor.register_subagent(canary, path)
+        row = recs[-1]
+        assert row["route_kind"] == "alias"
+        assert row["model_attribution"] == "unresolved-router-alias"
+        assert row["model_identity_complete"] is False
+    finally:
+        path.unlink(missing_ok=True)
+
 def test_projection_readonly_and_verdict():
     proj = supervisor.emit_projection(
         free_models=supervisor.enumerate_free_models(FIXTURE_MODELS),
@@ -120,17 +171,6 @@ def test_sqlite_session_history_is_not_treated_as_concurrent_process_duplication
         },
     ]
     assert supervisor.detect_duplicate_worktrees(records) == []
-
-
-if __name__ == "__main__":
-    test_enumerate_free_models_from_fixture()
-    test_credential_present_no_secret_leak()
-    test_register_inspect_duplicates()
-    test_projection_readonly_and_verdict()
-    test_projection_healthy_when_clean()
-    test_projection_notes_document_stdinhazard()
-    test_sqlite_session_history_is_not_treated_as_concurrent_process_duplication()
-    print("all free_subagent_supervisor tests passed")
 
 
 def test_discover_live_sessions_readonly_query_only():
@@ -421,3 +461,376 @@ def test_projection_includes_free_model_types():
     # Both have free tags, so both are opencode-native-free
     assert proj["free_model_types"]["opencode-native-free"] == 2
     # No openrouter-account-free since both have tags
+
+
+FIXTURE_POOLS = pathlib.Path(__file__).parent / "fixtures" / "provider_pools_sample.jsonl"
+
+
+def _load_pool_models():
+    import json
+
+    models = []
+    with FIXTURE_POOLS.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            obj["free_model_type"] = supervisor.classify_free_model(obj)
+            models.append(obj)
+    return models
+
+
+def test_kilo_anonymous_pool_constants():
+    from free_subagent_supervisor import (
+        KILO_ANONYMOUS_BASE_URL,
+        KILO_ANONYMOUS_BEARER,
+        pool_tier,
+        is_anonymous_pool,
+    )
+
+    assert KILO_ANONYMOUS_BASE_URL == "https://api.kilo.ai/api/openrouter"
+    # The anonymous bearer is a non-secret placeholder, never a real key.
+    assert KILO_ANONYMOUS_BEARER == "anonymous"
+    assert pool_tier("kilo", KILO_ANONYMOUS_BASE_URL) == "kilo-anonymous"
+    # A kilo base_url alone identifies the anonymous pool.
+    assert pool_tier("", KILO_ANONYMOUS_BASE_URL) == "kilo-anonymous"
+    assert is_anonymous_pool("kilo-anonymous") is True
+    assert is_anonymous_pool("lmstudio-local") is True
+    assert is_anonymous_pool("openrouter-free") is False
+    assert is_anonymous_pool("zai-reserve") is False
+
+
+def test_pool_ordering_prefers_anonymous_before_reserved():
+    from free_subagent_supervisor import (
+        order_free_pools,
+        pool_tier,
+        pool_preference_rank,
+    )
+
+    models = _load_pool_models()
+    ordered = order_free_pools(models)
+    ordered_tiers = [pool_tier(m.get("provider") or "", m.get("base_url") or "") for m in ordered]
+    # Distinct tiers, preserving preference order.
+    distinct_tiers = list(dict.fromkeys(ordered_tiers))
+
+    # Truly zero-cost / anonymous pools come first.
+    assert distinct_tiers[0] == "kilo-anonymous"
+    assert distinct_tiers[1] == "lmstudio-local"
+    # OpenRouter free models (shared free quota) follow the anonymous pools.
+    assert distinct_tiers[2] == "openrouter-free"
+    # Reserved quota never precedes an anonymous / zero-cost pool.
+    assert distinct_tiers[3] == "cohere-reserved"
+    assert pool_preference_rank("kilo-anonymous") < pool_preference_rank("cohere-reserved")
+    assert pool_preference_rank("lmstudio-local") < pool_preference_rank("cohere-reserved")
+    assert pool_preference_rank("openrouter-free") < pool_preference_rank("cohere-reserved")
+    # Z.AI is reserve-only and excluded by default.
+    assert "zai-reserve" not in distinct_tiers
+    # The paid model is never auto-selected.
+    assert "openrouter/anthropic/claude-sonnet-4.5" not in [m.get("id") for m in ordered]
+
+
+def test_zai_is_reserve_only_unless_explicitly_requested():
+    from free_subagent_supervisor import order_free_pools, pool_tier, RESERVE_ONLY_POOLS
+
+    models = _load_pool_models()
+
+    # Default: Z.AI excluded entirely.
+    default_ordered = order_free_pools(models, allow_reserve=False)
+    assert "zai-reserve" not in {
+        pool_tier(m.get("provider") or "", m.get("base_url") or "") for m in default_ordered
+    }
+
+    # Explicitly requested: Z.AI included, but still ranked after
+    # every anonymous / zero-cost pool.
+    allowed = order_free_pools(models, allow_reserve=True)
+    tiers = [pool_tier(m.get("provider") or "", m.get("base_url") or "") for m in allowed]
+    assert "zai-reserve" in tiers
+    assert "zai-reserve" in RESERVE_ONLY_POOLS
+    zai_positions = [i for i, t in enumerate(tiers) if t == "zai-reserve"]
+    anonymous_positions = [i for i, t in enumerate(tiers) if t in ("kilo-anonymous", "lmstudio-local")]
+    assert max(anonymous_positions) < min(zai_positions)
+
+
+def test_route_kind_distinguishes_exact_model_from_router_alias():
+    from free_subagent_supervisor import route_kind
+
+    # Router aliases delegate model selection to the provider router.
+    assert route_kind("openrouter/free") == "alias"
+    assert route_kind("kilo/free") == "alias"
+    assert route_kind("kilo/auto") == "alias"
+    assert route_kind("openrouter/auto") == "alias"
+    # Exact-model routes name one concrete model.
+    assert route_kind("zai/glm-4.7-flash") == "exact"
+    assert route_kind("kilo/kimi-k2-turbo") == "exact"
+    assert route_kind("openrouter/nvidia/nemotron-3-ultra-550b-a55b:free") == "exact"
+    assert route_kind("cohere/north-mini-code:free") == "exact"
+    assert route_kind("lmstudio/qwen3-30b-a3b") == "exact"
+    # A bare concrete model with no provider prefix is still exact.
+    assert route_kind("space-bunny-free") == "exact"
+
+
+def test_provider_state_surface_without_spending():
+    from free_subagent_supervisor import provider_state, PROVIDER_STATES
+
+    assert set(PROVIDER_STATES) == {
+        "usable",
+        "rate_limited",
+        "quota_exhausted",
+        "payment_required",
+        "unqualified",
+    }
+
+    # Zero-cost model is usable.
+    assert provider_state({
+        "id": "kilo/kimi-k2-turbo",
+        "provider": "kilo",
+        "base_url": "https://api.kilo.ai/api/openrouter",
+        "pricing": {"prompt": "0", "completion": "0"},
+    }) == "usable"
+
+    # Kilo anonymous pool is zero-cost by policy even without pricing metadata.
+    assert provider_state({
+        "id": "kilo/kimi-k2-turbo",
+        "provider": "kilo",
+        "base_url": "https://api.kilo.ai/api/openrouter",
+    }) == "usable"
+
+    # A non-zero price is always payment_required and never auto-spent.
+    assert provider_state({
+        "id": "openrouter/anthropic/claude-sonnet-4.5",
+        "provider": "openrouter",
+        "pricing": {"prompt": "3.0", "completion": "15.0"},
+    }) == "payment_required"
+
+    # Unknown provider is unqualified.
+    assert provider_state({
+        "id": "unknown/model",
+        "provider": "some-unknown-provider",
+        "pricing": {"prompt": "0", "completion": "0"},
+    }) == "unqualified"
+
+    # Read-only observed signals upgrade the state without spending.
+    base = {
+        "id": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        "provider": "openrouter",
+        "pricing": {"prompt": "0", "completion": "0"},
+    }
+    assert provider_state(base, {"rate_limited": True}) == "rate_limited"
+    assert provider_state(base, {"quota_exhausted": True}) == "quota_exhausted"
+    assert provider_state(base, {"payment_required": True}) == "payment_required"
+
+
+def test_qualify_provider_pools_surfaces_states_and_reserve_policy():
+    from free_subagent_supervisor import qualify_provider_pools
+
+    models = _load_pool_models()
+    pools = qualify_provider_pools(models, allow_reserve=False)
+    by_pool = {p["pool"]: p for p in pools}
+
+    # Ordered by preference: anonymous / zero-cost before reserved quota.
+    assert [p["pool"] for p in pools].index("kilo-anonymous") < [p["pool"] for p in pools].index("openrouter-free")
+    assert [p["pool"] for p in pools].index("kilo-anonymous") < [p["pool"] for p in pools].index("cohere-reserved")
+
+    # Kilo anonymous pool is usable, anonymous, and offers exact + alias routes.
+    kilo = by_pool["kilo-anonymous"]
+    assert kilo["state"] == "usable"
+    assert kilo["anonymous"] is True
+    assert kilo["reserve_only"] is False
+    assert kilo["route_kinds"] == {"alias": 2, "exact": 1}
+
+    # Z.AI is reserve-only and flagged as excluded by policy.
+    zai = by_pool["zai-reserve"]
+    assert zai["reserve_only"] is True
+    assert zai["excluded_by_policy"] is True
+    assert "reserve-only" in zai["policy"]
+
+    # OpenRouter free pool is usable but also records the paid model as
+    # blocked with payment_required (never auto-selected).
+    openrouter = by_pool["openrouter-free"]
+    assert openrouter["state"] == "usable"
+    blocked_states = {b["model"]: b["state"] for b in openrouter["blocked"]}
+    assert blocked_states.get("openrouter/anthropic/claude-sonnet-4.5") == "payment_required"
+
+
+def test_projection_orders_pools_and_marks_zai_reserve_only():
+    from free_subagent_supervisor import emit_projection
+
+    models = _load_pool_models()
+    proj = emit_projection(free_models=models, state_path=FIXTURE_STATE)
+
+    assert proj["read_only"] is True
+    pools = proj["provider_pools"]
+    tiers = [p["pool"] for p in pools]
+    # Preferred pool is the Kilo anonymous pool (most preferred, usable).
+    assert proj["preferred_pool"] == "kilo-anonymous"
+    assert tiers[0] == "kilo-anonymous"
+    # Z.AI is surfaced as reserve-only.
+    assert any(r["pool"] == "zai-reserve" for r in proj["reserve_only_pools"])
+    # Anonymous pools usable without a credential are surfaced.
+    assert "kilo-anonymous" in proj["anonymous_pools_usable"]
+    assert proj["kilo_anonymous_base_url"] == "https://api.kilo.ai/api/openrouter"
+    # Route-kind breakdown is surfaced for the free models.
+    assert proj["free_route_kinds"]["alias"] >= 2
+    assert proj["free_route_kinds"]["exact"] >= 1
+
+
+_CREDENTIAL_KEYS = ("OPENROUTER_API_KEY", "OPENROUTER_KEY", "OPENROUTER_API_KEY_2")
+
+
+def _isolate_openrouter_credential():
+    """Temporarily remove OpenRouter credential env vars and stub live
+    session discovery so a projection is decided solely by the
+    credential / anonymous-pool policy. Returns a restore callable."""
+    saved = {k: os.environ.pop(k) for k in _CREDENTIAL_KEYS if k in os.environ}
+    original_discover = supervisor.discover_live_sessions
+    supervisor.discover_live_sessions = lambda query_only=True: []
+
+    def restore():
+        os.environ.update(saved)
+        supervisor.discover_live_sessions = original_discover
+
+    return restore
+
+
+def test_projection_holds_when_no_anonymous_pool_and_no_credential():
+    from free_subagent_supervisor import emit_projection
+
+    # OpenRouter-only free models (no anonymous pool) and no credential.
+    restore = _isolate_openrouter_credential()
+    try:
+        models = [
+            {
+                "id": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+                "provider": "openrouter",
+                "pricing": {"prompt": "0", "completion": "0"},
+                "tags": ["free"],
+            },
+        ]
+        with tempfile.NamedTemporaryFile("w+", suffix=".jsonl", delete=False) as tf:
+            clean_path = pathlib.Path(tf.name)
+        try:
+            proj = emit_projection(free_models=models, state_path=clean_path)
+            # No credential and no anonymous pool usable -> hold.
+            assert proj["suggested_scale_verdict"] == "hold"
+            assert proj["anonymous_pools_usable"] == []
+        finally:
+            clean_path.unlink(missing_ok=True)
+    finally:
+        restore()
+
+
+def test_projection_healthy_with_anonymous_pool_even_without_credential():
+    from free_subagent_supervisor import emit_projection
+
+    restore = _isolate_openrouter_credential()
+    try:
+        models = [
+            {
+                "id": "kilo/kimi-k2-turbo",
+                "provider": "kilo",
+                "base_url": "https://api.kilo.ai/api/openrouter",
+            },
+        ]
+        with tempfile.NamedTemporaryFile("w+", suffix=".jsonl", delete=False) as tf:
+            clean_path = pathlib.Path(tf.name)
+        try:
+            proj = emit_projection(free_models=models, state_path=clean_path)
+            # Anonymous Kilo pool is usable without any credential.
+            assert proj["credential_present"] is False
+            assert proj["anonymous_pools_usable"] == ["kilo-anonymous"]
+            assert proj["preferred_pool"] == "kilo-anonymous"
+            assert proj["suggested_scale_verdict"] == "healthy"
+        finally:
+            clean_path.unlink(missing_ok=True)
+    finally:
+        restore()
+
+
+def test_provider_pools_cli_exposes_reserve_policy():
+    import json
+    import subprocess
+    import sys
+
+    repo_root = pathlib.Path(__file__).parent.parent
+    script = repo_root / "scripts" / "free_subagent_supervisor.py"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo_root / "scripts")
+
+    proc = subprocess.run(
+        [sys.executable, str(script), "--provider-pools", "--pools-fixture", str(FIXTURE_POOLS)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["read_only"] is True
+    assert payload["preferred_pool"] == "kilo-anonymous"
+    tiers = [p["pool"] for p in payload["provider_pools"]]
+    assert tiers[0] == "kilo-anonymous"
+    assert "zai-reserve" in tiers
+    zai = next(p for p in payload["provider_pools"] if p["pool"] == "zai-reserve")
+    assert zai["excluded_by_policy"] is True
+
+
+def test_provider_pools_cli_allow_reserve_includes_zai():
+    import json
+    import subprocess
+    import sys
+
+    repo_root = pathlib.Path(__file__).parent.parent
+    script = repo_root / "scripts" / "free_subagent_supervisor.py"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo_root / "scripts")
+
+    proc = subprocess.run(
+        [
+            sys.executable, str(script),
+            "--provider-pools", "--allow-reserve",
+            "--pools-fixture", str(FIXTURE_POOLS),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["allow_reserve"] is True
+    zai = next(p for p in payload["provider_pools"] if p["pool"] == "zai-reserve")
+    # When explicitly requested, Z.AI is no longer flagged excluded.
+    assert zai.get("excluded_by_policy") is not True
+
+
+if __name__ == "__main__":
+    test_enumerate_free_models_from_fixture()
+    test_credential_present_no_secret_leak()
+    test_register_inspect_duplicates()
+    test_projection_readonly_and_verdict()
+    test_projection_healthy_when_clean()
+    test_projection_notes_document_stdinhazard()
+    test_sqlite_session_history_is_not_treated_as_concurrent_process_duplication()
+    test_discover_live_sessions_readonly_query_only()
+    test_projection_with_trace_exporter_integration()
+    test_trace_exporter_readonly_query_only()
+    test_classify_free_model_openrouter_account_free()
+    test_classify_free_model_opencode_native()
+    test_classify_free_model_provider_specific()
+    test_classify_free_model_unknown_free()
+    test_enumerate_free_models_with_classification()
+    test_enumerate_free_models_deduplicates()
+    test_projection_includes_free_model_types()
+    test_kilo_anonymous_pool_constants()
+    test_pool_ordering_prefers_anonymous_before_reserved()
+    test_zai_is_reserve_only_unless_explicitly_requested()
+    test_route_kind_distinguishes_exact_model_from_router_alias()
+    test_provider_state_surface_without_spending()
+    test_qualify_provider_pools_surfaces_states_and_reserve_policy()
+    test_projection_orders_pools_and_marks_zai_reserve_only()
+    test_projection_holds_when_no_anonymous_pool_and_no_credential()
+    test_projection_healthy_with_anonymous_pool_even_without_credential()
+    test_provider_pools_cli_exposes_reserve_policy()
+    test_provider_pools_cli_allow_reserve_includes_zai()
+    print("all free_subagent_supervisor tests passed")

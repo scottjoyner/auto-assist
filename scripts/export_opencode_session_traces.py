@@ -68,6 +68,51 @@ def _git(directory: str) -> dict[str, Any]:
         return {"is_git": False}
 
 
+ROUTE_ALIAS_TOKENS = frozenset({"free", "auto", "router", "any", "best", "default"})
+
+
+def _route_kind(model_id: str) -> str:
+    """Classify a requested model as exact or router-selected alias."""
+    mid = str(model_id or "").strip()
+    if "/" in mid:
+        leaf = mid.rsplit("/", 1)[-1].lower().split(":")[0]
+        if leaf in ROUTE_ALIAS_TOKENS:
+            return "alias"
+    return "exact"
+
+
+def _model_attribution(requested: str | None, resolved: str | None) -> dict[str, Any]:
+    """Return fail-closed model attribution metadata.
+
+    A provider-resolved model is strongest. Otherwise an exact requested model
+    is attributable by contract. Router aliases without a resolved upstream
+    model remain explicitly unresolved.
+    """
+    requested = str(requested or "").strip() or None
+    resolved = str(resolved or "").strip() or None
+    kind = _route_kind(requested or "")
+    if resolved:
+        return {
+            "route_kind": kind,
+            "effective_model": resolved,
+            "model_attribution": "resolved-upstream",
+            "model_identity_complete": True,
+        }
+    if requested and kind == "exact":
+        return {
+            "route_kind": kind,
+            "effective_model": requested,
+            "model_attribution": "exact-request",
+            "model_identity_complete": True,
+        }
+    return {
+        "route_kind": kind,
+        "effective_model": None,
+        "model_attribution": "unresolved-router-alias",
+        "model_identity_complete": False,
+    }
+
+
 def _objective_digest(con: sqlite3.Connection, session_id: str) -> dict[str, Any]:
     row = con.execute(
         """
@@ -128,9 +173,7 @@ def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
                 roles[role] += 1
             err = msg.get("error")
             if err:
-                assistant_errors.append(
-                    err if isinstance(err, str) else json.dumps(err, sort_keys=True)
-                )
+                assistant_errors.append(err if isinstance(err, str) else json.dumps(err, sort_keys=True))
 
         parts = con.execute(
             "SELECT data FROM part WHERE session_id = ? ORDER BY time_created",
@@ -152,6 +195,9 @@ def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
                 finish_reasons.append(part["reason"])
 
         directory = session["directory"]
+        requested_model = model.get("id") or model.get("modelID")
+        resolved_model = model.get("resolvedID") or model.get("resolved_id") or model.get("resolvedModelID")
+        attribution = _model_attribution(requested_model, resolved_model)
         records.append(
             {
                 "schema": "opencode-session-trace/v1",
@@ -160,7 +206,10 @@ def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
                 "title": session["title"],
                 "directory": directory,
                 "provider": model.get("providerID"),
-                "model": model.get("id") or model.get("modelID"),
+                "model": requested_model,
+                "requested_model": requested_model,
+                "resolved_model": resolved_model,
+                **attribution,
                 "variant": model.get("variant"),
                 "cost": session["cost"],
                 "tokens": {
@@ -202,10 +251,13 @@ def main() -> int:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
 
     missing_model = [r["session_id"] for r in records if not r.get("provider") or not r.get("model")]
+    unresolved = [r["session_id"] for r in records if not r.get("model_identity_complete")]
     summary = {
         "records": len(records),
-        "with_model_identity": len(records) - len(missing_model),
-        "missing_model_identity": len(missing_model),
+        "with_requested_model_identity": len(records) - len(missing_model),
+        "missing_requested_model_identity": len(missing_model),
+        "fully_attributed_model_records": len(records) - len(unresolved),
+        "unresolved_model_attribution_records": len(unresolved),
         "output": str(args.out),
     }
     print(json.dumps(summary, sort_keys=True))

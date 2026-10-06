@@ -1,0 +1,9 @@
+{"id":"kilo/free","provider":"kilo","base_url":"https://api.kilo.ai/api/openrouter","pricing":{"prompt":"0","completion":"0"},"tags":["anonymous","free"]}
+{"id":"kilo/auto","provider":"kilo","base_url":"https://api.kilo.ai/api/openrouter","pricing":{"prompt":"0","completion":"0"},"tags":["anonymous"]}
+{"id":"kilo/kimi-k2-turbo","provider":"kilo","base_url":"https://api.kilo.ai/api/openrouter","pricing":{"prompt":"0","completion":"0"},"tags":["anonymous"]}
+{"id":"lmstudio/qwen3-30b-a3b","provider":"lmstudio","pricing":{"prompt":"0","completion":"0"}}
+{"id":"openrouter/nvidia/nemotron-3-ultra-550b-a55b:free","provider":"openrouter","pricing":{"prompt":"0","completion":"0"},"tags":["free"]}
+{"id":"openrouter/free","provider":"openrouter","pricing":{"prompt":"0","completion":"0"},"tags":["free"]}
+{"id":"zai/glm-4.7-flash","provider":"zai","pricing":{"prompt":"0","completion":"0"}}
+{"id":"cohere/north-mini-code:free","provider":"cohere","pricing":{"prompt":"0","completion":"0"}}
+{"id":"openrouter/anthropic/claude-sonnet-4.5","provider":"openrouter","pricing":{"prompt":"3.0","completion":"15.0"}}
