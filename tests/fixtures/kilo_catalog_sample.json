@@ -1,0 +1,63 @@
+{
+  "data": [
+    {
+      "id": "openrouter/anthropic/claude-3.5-sonnet",
+      "pricing": {"prompt": "0", "completion": "0"},
+      "context_length": 200000,
+      "supported_parameters": ["temperature", "max_tokens"]
+    },
+    {
+      "id": "openrouter/google/gemini-2.5-flash-preview",
+      "pricing": {"prompt": "0", "completion": "0"},
+      "context_length": 1000000,
+      "supported_parameters": ["temperature", "max_tokens", "top_p"]
+    },
+    {
+      "id": "openrouter/deepseek/deepseek-r1",
+      "pricing": {"prompt": "0.54", "completion": "2.19"},
+      "context_length": 163840,
+      "supported_parameters": ["temperature"]
+    },
+    {
+      "id": "openrouter/example/zero-prompt-paid-completion",
+      "pricing": {"prompt": "0", "completion": "0.25"},
+      "context_length": 4000,
+      "supported_parameters": []
+    },
+    {
+      "id": "openrouter/free",
+      "pricing": {"prompt": "0", "completion": "0"},
+      "context_length": 0,
+      "supported_parameters": []
+    },
+    {
+      "id": "kilo/kilo-auto/free",
+      "pricing": {"prompt": "0", "completion": "0"},
+      "context_length": 0,
+      "supported_parameters": []
+    },
+    {
+      "id": "kilo/kimi-k2-turbo",
+      "pricing": {"prompt": "0", "completion": "0"},
+      "context_length": 131072,
+      "supported_parameters": ["temperature", "max_tokens"]
+    },
+    {
+      "id": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+      "pricing": {"prompt": "0", "completion": "0"},
+      "context_length": 256000,
+      "supported_parameters": ["temperature", "top_p"]
+    },
+    {
+      "id": "openrouter/zai/glm-4.7-flash",
+      "pricing": {"prompt": "3.0", "completion": "15.0"},
+      "context_length": 128000,
+      "supported_parameters": ["temperature"]
+    },
+    {
+      "id": "kilo/openai/gpt-4o-mini",
+      "context_length": 128000,
+      "supported_parameters": ["temperature"]
+    }
+  ]
+}
