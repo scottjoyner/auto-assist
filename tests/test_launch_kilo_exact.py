@@ -108,19 +108,20 @@ def test_session_id_from_jsonl_reads_real_opencode_event(tmp_path):
     assert launch_kilo_exact._session_id_from_jsonl(stdout) == "ses-from-jsonl"
 
 
-def test_wait_for_session_cross_checks_jsonl_id_and_model_not_directory():
+def test_wait_for_session_requires_exact_worktree_directory():
     with tempfile.TemporaryDirectory() as td:
         root = pathlib.Path(td)
+        worktree = root / "worktree"
+        worktree.mkdir()
         db = root / "opencode.db"
         stdout = root / "run.jsonl"
         stdout.write_text(
             json.dumps({"type": "step_start", "sessionID": "ses-real-123"}) + "\n"
         )
-        # OpenCode may record a project root different from the Popen cwd.
         _make_session_db(
             db,
             title="real-title",
-            directory="/different/opencode/project/root",
+            directory=str(worktree),
             sid="ses-real-123",
             model_id="cohere/north-mini-code:free",
             created_ms=100,
@@ -129,10 +130,46 @@ def test_wait_for_session_cross_checks_jsonl_id_and_model_not_directory():
             db,
             title="real-title",
             model_id="cohere/north-mini-code:free",
+            expected_directory=worktree,
             stdout_path=stdout,
             not_before_ms=0,
             timeout_seconds=0.2,
         ) == "ses-real-123"
+
+
+def test_wait_for_session_rejects_emitted_session_outside_worktree():
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td)
+        worktree = root / "worktree"
+        worktree.mkdir()
+        db = root / "opencode.db"
+        stdout = root / "run.jsonl"
+        stdout.write_text(
+            json.dumps({"type": "step_start", "sessionID": "ses-escaped"}) + "\n"
+        )
+        _make_session_db(
+            db,
+            title="escaped-title",
+            directory="/home/scott",
+            sid="ses-escaped",
+            model_id="cohere/north-mini-code:free",
+            created_ms=100,
+        )
+
+        try:
+            launch_kilo_exact.wait_for_session(
+                db,
+                title="escaped-title",
+                model_id="cohere/north-mini-code:free",
+                expected_directory=worktree,
+                stdout_path=stdout,
+                not_before_ms=0,
+                timeout_seconds=0.2,
+            )
+            raise AssertionError("escaped session should be rejected")
+        except RuntimeError as exc:
+            assert "directory mismatch" in str(exc)
+            assert str(worktree.resolve()) in str(exc)
 
 
 def test_failure_classification():
@@ -211,6 +248,7 @@ def test_launch_uses_real_child_pid_and_real_session_id(tmp_path, monkeypatch):
 
     kwargs = popen.call_args.kwargs
     assert kwargs["cwd"] == tmp_path.resolve()
+    assert kwargs["env"]["PWD"] == str(tmp_path.resolve())
     assert kwargs["stdin"] is subprocess.DEVNULL
     assert result["opencode_pid"] == 4242
     assert result["session_id"] == "ses-from-db"

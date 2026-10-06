@@ -235,6 +235,7 @@ def wait_for_session(
     *,
     title: str,
     model_id: str,
+    expected_directory: pathlib.Path,
     stdout_path: pathlib.Path,
     not_before_ms: int,
     timeout_seconds: float = 30.0,
@@ -242,10 +243,9 @@ def wait_for_session(
     """Join an OpenCode process to its real SQLite session.
 
     Prefer the sessionID emitted by OpenCode's JSONL stream, then verify that
-    ID against the read-only SQLite row and exact provider/model. Fall back to
-    a unique recent title+model match. We intentionally do not require the DB
-    directory to equal the launch cwd because OpenCode may record its project
-    root rather than the process cwd.
+    ID against the read-only SQLite row, exact provider/model, and assigned
+    worktree directory. A directory mismatch is a containment failure: the
+    run must not be trusted even when its model identity is otherwise exact.
     """
     deadline = time.monotonic() + timeout_seconds
     requested = model_id
@@ -283,7 +283,8 @@ def wait_for_session(
                     con.close()
 
                 matches: list[str] = []
-                for sid, row_title, _row_directory, raw_model, _created in candidates:
+                expected = expected_directory.resolve()
+                for sid, row_title, row_directory, raw_model, _created in candidates:
                     if row_title != title:
                         continue
                     try:
@@ -292,8 +293,18 @@ def wait_for_session(
                         parsed = {}
                     provider = parsed.get("providerID")
                     row_model = parsed.get("id") or parsed.get("modelID")
-                    if provider == PROVIDER_ID and row_model == requested:
-                        matches.append(str(sid))
+                    if provider != PROVIDER_ID or row_model != requested:
+                        continue
+
+                    recorded = pathlib.Path(str(row_directory or "")).expanduser().resolve()
+                    if recorded != expected:
+                        if emitted_session_id and str(sid) == emitted_session_id:
+                            raise RuntimeError(
+                                "OpenCode session directory mismatch: "
+                                f"expected {expected}, recorded {recorded}"
+                            )
+                        continue
+                    matches.append(str(sid))
                 if emitted_session_id and emitted_session_id in matches:
                     return emitted_session_id
                 if len(matches) == 1:
@@ -469,6 +480,7 @@ def launch(
 
     env = dict(os.environ)
     env.pop("OPENROUTER_API_KEY", None)
+    env["PWD"] = str(worktree)
     env.setdefault("OPENCODE_DISABLE_MODELS_FETCH", "1")
     env.setdefault("OPENCODE_DISABLE_AUTOUPDATE", "1")
     env.setdefault("OPENCODE_DISABLE_PRUNE", "1")
@@ -486,14 +498,25 @@ def launch(
             stderr=stderr_handle,
         )
 
-        session_id = wait_for_session(
-            db_path,
-            title=title,
-            model_id=model_id,
-            stdout_path=stdout_path,
-            not_before_ms=launch_started_ms,
-            timeout_seconds=session_timeout,
-        )
+        try:
+            session_id = wait_for_session(
+                db_path,
+                title=title,
+                model_id=model_id,
+                expected_directory=worktree,
+                stdout_path=stdout_path,
+                not_before_ms=launch_started_ms,
+                timeout_seconds=session_timeout,
+            )
+        except Exception:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+            raise
+
         if not session_id:
             proc.terminate()
             try:
