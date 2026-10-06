@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Focused tests for free_subagent_supervisor (read-only slice)."""
 import json
+import multiprocessing
 import os
 import pathlib
+import stat
 import sys
 import tempfile
 from typing import Any
@@ -42,6 +44,43 @@ def test_credential_present_no_secret_leak():
     finally:
         if old is not None:
             os.environ[k] = old
+
+
+def _parallel_register_worker(state_path: str, index: int) -> None:
+    supervisor.register_subagent(
+        {
+            "title": f"parallel-{index}",
+            "objective": "parallel trace registration",
+            "model": "stepfun/step-3.7-flash:free",
+            "worktree": f"/tmp/wt-parallel-{index}",
+            "pid": 1000 + index,
+            "session": f"sess-parallel-{index}",
+            "status": "running",
+        },
+        pathlib.Path(state_path),
+    )
+
+
+def test_parallel_registration_preserves_all_rows_and_private_modes(tmp_path):
+    state_path = tmp_path / "state.jsonl"
+    ctx = multiprocessing.get_context("fork")
+    processes = [
+        ctx.Process(target=_parallel_register_worker, args=(str(state_path), index))
+        for index in range(8)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=10)
+        assert process.exitcode == 0
+
+    rows = supervisor.load_state(state_path)
+    sessions = {row["session"] for row in rows}
+    assert sessions == {f"sess-parallel-{index}" for index in range(8)}
+    assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
+    lock_path = state_path.with_name(state_path.name + ".lock")
+    assert lock_path.exists()
+    assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
 
 
 def test_register_inspect_duplicates():
