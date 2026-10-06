@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "authority": "non-authoritative",
+    "default_rollout": "shadow",
+    "routing_authority": "assistx",
+    "approval_authority": "assistx"
+  },
+  "tools": {
+    "ripwire": {
+      "version": "0.6.5",
+      "source": "redhat-et/ripwire",
+      "archive_sha256": "5c5794612f5f06632ada7c27a0f5c8f400748a70f707b64ec4d238c4fba2f7ea",
+      "binary_sha256": "30f961efca7c7bff70cec72b84524b03d65a93097724ccd7ee1635801f621284",
+      "mode": "read-only-code-context",
+      "acceptance": "real-binary-smoke-pass"
+    },
+    "cass": {
+      "version": "0.10.0",
+      "source": "Dicklesworthstone/coding_agent_session_search",
+      "archive_sha256": "638ea8a8a9023c2e046bf8868392e6191218b89cf006e81af3ca205b546c4681",
+      "binary_sha256": "d221153d8e0a79ae37eb492855d32cd2aadb98e707c74c37445f779a46c626dd",
+      "mode": "strict-read-only-session-search",
+      "index_mutation": "disabled",
+      "acceptance": "binary-selftest-pass; missing-index classified"
+    },
+    "harnessrouter": {
+      "version": "0.31.5",
+      "source": "HarnessRouter/harnessrouter",
+      "image": "harnessrouter/harnessrouter:0.31.5",
+      "image_id": "sha256:6e28c617bce2404417ba4ccfd84b27166999fff09794a3de1c9eb400068c9ab3",
+      "api_prefix": "/api/harness",
+      "mode": "discovery-only-with-explicit-canary-dispatch",
+      "acceptance": "contract-tests-pass; CE route set verified from pinned source"
+    },
+    "rtk": {
+      "version": "0.51.0",
+      "source": "rtk-ai/rtk",
+      "archive_sha256": "5028d3b19a8f0990d30fec9fbb07e32782bc5698e618fb1861aad8a9ccba4eb5",
+      "binary_sha256": "b947215511bfd8f5f6eb12c6b6d4a9f70b72e9ce37442cfa4df2352b033cd0ea",
+      "mode": "audit-preserving-output-compaction",
+      "acceptance": "real-binary-smoke-pass"
+    },
+    "graphify": {
+      "version": "0.9.77",
+      "source": "Graphify-Labs/graphify",
+      "package": "graphifyy",
+      "wheel_sha256": "9b23a0194ec6f326642c4f6e63fbeadc861ae85c7808638eb986ede8b04a26fa",
+      "mode": "code-only-dry-run-preview",
+      "neo4j_write": "disabled",
+      "acceptance": "real-cli-sample-extraction-pass"
+    }
+  }
+}
