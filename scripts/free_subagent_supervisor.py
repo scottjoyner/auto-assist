@@ -438,10 +438,16 @@ def enumerate_free_models(fixture_path: pathlib.Path | None = None) -> list[dict
                             obj["free_model_type"] = classify_free_model(obj)
                             results.append(obj)
                 except json.JSONDecodeError:
-                    # Plain model listings have no pricing metadata, so require
-                    # the provider's explicit :free suffix instead of guessing
-                    # by name. This never auto-selects a paid model.
-                    if ":free" in line:
+                    # Plain model listings have no pricing metadata. Normally
+                    # require an explicit :free suffix. The one exception is
+                    # Kilo's documented anonymous free router alias, which has
+                    # the stable full OpenCode selector kilo/kilo-auto/free.
+                    # Do not generalize this to arbitrary Kilo model IDs.
+                    kilo_free_alias = (
+                        matched_provider == "kilo"
+                        and line == "kilo/kilo-auto/free"
+                    )
+                    if ":free" in line or kilo_free_alias:
                         obj = {
                             "id": line,
                             "provider": matched_provider,

@@ -834,3 +834,33 @@ if __name__ == "__main__":
     test_provider_pools_cli_exposes_reserve_policy()
     test_provider_pools_cli_allow_reserve_includes_zai()
     print("all free_subagent_supervisor tests passed")
+
+
+def test_plain_catalog_only_accepts_exact_kilo_free_alias(monkeypatch):
+    def fake_run(args, capture_output, text, timeout):
+        return supervisor.subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="kilo/kilo-auto/free\nkilo/openai/gpt-paid\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(supervisor.subprocess, "run", fake_run)
+    models = supervisor.enumerate_free_models(pathlib.Path("/definitely/missing-fixture"))
+    ids = [row["id"] for row in models]
+    assert "kilo/kilo-auto/free" in ids
+    assert "kilo/openai/gpt-paid" not in ids
+    row = next(row for row in models if row["id"] == "kilo/kilo-auto/free")
+    assert row["free_model_type"] == "kilo-anonymous"
+
+
+def test_kilo_provider_manifest_matches_supervisor_policy():
+    manifest_path = pathlib.Path(__file__).parent.parent / "config" / "opencode-kilo-anonymous.provider.json"
+    payload = json.loads(manifest_path.read_text())
+    kilo = payload["provider"]["kilo"]
+    assert kilo["options"]["baseURL"] == supervisor.KILO_ANONYMOUS_BASE_URL
+    assert kilo["options"]["apiKey"] == supervisor.KILO_ANONYMOUS_BEARER
+    assert set(kilo["models"]) == {
+        "kilo-auto/free",
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+    }
