@@ -1333,6 +1333,12 @@ def fleet_dashboard_ui(request: Request, user: str = Depends(auth)):
     """New comprehensive fleet dashboard with live node/model/task visualization."""
     return templates.TemplateResponse(request=request, name="fleet_dashboard.html", context={"request": request})
 
+@app.get("/traces", response_class=HTMLResponse)
+def traces_ui(request: Request, user: str = Depends(auth)):
+    """Trace history viewer: browse historical router traces and their timelines."""
+    return templates.TemplateResponse(request=request, name="traces.html", context={"request": request})
+
+
 @app.get("/harness", response_class=HTMLResponse)
 def harness_ui(request: Request, user: str = Depends(auth)):
     """Harness evolution traceability: chains, live tasks, mistakes, reflections."""

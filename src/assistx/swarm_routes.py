@@ -21,6 +21,7 @@ from .swarm_core import (
     fail_task,
     get_trace,
     list_capabilities,
+    list_traces,
     list_model_endpoints,
     list_swarm_nodes,
     probe_model_endpoint,
@@ -435,6 +436,21 @@ def api_voice_policy(
             risk_level,
         ),
     }
+
+
+@router.get("/api/traces")
+def api_list_traces(
+    limit: int = 50,
+    offset: int = 0,
+    search: Optional[str] = None,
+    user: str = Depends(_default_auth),
+):
+    """Historical trace index, newest first, for the trace history viewer."""
+    neo = _neo()
+    try:
+        return list_traces(neo, limit=limit, offset=offset, search=search)
+    finally:
+        neo.close()
 
 
 @router.get("/api/traces/{correlation_id}")

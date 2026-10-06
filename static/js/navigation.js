@@ -14,7 +14,8 @@ const Navigation = {
       { href: '/tasks/ready', label: 'TASKS', active: false },
       { href: '/review', label: 'APPROVALS', active: false },
       { href: '#dependencies', label: 'DEPENDENCIES', active: false },
-      { href: '/metrics', label: 'METRICS', active: false }
+      { href: '/metrics', label: 'METRICS', active: false },
+      { href: '/traces', label: 'TRACES', active: false }
     ];
 
     nav.innerHTML = navItems.map(item => `

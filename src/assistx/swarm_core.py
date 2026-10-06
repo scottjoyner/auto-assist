@@ -1196,6 +1196,71 @@ def record_trace_from_envelope(
     )
 
 
+def list_traces(
+    neo: Neo4jClient,
+    limit: int = 50,
+    offset: int = 0,
+    search: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List historical traces, newest first, for the trace history viewer.
+
+    Aggregates in the database rather than hydrating each trace: at ~85k trace
+    groups, calling get_trace() per row to build a list would be unusable.
+    """
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+    match = "MATCH (g:TraceGroup)-[:HAS_EVENT]->(t:TraceEvent)"
+    params: Dict[str, Any] = {"limit": limit, "offset": offset}
+    where = ""
+    if search:
+        match += " WHERE toLower(g.correlation_id) CONTAINS toLower($search)"
+        params["search"] = search
+    with neo._session() as s:
+        total = s.run(
+            "MATCH (g:TraceGroup) " + ("WHERE toLower(g.correlation_id) CONTAINS toLower($search) " if search else "")
+            + "RETURN count(DISTINCT g) AS n",
+            {"search": search} if search else {},
+        ).single()["n"]
+        rows = s.run(
+            match
+            + """
+            WITH g, count(t) AS events, min(t.ts_ms) AS first_ts, max(t.ts_ms) AS last_ts,
+                 collect(DISTINCT t.event_type) AS types
+            // Outcome is the single most useful thing to scan in a list of ~85k
+            // traces. Currently ~95% of execution stages fail, so a plain
+            // event-count list would be unreadable.
+            WITH g, events, first_ts, last_ts, types,
+                 CASE
+                   WHEN any(x IN types WHERE x ENDS WITH ".failed") THEN "failed"
+                   WHEN any(x IN types WHERE x ENDS WITH ".completed")
+                     OR any(x IN types WHERE x ENDS WITH ".accepted") THEN "completed"
+                   ELSE "open"
+                 END AS outcome
+            RETURN g.correlation_id AS correlation_id, events, first_ts, last_ts, types, outcome
+            ORDER BY last_ts DESC
+            SKIP $offset LIMIT $limit
+            """,
+            params,
+        )
+        traces = [
+            {
+                "correlation_id": row["correlation_id"],
+                "events": row["events"],
+                "first_ts_ms": row["first_ts"],
+                "last_ts_ms": row["last_ts"],
+                "duration_ms": (
+                    row["last_ts"] - row["first_ts"]
+                    if row["first_ts"] is not None and row["last_ts"] is not None
+                    else None
+                ),
+                "outcome": row["outcome"],
+                "event_types": sorted(t for t in row["types"] if t)[:12],
+            }
+            for row in rows
+        ]
+    return {"traces": traces, "total": total, "limit": limit, "offset": offset}
+
+
 def get_trace(neo: Neo4jClient, correlation_id: str) -> Optional[Dict[str, Any]]:
     with neo._session() as s:
         rows = s.run(

@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Trace history — AssistX</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="stylesheet" href="{{ url_for('static', path='css/control_room.css') }}">
+  <style>
+    .trace-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 12px;
+      margin-top: 12px;
+    }
+    @media (min-width: 1280px) {
+      .trace-grid { grid-template-columns: minmax(0, 460px) minmax(0, 1fr); }
+      .trace-side { grid-column: 1; }
+      .trace-main { grid-column: 2; }
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px 14px;
+    }
+    .panel h2 {
+      margin: 0 0 10px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      opacity: 0.75;
+    }
+    .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+    .toolbar input[type="search"] {
+      flex: 1;
+      background: var(--panel-2, #12161c);
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      color: inherit;
+      padding: 7px 10px;
+      font: inherit;
+      font-size: 13px;
+    }
+    .toolbar button {
+      background: var(--panel-2, #12161c);
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      color: inherit;
+      cursor: pointer;
+      padding: 7px 12px;
+      font: inherit;
+      font-size: 13px;
+    }
+    .toolbar button:disabled { opacity: 0.4; cursor: default; }
+    .trace-list { max-height: 62vh; overflow-y: auto; margin: 0 -4px; }
+    .trace-row {
+      border: 1px solid transparent;
+      border-radius: 7px;
+      cursor: pointer;
+      padding: 8px 10px;
+      margin-bottom: 3px;
+    }
+    .trace-row:hover { background: var(--panel-2, #12161c); }
+    .trace-row.selected { border-color: var(--accent, #4f9dff); background: var(--panel-2, #12161c); }
+    .trace-row .cid {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      opacity: 0.9;
+    }
+    .trace-row .meta {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      font-size: 11px;
+      opacity: 0.65;
+      margin-top: 3px;
+    }
+    .badge {
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      padding: 1px 7px;
+      text-transform: uppercase;
+    }
+    .badge.failed { background: #4a1d22; color: #ff8f8f; }
+    .badge.completed { background: #17351f; color: #7fd39a; }
+    .badge.open { background: #2b2f36; color: #a8b0bb; }
+    .pager {
+      display: flex;
+      gap: 8px;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 10px;
+      font-size: 12px;
+      opacity: 0.75;
+    }
+    .timeline { display: flex; flex-direction: column; gap: 0; }
+    .event {
+      border-left: 2px solid var(--line);
+      padding: 0 0 14px 14px;
+      position: relative;
+    }
+    .event::before {
+      content: "";
+      position: absolute;
+      left: -5px;
+      top: 4px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent, #4f9dff);
+    }
+    .event.failed::before { background: #ff6b6b; }
+    .event .etype { font-size: 13px; font-weight: 600; }
+    .event .emeta { font-size: 11px; opacity: 0.6; margin-top: 2px; }
+    .event pre {
+      margin: 6px 0 0;
+      padding: 8px 10px;
+      background: var(--panel-2, #12161c);
+      border-radius: 7px;
+      font-size: 11px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .empty { opacity: 0.55; font-size: 13px; padding: 18px 4px; }
+    .summary-row { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; opacity: 0.8; margin-bottom: 10px; }
+    .summary-row b { font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Trace history</h1>
+  <p class="empty" style="padding-top:0">
+    Historical router traces, newest first. Select a trace to see its event timeline.
+  </p>
+
+  <div class="trace-grid">
+    <div class="trace-side">
+      <div class="panel">
+        <h2>Traces</h2>
+        <div class="toolbar">
+          <input type="search" id="trace-search" placeholder="filter by correlation id…" autocomplete="off"/>
+          <button id="trace-prev" disabled>&larr;</button>
+          <button id="trace-next" disabled>&rarr;</button>
+        </div>
+        <div id="trace-summary" class="summary-row"></div>
+        <div class="trace-list" id="trace-list"></div>
+        <div class="pager">
+          <span id="trace-range">&mdash;</span>
+          <span id="trace-total"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="trace-main">
+      <div class="panel">
+        <h2>Timeline</h2>
+        <div id="trace-detail"><div class="empty">Select a trace on the left.</div></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/traces.js"></script>
+</body>
+</html>
