@@ -28,6 +28,7 @@ def test_workbench_uses_existing_hermes_agent_boundary_only():
     assert "/api/v1/agent/chat/completions" in script
     assert "model: 'agent:auto'" in script
     assert "X-Hermes-Session-Id" in script
+    assert "X-Hermes-Session-Resumed" in script
     assert "X-Hermes-Session-Key" in script
     assert "sessionStorage" in script
 
