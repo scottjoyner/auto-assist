@@ -309,6 +309,7 @@ def install_control_room_runtime(control_room_module: Any) -> None:
             base = original(neo_factory)
             telemetry = collect_router_telemetry(neo_factory)
             value = _merge(base, telemetry)
+            value["_debug_merge_ran"] = True
             _CACHE_VALUE = copy.deepcopy(value)
             _CACHE_EXPIRES_AT = time.monotonic() + ttl
             return value

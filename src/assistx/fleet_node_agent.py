@@ -627,9 +627,11 @@ def run(
     del concurrency  # current worker loop intentionally executes one claimed task at a time
     node_id = _detect_hostname()
     auth = _auth_from_env()
-    caps, models = _detect_capabilities(lmstudio_url)
 
     while True:
+        # Re-detect per cycle: a value cached at startup is what a node booted
+        # while LM Studio was down keeps advertising forever.
+        caps, models = _detect_capabilities(lmstudio_url)
         _http(
             "POST",
             f"{router_url.rstrip('/')}/api/fleet/node-report",
