@@ -86,3 +86,33 @@ def test_missing_index_stderr_is_classified_and_preserved(tmp_path):
     assert result.status == "missing-index"
     assert result.payload["error"]["kind"] == "missing-index"
     assert "index required" in Path(result.stderr_path).read_text()
+
+
+def test_explicit_data_dir_is_passed_read_only(tmp_path):
+    binary = _fake_cass(tmp_path)
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    index_dir = tmp_path / "cass-index"
+    index_dir.mkdir()
+    result = CassSessionSearch(str(binary)).search(
+        "anything", workspace=str(workspace),
+        evidence_dir=str(tmp_path / "evidence"),
+        data_dir=str(index_dir),
+    )
+    assert result.status == "ok"
+    assert "--no-maintenance" in result.command
+    assert "--data-dir" in result.command
+    pos = result.command.index("--data-dir")
+    assert result.command[pos + 1] == str(index_dir.resolve())
+
+
+def test_missing_explicit_data_dir_fails_before_search(tmp_path):
+    binary = _fake_cass(tmp_path)
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    with pytest.raises(ValueError, match="data_dir"):
+        CassSessionSearch(str(binary)).search(
+            "anything", workspace=str(workspace),
+            evidence_dir=str(tmp_path / "evidence"),
+            data_dir=str(tmp_path / "missing-index"),
+        )
