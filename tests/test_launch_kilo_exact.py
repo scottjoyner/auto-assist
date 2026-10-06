@@ -213,3 +213,52 @@ def test_launch_uses_real_child_pid_and_real_session_id(tmp_path, monkeypatch):
     assert register.call_args.kwargs["opencode_pid"] == 4242
     assert register.call_args.kwargs["session_id"] == "ses-from-db"
     update.assert_called_once()
+
+def test_provider_overload_classification():
+    assert launch_kilo_exact.classify_failure("HTTP 503 Service temporarily overloaded") == "provider_overloaded"
+
+
+def test_manifest_is_private_and_hashes_raw_traces(tmp_path):
+    state = tmp_path / "state" / "live.jsonl"
+    traces = tmp_path / "state" / "traces"
+    traces.mkdir(parents=True)
+    stdout = traces / "run.stdout.jsonl"
+    stderr = traces / "run.stderr.log"
+    stdout.write_text('{"event":"ok"}\n')
+    stderr.write_text("")
+
+    manifest = launch_kilo_exact._write_manifest(
+        state_path=state,
+        session_id="ses-manifest",
+        title="manifest-test",
+        model_id="poolside/laguna-s-2.1:free",
+        worktree=tmp_path,
+        launch_git={"is_git": False},
+        launch_timestamp="2026-10-06T22:00:00Z",
+        stdout_path=stdout,
+        stderr_path=stderr,
+        final_trace={
+            "provider": "kilo_free",
+            "requested_model": "poolside/laguna-s-2.1:free",
+            "resolved_model": None,
+            "effective_model": "poolside/laguna-s-2.1:free",
+            "model_attribution": "exact-request",
+            "model_identity_complete": True,
+            "git": {"is_git": False},
+            "tokens": {"input": 10, "output": 2},
+            "cost": 0,
+            "tools": {"bash": 1},
+            "patch_parts": 0,
+            "last_finish_reason": "stop",
+        },
+        status="completed",
+        failure_class=None,
+    )
+
+    payload = json.loads(manifest.read_text())
+    assert payload["session_id"] == "ses-manifest"
+    assert payload["effective_model"] == "poolside/laguna-s-2.1:free"
+    assert payload["stdout"]["sha256"]
+    assert payload["stdout"]["bytes"] == len(stdout.read_bytes())
+    assert manifest.stat().st_mode & 0o777 == 0o600
+    assert manifest.parent.stat().st_mode & 0o777 == 0o700

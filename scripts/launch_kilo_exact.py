@@ -395,28 +395,25 @@ def _update_state(
     failure_class: str | None = None,
 ) -> None:
     supervisor = _load_module(supervisor_path, "free_subagent_supervisor_update")
-    rows = supervisor.load_state(state_path)
-    for row in rows:
-        if row.get("session") != session_id:
-            continue
-        row["status"] = status
-        row["updated_at"] = supervisor._now_utc()
-        if failure_class:
-            row["failure_class"] = failure_class
-        if final_trace:
-            row["tokens"] = final_trace.get("tokens")
-            row["cost"] = final_trace.get("cost")
-            row["tools"] = final_trace.get("tools")
-            row["last_finish_reason"] = final_trace.get("last_finish_reason")
-            row["assistant_error_count"] = final_trace.get("assistant_error_count")
-            row["opencode_session_directory"] = final_trace.get("directory")
-            row["opencode_session_git"] = final_trace.get("git")
-            row["git"] = row.get("launch_git")
-            row["model_attribution"] = final_trace.get("model_attribution")
-            row["effective_model"] = final_trace.get("effective_model")
-            row["model_identity_complete"] = final_trace.get("model_identity_complete")
-        break
-    supervisor.save_state(rows, state_path)
+    updates: dict[str, Any] = {"status": status}
+    if failure_class:
+        updates["failure_class"] = failure_class
+    if final_trace:
+        updates.update(
+            {
+                "tokens": final_trace.get("tokens"),
+                "cost": final_trace.get("cost"),
+                "tools": final_trace.get("tools"),
+                "last_finish_reason": final_trace.get("last_finish_reason"),
+                "assistant_error_count": final_trace.get("assistant_error_count"),
+                "opencode_session_directory": final_trace.get("directory"),
+                "opencode_session_git": final_trace.get("git"),
+                "model_attribution": final_trace.get("model_attribution"),
+                "effective_model": final_trace.get("effective_model"),
+                "model_identity_complete": final_trace.get("model_identity_complete"),
+            }
+        )
+    supervisor.update_subagent(session_id, updates, state_path)
 
 
 def launch(

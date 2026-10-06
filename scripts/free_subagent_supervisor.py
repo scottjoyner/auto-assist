@@ -40,6 +40,9 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
+import fcntl
+import hashlib
 import json
 import os
 import pathlib
@@ -677,8 +680,7 @@ def credential_present() -> bool:
     return False
 
 
-def load_state(state_path: pathlib.Path | None = None) -> list[dict[str, Any]]:
-    path = state_path or DEFAULT_STATE_PATH
+def _load_state_unlocked(path: pathlib.Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     if path.exists():
         with path.open("r", encoding="utf-8") as f:
@@ -688,18 +690,83 @@ def load_state(state_path: pathlib.Path | None = None) -> list[dict[str, Any]]:
                     continue
                 try:
                     rec = json.loads(line)
-                    if isinstance(rec, dict):
-                        records.append(rec)
                 except json.JSONDecodeError:
                     continue
+                if isinstance(rec, dict):
+                    records.append(rec)
     return records
+
+
+def _save_state_unlocked(records: list[dict[str, Any]], path: pathlib.Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    state_root = _state_root().expanduser().resolve()
+    try:
+        parent_resolved = path.parent.expanduser().resolve()
+        inside_private_root = (
+            parent_resolved == state_root
+            or state_root in parent_resolved.parents
+        )
+    except OSError:
+        inside_private_root = False
+    if inside_private_root:
+        os.chmod(path.parent, 0o700)
+    temp_path = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    with temp_path.open("w", encoding="utf-8") as f:
+        for rec in records:
+            f.write(
+                json.dumps(
+                    rec,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(temp_path, 0o600)
+    os.replace(temp_path, path)
+    os.chmod(path, 0o600)
+
+
+@contextlib.contextmanager
+def _state_lock(path: pathlib.Path):
+    parent_existed = path.parent.exists()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Only tighten a directory we own/create for the default private state
+    # hierarchy. Callers may intentionally place a state file under shared
+    # parents such as /tmp during tests; never chmod those parents.
+    state_root = _state_root().expanduser().resolve()
+    try:
+        parent_resolved = path.parent.expanduser().resolve()
+        inside_private_root = (
+            parent_resolved == state_root
+            or state_root in parent_resolved.parents
+        )
+    except OSError:
+        inside_private_root = False
+    if not parent_existed or inside_private_root:
+        os.chmod(path.parent, 0o700)
+    lock_path = path.with_name(path.name + ".lock")
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def load_state(state_path: pathlib.Path | None = None) -> list[dict[str, Any]]:
+    path = state_path or DEFAULT_STATE_PATH
+    with _state_lock(path):
+        return _load_state_unlocked(path)
 
 
 def save_state(records: list[dict[str, Any]], state_path: pathlib.Path | None = None) -> None:
     path = state_path or DEFAULT_STATE_PATH
-    with path.open("w", encoding="utf-8") as f:
-        for rec in records:
-            f.write(json.dumps(rec, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n")
+    with _state_lock(path):
+        _save_state_unlocked(records, path)
 
 
 def register_subagent(
@@ -714,7 +781,6 @@ def register_subagent(
     canary. This prevents an anonymous router alias from being mistaken for
     the model that actually performed a run.
     """
-    records = load_state(state_path)
     record = dict(record)
     for k in ("title", "objective", "model", "worktree", "pid", "session", "status"):
         if k not in record:
@@ -748,9 +814,33 @@ def register_subagent(
     if "created_at" not in record:
         record["created_at"] = _now_utc()
     record["updated_at"] = _now_utc()
-    records.append(record)
-    save_state(records, state_path)
+
+    path = state_path or DEFAULT_STATE_PATH
+    with _state_lock(path):
+        records = _load_state_unlocked(path)
+        records.append(record)
+        _save_state_unlocked(records, path)
     return records
+
+
+def update_subagent(
+    session_id: str,
+    updates: dict[str, Any],
+    state_path: pathlib.Path | None = None,
+) -> list[dict[str, Any]]:
+    """Atomically update one subagent record by session id."""
+    path = state_path or DEFAULT_STATE_PATH
+    with _state_lock(path):
+        records = _load_state_unlocked(path)
+        for record in records:
+            current = str(record.get("session") or record.get("session_id") or "")
+            if current != session_id:
+                continue
+            record.update(updates)
+            record["updated_at"] = _now_utc()
+            _save_state_unlocked(records, path)
+            return records
+    raise KeyError(f"unknown subagent session: {session_id}")
 
 
 def inspect_subagents(state_path: pathlib.Path | None = None) -> list[dict[str, Any]]:
