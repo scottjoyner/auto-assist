@@ -204,7 +204,7 @@ PAPERCLIP_API_TOKEN=<token-from-paperclip-agent-keys>
 PAPERCLIP_WORKSPACE_ID=<company-uuid-from-paperclip>
 
 # Required for webhook signature verification
-PAPERCLIP_WEBHOOK_SECRET=paperclip-dev-secret
+PAPERCLIP_WEBHOOK_SECRET=<REDACTED-ROTATE-PAPERCLIP_WEBHOOK_SECRET>
 ```
 
 ### Hermes Agent (TODO)

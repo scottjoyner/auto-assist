@@ -251,7 +251,7 @@ REDIS_URL=redis://redis:6379/0
 PAPERCLIP_API_URL=http://host.docker.internal:3100/api
 PAPERCLIP_API_TOKEN=<agent-api-key>
 PAPERCLIP_WORKSPACE_ID=<company-uuid>
-PAPERCLIP_WEBHOOK_SECRET=paperclip-dev-secret
+PAPERCLIP_WEBHOOK_SECRET=<REDACTED-ROTATE-PAPERCLIP_WEBHOOK_SECRET>
 
 # Hermes (optional; Phase 2)
 # ASSISTX_API_URL=http://localhost:8000

@@ -33,7 +33,7 @@ Description=Paperclip AI Server
 [Service]
 ExecStart=/home/scott/git/hermes-agent/paperclip/server/node_modules/.bin/tsx /home/scott/git/hermes-agent/paperclip/server/src/index.ts
 WorkingDirectory=/home/scott/git/hermes-agent/paperclip/server
-Environment=BETTER_AUTH_SECRET=paperclip-dev-secret
+Environment=BETTER_AUTH_SECRET=<REDACTED-ROTATE-PAPERCLIP_WEBHOOK_SECRET>
 Environment=PAPERCLIP_DEPLOYMENT_MODE=local_trusted
 Environment=HOST=0.0.0.0
 Environment=PAPERCLIP_ALLOWED_HOSTNAMES=host.docker.internal
@@ -216,7 +216,7 @@ PAPERCLIP_API_TOKEN=pcp_1966f1eb...
 PAPERCLIP_WORKSPACE_ID=23328778-...
 
 # Webhook signature (optional; required for production)
-PAPERCLIP_WEBHOOK_SECRET=paperclip-dev-secret
+PAPERCLIP_WEBHOOK_SECRET=<REDACTED-ROTATE-PAPERCLIP_WEBHOOK_SECRET>
 ```
 
 ### Docker Compose
