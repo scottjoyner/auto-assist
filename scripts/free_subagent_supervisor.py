@@ -836,13 +836,14 @@ def emit_projection(
         route_kind_counts[kind] = route_kind_counts.get(kind, 0) + 1
 
     records = inspect_subagents(state_path)
+    session_discovery_error: str | None = None
     if not records:
         try:
             live = discover_live_sessions(query_only=True)
             if live:
                 records = [{"source": "sqlite_readonly", **r} for r in live]
-        except Exception:
-            pass
+        except Exception as exc:
+            session_discovery_error = f"{type(exc).__name__}: {exc}"
     duplicates = detect_duplicate_worktrees(records)
     loops = detect_looping_records(records)
     stale = detect_stale_records(records)
@@ -853,7 +854,7 @@ def emit_projection(
     # or local LM Studio).
     usable_anonymous = bool(anonymous_pools_usable)
     verdict = "healthy"
-    if duplicates or loops or stale or not models:
+    if duplicates or loops or stale or not models or session_discovery_error:
         verdict = "hold"
     if not cred and not usable_anonymous:
         verdict = "hold"
@@ -866,6 +867,7 @@ def emit_projection(
         "free_models_found": len(models),
         "credential_present": cred,
         "subagent_records": len(records),
+        "session_discovery_error": session_discovery_error,
         "duplicate_worktrees": duplicates,
         "looping_records": loops,
         "stale_records": stale,

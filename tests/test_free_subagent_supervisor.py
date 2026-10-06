@@ -864,3 +864,21 @@ def test_kilo_provider_manifest_matches_supervisor_policy():
         "kilo-auto/free",
         "nvidia/nemotron-3-ultra-550b-a55b:free",
     }
+
+
+def test_projection_surfaces_session_discovery_failure_and_holds(monkeypatch, tmp_path):
+    def fail_discovery(query_only=True):
+        raise RuntimeError("opencode db unavailable")
+
+    monkeypatch.setattr(supervisor, "discover_live_sessions", fail_discovery)
+    proj = supervisor.emit_projection(
+        free_models=[{
+            "id": "kilo/kilo-auto/free",
+            "provider": "kilo",
+            "base_url": supervisor.KILO_ANONYMOUS_BASE_URL,
+        }],
+        state_path=tmp_path / "empty-state.jsonl",
+    )
+    assert proj["subagent_records"] == 0
+    assert proj["suggested_scale_verdict"] == "hold"
+    assert proj["session_discovery_error"] == "RuntimeError: opencode db unavailable"
