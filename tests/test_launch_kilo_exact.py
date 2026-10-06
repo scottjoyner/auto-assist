@@ -25,6 +25,7 @@ def test_qualified_models_are_exact_and_live_ids():
         "liquid/lfm-2.5-2.6b:free",
         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
         "nvidia/nemotron-3.5-lightning:free",
+        "inclusionai/ling-3.1-flash",
     }
     assert launch_kilo_exact.QUALIFIED_EXACT_MODELS == expected
     for model in expected:
@@ -48,10 +49,12 @@ def test_alias_and_unknown_models_fail_closed():
 
 def test_build_command_matches_proven_live_cli(monkeypatch):
     monkeypatch.setenv("OPENCODE_BIN", "/opt/opencode")
+    worktree = pathlib.Path("/tmp/trace-worktree")
     cmd = launch_kilo_exact.build_command(
         "cohere/north-mini-code:free",
         "trace-title",
         "do useful work",
+        worktree,
     )
     assert cmd == [
         "/opt/opencode",
@@ -61,6 +64,8 @@ def test_build_command_matches_proven_live_cli(monkeypatch):
         "json",
         "--title",
         "trace-title",
+        "--dir",
+        str(worktree.resolve()),
         "-m",
         "kilo_free/cohere/north-mini-code:free",
         "do useful work",

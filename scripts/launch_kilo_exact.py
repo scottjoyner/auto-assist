@@ -39,6 +39,7 @@ QUALIFIED_EXACT_MODELS = frozenset(
         "liquid/lfm-2.5-2.6b:free",
         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
         "nvidia/nemotron-3.5-lightning:free",
+        "inclusionai/ling-3.1-flash",
     }
 )
 ROUTE_ALIAS_TOKENS = frozenset({"free", "auto", "router", "any", "best", "default"})
@@ -47,7 +48,8 @@ def _state_root() -> pathlib.Path:
     env_root = os.environ.get("ASSIST_SUBAGENT_STATE_ROOT")
     if env_root:
         return pathlib.Path(env_root).expanduser()
-    return pathlib.Path.home() / ".local" / "state" / "auto-assist" / "subagents"
+    account_home = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
+    return account_home / ".local" / "state" / "auto-assist" / "subagents"
 
 
 def _now_utc() -> str:
@@ -170,7 +172,12 @@ def opencode_db_default() -> pathlib.Path:
     return pathlib.Path.home() / ".local" / "share" / "opencode" / "opencode.db"
 
 
-def build_command(model_id: str, title: str, objective: str) -> list[str]:
+def build_command(
+    model_id: str,
+    title: str,
+    objective: str,
+    worktree: pathlib.Path,
+) -> list[str]:
     validate_model(model_id)
     return [
         opencode_binary(),
@@ -180,6 +187,8 @@ def build_command(model_id: str, title: str, objective: str) -> list[str]:
         "json",
         "--title",
         title,
+        "--dir",
+        str(worktree.resolve()),
         "-m",
         f"{PROVIDER_ID}/{model_id}",
         objective,
@@ -436,7 +445,7 @@ def launch(
         raise ValueError(f"worktree does not exist: {worktree}")
 
     title = title or f"kilo-exact-{model_id.split('/')[-1].replace(':', '-')}-{uuid.uuid4().hex[:8]}"
-    cmd = build_command(model_id, title, objective)
+    cmd = build_command(model_id, title, objective, worktree)
 
     if dry_run:
         return {
