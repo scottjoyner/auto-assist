@@ -1459,6 +1459,11 @@ def build_control_room_router(
     def control_room(request: Request, _: str = Depends(auth_dependency)) -> HTMLResponse:
         return templates.TemplateResponse(request=request, name="control_room.html")
 
+    @router.get("/workbench", response_class=HTMLResponse)
+    def workbench(request: Request, _: str = Depends(auth_dependency)) -> HTMLResponse:
+        """Chat-first operator surface over the existing Hermes/AssistX boundaries."""
+        return templates.TemplateResponse(request=request, name="workbench.html")
+
     @router.get("/api/control-room/overview")
     def control_room_overview(_: str = Depends(auth_dependency)) -> dict[str, Any]:
         return build_overview(neo_factory)

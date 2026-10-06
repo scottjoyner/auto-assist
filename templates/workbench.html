@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}AssistX // Agent Workbench{% endblock %}
+{% block nav_active %}control_room{% endblock %}
+{% block heading %}Agent Workbench{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="/static/css/workbench.css">
+{% endblock %}
+{% block content %}
+<section class="workbench-shell" aria-label="AssistX agent workbench">
+  <div class="workbench-context-strip" aria-label="Current execution context">
+    <div class="context-primary">
+      <span class="context-kicker">CHAT FIRST</span>
+      <strong id="workbench-route">Hermes → AssistX Router</strong>
+      <span id="workbench-route-note" class="context-note">authoritative routing unchanged</span>
+    </div>
+    <div class="context-actions">
+      <span id="workbench-session-chip" class="workbench-chip">session new</span>
+      <span id="workbench-execution-chip" class="workbench-chip">execution idle</span>
+      <button id="workbench-drawer-toggle" type="button" class="btn btn-outline" aria-expanded="true" aria-controls="workbench-drawer">
+        CONTEXT
+      </button>
+    </div>
+  </div>
+
+  <div class="workbench-layout">
+    <section class="chat-surface" aria-label="Hermes conversation">
+      <div id="workbench-messages" class="chat-log" aria-live="polite">
+        <article class="chat-message assistant">
+          <div class="chat-role">ASSISTX</div>
+          <div class="chat-bubble">
+            This workbench keeps chat primary. Execution, fleet, session, and repository context stay inspectable in the side panel without changing routing or authority.
+          </div>
+        </article>
+      </div>
+
+      <form id="workbench-composer" class="chat-composer">
+        <label class="sr-only" for="workbench-input">Message AssistX</label>
+        <textarea id="workbench-input" rows="3" maxlength="64000" placeholder="Ask Hermes to inspect, reason, or work through the current task…" required></textarea>
+        <div class="composer-meta">
+          <span id="workbench-send-state">Hermes / agent:auto</span>
+          <button id="workbench-send" type="submit">SEND</button>
+        </div>
+      </form>
+    </section>
+
+    <aside id="workbench-drawer" class="workbench-drawer" aria-label="Context workbench">
+      <div class="drawer-head">
+        <div>
+          <span class="context-kicker">WORKBENCH</span>
+          <strong>Execution context</strong>
+        </div>
+        <button id="workbench-drawer-close" type="button" class="drawer-close" aria-label="Close context panel">×</button>
+      </div>
+
+      <div class="drawer-tabs" role="tablist" aria-label="Workbench views">
+        <button class="drawer-tab active" type="button" data-tab="execution" role="tab" aria-selected="true">EXECUTION</button>
+        <button class="drawer-tab" type="button" data-tab="sessions" role="tab" aria-selected="false">SESSIONS</button>
+        <button class="drawer-tab" type="button" data-tab="fleet" role="tab" aria-selected="false">FLEET</button>
+      </div>
+
+      <section class="drawer-panel active" data-panel="execution">
+        <dl class="context-grid">
+          <div><dt>Status</dt><dd id="ctx-status">idle</dd></div>
+          <div><dt>Agent</dt><dd id="ctx-agent">Hermes</dd></div>
+          <div><dt>Model</dt><dd id="ctx-model">auto</dd></div>
+          <div><dt>Node</dt><dd id="ctx-node">unresolved</dd></div>
+          <div><dt>Repository</dt><dd id="ctx-repository">—</dd></div>
+          <div><dt>Task</dt><dd id="ctx-task">—</dd></div>
+          <div><dt>Run</dt><dd id="ctx-run">—</dd></div>
+          <div><dt>Transport</dt><dd id="ctx-transport">—</dd></div>
+        </dl>
+        <div class="drawer-section">
+          <div class="drawer-section-title">Latest activity</div>
+          <div id="ctx-activity" class="drawer-feed muted">No active execution reported.</div>
+        </div>
+      </section>
+
+      <section class="drawer-panel" data-panel="sessions" hidden>
+        <div class="drawer-section-title">Recent sessions</div>
+        <div id="ctx-sessions" class="drawer-feed muted">Loading sessions…</div>
+      </section>
+
+      <section class="drawer-panel" data-panel="fleet" hidden>
+        <div class="drawer-section-title">Runtime snapshot</div>
+        <div id="ctx-fleet" class="drawer-feed muted">Waiting for fleet snapshot…</div>
+      </section>
+
+      <div class="drawer-footer">
+        <a href="/control-room">Open full Control Room</a>
+        <span>read-only instrumentation</span>
+      </div>
+    </aside>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+  <script src="/static/js/workbench.js"></script>
+{% endblock %}
