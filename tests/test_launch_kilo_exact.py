@@ -267,3 +267,15 @@ def test_manifest_is_private_and_hashes_raw_traces(tmp_path):
     assert payload["stdout"]["bytes"] == len(stdout.read_bytes())
     assert manifest.stat().st_mode & 0o777 == 0o600
     assert manifest.parent.stat().st_mode & 0o777 == 0o700
+
+def test_default_state_root_uses_account_home_not_process_home(monkeypatch):
+    monkeypatch.delenv("ASSIST_SUBAGENT_STATE_ROOT", raising=False)
+    monkeypatch.setenv("HOME", "/tmp/fake-isolated-home")
+    expected = pathlib.Path(launch_kilo_exact.pwd.getpwuid(launch_kilo_exact.os.getuid()).pw_dir) / ".local" / "state" / "auto-assist" / "subagents"
+    assert launch_kilo_exact._state_root() == expected
+
+
+def test_state_root_env_override(monkeypatch, tmp_path):
+    override = tmp_path / "custom-state"
+    monkeypatch.setenv("ASSIST_SUBAGENT_STATE_ROOT", str(override))
+    assert launch_kilo_exact._state_root() == override

@@ -46,6 +46,7 @@ import hashlib
 import json
 import os
 import pathlib
+import pwd
 import shutil
 import subprocess
 import sys
@@ -116,7 +117,15 @@ _PROJECTION_KEYS = [
     "projections_note",
 ]
 
-DEFAULT_STATE_PATH = pathlib.Path("local_subagent_state.jsonl")
+def _state_root() -> pathlib.Path:
+    env_root = os.environ.get("ASSIST_SUBAGENT_STATE_ROOT")
+    if env_root:
+        return pathlib.Path(env_root).expanduser()
+    account_home = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
+    return account_home / ".local" / "state" / "auto-assist" / "subagents"
+
+
+DEFAULT_STATE_PATH = _state_root() / "state.jsonl"
 DEFAULT_FIXTURE_PATH = pathlib.Path("tests/fixtures/openrouter_models_sample.jsonl")
 DEFAULT_PROVIDER_POOLS_FIXTURE_PATH = pathlib.Path("tests/fixtures/provider_pools_sample.jsonl")
 
