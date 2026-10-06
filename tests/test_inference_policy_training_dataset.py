@@ -13,6 +13,7 @@ from assistx.inference_policy_experiment import (
 from assistx.inference_policy_training_dataset import (
     assign_group_splits,
     post_hoc_measurement,
+    speculation_evidence,
     task_spec_anchors,
     task_spec_group_id,
     build_policy_training_bundle,
@@ -262,6 +263,20 @@ def _fixture(tmp_path: Path, duplicates: bool = False):
                     "output_chars": 160,
                     "tokens_per_second": 40.0,
                     "finish_reason": "stop",
+                    "response_timings": {
+                        "draft_n": 40,
+                        "draft_n_accepted": 32,
+                        "predicted_n": 40,
+                        "predicted_ms": wall_ms * 0.6,
+                        "prompt_ms": wall_ms * 0.4,
+                    },
+                    "runtime_telemetry": {
+                        "counter_deltas": {
+                            "spec_proposed_tokens": 40.0,
+                            "spec_accepted_tokens": 32.0,
+                            "spec_verification_steps": 8.0,
+                        }
+                    },
                 }
             )
     results_path = tmp_path / "results.jsonl"
@@ -522,3 +537,68 @@ def test_bundle_carries_post_hoc_evidence_without_leaking_it_into_state(tmp_path
     state = json.dumps(record["state"])
     for leaked in ("ttft_ms", "decode_window_ms", "completion_tokens", "post_hoc"):
         assert leaked not in state, f"{leaked} must not reach the router input"
+
+
+def test_speculation_evidence_reports_acceptance_and_steps_per_draft():
+    evidence = speculation_evidence(
+        {
+            "response_timings": {"draft_n": 42, "draft_n_accepted": 31},
+            "runtime_telemetry": {
+                "counter_deltas": {"spec_verification_steps": 7.0}
+            },
+        }
+    )
+
+    assert evidence["draft_tokens_proposed"] == 42
+    assert evidence["draft_tokens_accepted"] == 31
+    assert evidence["spec_acceptance_rate"] == pytest.approx(31 / 42)
+    assert evidence["verification_steps"] == 7.0
+    # tokens per verification step is the quantity that decides throughput:
+    # a lower acceptance rate can still win by proposing longer drafts
+    assert evidence["draft_tokens_per_step"] == pytest.approx(6.0)
+    assert evidence["accepted_tokens_per_step"] == pytest.approx(31 / 7)
+
+
+def test_speculation_evidence_reads_draft_accounting_from_either_source():
+    from_timings = speculation_evidence(
+        {"response_timings": {"draft_n": 10, "draft_n_accepted": 5}}
+    )
+    from_telemetry = speculation_evidence(
+        {
+            "runtime_telemetry": {
+                "counter_deltas": {
+                    "spec_proposed_tokens": 10.0,
+                    "spec_accepted_tokens": 5.0,
+                }
+            }
+        }
+    )
+
+    # per-request draft counts only come from the endpoint's own timings
+    assert from_timings["draft_tokens_proposed"] == 10
+    assert from_timings["spec_acceptance_rate"] == pytest.approx(0.5)
+    # the sidecar's counters are window totals, kept under their own names
+    assert "draft_tokens_proposed" not in from_telemetry
+    assert from_telemetry["window_proposed_tokens"] == 10.0
+    assert from_telemetry["window_accepted_tokens"] == 5.0
+
+
+def test_speculation_evidence_is_empty_without_draft_accounting():
+    # A non-speculative trial has no draft accounting, and that must not be
+    # reported as a zero acceptance rate.
+    assert speculation_evidence({"wall_ms": 10.0}) == {}
+    assert speculation_evidence({"response_timings": {}}) == {}
+    assert speculation_evidence({"runtime_telemetry": None}) == {}
+    zero = speculation_evidence({"response_timings": {"draft_n": 0}})
+    assert "spec_acceptance_rate" not in zero
+
+
+def test_bundle_carries_speculation_evidence(tmp_path):
+    bundle = _build(_fixture(tmp_path))
+
+    for record in bundle["records"]:
+        for candidate in record["metadata"]["candidate_evidence"].values():
+            speculation = candidate["post_hoc_measurement"]["speculation"]
+            assert speculation["draft_tokens_proposed"] == 40
+            assert speculation["spec_acceptance_rate"] == pytest.approx(0.8)
+            assert speculation["draft_tokens_per_step"] == pytest.approx(5.0)

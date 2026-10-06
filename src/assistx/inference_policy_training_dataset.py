@@ -74,6 +74,23 @@ POST_HOC_MEASUREMENT_FIELDS = (
     ("tokens_per_second", float),
 )
 
+# Speculation internals, read from two places in the result row: the replay
+# endpoint reports draft accounting in response_timings, and the read-only
+# telemetry sidecar reports verification steps in its counter deltas.
+# Per-request draft accounting comes from the replay endpoint's own timings.
+# The telemetry sidecar reports window counters over its sampling interval,
+# which are a different quantity and are kept under separate names.
+DRAFT_FIELDS_FROM_TIMINGS = (
+    ("draft_tokens_proposed", "draft_n", int),
+    ("draft_tokens_accepted", "draft_n_accepted", int),
+)
+
+DRAFT_FIELDS_FROM_TELEMETRY = (
+    ("verification_steps", "spec_verification_steps", float),
+    ("window_proposed_tokens", "spec_proposed_tokens", float),
+    ("window_accepted_tokens", "spec_accepted_tokens", float),
+)
+
 POST_HOC_MEASUREMENT_NOTE = (
     "observed after generation; never available to the router as an input"
 )
@@ -82,6 +99,9 @@ POST_HOC_MEASUREMENT_NOTE = (
 def post_hoc_measurement(row: dict[str, Any]) -> dict[str, Any]:
     """Carry the prefill/decode decomposition for one measured trial."""
     measurement: dict[str, Any] = {"note": POST_HOC_MEASUREMENT_NOTE}
+    speculation = speculation_evidence(row)
+    if speculation:
+        measurement["speculation"] = speculation
     for name, kind in POST_HOC_MEASUREMENT_FIELDS:
         value = row.get(name)
         if isinstance(value, bool) or not isinstance(value, kind):
@@ -101,6 +121,45 @@ def post_hoc_measurement(row: dict[str, Any]) -> dict[str, Any]:
     if isinstance(finish, str) and finish:
         measurement["finish_reason"] = finish
     return measurement
+
+
+def speculation_evidence(row: dict[str, Any]) -> dict[str, Any]:
+    """Draft accounting for one trial: why a speculative decode won or lost.
+
+    Verification steps matter more than acceptance rate here. dflash proposes
+    longer drafts, so it runs far fewer forward passes for the same output and
+    wins on throughput even though its acceptance rate is lower.
+    """
+    timings = row.get("response_timings")
+    timings = timings if isinstance(timings, dict) else {}
+    telemetry = row.get("runtime_telemetry")
+    telemetry = telemetry if isinstance(telemetry, dict) else {}
+    deltas = telemetry.get("counter_deltas")
+    deltas = deltas if isinstance(deltas, dict) else {}
+
+    evidence: dict[str, Any] = {}
+    for fields, source in (
+        (DRAFT_FIELDS_FROM_TIMINGS, timings),
+        (DRAFT_FIELDS_FROM_TELEMETRY, deltas),
+    ):
+        for name, key, kind in fields:
+            raw = source.get(key)
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                continue
+            evidence[name] = float(raw) if kind is float else int(raw)
+
+    proposed = evidence.get("draft_tokens_proposed")
+    accepted = evidence.get("draft_tokens_accepted")
+    if isinstance(proposed, int) and proposed > 0:
+        accepted = accepted if isinstance(accepted, int) else 0
+        evidence["spec_acceptance_rate"] = round(accepted / proposed, 9)
+    steps = evidence.get("verification_steps")
+    if isinstance(steps, float) and steps > 0:
+        if isinstance(proposed, int):
+            evidence["draft_tokens_per_step"] = round(proposed / steps, 9)
+        if isinstance(accepted, int):
+            evidence["accepted_tokens_per_step"] = round(accepted / steps, 9)
+    return evidence
 
 
 def policy_signature(policy: dict[str, Any]) -> dict[str, Any]:
