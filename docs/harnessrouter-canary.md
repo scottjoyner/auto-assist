@@ -2,7 +2,7 @@
 
 HarnessRouter is an execution-lifecycle adapter only. AssistX remains authoritative for scheduling, admission, node and model selection, approvals, leases, provider policy, and mutation authority.
 
-The upstream contract is pinned to HarnessRouter v0.31.5 / UHP 2026-10-04. Discovery uses GET /v1/harnesses and GET /v1/models. Background canary work uses POST /v1/responses with metadata.harness_id, model, stream=false, and background=true. Polling uses GET /v1/responses/{id}; cancellation uses POST /v1/responses/{id}/cancel.
+The upstream contract is pinned to HarnessRouter v0.31.5 / UHP 2026-10-04. For Community Edition, configure the console root (for example `http://127.0.0.1:3000`) or the explicit `/api/harness` base; the adapter normalizes the console root to that API prefix. Discovery then uses GET /v1/harnesses and GET /v1/models. Background canary work uses POST /v1/responses with metadata.harness_id, model, stream=false, and background=true. Polling uses GET /v1/responses/{id}; cancellation uses POST /v1/responses/{id}/cancel.
 
 The adapter defaults to discovery-only. Submission or cancellation requires canary_enabled=true in config, explicit_opt_in=true on each call, and membership in the configured harness allowlist when one is present. These checks occur before any network request.
 

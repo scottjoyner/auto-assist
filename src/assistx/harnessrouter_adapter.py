@@ -130,7 +130,10 @@ class HarnessRouterAdapter:
 
     def _http_request(self, method: str, path: str,
                       body: dict[str, Any] | None) -> dict[str, Any]:
-        url = self.config.base_url.rstrip("/") + path
+        base = self.config.base_url.rstrip("/")
+        if not base.endswith("/api/harness"):
+            base = base + "/api/harness"
+        url = base + path
         headers = {"accept": "application/json"}
         data = None
         if body is not None:

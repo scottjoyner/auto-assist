@@ -113,3 +113,24 @@ def test_non_allowlisted_harness_is_refused_before_network_call():
             "hello", harness_id="other", model="fixture-model", explicit_opt_in=True,
         )
     assert transport.calls == []
+
+
+def test_console_root_is_normalized_to_ce_api_prefix(monkeypatch):
+    seen = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            return False
+        def read(self):
+            return b'{"data":[]}'
+
+    def fake_urlopen(req, timeout):
+        seen["url"] = req.full_url
+        return Response()
+
+    monkeypatch.setattr("assistx.harnessrouter_adapter.request.urlopen", fake_urlopen)
+    adapter = HarnessRouterAdapter(HarnessRouterConfig(base_url="http://127.0.0.1:3000"))
+    adapter._http_request("GET", "/v1/harnesses", None)
+    assert seen["url"] == "http://127.0.0.1:3000/api/harness/v1/harnesses"
