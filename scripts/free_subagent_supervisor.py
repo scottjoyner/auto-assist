@@ -46,6 +46,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import urllib.request
 from datetime import UTC, datetime
 from typing import Any
 
@@ -115,6 +116,28 @@ _PROJECTION_KEYS = [
 DEFAULT_STATE_PATH = pathlib.Path("local_subagent_state.jsonl")
 DEFAULT_FIXTURE_PATH = pathlib.Path("tests/fixtures/openrouter_models_sample.jsonl")
 DEFAULT_PROVIDER_POOLS_FIXTURE_PATH = pathlib.Path("tests/fixtures/provider_pools_sample.jsonl")
+
+# Live Kilo anonymous catalog endpoint (read-only, anonymous bearer).
+# Matches the OpenRouter-compatible /models endpoint served by Kilo's
+# anonymous pool. The bearer value is a non-secret anonymous placeholder;
+# the supervisor never reads, stores, or prints a real credential.
+KILO_CATALOG_URL = "https://api.kilo.ai/api/openrouter/models"
+KILO_CATALOG_BEARER = "anonymous"
+DEFAULT_CATALOG_TIMEOUT = 10.0
+DEFAULT_KILO_CATALOG_FIXTURE_PATH = pathlib.Path("tests/fixtures/kilo_catalog_sample.json")
+
+# Router aliases that delegate model selection to the provider router rather
+# than naming one concrete model. These are never substantive candidates —
+# they resolve to whatever the router picks at request time.
+_CATALOG_ALIAS_IDS: frozenset[str] = frozenset(
+    {
+        "kilo/kilo-auto/free",
+        "openrouter/free",
+        "kilo/free",
+        "kilo/auto",
+        "openrouter/auto",
+    }
+)
 
 
 def _opencode_binary() -> str:
@@ -500,6 +523,149 @@ def enumerate_free_models(fixture_path: pathlib.Path | None = None) -> list[dict
             seen.add(rid)
             deduped.append(r)
     return deduped
+
+
+def fetch_kilo_catalog(
+    url: str = KILO_CATALOG_URL,
+    bearer: str = KILO_CATALOG_BEARER,
+    timeout: float = DEFAULT_CATALOG_TIMEOUT,
+) -> list[dict[str, Any]]:
+    """Read-only fetch of the Kilo anonymous catalog with a timeout.
+
+    Issues ``GET {url}`` with ``Authorization: Bearer {bearer}`` and returns
+    the ``data`` array from the JSON response. Returns an empty list on
+    network/timeout failure or malformed payload. No credentials are stored
+    or emitted.
+    """
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {bearer}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return []
+    if not isinstance(raw, dict):
+        return []
+    data = raw.get("data")
+    if not isinstance(data, list):
+        return []
+    return [d for d in data if isinstance(d, dict)]
+
+
+def _derive_provider(model_id: str) -> str:
+    """Derive a provider name from a model id prefix."""
+    mid = str(model_id or "").strip().lower()
+    for prefix, provider in _FREE_PREFIX_PROVIDERS:
+        if mid.startswith(prefix):
+            return provider
+    return ""
+
+
+def normalize_catalog_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a raw catalog record to a stable shape.
+
+    Preserves ``context_length`` and ``supported_parameters`` exactly as
+    provided by the catalog. Pricing is normalized to a dict with
+    ``prompt`` and ``completion`` keys (defaulting to 0 when absent).
+    Provider is derived from the model id prefix.
+    """
+    model_id = str(record.get("id") or "").strip()
+    pricing = record.get("pricing")
+    pricing = pricing if isinstance(pricing, dict) else {}
+    supported = record.get("supported_parameters")
+    if not isinstance(supported, list):
+        supported = list(supported) if supported is not None else []
+    return {
+        "id": model_id,
+        "provider": _derive_provider(model_id),
+        "pricing": {
+            "prompt": pricing.get("prompt", 0),
+            "completion": pricing.get("completion", 0),
+        },
+        "context_length": record.get("context_length"),
+        "supported_parameters": supported,
+    }
+
+
+def is_router_alias(model_id: str) -> bool:
+    """True for router-selection aliases that delegate model choice.
+
+    Recognizes ``kilo/kilo-auto/free``, ``openrouter/free`` and other
+    router-selection tokens. These are never substantive candidates.
+    """
+    mid = str(model_id or "").strip().lower()
+    if mid in _CATALOG_ALIAS_IDS:
+        return True
+    if "/" in mid:
+        leaf = mid.rsplit("/", 1)[-1]
+        leaf = leaf.split(":")[0]
+        if leaf in ROUTE_ALIAS_TOKENS:
+            return True
+    return False
+
+
+def is_exact_zero_cost(record: dict[str, Any]) -> bool:
+    """True when record is an exact model ID with numeric-zero prompt AND
+    completion pricing.
+
+    Router aliases and records with missing or non-zero pricing in either
+    direction are never considered exact zero-cost.
+    """
+    model_id = str(record.get("id") or "").strip()
+    if not model_id or is_router_alias(model_id):
+        return False
+    pricing = record.get("pricing")
+    pricing = pricing if isinstance(pricing, dict) else {}
+    prompt = pricing.get("prompt")
+    completion = pricing.get("completion")
+    if prompt is None or completion is None:
+        return False
+    return _price_is_zero(prompt) and _price_is_zero(completion)
+
+
+def filter_substantive_candidates(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reject router aliases; return only exact-model zero-cost records.
+
+    Router aliases such as ``kilo/kilo-auto/free`` and ``openrouter/free`` are
+    excluded. Records with non-numeric-zero pricing in either direction or
+    with missing pricing are excluded. Normalization (via
+    :func:`normalize_catalog_record`) is applied to retained records,
+    preserving ``context_length`` and ``supported_parameters``. Deduplication
+    is performed by stable model id.
+    """
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in records:
+        if not is_exact_zero_cost(record):
+            continue
+        normalized = normalize_catalog_record(record)
+        nid = normalized["id"]
+        if nid in seen:
+            continue
+        seen.add(nid)
+        results.append(normalized)
+    return results
+
+
+def normalize_kilo_catalog(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize and filter raw catalog records into substantive candidates.
+
+    Convenience wrapper: normalize → reject router aliases → keep only exact
+    model IDs whose prompt AND completion pricing are numeric zero.
+    Preserves ``context_length`` and ``supported_parameters``.
+    """
+    return filter_substantive_candidates(records)
+
+
+def fetch_substantive_free_models(
+    url: str = KILO_CATALOG_URL,
+    bearer: str = KILO_CATALOG_BEARER,
+    timeout: float = DEFAULT_CATALOG_TIMEOUT,
+) -> list[dict[str, Any]]:
+    """End-to-end: fetch catalog, normalize, filter to substantive zero-cost
+    exact models. Network-dependent entry point.
+    """
+    raw = fetch_kilo_catalog(url=url, bearer=bearer, timeout=timeout)
+    return normalize_kilo_catalog(raw)
 
 
 def credential_present() -> bool:
@@ -1001,6 +1167,23 @@ def main(argv: list[str] | None = None) -> int:
         help="Provider-pools fixture path",
     )
     parser.add_argument("--state", type=str, default=str(DEFAULT_STATE_PATH), help="State file path")
+    parser.add_argument(
+        "--kilo-catalog",
+        action="store_true",
+        help="Fetch Kilo anonymous catalog and list substantive zero-cost models (read-only, network)",
+    )
+    parser.add_argument(
+        "--catalog-fixture",
+        type=str,
+        default=None,
+        help="JSON fixture for --kilo-catalog (no network)",
+    )
+    parser.add_argument(
+        "--catalog-timeout",
+        type=float,
+        default=DEFAULT_CATALOG_TIMEOUT,
+        help="Kilo catalog fetch timeout in seconds",
+    )
     args = parser.parse_args(argv)
 
     state_path = pathlib.Path(args.state)
@@ -1085,6 +1268,27 @@ def main(argv: list[str] | None = None) -> int:
             allow_reserve=args.allow_reserve,
         )
         print(json.dumps(proj, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+        return 0
+
+    if args.kilo_catalog:
+        if args.catalog_fixture and pathlib.Path(args.catalog_fixture).exists():
+            raw_doc = json.loads(pathlib.Path(args.catalog_fixture).read_text(encoding="utf-8"))
+            records = raw_doc.get("data", []) if isinstance(raw_doc, dict) else raw_doc
+        else:
+            records = fetch_kilo_catalog(timeout=args.catalog_timeout)
+        candidates = normalize_kilo_catalog(records)
+        print(
+            json.dumps(
+                {
+                    "read_only": True,
+                    "network": args.catalog_fixture is None,
+                    "substantive_candidates": candidates,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+        )
         return 0
 
     # Default: projection with trace

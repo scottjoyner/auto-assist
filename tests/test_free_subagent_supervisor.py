@@ -5,6 +5,7 @@ import os
 import pathlib
 import sys
 import tempfile
+from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "scripts"))
 
@@ -914,3 +915,347 @@ def test_projection_surfaces_session_discovery_failure_and_holds(monkeypatch, tm
     assert proj["subagent_records"] == 0
     assert proj["suggested_scale_verdict"] == "hold"
     assert proj["session_discovery_error"] == "RuntimeError: opencode db unavailable"
+
+
+FIXTURE_KILO_CATALOG = pathlib.Path(__file__).parent / "fixtures" / "kilo_catalog_sample.json"
+
+
+def _load_kilo_catalog_fixture() -> list[dict[str, Any]]:
+    with FIXTURE_KILO_CATALOG.open("r", encoding="utf-8") as handle:
+        doc = json.loads(handle.read())
+    return doc["data"] if isinstance(doc, dict) else doc
+
+
+def test_normalize_catalog_record_preserves_context_length_and_supported_parameters():
+    from free_subagent_supervisor import normalize_catalog_record
+
+    raw = {
+        "id": "openrouter/anthropic/claude-3.5-sonnet",
+        "pricing": {"prompt": "0", "completion": "0"},
+        "context_length": 200000,
+        "supported_parameters": ["temperature", "max_tokens"],
+    }
+    norm = normalize_catalog_record(raw)
+    assert norm["id"] == "openrouter/anthropic/claude-3.5-sonnet"
+    assert norm["provider"] == "openrouter"
+    assert norm["pricing"] == {"prompt": "0", "completion": "0"}
+    assert norm["context_length"] == 200000
+    assert norm["supported_parameters"] == ["temperature", "max_tokens"]
+
+
+def test_normalize_catalog_record_defaults_missing_pricing_and_parameters():
+    from free_subagent_supervisor import normalize_catalog_record
+
+    raw = {"id": "openrouter/some/model", "context_length": 8192}
+    norm = normalize_catalog_record(raw)
+    assert norm["pricing"] == {"prompt": 0, "completion": 0}
+    assert norm["context_length"] == 8192
+    assert norm["supported_parameters"] == []
+
+
+def test_is_router_alias_rejects_kilo_auto_free_and_openrouter_free():
+    from free_subagent_supervisor import is_router_alias
+
+    assert is_router_alias("kilo/kilo-auto/free") is True
+    assert is_router_alias("openrouter/free") is True
+    assert is_router_alias("kilo/free") is True
+    assert is_router_alias("kilo/auto") is True
+    assert is_router_alias("openrouter/auto") is True
+    # Exact-model leaf tokens that happen to match are still aliases.
+    assert is_router_alias("openrouter/anthropic/claude-3.5-sonnet") is False
+    assert is_router_alias("kilo/kimi-k2-turbo") is False
+    assert is_router_alias("zai/glm-4.7-flash") is False
+    assert is_router_alias("stepfun/step-3.7-flash:free") is False
+
+
+def test_is_exact_zero_cost_only_for_exact_ids_with_both_pricings_zero():
+    from free_subagent_supervisor import is_exact_zero_cost
+
+    # Exact id + both zero → True
+    assert (
+        is_exact_zero_cost(
+            {
+                "id": "openrouter/anthropic/claude-3.5-sonnet",
+                "pricing": {"prompt": "0", "completion": "0"},
+            }
+        )
+        is True
+    )
+    # Exact id + numeric 0 → True
+    assert (
+        is_exact_zero_cost(
+            {
+                "id": "openrouter/google/gemini-2.5-flash",
+                "pricing": {"prompt": 0, "completion": 0},
+            }
+        )
+        is True
+    )
+    # Partial zero (paid completion) → False
+    assert (
+        is_exact_zero_cost(
+            {
+                "id": "openrouter/example/zero-prompt-paid-completion",
+                "pricing": {"prompt": "0", "completion": "0.25"},
+            }
+        )
+        is False
+    )
+    # Paid model → False
+    assert (
+        is_exact_zero_cost(
+            {
+                "id": "openrouter/deepseek/deepseek-r1",
+                "pricing": {"prompt": "0.54", "completion": "2.19"},
+            }
+        )
+        is False
+    )
+    # Router alias → False
+    assert (
+        is_exact_zero_cost(
+            {
+                "id": "openrouter/free",
+                "pricing": {"prompt": "0", "completion": "0"},
+            }
+        )
+        is False
+    )
+    assert (
+        is_exact_zero_cost(
+            {
+                "id": "kilo/kilo-auto/free",
+                "pricing": {"prompt": "0", "completion": "0"},
+            }
+        )
+        is False
+    )
+    # Missing pricing → False
+    assert is_exact_zero_cost({"id": "kilo/openai/gpt-4o-mini"}) is False
+    # Empty id → False
+    assert is_exact_zero_cost({"id": "", "pricing": {"prompt": "0", "completion": "0"}}) is False
+
+
+def test_filter_substantive_candidates_rejects_aliases_and_paid_and_preserves_fields():
+    from free_subagent_supervisor import filter_substantive_candidates
+
+    records = [
+        {
+            "id": "openrouter/anthropic/claude-3.5-sonnet",
+            "pricing": {"prompt": "0", "completion": "0"},
+            "context_length": 200000,
+            "supported_parameters": ["temperature"],
+        },
+        {
+            "id": "kilo/kilo-auto/free",
+            "pricing": {"prompt": "0", "completion": "0"},
+            "context_length": 0,
+            "supported_parameters": [],
+        },
+        {
+            "id": "openrouter/free",
+            "pricing": {"prompt": "0", "completion": "0"},
+            "context_length": 0,
+            "supported_parameters": [],
+        },
+        {
+            "id": "openrouter/deepseek/deepseek-r1",
+            "pricing": {"prompt": "0.54", "completion": "2.19"},
+            "context_length": 163840,
+            "supported_parameters": ["temperature"],
+        },
+        {
+            "id": "kilo/kimi-k2-turbo",
+            "pricing": {"prompt": "0", "completion": "0"},
+            "context_length": 131072,
+            "supported_parameters": ["max_tokens"],
+        },
+        {
+            "id": "openrouter/example/zero-prompt-paid-completion",
+            "pricing": {"prompt": "0", "completion": "0.25"},
+            "context_length": 4000,
+            "supported_parameters": [],
+        },
+        {
+            "id": "kilo/openai/gpt-4o-mini",
+            "context_length": 128000,
+            "supported_parameters": ["temperature"],
+        },
+    ]
+    result = filter_substantive_candidates(records)
+    ids = [r["id"] for r in result]
+    # Exact zero-cost models retained.
+    assert "openrouter/anthropic/claude-3.5-sonnet" in ids
+    assert "kilo/kimi-k2-turbo" in ids
+    # Router aliases rejected.
+    assert "kilo/kilo-auto/free" not in ids
+    assert "openrouter/free" not in ids
+    # Paid and partial-zero rejected.
+    assert "openrouter/deepseek/deepseek-r1" not in ids
+    assert "openrouter/example/zero-prompt-paid-completion" not in ids
+    # Missing pricing rejected.
+    assert "kilo/openai/gpt-4o-mini" not in ids
+    # Fields preserved.
+    claude = next(r for r in result if r["id"] == "openrouter/anthropic/claude-3.5-sonnet")
+    assert claude["context_length"] == 200000
+    assert claude["supported_parameters"] == ["temperature"]
+    assert claude["provider"] == "openrouter"
+    kimi = next(r for r in result if r["id"] == "kilo/kimi-k2-turbo")
+    assert kimi["context_length"] == 131072
+    assert kimi["supported_parameters"] == ["max_tokens"]
+    assert kimi["provider"] == "kilo"
+
+
+def test_filter_substantive_candidates_deduplicates_by_id():
+    from free_subagent_supervisor import filter_substantive_candidates
+
+    records = [
+        {"id": "openrouter/anthropic/claude-3.5-sonnet", "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "openrouter/anthropic/claude-3.5-sonnet", "pricing": {"prompt": "0", "completion": "0"}},
+    ]
+    result = filter_substantive_candidates(records)
+    assert len(result) == 1
+
+
+def test_normalize_kilo_catalog_with_fixture_is_deterministic_and_no_network():
+    from free_subagent_supervisor import normalize_kilo_catalog
+
+    records = _load_kilo_catalog_fixture()
+    result = normalize_kilo_catalog(records)
+
+    ids = [r["id"] for r in result]
+    # Exact zero-cost models kept.
+    assert "openrouter/anthropic/claude-3.5-sonnet" in ids
+    assert "openrouter/google/gemini-2.5-flash-preview" in ids
+    assert "kilo/kimi-k2-turbo" in ids
+    assert "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free" in ids
+    # Router aliases rejected.
+    assert "kilo/kilo-auto/free" not in ids
+    assert "openrouter/free" not in ids
+    # Paid models rejected.
+    assert "openrouter/deepseek/deepseek-r1" not in ids
+    assert "openrouter/zai/glm-4.7-flash" not in ids
+    # Partial-zero rejected.
+    assert "openrouter/example/zero-prompt-paid-completion" not in ids
+    # Missing-pricing kilo model rejected.
+    assert "kilo/openai/gpt-4o-mini" not in ids
+    # context_length and supported_parameters preserved on kept records.
+    claude = next(r for r in result if r["id"] == "openrouter/anthropic/claude-3.5-sonnet")
+    assert claude["context_length"] == 200000
+    assert claude["supported_parameters"] == ["temperature", "max_tokens"]
+    nemotron = next(r for r in result if r["id"] == "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free")
+    assert nemotron["context_length"] == 256000
+    assert nemotron["supported_parameters"] == ["temperature", "top_p"]
+    # Exactly 4 substantive candidates.
+    assert len(result) == 4
+
+
+def test_fetch_kilo_catalog_handles_network_failure_gracefully(monkeypatch):
+    from free_subagent_supervisor import fetch_kilo_catalog
+
+    def fake_urlopen(req, timeout):
+        raise TimeoutError("simulated timeout")
+
+    monkeypatch.setattr(supervisor.urllib.request, "urlopen", fake_urlopen)
+    result = fetch_kilo_catalog(url="https://api.kilo.ai/api/openrouter/models", bearer="anonymous", timeout=0.1)
+    assert result == []
+
+
+def test_fetch_kilo_catalog_parses_live_schema(monkeypatch):
+    from free_subagent_supervisor import fetch_kilo_catalog
+
+    fixture_data = _load_kilo_catalog_fixture()
+
+    class _FakeResponse:
+        def __init__(self, data):
+            self._data = json.dumps({"data": data}).encode("utf-8")
+
+        def read(self):
+            return self._data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout):
+        assert "Authorization" in req.headers
+        assert req.headers["Authorization"] == "Bearer anonymous"
+        assert timeout == 5.0
+        return _FakeResponse(fixture_data)
+
+    monkeypatch.setattr(supervisor.urllib.request, "urlopen", fake_urlopen)
+    result = fetch_kilo_catalog(timeout=5.0)
+    assert isinstance(result, list)
+    assert len(result) == 10
+    assert all(isinstance(r, dict) for r in result)
+
+
+def test_fetch_substantive_free_models_end_to_end_with_mocked_network(monkeypatch):
+    from free_subagent_supervisor import fetch_substantive_free_models
+
+    fixture_data = _load_kilo_catalog_fixture()
+
+    class _FakeResponse:
+        def __init__(self, data):
+            self._data = json.dumps({"data": data}).encode("utf-8")
+
+        def read(self):
+            return self._data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout):
+        return _FakeResponse(fixture_data)
+
+    monkeypatch.setattr(supervisor.urllib.request, "urlopen", fake_urlopen)
+    result = fetch_substantive_free_models(timeout=5.0)
+    ids = [r["id"] for r in result]
+    assert "openrouter/anthropic/claude-3.5-sonnet" in ids
+    assert "kilo/kilo-auto/free" not in ids
+    assert "openrouter/free" not in ids
+    assert "openrouter/deepseek/deepseek-r1" not in ids
+    assert len(result) == 4
+
+
+def test_kilo_catalog_cli_with_fixture_no_network(tmp_path, monkeypatch):
+    import json
+    import subprocess
+    import sys
+
+    repo_root = pathlib.Path(__file__).parent.parent
+    script = repo_root / "scripts" / "free_subagent_supervisor.py"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo_root / "scripts")
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--kilo-catalog",
+            "--catalog-fixture",
+            str(FIXTURE_KILO_CATALOG),
+            "--catalog-timeout",
+            "0.1",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["read_only"] is True
+    assert payload["network"] is False
+    ids = [c["id"] for c in payload["substantive_candidates"]]
+    assert "openrouter/anthropic/claude-3.5-sonnet" in ids
+    assert "kilo/kimo-k2-turbo" not in ids  # not in fixture
+    assert "kilo/kimi-k2-turbo" in ids
+    assert "kilo/kilo-auto/free" not in ids
+    assert "openrouter/free" not in ids
+    assert len(payload["substantive_candidates"]) == 4
