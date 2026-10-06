@@ -1,0 +1,55 @@
+# Installed as $HERMES_HOME/config.yaml for the reconciliation executor.
+# Hermes is an executor only. Do not add fleet.nodes or physical runtime URLs.
+
+model:
+  provider: custom
+  default: auto/code
+  base_url: http://auto-router-reconciliation:8088/v1
+  context_length: 32768
+
+fleet:
+  mode: external
+  external:
+    base_url: http://auto-router-reconciliation:8088/v1
+    admin_url: http://auto-router-reconciliation:8088
+    admin_token_env: AUTO_ROUTER_ADMIN_TOKEN
+    default_model: auto/code
+    strict_offline: true
+    timeout_seconds: 10
+
+agent:
+  context_profile: auto
+  coding_context: focus
+  parallel_tool_call_guidance: true
+  task_completion_guidance: true
+
+context_optimizer:
+  profile: auto
+  skills: auto
+  tools: auto
+  tool_description_chars: 180
+  parameter_description_chars: 96
+  skill_description_chars: 120
+
+compression:
+  enabled: true
+  protect_first_n: 0
+  protect_last_n: 16
+  min_tail_user_messages: 3
+  max_attempts: 4
+  proactive_prune_tokens: 0
+
+plugins:
+  enabled:
+    - small-model-context
+    - fleet-router
+    - cache-foundation
+
+worktree: true
+worktree_sync: true
+
+terminal:
+  backend: local
+  timeout: 180
+
+max_concurrent_sessions: 1

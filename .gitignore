@@ -1,20 +1,4 @@
 .env
-# Environment files other than `.env` itself: override files and pre-deploy
-# snapshots (`.env.override`, `.env.pre-<change>.<timestamp>`). These are copies
-# of a live environment and carry real values -- the Neo4j password, paperclip
-# tokens, the runtime-projection HMAC secret, the signing key, and per-node
-# tokens.
-#
-# `.env` alone was matched, so every one of those variants was untracked but NOT
-# ignored, and a routine `git add -A` would have committed them. Per
-# docs/SECURITY_SECRETS_AND_FLEET_IDENTITY_PLAN.md, secret values must never
-# enter Git.
-.env.*
-# Templates stay trackable: they are documented examples, not copies of a live
-# environment. Both negations are needed -- `.env.*.example` does not match
-# `.env.example`.
-!.env.example
-!.env.*.example
 deploy/canary.env
 deploy/canary-*.env
 deploy/reconciliation.env
@@ -22,6 +6,7 @@ deploy/reconciliation/migration-state.yaml
 deploy/reconciliation/final-cutover-evidence.yaml
 deploy/reconciliation/runtime-projection.yaml
 deploy/reconciliation/lan-runtime-map.json
+deploy/reconciliation/lan-runtime-map.json.sha256
 deploy/local/
 artifacts/deployment-canary/
 artifacts/reconciliation-preflight/
@@ -42,6 +27,6 @@ __pycache__/
 *.assistx_cache.sqlite
 .assistx_cache.sqlite
 
-# --- coverage artifacts (additive: not covered above) ---
-.coverage
-htmlcov/
+# Reconciliation secrets: never commit signing keys
+deploy/keys/
+artifacts/runtime/

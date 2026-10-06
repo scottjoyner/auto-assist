@@ -3,56 +3,35 @@ from __future__ import annotations
 import base64
 import json
 import os
+import stat
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import APIRouter, Depends, HTTPException
 
 from . import runtime_projection as legacy
-from .fleet_routing_projection import (
-    benchmark_projection_index,
-    node_routing_policy_index,
-)
 
 
+_ALGORITHM = "Ed25519"
 _DEFAULT_KEY_ID = "assistx-runtime-projection-v1"
 _INTERNAL_COMPAT_SECRET = "assistx-ed25519-projection-wrapper"
 
 
-class RuntimeProjectionSigningError(RuntimeError):
-    pass
-
-
-def _b64url_encode(value: bytes) -> str:
+def _b64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
-def _b64url_decode(value: str) -> bytes:
-    padding = "=" * ((4 - len(value) % 4) % 4)
-    try:
-        return base64.urlsafe_b64decode(value + padding)
-    except Exception as exc:
-        raise RuntimeProjectionSigningError(
-            "runtime projection private key is not valid base64url"
-        ) from exc
-
-
 def _private_key_bytes_from_env() -> bytes:
-    path_value = os.getenv(
-        "ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_FILE",
-        "",
-    ).strip()
+    path_value = os.getenv("ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_FILE", "").strip()
     if path_value:
-        path = Path(path_value).expanduser().resolve()
-        if not path.is_file() or path.is_symlink():
-            raise RuntimeProjectionSigningError(
-                "runtime projection signing key file must be a regular nonsymlinked file"
-            )
-        if path.stat().st_mode & 0o077:
-            raise RuntimeProjectionSigningError(
-                "runtime projection signing key file must be mode 0600 or stricter"
+        path = Path(path_value)
+        mode = stat.S_IMODE(path.stat().st_mode)
+        if mode & 0o077:
+            raise legacy.RuntimeProjectionBlocked(
+                "runtime projection private key permissions must be 0600 or stricter"
             )
         return path.read_bytes()
     value = os.getenv("ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_PEM", "")
@@ -62,56 +41,24 @@ def _private_key_bytes_from_env() -> bytes:
 def load_private_key() -> Ed25519PrivateKey:
     raw = _private_key_bytes_from_env()
     if not raw:
-        raise RuntimeProjectionSigningError(
-            "runtime projection Ed25519 signing key is required"
+        raise legacy.RuntimeProjectionBlocked(
+            "ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_FILE is required"
         )
     try:
         key = serialization.load_pem_private_key(raw, password=None)
     except ValueError:
         try:
-            key = Ed25519PrivateKey.from_private_bytes(
-                _b64url_decode(raw.decode("ascii"))
-            )
+            decoded = base64.urlsafe_b64decode(raw.decode("ascii") + "==")
+            key = Ed25519PrivateKey.from_private_bytes(decoded)
         except Exception as exc:
-            raise RuntimeProjectionSigningError(
-                "runtime projection signing key is invalid"
+            raise legacy.RuntimeProjectionBlocked(
+                "runtime projection private key is invalid"
             ) from exc
     if not isinstance(key, Ed25519PrivateKey):
-        raise RuntimeProjectionSigningError(
-            "runtime projection signing key must be Ed25519"
+        raise legacy.RuntimeProjectionBlocked(
+            "runtime projection private key must be Ed25519"
         )
     return key
-
-
-def verify_projection_v2(document: dict[str, Any], *, verify_key_file: str | None = None) -> None:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-    from cryptography.hazmat.primitives.serialization import load_pem_public_key
-
-    from . import runtime_projection as legacy
-
-    checksum = legacy.projection_checksum(document)
-    if str(document.get("checksum") or "") != checksum:
-        raise ValueError("runtime projection checksum mismatch")
-    key_path = (
-        verify_key_file
-        or os.getenv("ASSISTX_RUNTIME_PROJECTION_VERIFY_KEY_FILE", "")
-    ).strip()
-    if not key_path:
-        raise ValueError(
-            "ASSISTX_RUNTIME_PROJECTION_VERIFY_KEY_FILE is required "
-            "to verify Ed25519 projections"
-        )
-    public_key = load_pem_public_key(Path(key_path).read_bytes())
-    if not isinstance(public_key, Ed25519PublicKey):
-        raise ValueError("projection verify key is not an Ed25519 public key")
-    raw_signature = str(document.get("signature") or "")
-    signature = base64.urlsafe_b64decode(
-        raw_signature + "=" * (-len(raw_signature) % 4)
-    )
-    try:
-        public_key.verify(signature, signing_message(document))
-    except Exception as exc:
-        raise ValueError("runtime projection signature mismatch") from exc
 
 
 def signing_message(document: dict[str, Any]) -> bytes:
@@ -123,9 +70,7 @@ def signing_message(document: dict[str, Any]) -> bytes:
         "checksum": str(document.get("checksum") or ""),
         "generated_at_ms": int(document.get("generated_at_ms") or 0),
         "expires_at_ms": int(document.get("expires_at_ms") or 0),
-        "signature_algorithm": str(
-            document.get("signature_algorithm") or ""
-        ),
+        "signature_algorithm": str(document.get("signature_algorithm") or ""),
         "signature_key_id": str(document.get("signature_key_id") or ""),
     }
     return json.dumps(
@@ -136,77 +81,20 @@ def signing_message(document: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
-def _apply_benchmark_routing(
+def projection_signature(
     document: dict[str, Any],
-    neo_factory: Callable[[], Any],
-) -> None:
-    """Attach role and benchmark hints to already admitted models only.
-
-    Node role policy is preserved even when a model is unbenchmarked or failed a
-    quality floor. The matrix still cannot create a provider or make a model
-    routable; it only enriches runtimes that passed the existing identity,
-    access-path, capacity, loaded-model, and operator approval gates.
-
-    Benchmark enrichment is advisory. If the matrix store is absent or
-    temporarily unavailable, signing proceeds with the authoritative admitted
-    runtime projection and no benchmark hints.
-    """
-
-    try:
-        benchmark_index = benchmark_projection_index(neo_factory)
-        node_policy_index = node_routing_policy_index(neo_factory)
-    except Exception:
-        return
-    for provider in document.get("providers") or []:
-        if not isinstance(provider, dict):
-            continue
-        node_id = str(provider.get("node_id") or "")
-        node_policy = node_policy_index.get(node_id)
-        if node_policy is not None:
-            provider["routing_roles"] = node_policy["routing_roles"]
-            provider["worker_mode"] = node_policy["worker_mode"]
-            provider["allow_agent_runtime"] = node_policy[
-                "allow_agent_runtime"
-            ]
-            provider["allow_code_execution"] = node_policy[
-                "allow_code_execution"
-            ]
-        for model in provider.get("models") or []:
-            if not isinstance(model, dict):
-                continue
-            aliases = (
-                str(model.get("alias") or ""),
-                str(model.get("provider_model") or ""),
-            )
-            hint = next(
-                (
-                    benchmark_index[(node_id, alias)]
-                    for alias in aliases
-                    if (node_id, alias) in benchmark_index
-                ),
-                None,
-            )
-            policy = hint or node_policy
-            if policy is None:
-                continue
-            model["routing_roles"] = policy["routing_roles"]
-            model["worker_mode"] = policy["worker_mode"]
-            model["allow_agent_runtime"] = policy["allow_agent_runtime"]
-            model["allow_code_execution"] = policy[
-                "allow_code_execution"
-            ]
-            model["task_family_scores"] = (
-                hint["task_family_scores"] if hint is not None else {}
-            )
+    private_key: Ed25519PrivateKey,
+) -> str:
+    return _b64url(private_key.sign(signing_message(document)))
 
 
-def build_runtime_projection_v2(
+def build_runtime_projection(
     neo_factory: Callable[[], Any],
     *,
-    private_key: Ed25519PrivateKey | None = None,
-    key_id: str | None = None,
     ttl_seconds: int = 60,
     now_ms: int | None = None,
+    private_key: Ed25519PrivateKey | None = None,
+    key_id: str | None = None,
 ) -> dict[str, Any]:
     document = legacy.build_runtime_projection(
         neo_factory,
@@ -214,27 +102,21 @@ def build_runtime_projection_v2(
         ttl_seconds=ttl_seconds,
         now_ms=now_ms,
     )
-    _apply_benchmark_routing(document, neo_factory)
-    document.pop("signature", None)
     document["schema_version"] = "2"
-    document["signature_algorithm"] = "Ed25519"
+    document["signature_algorithm"] = _ALGORITHM
     document["signature_key_id"] = (
         key_id
-        or os.getenv(
-            "ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_ID",
-            _DEFAULT_KEY_ID,
-        ).strip()
+        or os.getenv("ASSISTX_RUNTIME_PROJECTION_KEY_ID", _DEFAULT_KEY_ID).strip()
         or _DEFAULT_KEY_ID
     )
+    document.pop("signature", None)
     document["checksum"] = legacy.projection_checksum(document)
     signer = private_key or load_private_key()
-    document["signature"] = _b64url_encode(
-        signer.sign(signing_message(document))
-    )
+    document["signature"] = projection_signature(document, signer)
     return document
 
 
-def build_runtime_projection_router_v2(
+def build_runtime_projection_router(
     neo_factory: Callable[[], Any],
     auth_dependency: Any | None = None,
 ) -> APIRouter:
@@ -250,20 +132,13 @@ def build_runtime_projection_router_v2(
     @router.get("/runtime-projection")
     def runtime_projection() -> dict[str, Any]:
         try:
-            return build_runtime_projection_v2(
+            return build_runtime_projection(
                 neo_factory,
                 ttl_seconds=int(
-                    os.getenv(
-                        "ASSISTX_RUNTIME_PROJECTION_TTL_SECONDS",
-                        "900",
-                    )
+                    os.getenv("ASSISTX_RUNTIME_PROJECTION_TTL_SECONDS", "60")
                 ),
             )
-        except (
-            legacy.RuntimeProjectionBlocked,
-            RuntimeProjectionSigningError,
-            ValueError,
-        ) as exc:
+        except legacy.RuntimeProjectionBlocked as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     return router
