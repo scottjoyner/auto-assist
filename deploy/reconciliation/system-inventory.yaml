@@ -140,7 +140,7 @@ services:
   reconciliation_required:
     - id: reconciliation-neo4j
       owner: auto-assist
-      image_or_runtime: neo4j:5-community
+        image_or_runtime: neo4j:5.26-enterprise
       state: isolated_named_volume
       health: cypher_shell_return_1
       mutation_policy: isolated_canary_only
