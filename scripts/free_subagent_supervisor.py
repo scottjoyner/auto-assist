@@ -204,6 +204,14 @@ def provider_state(record: dict[str, Any], observed: dict[str, Any] | None = Non
     for state in ("payment_required", "quota_exhausted", "rate_limited"):
         if observed.get(state):
             return state
+    # Upstream free-provider capacity failures are temporary availability
+    # failures, not evidence that the model is paid or permanently exhausted.
+    # Treat provider overload / HTTP 503 like a rate limit so pool ordering
+    # fails closed and can retry/fall through to another zero-cost lane.
+    error_type = str(observed.get("error_type") or observed.get("kind") or "").lower()
+    status_code = observed.get("status_code") or observed.get("statusCode")
+    if error_type in {"provider_overloaded", "overloaded"} or status_code == 503:
+        return "rate_limited"
     provider = str(record.get("provider") or "").lower()
     if provider and provider not in KNOWN_PROVIDERS:
         return "unqualified"
@@ -240,7 +248,8 @@ def order_free_pools(
     candidates = models if models is not None else enumerate_free_models()
     ordered: list[tuple[int, int, dict[str, Any]]] = []
     for index, model in enumerate(candidates):
-        state = provider_state(model)
+        observed = model.get("observed") if isinstance(model.get("observed"), dict) else None
+        state = provider_state(model, observed)
         if state != "usable":
             continue
         tier = pool_tier(model.get("provider") or "", model.get("base_url") or "")
@@ -268,7 +277,8 @@ def qualify_provider_pools(
     pools: dict[str, dict[str, Any]] = {}
     for model in candidates:
         tier = pool_tier(model.get("provider") or "", model.get("base_url") or "")
-        state = provider_state(model)
+        observed = model.get("observed") if isinstance(model.get("observed"), dict) else None
+        state = provider_state(model, observed)
         kind = route_kind(model.get("id") or "")
         entry = pools.setdefault(
             tier,

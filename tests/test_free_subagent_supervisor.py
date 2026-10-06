@@ -619,6 +619,38 @@ def test_provider_state_surface_without_spending():
     assert provider_state(base, {"rate_limited": True}) == "rate_limited"
     assert provider_state(base, {"quota_exhausted": True}) == "quota_exhausted"
     assert provider_state(base, {"payment_required": True}) == "payment_required"
+    assert provider_state(base, {"error_type": "provider_overloaded"}) == "rate_limited"
+    assert provider_state(base, {"status_code": 503}) == "rate_limited"
+
+
+def test_observed_overload_removes_model_from_usable_pool():
+    from free_subagent_supervisor import order_free_pools, qualify_provider_pools
+
+    models = [
+        {
+            "id": "kilo/nvidia/nemotron-3-ultra-550b-a55b:free",
+            "provider": "kilo",
+            "base_url": "https://api.kilo.ai/api/openrouter",
+            "pricing": {"prompt": "0", "completion": "0"},
+            "observed": {"error_type": "provider_overloaded", "status_code": 503},
+        },
+        {
+            "id": "openrouter/google/gemma-3-27b-it:free",
+            "provider": "openrouter",
+            "pricing": {"prompt": "0", "completion": "0"},
+        },
+    ]
+    ordered = order_free_pools(models)
+    assert [m["id"] for m in ordered] == ["openrouter/google/gemma-3-27b-it:free"]
+    pools = {p["pool"]: p for p in qualify_provider_pools(models)}
+    assert pools["kilo-anonymous"]["state"] == "rate_limited"
+    assert pools["kilo-anonymous"]["usable_models"] == []
+    assert pools["kilo-anonymous"]["blocked"] == [
+        {
+            "model": "kilo/nvidia/nemotron-3-ultra-550b-a55b:free",
+            "state": "rate_limited",
+        }
+    ]
 
 
 def test_qualify_provider_pools_surfaces_states_and_reserve_policy():
