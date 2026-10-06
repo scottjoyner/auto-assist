@@ -152,4 +152,3 @@ def test_discover_live_sessions_readonly_query_only():
     except sqlite3.OperationalError:
         pass  # expected
     conn.close()
-
