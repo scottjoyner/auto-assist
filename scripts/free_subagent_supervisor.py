@@ -85,8 +85,72 @@ def _is_clearly_free_model(record: dict[str, Any]) -> bool:
     return _price_is_zero(pricing.get("prompt")) and _price_is_zero(pricing.get("completion"))
 
 
+def classify_free_model(record: dict[str, Any]) -> str:
+    """Classify free model by provider and pricing model.
+    
+    Returns one of:
+    - 'openrouter-account-free': OpenRouter with zero prompt and completion
+    - 'opencode-native-free': OpenCode-native :free models
+    - 'zai-zero-cost': Direct Z.AI models
+    - 'cohere-zero-cost': Direct Cohere zero-cost models
+    - 'lmstudio-zero-cost': Local LM Studio models
+    - 'unknown-free': Other zero-cost models (unclassified)
+    - 'rate-limited': Model available but rate-limited
+    """
+    model_id = str(record.get("id") or "")
+    provider = str(record.get("provider") or "").lower()
+    
+    # Z.AI zero-cost models (highest priority - provider-specific)
+    if provider == "zai":
+        return "zai-zero-cost"
+    
+    # Cohere zero-cost models (provider-specific)
+    if provider in ("cohère", "cohere"):
+        pricing = record.get("pricing") or {}
+        if isinstance(pricing, dict):
+            if _price_is_zero(pricing.get("prompt")) and _price_is_zero(pricing.get("completion")):
+                return "cohere-zero-cost"
+    
+    # LM Studio zero-cost models (local inference)
+    if "lmstudio" in provider or "lm_studio" in provider:
+        return "lmstudio-zero-cost"
+    
+    # OpenCode-native free models (:free suffix or explicit free tag)
+    # These take priority over general OpenRouter account-free checks
+    if ":free" in model_id:
+        return "opencode-native-free"
+    tags = record.get("tags") or []
+    if isinstance(tags, list) and any(str(tag).lower() == "free" for tag in tags):
+        return "opencode-native-free"
+    
+    # OpenRouter account-free models (both prompt and completion zero)
+    if "openrouter" in provider:
+        pricing = record.get("pricing") or {}
+        if isinstance(pricing, dict):
+            if _price_is_zero(pricing.get("prompt")) and _price_is_zero(pricing.get("completion")):
+                return "openrouter-account-free"
+    
+    # Unknown or rate-limited
+    pricing = record.get("pricing") or {}
+    if isinstance(pricing, dict):
+        if _price_is_zero(pricing.get("prompt")) and _price_is_zero(pricing.get("completion")):
+            return "unknown-free"
+    
+    return "rate-limited"
+
+
 def enumerate_free_models(fixture_path: pathlib.Path | None = None) -> list[dict[str, Any]]:
-    """Return models that are explicitly free or zero-cost in both directions."""
+    """Return models that are explicitly free or zero-cost in both directions.
+    
+    Each returned model includes a 'free_model_type' field classifying:
+    - openrouter-account-free
+    - opencode-native-free
+    - zai-zero-cost
+    - cohere-zero-cost
+    - lmstudio-zero-cost
+    - unknown-free
+    - rate-limited
+    """
     results: list[dict[str, Any]] = []
     # Try authoritative command first; if unavailable/offline, fall back.
     try:
@@ -106,13 +170,17 @@ def enumerate_free_models(fixture_path: pathlib.Path | None = None) -> list[dict
                     # Basic extraction; if JSON, parse; else treat as id
                     try:
                         obj = json.loads(line)
-                        if isinstance(obj, dict) and obj.get("id") and _is_clearly_free_model(obj):
-                            results.append(obj)
+                        if isinstance(obj, dict) and obj.get("id"):
+                            if _is_clearly_free_model(obj):
+                                obj["free_model_type"] = classify_free_model(obj)
+                                results.append(obj)
                     except json.JSONDecodeError:
                         # Plain model listings have no pricing metadata, so require the
                         # provider's explicit :free suffix instead of guessing by name.
                         if ":free" in line:
-                            results.append({"id": line, "provider": "openrouter", "tags": ["free"]})
+                            obj = {"id": line, "provider": "openrouter", "tags": ["free"]}
+                            obj["free_model_type"] = classify_free_model(obj)
+                            results.append(obj)
             # Deduplicate by id
             seen = set()
             deduped = []
@@ -135,6 +203,7 @@ def enumerate_free_models(fixture_path: pathlib.Path | None = None) -> list[dict
                 try:
                     obj = json.loads(line)
                     if isinstance(obj, dict) and obj.get("id") and _is_clearly_free_model(obj):
+                        obj["free_model_type"] = classify_free_model(obj)
                         results.append(obj)
                 except json.JSONDecodeError:
                     continue
@@ -377,10 +446,18 @@ def detect_stale_records(records: list[dict[str, Any]] | None = None, max_age_mi
 def emit_projection(
     free_models: list[dict[str, Any]] | None = None,
     state_path: pathlib.Path | None = None,
+    trace_exporter_path: pathlib.Path | None = None,
     extra_note: str = "",
 ) -> dict[str, Any]:
     """Read-only supervision projection; never enforced."""
     models = free_models if free_models is not None else enumerate_free_models()
+    
+    # Classify models by type
+    model_types = {}
+    for m in models:
+        mtype = m.get("free_model_type", classify_free_model(m))
+        model_types[mtype] = model_types.get(mtype, 0) + 1
+    
     records = inspect_subagents(state_path)
     if not records:
         try:
@@ -397,6 +474,7 @@ def emit_projection(
     verdict = "healthy"
     if duplicates or loops or stale or not cred or not models:
         verdict = "hold"
+    
     projection = {
         "supervision_slice": "free_subagent_supervisor",
         "observed_at": _now_utc(),
@@ -409,6 +487,7 @@ def emit_projection(
         "looping_records": loops,
         "stale_records": stale,
         "free_model_ids": sorted([m.get("id") for m in models if m.get("id")]),
+        "free_model_types": model_types,
         "projections_note": (
             "Projection is read-only and advisory. It does not approve, admit, "
             "dispatch, or terminate subagent processes. Scale verdict is suggested, "
@@ -418,6 +497,32 @@ def emit_projection(
             + (" " + extra_note if extra_note else "")
         ),
     }
+    
+    # Read-only trace exporter integration (never mutates state)
+    if trace_exporter_path and trace_exporter_path.exists():
+        try:
+            import importlib.util
+            SPEC = importlib.util.spec_from_file_location("trace_exporter", trace_exporter_path)
+            trace_exporter_module = importlib.util.module_from_spec(SPEC)
+            assert SPEC.loader is not None
+            SPEC.loader.exec_module(trace_exporter_module)
+            
+            # OpenCode SQLite read-only path
+            opencode_db_path = pathlib.Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+            if opencode_db_path.exists():
+                trace_records = trace_exporter_module.export_sessions(opencode_db_path)
+                projection["trace_records_count"] = len(trace_records)
+                projection["trace_records_sample"] = [
+                    {k: v for k, v in r.items() if k in ("session_id", "model", "provider", "cost", "tokens", "tools", "git", "time_created", "time_updated")}
+                    for r in trace_records[:10]
+                ]
+                projection["trace_provider_summary"] = {}
+                for r in trace_records:
+                    provider = r.get("provider", "unknown")
+                    projection["trace_provider_summary"][provider] = projection["trace_provider_summary"].get(provider, 0) + 1
+        except Exception as e:
+            projection["trace_exporter_error"] = str(e)
+    
     return projection
 
 
@@ -431,6 +536,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--detect-looping", action="store_true", help="Detect looping session registrations")
     parser.add_argument("--detect-stale", action="store_true", help="Detect stale subagent records")
     parser.add_argument("--projection", action="store_true", help="Emit supervision projection")
+    parser.add_argument("--trace", type=pathlib.Path, default=None, help="Use trace exporter for projection (read-only)")
     parser.add_argument("--fixture", type=str, default=str(DEFAULT_FIXTURE_PATH), help="Fixture path")
     parser.add_argument("--state", type=str, default=str(DEFAULT_STATE_PATH), help="State file path")
     args = parser.parse_args(argv)
@@ -440,7 +546,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.enumerate_models:
         for m in enumerate_free_models(fixture_path):
-            print(json.dumps({"id": m.get("id"), "tags": m.get("tags", [])}))
+            print(json.dumps({"id": m.get("id"), "tags": m.get("tags", []), "free_model_type": m.get("free_model_type", classify_free_model(m))}))
         return 0
 
     if args.credential_present:
@@ -482,12 +588,13 @@ def main(argv: list[str] | None = None) -> int:
         proj = emit_projection(
             free_models=enumerate_free_models(fixture_path),
             state_path=state_path,
+            trace_exporter_path=args.trace,
         )
         print(json.dumps(proj, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         return 0
 
-    # Default: projection
-    proj = emit_projection(free_models=enumerate_free_models(fixture_path), state_path=state_path)
+    # Default: projection with trace
+    proj = emit_projection(free_models=enumerate_free_models(fixture_path), state_path=state_path, trace_exporter_path=args.trace)
     print(json.dumps(proj, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
     return 0
 

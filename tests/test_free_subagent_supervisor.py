@@ -152,3 +152,272 @@ def test_discover_live_sessions_readonly_query_only():
     except sqlite3.OperationalError:
         pass  # expected
     conn.close()
+
+
+def test_projection_with_trace_exporter_integration():
+    import sys, json
+    sys.path.insert(0, "scripts")
+    from free_subagent_supervisor import emit_projection
+    
+    # Create a temporary trace exporter module for testing
+    import importlib.util
+    import pathlib
+    
+    trace_exporter_path = pathlib.Path(__file__).parent / "fixtures" / "empty_trace_exporter.py"
+    if not trace_exporter_path.exists():
+        # Create a mock trace exporter
+        trace_exporter_path.write_text('''
+import json
+import pathlib
+import sqlite3
+from typing import Any
+
+def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
+    return []
+''')
+    
+    # Test projection with trace exporter (will fail gracefully if no DB)
+    proj = emit_projection(
+        free_models=[{"id": "openrouter/claude-3.5-sonnet", "provider": "openrouter", "pricing": {"prompt": "0", "completion": "0"}}],
+        state_path=FIXTURE_STATE,
+        trace_exporter_path=trace_exporter_path
+    )
+    
+    # Check that trace exporter integration fields are present
+    assert "trace_records_count" in proj
+    assert "trace_records_sample" in proj
+    assert "trace_provider_summary" in proj
+    assert "trace_exporter_error" not in proj or isinstance(proj.get("trace_exporter_error"), str)
+
+
+def test_trace_exporter_readonly_query_only():
+    import importlib.util
+    import json
+    import pathlib
+    import sqlite3
+    import tempfile
+    from typing import Any
+    
+    MODULE_PATH = (
+        pathlib.Path(__file__).parent.parent
+        / "scripts"
+        / "export_opencode_session_traces.py"
+    )
+    SPEC = importlib.util.spec_from_file_location("trace_exporter", MODULE_PATH)
+    trace_exporter = importlib.util.module_from_spec(SPEC)
+    assert SPEC.loader is not None
+    SPEC.loader.exec_module(trace_exporter)
+    
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td)
+        db = root / "opencode.db"
+        con = sqlite3.connect(db)
+        con.executescript(
+            """
+            CREATE TABLE session (
+              id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT,
+              model TEXT, cost REAL, tokens_input INTEGER, tokens_output INTEGER,
+              tokens_reasoning INTEGER, tokens_cache_read INTEGER,
+              tokens_cache_write INTEGER, time_created INTEGER, time_updated INTEGER
+            );
+            CREATE TABLE message (
+              id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
+              time_updated INTEGER, data TEXT
+            );
+            CREATE TABLE part (
+              id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+              time_created INTEGER, time_updated INTEGER, data TEXT
+            );
+            """
+        )
+        con.execute(
+            "INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "ses_trace_test", None, str(root), "trace-test-session",
+                json.dumps({"providerID": "test-provider", "id": "test-model", "variant": "test"}),
+                0.0, 100, 20, 5, 50, 0, 1, 2,
+            ),
+        )
+        con.commit()
+        con.close()
+        
+        records = trace_exporter.export_sessions(db)
+        assert len(records) == 1
+        assert records[0]["provider"] == "test-provider"
+        assert records[0]["model"] == "test-model"
+        assert records[0]["tokens"]["input"] == 100
+        assert records[0]["cost"] == 0.0
+
+
+def test_classify_free_model_openrouter_account_free():
+    from free_subagent_supervisor import classify_free_model
+    
+    # OpenRouter with zero prompt and completion and free tag should be opencode-native-free
+    model = {
+        "id": "openrouter/anthropic/claude-3.5-sonnet",
+        "provider": "openrouter",
+        "pricing": {"prompt": "0", "completion": "0"},
+        "tags": ["free"]
+    }
+    assert classify_free_model(model) == "opencode-native-free"
+    
+    # OpenRouter with zero prompt and completion but no free tag
+    model["tags"] = []
+    assert classify_free_model(model) == "openrouter-account-free"
+    
+    # Deepseek with paid completion should be rate-limited
+    model["id"] = "openrouter/deepseek/deepseek-r1"
+    model["pricing"] = {"prompt": "0.54", "completion": "2.19"}
+    assert classify_free_model(model) == "rate-limited"
+    
+    # Zero prompt but paid completion
+    model["id"] = "openrouter/example/zero-prompt-paid-completion"
+    model["pricing"] = {"prompt": "0", "completion": "0.25"}
+    assert classify_free_model(model) == "rate-limited"
+
+
+def test_classify_free_model_opencode_native():
+    from free_subagent_supervisor import classify_free_model
+    
+    # OpenCode-native :free models
+    model = {
+        "id": "openrouter/some-model:free",
+        "provider": "openrouter",
+        "pricing": {"prompt": "0.1", "completion": "0.2"}
+    }
+    assert classify_free_model(model) == "opencode-native-free"
+    
+    # With explicit free tag
+    model = {
+        "id": "openrouter/some-model",
+        "provider": "openrouter",
+        "pricing": {"prompt": "0.1", "completion": "0.2"},
+        "tags": ["free"]
+    }
+    assert classify_free_model(model) == "opencode-native-free"
+
+
+def test_classify_free_model_provider_specific():
+    from free_subagent_supervisor import classify_free_model
+    
+    # Z.AI zero-cost
+    model = {
+        "id": "zai/glm-4-flash",
+        "provider": "zai",
+        "pricing": {"prompt": "0", "completion": "0"}
+    }
+    assert classify_free_model(model) == "zai-zero-cost"
+    
+    # Cohere zero-cost
+    model = {
+        "id": "cohere/command-r-plus",
+        "provider": "cohere",
+        "pricing": {"prompt": "0", "completion": "0"}
+    }
+    assert classify_free_model(model) == "cohere-zero-cost"
+    
+    # Rate-limited Cohere
+    model["pricing"] = {"prompt": "0.001", "completion": "0.002"}
+    assert classify_free_model(model) == "rate-limited"
+    
+    # LM Studio
+    model = {
+        "id": "lmstudio/mistral",
+        "provider": "lmstudio",
+        "pricing": {"prompt": "0", "completion": "0"}
+    }
+    assert classify_free_model(model) == "lmstudio-zero-cost"
+
+
+def test_classify_free_model_unknown_free():
+    from free_subagent_supervisor import classify_free_model
+    
+    # Unknown free model (zero pricing but unclassified provider)
+    model = {
+        "id": "custom/free-model",
+        "provider": "custom",
+        "pricing": {"prompt": "0", "completion": "0"}
+    }
+    assert classify_free_model(model) == "unknown-free"
+    
+    # Model with partial zero pricing (should be rate-limited)
+    model["pricing"] = {"prompt": "0", "completion": "0.5"}
+    assert classify_free_model(model) == "rate-limited"
+
+
+def test_enumerate_free_models_with_classification():
+    from free_subagent_supervisor import enumerate_free_models
+    
+    models = enumerate_free_models(FIXTURE_MODELS)
+    
+    # Verify we get models back
+    assert len(models) > 0
+    
+    # Check that each model has classification
+    for m in models:
+        assert "free_model_type" in m
+        assert m["free_model_type"] in [
+            "openrouter-account-free",
+            "opencode-native-free",
+            "rate-limited"
+        ]
+    
+    # Verify specific model types from fixture
+    # Claude has tags=["free"] so it's classified as opencode-native-free
+    claude_ids = [m.get("id", "") for m in models if "claude" in m.get("id", "").lower()]
+    assert len(claude_ids) > 0, "Claude model should be found"
+    claude_type = next(m.get("free_model_type", "") for m in models if "claude" in m.get("id", "").lower())
+    assert claude_type == "opencode-native-free", "Claude with free tag should be classified as opencode-native-free"
+    
+    gemini_ids = [m.get("id", "") for m in models if "gemini" in m.get("id", "").lower()]
+    assert len(gemini_ids) > 0, "Gemini model should be found"
+    gemini_type = next(m.get("free_model_type", "") for m in models if "gemini" in m.get("id", "").lower())
+    assert gemini_type == "opencode-native-free", "Gemini with free tag should be classified as opencode-native-free"
+    
+    # Deepseek and zero-prompt-paid-completion should not be in results (rate-limited)
+    deepseek_ids = [m.get("id", "") for m in models if "deepseek" in m.get("id", "").lower()]
+    assert len(deepseek_ids) == 0, "Deepseek with paid pricing should not be included in free models"
+    
+    zero_pricing_ids = [
+        m.get("id", "") for m in models
+        if "zero-prompt-paid-completion" in m.get("id", "")
+    ]
+    assert len(zero_pricing_ids) == 0, "Zero-prompt-paid-completion should not be included in free models"
+
+
+def test_enumerate_free_models_deduplicates():
+    from free_subagent_supervisor import enumerate_free_models
+    
+    # Test that duplicates are removed
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "openrouter_models_sample.jsonl"
+    models = enumerate_free_models(fixture)
+    
+    # Check no duplicates by id
+    ids = [m.get("id") for m in models]
+    assert len(ids) == len(set(ids)), "Should not have duplicate model IDs"
+
+
+def test_projection_includes_free_model_types():
+    from free_subagent_supervisor import emit_projection
+    
+    proj = emit_projection(
+        free_models=[
+            {
+                "id": "openrouter/claude-3.5-sonnet",
+                "provider": "openrouter",
+                "pricing": {"prompt": "0", "completion": "0"},
+                "tags": ["free"]
+            },
+            {
+                "id": "openrouter/claude-3.5-sonnet:free",
+                "provider": "openrouter",
+                "tags": ["free"]
+            },
+        ],
+        state_path=FIXTURE_STATE
+    )
+    
+    assert "free_model_types" in proj
+    # Both have free tags, so both are opencode-native-free
+    assert proj["free_model_types"]["opencode-native-free"] == 2
+    # No openrouter-account-free since both have tags
