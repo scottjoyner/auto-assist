@@ -190,6 +190,7 @@ def test_agent_chat_invokes_hermes_server_side_and_streams_openai_sse(monkeypatc
     assert response.status_code == 200
     assert response.headers["x-kipnerter-agent-executor"] == "hermes"
     assert response.headers["x-hermes-session-id"] == "server-hermes-session"
+    assert response.headers["x-hermes-session-resumed"] == "false"
     assert "data: " in response.text
     assert "Hermes completed the fleet-routed request." in response.text
     assert "data: [DONE]" in response.text
@@ -199,6 +200,67 @@ def test_agent_chat_invokes_hermes_server_side_and_streams_openai_sse(monkeypatc
     # chosen by Hermes/AssistX/Auto-Router on the server.
     assert captured["model"] is None
     assert captured["provider"] == "assistx-router"
+
+
+def test_agent_chat_resumes_only_session_bound_to_user_and_conversation(monkeypatch):
+    monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.delenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", raising=False)
+    mobile._HERMES_CONVERSATION_BINDINGS.clear()
+    resume_calls = []
+
+    def fake_run(prompt: str, *, timeout: int, model, provider, resume_session_id=None):
+        resume_calls.append(resume_session_id)
+        return {
+            "success": True,
+            "output": f"turn-{len(resume_calls)}",
+            "session_id": "server-bound-session",
+        }
+
+    monkeypatch.setattr(mobile, "_run_hermes", fake_run)
+    client = TestClient(_app())
+    base_headers = {
+        "Tailscale-User-Login": "scott@example.com",
+        "X-Hermes-Session-Key": "web-workbench:test-continuity",
+    }
+    body = {
+        "model": "agent:auto",
+        "stream": False,
+        "messages": [{"role": "user", "content": "continuity probe"}],
+    }
+
+    first = client.post(
+        "/api/v1/agent/chat/completions",
+        headers=base_headers,
+        json=body,
+    )
+    assert first.status_code == 200
+    assert first.headers["x-hermes-session-id"] == "server-bound-session"
+    assert first.headers["x-hermes-session-resumed"] == "false"
+    assert resume_calls == [None]
+
+    second = client.post(
+        "/api/v1/agent/chat/completions",
+        headers={**base_headers, "X-Hermes-Session-Id": "server-bound-session"},
+        json=body,
+    )
+    assert second.status_code == 200
+    assert second.headers["x-hermes-session-resumed"] == "true"
+    assert resume_calls == [None, "server-bound-session"]
+
+    # A known session ID presented under a different browser conversation is
+    # not enough to gain resume authority.
+    third = client.post(
+        "/api/v1/agent/chat/completions",
+        headers={
+            "Tailscale-User-Login": "scott@example.com",
+            "X-Hermes-Session-Key": "web-workbench:other-conversation",
+            "X-Hermes-Session-Id": "server-bound-session",
+        },
+        json=body,
+    )
+    assert third.status_code == 200
+    assert third.headers["x-hermes-session-resumed"] == "false"
+    assert resume_calls[-1] is None
 
 
 def test_agent_chat_returns_gateway_failure_when_hermes_fails(monkeypatch):
