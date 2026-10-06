@@ -1,0 +1,51 @@
+schema_version: 1
+generation: 482
+expected_current_generation: 481
+revision: fleet-live-x1-main-20261003T030926Z
+approved_by: scott
+approval_id: chat-directive-20261002-fleet-takeover-x1-main-20261003T030926Z
+ttl_seconds: 900
+require_lan_and_tailscale: true
+runtimes:
+  - runtime_instance_id: x1-lmstudio-1234
+    node_id: x1-370
+    runtime_kind: lmstudio
+    runtime_version: lm-studio/0.4.24+1
+    headless: false
+    process_id: 3526
+    capacity:
+      parallel_slots: 4
+      queue_limit: 0
+      queue_timeout_seconds: 0
+      evidence_ref: artifacts/runtime/live-keepalive/20261003T030926Z/x1-capacity.json
+      evidence_sha256: 992734295aee550cefbd3eb09070847b0a0d05b51be41de939b41e450a793307
+    access_paths:
+      - base_url: http://192.168.1.237:1234/v1
+        transport: lan
+        preference: 10
+        evidence_ref: artifacts/runtime/live-keepalive/20261003T030926Z/x1-lan.json
+        evidence_sha256: 614c26561aa8f70a5a15773d6bd9f28670c1a29dfc0abe197cae1803056e7c89
+      - base_url: http://100.64.43.123:1234/v1
+        transport: tailscale
+        preference: 20
+        evidence_ref: artifacts/runtime/live-keepalive/20261003T030926Z/x1-tailscale.json
+        evidence_sha256: 0f2b2409a9b75447fa8ec966c8a2d6a0ca6dd33126c1f17af41fb64b71b6aadb
+    models:
+      - model_instance_id: model-x1-ornith-compact
+        model_key: ornith-1.5-35b-a3b-apex-mtp
+        provider_model: ornith-1.5-35b-a3b-apex-mtp
+        artifact_fingerprint: "lmstudio-indexed:1504ff8c3ac1e0791478f8e01bd88b9b:mudler/Ornith-1.5-35B-A3B-APEX-MTP-GGUF/Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf:size=17437861152"
+        quantization: Q4_K_M
+        context_length: 262144
+        capabilities: [chat, streaming, code, reasoning, tool_use, local_only, hermes_worker]
+        evidence_ref: artifacts/runtime/live-keepalive/20261003T030926Z/x1-ornith.json
+        evidence_sha256: 849c824198aa7025444ee0393757ad519c5364ae9cea5ee59ebcbe36c4673cfa
+      - model_instance_id: model-x1-toolcall-v5-3b-f16
+        model_key: toolcall-v5-3b-combined-r2
+        provider_model: toolcall-v5-3b-combined-r2
+        artifact_fingerprint: "sha256:2c4243e3c3dd617365f40a4bc3c379feec620579bab7e92666bf66c1b80317d9"
+        quantization: F16
+        context_length: 32768
+        capabilities: [chat, streaming, code, json, tool_use, local_only, hermes_worker]
+        evidence_ref: artifacts/runtime/live-keepalive/20261003T030926Z/x1-toolcall.json
+        evidence_sha256: 4313eaf8c89bd37dcdc22846fba4f21f853cf6623cda0f1e3d41ffacf93587cb

@@ -1,0 +1,21 @@
+{
+  "architecture": "qwen35moe",
+  "artifact_fingerprint": "lmstudio-indexed:1504ff8c3ac1e0791478f8e01bd88b9b:mudler/Ornith-1.5-35B-A3B-APEX-MTP-GGUF/Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf:size=17437861152",
+  "captured_at": "2026-10-03T02:57:56.583765+00:00",
+  "context_length": 262144,
+  "device_identifier": "1504ff8c3ac1e0791478f8e01bd88b9b",
+  "display_name": "Ornith 1.5 35B A3B APEX MTP Compact",
+  "evidence_only": true,
+  "indexed_model_identifier": "1504ff8c3ac1e0791478f8e01bd88b9b:mudler/Ornith-1.5-35B-A3B-APEX-MTP-GGUF/Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf",
+  "logical_path": "1504ff8c3ac1e0791478f8e01bd88b9b:mudler/Ornith-1.5-35B-A3B-APEX-MTP-GGUF/Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf",
+  "model_key": "ornith-1.5-35b-a3b-apex-mtp",
+  "node_id": "x1-370",
+  "parallel": 4,
+  "provider_model": "ornith-1.5-35b-a3b-apex-mtp",
+  "quantization": "Q4_K_M",
+  "quantization_basis": "existing Compact benchmark evidence + exact Compact LM Studio identity; physical checkpoint is on LM Studio secondary device",
+  "runtime_kind": "lmstudio",
+  "schema": "assistx-live-model-identity-evidence-v1",
+  "size_bytes": 17437861152,
+  "status": "generating"
+}

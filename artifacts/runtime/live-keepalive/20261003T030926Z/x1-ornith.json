@@ -1,0 +1,10 @@
+{
+  "captured_at": "2026-10-03T03:09:26.385572+00:00",
+  "context_length": 262144,
+  "evidence_only": true,
+  "indexed_model_identifier": "1504ff8c3ac1e0791478f8e01bd88b9b:mudler/Ornith-1.5-35B-A3B-APEX-MTP-GGUF/Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf",
+  "model_key": "ornith-1.5-35b-a3b-apex-mtp",
+  "parallel": 4,
+  "quantization": "Q4_K_M",
+  "size_bytes": 17437861152
+}

@@ -1,0 +1,10 @@
+{
+  "base_url": "http://100.64.43.123:1234/v1",
+  "captured_at": "2026-10-03T03:09:36.351920+00:00",
+  "evidence_only": true,
+  "models": [
+    "toolcall-v5-3b-combined-r2",
+    "text-embedding-nomic-embed-text-v1.5",
+    "ornith-1.5-35b-a3b-apex-mtp"
+  ]
+}

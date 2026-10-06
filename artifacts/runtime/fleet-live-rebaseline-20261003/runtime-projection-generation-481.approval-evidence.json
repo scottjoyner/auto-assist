@@ -1,0 +1,13 @@
+{
+  "access_path_count": 2,
+  "evidence_sha256": "df2b78e67a9c75fdf32107547a014bec01bbfe738cd3304138de52959f620e68",
+  "expires_at_ts": 1790997226499,
+  "generation": 481,
+  "manifest": "/app/artifacts/runtime/fleet-live-rebaseline-20261003/runtime-projection-generation-481.yaml",
+  "manifest_checksum": "a159d10ff3fa772f70d57b6937f8500b18587a450a624513e18486375598bbd8",
+  "mode": "apply",
+  "model_count": 2,
+  "revision": "fleet-live-rebaseline-20261003-x1-main",
+  "runtime_count": 1,
+  "status": "approved"
+}

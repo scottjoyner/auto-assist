@@ -1,0 +1,9 @@
+{
+  "captured_at": "2026-10-03T03:09:36.351920+00:00",
+  "checkpoint_sha256": "2c4243e3c3dd617365f40a4bc3c379feec620579bab7e92666bf66c1b80317d9",
+  "context_length": 32768,
+  "evidence_only": true,
+  "model_key": "toolcall-v5-3b-combined-r2",
+  "parallel": 1,
+  "quantization": "F16"
+}

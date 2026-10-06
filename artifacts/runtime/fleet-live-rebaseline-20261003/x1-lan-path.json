@@ -1,0 +1,15 @@
+{
+  "base_url": "http://192.168.1.237:1234/v1",
+  "captured_at": "2026-10-03T02:57:56.583765+00:00",
+  "evidence_only": true,
+  "http_ok": true,
+  "model_ids": [
+    "toolcall-v5-3b-combined-r2",
+    "text-embedding-nomic-embed-text-v1.5",
+    "ornith-1.5-35b-a3b-apex-mtp"
+  ],
+  "node_id": "x1-370",
+  "probe_url": "http://192.168.1.237:1234/v1/models",
+  "schema": "assistx-live-access-path-evidence-v1",
+  "transport": "lan"
+}

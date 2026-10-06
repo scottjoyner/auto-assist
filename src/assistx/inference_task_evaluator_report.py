@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -91,36 +90,9 @@ def load_task_evaluator_suite(path: str | Path) -> dict[str, Any]:
     return normalized
 
 
-def _gate_noise(required: float, cases: int, tolerance_sd: float) -> dict[str, Any]:
-    """Describe how far a floor may be missed by measurement noise alone.
-
-    A gate decision is only meaningful when it is larger than the noise in the
-    measurement it is made from. On the 1983-case corpus one review case is
-    0.13 binomial sd, and roughly 3.7% of outputs differ between speculation
-    modes because the kernels round differently, so a floor can be missed by a
-    single case whose outcome is not a property of the policy at all. Callers
-    set the tolerance explicitly; the default of 0 keeps the strict rule.
-    """
-    if cases <= 0 or tolerance_sd <= 0.0:
-        return {
-            "cases": cases,
-            "standard_error": 0.0,
-            "tolerance_sd": tolerance_sd,
-            "effective_minimum": required,
-        }
-    standard_error = math.sqrt(max(required * (1.0 - required), 0.0) / cases)
-    return {
-        "cases": cases,
-        "standard_error": standard_error,
-        "tolerance_sd": tolerance_sd,
-        "effective_minimum": max(required - tolerance_sd * standard_error, 0.0),
-    }
-
-
 def summarize_task_evaluator_results(
     rows: Iterable[dict[str, Any]],
     suite: dict[str, Any],
-    noise_tolerance_sd: float = 0.0,
 ) -> dict[str, Any]:
     suite_id = str(suite["suite_id"])
     required_case_ids = set(suite["required_case_ids"])
@@ -178,8 +150,7 @@ def summarize_task_evaluator_results(
             pass_count = sum(1 for row in kind_rows if _row_passed(row))
             rate = pass_count / len(kind_rows) if kind_rows else 0.0
             required = float(thresholds.get(kind, 1.0))
-            noise = _gate_noise(required, len(kind_rows), noise_tolerance_sd)
-            passed = rate >= float(noise["effective_minimum"])
+            passed = rate >= required
             kind_gate_passed = kind_gate_passed and passed
             kind_rates[kind] = {
                 "cases": len(kind_rows),
@@ -187,14 +158,6 @@ def summarize_task_evaluator_results(
                 "pass_rate": round(rate, 9),
                 "required_minimum": required,
                 "passed": passed,
-                "passed_strictly": rate >= required,
-                "standard_error": round(float(noise["standard_error"]), 9),
-                "effective_minimum": round(float(noise["effective_minimum"]), 9),
-                "margin_sd": (
-                    round((rate - required) / float(noise["standard_error"]), 6)
-                    if float(noise["standard_error"]) > 0.0
-                    else None
-                ),
             }
 
         overall_pass_count = sum(1 for row in scored if _row_passed(row))
@@ -204,15 +167,10 @@ def summarize_task_evaluator_results(
             else 0.0
         )
         complete = not missing and not unexpected
-        overall_required = float(suite["minimum_overall_pass_rate"])
-        overall_noise = _gate_noise(
-            overall_required, len(required_case_ids), noise_tolerance_sd
-        )
-        overall_passed = overall_rate >= float(overall_noise["effective_minimum"])
         eligible = (
             complete
             and not case_hash_mismatches
-            and overall_passed
+            and overall_rate >= float(suite["minimum_overall_pass_rate"])
             and kind_gate_passed
         )
         exemplar = next(iter(case_rows.values()), {})
@@ -233,14 +191,6 @@ def summarize_task_evaluator_results(
                 "case_hash_mismatch_ids": case_hash_mismatches,
                 "overall_pass_rate": round(overall_rate, 9),
                 "required_overall_pass_rate": suite["minimum_overall_pass_rate"],
-                "overall_passed": overall_passed,
-                "overall_passed_strictly": overall_rate >= overall_required,
-                "overall_standard_error": round(
-                    float(overall_noise["standard_error"]), 9
-                ),
-                "overall_effective_minimum": round(
-                    float(overall_noise["effective_minimum"]), 9
-                ),
                 "by_evaluator_kind": kind_rates,
                 "eligible_for_training_evidence": eligible,
                 "routing_authority_changed": False,
@@ -252,7 +202,6 @@ def summarize_task_evaluator_results(
         "suite_id": suite_id,
         "suite_sha256": suite["suite_sha256"],
         "cases_sha256": suite["cases_sha256"],
-        "noise_tolerance_sd": noise_tolerance_sd,
         "required_case_ids": sorted(required_case_ids),
         "policy_count": len(policies),
         "policies": policies,
@@ -261,7 +210,6 @@ def summarize_task_evaluator_results(
         "authority": dict(DEFAULT_AUTHORITY),
         "report_sha256": canonical_sha256({
             "suite_sha256": suite["suite_sha256"],
-            "noise_tolerance_sd": noise_tolerance_sd,
             "policies": policies,
         }),
         "note": (

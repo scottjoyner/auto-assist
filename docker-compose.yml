@@ -321,7 +321,7 @@ services:
       # SSD workspace
       - /media/scott/SSD_4TB:/media/scott/SSD_4TB:rw
       # NAS workspace
-      - /media/scott/NAS5:/media/scott/NAS5:rw
+      - /nas:/nas:rw
       # MCP servers (read-only, from host .hermes)
       - /home/scott/.hermes/mcp:/root/.hermes/mcp:ro
       # OpenCode CLI binary (not baked into image to keep layers small)

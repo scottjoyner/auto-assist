@@ -76,31 +76,21 @@ check_path_conflict() {
   fi
 }
 
-# The mobile surface, declared once. It used to be spelled out separately in the
-  # conflict checks and the serve invocations below, so adding a route meant editing
-  # two blocks in this file plus the verifier and its tests. That is how
-  # /api/v1/model/chat/completions came to be served by FastAPI, tested, and still
-  # unreachable from the phone: the per-model route existed and nothing checked that
-  # the edge published it. One list means one edit, and the tests assert the list.
-  MOBILE_PATHS=(
-    /health
-    /api/v1/auth/whoami
-    /api/v1/runtime/catalog
-    /api/v1/agent/chat/completions
-    /api/v1/model/chat/completions
-  )
+check_path_conflict "/health" "http://127.0.0.1:${API_PORT}/health"
+check_path_conflict "/api/v1/auth/whoami" "http://127.0.0.1:${API_PORT}/api/v1/auth/whoami"
+check_path_conflict "/api/v1/runtime/catalog" "http://127.0.0.1:${API_PORT}/api/v1/runtime/catalog"
+check_path_conflict "/api/v1/agent/chat/completions" "http://127.0.0.1:${API_PORT}/api/v1/agent/chat/completions"
 
-  local path
-  for path in "${MOBILE_PATHS[@]}"; do
-    check_path_conflict "$path" "http://127.0.0.1:${API_PORT}${path}"
-  done
-
-  # Route-scoped mobile mounts only. --bg persists the Serve config across
-  # command exit/reboot. Existing root/path/Funnel state is left untouched.
-  for path in "${MOBILE_PATHS[@]}"; do
-    sudo tailscale serve --https="${SERVE_PORT}" "--set-path=${path}" --bg \
-      "http://127.0.0.1:${API_PORT}${path}"
-  done
+# Add only the four route-scoped mobile mounts. --bg persists the Serve config
+# across command exit/reboot. Existing root/path/Funnel state is left untouched.
+sudo tailscale serve --https="${SERVE_PORT}" --set-path=/health --bg \
+  "http://127.0.0.1:${API_PORT}/health"
+sudo tailscale serve --https="${SERVE_PORT}" --set-path=/api/v1/auth/whoami --bg \
+  "http://127.0.0.1:${API_PORT}/api/v1/auth/whoami"
+sudo tailscale serve --https="${SERVE_PORT}" --set-path=/api/v1/runtime/catalog --bg \
+  "http://127.0.0.1:${API_PORT}/api/v1/runtime/catalog"
+sudo tailscale serve --https="${SERVE_PORT}" --set-path=/api/v1/agent/chat/completions --bg \
+  "http://127.0.0.1:${API_PORT}/api/v1/agent/chat/completions"
 
 echo
 sudo tailscale serve status

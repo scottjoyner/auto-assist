@@ -1,0 +1,15 @@
+{
+  "canary": {
+    "choice_count": 1,
+    "http_status": 200,
+    "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "captured_at": "20261004T221635Z",
+  "checkpoint_sha256": "3a0c8464fe35674a2eb3ec9b2ce8668a72c4fe3d62367a6ca2ec258cb4c7520c",
+  "context_length": 32768,
+  "evidence_only": true,
+  "max_context_length": 262144,
+  "model_key": "qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled",
+  "quantization": "Q8_0",
+  "size_bytes": 811839424
+}

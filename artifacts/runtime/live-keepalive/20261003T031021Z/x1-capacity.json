@@ -1,0 +1,10 @@
+{
+  "captured_at": "2026-10-03T03:10:21.192064+00:00",
+  "evidence_only": true,
+  "ornith_context": 262144,
+  "ornith_parallel": 4,
+  "parallel_slots": 4,
+  "queue_limit": 0,
+  "toolcall_context": 32768,
+  "toolcall_parallel": 1
+}

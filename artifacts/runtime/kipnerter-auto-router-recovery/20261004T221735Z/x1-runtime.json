@@ -1,0 +1,26 @@
+{
+  "canaries": {
+    "qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled": {
+      "choice_count": 1,
+      "http_status": 200,
+      "output_length": 48,
+      "output_sha256": "61bc8ce2dd52bdb967e82c0d98d070ce36804e5d1e89a0f435e100a961513606"
+    },
+    "toolcall-v5-3b-combined-r2": {
+      "choice_count": 1,
+      "http_status": 200,
+      "output_length": 2,
+      "output_sha256": "565339bc4d33d72817b583024112eb7f5cdf3e5eef0252d6ec1b9c9a94e12bb3"
+    }
+  },
+  "captured_at": "20261004T221735Z",
+  "evidence_only": true,
+  "lm_studio_app_version": "0.4.24+1",
+  "models": [
+    "qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled",
+    "toolcall-v5-3b-combined-r2"
+  ],
+  "node_id": "x1-370",
+  "runtime_kind": "lmstudio",
+  "runtime_pid": "3526"
+}

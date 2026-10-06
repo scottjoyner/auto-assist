@@ -1,0 +1,12 @@
+{
+  "captured_at": "2026-10-03T02:57:56.583765+00:00",
+  "evidence_only": true,
+  "lm_studio_app_version": "0.4.24+1",
+  "lms_cli_commit": "ff50809",
+  "models_endpoint": "http://127.0.0.1:1234/v1/models",
+  "node_id": "x1-370",
+  "runtime_kind": "lmstudio",
+  "runtime_pid": 3526,
+  "schema": "assistx-live-runtime-evidence-v1",
+  "service_command": "/opt/LM-Studio/lm-studio --run-as-service"
+}

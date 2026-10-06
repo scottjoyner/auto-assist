@@ -39,4 +39,4 @@
 ### Credentials
 - URI: bolt://127.0.0.1:7687 (or bolt://100.64.43.123:7687)
 - User: neo4j
-- Password: read it from `.env` (`NEO4J_PASSWORD`); do not paste it into this file
+- Password: <neo4j-password> (from docker-compose.yml / .env files)

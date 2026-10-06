@@ -1,0 +1,10 @@
+{
+  "base_url": "http://192.168.1.237:1234/v1",
+  "captured_at": "20261004T221635Z",
+  "evidence_only": true,
+  "model_ids": [
+    "qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled",
+    "text-embedding-nomic-embed-text-v1.5",
+    "toolcall-v5-3b-combined-r2"
+  ]
+}

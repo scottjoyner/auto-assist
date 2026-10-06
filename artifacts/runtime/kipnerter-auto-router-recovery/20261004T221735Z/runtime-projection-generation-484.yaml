@@ -1,0 +1,63 @@
+schema_version: 1
+generation: 484
+expected_current_generation: 483
+revision: kipnerter-auto-router-recovery-20261004T221735Z
+approved_by: scott
+approval_id: chat-directive-20261004-kipnerter-auto-router-recovery-20261004T221735Z
+ttl_seconds: 900
+require_lan_and_tailscale: true
+runtimes:
+- runtime_instance_id: x1-lmstudio-1234
+  node_id: x1-370
+  runtime_kind: lmstudio
+  runtime_version: lm-studio/0.4.24+1
+  headless: false
+  process_id: '3526'
+  capacity:
+    parallel_slots: 4
+    queue_limit: 0
+    queue_timeout_seconds: 0
+    evidence_ref: artifacts/runtime/kipnerter-auto-router-recovery/20261004T221735Z/x1-capacity.json
+    evidence_sha256: 599de38d3bba623d98b7fe9c7b25aefe54907174e138037f1319119bc9819e38
+  access_paths:
+  - base_url: http://192.168.1.237:1234/v1
+    transport: lan
+    preference: 10
+    evidence_ref: artifacts/runtime/kipnerter-auto-router-recovery/20261004T221735Z/x1-lan.json
+    evidence_sha256: 70bd72cbb093dfc0ab9eb06d58477e24b6be2573547b831ea10c9e33fec9d1fb
+  - base_url: http://100.64.43.123:1234/v1
+    transport: tailscale
+    preference: 20
+    evidence_ref: artifacts/runtime/kipnerter-auto-router-recovery/20261004T221735Z/x1-tailscale.json
+    evidence_sha256: 30199ddf395688aa123bd8379e96673d637efb5cac97ca056e7810811a1bef96
+  models:
+  - model_instance_id: model-x1-qwen35-08b-q8
+    model_key: qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled
+    provider_model: qwen3.5-0.8b-claude-4.6-opus-reasoning-distilled
+    artifact_fingerprint: sha256:3a0c8464fe35674a2eb3ec9b2ce8668a72c4fe3d62367a6ca2ec258cb4c7520c
+    quantization: Q8_0
+    context_length: 32768
+    capabilities:
+    - chat
+    - streaming
+    - reasoning
+    - tool_use
+    - local_only
+    evidence_ref: artifacts/runtime/kipnerter-auto-router-recovery/20261004T221735Z/x1-qwen.json
+    evidence_sha256: 453e3eab8b63c58ac7b43402f2c25e243a0b8caeede1de432072788e1ffb583e
+  - model_instance_id: model-x1-toolcall-v5-3b-f16
+    model_key: toolcall-v5-3b-combined-r2
+    provider_model: toolcall-v5-3b-combined-r2
+    artifact_fingerprint: sha256:2c4243e3c3dd617365f40a4bc3c379feec620579bab7e92666bf66c1b80317d9
+    quantization: F16
+    context_length: 131072
+    capabilities:
+    - chat
+    - streaming
+    - code
+    - json
+    - tool_use
+    - local_only
+    - hermes_worker
+    evidence_ref: artifacts/runtime/kipnerter-auto-router-recovery/20261004T221735Z/x1-toolcall.json
+    evidence_sha256: 980bd738113ae8d3da00c25890c173f5b277648b0194bbe60451dbe090b4e1a7

@@ -1,0 +1,69 @@
+schema_version: 1
+generation: 481
+expected_current_generation: 480
+revision: fleet-live-rebaseline-20261003-x1-main
+approved_by: scott
+approval_id: chat-directive-20261002-fleet-takeover-x1-main
+ttl_seconds: 900
+require_lan_and_tailscale: true
+
+runtimes:
+  - runtime_instance_id: x1-lmstudio-1234-20261003
+    node_id: x1-370
+    runtime_kind: lmstudio
+    runtime_version: lm-studio/0.4.24+1+lms-ff50809
+    headless: false
+    process_id: 3526
+
+    capacity:
+      parallel_slots: 4
+      queue_limit: 0
+      queue_timeout_seconds: 0
+      evidence_ref: artifacts/runtime/fleet-live-rebaseline-20261003/x1-capacity.json
+      evidence_sha256: 99ca78d805c15d303ecca4f7f8b2a502012b9bb9b57b6e5f74b95e3f24654727
+
+    access_paths:
+      - base_url: http://192.168.1.237:1234/v1
+        transport: lan
+        preference: 10
+        evidence_ref: artifacts/runtime/fleet-live-rebaseline-20261003/x1-lan-path.json
+        evidence_sha256: dcd5db2f2cf67f3355bdb5a6b1e3882cd7606199fecc4949b6ea991c52365886
+      - base_url: http://100.64.43.123:1234/v1
+        transport: tailscale
+        preference: 20
+        evidence_ref: artifacts/runtime/fleet-live-rebaseline-20261003/x1-tailscale-path.json
+        evidence_sha256: 7723a564582c5f59991c85c004233ab477562f45e27ab26c11418e0715d3b576
+
+    models:
+      - model_instance_id: model-x1-ornith-1.5-35b-a3b-apex-mtp-compact-20261003
+        model_key: ornith-1.5-35b-a3b-apex-mtp
+        provider_model: ornith-1.5-35b-a3b-apex-mtp
+        artifact_fingerprint: "lmstudio-indexed:1504ff8c3ac1e0791478f8e01bd88b9b:mudler/Ornith-1.5-35B-A3B-APEX-MTP-GGUF/Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf:size=17437861152"
+        quantization: Q4_K_M
+        context_length: 262144
+        capabilities:
+          - chat
+          - streaming
+          - code
+          - reasoning
+          - tool_use
+          - local_only
+          - hermes_worker
+        evidence_ref: artifacts/runtime/fleet-live-rebaseline-20261003/x1-ornith-model.json
+        evidence_sha256: 8e1c66af88b048e2c7118a8341b8b7fa8f3f05feb73246bcfb87abf142f5bfe6
+
+      - model_instance_id: model-x1-toolcall-v5-3b-combined-r2-f16-20261003
+        model_key: toolcall-v5-3b-combined-r2
+        provider_model: toolcall-v5-3b-combined-r2
+        artifact_fingerprint: "sha256:2c4243e3c3dd617365f40a4bc3c379feec620579bab7e92666bf66c1b80317d9"
+        quantization: F16
+        context_length: 32768
+        capabilities:
+          - chat
+          - streaming
+          - code
+          - json
+          - tool_use
+          - local_only
+          - hermes_worker
+        evidence_ref: artifacts/runtime/fleet-live-rebaseline-20261003/x1-toolcall-model.json

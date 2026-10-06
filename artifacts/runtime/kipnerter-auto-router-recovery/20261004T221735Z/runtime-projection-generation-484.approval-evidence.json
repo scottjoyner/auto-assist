@@ -1,0 +1,10 @@
+{
+  "evidence_sha256": "0ad36913744e7d474dd327bc5401a9c9f6a1763f9ad0125eb04282484a4a5049",
+  "generation": 484,
+  "manifest": "artifacts/runtime/kipnerter-auto-router-recovery/20261004T221735Z/runtime-projection-generation-484.yaml",
+  "manifest_checksum": "b169e288b3424e196e921df71d73b7bc48f77c651d63c293fa706e27448686a2",
+  "mode": "dry-run",
+  "revision": "kipnerter-auto-router-recovery-20261004T221735Z",
+  "runtime_count": 1,
+  "status": "validated"
+}

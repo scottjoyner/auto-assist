@@ -1,0 +1,13 @@
+{
+  "access_path_count": 2,
+  "evidence_sha256": "3ad039d89b3183873ed52a4b9359873031f3b7d1eddaf40e1eb6d1c04e4cf24a",
+  "expires_at_ts": 1790997877862,
+  "generation": 482,
+  "manifest": "/app/artifacts/runtime/live-keepalive/20261003T030936Z/runtime-projection-generation-482.yaml",
+  "manifest_checksum": "cdbc65b580cb914d578ad418a3074979cf903aac4cf189c9624b5fba28fbec1d",
+  "mode": "apply",
+  "model_count": 2,
+  "revision": "fleet-live-x1-main-20261003T030936Z",
+  "runtime_count": 1,
+  "status": "approved"
+}

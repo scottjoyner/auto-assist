@@ -1,0 +1,23 @@
+{
+  "basis": "parallel=4 observed for primary Ornith; queueing disabled in projection until measured",
+  "captured_at": "2026-10-03T02:57:56.583765+00:00",
+  "declared_projection_parallel_slots": 4,
+  "declared_projection_queue_limit": 0,
+  "declared_projection_queue_timeout_seconds": 0,
+  "evidence_only": true,
+  "node_id": "x1-370",
+  "ornith": {
+    "context_length": 262144,
+    "parallel": 4,
+    "queued": 0,
+    "status": "generating"
+  },
+  "runtime_pid": 3526,
+  "schema": "assistx-live-capacity-evidence-v1",
+  "toolcall": {
+    "context_length": 32768,
+    "parallel": 1,
+    "queued": 0,
+    "status": "idle"
+  }
+}

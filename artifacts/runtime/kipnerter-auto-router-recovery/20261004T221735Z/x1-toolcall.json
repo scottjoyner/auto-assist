@@ -1,0 +1,16 @@
+{
+  "canary": {
+    "choice_count": 1,
+    "http_status": 200,
+    "output_length": 2,
+    "output_sha256": "565339bc4d33d72817b583024112eb7f5cdf3e5eef0252d6ec1b9c9a94e12bb3"
+  },
+  "captured_at": "20261004T221735Z",
+  "checkpoint_sha256": "2c4243e3c3dd617365f40a4bc3c379feec620579bab7e92666bf66c1b80317d9",
+  "context_length": 131072,
+  "evidence_only": true,
+  "max_context_length": 131072,
+  "model_key": "toolcall-v5-3b-combined-r2",
+  "quantization": "F16",
+  "size_bytes": 6178316512
+}
