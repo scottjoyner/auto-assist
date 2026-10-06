@@ -132,18 +132,23 @@ class CassSessionSearch:
             code, status = 124, "timeout"
         duration_ms = int((time.monotonic() - started) * 1000)
         payload: dict[str, Any] | None = None
-        if stdout:
+        source = stdout if stdout else stderr
+        if source:
             try:
-                parsed = json.loads(stdout.decode("utf-8"))
+                parsed = json.loads(source.decode("utf-8"))
                 payload = parsed if isinstance(parsed, dict) else None
             except (UnicodeDecodeError, json.JSONDecodeError):
-                status = "invalid-json"
+                if code == 0:
+                    status = "invalid-json"
         if payload:
             budget = payload.get("budget")
             if isinstance(budget, dict) and budget.get("timed_out") is True:
                 status = "partial-timeout"
             if payload.get("status") == "maintenance-required":
                 status = "maintenance-required"
+            error_payload = payload.get("error")
+            if isinstance(error_payload, dict) and error_payload.get("kind"):
+                status = str(error_payload["kind"])
         return self._persist(
             query, workspace, command, code, duration_ms, status,
             stdout, stderr, evidence_dir, payload, binary,

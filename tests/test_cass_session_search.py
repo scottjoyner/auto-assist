@@ -66,3 +66,23 @@ def test_cass_digest_mismatch_fails_closed(tmp_path):
     binary = _fake_cass(tmp_path)
     with pytest.raises(RuntimeError, match="SHA-256"):
         CassSessionSearch(str(binary), expected_sha256="f" * 64).verify_binary()
+
+
+def test_missing_index_stderr_is_classified_and_preserved(tmp_path):
+    binary = _fake_cass(tmp_path)
+    text = binary.read_text()
+    text = text.replace(
+        "  echo '{\"hits\":[],\"budget\":{\"timed_out\":false}}'\n  exit 0",
+        "  echo '{\"error\":{\"code\":3,\"kind\":\"missing-index\",\"message\":\"index required\"}}' >&2\n  exit 3",
+    )
+    binary.write_text(text)
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    result = CassSessionSearch(str(binary)).search(
+        "anything", workspace=str(workspace),
+        evidence_dir=str(tmp_path / "evidence"),
+    )
+    assert result.exit_code == 3
+    assert result.status == "missing-index"
+    assert result.payload["error"]["kind"] == "missing-index"
+    assert "index required" in Path(result.stderr_path).read_text()
