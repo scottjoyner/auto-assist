@@ -12,6 +12,7 @@ from assistx.inference_policy_experiment import (
 )
 from assistx.inference_policy_training_dataset import (
     assign_group_splits,
+    post_hoc_measurement,
     task_spec_anchors,
     task_spec_group_id,
     build_policy_training_bundle,
@@ -254,6 +255,13 @@ def _fixture(tmp_path: Path, duplicates: bool = False):
                     "telemetry_required": True,
                     "telemetry_valid": True,
                     "wall_ms": wall_ms,
+                    "ttft_ms": wall_ms * 0.4,
+                    "decode_window_ms": wall_ms * 0.6,
+                    "prompt_tokens": 20,
+                    "completion_tokens": 40,
+                    "output_chars": 160,
+                    "tokens_per_second": 40.0,
+                    "finish_reason": "stop",
                 }
             )
     results_path = tmp_path / "results.jsonl"
@@ -449,3 +457,68 @@ def test_widened_quality_authority_is_rejected(tmp_path):
 
     with pytest.raises(ValueError, match="authority"):
         _build(paths)
+
+
+def test_post_hoc_measurement_carries_the_prefill_decode_split():
+    row = {
+        "wall_ms": 1000.0,
+        "ttft_ms": 400.0,
+        "decode_window_ms": 600.0,
+        "prompt_tokens": 50,
+        "completion_tokens": 40,
+        "output_chars": 160,
+        "tokens_per_second": 66.7,
+        "finish_reason": "stop",
+    }
+
+    measurement = post_hoc_measurement(row)
+
+    assert measurement["prefill_share"] == pytest.approx(0.4)
+    assert measurement["decode_share"] == pytest.approx(0.6)
+    assert measurement["ms_per_completion_token"] == pytest.approx(25.0)
+    assert measurement["completion_tokens"] == 40
+    assert measurement["finish_reason"] == "stop"
+
+
+def test_post_hoc_measurement_drops_absent_and_mistyped_fields():
+    measurement = post_hoc_measurement(
+        {
+            "wall_ms": 10.0,
+            "ttft_ms": None,
+            "decode_window_ms": "fast",
+            # a bool is an int in Python; it must not be recorded as a count
+            "completion_tokens": True,
+            "wall_ms_is_not_a_measured_field": 5,
+        }
+    )
+
+    assert "ttft_ms" not in measurement
+    assert "decode_window_ms" not in measurement
+    assert "completion_tokens" not in measurement
+    assert "prefill_share" not in measurement
+    assert measurement["note"]
+
+
+def test_post_hoc_measurement_is_labelled_as_unavailable_to_the_router():
+    # The whole reason this is evidence and not a feature: a router must
+    # choose before generating, so none of it exists at decision time.
+    measurement = post_hoc_measurement({"wall_ms": 10.0, "ttft_ms": 4.0})
+
+    assert "never available to the router" in measurement["note"]
+
+
+def test_bundle_carries_post_hoc_evidence_without_leaking_it_into_state(tmp_path):
+    bundle = _build(_fixture(tmp_path))
+
+    record = bundle["records"][0]
+
+    evidence = record["metadata"]["candidate_evidence"]
+    assert evidence, "record has at least one candidate"
+    for candidate in evidence.values():
+        measurement = candidate["post_hoc_measurement"]
+        assert measurement["completion_tokens"] == 40
+        assert measurement["prefill_share"] == pytest.approx(0.4)
+
+    state = json.dumps(record["state"])
+    for leaked in ("ttft_ms", "decode_window_ms", "completion_tokens", "post_hoc"):
+        assert leaked not in state, f"{leaked} must not reach the router input"

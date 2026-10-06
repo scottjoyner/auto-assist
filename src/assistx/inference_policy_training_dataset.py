@@ -60,6 +60,49 @@ def _file_sha256(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+# Timing decomposition measured AFTER the answer was written. This is recorded
+# as evidence, never as a routing input: a router has to choose before
+# generating, so none of it is available when the decision is made. It is kept
+# because wall_ms alone cannot say why one policy won, and the whole point of
+# the bundle is to let that question be asked afterwards.
+POST_HOC_MEASUREMENT_FIELDS = (
+    ("ttft_ms", float),
+    ("decode_window_ms", float),
+    ("prompt_tokens", int),
+    ("completion_tokens", int),
+    ("output_chars", int),
+    ("tokens_per_second", float),
+)
+
+POST_HOC_MEASUREMENT_NOTE = (
+    "observed after generation; never available to the router as an input"
+)
+
+
+def post_hoc_measurement(row: dict[str, Any]) -> dict[str, Any]:
+    """Carry the prefill/decode decomposition for one measured trial."""
+    measurement: dict[str, Any] = {"note": POST_HOC_MEASUREMENT_NOTE}
+    for name, kind in POST_HOC_MEASUREMENT_FIELDS:
+        value = row.get(name)
+        if isinstance(value, bool) or not isinstance(value, kind):
+            continue
+        measurement[name] = float(value) if kind is float else int(value)
+    wall = measurement.get("ttft_ms")
+    total = row.get("wall_ms")
+    if isinstance(wall, float) and isinstance(total, (int, float)) and float(total) > 0:
+        measurement["prefill_share"] = round(wall / float(total), 9)
+    decode = measurement.get("decode_window_ms")
+    if isinstance(decode, float) and isinstance(total, (int, float)) and float(total) > 0:
+        measurement["decode_share"] = round(decode / float(total), 9)
+    completion = measurement.get("completion_tokens")
+    if isinstance(completion, int) and completion > 0 and isinstance(total, (int, float)):
+        measurement["ms_per_completion_token"] = round(float(total) / completion, 9)
+    finish = row.get("finish_reason")
+    if isinstance(finish, str) and finish:
+        measurement["finish_reason"] = finish
+    return measurement
+
+
 def policy_signature(policy: dict[str, Any]) -> dict[str, Any]:
     return {
         "node_id": str(policy["node_id"]),
@@ -340,6 +383,7 @@ def _record_for_group(
                 "signature_id": policy_signature_id(policy),
                 "descriptor": policy_signature(policy),
                 "wall_ms": float(row["wall_ms"]),
+                "post_hoc_measurement": post_hoc_measurement(row),
                 "result_sha256": canonical_sha256(row),
             }
         )
@@ -415,6 +459,9 @@ def _record_for_group(
                 option: {
                     "policy_id": by_signature[option]["policy_id"],
                     "wall_ms": by_signature[option]["wall_ms"],
+                    "post_hoc_measurement": by_signature[option][
+                        "post_hoc_measurement"
+                    ],
                     "result_sha256": by_signature[option]["result_sha256"],
                 }
                 for option in options
