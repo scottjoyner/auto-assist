@@ -114,6 +114,44 @@ def test_unconfigured_tailnet_allowlist_rejects_every_login(monkeypatch):
         assert response.status_code == 403
 
 
+def test_file_backed_tailnet_allowlist_supports_existing_container_restart(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.delenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", raising=False)
+    monkeypatch.setenv("ASSISTX_FLEET_STATE_DIR", str(tmp_path))
+    (tmp_path / "kipnerter-mobile-allowlist.txt").write_text(
+        "scott@example.com\n", encoding="utf-8"
+    )
+    client = TestClient(_app())
+    allowed = client.get(
+        "/api/v1/auth/whoami",
+        headers={"Tailscale-User-Login": "scott@example.com"},
+    )
+    denied = client.get(
+        "/api/v1/auth/whoami",
+        headers={"Tailscale-User-Login": "other@example.com"},
+    )
+    assert allowed.status_code == 200
+    assert denied.status_code == 403
+
+
+def test_environment_allowlist_takes_precedence_over_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "env@example.com")
+    monkeypatch.setenv("ASSISTX_FLEET_STATE_DIR", str(tmp_path))
+    (tmp_path / "kipnerter-mobile-allowlist.txt").write_text(
+        "file@example.com\n", encoding="utf-8"
+    )
+    client = TestClient(_app())
+    assert client.get(
+        "/api/v1/auth/whoami",
+        headers={"Tailscale-User-Login": "env@example.com"},
+    ).status_code == 200
+    assert client.get(
+        "/api/v1/auth/whoami",
+        headers={"Tailscale-User-Login": "file@example.com"},
+    ).status_code == 403
+
+
 def test_executor_security_does_not_break_tailnet_mobile_auth(monkeypatch):
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
     monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
