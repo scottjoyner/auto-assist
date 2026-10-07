@@ -111,6 +111,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--detect-stale", action="store_true", help="Detect stale subagent records")
     parser.add_argument("--projection", action="store_true", help="Emit supervision projection")
     parser.add_argument("--supervise", action="store_true", help="Act on projection: terminate stale/duplicate/looping (hold) or admit subagents (healthy)")
+    parser.add_argument("--loop", action="store_true", help="Run supervise continuously")
+    parser.add_argument("--interval", type=int, default=60, help="Loop interval in seconds (default 60)")
     parser.add_argument("--max-age-minutes", type=int, default=30, help="Stale record threshold for supervise (default 30)")
     parser.add_argument("--dry-run", action="store_true", default=True, help="Preview actions without executing (default True)")
     parser.add_argument("--no-dry-run", dest="dry_run", action="store_false", help="Actually execute supervise actions")
@@ -209,21 +211,27 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(proj, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         return 0
 
-    if args.supervise:
-        proj = emit_projection(
-            free_models=enumerate_free_models(fixture_path),
-            state_path=state_path,
-            trace_exporter_path=args.trace,
-            allow_reserve=args.allow_reserve,
-            discover_fn=discover_live_sessions,
-        )
-        result = run_supervision_loop(
-            projection=proj,
-            state_path=state_path,
-            max_age_minutes=args.max_age_minutes,
-            dry_run=args.dry_run,
-        )
-        print(json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+    if args.supervise or args.loop:
+        while True:
+            proj = emit_projection(
+                free_models=enumerate_free_models(fixture_path),
+                state_path=state_path,
+                trace_exporter_path=args.trace,
+                allow_reserve=args.allow_reserve,
+                discover_fn=discover_live_sessions,
+            )
+            result = run_supervision_loop(
+                projection=proj,
+                state_path=state_path,
+                max_age_minutes=args.max_age_minutes,
+                dry_run=args.dry_run,
+                admit_count=args.admit_count,
+            )
+            print(json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+            if not args.loop:
+                break
+            import time
+            time.sleep(args.interval)
         return 0
 
     proj = emit_projection(

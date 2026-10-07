@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import signal
+import sys
+from datetime import UTC, datetime
 from typing import Any
 
 from free_subagent_discover import (
@@ -16,16 +19,27 @@ from free_subagent_routing import classify_free_model, enumerate_free_models
 from free_subagent_state import register_subagent
 
 
+def _now_iso() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _log(entry: dict[str, Any]) -> None:
+    print(json.dumps(entry, sort_keys=True, ensure_ascii=False), file=sys.stderr)
+
+
 def terminate_subagent(pid: int, session: str = "", sig: int = signal.SIGTERM) -> dict[str, Any]:
+    result = None
     try:
         os.kill(pid, sig)
-        return {"pid": pid, "session": session, "action": "terminated", "signal": sig}
+        result = {"pid": pid, "session": session, "action": "terminated", "signal": sig}
     except ProcessLookupError:
-        return {"pid": pid, "session": session, "action": "already_gone", "signal": sig}
+        result = {"pid": pid, "session": session, "action": "already_gone", "signal": sig}
     except PermissionError:
-        return {"pid": pid, "session": session, "action": "permission_denied", "signal": sig}
+        result = {"pid": pid, "session": session, "action": "permission_denied", "signal": sig}
     except OSError as exc:
-        return {"pid": pid, "session": session, "action": "error", "error": str(exc), "signal": sig}
+        result = {"pid": pid, "session": session, "action": "error", "error": str(exc), "signal": sig}
+    _log({"ts": _now_iso(), "event": "terminate", **result})
+    return result
 
 
 def cleanup_stale(
@@ -91,9 +105,11 @@ def admit_subagent(
     }
     try:
         recs = register_subagent(record, state_path)
-        return {"admitted": True, "model": model.get("id"), "total_records": len(recs), "record": recs[-1]}
+        result = {"admitted": True, "model": model.get("id"), "total_records": len(recs), "record": recs[-1]}
     except Exception as exc:
-        return {"admitted": False, "model": model.get("id"), "error": str(exc)}
+        result = {"admitted": False, "model": model.get("id"), "error": str(exc)}
+    _log({"ts": _now_iso(), "event": "admit", **result})
+    return result
 
 
 def run_supervision_loop(
@@ -101,9 +117,12 @@ def run_supervision_loop(
     state_path: pathlib.Path | None = None,
     max_age_minutes: int = 30,
     dry_run: bool = True,
+    admit_count: int = 1,
 ) -> dict[str, Any]:
     verdict = projection.get("suggested_scale_verdict", "hold")
     actions_taken: list[dict[str, Any]] = []
+
+    _log({"ts": _now_iso(), "event": "supervision_cycle", "verdict": verdict, "dry_run": dry_run})
 
     if verdict == "hold":
         records = projection.get("subagent_records", 0)
@@ -126,7 +145,7 @@ def run_supervision_loop(
     elif verdict == "healthy":
         models = enumerate_free_models()
         admitted = []
-        for m in models[:1]:
+        for m in models[:admit_count]:
             if dry_run:
                 admitted.append({"model": m.get("id"), "action": "dry_run"})
             else:
