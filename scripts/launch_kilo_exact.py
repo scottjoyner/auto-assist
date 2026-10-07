@@ -43,6 +43,9 @@ QUALIFIED_EXACT_MODELS = frozenset(
     }
 )
 ROUTE_ALIAS_TOKENS = frozenset({"free", "auto", "router", "any", "best", "default"})
+QUALIFICATION_MAX_AGE_SECONDS = int(
+    os.environ.get("ASSIST_KILO_QUALIFICATION_MAX_AGE_SECONDS", "86400")
+)
 
 def _state_root() -> pathlib.Path:
     env_root = os.environ.get("ASSIST_SUBAGENT_STATE_ROOT")
@@ -146,12 +149,138 @@ def route_kind(model_id: str) -> str:
     return "alias" if leaf in ROUTE_ALIAS_TOKENS else "exact"
 
 
-def validate_model(model_id: str) -> None:
+def _qualification_ledger_path(state_path: pathlib.Path | None = None) -> pathlib.Path:
+    state = state_path or (_state_root() / "live.jsonl")
+    return state.parent / "provider-qualification.jsonl"
+
+
+def _read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        for line in path.read_text(errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                rows.append(value)
+    except OSError:
+        return []
+    return rows
+
+
+def _started_at_epoch(record: dict[str, Any]) -> float | None:
+    value = record.get("started_at")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp()
+
+
+def latest_qualification(
+    model_id: str,
+    state_path: pathlib.Path | None = None,
+) -> dict[str, Any] | None:
+    matches = [
+        row
+        for row in _read_jsonl(_qualification_ledger_path(state_path))
+        if row.get("provider") == PROVIDER_ID
+        and row.get("requested_model") == model_id
+    ]
+    if not matches:
+        return None
+    matches.sort(key=lambda row: _started_at_epoch(row) or 0.0)
+    return matches[-1]
+
+
+def qualification_allows_launch(
+    model_id: str,
+    state_path: pathlib.Path | None = None,
+    *,
+    now_epoch: float | None = None,
+) -> tuple[bool, str]:
+    if route_kind(model_id) != "exact":
+        return False, "router_alias"
+
+    record = latest_qualification(model_id, state_path)
+    if record is None:
+        return False, "missing_qualification"
+
+    started = _started_at_epoch(record)
+    now_epoch = time.time() if now_epoch is None else now_epoch
+    if started is None or now_epoch - started > QUALIFICATION_MAX_AGE_SECONDS:
+        return False, "stale_qualification"
+
+    if record.get("qualified") is not True:
+        return False, "not_qualified"
+    if record.get("model_identity_complete") is not True:
+        return False, "incomplete_model_identity"
+    if record.get("capacity_state") != "usable":
+        return False, f"capacity_{record.get('capacity_state') or 'unknown'}"
+    if record.get("requested_model") != model_id:
+        return False, "requested_model_mismatch"
+    if record.get("response_model") != model_id:
+        return False, "response_model_mismatch"
+    if record.get("structured_tool_call") is not True:
+        return False, "tool_canary_missing"
+
+    for key in ("cost", "upstream_inference_cost"):
+        value = record.get(key)
+        if value is None:
+            return False, f"{key}_unknown"
+        try:
+            if float(value) != 0.0:
+                return False, f"{key}_nonzero"
+        except (TypeError, ValueError):
+            return False, f"{key}_invalid"
+
+    return True, "qualified_exact_zero_cost"
+
+
+def qualified_models_from_ledger(
+    state_path: pathlib.Path | None = None,
+    *,
+    now_epoch: float | None = None,
+) -> list[str]:
+    ledger = _read_jsonl(_qualification_ledger_path(state_path))
+    models = sorted(
+        {
+            str(row.get("requested_model"))
+            for row in ledger
+            if row.get("provider") == PROVIDER_ID
+            and isinstance(row.get("requested_model"), str)
+        }
+    )
+    return [
+        model
+        for model in models
+        if qualification_allows_launch(
+            model,
+            state_path,
+            now_epoch=now_epoch,
+        )[0]
+    ]
+
+
+def validate_model(
+    model_id: str,
+    state_path: pathlib.Path | None = None,
+) -> None:
     if route_kind(model_id) != "exact":
         raise ValueError("router aliases are not allowed for real anonymous work")
-    if model_id not in QUALIFIED_EXACT_MODELS:
+    allowed, reason = qualification_allows_launch(model_id, state_path)
+    if not allowed:
         raise ValueError(
-            f"{model_id!r} is not in the explicitly qualified anonymous Kilo model set"
+            f"{model_id!r} lacks current attributable zero-cost qualification: {reason}"
         )
 
 
@@ -181,8 +310,9 @@ def build_command(
     title: str,
     objective: str,
     worktree: pathlib.Path,
+    state_path: pathlib.Path | None = None,
 ) -> list[str]:
-    validate_model(model_id)
+    validate_model(model_id, state_path)
     return [
         opencode_binary(),
         "run",
@@ -624,13 +754,13 @@ def launch(
     budget_poll_seconds: float = 1.0,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    validate_model(model_id)
+    validate_model(model_id, state_path)
     worktree = worktree.resolve()
     if not worktree.is_dir():
         raise ValueError(f"worktree does not exist: {worktree}")
 
     title = title or f"kilo-exact-{model_id.split('/')[-1].replace(':', '-')}-{uuid.uuid4().hex[:8]}"
-    cmd = build_command(model_id, title, objective, worktree)
+    cmd = build_command(model_id, title, objective, worktree, state_path)
     budget_limits = {
         "max_wall_seconds": max_wall_seconds,
         "max_input_tokens": max_input_tokens,
@@ -838,7 +968,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.list_qualified:
-        print(json.dumps(sorted(QUALIFIED_EXACT_MODELS)))
+        print(json.dumps(qualified_models_from_ledger(args.state)))
         return 0
 
     if not args.model or args.objective is None or args.worktree is None:

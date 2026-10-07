@@ -15,7 +15,40 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(launch_kilo_exact)
 
 
-def test_qualified_models_are_exact_and_live_ids():
+def _write_qualification(
+    state_path: pathlib.Path,
+    model: str,
+    *,
+    started_at: str | None = None,
+    qualified: bool = True,
+    identity: bool = True,
+    capacity: str = "usable",
+    response_model: str | None = None,
+    cost: float | None = 0.0,
+    upstream_cost: float | None = 0.0,
+    structured_tool_call: bool = True,
+) -> pathlib.Path:
+    ledger = state_path.parent / "provider-qualification.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "schema": "free-provider-qualification/v1",
+        "provider": "kilo_free",
+        "requested_model": model,
+        "response_model": model if response_model is None else response_model,
+        "qualified": qualified,
+        "model_identity_complete": identity,
+        "capacity_state": capacity,
+        "structured_tool_call": structured_tool_call,
+        "cost": cost,
+        "upstream_inference_cost": upstream_cost,
+        "started_at": started_at or launch_kilo_exact._now_utc(),
+    }
+    with ledger.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, sort_keys=True) + "\n")
+    return ledger
+
+
+def test_bootstrap_models_are_exact_but_launch_requires_dynamic_evidence(tmp_path):
     expected = {
         "nvidia/nemotron-3-super-120b-a12b:free",
         "nvidia/nemotron-3-ultra-550b-a55b:free",
@@ -28,33 +61,87 @@ def test_qualified_models_are_exact_and_live_ids():
         "inclusionai/ling-3.1-flash",
     }
     assert launch_kilo_exact.QUALIFIED_EXACT_MODELS == expected
+    state = tmp_path / "state" / "live.jsonl"
     for model in expected:
         assert launch_kilo_exact.route_kind(model) == "exact"
-        launch_kilo_exact.validate_model(model)
+        _write_qualification(state, model)
+        launch_kilo_exact.validate_model(model, state)
 
 
-def test_alias_and_unknown_models_fail_closed():
+def test_alias_and_unknown_models_fail_closed(tmp_path):
+    state = tmp_path / "state" / "live.jsonl"
     for model in ("openrouter/free", "kilo/auto", "auto", "free"):
         try:
-            launch_kilo_exact.validate_model(model)
+            launch_kilo_exact.validate_model(model, state)
             raise AssertionError(model)
         except ValueError:
             pass
     try:
-        launch_kilo_exact.validate_model("some-paid/model")
+        launch_kilo_exact.validate_model("some-paid/model", state)
         raise AssertionError("unknown model should fail")
     except ValueError as exc:
-        assert "qualified" in str(exc)
+        assert "qualification" in str(exc)
 
 
-def test_build_command_matches_proven_live_cli(monkeypatch):
+def test_dynamic_qualification_rejects_stale_failed_and_mismatched(tmp_path):
+    state = tmp_path / "state" / "live.jsonl"
+    model = "brand/new-code-model:free"
+
+    _write_qualification(state, model, started_at="2000-01-01T00:00:00Z")
+    ok, reason = launch_kilo_exact.qualification_allows_launch(model, state)
+    assert ok is False
+    assert reason == "stale_qualification"
+
+    _write_qualification(state, model, qualified=False)
+    ok, reason = launch_kilo_exact.qualification_allows_launch(model, state)
+    assert ok is False
+    assert reason == "not_qualified"
+
+    _write_qualification(state, model, response_model="brand/other-model:free")
+    ok, reason = launch_kilo_exact.qualification_allows_launch(model, state)
+    assert ok is False
+    assert reason == "response_model_mismatch"
+
+    _write_qualification(state, model, upstream_cost=None)
+    ok, reason = launch_kilo_exact.qualification_allows_launch(model, state)
+    assert ok is False
+    assert reason == "upstream_inference_cost_unknown"
+
+    _write_qualification(state, model)
+    ok, reason = launch_kilo_exact.qualification_allows_launch(model, state)
+    assert ok is True
+    assert reason == "qualified_exact_zero_cost"
+    launch_kilo_exact.validate_model(model, state)
+
+
+def test_latest_qualification_wins(tmp_path):
+    state = tmp_path / "state" / "live.jsonl"
+    model = "brand/latest-wins:free"
+    _write_qualification(state, model, qualified=True)
+    _write_qualification(state, model, qualified=False)
+    assert launch_kilo_exact.qualification_allows_launch(model, state)[0] is False
+
+
+def test_qualified_models_from_ledger_is_dynamic(tmp_path):
+    state = tmp_path / "state" / "live.jsonl"
+    _write_qualification(state, "brand/dynamic-a:free")
+    _write_qualification(state, "brand/dynamic-b:free", qualified=False)
+    assert launch_kilo_exact.qualified_models_from_ledger(state) == [
+        "brand/dynamic-a:free"
+    ]
+
+
+def test_build_command_matches_proven_live_cli(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENCODE_BIN", "/opt/opencode")
     worktree = pathlib.Path("/tmp/trace-worktree")
+    state = tmp_path / "state" / "live.jsonl"
+    _write_qualification(state, "cohere/north-mini-code:free")
     cmd = launch_kilo_exact.build_command(
         "cohere/north-mini-code:free",
         "trace-title",
         "do useful work",
         worktree,
+        state,
     )
     assert cmd == [
         "/opt/opencode",
@@ -182,6 +269,10 @@ def test_failure_classification():
 
 def test_dry_run_does_not_spawn_process(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENCODE_BIN", "/opt/opencode")
+    _write_qualification(
+        tmp_path / "state.jsonl",
+        "nvidia/nemotron-3-super-120b-a12b:free",
+    )
     with mock.patch.object(subprocess, "Popen") as popen:
         result = launch_kilo_exact.launch(
             model_id="nvidia/nemotron-3-super-120b-a12b:free",
@@ -219,6 +310,7 @@ def test_launch_uses_real_child_pid_and_real_session_id(tmp_path, monkeypatch):
 
     fake_proc = FakeProc()
     monkeypatch.setenv("OPENCODE_BIN", "/opt/opencode")
+    _write_qualification(tmp_path / "state.jsonl", "cohere/north-mini-code:free")
     with (
         mock.patch.object(subprocess, "Popen", return_value=fake_proc) as popen,
         mock.patch.object(
