@@ -208,6 +208,8 @@ def test_launch_uses_real_child_pid_and_real_session_id(tmp_path, monkeypatch):
     class FakeProc:
         pid = 4242
         returncode = 0
+        def poll(self):
+            return 0
         def wait(self, timeout=None):
             return 0
         def terminate(self):
@@ -246,7 +248,12 @@ def test_launch_uses_real_child_pid_and_real_session_id(tmp_path, monkeypatch):
             title="live-title",
         )
 
-    kwargs = popen.call_args.kwargs
+    launch_call = next(
+        call for call in popen.call_args_list
+        if call.kwargs.get("cwd") == tmp_path.resolve()
+        and call.kwargs.get("stdin") is subprocess.DEVNULL
+    )
+    kwargs = launch_call.kwargs
     assert kwargs["cwd"] == tmp_path.resolve()
     assert kwargs["env"]["PWD"] == str(tmp_path.resolve())
     assert kwargs["stdin"] is subprocess.DEVNULL
@@ -317,3 +324,279 @@ def test_state_root_env_override(monkeypatch, tmp_path):
     override = tmp_path / "custom-state"
     monkeypatch.setenv("ASSIST_SUBAGENT_STATE_ROOT", str(override))
     assert launch_kilo_exact._state_root() == override
+
+
+def test_final_session_trace_filters_without_exporter_session_argument(tmp_path):
+    class FakeExporter:
+        @staticmethod
+        def export_sessions(db_path):
+            assert db_path == tmp_path / "opencode.db"
+            return [
+                {"session_id": "ses-other", "tokens": {"input": 1}},
+                {"session_id": "ses-target", "tokens": {"input": 2}},
+            ]
+
+    with mock.patch.object(
+        launch_kilo_exact, "_load_module", return_value=FakeExporter()
+    ):
+        result = launch_kilo_exact._final_session_trace(
+            tmp_path / "exporter.py",
+            tmp_path / "opencode.db",
+            "ses-target",
+        )
+
+    assert result == {"session_id": "ses-target", "tokens": {"input": 2}}
+
+
+def test_budget_monitor_stops_no_progress_run(tmp_path):
+    class FakeProc:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    metrics = {
+        "input_tokens": 80_000,
+        "output_tokens": 100,
+        "reasoning_tokens": 10_000,
+        "cache_read_tokens": 0,
+        "tool_calls": 12,
+        "mutation_tool_calls": 0,
+        "patch_parts": 0,
+    }
+    proc = FakeProc()
+    with (
+        mock.patch.object(
+            launch_kilo_exact,
+            "_session_budget_metrics",
+            return_value=dict(metrics),
+        ),
+        mock.patch.object(
+            launch_kilo_exact,
+            "_has_worktree_progress",
+            return_value=False,
+        ),
+    ):
+        returncode, reason, observed = launch_kilo_exact._wait_with_budgets(
+            proc,
+            db_path=tmp_path / "missing.db",
+            session_id="ses-budget",
+            worktree=tmp_path,
+            launch_git={"is_git": False},
+            max_wall_seconds=600,
+            max_input_tokens=500_000,
+            max_reasoning_tokens=200_000,
+            max_tool_calls=80,
+            max_no_progress_input_tokens=75_000,
+            poll_seconds=0.01,
+        )
+
+    assert returncode == -15
+    assert reason == "budget_no_progress"
+    assert observed["input_tokens"] == 80_000
+    assert observed["worktree_progress"] is False
+
+
+def test_budget_monitor_allows_completed_run(tmp_path):
+    class FakeProc:
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+    metrics = {
+        "input_tokens": 10_000,
+        "output_tokens": 100,
+        "reasoning_tokens": 500,
+        "cache_read_tokens": 0,
+        "tool_calls": 3,
+        "mutation_tool_calls": 1,
+        "patch_parts": 0,
+    }
+    with (
+        mock.patch.object(
+            launch_kilo_exact,
+            "_session_budget_metrics",
+            return_value=dict(metrics),
+        ),
+        mock.patch.object(
+            launch_kilo_exact,
+            "_has_worktree_progress",
+            return_value=True,
+        ),
+    ):
+        returncode, reason, observed = launch_kilo_exact._wait_with_budgets(
+            FakeProc(),
+            db_path=tmp_path / "missing.db",
+            session_id="ses-complete",
+            worktree=tmp_path,
+            launch_git={"is_git": False},
+            max_wall_seconds=600,
+            max_input_tokens=500_000,
+            max_reasoning_tokens=200_000,
+            max_tool_calls=80,
+            max_no_progress_input_tokens=75_000,
+            poll_seconds=0.01,
+        )
+
+    assert returncode == 0
+    assert reason is None
+    assert observed["worktree_progress"] is True
+
+
+def test_final_session_trace_filters_exporter_without_session_argument(tmp_path, monkeypatch):
+    exporter = tmp_path / "exporter.py"
+    exporter.write_text(
+        "def export_sessions(db_path):\n"
+        "    return [\n"
+        "        {'session_id': 'ses-other', 'cost': 0},\n"
+        "        {'session_id': 'ses-target', 'cost': 0},\n"
+        "    ]\n"
+    )
+    result = launch_kilo_exact._final_session_trace(
+        exporter, tmp_path / "unused.db", "ses-target"
+    )
+    assert result == {"session_id": "ses-target", "cost": 0}
+
+
+def test_wait_with_budgets_stops_no_progress_run(monkeypatch, tmp_path):
+    class FakeProc:
+        returncode = None
+        def poll(self):
+            return self.returncode
+        def terminate(self):
+            self.returncode = -15
+        def wait(self, timeout=None):
+            return self.returncode
+        def kill(self):
+            self.returncode = -9
+
+    proc = FakeProc()
+    monkeypatch.setattr(
+        launch_kilo_exact,
+        "_session_budget_metrics",
+        lambda *_args, **_kwargs: {
+            "input_tokens": 80_000,
+            "output_tokens": 100,
+            "reasoning_tokens": 5_000,
+            "cache_read_tokens": 0,
+            "tool_calls": 12,
+            "mutation_tool_calls": 0,
+            "patch_parts": 0,
+        },
+    )
+    monkeypatch.setattr(launch_kilo_exact, "_has_worktree_progress", lambda *_a, **_k: False)
+    code, reason, metrics = launch_kilo_exact._wait_with_budgets(
+        proc,
+        db_path=tmp_path / "db",
+        session_id="ses",
+        worktree=tmp_path,
+        launch_git={"is_git": False},
+        max_wall_seconds=600,
+        max_input_tokens=500_000,
+        max_reasoning_tokens=200_000,
+        max_tool_calls=80,
+        max_no_progress_input_tokens=75_000,
+        poll_seconds=0.01,
+    )
+    assert code == -15
+    assert reason == "budget_no_progress"
+    assert metrics["worktree_progress"] is False
+
+
+def test_wait_with_budgets_stops_hard_input_cap_even_with_progress(monkeypatch, tmp_path):
+    class FakeProc:
+        returncode = None
+        def poll(self):
+            return self.returncode
+        def terminate(self):
+            self.returncode = -15
+        def wait(self, timeout=None):
+            return self.returncode
+        def kill(self):
+            self.returncode = -9
+
+    proc = FakeProc()
+    monkeypatch.setattr(
+        launch_kilo_exact,
+        "_session_budget_metrics",
+        lambda *_args, **_kwargs: {
+            "input_tokens": 500_000,
+            "output_tokens": 2_000,
+            "reasoning_tokens": 40_000,
+            "cache_read_tokens": 0,
+            "tool_calls": 20,
+            "mutation_tool_calls": 3,
+            "patch_parts": 2,
+        },
+    )
+    monkeypatch.setattr(launch_kilo_exact, "_has_worktree_progress", lambda *_a, **_k: True)
+    code, reason, metrics = launch_kilo_exact._wait_with_budgets(
+        proc,
+        db_path=tmp_path / "db",
+        session_id="ses",
+        worktree=tmp_path,
+        launch_git={"is_git": False},
+        max_wall_seconds=600,
+        max_input_tokens=500_000,
+        max_reasoning_tokens=200_000,
+        max_tool_calls=80,
+        max_no_progress_input_tokens=75_000,
+        poll_seconds=0.01,
+    )
+    assert code == -15
+    assert reason == "budget_input_tokens"
+    assert metrics["worktree_progress"] is True
+
+
+def test_wait_with_budgets_allows_normal_completion(monkeypatch, tmp_path):
+    class FakeProc:
+        returncode = 0
+        def poll(self):
+            return 0
+        def terminate(self):
+            raise AssertionError("completed process should not be terminated")
+        def wait(self, timeout=None):
+            return 0
+        def kill(self):
+            raise AssertionError("completed process should not be killed")
+
+    monkeypatch.setattr(
+        launch_kilo_exact,
+        "_session_budget_metrics",
+        lambda *_args, **_kwargs: {
+            "input_tokens": 20_000,
+            "output_tokens": 800,
+            "reasoning_tokens": 2_000,
+            "cache_read_tokens": 5_000,
+            "tool_calls": 8,
+            "mutation_tool_calls": 2,
+            "patch_parts": 1,
+        },
+    )
+    monkeypatch.setattr(launch_kilo_exact, "_has_worktree_progress", lambda *_a, **_k: True)
+    code, reason, metrics = launch_kilo_exact._wait_with_budgets(
+        FakeProc(),
+        db_path=tmp_path / "db",
+        session_id="ses",
+        worktree=tmp_path,
+        launch_git={"is_git": False},
+        max_wall_seconds=600,
+        max_input_tokens=500_000,
+        max_reasoning_tokens=200_000,
+        max_tool_calls=80,
+        max_no_progress_input_tokens=75_000,
+        poll_seconds=0.01,
+    )
+    assert code == 0
+    assert reason is None
+    assert metrics["worktree_progress"] is True

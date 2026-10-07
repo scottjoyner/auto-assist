@@ -91,6 +91,8 @@ def _write_manifest(
     final_trace: dict[str, Any] | None,
     status: str,
     failure_class: str | None,
+    budget_limits: dict[str, Any] | None = None,
+    budget_result: dict[str, Any] | None = None,
 ) -> pathlib.Path:
     manifests_dir = state_path.parent / "manifests"
     _ensure_private_dir(manifests_dir)
@@ -118,6 +120,8 @@ def _write_manifest(
         "finished_at": _now_utc(),
         "status": status,
         "failure_class": failure_class,
+        "budget_limits": budget_limits,
+        "budget_result": budget_result,
         "tokens": final_trace.get("tokens") if final_trace else None,
         "cost": final_trace.get("cost") if final_trace else None,
         "tools": final_trace.get("tools") if final_trace else None,
@@ -367,9 +371,13 @@ def _final_session_trace(
     db_path: pathlib.Path,
     session_id: str,
 ) -> dict[str, Any] | None:
+    """Read one final session trace without assuming exporter filter support."""
     exporter = _load_module(exporter_path, "opencode_trace_exporter")
-    records = exporter.export_sessions(db_path, session_id=session_id)
-    return records[0] if records else None
+    records = exporter.export_sessions(db_path)
+    return next(
+        (record for record in records if record.get("session_id") == session_id),
+        None,
+    )
 
 
 def _register_initial(
@@ -413,6 +421,7 @@ def _update_state(
     status: str,
     final_trace: dict[str, Any] | None,
     failure_class: str | None = None,
+    extra_updates: dict[str, Any] | None = None,
 ) -> None:
     supervisor = _load_module(supervisor_path, "free_subagent_supervisor_update")
     updates: dict[str, Any] = {"status": status}
@@ -433,7 +442,166 @@ def _update_state(
                 "model_identity_complete": final_trace.get("model_identity_complete"),
             }
         )
+    if extra_updates:
+        updates.update(extra_updates)
     supervisor.update_subagent(session_id, updates, state_path)
+
+
+MUTATION_TOOLS = frozenset(
+    {"edit", "write", "patch", "apply_patch", "multiedit", "create_file"}
+)
+
+
+def _session_budget_metrics(
+    db_path: pathlib.Path,
+    session_id: str,
+) -> dict[str, Any]:
+    """Read lightweight token/tool progress for one OpenCode session."""
+    metrics: dict[str, Any] = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": 0,
+        "tool_calls": 0,
+        "mutation_tool_calls": 0,
+        "patch_parts": 0,
+    }
+    if not db_path.exists():
+        return metrics
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            row = con.execute(
+                """
+                SELECT tokens_input, tokens_output, tokens_reasoning, tokens_cache_read
+                FROM session WHERE id = ? LIMIT 1
+                """,
+                (session_id,),
+            ).fetchone()
+            if row:
+                metrics.update(
+                    {
+                        "input_tokens": int(row[0] or 0),
+                        "output_tokens": int(row[1] or 0),
+                        "reasoning_tokens": int(row[2] or 0),
+                        "cache_read_tokens": int(row[3] or 0),
+                    }
+                )
+            tool_calls = 0
+            mutation_calls = 0
+            patch_parts = 0
+            for (raw,) in con.execute(
+                "SELECT data FROM part WHERE session_id = ?",
+                (session_id,),
+            ):
+                try:
+                    part = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                typ = part.get("type")
+                if typ == "tool":
+                    tool_calls += 1
+                    name = str(part.get("tool") or part.get("name") or "").lower()
+                    if name in MUTATION_TOOLS:
+                        mutation_calls += 1
+                elif typ == "patch":
+                    patch_parts += 1
+            metrics.update(
+                {
+                    "tool_calls": tool_calls,
+                    "mutation_tool_calls": mutation_calls,
+                    "patch_parts": patch_parts,
+                }
+            )
+        finally:
+            con.close()
+    except sqlite3.Error:
+        pass
+    return metrics
+
+
+def _has_worktree_progress(
+    worktree: pathlib.Path,
+    launch_git: dict[str, Any],
+    metrics: dict[str, Any],
+) -> bool:
+    if metrics.get("mutation_tool_calls", 0) or metrics.get("patch_parts", 0):
+        return True
+    if not launch_git.get("is_git"):
+        return False
+    current = _git_snapshot(worktree)
+    if not current.get("is_git"):
+        return False
+    return bool(
+        current.get("head") != launch_git.get("head")
+        or int(current.get("dirty_paths") or 0) > int(launch_git.get("dirty_paths") or 0)
+    )
+
+
+def _stop_process(proc: subprocess.Popen[Any]) -> None:
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def _wait_with_budgets(
+    proc: subprocess.Popen[Any],
+    *,
+    db_path: pathlib.Path,
+    session_id: str,
+    worktree: pathlib.Path,
+    launch_git: dict[str, Any],
+    max_wall_seconds: float,
+    max_input_tokens: int,
+    max_reasoning_tokens: int,
+    max_tool_calls: int,
+    max_no_progress_input_tokens: int,
+    poll_seconds: float = 1.0,
+) -> tuple[int, str | None, dict[str, Any]]:
+    """Wait for a run while enforcing deterministic resource budgets."""
+    started = time.monotonic()
+    last_metrics = _session_budget_metrics(db_path, session_id)
+    while proc.poll() is None:
+        elapsed = time.monotonic() - started
+        last_metrics = _session_budget_metrics(db_path, session_id)
+        progress = _has_worktree_progress(worktree, launch_git, last_metrics)
+        last_metrics["worktree_progress"] = progress
+        last_metrics["elapsed_seconds"] = round(elapsed, 3)
+
+        reason: str | None = None
+        if (
+            max_no_progress_input_tokens > 0
+            and last_metrics["input_tokens"] >= max_no_progress_input_tokens
+            and not progress
+        ):
+            reason = "budget_no_progress"
+        elif max_input_tokens > 0 and last_metrics["input_tokens"] >= max_input_tokens:
+            reason = "budget_input_tokens"
+        elif (
+            max_reasoning_tokens > 0
+            and last_metrics["reasoning_tokens"] >= max_reasoning_tokens
+        ):
+            reason = "budget_reasoning_tokens"
+        elif max_tool_calls > 0 and last_metrics["tool_calls"] >= max_tool_calls:
+            reason = "budget_tool_calls"
+        elif max_wall_seconds > 0 and elapsed >= max_wall_seconds:
+            reason = "budget_wall_clock"
+
+        if reason:
+            _stop_process(proc)
+            return int(proc.returncode or -15), reason, last_metrics
+
+        time.sleep(max(0.1, poll_seconds))
+
+    last_metrics = _session_budget_metrics(db_path, session_id)
+    last_metrics["worktree_progress"] = _has_worktree_progress(
+        worktree, launch_git, last_metrics
+    )
+    last_metrics["elapsed_seconds"] = round(time.monotonic() - started, 3)
+    return int(proc.returncode or 0), None, last_metrics
 
 
 def launch(
@@ -448,6 +616,12 @@ def launch(
     exporter_path: pathlib.Path,
     title: str | None = None,
     session_timeout: float = 30.0,
+    max_wall_seconds: float = 600.0,
+    max_input_tokens: int = 500_000,
+    max_reasoning_tokens: int = 200_000,
+    max_tool_calls: int = 80,
+    max_no_progress_input_tokens: int = 75_000,
+    budget_poll_seconds: float = 1.0,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     validate_model(model_id)
@@ -457,6 +631,14 @@ def launch(
 
     title = title or f"kilo-exact-{model_id.split('/')[-1].replace(':', '-')}-{uuid.uuid4().hex[:8]}"
     cmd = build_command(model_id, title, objective, worktree)
+    budget_limits = {
+        "max_wall_seconds": max_wall_seconds,
+        "max_input_tokens": max_input_tokens,
+        "max_reasoning_tokens": max_reasoning_tokens,
+        "max_tool_calls": max_tool_calls,
+        "max_no_progress_input_tokens": max_no_progress_input_tokens,
+        "poll_seconds": budget_poll_seconds,
+    }
 
     if dry_run:
         return {
@@ -470,6 +652,7 @@ def launch(
             "title": title,
             "command": cmd,
             "stdin": "/dev/null",
+            "budget_limits": budget_limits,
         }
 
     _ensure_private_dir(trace_dir)
@@ -537,13 +720,40 @@ def launch(
             session_id=session_id,
         )
         _secure_file(state_path)
-        returncode = proc.wait()
+        returncode, budget_reason, budget_metrics = _wait_with_budgets(
+            proc,
+            db_path=db_path,
+            session_id=session_id,
+            worktree=worktree,
+            launch_git=launch_git,
+            max_wall_seconds=max_wall_seconds,
+            max_input_tokens=max_input_tokens,
+            max_reasoning_tokens=max_reasoning_tokens,
+            max_tool_calls=max_tool_calls,
+            max_no_progress_input_tokens=max_no_progress_input_tokens,
+            poll_seconds=budget_poll_seconds,
+        )
 
     stderr_text = stderr_path.read_text(errors="replace")
     stdout_text = stdout_path.read_text(errors="replace")
     final_trace = _final_session_trace(exporter_path, db_path, session_id)
-    failure_class = None if returncode == 0 else classify_failure(stderr_text + "\n" + stdout_text)
-    status = "completed" if returncode == 0 else "failed"
+    if budget_reason == "budget_no_progress":
+        status = "no_progress"
+        failure_class = budget_reason
+    elif budget_reason:
+        status = "budget_exhausted"
+        failure_class = budget_reason
+    else:
+        failure_class = (
+            None
+            if returncode == 0
+            else classify_failure(stderr_text + "\n" + stdout_text)
+        )
+        status = "completed" if returncode == 0 else "failed"
+    budget_result = {
+        "termination_reason": budget_reason,
+        "metrics": budget_metrics,
+    }
     _update_state(
         supervisor_path,
         state_path,
@@ -551,6 +761,10 @@ def launch(
         status=status,
         final_trace=final_trace,
         failure_class=failure_class,
+        extra_updates={
+            "budget_limits": budget_limits,
+            "budget_result": budget_result,
+        },
     )
     _secure_file(state_path)
     manifest_path = _write_manifest(
@@ -566,10 +780,12 @@ def launch(
         final_trace=final_trace,
         status=status,
         failure_class=failure_class,
+        budget_limits=budget_limits,
+        budget_result=budget_result,
     )
 
     return {
-        "success": returncode == 0,
+        "success": status == "completed",
         "returncode": returncode,
         "provider": PROVIDER_ID,
         "requested_model": model_id,
@@ -586,6 +802,8 @@ def launch(
         "stderr_trace": str(stderr_path),
         "manifest": str(manifest_path),
         "failure_class": failure_class,
+        "budget_limits": budget_limits,
+        "budget_result": budget_result,
         "final_trace": final_trace,
     }
 
@@ -609,6 +827,12 @@ def main(argv: list[str] | None = None) -> int:
         type=pathlib.Path,
         default=pathlib.Path(__file__).with_name("export_opencode_session_traces.py"),
     )
+    parser.add_argument("--max-wall-seconds", type=float, default=600.0)
+    parser.add_argument("--max-input-tokens", type=int, default=500_000)
+    parser.add_argument("--max-reasoning-tokens", type=int, default=200_000)
+    parser.add_argument("--max-tool-calls", type=int, default=80)
+    parser.add_argument("--max-no-progress-input-tokens", type=int, default=75_000)
+    parser.add_argument("--budget-poll-seconds", type=float, default=1.0)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--list-qualified", action="store_true")
     args = parser.parse_args(argv)
@@ -630,6 +854,12 @@ def main(argv: list[str] | None = None) -> int:
         supervisor_path=args.supervisor,
         exporter_path=args.trace_exporter,
         title=args.title,
+        max_wall_seconds=args.max_wall_seconds,
+        max_input_tokens=args.max_input_tokens,
+        max_reasoning_tokens=args.max_reasoning_tokens,
+        max_tool_calls=args.max_tool_calls,
+        max_no_progress_input_tokens=args.max_no_progress_input_tokens,
+        budget_poll_seconds=args.budget_poll_seconds,
         dry_run=args.dry_run,
     )
     print(json.dumps(result, sort_keys=True, indent=2))
