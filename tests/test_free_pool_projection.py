@@ -212,3 +212,56 @@ def test_unconfigured_first_party_provider_stays_unconfigured():
     assert result["providers"]["nvidia_nim"]["state"] == "unconfigured"
     assert result["providers"]["zai"]["state"] == "reserve_only"
     assert result["providers"]["cerebras"]["state"] == "payment_required"
+
+
+def test_newly_qualified_model_is_trial_until_it_earns_coding_fitness():
+    model = "inclusionai/ling-3.1-flash"
+    result = projection.build_projection(
+        catalog_records=[catalog_record(model)],
+        qualification_records=[qualification(model)],
+        state_records=[],
+        credential_presence={},
+    )
+    row = result["kilo"]["models"][0]
+    assert row["recommendation_tier"] == "trial"
+    assert row["eligible_for_recommendation"] is True
+    assert result["kilo"]["trial_exact_models"] == [model]
+    assert result["kilo"]["proven_exact_models"] == []
+
+
+def test_low_fitness_healthy_model_is_blocked_from_coding_recommendation():
+    model = "dots-studio/dots-3-note-preview:free"
+    states = [
+        state_record(
+            model,
+            status="stalled_abandoned",
+            title="dots-coding",
+            patches=0,
+        )
+    ]
+    result = projection.build_projection(
+        catalog_records=[catalog_record(model)],
+        qualification_records=[qualification(model)],
+        state_records=states,
+        credential_presence={},
+    )
+    row = result["kilo"]["models"][0]
+    assert row["capacity_state"] == "usable"
+    assert row["recommendation_tier"] == "blocked_low_fitness"
+    assert row["eligible_for_recommendation"] is False
+    assert result["kilo"]["recommended_exact_models"] == []
+    assert result["kilo"]["blocked_low_fitness_exact_models"] == [model]
+
+
+def test_proven_models_sort_before_trials():
+    proven = "poolside/laguna-s-2.1:free"
+    trial = "inclusionai/ling-3.1-flash"
+    result = projection.build_projection(
+        catalog_records=[catalog_record(trial), catalog_record(proven)],
+        qualification_records=[qualification(trial), qualification(proven)],
+        state_records=[state_record(proven)],
+        credential_presence={},
+    )
+    assert result["kilo"]["proven_exact_models"] == [proven]
+    assert result["kilo"]["trial_exact_models"] == [trial]
+    assert result["kilo"]["recommended_exact_models"] == [proven, trial]

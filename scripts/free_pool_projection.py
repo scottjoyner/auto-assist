@@ -340,6 +340,8 @@ def build_projection(
     fitness_by_group = model_fitness_projection(state_records)
 
     models: list[dict[str, Any]] = []
+    proven_min_fitness = 50.0
+    proven_max_no_progress = 0.25
     for row in normalized:
         model_id = str(row.get("id") or "")
         supports_tools = "tools" in set(row.get("supported_parameters") or [])
@@ -361,6 +363,36 @@ def build_projection(
         coding_fitness = fitness_by_group.get(
             ("kilo_free", model_id, "coding")
         )
+        base_eligible = bool(
+            supports_tools
+            and qualified
+            and state == "usable"
+        )
+        quality_runs = int(
+            (coding_fitness or {}).get("quality_scored_runs") or 0
+        )
+        fitness_score = float(
+            (coding_fitness or {}).get("fitness_score") or 0.0
+        )
+        no_progress_rate = float(
+            (coding_fitness or {}).get("no_progress_rate") or 0.0
+        )
+        if not base_eligible:
+            recommendation_tier = "blocked_unavailable"
+            eligible = False
+        elif quality_runs == 0:
+            recommendation_tier = "trial"
+            eligible = True
+        elif (
+            fitness_score >= proven_min_fitness
+            and no_progress_rate <= proven_max_no_progress
+        ):
+            recommendation_tier = "proven"
+            eligible = True
+        else:
+            recommendation_tier = "blocked_low_fitness"
+            eligible = False
+
         models.append(
             {
                 "id": model_id,
@@ -371,11 +403,8 @@ def build_projection(
                 "capacity_state": state,
                 "capacity_observed_at_epoch": latest_state_ts or None,
                 "coding_fitness": coding_fitness,
-                "eligible_for_recommendation": bool(
-                    supports_tools
-                    and qualified
-                    and state == "usable"
-                ),
+                "recommendation_tier": recommendation_tier,
+                "eligible_for_recommendation": eligible,
             }
         )
 
@@ -396,13 +425,29 @@ def build_projection(
     ]
     recommended.sort(
         key=lambda model: (
+            0 if model.get("recommendation_tier") == "proven" else 1,
             -float(
-                ((model.get("coding_fitness") or {}).get("fitness_score") or 50.0)
+                ((model.get("coding_fitness") or {}).get("fitness_score") or 0.0)
             ),
             -int(model.get("context_length") or 0),
             model["id"],
         )
     )
+    proven = [
+        model["id"]
+        for model in recommended
+        if model.get("recommendation_tier") == "proven"
+    ]
+    trial = [
+        model["id"]
+        for model in recommended
+        if model.get("recommendation_tier") == "trial"
+    ]
+    blocked_low_fitness = [
+        model["id"]
+        for model in models
+        if model.get("recommendation_tier") == "blocked_low_fitness"
+    ]
 
     presence = credential_presence or _credential_presence()
     qualified_provider_ids = {"kilo_anonymous"} if recommended else set()
@@ -425,6 +470,14 @@ def build_projection(
             "models": models,
             "retired_catalog_missing": retired,
             "recommended_exact_models": [model["id"] for model in recommended],
+            "proven_exact_models": proven,
+            "trial_exact_models": trial,
+            "blocked_low_fitness_exact_models": blocked_low_fitness,
+            "fitness_policy": {
+                "proven_min_fitness": proven_min_fitness,
+                "proven_max_no_progress_rate": proven_max_no_progress,
+                "trial_requires_zero_quality_runs": True,
+            },
         },
         "providers": provider_view,
     }
