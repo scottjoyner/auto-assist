@@ -26,6 +26,7 @@ def test_qualified_models_are_exact_and_live_ids():
         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
         "nvidia/nemotron-3.5-lightning:free",
         "inclusionai/ling-3.1-flash",
+        "stepfun/step-3.7-flash:free",
     }
     assert launch_kilo_exact.QUALIFIED_EXACT_MODELS == expected
     for model in expected:

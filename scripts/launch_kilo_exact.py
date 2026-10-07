@@ -40,6 +40,7 @@ QUALIFIED_EXACT_MODELS = frozenset(
         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
         "nvidia/nemotron-3.5-lightning:free",
         "inclusionai/ling-3.1-flash",
+        "stepfun/step-3.7-flash:free",
     }
 )
 ROUTE_ALIAS_TOKENS = frozenset({"free", "auto", "router", "any", "best", "default"})
