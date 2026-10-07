@@ -59,6 +59,7 @@ services:
       - BASIC_AUTH_USER=${BASIC_AUTH_USER:-admin}
       - BASIC_AUTH_PASS=${BASIC_AUTH_PASS:-change-me}
       - TRUSTED_AUTH_HEADER=${TRUSTED_AUTH_HEADER:-}
+      - KIPNERTER_TAILNET_ALLOWED_LOGINS=${KIPNERTER_TAILNET_ALLOWED_LOGINS:-}
       - API_TOKEN=${API_TOKEN:-}                    # if set, /upload-audio requires x-api-token
       - WS_AUTH_REQUIRED=${WS_AUTH_REQUIRED:-1}
       - WS_AUTH_TOKEN=${WS_AUTH_TOKEN:-}

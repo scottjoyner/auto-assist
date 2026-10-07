@@ -9,6 +9,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_production_compose_passes_explicit_tailnet_mobile_allowlist() -> None:
+    compose = (ROOT / "docker-compose.yml").read_text()
+    assert "KIPNERTER_TAILNET_ALLOWED_LOGINS=${KIPNERTER_TAILNET_ALLOWED_LOGINS:-}" in compose
+
+
 def test_deployed_asgi_module_registers_mobile_routes_once() -> None:
     """The Tailnet edge cannot forward a route absent from api_router:app."""
     module = ast.parse((ROOT / "src/assistx/api_router.py").read_text())
