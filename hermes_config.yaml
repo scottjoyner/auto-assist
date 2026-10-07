@@ -121,4 +121,4 @@ providers:
     type: openai
     base_url: http://host.docker.internal:8088/v1
     api_key: dummy
-    default_model: local/reasoning-large
+    default_model: auto/local
