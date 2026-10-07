@@ -276,6 +276,22 @@ def classify_run_failure(stderr_text: str, stdout_text: str) -> str:
     return "process_error"
 
 
+def final_trace_failure(final_trace: dict[str, Any] | None) -> str | None:
+    """Fail closed when a nominally successful free run lacks trusted evidence."""
+    if final_trace is None:
+        return "missing_final_trace"
+    if not final_trace.get("model_identity_complete"):
+        return "incomplete_model_identity"
+    cost = final_trace.get("cost")
+    try:
+        numeric_cost = float(cost)
+    except (TypeError, ValueError):
+        return "cost_unverified"
+    if numeric_cost != 0.0:
+        return "unexpected_nonzero_cost"
+    return None
+
+
 def _session_id_from_jsonl(stdout_path: pathlib.Path) -> str | None:
     """Read the OpenCode-emitted sessionID from its JSONL event stream."""
     if not stdout_path.exists():
@@ -609,9 +625,11 @@ def launch(
     stdout_text = stdout_path.read_text(errors="replace")
     final_trace = _final_session_trace(exporter_path, db_path, session_id)
     failure_class = (
-        None if returncode == 0 else classify_run_failure(stderr_text, stdout_text)
+        final_trace_failure(final_trace)
+        if returncode == 0
+        else classify_run_failure(stderr_text, stdout_text)
     )
-    status = "completed" if returncode == 0 else "failed"
+    status = "completed" if failure_class is None else "failed"
     _update_state(
         supervisor_path,
         state_path,
@@ -637,13 +655,19 @@ def launch(
     )
 
     return {
-        "success": returncode == 0,
+        "success": status == "completed",
         "returncode": returncode,
         "provider": PROVIDER_ID,
         "requested_model": model_id,
-        "effective_model": model_id,
-        "model_attribution": "exact-request",
-        "model_identity_complete": True,
+        "effective_model": (
+            final_trace.get("effective_model") if final_trace else model_id
+        ),
+        "model_attribution": (
+            final_trace.get("model_attribution") if final_trace else "exact-request"
+        ),
+        "model_identity_complete": (
+            final_trace.get("model_identity_complete") if final_trace else False
+        ),
         "session_id": session_id,
         "opencode_pid": proc.pid,
         "launcher_pid": os.getpid(),

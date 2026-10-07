@@ -236,6 +236,34 @@ def test_run_failure_classification_prefers_real_timeout_event():
     assert launch_kilo_exact.classify_run_failure("", stdout) == "timeout"
 
 
+def test_final_trace_gate_requires_identity_and_zero_cost():
+    assert launch_kilo_exact.final_trace_failure(None) == "missing_final_trace"
+    assert (
+        launch_kilo_exact.final_trace_failure(
+            {"model_identity_complete": False, "cost": 0.0}
+        )
+        == "incomplete_model_identity"
+    )
+    assert (
+        launch_kilo_exact.final_trace_failure(
+            {"model_identity_complete": True, "cost": None}
+        )
+        == "cost_unverified"
+    )
+    assert (
+        launch_kilo_exact.final_trace_failure(
+            {"model_identity_complete": True, "cost": 0.01}
+        )
+        == "unexpected_nonzero_cost"
+    )
+    assert (
+        launch_kilo_exact.final_trace_failure(
+            {"model_identity_complete": True, "cost": 0.0}
+        )
+        is None
+    )
+
+
 def test_dry_run_does_not_spawn_process(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENCODE_BIN", "/opt/opencode")
     with mock.patch.object(subprocess, "Popen") as popen:
@@ -286,6 +314,9 @@ def test_launch_uses_real_child_pid_and_real_session_id(tmp_path, monkeypatch):
             return_value={
                 "session_id": "ses-from-db",
                 "effective_model": "cohere/north-mini-code:free",
+                "model_attribution": "exact-request",
+                "model_identity_complete": True,
+                "cost": 0.0,
             },
         ),
     ):
