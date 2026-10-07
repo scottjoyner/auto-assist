@@ -79,7 +79,10 @@ def _allowed_tailnet_login(login: str) -> bool:
         for item in os.getenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "").split(",")
         if item.strip()
     }
-    return not configured or login.strip().lower() in configured
+    # An unset allowlist must never authorize a Tailnet user on the newly
+    # exposed mobile agent/LLM boundary. Tailnet membership is not itself a
+    # grant to execute Hermes; deployment must explicitly approve logins.
+    return bool(configured) and login.strip().lower() in configured
 
 
 def _tailnet_identity(request: Request) -> tuple[str, str] | None:
