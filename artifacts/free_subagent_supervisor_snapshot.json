@@ -1,0 +1,267 @@
+{
+  "anonymous_pools_usable": [],
+  "credential_present": true,
+  "duplicate_worktrees": [],
+  "free_model_ids": [],
+  "free_model_types": {},
+  "free_models_found": 0,
+  "free_route_kinds": {},
+  "kilo_anonymous_base_url": "https://api.kilo.ai/api/openrouter",
+  "looping_records": [],
+  "observed_at": "2026-10-06T18:46:32Z",
+  "preferred_pool": null,
+  "projections_note": "Projection is read-only and advisory. It does not approve, admit, dispatch, or terminate subagent processes. Scale verdict is suggested, not enforced. Close stdin (< /dev/null) for noninteractive launches to avoid init waits. Free-cost gating requires both prompt and completion pricing to be zero; stale/duplicate/looping classifications are advisory. Provider pools are ordered to prefer truly zero-cost/anonymous pools (Kilo anonymous, LM Studio local) before reserved quota; Z.AI is reserve-only and excluded unless explicitly requested; provider state is surfaced as usable/rate_limited/quota_exhausted/payment_required/unqualified without spending paid models.",
+  "provider_pools": [],
+  "read_only": true,
+  "reserve_only_pools": [],
+  "stale_records": [
+    {
+      "age_minutes": 30.0,
+      "session": "ses_eed9e18f7ffenRkMlzRdAuJriW",
+      "status": "active",
+      "updated_at": "2026-10-06T18:16:32Z",
+      "worktree": "/home/scott"
+    },
+    {
+      "age_minutes": 30.4,
+      "session": "ses_eed9e19a0ffeH1twPogxNL5Ike",
+      "status": "active",
+      "updated_at": "2026-10-06T18:16:08Z",
+      "worktree": "/home/scott"
+    },
+    {
+      "age_minutes": 32.42,
+      "session": "ses_eed9b8577ffeN9baau7NN0Kn6c",
+      "status": "active",
+      "updated_at": "2026-10-06T18:14:07Z",
+      "worktree": "/home/scott"
+    },
+    {
+      "age_minutes": 39.0,
+      "session": "ses_eed99ddd3ffeXaMPul85k0ei4I",
+      "status": "active",
+      "updated_at": "2026-10-06T18:07:32Z",
+      "worktree": "/nas/repos/auto-assist"
+    },
+    {
+      "age_minutes": 39.1,
+      "session": "ses_eed99ddc6ffepOlDQvpVdYx4Al",
+      "status": "active",
+      "updated_at": "2026-10-06T18:07:26Z",
+      "worktree": "/nas/repos/auto-assist"
+    },
+    {
+      "age_minutes": 39.1,
+      "session": "ses_eed99ddfcffecHtM2JqYlksf1G",
+      "status": "active",
+      "updated_at": "2026-10-06T18:07:26Z",
+      "worktree": "/nas/repos/auto-assist"
+    },
+    {
+      "age_minutes": 39.35,
+      "session": "ses_eed9a17b6ffeLm0zRAUT7x9Acq",
+      "status": "active",
+      "updated_at": "2026-10-06T18:07:11Z",
+      "worktree": "/tmp/opencode/cerebras-canary"
+    },
+    {
+      "age_minutes": 39.95,
+      "session": "ses_eed9bb7d4ffeMZD0DGJv4pwJaG",
+      "status": "active",
+      "updated_at": "2026-10-06T18:06:35Z",
+      "worktree": "/home/scott"
+    },
+    {
+      "age_minutes": 40.1,
+      "session": "ses_eed9df52cffeC7PWaSSx9WMmhv",
+      "status": "active",
+      "updated_at": "2026-10-06T18:06:26Z",
+      "worktree": "/home/scott"
+    },
+    {
+      "age_minutes": 41.32,
+      "session": "ses_eed9ce3adffe8l6lCRnC5s0VKF",
+      "status": "active",
+      "updated_at": "2026-10-06T18:05:13Z",
+      "worktree": "/home/scott"
+    },
+    {
+      "age_minutes": 42.8,
+      "session": "ses_eed9e191dffeG2SKH7Q4HOd8Lq",
+      "status": "active",
+      "updated_at": "2026-10-06T18:03:44Z",
+      "worktree": "/home/scott"
+    },
+    {
+      "age_minutes": 43.24,
+      "session": "ses_eed9dc7b3ffenXQGOBepiu0B7L",
+      "status": "active",
+      "updated_at": "2026-10-06T18:03:18Z",
+      "worktree": "/home/scott"
+    },
+    {
+      "age_minutes": 43.39,
+      "session": "ses_eed9dc8f0ffeeSGxbEd0EbBadb",
+      "status": "active",
+      "updated_at": "2026-10-06T18:03:09Z",
+      "worktree": "/home/scott"
+    },
+    {
+      "age_minutes": 48.69,
+      "session": "ses_eedb6b2dbffe3yB7sgA9lyKUwL",
+      "status": "active",
+      "updated_at": "2026-10-06T17:57:51Z",
+      "worktree": "/home/scott/git/wt-kipnerter-provider-ux-20261006"
+    },
+    {
+      "age_minutes": 51.37,
+      "session": "ses_eedb6cba2ffeMzIOKBYMOPJTNh",
+      "status": "active",
+      "updated_at": "2026-10-06T17:55:10Z",
+      "worktree": "/home/scott/git/wt-nas5-readonly-next-20261006"
+    },
+    {
+      "age_minutes": 52.27,
+      "session": "ses_eedb90b53ffe3P0QSRMD8tvxuW",
+      "status": "active",
+      "updated_at": "2026-10-06T17:54:16Z",
+      "worktree": "/home/scott/git/wt-auto-assist-free-subagent-routing-20261006"
+    },
+    {
+      "age_minutes": 56.32,
+      "session": "ses_eedb8df0fffeJlT6p4wVelaWSa",
+      "status": "active",
+      "updated_at": "2026-10-06T17:50:13Z",
+      "worktree": "/home/scott/git/wt-kipnerter-integration-20261006"
+    },
+    {
+      "age_minutes": 66.97,
+      "session": "ses_eedb5605fffeA4J2vKW17mNDSR",
+      "status": "active",
+      "updated_at": "2026-10-06T17:39:34Z",
+      "worktree": "/home/scott/git/wt-kipnerter-provider-ux-20261006"
+    },
+    {
+      "age_minutes": 70.64,
+      "session": "ses_eedb8f54bffeSdQ500pNKbX2Ew",
+      "status": "active",
+      "updated_at": "2026-10-06T17:35:54Z",
+      "worktree": "/home/scott/git/wt-local-studio-free-provider-qualification-20261006"
+    },
+    {
+      "age_minutes": 70.82,
+      "session": "ses_eedb6e63effek7AGkBux74Q0D2",
+      "status": "active",
+      "updated_at": "2026-10-06T17:35:43Z",
+      "worktree": "/home/scott/git/wt-vitrial-integration-20261006"
+    },
+    {
+      "age_minutes": 76.24,
+      "session": "ses_eedbbdb48ffehnVVMY65mw6MzN",
+      "status": "active",
+      "updated_at": "2026-10-06T17:30:18Z",
+      "worktree": "/tmp/opencode/opencode-ling-canary"
+    },
+    {
+      "age_minutes": 76.6,
+      "session": "ses_eedbc3ddeffeQNvBv4Z2xCnxtN",
+      "status": "active",
+      "updated_at": "2026-10-06T17:29:56Z",
+      "worktree": "/tmp/opencode/zai46v-canary"
+    },
+    {
+      "age_minutes": 76.72,
+      "session": "ses_eedbc907cffeH5eAhNpAB0Dzj0",
+      "status": "active",
+      "updated_at": "2026-10-06T17:29:49Z",
+      "worktree": "/tmp/opencode/zai47-canary"
+    },
+    {
+      "age_minutes": 81.02,
+      "session": "ses_eedc04957ffeBXD7RDHJ8QKJwl",
+      "status": "active",
+      "updated_at": "2026-10-06T17:25:31Z",
+      "worktree": "/tmp/opencode/zai-flash-canary"
+    },
+    {
+      "age_minutes": 81.52,
+      "session": "ses_eedc0b2f5ffeH1eEquecG1XRJl",
+      "status": "active",
+      "updated_at": "2026-10-06T17:25:01Z",
+      "worktree": "/tmp/opencode/space-bunny-canary"
+    },
+    {
+      "age_minutes": 89.35,
+      "session": "ses_eedc7dcadffeLWNPzgyfRupTUI",
+      "status": "active",
+      "updated_at": "2026-10-06T17:17:11Z",
+      "worktree": "/tmp/opencode/lmstudio-canary"
+    },
+    {
+      "age_minutes": 89.69,
+      "session": "ses_eedc82d64ffeobgAxG3WToMNrH",
+      "status": "active",
+      "updated_at": "2026-10-06T17:16:51Z",
+      "worktree": "/tmp/opencode/cohere-command-canary"
+    },
+    {
+      "age_minutes": 92.69,
+      "session": "ses_eedcaecf3ffeMyC2XX8wX7ebA2",
+      "status": "active",
+      "updated_at": "2026-10-06T17:13:51Z",
+      "worktree": "/tmp/opencode/cohere-canary"
+    },
+    {
+      "age_minutes": 196.85,
+      "session": "ses_eee2ad435ffer8Jkaw4Zl6HLnv",
+      "status": "active",
+      "updated_at": "2026-10-06T15:29:41Z",
+      "worktree": "/home/scott/git/wt-auto-assist-free-subagent-routing-20261006"
+    },
+    {
+      "age_minutes": 198.92,
+      "session": "ses_eee2c6f07ffe7zWly7cBP6rQY2",
+      "status": "active",
+      "updated_at": "2026-10-06T15:27:37Z",
+      "worktree": "/home/scott/git/wt-auto-assist-free-subagent-routing-20261006"
+    },
+    {
+      "age_minutes": 200.2,
+      "session": "ses_eee2d7ec1ffeoT7EGbKYlj9Sf1",
+      "status": "active",
+      "updated_at": "2026-10-06T15:26:20Z",
+      "worktree": "/home/scott/git/wt-auto-assist-free-subagent-routing-20261006"
+    },
+    {
+      "age_minutes": 258.9,
+      "session": "ses_eee631806ffe8Sqh0WgSQwh47I",
+      "status": "active",
+      "updated_at": "2026-10-06T14:27:38Z",
+      "worktree": "/home/scott/git/wt-vitrial-client-readiness"
+    },
+    {
+      "age_minutes": 259.32,
+      "session": "ses_eee644570ffesZGRu2Z3kr1AmL",
+      "status": "active",
+      "updated_at": "2026-10-06T14:27:13Z",
+      "worktree": "/home/scott/git/wt-auto-assist-free-subagent-routing-20261006"
+    },
+    {
+      "age_minutes": 259.84,
+      "session": "ses_eee63f3afffei368IrsTuEmGWJ",
+      "status": "active",
+      "updated_at": "2026-10-06T14:26:42Z",
+      "worktree": "/home/scott/git/wt-local-studio-free-provider-qualification-20261006"
+    },
+    {
+      "age_minutes": 260.0,
+      "session": "ses_eee641934ffe6Rk7zJDM1xOuy3",
+      "status": "active",
+      "updated_at": "2026-10-06T14:26:32Z",
+      "worktree": "/home/scott/git/wt-auto-assist-latency-shadow-20261006"
+    }
+  ],
+  "subagent_records": 50,
+  "suggested_scale_verdict": "hold",
+  "supervision_slice": "free_subagent_supervisor"
+}

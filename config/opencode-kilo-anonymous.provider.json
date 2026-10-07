@@ -1,0 +1,23 @@
+{
+  "provider": {
+    "kilo": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Kilo Anonymous Free",
+      "options": {
+        "baseURL": "https://api.kilo.ai/api/openrouter",
+        "apiKey": "anonymous",
+        "timeout": 900000,
+        "headerTimeout": 120000,
+        "chunkTimeout": 120000
+      },
+      "models": {
+        "kilo-auto/free": {
+          "name": "Kilo Auto Free (anonymous router)"
+        },
+        "nvidia/nemotron-3-ultra-550b-a55b:free": {
+          "name": "Nemotron 3 Ultra Free via Kilo (exact)"
+        }
+      }
+    }
+  }
+}
