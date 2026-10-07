@@ -208,6 +208,7 @@ def _runtime_rows(
                    quantization: coalesce(m.quantization, a.quantization),
                    context_length: coalesce(m.context_length, a.context_length),
                    capabilities_json: coalesce(m.capabilities_json, a.capabilities_json),
+                   task_family_scores_json: a.task_family_scores_json,
                    updated_at_ts: m.updated_at_ts
                }) AS loaded_models
         ORDER BY r.node_id, r.runtime_instance_id
@@ -419,6 +420,9 @@ def build_runtime_projection(
                         | {"local_only"}
                     ),
                     "context_window": context_length,
+                    "task_family_scores": _json_value(
+                        model.get("task_family_scores_json"), {}
+                    ),
                 }
             )
             model_expiries.append(model_expiry)
