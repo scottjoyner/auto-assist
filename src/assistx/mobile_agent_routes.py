@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import os
+from pathlib import Path
 import time
 import uuid
 from email.header import decode_header, make_header
@@ -73,13 +74,41 @@ def _trusted_login_header_name() -> str:
     return _TAILSCALE_LOGIN_HEADER
 
 
-def _allowed_tailnet_login(login: str) -> bool:
+def _configured_tailnet_logins() -> set[str]:
     configured = {
         item.strip().lower()
         for item in os.getenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "").split(",")
         if item.strip()
     }
-    return not configured or login.strip().lower() in configured
+    if configured:
+        return configured
+
+    # Existing production containers may predate the Compose variable. Permit
+    # a durable, operator-owned allowlist in the already-mounted fleet-state
+    # directory so a controlled restart can remain fail-closed without
+    # recreating the container or widening its environment.
+    state_dir = Path(
+        os.getenv("ASSISTX_FLEET_STATE_DIR", "/app/fleet-state")
+    ).expanduser()
+    allowlist_path = state_dir / "kipnerter-mobile-allowlist.txt"
+    try:
+        raw = allowlist_path.read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    return {
+        item.strip().lower()
+        for line in raw.splitlines()
+        for item in line.split(",")
+        if item.strip()
+    }
+
+
+def _allowed_tailnet_login(login: str) -> bool:
+    # An unconfigured allowlist must never authorize a Tailnet user on the
+    # mobile agent/LLM boundary. Tailnet membership is not itself a grant to
+    # execute Hermes; deployment must explicitly approve logins.
+    configured = _configured_tailnet_logins()
+    return bool(configured) and login.strip().lower() in configured
 
 
 def _tailnet_identity(request: Request) -> tuple[str, str] | None:
@@ -403,7 +432,7 @@ def _unavailable_mobile_runtime_catalog() -> dict[str, Any]:
 
 def _current_runtime_projection() -> dict[str, Any]:
     from .api import _neo
-    from .runtime_projection_v2 import build_runtime_projection_v2
+    from .runtime_projection_v2 import build_runtime_projection
 
     try:
         ttl_seconds = int(
@@ -411,7 +440,7 @@ def _current_runtime_projection() -> dict[str, Any]:
         )
     except ValueError:
         ttl_seconds = 900
-    return build_runtime_projection_v2(
+    return build_runtime_projection(
         _neo,
         ttl_seconds=max(30, min(ttl_seconds, 3600)),
     )

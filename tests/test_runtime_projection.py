@@ -34,6 +34,13 @@ def complete_runtime(*, expires_at_ts: int = 1_060_000):
                     "code",
                     "tool_use",
                 ],
+                "task_family_scores_json": (
+                    '{"tool_use":{"quality_floor_passed":true,'
+                    '"tool_call_probe":{"schema_version":"1","passed":true,'
+                    '"passed_probes":["wrong_tool_selection","mixed_serialization",'
+                    '"duplicate_semantic_call","malformed_arguments",'
+                    '"hidden_info_spelunking"],"failed_probes":[],"missing_probes":[]}}}'
+                ),
             }
         ],
     }
@@ -150,6 +157,8 @@ def test_projection_contains_resolved_identity_and_bounded_signed_lease(monkeypa
     assert model["artifact_fingerprint"] == "sha256:abcdef"
     assert model["quantization"] == "Q4_K_M"
     assert model["context_window"] == 32768
+    assert model["task_family_scores"]["tool_use"]["quality_floor_passed"] is True
+    assert model["task_family_scores"]["tool_use"]["tool_call_probe"]["passed"] is True
 
 
 def test_same_generation_refresh_has_stable_config_checksum_and_new_signature(

@@ -1,11 +1,31 @@
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_production_compose_passes_explicit_tailnet_mobile_allowlist() -> None:
+    compose = (ROOT / "docker-compose.yml").read_text()
+    assert "KIPNERTER_TAILNET_ALLOWED_LOGINS=${KIPNERTER_TAILNET_ALLOWED_LOGINS:-}" in compose
+
+
+def test_deployed_asgi_module_registers_mobile_routes_once() -> None:
+    """The Tailnet edge cannot forward a route absent from api_router:app."""
+    module = ast.parse((ROOT / "src/assistx/api_router.py").read_text())
+    calls = [node for node in module.body if isinstance(node, ast.Expr)
+             and isinstance(node.value, ast.Call)]
+    registers = [node for node in calls if isinstance(node.value.func, ast.Name)
+                 and node.value.func.id == "register_mobile_agent_routes"]
+    mounts = [node for node in calls if isinstance(node.value.func, ast.Attribute)
+              and node.value.func.attr == "include_router"
+              and any(isinstance(arg, ast.Name) and arg.id == "_mobile_router"
+                      for arg in node.value.args)]
+    assert len(registers) == 1 and len(mounts) == 1
 
 
 def test_gateway_shell_scripts_parse() -> None:
