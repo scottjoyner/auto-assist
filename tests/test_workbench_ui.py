@@ -8,6 +8,30 @@ ROOT = Path(__file__).resolve().parents[1]
 AUTH = ("neo4j", "redacted-rotate-credentials")
 
 
+def test_production_asgi_exposes_mobile_agent_contract_before_operator_use():
+    """The live api_router:app must mount the routes, not merely define them."""
+    expected = {
+        "/api/v1/auth/whoami": "GET",
+        "/api/v1/runtime/catalog": "GET",
+        "/api/v1/model/chat/completions": "POST",
+        "/api/v1/agent/chat/completions": "POST",
+    }
+    for path, method in expected.items():
+        matches = [
+            route for route in app.routes
+            if getattr(route, "path", None) == path
+            and method in (getattr(route, "methods", None) or set())
+        ]
+        assert len(matches) == 1, f"production mobile route missing or duplicated: {method} {path}"
+
+    # An unauthenticated request must not proceed into Hermes, model routing,
+    # or catalog lookup. OPTIONS proves path existence without executing it.
+    client = TestClient(app)
+    assert client.options("/api/v1/agent/chat/completions").status_code == 405
+    assert client.options("/api/v1/model/chat/completions").status_code == 405
+    assert client.get("/api/v1/auth/whoami").status_code in {401, 403}
+
+
 def test_workbench_route_renders_chat_first_surface():
     client = TestClient(app)
 
