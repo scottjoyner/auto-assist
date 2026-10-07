@@ -178,7 +178,62 @@ def test_failure_classification():
     assert launch_kilo_exact.classify_failure("402 payment required") == "payment_required"
     assert launch_kilo_exact.classify_failure("monthly quota exhausted") == "quota_exhausted"
     assert launch_kilo_exact.classify_failure("401 Unauthorized") == "auth_error"
+    assert launch_kilo_exact.classify_failure(
+        "maximum context length is 65536 tokens; requested 66614 tokens"
+    ) == "context_length_exceeded"
+    assert launch_kilo_exact.classify_failure("The operation timed out") == "timeout"
     assert launch_kilo_exact.classify_failure("boom") == "process_error"
+
+
+def test_run_failure_classification_ignores_tool_output_keywords():
+    stdout = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {
+                        "state": {
+                            "output": "source mentions HTTP 429, quota, and rate-limited"
+                        }
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "error",
+                    "error": {
+                        "data": {
+                            "message": (
+                                "This endpoint's maximum context length is 65536 tokens. "
+                                "However, you requested about 66614 tokens."
+                            )
+                        }
+                    },
+                }
+            ),
+        ]
+    )
+    assert launch_kilo_exact.classify_run_failure("", stdout) == "context_length_exceeded"
+
+
+def test_run_failure_classification_prefers_real_timeout_event():
+    stdout = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {"state": {"output": "429 rate-limited"}},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "error",
+                    "error": {"data": {"message": "The operation timed out."}},
+                }
+            ),
+        ]
+    )
+    assert launch_kilo_exact.classify_run_failure("", stdout) == "timeout"
 
 
 def test_dry_run_does_not_spawn_process(tmp_path, monkeypatch):
@@ -260,6 +315,42 @@ def test_launch_uses_real_child_pid_and_real_session_id(tmp_path, monkeypatch):
 
 def test_provider_overload_classification():
     assert launch_kilo_exact.classify_failure("HTTP 503 Service temporarily overloaded") == "provider_overloaded"
+
+
+def test_raw_error_summary_ignores_tool_output_failure_words(tmp_path):
+    trace = tmp_path / "run.jsonl"
+    trace.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "tool_use",
+                        "part": {"state": {"output": "429 quota rate-limited"}},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "data": {
+                                "message": (
+                                    "maximum context length is 65536 tokens; "
+                                    "requested 66614 tokens"
+                                )
+                            }
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n"
+    )
+    summary = launch_kilo_exact._raw_error_summary(trace)
+    assert summary == {
+        "count": 1,
+        "classes": {"context_length_exceeded": 1},
+        "status_codes": {},
+    }
 
 
 def test_manifest_is_private_and_hashes_raw_traces(tmp_path):

@@ -78,6 +78,34 @@ def _file_info(path: pathlib.Path) -> dict[str, Any] | None:
     }
 
 
+def _raw_error_summary(path: pathlib.Path) -> dict[str, Any]:
+    summary: dict[str, Any] = {"count": 0, "classes": {}, "status_codes": {}}
+    if not path.exists():
+        return summary
+    for line in path.read_text(errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") != "error":
+            continue
+        error = event.get("error")
+        rendered = json.dumps(error, sort_keys=True, ensure_ascii=False)
+        failure_class = classify_failure(rendered)
+        summary["count"] += 1
+        summary["classes"][failure_class] = (
+            summary["classes"].get(failure_class, 0) + 1
+        )
+        data = error.get("data") if isinstance(error, dict) else None
+        status_code = data.get("statusCode") if isinstance(data, dict) else None
+        if status_code is not None:
+            key = str(status_code)
+            summary["status_codes"][key] = summary["status_codes"].get(key, 0) + 1
+    return summary
+
+
 def _write_manifest(
     *,
     state_path: pathlib.Path,
@@ -126,6 +154,7 @@ def _write_manifest(
         "last_finish_reason": (
             final_trace.get("last_finish_reason") if final_trace else None
         ),
+        "raw_error_summary": _raw_error_summary(stdout_path),
         "stdout": _file_info(stdout_path),
         "stderr": _file_info(stderr_path),
     }
@@ -198,6 +227,14 @@ def build_command(
 
 def classify_failure(text: str) -> str:
     lowered = text.lower()
+    if (
+        "maximum context length" in lowered
+        or "context length exceeded" in lowered
+        or ("context length" in lowered and "requested" in lowered and "tokens" in lowered)
+    ):
+        return "context_length_exceeded"
+    if "timed out" in lowered or "timeout" in lowered:
+        return "timeout"
     if "429" in lowered or "rate limit" in lowered or "rate-limited" in lowered:
         return "rate_limited"
     if "503" in lowered or "temporarily overloaded" in lowered or "overloaded" in lowered:
@@ -208,6 +245,34 @@ def classify_failure(text: str) -> str:
         return "quota_exhausted"
     if "401" in lowered or "unauthorized" in lowered or "authentication" in lowered:
         return "auth_error"
+    return "process_error"
+
+
+def classify_run_failure(stderr_text: str, stdout_text: str) -> str:
+    """Classify only real process/error-channel evidence.
+
+    OpenCode JSONL stdout contains tool outputs, including source code under
+    inspection. Searching the entire stream as plain text can therefore turn
+    harmless strings such as "429" or "rate-limited" inside a file read into
+    a false provider diagnosis.
+    """
+    error_events: list[str] = []
+    for line in stdout_text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") != "error":
+            continue
+        error = event.get("error")
+        if error is not None:
+            error_events.append(json.dumps(error, sort_keys=True, ensure_ascii=False))
+    if error_events:
+        return classify_failure("\n".join(error_events))
+    if stderr_text.strip():
+        return classify_failure(stderr_text)
     return "process_error"
 
 
@@ -543,7 +608,9 @@ def launch(
     stderr_text = stderr_path.read_text(errors="replace")
     stdout_text = stdout_path.read_text(errors="replace")
     final_trace = _final_session_trace(exporter_path, db_path, session_id)
-    failure_class = None if returncode == 0 else classify_failure(stderr_text + "\n" + stdout_text)
+    failure_class = (
+        None if returncode == 0 else classify_run_failure(stderr_text, stdout_text)
+    )
     status = "completed" if returncode == 0 else "failed"
     _update_state(
         supervisor_path,
