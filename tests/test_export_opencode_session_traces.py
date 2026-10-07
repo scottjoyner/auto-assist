@@ -153,6 +153,9 @@ def test_export_records_exact_requested_and_resolved_model():
         assert exact["model_attribution"] == "resolved-upstream"
         assert exact["model_identity_complete"] is True
 
+        filtered = trace_exporter.export_sessions(db, session_id="ses_exact")
+        assert [record["session_id"] for record in filtered] == ["ses_exact"]
+
 
 def test_exporter_records_git_head_and_worktree():
     with tempfile.TemporaryDirectory() as td:

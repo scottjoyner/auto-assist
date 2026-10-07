@@ -317,3 +317,21 @@ def test_state_root_env_override(monkeypatch, tmp_path):
     override = tmp_path / "custom-state"
     monkeypatch.setenv("ASSIST_SUBAGENT_STATE_ROOT", str(override))
     assert launch_kilo_exact._state_root() == override
+
+
+def test_final_session_trace_filters_exporter_records_by_session_id(tmp_path):
+    exporter = tmp_path / "exporter.py"
+    exporter.write_text(
+        "def export_sessions(db_path, session_id=None):\n"
+        "    records = [\n"
+        "        {'session_id': 'ses-other', 'cost': 0},\n"
+        "        {'session_id': 'ses-target', 'cost': 0},\n"
+        "    ]\n"
+        "    return [r for r in records if session_id is None or r['session_id'] == session_id]\n"
+    )
+    record = launch_kilo_exact._final_session_trace(
+        exporter,
+        tmp_path / "unused.db",
+        "ses-target",
+    )
+    assert record == {"session_id": "ses-target", "cost": 0}

@@ -140,20 +140,26 @@ def _objective_digest(con: sqlite3.Connection, session_id: str) -> dict[str, Any
     }
 
 
-def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
+def export_sessions(
+    db_path: pathlib.Path,
+    session_id: str | None = None,
+) -> list[dict[str, Any]]:
     uri = f"file:{db_path}?mode=ro"
     con = sqlite3.connect(uri, uri=True)
     con.row_factory = sqlite3.Row
-    sessions = con.execute(
-        """
+    query = """
         SELECT id, parent_id, directory, title, model, cost,
                tokens_input, tokens_output, tokens_reasoning,
                tokens_cache_read, tokens_cache_write,
                time_created, time_updated
         FROM session
-        ORDER BY time_created ASC
-        """
-    ).fetchall()
+    """
+    params: tuple[str, ...] = ()
+    if session_id is not None:
+        query += " WHERE id = ?"
+        params = (session_id,)
+    query += " ORDER BY time_created ASC"
+    sessions = con.execute(query, params).fetchall()
 
     records: list[dict[str, Any]] = []
     for session in sessions:
