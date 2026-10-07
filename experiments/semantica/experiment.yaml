@@ -1,0 +1,79 @@
+experiment:
+  id: semantica-shadow-context-v1
+  tracking_issue: 113
+  authority: advisory_only
+  production_mutation: false
+
+corpus:
+  records: 200
+  composition:
+    tasks: 50
+    execution_attempts: 50
+    node_model_observations: 30
+    operator_decisions: 25
+    recovery_events: 25
+    knowledge_notes: 20
+
+queries:
+  total: 40
+  development: 10
+  locked_evaluation: 30
+  categories:
+    exact_fact: 10
+    semantic_single_hop: 10
+    multi_hop_context: 10
+    decision_precedent: 10
+
+arms:
+  A:
+    name: exact_graph_baseline
+  B:
+    name: flat_semantic_baseline
+  C:
+    name: semantica_vector_only
+    use_graph: false
+  D:
+    name: semantica_graph_aware
+    use_graph: true
+    max_hops: 2
+    top_k: 5
+  E:
+    name: semantica_decision_precedent
+    top_k: 3
+
+semantica:
+  hosted_llm: false
+  gpu_extras: false
+  advanced_analytics: false
+  decision_tracking: true
+  persistence_required: true
+  mcp_transport: stdio
+  mcp_agent_surface: read_only_allowlist
+
+gates:
+  graph_retrieval:
+    min_recall_at_5_delta: 0.10
+    min_mrr_delta_alternative: 0.10
+  decision_precedent:
+    min_top3_accuracy: 0.80
+  provenance:
+    required_completeness: 1.0
+  restart:
+    min_top5_identity_agreement: 0.95
+  performance:
+    max_p95_incremental_ms: 250
+    max_incremental_rss_gib: 1.5
+    max_persisted_bytes_over_corpus_ratio: 5.0
+  authority_boundary:
+    production_credentials_present: false
+    writeback_capability_present: false
+    canonical_paths_touched: false
+
+repetitions:
+  warmup_queries: 5
+  timed_runs_per_query: 10
+  clean_restarts: 2
+
+outputs:
+  receipt: semantica-shadow-receipt.json
+  report: semantica-shadow-report.md
