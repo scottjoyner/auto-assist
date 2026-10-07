@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
@@ -202,6 +203,29 @@ def test_non_tailscale_trusted_header_configuration_fails_closed(monkeypatch):
     assert response.status_code == 200
     assert response.json()["authenticated"] is False
     assert response.json()["provider"] == "legacy"
+
+
+def test_current_runtime_projection_calls_real_v2_export_name(monkeypatch):
+    marker = object()
+    captured = {}
+
+    def build_runtime_projection(neo_factory, *, ttl_seconds):
+        captured["neo_factory"] = neo_factory
+        captured["ttl_seconds"] = ttl_seconds
+        return {"schema_version": "2", "expires_at_ms": 9_999_999_999_999}
+
+    monkeypatch.setitem(sys.modules, "assistx.api", SimpleNamespace(_neo=marker))
+    monkeypatch.setitem(
+        sys.modules,
+        "assistx.runtime_projection_v2",
+        SimpleNamespace(build_runtime_projection=build_runtime_projection),
+    )
+    monkeypatch.setenv("ASSISTX_RUNTIME_PROJECTION_TTL_SECONDS", "900")
+
+    projection = mobile._current_runtime_projection()
+
+    assert projection["schema_version"] == "2"
+    assert captured == {"neo_factory": marker, "ttl_seconds": 900}
 
 
 def test_agent_chat_invokes_hermes_server_side_and_streams_openai_sse(monkeypatch):
