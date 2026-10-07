@@ -30,10 +30,15 @@ Noninteractive stdin hazard (Fleet Commander-style launches):
   wrapper), stdin must be closed or redirected from /dev/null. Example:
       opencode run ... < /dev/null
   Otherwise opencode may wait at init for interactive input.
-  This module is read-only and never terminates external processes.
+
+Supervision loop (--supervise):
+  When --supervise is set, the supervisor acts on the projection:
+  - hold verdict: terminates stale, duplicate, and looping subagent processes
+  - healthy verdict: admits new subagents from the free pool
+  Use --dry-run (default) to preview actions without executing them.
 
 No API key values are emitted. No production routing mutations occur.
-No process termination is performed. No secrets are stored.
+Secrets are not stored.
 """
 
 from __future__ import annotations
@@ -75,6 +80,14 @@ from free_subagent_routing import (
     qualify_provider_pools,
     route_kind,
 )
+from free_subagent_actions import (
+    admit_subagent,
+    cleanup_duplicates,
+    cleanup_looping,
+    cleanup_stale,
+    run_supervision_loop,
+    terminate_subagent,
+)
 from free_subagent_state import (
     DEFAULT_FIXTURE_PATH,
     DEFAULT_PROVIDER_POOLS_FIXTURE_PATH,
@@ -97,6 +110,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--detect-looping", action="store_true", help="Detect looping session registrations")
     parser.add_argument("--detect-stale", action="store_true", help="Detect stale subagent records")
     parser.add_argument("--projection", action="store_true", help="Emit supervision projection")
+    parser.add_argument("--supervise", action="store_true", help="Act on projection: terminate stale/duplicate/looping (hold) or admit subagents (healthy)")
+    parser.add_argument("--max-age-minutes", type=int, default=30, help="Stale record threshold for supervise (default 30)")
+    parser.add_argument("--dry-run", action="store_true", default=True, help="Preview actions without executing (default True)")
+    parser.add_argument("--no-dry-run", dest="dry_run", action="store_false", help="Actually execute supervise actions")
+    parser.add_argument("--admit-count", type=int, default=1, help="Max subagents to admit when healthy (default 1)")
     parser.add_argument("--provider-pools", action="store_true", help="Emit qualified provider pools (read-only)")
     parser.add_argument(
         "--allow-reserve", action="store_true", help="Explicitly request reserve-only pools (e.g. Z.AI)"
@@ -189,6 +207,23 @@ def main(argv: list[str] | None = None) -> int:
             discover_fn=discover_live_sessions,
         )
         print(json.dumps(proj, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+        return 0
+
+    if args.supervise:
+        proj = emit_projection(
+            free_models=enumerate_free_models(fixture_path),
+            state_path=state_path,
+            trace_exporter_path=args.trace,
+            allow_reserve=args.allow_reserve,
+            discover_fn=discover_live_sessions,
+        )
+        result = run_supervision_loop(
+            projection=proj,
+            state_path=state_path,
+            max_age_minutes=args.max_age_minutes,
+            dry_run=args.dry_run,
+        )
+        print(json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         return 0
 
     proj = emit_projection(
