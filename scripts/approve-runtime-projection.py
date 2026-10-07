@@ -225,6 +225,9 @@ def validate_manifest(payload: dict[str, Any]) -> ValidatedManifest:
                 failures.append(f"{model_label}.capabilities must be a non-empty list")
             elif "local_only" not in {str(item) for item in capabilities}:
                 failures.append(f"{model_label}.capabilities must include local_only")
+            task_family_scores = model.get("task_family_scores")
+            if task_family_scores is not None and not isinstance(task_family_scores, dict):
+                failures.append(f"{model_label}.task_family_scores must be a mapping")
 
     if failures:
         raise ValueError("; ".join(sorted(set(failures))))
@@ -389,6 +392,11 @@ def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dic
                 SET artifact.quantization=$quantization,
                     artifact.context_length=$context_length,
                     artifact.capabilities_json=$capabilities_json,
+                    artifact.task_family_scores_json = CASE
+                        WHEN $task_family_scores_json IS NULL
+                        THEN artifact.task_family_scores_json
+                        ELSE $task_family_scores_json
+                    END,
                     artifact.updated_at=datetime(),
                     artifact.updated_at_ts=timestamp()
                 WITH artifact
@@ -421,6 +429,11 @@ def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dic
                 quantization=model["quantization"],
                 context_length=int(model["context_length"]),
                 capabilities_json=json.dumps(sorted(set(model["capabilities"]))),
+                task_family_scores_json=(
+                    json.dumps(model["task_family_scores"], sort_keys=True)
+                    if isinstance(model.get("task_family_scores"), dict)
+                    else None
+                ),
                 evidence_ref=model["evidence_ref"],
                 generation=generation,
                 approved_by=payload["approved_by"],
