@@ -137,3 +137,12 @@ def test_grouping_is_exact_provider_model_task_family():
         "cohere/north-mini-code:free",
         "coding",
     ) in grouped
+
+
+def test_orchestration_failures_do_not_reduce_model_quality():
+    for failure in ("launcher_trace_error", "supervisor_interrupted"):
+        row = rec(status="failed", failure=failure)
+        assert classify_outcome(row) == "provider_failure"
+        result = compute_fitness_record(row)
+        assert result["provider_failure"] is True
+        assert result["model_failed"] is False

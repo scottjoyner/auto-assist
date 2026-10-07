@@ -21,6 +21,8 @@ PROVIDER_FAILURE_CLASSES = frozenset(
         "payment_required",
         "auth_error",
         "control_plane_timeout",
+        "launcher_trace_error",
+        "supervisor_interrupted",
         "429",
         "503",
         "payment",
