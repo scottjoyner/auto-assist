@@ -307,6 +307,10 @@ _loader_user_configs: Dict[tuple, dict] = {}
 _loader_demand: set = set()
 _loader_state: Dict[str, Any] = {
     "running": False, "last_run_ts": 0.0, "last_action": "",
+    # The loader loop counts cycles and writes "discovered_models". A snapshot
+    # merge dropped these keys while the loop still read them with [], which
+    # raised KeyError on every cycle and silently killed fleet model discovery.
+    "cycle": 0, "discovered_models": [],
 }
 
 # --- Inference session tracking -----------------------------------------
