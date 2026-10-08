@@ -1326,8 +1326,64 @@ def get_trace(neo: Neo4jClient, correlation_id: str) -> Optional[Dict[str, Any]]
             "correlation_id": correlation_id,
             "current_state": current_state,
             "summary": summary,
+            "context": _build_trace_context(events),
             "events": events,
         }
+
+
+_TRACE_CONTEXT_FIELDS = ("source", "task_id", "dispatch_id", "route_id", "assignment_id")
+
+
+def _build_trace_context(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Evidence-limited IDs recorded as top-level TraceEvent properties.
+
+    Never derive identity from payload_json or trace summary, never resolve a
+    physical node or agent from a producer source string. Each distinct scalar
+    value remains separately attributable to the indices that recorded it.
+    """
+    max_values = 12
+    max_chars = 160
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    missing: List[str] = []
+    truncated: List[str] = []
+    for field in _TRACE_CONTEXT_FIELDS:
+        found: Dict[str, Dict[str, Any]] = {}
+        skipped = False
+        for idx, event in enumerate(events):
+            value = event.get(field)
+            if not isinstance(value, str):
+                continue
+            value = value.strip()
+            if (not value or len(value) > max_chars
+                    or any(ord(char) < 32 or ord(char) == 127 for char in value)):
+                continue
+            if value in found:
+                found[value]["events"] += 1
+                found[value]["last_event_index"] = idx
+            elif len(found) < max_values:
+                found[value] = {
+                    "value": value,
+                    "events": 1,
+                    "first_event_index": idx,
+                    "last_event_index": idx,
+                    "provenance": "trace_event_property",
+                }
+            else:
+                skipped = True
+        groups[field] = list(found.values())
+        if not found:
+            missing.append(field)
+        if skipped:
+            truncated.append(field)
+    return {
+        "schema": "trace-context-v1",
+        "fields": groups,
+        "missing": missing,
+        "truncated": truncated,
+        "source_semantics": "producer_label_not_verified_node_or_agent",
+        "node_or_agent_verified": False,
+        "payload_inspected": False,
+    }
 
 
 def _derive_trace_state(events: List[Dict[str, Any]]) -> str:

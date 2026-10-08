@@ -1,0 +1,44 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs,amsmath,hyperref}
+\title{Provenance-Bounded Navigation in a Fleet Trace Investigation Workbench}
+\author{AssistX fleet observability engineering --- research draft}
+\date{October 8, 2026}
+\begin{document}
+\maketitle
+\begin{abstract}
+Trace investigation interfaces can make an unsafe attribution error by presenting a producer label, task ID or unreviewed assignment payload as a verified computing node or agent identity. We introduce a minimal, read-only provenance-bounded context projection for an existing authenticated trace-event API. It aggregates already stored top-level scalar event properties and presents task, dispatch, route, assignment and producing-source IDs with per-value supporting event counts and first/last occurrence indices. The client provides local within-trace event filtering without additional graph requests. Synthetic tests passed (15 new Python cases and four new JavaScript cases; 32 and 15 full test counts respectively). Signed producer identity and production browser acceptance remain out of scope.
+\end{abstract}
+\section{Background}
+Earlier UI work added outcome filtering over the historical index with bounded read-only Cypher, responsive trace navigation and deferred payload disclosure. The next observable problem is provenance: the graph records some task and dispatch properties directly on \texttt{TraceEvent}, but assignment payload strings can describe a worker or node without independent authentication. Reliable logging interfaces should distinguish evidence from inference \cite{nist92}.
+\section{Preregistered hypothesis}
+A deterministic projection over the event detail response can expose trace-linked IDs without querying arbitrary graph relationships or parsing payload bodies. We predicted the projection would retain multiple competing IDs, report missing values without inference, and allow local timeline filtering while preserving lazy payload disclosure and the existing authorization boundary.
+\section{Method}
+Let $E=(e_0,\dots,e_{n-1})$ be the chronological event sequence. For each allowed field $f$ in source, task, dispatch, route and assignment, define $V_f=\{e_i[f]\mid e_i[f]\text{ is an admissible scalar string}\}$. Each distinct value $v\in V_f$ is associated with an occurrence count and the minimum and maximum supporting event indices:
+\[
+C_{f,v} = \sum_i {\bf 1}[e_i[f]=v],\quad
+I_{f,v} = (\min\{i:e_i[f]=v\},\max\{i:e_i[f]=v\}).
+\]
+The output is limited to 12 distinct values per field and 160 characters per value. Binary/control-character, nested and oversized values are not admitted. Every retained value is labeled \texttt{trace\_event\_property}. Source labels are explicitly treated as producer strings, not authenticated machine or agent identities. The projection does not inspect \texttt{payload\_json}, and no new graph traversal is issued.
+\section{User interaction}
+The context panel uses keyboard-focusable buttons with selected state to filter **only the already-loaded event timeline** by one recorded property value. A reset button restores all events. The interface does not create speculative task pages, outbound links or any tool-execution control. Event payloads remain absent from HTML until per-event disclosure is opened; user-controlled labels are escaped. Keyboard focus and label clarity follow accessibility principles in WCAG 2.2, but a true browser assistive-technology acceptance is still pending \cite{wcag22}.
+\section{Results}
+\begin{table}[h]\centering
+\caption{Synthetic test evidence (no production UI deployment).}
+\begin{tabular}{ll}\toprule
+Test set & Result\\\midrule
+Python provenance and existing outcome contracts & 32 passed\\
+JavaScript workbench interaction contracts & 15 passed\\
+Additional graph fetches for context & 0 in synthetic tests\\
+Real authenticated browser/keyboard audit & Not performed\\
+Verified node/agent identity attribution & Not claimed\\
+\bottomrule
+\end{tabular}\end{table}
+The new slice contributes 15 Python context cases and four JavaScript context cases; previously passing tests are included in the totals, not counted twice.
+\section{Limitations and future work}
+String-level top-level trace property evidence is not cryptographic attribution. The source writer, event producer and later operator registration can all differ. No live node or agent linkage is inferred; missing values remain unknown. This work is not evidence that all arguments and tool outputs have been retained in the historical audit. Before production release, review actual authenticated keyboard and mobile usability, query scalability of the parent PR, safe source identity attestations and cross-link authorization. The manuscript is an arXiv-style working draft, not compiled, submitted or peer reviewed.
+\begin{thebibliography}{9}
+\bibitem{wcag22} W3C, \emph{Web Content Accessibility Guidelines (WCAG) 2.2}. \url{https://www.w3.org/TR/WCAG22/}.
+\bibitem{nist92} K. Kent and M. Souppaya, \emph{Guide to Computer Security Log Management}, NIST SP 800-92 (2006). \url{https://doi.org/10.6028/NIST.SP.800-92}.
+\end{thebibliography}
+\end{document}
