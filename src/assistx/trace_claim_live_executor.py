@@ -6,10 +6,12 @@ claim and NEVER runs shell, LLM, arbitrary commands, or remote scripts.
 
 from __future__ import annotations
 
+import os
 import secrets
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .trace_claim_lease import is_trace_probe_task, load_verifier, verify_lease_proof
 from .trace_execution_adapter import TraceDenied, TraceReceiptStore, run_trace_probe
@@ -29,19 +31,43 @@ def _enabled(env: dict[str, str]) -> bool:
 
 
 def _safe_url(value: str) -> str:
-    # Existing private AssistX network, not an arbitrary redirect or public URL.
-    if not isinstance(value, str) or not value or "@" in value or "#" in value or "?" in value:
+    """Accept only a complete HTTPS origin (localhost HTTP for tests)."""
+    if not isinstance(value, str) or not value or value != value.strip():
         raise TraceDenied("unsafe_lease_issuer_url")
-    if value.startswith("http://"):
-        from urllib.parse import urlsplit
-
+    try:
         split = urlsplit(value)
+        _ = split.port
+    except ValueError as exc:
+        raise TraceDenied("unsafe_lease_issuer_url") from exc
+    if (
+        not split.hostname
+        or any(ord(char) < 32 for char in value)
+        or split.username is not None
+        or split.password is not None
+        or split.query
+        or split.fragment
+        or "?" in value
+        or "#" in value
+        or split.path not in ("", "/")
+    ):
+        raise TraceDenied("unsafe_lease_issuer_url")
+    if split.scheme == "http":
         if split.hostname not in {"127.0.0.1", "localhost", "::1"}:
             raise TraceDenied("lease_issuer_plaintext_remote_denied")
-        return value.rstrip("/")
-    if not value.startswith("https://"):
+    elif split.scheme != "https":
         raise TraceDenied("lease_issuer_https_required")
     return value.rstrip("/")
+
+
+def require_pinned_issuer(assistx_url: str, env: dict[str, str]) -> str:
+    """Reject an unapproved issuer origin before node credentials are sent."""
+    expected = env.get("FLEET_TRACE_ISSUER_ORIGIN", "")
+    if not expected:
+        raise TraceDenied("missing_pinned_issuer_origin")
+    url = _safe_url(assistx_url)
+    if url != _safe_url(expected):
+        raise TraceDenied("issuer_origin_not_pinned")
+    return url
 
 
 def preflight(
@@ -57,11 +83,26 @@ def preflight(
         raise TraceDenied("real_trace_execution_disabled")
     if not env.get("FLEET_NODE_AUTH_TOKEN"):
         raise TraceDenied("missing_fleet_node_identity_token")
+    if not env.get("FLEET_TRACE_ISSUER_ORIGIN"):
+        raise TraceDenied("missing_pinned_issuer_origin")
+    _safe_url(env["FLEET_TRACE_ISSUER_ORIGIN"])
     key_path = env.get("FLEET_TRACE_LEASE_VERIFIER_KEY_FILE", "")
     if not key_path:
         raise TraceDenied("missing_real_issuer_verification_key")
     load_verifier(Path(key_path))
-    TraceReceiptStore(audit_root, node_id=node_id)
+    store = TraceReceiptStore(audit_root, node_id=node_id)
+    # The current encrypted NAS snapshot writer supports at most 8 MiB.
+    # Halt *before* reaching that ceiling; never truncate an existing journal.
+    if os.path.lexists(store.path):
+        if store.path.lstat().st_size >= 7 * 1024 * 1024:
+            raise TraceDenied("trace_journal_archive_capacity_near_limit")
+        store.verify()
+    try:
+        volume = os.statvfs(store.root)
+    except OSError as exc:
+        raise TraceDenied("trace_disk_capacity_unavailable") from exc
+    if volume.f_bavail * volume.f_frsize < 128 * 1024 * 1024:
+        raise TraceDenied("trace_disk_capacity_too_low")
 
 
 def execute_authorized_probe(
@@ -104,6 +145,8 @@ def execute_authorized_probe(
     # Request only a typed no-op; no task ID is allowed to redirect requests
     # to a different host, path, or service.
     url = _safe_url(assistx_url)
+    if url != _safe_url(env["FLEET_TRACE_ISSUER_ORIGIN"]):
+        raise TraceDenied("issuer_origin_not_pinned")
     headers = {"X-Fleet-Node-Token": env["FLEET_NODE_AUTH_TOKEN"]}
     proof_path = "/api/fleet/trace-execution/claim-lease-proof"
     status_code, response = http(

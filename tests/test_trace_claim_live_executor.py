@@ -41,6 +41,7 @@ def scenario(tmp_path):
         "FLEET_TRACE_PROBE_ENABLED": "true",
         "FLEET_TRACE_REAL_EXECUTION_ENABLED": "true",
         "FLEET_NODE_AUTH_TOKEN": "fixture-node-token",
+        "FLEET_TRACE_ISSUER_ORIGIN": "https://assistx.example",
         "FLEET_TRACE_LEASE_VERIFIER_KEY_FILE": str(public),
     }
     return {"signer": signer, "audit": audit, "task": task, "env": env}
@@ -272,3 +273,86 @@ def test_advertised_capability_requires_all_real_prerequisites(scenario, monkeyp
     monkeypatch.setenv("FLEET_TRACE_REAL_EXECUTION_ENABLED", "false")
     caps, _ = fleet_node_agent._detect_capabilities(None)
     assert "trace-probe" not in caps
+
+
+def test_issuer_origin_required_for_preflight(scenario):
+    scenario["env"].pop("FLEET_TRACE_ISSUER_ORIGIN")
+    with pytest.raises(TraceDenied, match="missing_pinned_issuer_origin"):
+        preflight(node_id="xwing", audit_root=str(scenario["audit"]), env=scenario["env"])
+
+
+def test_unapproved_issuer_origin_denied_without_remote_calls(scenario):
+    scenario["env"]["FLEET_TRACE_ISSUER_ORIGIN"] = "https://second.example"
+    http, calls = transport(scenario)
+    with pytest.raises(TraceDenied, match="issuer_origin_not_pinned"):
+        perform(scenario, http)
+    assert not calls
+
+
+@pytest.mark.parametrize(
+    "origin", ["https://assistx.example/path", "https://assistx.example?q=1", "https://assistx.example:wrong"]
+)
+def test_malformed_issuer_origin_denied(scenario, origin):
+    scenario["env"]["FLEET_TRACE_ISSUER_ORIGIN"] = origin
+    http, calls = transport(scenario)
+    with pytest.raises(TraceDenied, match="unsafe_lease_issuer_url"):
+        perform(scenario, http)
+    assert calls == []
+
+
+def test_worker_denies_mismatched_issuer_before_claim(scenario, monkeypatch):
+    from assistx import fleet_node_agent
+
+    monkeypatch.setenv("FLEET_NODE_ID", "xwing")
+    monkeypatch.setenv("FLEET_TRACE_EXECUTION_AUDIT_ROOT", str(scenario["audit"]))
+    for name, value in scenario["env"].items():
+        monkeypatch.setenv(name, value)
+
+    def no_request(*args, **kwargs):
+        raise AssertionError("unexpected remote request")
+
+    monkeypatch.setattr(fleet_node_agent, "_http", no_request)
+    assert (
+        fleet_node_agent._claim_and_run(
+            assistx_url="https://second.example",
+            router_url="unused",
+            auth=None,
+            node_id="xwing",
+            caps=["trace-probe"],
+            task=scenario["task"],
+            lmstudio_url=None,
+        )
+        is False
+    )
+
+
+def test_corrupted_existing_audit_denies_admission(scenario):
+    journal = scenario["audit"] / "journal.jsonl"
+    journal.write_text('{"not":"a valid record"}\n')
+    journal.chmod(0o600)
+    with pytest.raises(TraceDenied, match="audit_chain_invalid"):
+        preflight(node_id="xwing", audit_root=str(scenario["audit"]), env=scenario["env"])
+
+
+def test_near_backup_snapshot_limit_denies_without_truncating(scenario):
+    journal = scenario["audit"] / "journal.jsonl"
+    with journal.open("wb") as file:
+        file.truncate(7 * 1024 * 1024)
+    journal.chmod(0o600)
+    before = journal.stat().st_size
+    with pytest.raises(TraceDenied, match="trace_journal_archive_capacity_near_limit"):
+        preflight(node_id="xwing", audit_root=str(scenario["audit"]), env=scenario["env"])
+    assert journal.stat().st_size == before
+
+
+def test_low_disk_capacity_denies_without_audit_mutation(scenario, monkeypatch):
+    from assistx import trace_claim_live_executor
+
+    class LowVolume:
+        f_bavail = 1
+        f_frsize = 4096
+
+    monkeypatch.setattr(trace_claim_live_executor.os, "statvfs", lambda path: LowVolume())
+    with pytest.raises(TraceDenied, match="trace_disk_capacity_too_low"):
+        preflight(node_id="xwing", audit_root=str(scenario["audit"]), env=scenario["env"])
+    assert not (scenario["audit"] / "journal.jsonl").exists()

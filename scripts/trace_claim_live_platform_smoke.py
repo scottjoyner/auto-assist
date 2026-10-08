@@ -59,6 +59,7 @@ def main() -> int:
             "FLEET_TRACE_PROBE_ENABLED": "true",
             "FLEET_TRACE_REAL_EXECUTION_ENABLED": "true",
             "FLEET_NODE_AUTH_TOKEN": "offline-test-fixture-token",
+            "FLEET_TRACE_ISSUER_ORIGIN": "https://fixture.invalid",
             "FLEET_TRACE_LEASE_VERIFIER_KEY_FILE": str(public),
         }
         calls = []

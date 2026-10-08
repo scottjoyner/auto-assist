@@ -141,6 +141,7 @@ def exercise(driver, database: str, node_id: str, *, cancel: bool) -> dict:
                     "FLEET_TRACE_PROBE_ENABLED": "true",
                     "FLEET_TRACE_REAL_EXECUTION_ENABLED": "true",
                     "FLEET_NODE_AUTH_TOKEN": STAGE_TOKEN,
+                    "FLEET_TRACE_ISSUER_ORIGIN": "https://assistx.staging.invalid",
                     "FLEET_TRACE_LEASE_VERIFIER_KEY_FILE": str(verify_path),
                     "FLEET_TRACE_EXECUTION_AUDIT_ROOT": str(audit),
                     "ASSISTX_TRACE_LEASE_ISSUER_ENABLED": "true",

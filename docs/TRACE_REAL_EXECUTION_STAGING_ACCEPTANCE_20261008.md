@@ -155,3 +155,45 @@ has a single-line `# noqa: UP017` compatibility exception, preserving
 repo-wide lint policy. This exception passed the exact blocking CI Ruff
 rule selection locally. The broad CI test-phase baseline remains a separate
 release hold until its next run and comparison with main.
+
+
+## Additional pre-production hardening (October 8)
+
+**Prospective prediction for the next isolated issuer pilot:** Explicitly
+pinning `FLEET_TRACE_ISSUER_ORIGIN` on each physical node and validating it
+before the first claim request will deny cross-origin and malformed issuer
+configuration without transmitting the node token. Refusing admission if the
+local hash-chain journal is corrupt, local filesystem free space is below
+128 MiB, or the journal reaches 7 MiB (against the existing 8 MiB archive
+snapshot limit) will prevent additional unauditable work without deleting
+historical receipts. These assertions were specified and tested during
+this enhancement pass, not before earlier shadow experiments.
+
+**Changes:**
+- `trace_claim_live_executor.py` validates an explicit issuer origin; HTTP
+  is accepted only for loopback, HTTPS otherwise, with no userinfo,
+  query/fragment or URL path. `fleet_node_agent.py` enforces this origin
+  match **before its claim request**. Preflight refuses a missing pinned
+  issuer origin.
+- A present journal undergoes chain/ownership verification before trace
+  capability admission. At >=7 MiB, further trace work is denied pending
+  archive segmentation; the journal is never shortened. `statvfs` must
+  report at least 128 MiB free locally.
+- Explicit negative tests cover missing/incorrect/malformed issuer origins,
+  failed audit chain validation, near-archive-limit retention (byte size
+  unchanged), and a low-free-space filesystem fixture.
+- **127 trace/recovery/concurrency tests passed locally** after these
+  changes. The four-case real-Neo4j rollback-only FastAPI+worker canary
+  passed again with zero committed fixture rows. Read-only physical
+  preflight passed on both xwing and the MacBook Air, with prior journal
+  counts unchanged at 12 and 10 respectively.
+
+**Still blocked:** The worker's shared urllib HTTP transport can follow
+server-issued redirects. Even with a configured origin pin, that transport
+does not yet fail closed on redirects; this must be independently fixed and
+tested on trace claim, heartbeat, status-proof, and completion requests
+before trusting live node credentials. The existing monolithic snapshot
+writer cannot safely archive beyond 8 MiB; the 7 MiB stop gate is temporary
+backpressure, **not** full long-term retention/offload or a reason to trim
+history. Do not deploy a real issuer or promote unrestricted execution until
+these and the prior key/CI/cancellation gates are accepted.

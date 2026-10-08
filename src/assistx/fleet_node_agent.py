@@ -463,13 +463,14 @@ def _claim_and_run(
         from .trace_execution_adapter import TraceDenied
 
         try:
-            from .trace_claim_live_executor import preflight
+            from .trace_claim_live_executor import preflight, require_pinned_issuer
 
             preflight(
                 node_id=node_id,
                 audit_root=os.getenv("FLEET_TRACE_EXECUTION_AUDIT_ROOT", ""),
                 env=dict(os.environ),
             )
+            require_pinned_issuer(assistx_url, dict(os.environ))
         except (TraceDenied, ImportError):
             return False
     trace_headers = {"X-Fleet-Node-Token": os.environ["FLEET_NODE_AUTH_TOKEN"]} if trace_candidate else None
