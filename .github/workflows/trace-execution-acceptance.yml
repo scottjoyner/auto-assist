@@ -9,6 +9,7 @@ on:
       - "tests/test_trace_*"
       - "tests/test_fleet_node_*"
       - "scripts/trace_*"
+      - "docs/TRACE_EXECUTION_ACCEPTANCE_REMEDIATION_20261008.md"
       - ".github/workflows/trace-execution-acceptance.yml"
   workflow_dispatch:
 
@@ -41,7 +42,9 @@ jobs:
             src/assistx/trace_segment_bundle.py \
             src/assistx/trace_segment_nas.py \
             scripts/trace_claim_lease_staging_canary.py \
-            scripts/trace_claim_live_platform_smoke.py
+            scripts/trace_claim_live_platform_smoke.py \\
+            scripts/trace_acceptance_report.py \\
+            tests/test_trace_acceptance_report.py
       - name: Trace admission lint
         run: |
           ruff check --ignore UP017 \
@@ -59,7 +62,9 @@ jobs:
             tests/test_trace_segment_nas.py \
             tests/test_trace_execution_adapter.py \
             scripts/trace_claim_lease_staging_canary.py \
-            scripts/trace_claim_live_platform_smoke.py
+            scripts/trace_claim_live_platform_smoke.py \\
+            scripts/trace_acceptance_report.py \\
+            tests/test_trace_acceptance_report.py
       - name: Fail-closed trace and recovery regression suite
         env:
           FLEET_TRACE_PROBE_ENABLED: "false"
@@ -81,3 +86,30 @@ jobs:
             tests/test_fleet_node_recovery.py \
             tests/test_safe_fleet_executor.py \
             tests/test_fleet_executor_concurrency.py
+
+      - name: Emit revision-bound, deny-only acceptance artifact
+        if: always()
+        env:
+          TRACE_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TRACE_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          TRACE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python scripts/trace_acceptance_report.py \
+            --junit trace-acceptance-junit.xml \
+            --output trace-acceptance.json \
+            --head "$TRACE_PR_HEAD_SHA" \
+            --base "$TRACE_PR_BASE_SHA" \
+            --tested "$(git rev-parse HEAD)" \
+            --run-url "$TRACE_RUN_URL"
+          python -m json.tool trace-acceptance.json >/dev/null
+          sha256sum trace-acceptance.json
+      - name: Retain trace acceptance and offline test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trace-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            trace-acceptance.json
+            trace-acceptance-junit.xml
+          if-no-files-found: error
+          retention-days: 30
