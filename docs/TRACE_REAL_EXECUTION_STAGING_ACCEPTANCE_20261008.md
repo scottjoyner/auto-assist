@@ -226,3 +226,43 @@ execution were involved. The suite is now part of dedicated trace CI.
 independently witnessed revocation and authenticated production issuer
 availability still require deployment acceptance. These tests validate
 transport redirects, not full runtime production security.
+
+
+## Issue #127 — immutable encrypted segment staging (offline acceptance)
+
+**Prospective claim for the next NAS publisher:** A journal larger than the
+legacy 8 MiB snapshot limit can be exported in <=1 MiB record-aligned
+segments, encrypted individually using GPG AES-256, authenticated by
+a signed/HMAC segment manifest, resumed after interruption and restored
+byte-for-byte. The old journal remains the source of truth until independently
+witnessed NAS custody is verified. Do not silently reset the witness or
+truncate prior history.
+
+**Implementation scope (not a production exporter):**
+`trace_segment_plan.py` validates an entire append-only journal and builds
+deterministic linked segment descriptors (first/last sequence, previous
+journal hash, previous segment descriptor digest, byte length and SHA-256)
+with an HMAC-protected complete-index summary.
+`trace_segment_bundle.py` exclusively locks a private local directory,
+encrypts each segment via GPG AES-256, atomically links encrypted files into
+place without overwrite, signs an index with ciphertext digests, and
+independently decrypts/reconstructs/validates all segments. Re-entry with
+identical content verifies and reuses an existing bundle. A valid partial
+encrypted segment from a previous interrupted run is verified and reused
+without changing its ciphertext.
+
+**Observed offline acceptance:** A synthetic valid trace journal exceeding
+8 MiB was staged and restored exactly; **18 segment tests passed**, including
+missing/reordered/truncated/tampered fragments, manifest tampering,
+wrong-node identity, unsafe passphrase permissions, two concurrent stagers,
+and interrupted-first-segment resume. Tests used temporary private local
+directories only. The source journal was neither modified nor truncated.
+
+**Unmet #127 requirements:** There is no NAS transfer, verified CIFS
+owner/UUID handshake, durable independent witness, upload retry/acknowledgment
+or key escrow yet. The encrypted-bundle index resides with the staged files;
+its HMAC alone does not prevent complete snapshot rollback if the entire
+storage directory is replaced. These helpers are **not** wired to the running
+backup job, and the real worker's 7 MiB admission ceiling remains enforced.
+Never treat this as permission to reformat NAS5, evacuate nodes or delete
+existing four-generation custody archives.
