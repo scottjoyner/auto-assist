@@ -134,7 +134,8 @@ def main():
             check(True, f"HTTP {transient_status} retry restores trace index")
 
         mode.update(index=200, detail=503)
-        page.locator("#trace-refresh").click()
+        # A new selection must first experience the 503 before its Refresh can retry it.
+        page.goto("http://127.0.0.1:8765/traces")
         page.locator(".trace-row").first.wait_for()
         page.wait_for_function(
             "() => document.querySelector('#trace-detail').textContent.includes('Timeline unavailable')")
