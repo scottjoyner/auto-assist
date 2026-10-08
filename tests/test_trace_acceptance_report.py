@@ -19,6 +19,7 @@ SPEC.loader.exec_module(COLLECTOR)
 REQUIRED = COLLECTOR.REQUIRED
 create_report = COLLECTOR.create_report
 validate_report = COLLECTOR.validate_report
+verify_report = COLLECTOR.verify_report
 
 SHA_A = "a" * 40
 SHA_B = "b" * 40
@@ -177,3 +178,51 @@ def test_partial_parameterized_denial_matrix_does_not_count_as_pass(tmp_path):
     assert check["case_count"] == 1
     assert check["required_case_count"] == 17
     assert check["reason"] == "insufficient_case_coverage"
+
+
+def test_independent_report_verifier_recomputes_exact_revision_and_digest(tmp_path):
+    xml = tmp_path / "results.xml"
+    write_junit(xml)
+    report = collect(xml)
+    verify_report(report, xml, head=SHA_A, base=SHA_B, tested=SHA_C)
+    assert all(
+        c["repository_revision"] == SHA_C and c["observed_at"] == report["observed_at"]
+        for gate in report["gates"].values() for c in gate["checks"]
+    )
+
+
+def test_report_verifier_rejects_tampered_evidence(tmp_path):
+    xml = tmp_path / "results.xml"
+    write_junit(xml)
+    report = collect(xml)
+    xml.write_bytes(xml.read_bytes() + b" ")
+    with pytest.raises(ValueError, match="acceptance_report_evidence_mismatch"):
+        verify_report(report, xml, head=SHA_A, base=SHA_B, tested=SHA_C)
+
+
+def test_report_verifier_rejects_wrong_checkout_revision(tmp_path):
+    xml = tmp_path / "results.xml"
+    write_junit(xml)
+    report = collect(xml)
+    with pytest.raises(ValueError, match="acceptance_report_evidence_mismatch"):
+        verify_report(report, xml, head=SHA_A, base=SHA_B, tested=SHA_B)
+
+
+def test_report_verifier_rejects_missing_and_partial_evidence(tmp_path):
+    xml = tmp_path / "results.xml"
+    write_junit(xml, missing=[REQUIRED["lease_freshness"][0]])
+    report = collect(xml)
+    verify_report(report, xml, head=SHA_A, base=SHA_B, tested=SHA_C)
+    assert report["gates"]["lease_freshness"]["fixture_status"] == "blocked"
+    xml.unlink()
+    with pytest.raises(ValueError, match="evidence_junit_unavailable"):
+        verify_report(report, xml, head=SHA_A, base=SHA_B, tested=SHA_C)
+
+
+def test_report_verifier_rejects_claimed_deployed_gate(tmp_path):
+    xml = tmp_path / "results.xml"
+    write_junit(xml)
+    report = collect(xml)
+    report["gates"]["production_api"]["activation_status"] = "deployed_pass"
+    with pytest.raises(ValueError, match="unsafe_gate"):
+        verify_report(report, xml, head=SHA_A, base=SHA_B, tested=SHA_C)
