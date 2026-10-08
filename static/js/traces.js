@@ -42,7 +42,7 @@
     link.href = url.pathname + url.search;
     link.setAttribute("aria-disabled", cid ? "false" : "true");
     link.tabIndex = cid ? 0 : -1;
-    $("trace-detail-caption").textContent = cid ? "Router event sequence · payloads collapsed by default" : "Select a trace to inspect its recorded steps";
+    $("trace-detail-caption").textContent = cid ? "Recorded context and event sequence · payloads collapsed by default" : "Select a trace to inspect its recorded steps";
   }
   function persistSelection(cid) {
     var url = new URL(window.location.href);
@@ -108,6 +108,7 @@
   }
   function clearSelection(message) {
     state.selected = null;
+    currentTrace = null;
     state.detailRequest++;
     persistSelection(null);
     $("trace-detail").innerHTML = placeholder("No trace selected", message || "Choose a result from the index to view its timeline.");
@@ -171,20 +172,70 @@
     });
     return data;
   }
-  function renderDetail(trace) {
+  var currentTrace = null;
+  var contextFields = {
+    source: "Recorded source",
+    task_id: "Task IDs",
+    dispatch_id: "Dispatch IDs",
+    route_id: "Route IDs",
+    assignment_id: "Assignment IDs"
+  };
+  function contextPanel(trace, filter) {
+    var ctx = trace.context;
+    if (!ctx || ctx.schema !== "trace-context-v1" || !ctx.fields) {
+      return '<section class="trace-context" aria-label="Recorded context">' +
+        '<h3>Recorded context</h3><p class="trace-context-note">Context metadata not available for this trace. No node or agent identity is inferred.</p></section>';
+    }
+    var sections = Object.keys(contextFields).map(function (field) {
+      var entries = Array.isArray(ctx.fields[field]) ? ctx.fields[field] : [];
+      var chips = entries.map(function (entry) {
+        if (!entry || typeof entry.value !== "string" || entry.provenance !== "trace_event_property") return "";
+        var selected = filter && filter.field === field && filter.value === entry.value;
+        return '<button type="button" class="trace-context-chip' + (selected ? ' selected' : '') +
+          '" aria-pressed="' + (selected ? 'true' : 'false') + '" data-context-field="' + esc(field) +
+          '" data-context-value="' + esc(entry.value) + '" title="Show events containing this recorded value">' +
+          '<span>' + esc(entry.value) + '</span><small>' + esc(entry.events) + ' event(s)</small></button>';
+      }).join("");
+      return '<div class="trace-context-group"><h4>' + esc(contextFields[field]) + '</h4>' +
+        (chips || '<span class="trace-context-unknown">Not recorded</span>') +
+        (Array.isArray(ctx.truncated) && ctx.truncated.indexOf(field) >= 0
+          ? '<span class="trace-context-unknown">More values omitted from this view</span>' : '') + '</div>';
+    }).join("");
+    return '<section class="trace-context" aria-label="Recorded context">' +
+      '<div class="trace-context-heading"><div><h3>Recorded context</h3>' +
+      '<p class="trace-context-note">From event properties, not independently verified identities. Source labels are not confirmed agents or machines.</p></div>' +
+      (filter ? '<button type="button" class="trace-clear-context">All trace events</button>' : '') + '</div>' +
+      '<div class="trace-context-groups">' + sections + '</div>' +
+      '<p class="trace-context-foot">Node/agent identity: not established by this trace index. No task or fleet execution actions are available here.</p></section>';
+  }
+  function renderDetail(trace, filter) {
+    currentTrace = trace;
     var events = Array.isArray(trace.events) ? trace.events : [];
-    var first = events.length ? Number(events[0].ts_ms) : null;
+    var first = events.length && events[0].ts_ms != null ? Number(events[0].ts_ms) : null;
     var cid = String(trace.correlation_id || state.selected || "");
     var head = '<div class="trace-detail-summary"><span class="trace-eyebrow">Correlation ID</span>' +
       '<span class="trace-id">' + esc(cid) + '</span>' +
       '<div class="trace-detail-stats"><span>State · ' + esc(trace.current_state || "Unknown") + '</span>' +
       '<span>' + events.length + ' events</span><span>Started · ' + esc(when(first)) + '</span></div></div>';
+    var visible = events.map(function (e, i) { return { event: e, index: i }; })
+      .filter(function (item) {
+        return !filter || item.event[filter.field] === filter.value;
+      });
+    var context = contextPanel(trace, filter);
     if (!events.length) {
-      $("trace-detail").innerHTML = head + placeholder("No timeline events", "This trace has no event records available.");
+      $("trace-detail").innerHTML = head + context +
+        placeholder("No timeline events", "This trace has no event records available.");
       return;
     }
-    // Payload data stays in memory, never inserted in DOM until disclosure opens.
-    $("trace-detail").innerHTML = head + '<div class="trace-timeline">' + events.map(function (e, i) {
+    // Only events in this already-loaded trace are filtered. No extra API call.
+    // Payloads remain in memory until an explicit event disclosure opens.
+    $("trace-detail").innerHTML = head + context +
+      '<div class="trace-timeline-header">' +
+      '<h3>' + (filter ? "Matching events" : "All recorded events") + '</h3>' +
+      '<span>' + visible.length + ' of ' + events.length + ' events</span></div>' +
+      (visible.length ? '<div class="trace-timeline">' + visible.map(function (item) {
+      var e = item.event;
+      var i = item.index;
       var failed = String(e.event_type || "").endsWith(".failed");
       var elapsed = Number.isFinite(Number(e.ts_ms)) && Number.isFinite(first) ? " · +" + duration(Math.max(0, Number(e.ts_ms) - first)) : "";
       return '<article class="trace-event' + (failed ? ' failed' : '') + '">' +
@@ -193,7 +244,8 @@
         esc(when(e.ts_ms)) + esc(elapsed) + '</div>' +
         '<details data-event-index="' + i + '"><summary>Show event fields (may contain operational data)</summary><pre></pre></details>' +
         '</article>';
-    }).join("") + "</div>";
+    }).join("") + "</div>" :
+      '<p class="trace-empty">No loaded events match this recorded value.</p>');
     $("trace-detail").querySelectorAll("details[data-event-index]").forEach(function (node) {
       node.addEventListener("toggle", function () {
         if (!node.open) {
@@ -208,9 +260,30 @@
       });
     });
   }
+  $("trace-detail").addEventListener("click", function (event) {
+    if (!currentTrace) return;
+    var reset = event.target.closest("button.trace-clear-context");
+    if (reset) {
+      renderDetail(currentTrace, null);
+      return;
+    }
+    var chip = event.target.closest("button.trace-context-chip");
+    if (!chip) return;
+    var field = chip.getAttribute("data-context-field");
+    var value = chip.getAttribute("data-context-value");
+    if (!Object.prototype.hasOwnProperty.call(contextFields, field)) return;
+    // Only permit a recorded property from the server's allowlisted context.
+    var ctx = currentTrace.context;
+    var entries = ctx && ctx.fields && Array.isArray(ctx.fields[field]) ? ctx.fields[field] : [];
+    if (!entries.some(function (entry) {
+      return entry.value === value && entry.provenance === "trace_event_property";
+    })) return;
+    renderDetail(currentTrace, { field: field, value: value });
+  });
   function select(cid) {
     if (!cid) return;
     state.selected = cid;
+    currentTrace = null;
     var sequence = ++state.detailRequest;
     persistSelection(cid);
     paintList();
