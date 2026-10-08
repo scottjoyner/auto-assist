@@ -31,12 +31,15 @@ def write_junit(path: Path, *, missing=(), overrides=None, include_unknown=False
     overrides = overrides or {}
     for key in sorted({name for group in REQUIRED.values() for name in group} - set(missing)):
         module, function = key.split("::")
-        testcase = ElementTree.SubElement(
-            suite, "testcase", classname="tests." + module, name=function
-        )
-        status = overrides.get(key)
-        if status:
-            ElementTree.SubElement(testcase, status, message="synthetic test result")
+        minimum = COLLECTOR.MIN_CASES.get(key, 1)
+        for i in range(minimum):
+            name = function if minimum == 1 else function + f"[case-{i}]"
+            testcase = ElementTree.SubElement(
+                suite, "testcase", classname="tests." + module, name=name
+            )
+            status = overrides.get(key)
+            if status:
+                ElementTree.SubElement(testcase, status, message="synthetic test result")
     if include_unknown:
         ElementTree.SubElement(
             suite, "testcase", classname="untrusted.other", name="test_simulated_deployed_pass"
@@ -150,3 +153,27 @@ def test_claimed_deployed_evidence_is_rejected(tmp_path):
     report["gates"]["key_custody"]["checks"][0]["provenance"] = "deployed_observation"
     with pytest.raises(ValueError, match="unsafe_evidence"):
         validate_report(report)
+
+
+def test_partial_parameterized_denial_matrix_does_not_count_as_pass(tmp_path):
+    xml = tmp_path / "results.xml"
+    write_junit(xml)
+    tree = ElementTree.parse(xml)
+    key = REQUIRED["revocation_supersession"][0]
+    module, name = key.split("::")
+    suite = next(tree.getroot().iter("testsuite"))
+    matching = [
+        case for case in suite.findall("testcase")
+        if case.get("classname") == "tests." + module
+        and case.get("name", "").startswith(name + "[")
+    ]
+    assert len(matching) == 17
+    for case in matching[1:]:
+        suite.remove(case)
+    tree.write(xml, encoding="utf-8")
+    report = collect(xml)
+    check = report["gates"]["revocation_supersession"]["checks"][0]
+    assert check["result"] == "blocked"
+    assert check["case_count"] == 1
+    assert check["required_case_count"] == 17
+    assert check["reason"] == "insufficient_case_coverage"
