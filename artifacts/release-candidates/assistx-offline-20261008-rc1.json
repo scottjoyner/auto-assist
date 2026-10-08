@@ -1,0 +1,29 @@
+{
+  "schema": "assistx-offline-release-candidate/v1",
+  "release_id": "assistx-offline-20261008-rc1",
+  "date": "2026-10-08",
+  "scope": "offline_research_overlay_only",
+  "deployable": false,
+  "production_dispatch_authorized": false,
+  "hosted_inference_authorized": false,
+  "free_provider_checkpoint": "CHECKPOINT_NOT_REACHED",
+  "auto_assist_base_sha": "a300072d11787a58a4587fa325f1b8fd66803730",
+  "included": [
+    {"pr": 130, "head_sha": "a1d8059e21000b0af388e738b1c36ce1dd3826aa", "role": "mock_mercury"},
+    {"pr": 133, "head_sha": "3d935cf151cc4aef0e7e4640de2d7436944e694b", "role": "deny_only_stand_in"},
+    {"pr": 134, "head_sha": "3909a337549caf78d9f7db132b10dba548150737", "role": "burn_projection"},
+    {"pr": 121, "head_sha": "cecbb9961dd542743d1d851b4425e0af30c2b229", "role": "traces_ui"},
+    {"pr": 131, "head_sha": "e212c7eddf25cd043a849bfa570c9464341a85f1", "role": "traces_ui_fix"}
+  ],
+  "related_external": [{"repo": "scottjoyner/auto-router", "pr": 30, "head_sha": "06eac03555316b366e72de5d8bef0c226c4e88fc"}],
+  "blocked_stack": {"trace_execution": [119,132,135], "trace_context": [122,124,128,129], "latency": [90,91,92]},
+  "tests": {
+    "python_cases": 80, "python_subtests": 5,
+    "burn_node": 15, "traces_node": 9,
+    "mercury_pinned_fork_node": 12, "router_external_python": 7,
+    "router_correlation_probe": "pass", "authenticated_browser": "not_executed"
+  },
+  "provider_calls": 0,
+  "production_activation": false,
+  "readiness": "offline_research_pass__production_no_go"
+}
