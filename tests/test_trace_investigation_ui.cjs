@@ -45,6 +45,8 @@ function element(id) {
       get() { return html; },
       set(content) {
         html = content;
+        dom.evidence = String(content).includes('class="trace-evidence-results"')
+          ? { textContent: "", innerHTML: "" } : null;
         dom.details = Array.from(String(content).matchAll(/<details data-event-index="([0-9]+)"/g), match => {
           const pre = { textContent: "" };
           return {
@@ -59,9 +61,11 @@ function element(id) {
     });
     dom.querySelectorAll = selector => selector === "details[data-event-index]" ? dom.details : [];
     dom.focusedSelector = null;
-    dom.querySelector = selector =>
-      ["button.trace-context-chip.selected", ".trace-context h3"].includes(selector)
+    dom.querySelector = selector => {
+      if (selector === ".trace-evidence-results") return dom.evidence;
+      return ["button.trace-context-chip.selected", ".trace-context h3"].includes(selector)
         ? { focus() { dom.focusedSelector = selector; } } : null;
+    };
   }
   return dom;
 }
@@ -449,4 +453,118 @@ test("context filters reject unknown or fabricated field assertions", async () =
   assert.equal(ui.els["trace-detail"].innerHTML, before);
   action("task_id", "invented-task");
   assert.equal(ui.els["trace-detail"].innerHTML, before);
+});
+
+
+function inspectEvidence(ui) {
+  ui.els["trace-detail"].fire("click", {
+    target: { closest(selector) {
+      return selector === "button.trace-inspect-evidence" ? {} : null;
+    }}
+  });
+}
+function mockEvidence(cid, tasks) {
+  return {
+    schema: "trace-task-evidence-v1", correlation_id: cid, tasks,
+    trust: "unverified_correspondence_not_execution_attestation",
+    node_or_agent_verified: false, source_authenticated: false,
+    graph_write_permitted: false, truncated: false,
+  };
+}
+function taskEvidence(id="task-1", node="node-1", state="registry_id_match_unverified") {
+  return {
+    task_id: id, node_id: node, worker_id:"claimed-worker",task_status:"CLAIMED",
+    registry_state: state, registry_matches: 1,
+    task_provenance: "trace_event_relationship_and_property",
+    projection_provenance: "assignment_projection_unverified",
+    node_or_agent_verified: false
+  };
+}
+
+test("on-demand evidence GET is never triggered on initial trace detail load", async () => {
+  const ui = harness({ response: url => Promise.resolve(ok(url.includes("?limit=")
+    ? { traces: [trace("run-a")], total: 1, outcome: "all" }
+    : detail("run-a"))) });
+  await sleep(26);
+  assert.equal(ui.calls.length, 2);
+  assert.ok(!ui.calls.some(url => url.endsWith("/evidence")));
+  assert.ok(!ui.els["trace-detail"].innerHTML.includes("SSH"));
+});
+
+test("explicit read-only evidence inspection is bounded, unverified and escaped", async () => {
+  const malicious = '<img src=x onerror="alert(1)">';
+  const ui = harness({ response: url => Promise.resolve(ok(
+    url.includes("?limit=") ? { traces: [trace("run-b")], total: 1, outcome: "all" }
+      : url.endsWith("/evidence")
+        ? mockEvidence("run-b",[taskEvidence(malicious,malicious)])
+        : detail("run-b")
+  )) });
+  await sleep(22);
+  assert.equal(ui.calls.length, 2);
+  inspectEvidence(ui);
+  await sleep(24);
+  assert.ok(ui.calls[2].endsWith("/api/traces/run-b/evidence"));
+  assert.equal(ui.calls.length, 3);
+  const text = ui.els["trace-detail"].evidence.innerHTML;
+  assert.match(text, /Registry ID matches; identity unverified/);
+  assert.match(text, /unverified ID correspondence/);
+  assert.ok(text.includes("&lt;img"));
+  assert.doesNotMatch(text, /<img src=x/);
+  assert.doesNotMatch(text, /href=|ssh:\/\/|tailscale_ip|password/i);
+});
+
+test("ambiguous registration is not promoted to verified attribution", async () => {
+  const ui = harness({ response: url => Promise.resolve(ok(
+    url.includes("?limit=") ? { traces: [trace("ambiguous")], total: 1, outcome: "all" }
+      : url.endsWith("/evidence") ? mockEvidence("ambiguous",[
+        taskEvidence("task-a","node-z","ambiguous_registry_id"),
+        taskEvidence("task-b",null,"not_recorded")
+      ]) : detail("ambiguous")
+  )) });
+  await sleep(20);
+  inspectEvidence(ui);
+  await sleep(22);
+  assert.match(ui.els["trace-detail"].evidence.innerHTML, /Ambiguous registry ID/);
+  assert.match(ui.els["trace-detail"].evidence.innerHTML, /No node ID recorded/);
+  assert.doesNotMatch(ui.els["trace-detail"].evidence.innerHTML, /Verified executor|Execute task|Run command/);
+});
+
+test("stale evidence response for earlier selected trace is discarded", async () => {
+  const old = deferred();
+  const ui = harness({ response: url => {
+    if (url.includes("?limit=")) return Promise.resolve(ok({
+      traces: [trace("first"),trace("second")],total:2,outcome:"all"
+    }));
+    if (url.endsWith("/first/evidence")) return old.promise;
+    if (url.endsWith("/evidence")) return Promise.resolve(ok(mockEvidence("second",[
+      taskEvidence("new-task")
+    ])));
+    return Promise.resolve(ok(detail(url.includes("second")?"second":"first")));
+  }});
+  await sleep(24);
+  inspectEvidence(ui);
+  ui.els["trace-list"].fire("click", { target: {
+    closest: () => ({ dataset: { cid:"second" } })
+  }});
+  await sleep(22);
+  inspectEvidence(ui);
+  await sleep(20);
+  assert.match(ui.els["trace-detail"].evidence.innerHTML, /new-task/);
+  old.resolve(ok(mockEvidence("first",[taskEvidence("stale-task")])));
+  await sleep(20);
+  assert.match(ui.els["trace-detail"].evidence.innerHTML, /new-task/);
+  assert.doesNotMatch(ui.els["trace-detail"].evidence.innerHTML, /stale-task/);
+});
+
+test("untrusted older evidence schema and auth errors never assert identity", async () => {
+  const ui = harness({ response: url => Promise.resolve(
+    url.includes("?limit=") ? ok({traces:[trace("older")],total:1,outcome:"all"})
+      : url.endsWith("/evidence") ? ok({ tasks:[{node_id:"unverified",node_or_agent_verified:true}] })
+      : ok(detail("older"))
+  )});
+  await sleep(20);
+  inspectEvidence(ui);
+  await sleep(20);
+  assert.match(ui.els["trace-detail"].evidence.textContent, /Evidence schema unavailable/);
+  assert.doesNotMatch(ui.els["trace-detail"].evidence.innerHTML, /unverified/);
 });
