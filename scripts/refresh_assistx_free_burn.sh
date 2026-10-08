@@ -20,7 +20,7 @@ trap 'rm -f "$TEMP"' EXIT
 PYTHONPATH="$ROOT/src" /usr/bin/python3 "$ROOT/scripts/free_endpoint_burn_dashboard.py" --out-json "$TEMP"
 chmod 0600 "$TEMP"
 mv -f "$TEMP" "$REPORT"
-PYTHONPATH="$ROOT/src" /usr/bin/python3 "$ROOT/scripts/render_provider_burn_fragment.py" --report "$REPORT" --out "$PANEL"
+PYTHONPATH="$ROOT/src" /usr/bin/python3 "$ROOT/scripts/render_provider_burn_fragment.py" --report "$REPORT" --out "$PANEL" --history "$STATE/observations.jsonl"
 
 # Durable, append-only compact observation ledger (not the raw per-model export).
 /usr/bin/python3 - "$REPORT" "$PANEL" "$STATE/observations.jsonl" <<'PY'

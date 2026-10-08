@@ -3,8 +3,10 @@ import importlib.util
 import json
 import pathlib
 import tempfile
+import sys
 
 MODULE = pathlib.Path(__file__).resolve().parents[1] / "scripts/render_provider_burn_fragment.py"
+sys.path.insert(0, str(MODULE.parent))
 spec = importlib.util.spec_from_file_location("burn_fragment", MODULE)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
@@ -46,3 +48,18 @@ def test_atomic_write_private_and_no_residual_files():
         mod.atomic_private_write(dest, "world")
         assert dest.read_text() == "world"
         assert sorted(p.name for p in pathlib.Path(tmp).iterdir()) == ["panel.html"]
+
+
+def test_catalog_warning_is_advisory_and_html_escaped():
+    rendered = mod.render({
+        "state": "fresh", "complete": True, "updated_epoch": 1791450000,
+        "observed_tokens_24h": 0, "forecast_next_24h": 0,
+        "providers": [{"provider": "<unsafe>", "presence": "rate_limited",
+                       "observed_tokens_24h": 0, "observed_tokens_1h": 0,
+                       "observed_tokens_7d": 0, "cache_read_24h": 0,
+                       "forecast_next_24h": 0}],
+    }, history=[])
+    assert "Catalog/credential advisory" in rendered
+    assert "&lt;unsafe&gt;" in rendered
+    assert "<unsafe>" not in rendered
+    assert "Insufficient history" in rendered
