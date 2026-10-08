@@ -202,7 +202,7 @@
           ? '<span class="trace-context-unknown">More values omitted from this view</span>' : '') + '</div>';
     }).join("");
     return '<section class="trace-context" aria-label="Recorded context">' +
-      '<div class="trace-context-heading"><div><h3>Recorded context</h3>' +
+      '<div class="trace-context-heading"><div><h3 tabindex="-1">Recorded context</h3>' +
       '<p class="trace-context-note">From event properties, not independently verified identities. Source labels are not confirmed agents or machines.</p></div>' +
       (filter ? '<button type="button" class="trace-clear-context">All trace events</button>' : '') + '</div>' +
       '<div class="trace-context-groups">' + sections + '</div>' +
@@ -265,6 +265,8 @@
     var reset = event.target.closest("button.trace-clear-context");
     if (reset) {
       renderDetail(currentTrace, null);
+      var heading = $("trace-detail").querySelector(".trace-context h3");
+      if (heading && typeof heading.focus === "function") heading.focus();
       return;
     }
     var chip = event.target.closest("button.trace-context-chip");
@@ -279,6 +281,8 @@
       return entry.value === value && entry.provenance === "trace_event_property";
     })) return;
     renderDetail(currentTrace, { field: field, value: value });
+    var active = $("trace-detail").querySelector("button.trace-context-chip.selected");
+    if (active && typeof active.focus === "function") active.focus();
   });
   function select(cid) {
     if (!cid) return;
