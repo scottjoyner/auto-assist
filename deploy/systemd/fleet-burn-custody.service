@@ -1,0 +1,13 @@
+[Unit]
+Description=Read-only fleet OpenCode archive custody and compliance report
+After=network-online.target nas.mount
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /home/scott/.local/lib/fleet/fleet-burn-custody-20261008/scripts/publish_fleet_burn_custody.sh
+TimeoutStartSec=90
+Nice=15
+IOSchedulingClass=idle
+UMask=0077
+NoNewPrivileges=yes
