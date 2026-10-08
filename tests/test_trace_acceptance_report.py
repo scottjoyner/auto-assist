@@ -3,12 +3,22 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.util
 from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
 
-from scripts.trace_acceptance_report import REQUIRED, create_report, validate_report
+# The repository exposes src/ in pytest.ini, not scripts/. Import the standalone
+# collector by its absolute path to avoid relying on the runner's sys.path.
+COLLECTOR_PATH = Path(__file__).resolve().parents[1] / "scripts" / "trace_acceptance_report.py"
+SPEC = importlib.util.spec_from_file_location("trace_acceptance_report", COLLECTOR_PATH)
+assert SPEC is not None and SPEC.loader is not None
+COLLECTOR = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(COLLECTOR)
+REQUIRED = COLLECTOR.REQUIRED
+create_report = COLLECTOR.create_report
+validate_report = COLLECTOR.validate_report
 
 SHA_A = "a" * 40
 SHA_B = "b" * 40
