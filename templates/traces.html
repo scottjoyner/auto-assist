@@ -38,7 +38,7 @@
     </section>
 
     <div class="trace-metrics" aria-label="Loaded page summary">
-      <div class="trace-metric"><span>Matching trace groups</span><strong id="trace-total-metric">—</strong><small>Across current correlation-ID search</small></div>
+      <div class="trace-metric"><span>Matching trace groups</span><strong id="trace-total-metric">—</strong><small>Global ID + outcome filters</small></div>
       <div class="trace-metric"><span>Loaded on this page</span><strong id="trace-loaded-metric">—</strong><small>Results returned by the server</small></div>
       <div class="trace-metric"><span>Failures on this page</span><strong id="trace-failed-metric">—</strong><small>Not an all-history failure count</small></div>
     </div>
@@ -57,14 +57,14 @@
             <input type="search" id="trace-search" placeholder="Search trace IDs" autocomplete="off" spellcheck="false"/>
             <button type="button" id="trace-clear" class="trace-icon" aria-label="Clear search" title="Clear search">×</button>
           </div>
-          <label for="trace-outcome">Outcome · loaded page only</label>
+          <label for="trace-outcome">Outcome · all indexed history</label>
           <select id="trace-outcome">
-            <option value="all">All on page</option>
-            <option value="failed">Failed on page</option>
-            <option value="completed">Completed on page</option>
-            <option value="open">Open on page</option>
+            <option value="all">All outcomes</option>
+            <option value="failed">Failed across history</option>
+            <option value="completed">Completed across history</option>
+            <option value="open">Open across history</option>
           </select>
-          <p class="trace-help">The server searches correlation IDs, not event payloads. Outcome filtering affects only these loaded results.</p>
+          <p class="trace-help">The server searches correlation IDs, not event payloads. Outcome filtering is applied by the server before pagination; each page still shows at most 50 traces.</p>
         </form>
         <div id="trace-list" class="trace-list" role="group" aria-label="Trace results">
           <p class="trace-empty">Loading trace index…</p>
