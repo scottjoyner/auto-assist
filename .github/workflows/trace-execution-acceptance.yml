@@ -56,7 +56,6 @@ jobs:
             src/assistx/trace_segment_bundle.py \
             src/assistx/trace_segment_nas.py \
             tests/test_trace_claim_lease.py \
-            tests/test_trace_acceptance_report.py \
             tests/test_trace_claim_live_executor.py \
             tests/test_trace_http_redirect.py \
             tests/test_trace_segment_plan.py \
@@ -104,6 +103,12 @@ jobs:
             --tested "$(git rev-parse HEAD)" \
             --run-url "$TRACE_RUN_URL"
           python -m json.tool trace-acceptance.json >/dev/null
+          python scripts/trace_acceptance_report.py \
+            --junit trace-acceptance-junit.xml \
+            --verify-report trace-acceptance.json \
+            --head "$TRACE_PR_HEAD_SHA" \
+            --base "$TRACE_PR_BASE_SHA" \
+            --tested "$(git rev-parse HEAD)"
           sha256sum trace-acceptance.json
       - name: Retain trace acceptance and offline test evidence
         if: always()
