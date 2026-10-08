@@ -33,6 +33,9 @@ artifacts/reconciliation-tailnet-candidates.json.sha256
 artifacts/runtime-projection-approval-evidence.json
 artifacts/runtime-projection-evidence.json
 artifacts/reconciliation-report*.md
+# Private, regenerable local consumption dashboard snapshots; never commit usage telemetry.
+artifacts/free-endpoint-burn-*.json
+artifacts/free-endpoint-burn-*.html
 .venv/
 env/
 venv/
