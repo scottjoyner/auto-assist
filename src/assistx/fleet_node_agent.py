@@ -30,7 +30,6 @@ FLEET_CAPABILITIES (comma-separated extra caps), FLEET_NODE_ID (override).
 from __future__ import annotations
 
 import argparse
-import uuid
 import json
 import os
 import platform
@@ -40,19 +39,24 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .kv_cache import runtime_capabilities
 from .recovery_runbooks import RecoveryRunbookExecutor
 
 DEFAULT_CAPS = ["script"]
 
 
+def _trace_candidate(task: dict[str, Any]) -> bool:
+    """Classify protected tasks without importing optional crypto packages."""
+    return any(task.get(k) == "trace_probe" for k in ("kind", "ticket_type", "task_type"))
+
+
 def _now() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _http(
@@ -96,19 +100,8 @@ def _detect_hostname() -> str:
 
 def _detect_capabilities(lmstudio_url: str | None) -> tuple[list[str], list[str]]:
     caps = set(DEFAULT_CAPS)
-    # Advertise only when the operator opted in and local audit storage is safe.
-    if os.getenv("FLEET_TRACE_PROBE_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
-        from .trace_execution_adapter import TraceDenied, TraceReceiptStore
-
-        try:
-            TraceReceiptStore(
-                os.getenv("FLEET_TRACE_EXECUTION_AUDIT_ROOT", ""),
-                node_id=_detect_hostname(),
-            )
-        except TraceDenied:
-            pass  # Deny admission when preflight storage is unavailable.
-        else:
-            caps.add("trace-probe")
+    # Trace capability is admitted only by the dual signed-proof preflight
+    # below. Avoid importing optional cryptography during ordinary polling.
     models: list[str] = []
 
     if lmstudio_url:
@@ -125,11 +118,26 @@ def _detect_capabilities(lmstudio_url: str | None) -> tuple[list[str], list[str]
 
     extra = os.getenv("FLEET_CAPABILITIES", "")
     caps.update(cap.strip() for cap in extra.split(",") if cap.strip())
-    # The live AssistX lease/status handshake is not wired to _claim_and_run.
-    # Never advertise this capability, even if a feature flag or manual
-    # FLEET_CAPABILITIES entry requests it; only the isolated synthetic runner
-    # is currently admitted.
+    # Real trace admission requires a separate explicit flag and pinned issuer.
+    # Manual FLEET_CAPABILITIES cannot bypass this preflight.
     caps.discard("trace-probe")
+    if os.getenv("FLEET_TRACE_PROBE_ENABLED", "false").lower() in {"1", "true", "yes", "on"} and os.getenv(
+        "FLEET_TRACE_REAL_EXECUTION_ENABLED", "false"
+    ).lower() in {"1", "true", "yes", "on"}:
+        from .trace_execution_adapter import TraceDenied
+
+        try:
+            from .trace_claim_live_executor import preflight
+
+            preflight(
+                node_id=_detect_hostname(),
+                audit_root=os.getenv("FLEET_TRACE_EXECUTION_AUDIT_ROOT", ""),
+                env=dict(os.environ),
+            )
+        except (ImportError, TraceDenied):
+            pass  # Missing optional crypto, key, identity or audit root.
+        else:
+            caps.add("trace-probe")
     return sorted(caps), models
 
 
@@ -450,6 +458,22 @@ def _claim_and_run(
     if not task_id:
         return
 
+    trace_candidate = _trace_candidate(task)
+    if trace_candidate:
+        from .trace_execution_adapter import TraceDenied
+
+        try:
+            from .trace_claim_live_executor import preflight
+
+            preflight(
+                node_id=node_id,
+                audit_root=os.getenv("FLEET_TRACE_EXECUTION_AUDIT_ROOT", ""),
+                env=dict(os.environ),
+            )
+        except (TraceDenied, ImportError):
+            return False
+    trace_headers = {"X-Fleet-Node-Token": os.environ["FLEET_NODE_AUTH_TOKEN"]} if trace_candidate else None
+
     session_id = f"{node_id}-{uuid.uuid4().hex[:8]}"
     status, claim = _http(
         "POST",
@@ -459,8 +483,9 @@ def _claim_and_run(
             "agent_id": node_id,
             "capabilities": caps,
             "session_id": session_id,
-            "lease_seconds": 900,
+            "lease_seconds": 60 if trace_candidate else 900,
         },
+        headers=trace_headers,
     )
     if status != 200 or not isinstance(claim, dict):
         # 404/409/etc: task gone, drained, or claimed elsewhere. Report no-work
@@ -478,6 +503,7 @@ def _claim_and_run(
                 f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/heartbeat",
                 auth=auth,
                 data={"node_id": node_id, "agent_id": node_id, "claim_id": claim_id},
+                headers=trace_headers,
                 timeout=10,
             )
 
@@ -519,14 +545,19 @@ def _claim_and_run(
 
             if not is_trace_probe_task(claimed_task):
                 raise TraceDenied("claimed_task_type_mismatch")
-            # Live claim-consumption MUST NOT infer execution authority from
-            # the poll/claim response or a feature flag. The two signed proof
-            # handshake is not yet wired to this worker: deny before journal
-            # preparation and before any command side effects.
-            raise TraceDenied("live_claim_proof_gate_not_connected")
-            # Shadow canaries execute via a separate fixed synthetic runner.
-            # A live Task remains denied until the signed lease plus fresh
-            # current-status handshake is attached here.
+            from .trace_claim_live_executor import execute_authorized_probe
+
+            result = execute_authorized_probe(
+                task=claimed_task,
+                node_id=node_id,
+                claim_id=claim_id,
+                audit_root=os.getenv("FLEET_TRACE_EXECUTION_AUDIT_ROOT", ""),
+                assistx_url=assistx_url,
+                auth=auth,
+                env=dict(os.environ),
+                http=_http,
+            )
+            success = result.get("status") == "DONE" and result.get("assistx_claim_verified") is True
         elif task_type == "script":
             # Script tasks are allowlisted recovery runbooks only. Generic
             # command execution was removed with the strict executor (9d8751a5).
@@ -597,6 +628,7 @@ def _claim_and_run(
         "POST",
         f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/complete",
         auth=auth,
+        headers=trace_headers,
         data={
             "node_id": node_id,
             "agent_id": node_id,
@@ -634,6 +666,10 @@ def _poll_once(
         if not isinstance(task, dict):
             continue
         required = set(task.get("required_capabilities") or [])
+        if task.get("target_agent_id") not in (None, node_id):
+            continue
+        if _trace_candidate(task) and "trace-probe" not in caps:
+            continue
         if required.issubset(set(caps)):
             _claim_and_run(
                 assistx_url=assistx_url,

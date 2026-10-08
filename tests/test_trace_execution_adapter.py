@@ -188,10 +188,8 @@ def test_live_claim_is_blocked_until_signed_status_gate_is_wired(tmp_path, monke
         task=task,
         lmstudio_url=None,
     )
-    completions = [entry[2] for entry in observed if entry[1].endswith("/complete")]
-    assert len(completions) == 1
-    assert completions[0]["status"] == "FAILED"
-    assert completions[0]["claim_id"] == "claim-from-assistx"
+    # Missing node allowlist/real-execution key denies before any claim.
+    assert observed == []
     assert not (root / "journal.jsonl").exists()
 
 
@@ -243,8 +241,7 @@ def test_missing_authoritative_claim_fails_before_writing(tmp_path, monkeypatch)
         task=task,
         lmstudio_url=None,
     )
-    outcomes = [row[1] for row in observed if row[0].endswith("/complete")]
-    assert outcomes[0]["status"] == "FAILED"
+    assert observed == []
     assert not (root / "journal.jsonl").exists()
 
 
@@ -276,6 +273,5 @@ def test_conflicting_explicit_llm_type_cannot_bypass_trace_fence(tmp_path, monke
         task=task,
         lmstudio_url=None,
     )
-    completions = [row[1] for row in events if row[0].endswith("/complete")]
-    assert len(completions) == 1 and completions[0]["status"] == "FAILED"
+    assert events == []  # no claim, LLM fallback, or completion
     assert not (root / "journal.jsonl").exists()
