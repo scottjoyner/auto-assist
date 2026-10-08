@@ -53,6 +53,7 @@ from .recovery_control import (
 from .recovery_runbooks import build_runbook, sign_runbook
 from .node_identity import verify_node_token
 from .trace_claim_lease_api import build_claim_lease_router
+from .trace_claim_lease import is_trace_probe_candidate, is_trace_probe_task
 from .operations_readiness import build_operations_readiness
 from .self_healing import SelfHealingController
 
@@ -4275,7 +4276,9 @@ def api_claim_task(
     task_obj = neo.get_task(task_id)
     if not task_obj:
         raise HTTPException(status_code=404, detail="Task not found")
-    if task_obj.get("task_type") == "trace_probe":
+    if is_trace_probe_candidate(task_obj):
+        if not is_trace_probe_task(task_obj):
+            raise HTTPException(status_code=409, detail="trace_probe_schema_mismatch")
         if os.getenv("ASSISTX_TRACE_LEASE_ISSUER_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
             raise HTTPException(status_code=409, detail="trace_probe_claims_disabled")
         _verify_fleet_node_identity(body.agent_id, x_fleet_node_token)
@@ -4315,7 +4318,9 @@ def api_heartbeat_task(
     neo = _neo()
     try:
         task_before = neo.get_task(task_id)
-        if task_before and task_before.get("task_type") == "trace_probe":
+        if task_before and is_trace_probe_candidate(task_before):
+            if not is_trace_probe_task(task_before):
+                raise HTTPException(status_code=409, detail="trace_probe_schema_mismatch")
             _verify_fleet_node_identity(body.agent_id, x_fleet_node_token)
             if not body.claim_id:
                 raise HTTPException(status_code=403, detail="trace_probe_claim_id_required")
@@ -4348,7 +4353,9 @@ def api_complete_task(
         raise HTTPException(status_code=400, detail="status must be DONE, FAILED, or CANCELLED")
     neo = _neo_fleet()
     task_before = neo.get_task(task_id) or {}
-    if task_before.get("task_type") == "trace_probe":
+    if is_trace_probe_candidate(task_before):
+        if not is_trace_probe_task(task_before):
+            raise HTTPException(status_code=409, detail="trace_probe_schema_mismatch")
         _verify_fleet_node_identity(body.agent_id, x_fleet_node_token)
         if not body.claim_id:
             raise HTTPException(status_code=403, detail="trace_probe_claim_id_required")

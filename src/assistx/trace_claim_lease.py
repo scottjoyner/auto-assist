@@ -78,6 +78,21 @@ def _payload(task: dict[str, Any]) -> dict[str, Any]:
     return raw
 
 
+def is_trace_probe_candidate(task: dict[str, Any] | None) -> bool:
+    """Any trace-probe marker reserves the protected task path."""
+    return isinstance(task, dict) and any(task.get(k) == "trace_probe" for k in ("ticket_type", "kind", "task_type"))
+
+
+def is_trace_probe_task(task: dict[str, Any] | None) -> bool:
+    """Use the canonical Neo4j upsert_ticket fields, never a lone task_type."""
+    return (
+        isinstance(task, dict)
+        and task.get("ticket_type") == "trace_probe"
+        and task.get("kind") == "trace_probe"
+        and task.get("task_type", "trace_probe") == "trace_probe"
+    )
+
+
 def validate_claim(
     task: dict[str, Any] | None,
     *,
@@ -96,7 +111,7 @@ def validate_claim(
         raise TraceDenied("claim_not_found")
     if str(task.get("id") or "") != task_id:
         raise TraceDenied("claim_task_mismatch")
-    if task.get("task_type") != "trace_probe":
+    if not is_trace_probe_task(task):
         raise TraceDenied("claim_type_not_allowed")
     if task.get("status") not in {"CLAIMED", "RUNNING"}:
         raise TraceDenied("claim_inactive")

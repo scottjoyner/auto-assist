@@ -120,13 +120,16 @@ def _detect_capabilities(lmstudio_url: str | None) -> tuple[list[str], list[str]
 
     # Lightweight vision/tooling detection without importing heavyweight libs.
     for command in ("ffmpeg", "python3"):
-        if subprocess.run(
-            ["which", command], capture_output=True, text=True, check=False
-        ).returncode == 0:
+        if subprocess.run(["which", command], capture_output=True, text=True, check=False).returncode == 0:
             caps.add(command)
 
     extra = os.getenv("FLEET_CAPABILITIES", "")
     caps.update(cap.strip() for cap in extra.split(",") if cap.strip())
+    # The live AssistX lease/status handshake is not wired to _claim_and_run.
+    # Never advertise this capability, even if a feature flag or manual
+    # FLEET_CAPABILITIES entry requests it; only the isolated synthetic runner
+    # is currently admitted.
+    caps.discard("trace-probe")
     return sorted(caps), models
 
 
@@ -233,9 +236,7 @@ def execute_task(
         }
 
     if payload.get("benchmark"):
-        return _run_benchmark_cases(
-            task, payload, lmstudio_url, should_stop, saved_checkpoint
-        )
+        return _run_benchmark_cases(task, payload, lmstudio_url, should_stop, saved_checkpoint)
     if "llm" in required and lmstudio_url:
         return _run_llm_task(
             task,
@@ -360,9 +361,7 @@ def _run_llm_task(
             "progress": 0.0,
             "checkpoint": {"handler": "llm", "phase": "before_inference"},
         }
-    cache_request = (
-        payload.get("kv_cache") if isinstance(payload.get("kv_cache"), dict) else {}
-    )
+    cache_request = payload.get("kv_cache") if isinstance(payload.get("kv_cache"), dict) else {}
     cache_resolution: dict[str, Any] = {}
     request_fields: dict[str, Any] = {}
     if cache_control_url and cache_request.get("prefix_id"):
@@ -390,9 +389,7 @@ def _run_llm_task(
                 cache_resolution = resolved
                 safe_fields = {"cache_id", "cache_prompt", "session_id", "slot_id"}
                 request_fields = {
-                    key: value
-                    for key, value in (resolved.get("request_fields") or {}).items()
-                    if key in safe_fields
+                    key: value for key, value in (resolved.get("request_fields") or {}).items() if key in safe_fields
                 }
     st, body = _http(
         "POST",
@@ -427,9 +424,7 @@ def _run_llm_task(
             result["kv_cache_event"] = {
                 "cache_id": cache_id,
                 "node_id": node_id,
-                "outcome": (
-                    "RESTORE" if mode == "restore" else "HIT" if mode == "local" else "MISS"
-                ),
+                "outcome": ("RESTORE" if mode == "restore" else "HIT" if mode == "local" else "MISS"),
                 "prefix_id": cache_request.get("prefix_id"),
                 "tokens_saved": int(cache_resolution.get("tokens_saved") or 0),
                 "prefill_ms_saved": int(cache_resolution.get("prefill_ms_saved") or 0),
@@ -493,6 +488,9 @@ def _claim_and_run(
     success = False
     try:
         task_type = str(task.get("task_type") or "").lower()
+        if not task_type and (task.get("kind") == "trace_probe" or task.get("ticket_type") == "trace_probe"):
+            # Even partially malformed trace tasks must never fall through to LLM.
+            task_type = "trace_probe"
         if not task_type:
             _has_prompt = bool(
                 str(task.get("prompt") or task.get("description") or "").strip()
@@ -510,30 +508,24 @@ def _claim_and_run(
             except (json.JSONDecodeError, TypeError):
                 raw_payload = {}
         if task_type == "trace_probe":
-            from .trace_execution_adapter import TraceDenied, run_trace_probe
+            from .trace_execution_adapter import TraceDenied
 
             if not claimed_task or not claim.get("claimed"):
                 raise TraceDenied("missing_authoritative_claim")
             if str(claimed_task.get("id") or claimed_task.get("task_id") or "") != task_id:
                 raise TraceDenied("claim_task_identity_mismatch")
-            if claimed_task.get("task_type") != "trace_probe":
+            from .trace_claim_lease import is_trace_probe_task
+
+            if not is_trace_probe_task(claimed_task):
                 raise TraceDenied("claimed_task_type_mismatch")
-            authoritative = dict(claimed_task)
-            if authoritative.get("payload_json"):
-                try:
-                    authoritative["payload"] = json.loads(authoritative["payload_json"])
-                except (ValueError, TypeError) as exc:
-                    raise TraceDenied("invalid_claimed_payload_json") from exc
-            outcome = run_trace_probe(
-                authoritative,
-                node_id=node_id,
-                claim_id=claim_id,
-                audit_root=os.getenv("FLEET_TRACE_EXECUTION_AUDIT_ROOT", ""),
-                enabled=os.getenv("FLEET_TRACE_PROBE_ENABLED", "false").lower()
-                in {"1", "true", "yes", "on"},
-            )
-            success = outcome["status"] == "DONE"
-            result = outcome
+            # Live claim-consumption MUST NOT infer execution authority from
+            # the poll/claim response or a feature flag. The two signed proof
+            # handshake is not yet wired to this worker: deny before journal
+            # preparation and before any command side effects.
+            raise TraceDenied("live_claim_proof_gate_not_connected")
+            # Shadow canaries execute via a separate fixed synthetic runner.
+            # A live Task remains denied until the signed lease plus fresh
+            # current-status handshake is attached here.
         elif task_type == "script":
             # Script tasks are allowlisted recovery runbooks only. Generic
             # command execution was removed with the strict executor (9d8751a5).
@@ -692,18 +684,10 @@ def run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run this machine as an AssistX fleet worker")
-    parser.add_argument(
-        "--assistx-url", default=os.getenv("FLEET_ASSISTX_URL", "http://assistx:8000")
-    )
-    parser.add_argument(
-        "--router-url", default=os.getenv("FLEET_ROUTER_URL", "http://router:8088")
-    )
-    parser.add_argument(
-        "--poll-interval", type=float, default=float(os.getenv("FLEET_POLL_INTERVAL", "10"))
-    )
-    parser.add_argument(
-        "--concurrency", type=int, default=int(os.getenv("FLEET_CONCURRENCY", "1"))
-    )
+    parser.add_argument("--assistx-url", default=os.getenv("FLEET_ASSISTX_URL", "http://assistx:8000"))
+    parser.add_argument("--router-url", default=os.getenv("FLEET_ROUTER_URL", "http://router:8088"))
+    parser.add_argument("--poll-interval", type=float, default=float(os.getenv("FLEET_POLL_INTERVAL", "10")))
+    parser.add_argument("--concurrency", type=int, default=int(os.getenv("FLEET_CONCURRENCY", "1")))
     parser.add_argument("--lmstudio-url", default=os.getenv("FLEET_LMSTUDIO_URL"))
     args = parser.parse_args()
     run(

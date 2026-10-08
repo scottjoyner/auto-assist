@@ -27,6 +27,8 @@ def make_task(*, task_id="task-1", target="node-a", command="probe.echo.v1", mes
         "id": task_id,
         "target_agent_id": target,
         "task_type": "trace_probe",
+        "ticket_type": "trace_probe",
+        "kind": "trace_probe",
         "payload": {"command_id": command, "message": message},
     }
 
@@ -162,7 +164,7 @@ def test_concurrent_same_claim_exactly_one_execution(tmp_path):
     assert TraceReceiptStore(str(root), node_id="node-a").verify()["records"] == 2
 
 
-def test_real_claim_lifecycle_wires_trace_without_external_side_effects(tmp_path, monkeypatch):
+def test_live_claim_is_blocked_until_signed_status_gate_is_wired(tmp_path, monkeypatch):
     root = prepared_root(tmp_path)
     monkeypatch.setenv("FLEET_TRACE_EXECUTION_AUDIT_ROOT", str(root))
     monkeypatch.setenv("FLEET_TRACE_PROBE_ENABLED", "true")
@@ -188,9 +190,9 @@ def test_real_claim_lifecycle_wires_trace_without_external_side_effects(tmp_path
     )
     completions = [entry[2] for entry in observed if entry[1].endswith("/complete")]
     assert len(completions) == 1
-    assert completions[0]["status"] == "DONE"
+    assert completions[0]["status"] == "FAILED"
     assert completions[0]["claim_id"] == "claim-from-assistx"
-    assert TraceReceiptStore(str(root), node_id="node-a").verify()["records"] == 2
+    assert not (root / "journal.jsonl").exists()
 
 
 def test_advertisement_requires_opt_in_and_safe_storage(tmp_path, monkeypatch):
@@ -206,7 +208,7 @@ def test_advertisement_requires_opt_in_and_safe_storage(tmp_path, monkeypatch):
     root = prepared_root(tmp_path)
     monkeypatch.setenv("FLEET_TRACE_EXECUTION_AUDIT_ROOT", str(root))
     caps, _ = fleet_node_agent._detect_capabilities(None)
-    assert "trace-probe" in caps
+    assert "trace-probe" not in caps
 
 
 def test_cross_node_audit_root_identity_is_rejected(tmp_path):

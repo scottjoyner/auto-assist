@@ -16,6 +16,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from assistx.trace_claim_lease import (
+    is_trace_probe_candidate,
+    is_trace_probe_task,
     issue_current_status,
     issue_lease_proof,
     load_signer,
@@ -34,7 +36,8 @@ def task(now=NOW):
     return {
         "id": "task-101",
         "status": "CLAIMED",
-        "task_type": "trace_probe",
+        "kind": "trace_probe",
+        "ticket_type": "trace_probe",
         "claimed_by": "xwing",
         "target_agent_id": "xwing",
         "claim_id": "claim-5",
@@ -80,6 +83,8 @@ def test_readonly_claim_snapshot_yields_short_node_bound_proof():
         ({"claim_id": "replacement"}, "claim_superseded"),
         ({"execution_attempt": 3}, "claim_generation_mismatch"),
         ({"execution_attempt": None}, "claim_generation_mismatch"),
+        ({"kind": "script"}, "claim_type_not_allowed"),
+        ({"ticket_type": "task"}, "claim_type_not_allowed"),
         ({"task_type": "script"}, "claim_type_not_allowed"),
         ({"required_capabilities": ["script"]}, "claim_missing_capability"),
         ({"lease_expires_at_ts": NOW + 9_000}, "claim_lease_insufficient"),
@@ -345,3 +350,30 @@ def test_status_proof_cannot_be_minted_for_undisclosed_lease():
             signer=signer,
             now_ms=NOW + 1,
         )
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {"kind": "trace_probe", "ticket_type": "task"},
+        {"kind": "task", "ticket_type": "trace_probe"},
+        {"kind": "trace_probe", "ticket_type": None},
+        {"kind": None, "ticket_type": "trace_probe"},
+        {"kind": "trace_probe", "ticket_type": "trace_probe", "task_type": "llm"},
+    ],
+)
+def test_partial_trace_markers_use_protected_path_but_cannot_get_lease(broken):
+    item = task()
+    item.update(broken)
+    assert is_trace_probe_candidate(item)
+    assert not is_trace_probe_task(item)
+    with pytest.raises(TraceDenied, match="claim_type_not_allowed"):
+        issue(item)
+
+
+def test_live_schema_matches_ticket_upsert_without_task_type():
+    item = task()
+    assert "task_type" not in item
+    assert is_trace_probe_candidate(item) and is_trace_probe_task(item)
+    signed = issue(item)
+    assert signed["node_id"] == "xwing"
