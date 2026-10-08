@@ -53,7 +53,8 @@ jobs:
             tests/test_trace_acceptance_report.py \
             tests/test_trace_node_readonly_inventory.py \
             tests/test_trace_node_offline_negative.py \
-            tests/test_trace_node_readonly_chain.py
+            tests/test_trace_node_readonly_chain.py \
+            tests/test_trace_api_readonly_startup.py
       - name: Trace admission lint
         run: |
           ruff check --ignore UP017 \
@@ -86,6 +87,7 @@ jobs:
             tests/test_trace_node_readonly_inventory.py \
             tests/test_trace_node_offline_negative.py \
             tests/test_trace_node_readonly_chain.py \
+            tests/test_trace_api_readonly_startup.py \
             tests/test_trace_claim_live_executor.py \
             tests/test_trace_http_redirect.py \
             tests/test_trace_segment_plan.py \
