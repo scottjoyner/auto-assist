@@ -48,3 +48,14 @@ Their tests proved redaction, refusal of unsafe/symlink paths, pinned source dig
 3. Design and independently review receiver-owned signing-key custody, key rotation/revocation and negative issuer behavior with a dedicated staging key; never include a private key in logs/artifacts.
 4. Resolve private server-side ACLs on a **separate trace archive destination**, not NAS5 recovery storage; prove independent WORM witness and interrupted-write recovery prior to any offload writes.
 5. Only after those gates may a separately approved, typed `probe.noop.v1` authenticated two-node canary be considered. No generic shell, LLM, script or unrestricted agent dispatch.
+
+
+## Follow-up: startup-contract and key-custody remediation
+
+Added `tests/test_trace_api_readonly_startup.py` to exercise both claim-lease routes in an **isolated in-process FastAPI router**, with no production `api.py` import, lifecycle execution, Neo4j access, or key provisioning. Its nine local cases cover default-disabled 503, authentication 401, wrong-node 403, absent signer 503, and static source registration checks. This is **not proof of deployed startup**: the full `api.py` import currently creates local directories, and its lifespan initializes services and schedules background workers, so it cannot be used as a non-mutating physical probe.
+
+Added `scripts/trace_key_custody_readonly.py` and `tests/test_trace_key_custody_readonly.py`. They check prospective issuer signing-key and node public-verifier **filesystem metadata only**; private signing-key bytes are never read, hashed or printed. Public verifier bytes may be hashed only when an expected public-pin SHA-256 is provided. Unsafe modes, symlinks and writable parents are refused. The tool always reports independent escrow, real keypair linkage, and production authorization as **unproven**. Do not infer that a not-provided path proves the host has no key.
+
+At `bce665ea7602be719f0fe7784aa936c8530f0573`, the isolated combined checks for key metadata, staging routes, physical journal custody, negative preflight and acceptance artifacts passed **61 local tests** (one nonblocking TestClient deprecation warning); exact-head GitHub Actions acceptance remains a separate required verification.
+
+**Key custody and startup blockers stay open:** real deployed API startup, issuer-bound authentication and negative tests, dedicated signer key ownership, verifier pin installed on both nodes, independent rotation/escrow, and mismatched worker release revisions.
