@@ -1386,6 +1386,97 @@ def _build_trace_context(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def get_trace_task_evidence(
+    neo: Neo4jClient, correlation_id: str
+) -> Optional[Dict[str, Any]]:
+    """On-demand, read-only matching trace-event -> task -> registry evidence.
+
+    A producer-linked Task and matching SwarmNode.node_id are not attested
+    execution. Task worker/node properties originate in assignment projections
+    and may be stale or false. Never expose node IPs or arbitrary node props.
+    """
+    from neo4j import Query as ReadOnlyQuery
+
+    if not isinstance(correlation_id, str) or not correlation_id or len(correlation_id) > 128:
+        raise ValueError("Invalid correlation ID")
+    def admissible(value: Any) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        if not value or len(value) > 128 or any(ord(c) < 32 or ord(c) == 127 for c in value):
+            return None
+        return value
+
+    with neo._session() as session:
+        group = session.run(
+            ReadOnlyQuery(
+                "MATCH (g:TraceGroup {correlation_id:$correlation_id}) "
+                "RETURN count(g) AS n", timeout=4.0
+            ), {"correlation_id": correlation_id}
+        ).single()
+        if not group or not group["n"]:
+            return None
+        rows = session.run(
+            ReadOnlyQuery(
+                """
+                MATCH (g:TraceGroup {correlation_id:$correlation_id})
+                      -[:HAS_EVENT]->(e:TraceEvent)-[:FOR_TASK]->(t:Task)
+                WHERE e.task_id IS NOT NULL AND e.task_id = t.id
+                WITH DISTINCT t
+                ORDER BY t.id
+                LIMIT 13
+                OPTIONAL MATCH (n:SwarmNode {node_id:t.node_id})
+                RETURN t.id AS task_id, t.status AS task_status,
+                       t.worker_id AS worker_id, t.node_id AS node_id,
+                       count(DISTINCT n) AS registry_matches
+                ORDER BY task_id
+                """, timeout=4.0
+            ), {"correlation_id": correlation_id}
+        )
+        evidence = []
+        truncated = False
+        for row in rows:
+            if len(evidence) >= 12:
+                truncated = True
+                break
+            task_id = admissible(row["task_id"])
+            if task_id is None:
+                continue
+            node_id = admissible(row["node_id"])
+            worker_id = admissible(row["worker_id"])
+            status = admissible(row["task_status"])
+            matches = row["registry_matches"]
+            if type(matches) is not int or matches < 0:
+                matches = 0
+            registry_state = (
+                "not_recorded" if node_id is None else
+                "not_registered" if matches == 0 else
+                "registry_id_match_unverified" if matches == 1 else
+                "ambiguous_registry_id"
+            )
+            evidence.append({
+                "task_id": task_id,
+                "task_status": status,
+                "worker_id": worker_id,
+                "node_id": node_id,
+                "registry_state": registry_state,
+                "registry_matches": min(matches, 2),
+                "task_provenance": "trace_event_relationship_and_property",
+                "projection_provenance": "assignment_projection_unverified",
+                "node_or_agent_verified": False,
+            })
+    return {
+        "schema": "trace-task-evidence-v1",
+        "correlation_id": correlation_id,
+        "tasks": evidence,
+        "truncated": truncated,
+        "trust": "unverified_correspondence_not_execution_attestation",
+        "source_authenticated": False,
+        "node_or_agent_verified": False,
+        "graph_write_permitted": False,
+    }
+
+
 def _derive_trace_state(events: List[Dict[str, Any]]) -> str:
     latest_type = events[-1].get("event_type", "") if events else ""
     if latest_type == "assignment.completed":
