@@ -30,7 +30,6 @@ FLEET_CAPABILITIES (comma-separated extra caps), FLEET_NODE_ID (override).
 from __future__ import annotations
 
 import argparse
-import uuid
 import json
 import os
 import platform
@@ -40,19 +39,24 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .kv_cache import runtime_capabilities
 from .recovery_runbooks import RecoveryRunbookExecutor
 
 DEFAULT_CAPS = ["script"]
 
 
+def _trace_candidate(task: dict[str, Any]) -> bool:
+    """Classify protected tasks without importing optional crypto packages."""
+    return any(task.get(k) == "trace_probe" for k in ("kind", "ticket_type", "task_type"))
+
+
 def _now() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()  # noqa: UP017 -- macOS Python 3.9 compatibility
 
 
 def _http(
@@ -62,6 +66,7 @@ def _http(
     data: dict | None = None,
     headers: dict[str, str] | None = None,
     timeout: int = 30,
+    allow_redirects: bool = True,
 ) -> tuple[int, Any]:
     req = urllib.request.Request(url, method=method)
     if auth:
@@ -75,7 +80,16 @@ def _http(
     if data is not None:
         req.data = json.dumps(data).encode()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        if allow_redirects:
+            response = urllib.request.urlopen(req, timeout=timeout)
+        else:
+
+            class _RejectRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, request, fp, code, msg, headers, newurl):
+                    return None
+
+            response = urllib.request.build_opener(_RejectRedirect()).open(req, timeout=timeout)
+        with response as resp:
             raw = resp.read().decode()
             try:
                 return resp.status, json.loads(raw) if raw else {}
@@ -90,12 +104,19 @@ def _http(
         return 0, {"detail": str(exc)}
 
 
+def _trace_http(*args: Any, **kwargs: Any) -> tuple[int, Any]:
+    """Trace task transport: refuse HTTP redirects on requests with node tokens."""
+    return _http(*args, allow_redirects=False, **kwargs)
+
+
 def _detect_hostname() -> str:
     return os.getenv("FLEET_NODE_ID") or platform.node()
 
 
 def _detect_capabilities(lmstudio_url: str | None) -> tuple[list[str], list[str]]:
     caps = set(DEFAULT_CAPS)
+    # Trace capability is admitted only by the dual signed-proof preflight
+    # below. Avoid importing optional cryptography during ordinary polling.
     models: list[str] = []
 
     if lmstudio_url:
@@ -107,13 +128,31 @@ def _detect_capabilities(lmstudio_url: str | None) -> tuple[list[str], list[str]
 
     # Lightweight vision/tooling detection without importing heavyweight libs.
     for command in ("ffmpeg", "python3"):
-        if subprocess.run(
-            ["which", command], capture_output=True, text=True, check=False
-        ).returncode == 0:
+        if subprocess.run(["which", command], capture_output=True, text=True, check=False).returncode == 0:
             caps.add(command)
 
     extra = os.getenv("FLEET_CAPABILITIES", "")
     caps.update(cap.strip() for cap in extra.split(",") if cap.strip())
+    # Real trace admission requires a separate explicit flag and pinned issuer.
+    # Manual FLEET_CAPABILITIES cannot bypass this preflight.
+    caps.discard("trace-probe")
+    if os.getenv("FLEET_TRACE_PROBE_ENABLED", "false").lower() in {"1", "true", "yes", "on"} and os.getenv(
+        "FLEET_TRACE_REAL_EXECUTION_ENABLED", "false"
+    ).lower() in {"1", "true", "yes", "on"}:
+        from .trace_execution_adapter import TraceDenied
+
+        try:
+            from .trace_claim_live_executor import preflight
+
+            preflight(
+                node_id=_detect_hostname(),
+                audit_root=os.getenv("FLEET_TRACE_EXECUTION_AUDIT_ROOT", ""),
+                env=dict(os.environ),
+            )
+        except (ImportError, TraceDenied):
+            pass  # Missing optional crypto, key, identity or audit root.
+        else:
+            caps.add("trace-probe")
     return sorted(caps), models
 
 
@@ -220,9 +259,7 @@ def execute_task(
         }
 
     if payload.get("benchmark"):
-        return _run_benchmark_cases(
-            task, payload, lmstudio_url, should_stop, saved_checkpoint
-        )
+        return _run_benchmark_cases(task, payload, lmstudio_url, should_stop, saved_checkpoint)
     if "llm" in required and lmstudio_url:
         return _run_llm_task(
             task,
@@ -347,9 +384,7 @@ def _run_llm_task(
             "progress": 0.0,
             "checkpoint": {"handler": "llm", "phase": "before_inference"},
         }
-    cache_request = (
-        payload.get("kv_cache") if isinstance(payload.get("kv_cache"), dict) else {}
-    )
+    cache_request = payload.get("kv_cache") if isinstance(payload.get("kv_cache"), dict) else {}
     cache_resolution: dict[str, Any] = {}
     request_fields: dict[str, Any] = {}
     if cache_control_url and cache_request.get("prefix_id"):
@@ -377,9 +412,7 @@ def _run_llm_task(
                 cache_resolution = resolved
                 safe_fields = {"cache_id", "cache_prompt", "session_id", "slot_id"}
                 request_fields = {
-                    key: value
-                    for key, value in (resolved.get("request_fields") or {}).items()
-                    if key in safe_fields
+                    key: value for key, value in (resolved.get("request_fields") or {}).items() if key in safe_fields
                 }
     st, body = _http(
         "POST",
@@ -414,9 +447,7 @@ def _run_llm_task(
             result["kv_cache_event"] = {
                 "cache_id": cache_id,
                 "node_id": node_id,
-                "outcome": (
-                    "RESTORE" if mode == "restore" else "HIT" if mode == "local" else "MISS"
-                ),
+                "outcome": ("RESTORE" if mode == "restore" else "HIT" if mode == "local" else "MISS"),
                 "prefix_id": cache_request.get("prefix_id"),
                 "tokens_saved": int(cache_resolution.get("tokens_saved") or 0),
                 "prefill_ms_saved": int(cache_resolution.get("prefill_ms_saved") or 0),
@@ -442,8 +473,26 @@ def _claim_and_run(
     if not task_id:
         return
 
+    trace_candidate = _trace_candidate(task)
+    if trace_candidate:
+        from .trace_execution_adapter import TraceDenied
+
+        try:
+            from .trace_claim_live_executor import preflight, require_pinned_issuer
+
+            preflight(
+                node_id=node_id,
+                audit_root=os.getenv("FLEET_TRACE_EXECUTION_AUDIT_ROOT", ""),
+                env=dict(os.environ),
+            )
+            require_pinned_issuer(assistx_url, dict(os.environ))
+        except (TraceDenied, ImportError):
+            return False
+    trace_headers = {"X-Fleet-Node-Token": os.environ["FLEET_NODE_AUTH_TOKEN"]} if trace_candidate else None
+    request_http = _trace_http if trace_candidate else _http
+
     session_id = f"{node_id}-{uuid.uuid4().hex[:8]}"
-    status, claim = _http(
+    status, claim = request_http(
         "POST",
         f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/claim",
         auth=auth,
@@ -451,24 +500,27 @@ def _claim_and_run(
             "agent_id": node_id,
             "capabilities": caps,
             "session_id": session_id,
-            "lease_seconds": 900,
+            "lease_seconds": 60 if trace_candidate else 900,
         },
+        headers=trace_headers,
     )
     if status != 200 or not isinstance(claim, dict):
         # 404/409/etc: task gone, drained, or claimed elsewhere. Report no-work
         # so the caller sleeps instead of hot-looping on the same task.
         return False
-    claim_id = claim.get("claim_id")
+    claimed_task = claim.get("task") if isinstance(claim.get("task"), dict) else {}
+    claim_id = claim.get("claim_id") or claimed_task.get("claim_id")
 
     stop_heartbeat = threading.Event()
 
     def _heartbeat() -> None:
         while not stop_heartbeat.wait(15):
-            _http(
+            request_http(
                 "POST",
                 f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/heartbeat",
                 auth=auth,
                 data={"node_id": node_id, "agent_id": node_id, "claim_id": claim_id},
+                headers=trace_headers,
                 timeout=10,
             )
 
@@ -479,6 +531,10 @@ def _claim_and_run(
     success = False
     try:
         task_type = str(task.get("task_type") or "").lower()
+        if task.get("kind") == "trace_probe" or task.get("ticket_type") == "trace_probe":
+            # Trace markers override a conflicting task_type. An invalid trace
+            # task must never fall through to ordinary LLM or shell execution.
+            task_type = "trace_probe"
         if not task_type:
             _has_prompt = bool(
                 str(task.get("prompt") or task.get("description") or "").strip()
@@ -495,7 +551,31 @@ def _claim_and_run(
                 raw_payload = json.loads(task["payload_json"])
             except (json.JSONDecodeError, TypeError):
                 raw_payload = {}
-        if task_type == "script":
+        if task_type == "trace_probe":
+            from .trace_execution_adapter import TraceDenied
+
+            if not claimed_task or not claim.get("claimed"):
+                raise TraceDenied("missing_authoritative_claim")
+            if str(claimed_task.get("id") or claimed_task.get("task_id") or "") != task_id:
+                raise TraceDenied("claim_task_identity_mismatch")
+            from .trace_claim_lease import is_trace_probe_task
+
+            if not is_trace_probe_task(claimed_task):
+                raise TraceDenied("claimed_task_type_mismatch")
+            from .trace_claim_live_executor import execute_authorized_probe
+
+            result = execute_authorized_probe(
+                task=claimed_task,
+                node_id=node_id,
+                claim_id=claim_id,
+                audit_root=os.getenv("FLEET_TRACE_EXECUTION_AUDIT_ROOT", ""),
+                assistx_url=assistx_url,
+                auth=auth,
+                env=dict(os.environ),
+                http=request_http,
+            )
+            success = result.get("status") == "DONE" and result.get("assistx_claim_verified") is True
+        elif task_type == "script":
             # Script tasks are allowlisted recovery runbooks only. Generic
             # command execution was removed with the strict executor (9d8751a5).
             runbook = raw_payload.get("runbook") if isinstance(raw_payload, dict) else None
@@ -561,10 +641,11 @@ def _claim_and_run(
 
     # AssistX exposes a single completion endpoint; failures are reported via
     # POST /complete with status=FAILED (no separate /fail route exists).
-    _http(
+    request_http(
         "POST",
         f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/complete",
         auth=auth,
+        headers=trace_headers,
         data={
             "node_id": node_id,
             "agent_id": node_id,
@@ -586,7 +667,17 @@ def _poll_once(
     caps: list[str],
     lmstudio_url: str | None,
 ) -> bool:
-    status, body = _http(
+    poll_http = _http
+    if "trace-probe" in caps:
+        from .trace_claim_live_executor import require_pinned_issuer
+        from .trace_execution_adapter import TraceDenied
+
+        try:
+            require_pinned_issuer(assistx_url, dict(os.environ))
+        except TraceDenied:
+            return False
+        poll_http = _trace_http
+    status, body = poll_http(
         "GET",
         f"{assistx_url.rstrip('/')}/api/agent/tasks?state=READY&limit=20",
         auth=auth,
@@ -602,6 +693,10 @@ def _poll_once(
         if not isinstance(task, dict):
             continue
         required = set(task.get("required_capabilities") or [])
+        if task.get("target_agent_id") not in (None, node_id):
+            continue
+        if _trace_candidate(task) and "trace-probe" not in caps:
+            continue
         if required.issubset(set(caps)):
             _claim_and_run(
                 assistx_url=assistx_url,
@@ -653,18 +748,10 @@ def run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run this machine as an AssistX fleet worker")
-    parser.add_argument(
-        "--assistx-url", default=os.getenv("FLEET_ASSISTX_URL", "http://assistx:8000")
-    )
-    parser.add_argument(
-        "--router-url", default=os.getenv("FLEET_ROUTER_URL", "http://router:8088")
-    )
-    parser.add_argument(
-        "--poll-interval", type=float, default=float(os.getenv("FLEET_POLL_INTERVAL", "10"))
-    )
-    parser.add_argument(
-        "--concurrency", type=int, default=int(os.getenv("FLEET_CONCURRENCY", "1"))
-    )
+    parser.add_argument("--assistx-url", default=os.getenv("FLEET_ASSISTX_URL", "http://assistx:8000"))
+    parser.add_argument("--router-url", default=os.getenv("FLEET_ROUTER_URL", "http://router:8088"))
+    parser.add_argument("--poll-interval", type=float, default=float(os.getenv("FLEET_POLL_INTERVAL", "10")))
+    parser.add_argument("--concurrency", type=int, default=int(os.getenv("FLEET_CONCURRENCY", "1")))
     parser.add_argument("--lmstudio-url", default=os.getenv("FLEET_LMSTUDIO_URL"))
     args = parser.parse_args()
     run(

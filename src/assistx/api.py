@@ -52,6 +52,8 @@ from .recovery_control import (
 )
 from .recovery_runbooks import build_runbook, sign_runbook
 from .node_identity import verify_node_token
+from .trace_claim_lease_api import build_claim_lease_router
+from .trace_claim_lease import is_trace_probe_candidate, is_trace_probe_task
 from .operations_readiness import build_operations_readiness
 from .self_healing import SelfHealingController
 
@@ -4274,7 +4276,15 @@ def api_claim_task(
     task_obj = neo.get_task(task_id)
     if not task_obj:
         raise HTTPException(status_code=404, detail="Task not found")
-    if _is_recovery_task(task_obj):
+    if is_trace_probe_candidate(task_obj):
+        if not is_trace_probe_task(task_obj):
+            raise HTTPException(status_code=409, detail="trace_probe_schema_mismatch")
+        if os.getenv("ASSISTX_TRACE_LEASE_ISSUER_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
+            raise HTTPException(status_code=409, detail="trace_probe_claims_disabled")
+        _verify_fleet_node_identity(body.agent_id, x_fleet_node_token)
+        if task_obj.get("target_agent_id") != body.agent_id:
+            raise HTTPException(status_code=403, detail="trace_probe_target_mismatch")
+    elif _is_recovery_task(task_obj):
         _verify_recovery_node_identity(body.agent_id, x_fleet_node_token)
     allowed, reason = _is_claim_allowed_for_workflow_control(task_obj)
     if not allowed:
@@ -4308,7 +4318,13 @@ def api_heartbeat_task(
     neo = _neo()
     try:
         task_before = neo.get_task(task_id)
-        if task_before and _is_recovery_task(task_before):
+        if task_before and is_trace_probe_candidate(task_before):
+            if not is_trace_probe_task(task_before):
+                raise HTTPException(status_code=409, detail="trace_probe_schema_mismatch")
+            _verify_fleet_node_identity(body.agent_id, x_fleet_node_token)
+            if not body.claim_id:
+                raise HTTPException(status_code=403, detail="trace_probe_claim_id_required")
+        elif task_before and _is_recovery_task(task_before):
             _verify_recovery_node_identity(body.agent_id, x_fleet_node_token)
         task = neo.heartbeat_task(
             task_id=task_id,
@@ -4337,7 +4353,13 @@ def api_complete_task(
         raise HTTPException(status_code=400, detail="status must be DONE, FAILED, or CANCELLED")
     neo = _neo_fleet()
     task_before = neo.get_task(task_id) or {}
-    if _is_recovery_task(task_before):
+    if is_trace_probe_candidate(task_before):
+        if not is_trace_probe_task(task_before):
+            raise HTTPException(status_code=409, detail="trace_probe_schema_mismatch")
+        _verify_fleet_node_identity(body.agent_id, x_fleet_node_token)
+        if not body.claim_id:
+            raise HTTPException(status_code=403, detail="trace_probe_claim_id_required")
+    elif _is_recovery_task(task_before):
         _verify_recovery_node_identity(body.agent_id, x_fleet_node_token)
     improvement_evaluation = evaluate_completion(
         task_before,
@@ -4618,6 +4640,15 @@ def _verify_fleet_node_identity(
         raise HTTPException(status_code=403, detail=missing_message)
     if error:
         raise HTTPException(status_code=403, detail=invalid_message)
+
+
+# Review-only lease proof. Endpoint is fail-closed unless explicitly enabled;
+# signing existing CLAIMED trace probes does not authorize any executor.
+app.include_router(build_claim_lease_router(
+    neo_factory=_neo_fleet,
+    auth_dependency=auth,
+    verify_node_identity=_verify_fleet_node_identity,
+))
 
 
 @app.post("/api/paperclip/events")

@@ -1,0 +1,141 @@
+name: trace-execution-acceptance
+
+on:
+  pull_request:
+    paths:
+      - "src/assistx/trace_*"
+      - "src/assistx/fleet_node_agent.py"
+      - "src/assistx/api.py"
+      - "tests/test_trace_*"
+      - "tests/test_fleet_node_*"
+      - "scripts/trace_*"
+      - "docs/TRACE_EXECUTION_ACCEPTANCE_REMEDIATION_20261008.md"
+      - "docs/TRACE_PR119_*.md"
+      - ".github/workflows/trace-execution-acceptance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace-proof-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install pinned repository requirements
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Compile trace admission and staging harness
+        run: |
+          python -m py_compile \
+            src/assistx/fleet_node_agent.py \
+            src/assistx/trace_claim_lease.py \
+            src/assistx/trace_claim_lease_api.py \
+            src/assistx/trace_claim_live_executor.py \
+            src/assistx/trace_execution_adapter.py \
+            src/assistx/trace_segment_plan.py \
+            src/assistx/trace_segment_bundle.py \
+            src/assistx/trace_segment_nas.py \
+            scripts/trace_claim_lease_staging_canary.py \
+            scripts/trace_claim_live_platform_smoke.py \
+            scripts/trace_node_readonly_inventory.py \
+            scripts/trace_node_offline_negative.py \
+            scripts/trace_node_readonly_chain.py \
+            scripts/trace_key_custody_readonly.py \
+            scripts/trace_acceptance_report.py \
+            scripts/trace_node_readonly_inventory.py \
+            scripts/trace_node_offline_negative.py \
+            scripts/trace_node_readonly_chain.py \
+            scripts/trace_key_custody_readonly.py \
+            tests/test_trace_acceptance_report.py \
+            tests/test_trace_node_readonly_inventory.py \
+            tests/test_trace_node_offline_negative.py \
+            tests/test_trace_node_readonly_chain.py \
+            tests/test_trace_api_readonly_startup.py \
+            tests/test_trace_key_custody_readonly.py
+      - name: Trace admission lint
+        run: |
+          ruff check --ignore UP017 \
+            src/assistx/fleet_node_agent.py \
+            src/assistx/trace_claim_lease.py \
+            src/assistx/trace_claim_lease_api.py \
+            src/assistx/trace_claim_live_executor.py \
+            src/assistx/trace_segment_plan.py \
+            src/assistx/trace_segment_bundle.py \
+            src/assistx/trace_segment_nas.py \
+            tests/test_trace_claim_lease.py \
+            tests/test_trace_claim_live_executor.py \
+            tests/test_trace_http_redirect.py \
+            tests/test_trace_segment_plan.py \
+            tests/test_trace_segment_nas.py \
+            tests/test_trace_execution_adapter.py \
+            scripts/trace_claim_lease_staging_canary.py \
+            scripts/trace_claim_live_platform_smoke.py \
+            scripts/trace_acceptance_report.py \
+            tests/test_trace_acceptance_report.py
+      - name: Fail-closed trace and recovery regression suite
+        env:
+          FLEET_TRACE_PROBE_ENABLED: "false"
+          FLEET_TRACE_REAL_EXECUTION_ENABLED: "false"
+          FLEET_UNSAFE_SHELL_TASKS_ENABLED: "false"
+          ASSISTX_TRACE_LEASE_ISSUER_ENABLED: "false"
+        run: |
+          pytest -q --junitxml=trace-acceptance-junit.xml \
+            tests/test_trace_acceptance_report.py \
+            tests/test_trace_node_readonly_inventory.py \
+            tests/test_trace_node_offline_negative.py \
+            tests/test_trace_node_readonly_chain.py \
+            tests/test_trace_api_readonly_startup.py \
+            tests/test_trace_key_custody_readonly.py \
+            tests/test_trace_claim_live_executor.py \
+            tests/test_trace_http_redirect.py \
+            tests/test_trace_segment_plan.py \
+            tests/test_trace_segment_nas.py \
+            tests/test_trace_claim_lease.py \
+            tests/test_trace_shadow_grant.py \
+            tests/test_trace_execution_shadow_backup.py \
+            tests/test_trace_execution_adapter.py \
+            tests/test_trace_execution_shadow_paths.py \
+            tests/test_fleet_node_shell_gate.py \
+            tests/test_fleet_node_recovery.py \
+            tests/test_safe_fleet_executor.py \
+            tests/test_fleet_executor_concurrency.py
+
+      - name: Emit revision-bound, deny-only acceptance artifact
+        if: always()
+        env:
+          TRACE_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TRACE_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          TRACE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python scripts/trace_acceptance_report.py \
+            --junit trace-acceptance-junit.xml \
+            --output trace-acceptance.json \
+            --head "$TRACE_PR_HEAD_SHA" \
+            --base "$TRACE_PR_BASE_SHA" \
+            --tested "$(git rev-parse HEAD)" \
+            --run-url "$TRACE_RUN_URL"
+          python -m json.tool trace-acceptance.json >/dev/null
+          python scripts/trace_acceptance_report.py \
+            --junit trace-acceptance-junit.xml \
+            --verify-report trace-acceptance.json \
+            --head "$TRACE_PR_HEAD_SHA" \
+            --base "$TRACE_PR_BASE_SHA" \
+            --tested "$(git rev-parse HEAD)"
+          sha256sum trace-acceptance.json
+      - name: Retain trace acceptance and offline test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trace-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            trace-acceptance.json
+            trace-acceptance-junit.xml
+          if-no-files-found: error
+          retention-days: 30
