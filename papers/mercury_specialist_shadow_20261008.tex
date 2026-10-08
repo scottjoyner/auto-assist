@@ -47,4 +47,36 @@ Source: \texttt{scripts/mercury\_shadow\_specialists.py}; tests: \texttt{tests/t
 \bibitem{rfc6585} M. Nottingham and R. Fielding. \emph{Additional HTTP Status Codes}, RFC 6585, 2012. \url{https://www.rfc-editor.org/rfc/rfc6585}.
 \bibitem{nist} National Institute of Standards and Technology. \emph{Secure Hash Standard}, FIPS 180-4, 2015. \url{https://doi.org/10.6028/NIST.FIPS.180-4}.
 \end{thebibliography}
+
+\section{Follow-on experiment: transactional mock denial acceptance}
+The operator approved continued offline hardening, not hosted inference or any
+production activation. The follow-on hypotheses were recorded in the
+engineering protocol before running the additional focused tests. A
+fixture-only SQLite authority now atomically claims task IDs and reserves the
+per-role worst-case input and output budget for a single synthetic physical
+upstream group. Released reservations are conservatively still charged; a
+successful fixture result cannot mint or restore vendor credits. Exact task,
+attempt, node, role, model, provider group, and epoch bindings are rechecked
+at renewal and in a fake provider-call-site shim.
+
+The extended suite reports 69 passing offline tests in 0.42 seconds
+(including the original 40 tests). New test fixtures exercise eight
+concurrent claimants, parallel same-task adapter submission, restart replay,
+cumulative reservation exhaustion, expired and revoked leases, changed
+identity and epoch, custody acknowledgement loss, and forbidden ingress
+types. No actual Mercury BotManager, provider SDK, router, credential,
+network endpoint, hosted inference call, or production service was used.
+The fake-call counter is explicitly synthetic and must not be reported as
+model-token consumption.
+
+\section{Follow-on limitations and next falsification boundary}
+The proof is restricted to a single-host trusted-local SQLite fixture and
+an in-process simulated witness; it does not establish cross-host authenticated
+quota coordination or independent WORM custody. The actual Mercury
+\texttt{streamText} provider call remains unmodified. A future pinned
+isolated fork must prove every Mercury ingress shares the same pre-call
+admission and that real SDK cancellation cannot emit further tokens after
+revocation; these are blockers, not inferred successes. No free-provider
+testing authorization was granted by this follow-on experiment.
+
 \end{document}
