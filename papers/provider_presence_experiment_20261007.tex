@@ -86,6 +86,38 @@ overestimate usage because they count entire lifetimes of sessions updated
 within the window. Both admission gates are local to one machine and do not
 supply fleet-wide atomic reservations; independent clients and hosts can
 still exceed a shared upstream provider limit.
+\section{Transactional Lease Pilot: Prospective Slice}
+The preregistered protocol for the next slice was recorded in
+\texttt{docs/shared\_provider\_lease\_prospectus\_20261007.md} prior
+to the offline trial. A private local SQLite coordinator used
+\texttt{BEGIN IMMEDIATE} to serialize independent writer transactions
+\cite{sqlite}. This is a cooperative one-host admission mechanism and
+does not supersede the independent runtime gate in the live auto-router.
+The prototype groups the Kilo aliases into one upstream quota domain;
+unknown aggregators are deliberately rejected rather than granted
+additional quota.
+
+On October 7, twenty simultaneous clients attempted to reserve a
+single slot using two aliases. The reproducible trial reported
+one accepted and nineteen denied leases, maximum concurrent active
+leases of one, twenty-four chained audit events, and 1.1614 seconds of
+elapsed test time. Retrying the original request key did not produce
+a second lease. A synthetic HTTP 429 opened a provider-specific
+3600-second circuit, consistent with its rate-limiting semantics and
+optional \texttt{Retry-After} guidance \cite{rfc6585}. No network
+generation calls were made and no inference tokens were consumed.
+The combined focused regression suite passed 56 tests, including
+a separate eight-process contention case and a renewal test that
+prevents accidentally shortening an active lease.
+
+These results validate the transactional ledger's offline behavior,
+not fleet-wide safety or actual free-model availability. The audit
+chain is locally tamper-evident only and lacks external attestation;
+leases are cooperative and an expired worker must stop itself. We
+have not deployed authenticated cross-node transports or replaced
+runtime routing admission, and no claim of zero real-world quota
+violations follows from these synthetic observations.
+
 \begin{thebibliography}{9}
 \bibitem{openrouter} OpenRouter. List all models and their properties.
 \url{https://openrouter.ai/docs/api/api-reference/models/get-models}
@@ -96,5 +128,12 @@ still exceed a shared upstream provider limit.
 \bibitem{xai} xAI. API Pricing.
 \url{https://docs.x.ai/developers/pricing}
 (accessed October 2026).
+\bibitem{sqlite} SQLite. Transaction control and the IMMEDIATE mode.
+\url{https://www.sqlite.org/lang_transaction.html}
+(accessed October 7, 2026).
+\bibitem{rfc6585} Nottingham, M. and R. Fielding.
+Additional HTTP Status Codes. RFC 6585, Section 4 (April 2012).
+\url{https://www.rfc-editor.org/rfc/rfc6585}
+(accessed October 7, 2026).
 \end{thebibliography}
 \end{document}

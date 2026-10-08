@@ -1,0 +1,40 @@
+{
+  "acceptance": {
+    "audit_valid": true,
+    "circuit_blocks": true,
+    "idempotent_existing": true,
+    "one_slot_only": true,
+    "released": true,
+    "zero_generation_requests": true
+  },
+  "host": "x1-370",
+  "limitations": [
+    "single-host local SQLite only",
+    "clients must enforce lease loss and expiry independently",
+    "no authenticated remote transport or provider-quota observation",
+    "audit chain is not externally notarized or WORM"
+  ],
+  "observations": {
+    "audit_events": 24,
+    "audit_last_hash": "d1a9e0ac8809324a4e193850337f361dd6094d19a47c0764a1cc2dc94311f09f",
+    "circuit_until_injected_epoch": 4603.0,
+    "contenders": 20,
+    "elapsed_seconds": 1.1614,
+    "inference_requests": 0,
+    "inference_tokens": 0,
+    "leases_denied": 19,
+    "leases_granted": 1,
+    "max_active": 1
+  },
+  "observed_at_utc": "2026-10-08T01:56:30.989350+00:00",
+  "pass": true,
+  "pre_registered_hypotheses": [
+    "one of twenty concurrent clients receives the only active slot",
+    "duplicate request does not reserve another slot",
+    "429 suppresses new grants for >=3600 seconds",
+    "each transaction has an auditable hash-chain event",
+    "zero generation tokens or provider API requests"
+  ],
+  "python": "3.12.3",
+  "schema": "provider-lease-offline-pilot/v1"
+}
