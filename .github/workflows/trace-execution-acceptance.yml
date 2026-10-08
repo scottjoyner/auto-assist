@@ -43,8 +43,11 @@ jobs:
             src/assistx/trace_segment_nas.py \
             scripts/trace_claim_lease_staging_canary.py \
             scripts/trace_claim_live_platform_smoke.py \
+            scripts/trace_node_readonly_inventory.py \
             scripts/trace_acceptance_report.py \
-            tests/test_trace_acceptance_report.py
+            scripts/trace_node_readonly_inventory.py \
+            tests/test_trace_acceptance_report.py \
+            tests/test_trace_node_readonly_inventory.py
       - name: Trace admission lint
         run: |
           ruff check --ignore UP017 \
@@ -74,6 +77,7 @@ jobs:
         run: |
           pytest -q --junitxml=trace-acceptance-junit.xml \
             tests/test_trace_acceptance_report.py \
+            tests/test_trace_node_readonly_inventory.py \
             tests/test_trace_claim_live_executor.py \
             tests/test_trace_http_redirect.py \
             tests/test_trace_segment_plan.py \
