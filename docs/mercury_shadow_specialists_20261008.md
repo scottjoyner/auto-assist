@@ -116,3 +116,13 @@ from real token usage and independently accepted work.
 experiment. Next implementation is a pinned-upstream, isolated **offline**
 provider-call-site wrapper with simulated stream/abort behavior. Do not
 reassign free-provider checkpoint status based on this fixture pass.
+
+## Next offline acceptance slice: pinned Mercury bot-turn stream intercept
+
+**October 8, 2026:** The operator-approved mock-only follow-on is captured in
+`docs/mercury_pinned_offline_stream_20261008.md` with preregistered hypotheses,
+source pin, tested patch, twelve native no-network Node tests, measured
+observations, test-fixture correction, and explicit nonclaims. The prior
+69/69 Python fixtures still pass. No real Mercury worker, SDK generation,
+provider credits or production authority were exercised; draft/no-live
+boundaries and the NOT REACHED checkpoint are unchanged.
