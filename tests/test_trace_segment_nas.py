@@ -285,3 +285,81 @@ def test_publisher_rejects_insecure_destination_before_writing(case):
         publish(case)
     assert not list(case["destination"].iterdir())
     assert not list(case["witness"].iterdir())
+
+
+def test_crash_after_index_before_signed_witness_recovers_with_prepared_intent(case):
+    """The exactly requested crash gap: remote index durable, no success witness."""
+    from assistx.trace_nas_intents import read_intents
+
+    original_open = nas.os.open
+
+    def simulate_witness_open_failure(path, *args, **kwargs):
+        if str(path).endswith("/published.jsonl"):
+            raise OSError("simulated crash between index and witness")
+        return original_open(path, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(nas.os, "open", simulate_witness_open_failure)
+        with pytest.raises(OSError, match="simulated crash"):
+            publish(case)
+
+    root = case["destination"] / "xwing" / hashlib.sha256(case["history"]).hexdigest()
+    assert (root / "index.json").exists()
+    assert not (case["witness"] / "published.jsonl").exists()
+    events = read_intents(case["witness"], case["key"])
+    assert [entry["phase"] for entry in events] == ["prepared"]
+    # Exactly matching signed PREPARED event authorizes verified completion.
+    result = publish(case)
+    assert result["ok"] and not result["reused"]
+    assert [e["phase"] for e in read_intents(case["witness"], case["key"])] == [
+        "prepared",
+        "acknowledged",
+    ]
+    assert independent(case, result["journal_sha256"])["nas_restore_verified"]
+
+
+def test_crash_after_witness_before_ack_completes_once(case):
+    from assistx.trace_nas_intents import read_intents
+
+    append = nas.append_intent
+
+    def crash_on_ack(root, *, phase, **kwargs):
+        if phase == "acknowledged":
+            raise RuntimeError("fixture simulated ack crash")
+        return append(root, phase=phase, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(nas, "append_intent", crash_on_ack)
+        with pytest.raises(RuntimeError, match="ack crash"):
+            publish(case)
+
+    rows = nas._witness_rows(case["witness"] / "published.jsonl", case["key"])
+    assert len(rows) == 1
+    assert [e["phase"] for e in read_intents(case["witness"], case["key"])] == ["prepared"]
+    with pytest.raises(TraceDenied, match="nas_signed_custody_ack_missing"):
+        independent(case, rows[0]["journal_sha256"])
+    result = publish(case)
+    assert result["reused"]
+    assert len(nas._witness_rows(case["witness"] / "published.jsonl", case["key"])) == 1
+    assert [e["phase"] for e in read_intents(case["witness"], case["key"])] == [
+        "prepared",
+        "acknowledged",
+    ]
+    assert independent(case, result["journal_sha256"])["ok"]
+
+
+def test_corrupted_intent_ledger_fails_closed_with_original_witness_intact(case):
+    publish(case)
+    original = (case["witness"] / "published.jsonl").read_bytes()
+    path = case["witness"] / "publication-intents.jsonl"
+    path.write_bytes(path.read_bytes()[:-2] + b"x\n")
+    with pytest.raises(TraceDenied, match="nas_intent_invalid"):
+        publish(case)
+    assert (case["witness"] / "published.jsonl").read_bytes() == original
+
+
+def test_prior_success_witness_loss_does_not_recover_from_old_intent(case):
+    publish(case)
+    (case["witness"] / "published.jsonl").unlink()
+    with pytest.raises(TraceDenied, match="nas_witness_missing_with_archives_present"):
+        publish(case)

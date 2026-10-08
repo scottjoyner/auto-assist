@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .trace_execution_adapter import TraceDenied, TraceReceiptStore
+from .trace_nas_intents import append_intent, intent_metadata, intent_state, read_intents
 from .trace_segment_bundle import _filename, _private, _read, verify_bundle
 from .trace_segment_plan import canonical, digest
 
@@ -205,15 +206,37 @@ def publish_bundle(
         fcntl.flock(lockfd, fcntl.LOCK_EX)
         witness_path = witness_root / "published.jsonl"
         rows = _witness_rows(witness_path, signing_key)
+        intent_meta = intent_metadata(
+            node_id=node_id,
+            journal_sha256=journal_hash,
+            ciphertext_index_sha256=digest(_read(source / "index.json", 8 * 1024 * 1024)),
+            mount_source=expected_mount_source,
+            mount_target=expected_mount_target,
+        )
+        intents = read_intents(witness_root, signing_key)
+        prepared, acknowledged = intent_state(intents, intent_meta)
         node_root = destination / node_id
-        # Never initialize a fresh custody history over an already complete
-        # remote archive after the separate signed witness disappears.
+        # Never reset custody after the witness is lost. Only a previously
+        # fsynced PREPARED intent for this exact archive permits recovering
+        # the post-index/pre-witness crash window; an ACK requires witness.
         if not witness_path.exists() and node_root.is_dir():
-            if any(node_root.glob("*/index.json")):
+            indices = list(node_root.glob("*/index.json"))
+            if indices and (acknowledged or not prepared or any(index.parent != content_root for index in indices)):
                 raise TraceDenied("nas_witness_missing_with_archives_present")
         duplicates = [r for r in rows if r.get("node_id") == node_id and r.get("journal_sha256") == journal_hash]
         if len(duplicates) > 1:
             raise TraceDenied("nas_duplicate_witness")
+        if acknowledged and not duplicates:
+            raise TraceDenied("nas_witness_missing_after_ack")
+        if not prepared:
+            if (content_root / "index.json").exists():
+                raise TraceDenied("nas_intent_missing_for_existing_archive")
+            append_intent(
+                witness_root,
+                signing_key=signing_key,
+                metadata=intent_meta,
+                phase="prepared",
+            )  # Persist intent BEFORE any remote bytes are written.
         for path in (node_root, content_root):
             assert_mount(destination, expected_source=expected_mount_source, expected_target=expected_mount_target)
             if path.is_symlink():
@@ -253,6 +276,13 @@ def publish_bundle(
             prior = {k: v for k, v in duplicates[0].items() if k not in ("signature", "previous_signature")}
             if prior != witness_meta:
                 raise TraceDenied("nas_existing_witness_conflict")
+            if not acknowledged:
+                append_intent(
+                    witness_root,
+                    signing_key=signing_key,
+                    metadata=intent_meta,
+                    phase="acknowledged",
+                )
             return {
                 "ok": True,
                 "reused": True,
@@ -283,6 +313,12 @@ def publish_bundle(
             os.fsync(dfd)
         finally:
             os.close(dfd)
+        append_intent(
+            witness_root,
+            signing_key=signing_key,
+            metadata=intent_meta,
+            phase="acknowledged",
+        )  # Post-commit ack seals any future missing-witness replay.
         return {
             "ok": True,
             "reused": False,
@@ -339,6 +375,16 @@ def verify_published_bundle(
     _private(archive)
     if digest(_read(archive / "index.json", 8 * 1024 * 1024)) != witness.get("ciphertext_index_sha256"):
         raise TraceDenied("nas_signed_index_hash_changed")
+    intent_info = intent_metadata(
+        node_id=node_id,
+        journal_sha256=journal_sha256,
+        ciphertext_index_sha256=witness["ciphertext_index_sha256"],
+        mount_source=expected_mount_source,
+        mount_target=expected_mount_target,
+    )
+    _, acknowledged = intent_state(read_intents(witness_root, signing_key), intent_info)
+    if not acknowledged:
+        raise TraceDenied("nas_signed_custody_ack_missing")
     restored = verify_bundle(archive, node_id=node_id, passphrase=passphrase, signing_key=signing_key)
     records = TraceReceiptStore._verify_data(restored)
     if (
