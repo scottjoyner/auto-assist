@@ -103,3 +103,29 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
  .trace-pager button { font-size: .7rem; padding: 10px 8px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
+
+/* Recorded event-property context; no inferred agent or machine claims. */
+.trace-context { padding: 18px; margin-bottom: 20px; border: 1px solid var(--line); background: rgba(9,18,22,.6); border-radius: 8px; }
+.trace-context-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.trace-context h3 { margin:0; font: 700 .94rem var(--sans); color:var(--text); }
+.trace-context-note { margin-top: 7px; font-size:.74rem; line-height:1.55; color:var(--text-secondary); }
+.trace-context-groups { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); column-gap:16px; row-gap:15px; margin-top:16px; }
+.trace-context-group { display:flex; flex-wrap:wrap; align-items:flex-start; gap:6px; min-width:0; }
+.trace-context-group h4 { width:100%; font:700 .66rem var(--mono); color:var(--steel); text-transform:uppercase; letter-spacing:.07em; }
+.trace-context-chip, .trace-clear-context { cursor:pointer; border:1px solid var(--line-hot); border-radius:6px; background:rgba(20,33,38,.9); color:var(--text); padding:9px 10px; font: .75rem var(--mono); max-width:100%; }
+.trace-context-chip { display:inline-flex; align-items:center; flex-wrap:wrap; text-align:left; gap:7px; overflow-wrap:anywhere; }
+.trace-context-chip span { min-width:0; overflow-wrap:anywhere; }
+.trace-context-chip small { color:var(--text-secondary); white-space:nowrap; }
+.trace-context-chip:hover, .trace-clear-context:hover { border-color:var(--cyan); }
+.trace-context-chip.selected { background:rgba(70,231,255,.13); border-color:var(--cyan); }
+.trace-clear-context { color:var(--cyan); white-space:nowrap; }
+.trace-context-unknown { color:var(--muted); font:.72rem var(--mono); }
+.trace-context-foot { border-top:1px solid var(--line); margin-top:15px; padding-top:12px; color:var(--muted); font-size:.7rem; line-height:1.55; }
+.trace-timeline-header { display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin:0 0 20px; }
+.trace-timeline-header h3 { font-size:.85rem; color:var(--text); font-weight:700; }
+.trace-timeline-header span { font:.69rem var(--mono); color:var(--muted); }
+@media (max-width:600px) {
+ .trace-context { padding:12px; }
+ .trace-context-groups { grid-template-columns:1fr; }
+ .trace-context-heading { flex-direction:column; align-items:stretch; }
+}
