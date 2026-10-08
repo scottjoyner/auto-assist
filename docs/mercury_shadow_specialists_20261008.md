@@ -61,3 +61,58 @@ The current `BotManager` queue lease protects resumable **jobs** (60-second rene
 No installed service or live config was changed. No worker runtime is exported or wired into API/router routes. Rollback is reverting this additive code/document branch. Existing provider timers, free-provider pause, AssistX deployment snapshot, NAS recovery and operational tool history remain untouched.
 
 **Remaining blocking research:** no proven production key authority, cross-host lease coordination, independent WORM witness, real mid-inference cancellation, physical quota limits, model generation results, real quality acceptance, or Mercury UI integration. A full disk requires denying new work rather than trimming trace history.
+
+## October 8 follow-on preregistration: transactional mock-only denial slice
+
+**Scope and authority:** Operator approved the previously recommended mock-only
+hardening of draft PR #130. No live provider access, Mercury BotManager startup,
+production routing changes, real keys, second node, or hosted inference is authorized.
+The fixture's sqlite database must live on trusted local storage, never SMB/CIFS.
+This addendum records the expected outcomes before running the *new* focused tests;
+the original 40 regression tests were already executed during development.
+
+- **H1 — concurrent group admission:** eight synthetic contenders sharing one
+  SQLite fixture will receive no more than one simultaneous upstream-group lease.
+- **H2 — idempotency:** reusing a task ID after denial, crash/restart, or release
+  will never re-admit; a different task is only eligible if the fixed group budget permits.
+- **H3 — exact scope:** altered node, role, attempt, model, epoch, or expired/revoked
+  lease is rejected before the fake provider-call counter increments.
+- **H4 — quota:** a full reservation is charged before a mock dispatch. The
+  fixed mock upstream-group budget will not be independently multiplied by aliases
+  or refreshed by mere worker completion.
+- **H5 — custody:** failed synthetic acknowledgement before start, or before
+  provider-call-site evaluation, stops the corresponding simulated work.
+- **H6 — ingress:** synthetic webhook, cron, message, replay, and peer calls
+  are denied at the fake provider-call boundary with zero fake provider calls.
+
+**Non-claims:** In-process acknowledgements are not independent WORM witnessing;
+SQLite is not a production authenticated coordinator; simulated cancellation does
+not prove Mercury SDK mid-stream revocation; the fake call site never invokes a
+model or exercises the actual BotManager. Any report must separate mocked counters
+from real token usage and independently accepted work.
+
+## Follow-on observations (October 8, 2026; after preregistration)
+
+- **69/69 offline tests PASS** (0.42 s) across the original fixture tests
+  and the new transactional/mock-call-site suite; Python syntax compilation
+  and whitespace checks passed. No real provider generation occurred.
+- A trusted-local SQLite fixture uses an immediate transaction for task-ID
+  uniqueness and a single active physical-upstream-group reservation.
+  Eight concurrent synthetic contenders admitted exactly one; parallel
+  same-task adapter invocations started exactly one fixture worker.
+- Reservations count against finite group capacity even after mock release:
+  neither completion nor an alias can manufacture restored credits.
+- Expired, revoked, wrong-node, wrong-model, wrong-role, altered-attempt and
+  superseded-epoch bindings are denied at the fake provider-call boundary.
+  Mock witness acknowledgement failure blocks the associated action.
+- Synthetic webhook, cron, messages, DLQ replay, mailbox, and crew paths
+  cannot invoke the fake call site; only explicit router-origin is accepted.
+- This is **not an integration into Mercury**: no actual streamText SDK
+  interception, socket, cross-node authenticated renewal, physical quota
+  provenance, hosted request, production router authority, independent WORM
+  trace preservation or genuine deliverable-quality judgment was exercised.
+
+**Disposition:** remain draft, disabled by default, no live free-provider
+experiment. Next implementation is a pinned-upstream, isolated **offline**
+provider-call-site wrapper with simulated stream/abort behavior. Do not
+reassign free-provider checkpoint status based on this fixture pass.
