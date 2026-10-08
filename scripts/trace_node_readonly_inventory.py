@@ -81,9 +81,17 @@ def journal_metadata(root):
         return {"status": "not_configured"}
     base = metadata(root)
     path = Path(root) / "journal.jsonl"
+    if (
+        base.get("status") != "observed"
+        or not base.get("directory")
+        or not base.get("owned_by_observer")
+        or base.get("symlink")
+        or int(base.get("mode", "0777"), 8) & 0o077
+    ):
+        return {"root": base, "journal": {"status": "unavailable_or_unsafe_root"}}
     info = metadata(str(path))
     result = {"root": base, "journal": info}
-    if info.get("status") == "observed" and info.get("regular_file"):
+    if info.get("status") == "observed" and info.get("regular_file") and not info.get("symlink"):
         size = info["size_bytes"]
         if size > MAX_JOURNAL_HASH_BYTES:
             result["journal_hash_status"] = "too_large_not_read"
