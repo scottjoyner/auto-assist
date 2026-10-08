@@ -244,7 +244,7 @@ def collect(expected_node, audit_root, release_root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-node", required=True,
-                        choices=["xwing", "scotts-macbook-air"])
+                        choices=["xwing", "scotts-macbook-air", "x1-370"])
     parser.add_argument("--audit-root", required=True)
     parser.add_argument("--release-root", required=True)
     args = parser.parse_args()
