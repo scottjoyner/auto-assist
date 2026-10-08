@@ -131,6 +131,9 @@ services:
       - ASSISTX_OVERLAY_MODE=${ASSISTX_OVERLAY_MODE:-router_plus_assign}
 
       # --- App paths ---
+      # Authenticated read-only burn projection from the existing artifacts bind mount.
+      # The snapshot is produced out-of-process; AssistX never calls providers.
+      - ASSISTX_FREE_BURN_REPORT_PATH=/app/artifacts/free-endpoint-burn.json
       - CACHE_PATH=/app/.assistx_cache.sqlite
       # Executor tokens admit these fleet-default model aliases when the task
       # declares none (comma-separated).

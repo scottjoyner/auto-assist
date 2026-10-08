@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block nav_active %}usage{% endblock %}
+{% block title %}AssistX // Provider Usage & Burn{% endblock %}
+{% block content %}
+<div class="grid">
+  <section class="card hero">
+    <div class="section-header">
+      <div>
+        <h1>Provider usage & burn rate</h1>
+        <p class="kicker">Read-only fleet consumption observations — not a provider quota or routing permit.</p>
+      </div>
+      <div class="actions">
+        <button id="usage-refresh" class="btn" type="button">Refresh snapshot</button>
+        <a class="btn secondary" href="/traces">Trace history</a>
+        <a class="btn secondary" href="/fleet-dashboard">Fleet Dashboard</a>
+      </div>
+    </div>
+    <p id="usage-state" class="kicker" role="status">Loading precomputed report…</p>
+    <div class="metric-grid mt-4">
+      <div class="metric"><div class="metric-label">Observed 24h</div><div id="usage-24h" class="metric-value">—</div></div>
+      <div class="metric"><div class="metric-label">Next 24h (flat pace)</div><div id="usage-forecast" class="metric-value">—</div></div>
+      <div class="metric"><div class="metric-label">Snapshot freshness</div><div id="usage-freshness" class="metric-value">—</div></div>
+      <div class="metric"><div class="metric-label">Quota remaining</div><div class="metric-value">Unknown</div></div>
+    </div>
+    <p class="kicker mt-4">Token totals include reported cache/reasoning consumption. Verified free entitlement, billing units, shared upstream quota groups, and reset times are unknown.</p>
+  </section>
+  <section class="card">
+    <h2>Provider telemetry</h2>
+    <div class="table-wrap mt-3">
+      <table class="dashboard-table"><thead><tr>
+        <th>Provider</th><th>Presence</th><th>1h tokens</th><th>24h tokens</th><th>7d tokens</th><th>Cache reads 24h</th><th>Next 24h</th><th>Operator plan/day</th>
+      </tr></thead><tbody id="usage-providers"><tr><td colspan="8">Loading…</td></tr></tbody></table>
+    </div>
+  </section>
+  <section class="card">
+    <h2>Model consumption detail</h2>
+    <p class="kicker">A model name ending in “free” is only a naming hint; not proof of entitlement.</p>
+    <div class="table-wrap mt-3">
+      <table class="dashboard-table"><thead><tr>
+        <th>Provider</th><th>Requested model</th><th>Free name hint</th><th>24h tokens</th><th>7d tokens</th><th>Last step</th>
+      </tr></thead><tbody id="usage-models"><tr><td colspan="6">Loading…</td></tr></tbody></table>
+    </div>
+  </section>
+  <section class="card">
+    <h2>Trace and acceptance</h2>
+    <p class="kicker">Existing <a href="/traces">AssistX trace history</a> is the canonical investigative view. These aggregates do not include raw prompts, tools, commits or independently accepted delivery receipts.</p>
+    <p class="kicker">A partial or stale snapshot is explicitly marked; it never shows false zero usage or grants provider admission.</p>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script defer src="{{ url_for('static', path='js/provider_usage.js') }}"></script>
+{% endblock %}
