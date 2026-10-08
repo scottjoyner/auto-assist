@@ -119,6 +119,7 @@ test("no exhaust-before-reset stays forecast-unknown even with measured positive
   const r = evaluate(s, samples(s), options);
   assert.equal(r.status, "authoritative");
   assert.equal(r.forecast_reason, "not_before_reset");
+  assert.ok(r.burn_per_hour > 0, "measured burn is still valid even when forecast is not");
   assert.equal(r.projected_exhaustion_at, null);
 });
 test("non-monotone, mismatched snapshot and invalid unit remain bounded", () => {
