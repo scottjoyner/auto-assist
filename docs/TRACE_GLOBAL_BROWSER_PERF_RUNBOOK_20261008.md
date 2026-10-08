@@ -44,3 +44,13 @@ docker rm -v assistx-tracebench-stage-20261008
 **Checkpoint result:** 85,000 generated trace groups / 170,000 synthetic event nodes; exact outcome totals 34,000 failed / 34,000 completed / 17,000 open. Three Cypher-shell count and three page calls per category had process wall medians around 2.4–2.7 seconds, **including JVM startup and Docker exec**. Neo4j driver transaction timeouts and production p95 are NOT measured. `EXPLAIN` output included only top-level metadata without a detailed operator tree, so it cannot prove DB hits, indexes or query-plan efficiency. Version 5.23.0 staged; a 5.26 production-version validation is still pending. This does not close [release gate #123](https://github.com/scottjoyner/auto-assist/issues/123).
 
 Read `TRACE_GLOBAL_PERF_PROSPECTUS_20261008.md`, `TRACE_GLOBAL_STAGE_OBSERVATIONS_20261008.md`, and `trace_global_perf_synthetic_results.json` for predictions, observations and machine-readable synthetic evidence. Both UI PRs remain draft and production unchanged.
+
+
+## Safety checks added after the staging run
+
+```bash
+PYTHONPATH=src python3 -m pytest -q tests/test_trace_bench_guard.py \
+  tests/test_trace_outcome_filter.py
+```
+
+**28 tests passed (11 benchmark-admission guards + 17 API/query contracts).** The benchmark refuses to run unless a locally inspected container matches the exact disposable name, disconnected network, 5.23 image, no bind mounts/ports, no auth, and the documented capped CPU/memory. The 85k measurement was collected before the guard was added, and is not a measurement of the guarded version; subsequent unit verification proved its admission behavior only. Always remove the test container and anonymous volumes following a deliberate experiment.
