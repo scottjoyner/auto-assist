@@ -1,0 +1,122 @@
+{
+  "database": "isolated docker neo4j 5.23.0 community no network/ports/host mounts",
+  "events_per_group": 2,
+  "expected": {
+    "completed": 34000,
+    "failed": 34000,
+    "open": 17000
+  },
+  "group_count": 85000,
+  "live_graph_queries": false,
+  "metrics_include_cypher_shell_startup": true,
+  "production_access": false,
+  "provider_actions": false,
+  "raw_trace_text_read": false,
+  "results": {
+    "completed": {
+      "explain": [
+        {
+          "kind": "count",
+          "plan_excerpt": "Plan: \"EXPLAIN\"\nStatement: \"READ_ONLY\"\nVersion: \"5\"\nPlanner: \"COST\"\nRuntime: \"SLOTTED\"\nTime: 297",
+          "wall_ms": 2686
+        },
+        {
+          "kind": "page",
+          "plan_excerpt": "Plan: \"EXPLAIN\"\nStatement: \"READ_ONLY\"\nVersion: \"5\"\nPlanner: \"COST\"\nRuntime: \"SLOTTED\"\nTime: 378",
+          "wall_ms": 2597
+        }
+      ],
+      "measurements": {
+        "count": {
+          "median_ms": 2522,
+          "sample": "n\n34000",
+          "wall_ms": [
+            2682,
+            2437,
+            2522
+          ]
+        },
+        "page": {
+          "median_ms": 2714,
+          "sample": "correlation_id, events, first_ts, last_ts, types, outcome\n\"synthetic-84998\", 2, 84998000, 84998001, [\"task.accepted\", \"task.progress\"], \"completed\"\n\"synthetic-84997\", 2, 84997000, 84997001, [\"task.progress\", \"task.completed\"], \"completed\"\n\"synthetic-84993\", 2, 84993000, 84993001, [\"task.accepted\", \"task.progress\"], \"completed\"\n\"synthetic-84992\", 2,",
+          "wall_ms": [
+            2888,
+            2714,
+            2441
+          ]
+        }
+      }
+    },
+    "failed": {
+      "explain": [
+        {
+          "kind": "count",
+          "plan_excerpt": "Plan: \"EXPLAIN\"\nStatement: \"READ_ONLY\"\nVersion: \"5\"\nPlanner: \"COST\"\nRuntime: \"SLOTTED\"\nTime: 791",
+          "wall_ms": 3026
+        },
+        {
+          "kind": "page",
+          "plan_excerpt": "Plan: \"EXPLAIN\"\nStatement: \"READ_ONLY\"\nVersion: \"5\"\nPlanner: \"COST\"\nRuntime: \"SLOTTED\"\nTime: 806",
+          "wall_ms": 3089
+        }
+      ],
+      "measurements": {
+        "count": {
+          "median_ms": 2529,
+          "sample": "n\n34000",
+          "wall_ms": [
+            3193,
+            2529,
+            2508
+          ]
+        },
+        "page": {
+          "median_ms": 2600,
+          "sample": "correlation_id, events, first_ts, last_ts, types, outcome\n\"synthetic-84996\", 2, 84996000, 84996001, [\"task.started\", \"task.failed\"], \"failed\"\n\"synthetic-84995\", 2, 84995000, 84995001, [\"task.failed\", \"task.completed\"], \"failed\"\n\"synthetic-84991\", 2, 84991000, 84991001, [\"task.started\", \"task.failed\"], \"failed\"\n\"synthetic-84990\", 2, 84990000, 849900",
+          "wall_ms": [
+            2860,
+            2600,
+            2419
+          ]
+        }
+      }
+    },
+    "open": {
+      "explain": [
+        {
+          "kind": "count",
+          "plan_excerpt": "Plan: \"EXPLAIN\"\nStatement: \"READ_ONLY\"\nVersion: \"5\"\nPlanner: \"COST\"\nRuntime: \"SLOTTED\"\nTime: 370",
+          "wall_ms": 2528
+        },
+        {
+          "kind": "page",
+          "plan_excerpt": "Plan: \"EXPLAIN\"\nStatement: \"READ_ONLY\"\nVersion: \"5\"\nPlanner: \"COST\"\nRuntime: \"SLOTTED\"\nTime: 316",
+          "wall_ms": 2586
+        }
+      ],
+      "measurements": {
+        "count": {
+          "median_ms": 2426,
+          "sample": "n\n17000",
+          "wall_ms": [
+            2426,
+            2318,
+            2445
+          ]
+        },
+        "page": {
+          "median_ms": 2482,
+          "sample": "correlation_id, events, first_ts, last_ts, types, outcome\n\"synthetic-84999\", 2, 84999000, 84999001, [\"task.progress\", \"task.started\"], \"open\"\n\"synthetic-84994\", 2, 84994000, 84994001, [\"task.started\", \"task.progress\"], \"open\"\n\"synthetic-84989\", 2, 84989000, 84989001, [\"task.progress\", \"task.started\"], \"open\"\n\"synthetic-84984\", 2, 84984000, 84984001",
+          "wall_ms": [
+            2344,
+            2482,
+            2537
+          ]
+        }
+      }
+    }
+  },
+  "schema": "assistx-trace-stage-bench-v1",
+  "seed_wall_ms": 10041,
+  "source": "generated-only"
+}

@@ -1,0 +1,72 @@
+name: observability-readonly-contracts
+
+on:
+  pull_request:
+    paths:
+      - 'static/js/traces.js'
+      - 'static/js/provider_burn_model.js'
+      - 'src/assistx/swarm_core.py'
+      - 'src/assistx/swarm_routes.py'
+      - 'tests/test_trace*'
+      - 'tests/test_provider_burn_model.cjs'
+      - 'tests/test_trace_bench_guard.py'
+      - '.github/workflows/observability-readonly.yml'
+  push:
+    branches:
+      - 'review/assistx-observability-rc*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  node-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax and GET-only offline contracts
+        run: |
+          node --check static/js/traces.js
+          node --check static/js/provider_burn_model.js
+          node --check tests/test_trace_investigation_ui.cjs
+          node --check tests/test_provider_burn_model.cjs
+          node --test tests/test_trace_investigation_ui.cjs tests/test_provider_burn_model.cjs
+
+  query-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install test runtime (no database or provider credentials)
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Bounded synthetic trace query / provenance tests
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m pytest -q tests/test_trace_outcome_filter.py \
+            tests/test_trace_context.py tests/test_trace_task_evidence.py \
+            tests/test_trace_bench_guard.py
+
+  synthetic-chromium:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated Playwright and Chromium
+        run: |
+          python -m pip install 'playwright==1.58.0'
+          python -m playwright install --with-deps chromium
+      - name: Loopback-route-only browser acceptance
+        run: python tests/test_trace_browser_synthetic.py

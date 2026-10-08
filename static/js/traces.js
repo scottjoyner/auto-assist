@@ -7,7 +7,7 @@
   var state = {
     offset: 0, search: "", outcome: permittedOutcomes.indexOf(initialOutcome) >= 0 ? initialOutcome : "all",
     total: 0, rows: [],
-    selected: null, listRequest: 0, detailRequest: 0,
+    selected: null, detailLoaded: false, listRequest: 0, detailRequest: 0,
     deepLink: new URL(window.location.href).searchParams.get("trace") || null
   };
 
@@ -85,6 +85,8 @@
     $("trace-total").textContent = "of " + Number(state.total).toLocaleString();
   }
   function paintList() {
+    var active = document.activeElement;
+    var focusedCid = active && active.matches && active.matches("button.trace-row") ? active.dataset.cid : null;
     // The server applies global outcome filtering before pagination.
     var shown = state.rows;
     if (!shown.length) {
@@ -105,12 +107,20 @@
         '<span>' + esc(duration(t.duration_ms)) + '</span>' +
         '<span>' + esc(when(t.last_ts_ms)) + '</span></span></button>';
     }).join("");
+    // Replacing innerHTML removes the focused button; transfer focus to its new peer.
+    if (focusedCid !== null) {
+      var replacement = Array.from($("trace-list").querySelectorAll("button.trace-row")).find(function (row) {
+        return row.dataset.cid === focusedCid;
+      });
+      if (replacement) replacement.focus();
+    }
   }
   function clearSelection(message) {
     evidenceRequest++;
     currentEvidence = null;
     state.selected = null;
     currentTrace = null;
+    state.detailLoaded = false;
     state.detailRequest++;
     persistSelection(null);
     $("trace-detail").innerHTML = placeholder("No trace selected", message || "Choose a result from the index to view its timeline.");
@@ -139,12 +149,25 @@
       state.deepLink = null;
       if (desired) select(desired);
       else if (!state.selected && state.rows.length) select(String(state.rows[0].correlation_id));
+      else if (state.selected && !state.detailLoaded) select(state.selected);
       else if (!state.selected) $("trace-detail").innerHTML =
         placeholder("No matching traces", "Try a different correlation ID, or refresh the index.");
     }).catch(function (err) {
       if (sequence !== state.listRequest) return;
       state.rows = [];
       state.total = 0;
+      state.detailRequest++;
+      state.detailLoaded = false;
+      evidenceRequest++;
+      currentEvidence = null;
+      currentTrace = null;
+      if (err && err.message === "AUTH") {
+        state.selected = null;
+        persistSelection(null);
+      } else {
+        setSelectedTools(null);
+      }
+      $("trace-detail").innerHTML = placeholder("Index unavailable", errorLabel(err) + " Retry to restore authenticated trace evidence.");
       paintMetrics();
       // A failed read means the count is unknown, never a verified zero.
       ["trace-total-metric", "trace-loaded-metric", "trace-failed-metric"].forEach(function (id) {
@@ -155,7 +178,6 @@
       $("trace-list").innerHTML = '<div class="trace-empty">' + esc(errorLabel(err)) +
         '<br><button type="button" class="trace-retry" id="trace-retry">Try again</button></div>';
       status(errorLabel(err) + " No data was changed.", true);
-      if (!state.selected) $("trace-detail").innerHTML = placeholder("Index unavailable", "The selected trace can still be opened from a direct link when access returns.");
     }).finally(function () {
       if (sequence === state.listRequest) $("trace-refresh").disabled = false;
     });
@@ -367,6 +389,7 @@
     currentEvidence = null;
     state.selected = cid;
     currentTrace = null;
+    state.detailLoaded = false;
     var sequence = ++state.detailRequest;
     persistSelection(cid);
     paintList();
@@ -374,6 +397,7 @@
     request("/api/traces/" + encodeURIComponent(cid)).then(function (detail) {
       if (sequence !== state.detailRequest) return;
       renderDetail(detail);
+      state.detailLoaded = true;
     }).catch(function (err) {
       if (sequence !== state.detailRequest) return;
       $("trace-detail").innerHTML = placeholder("Timeline unavailable", errorLabel(err) + " Select another trace or refresh to try again.");

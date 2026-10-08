@@ -568,3 +568,61 @@ test("untrusted older evidence schema and auth errors never assert identity", as
   assert.match(ui.els["trace-detail"].evidence.textContent, /Evidence schema unavailable/);
   assert.doesNotMatch(ui.els["trace-detail"].evidence.innerHTML, /unverified/);
 });
+
+test("refresh retries previously failed selected detail", async () => {
+  let detailCount = 0;
+  const ui = harness({ response: url => {
+    if (url.includes("?limit=")) return Promise.resolve(ok({ traces: [trace("retry-id")], total: 1 }));
+    detailCount++;
+    return Promise.resolve(detailCount === 1 ? { ok: false, status: 503 } : ok(detail("retry-id")));
+  }});
+  await sleep(25);
+  assert.match(ui.els["trace-detail"].innerHTML, /Timeline unavailable/);
+  ui.els["trace-refresh"].fire("click");
+  await sleep(25);
+  assert.equal(detailCount, 2);
+  assert.match(ui.els["trace-detail"].innerHTML, /router.started/);
+});
+
+test("index authentication loss clears expanded sensitive detail and disables copy", async () => {
+  let indexCount = 0;
+  const ui = harness({ response: url => {
+    if (url.includes("?limit=")) return Promise.resolve(++indexCount === 1
+      ? ok({ traces: [trace("private-id")], total: 1 }) : { ok: false, status: 401 });
+    return Promise.resolve(ok(detail("private-id", true)));
+  }});
+  await sleep(25);
+  const disclosure = ui.els["trace-detail"].details[0];
+  disclosure.toggle(true);
+  assert.match(disclosure.querySelector("pre").textContent, /SYNTHETIC_DO_NOT_RENDER/);
+  ui.els["trace-refresh"].fire("click");
+  await sleep(25);
+  assert.doesNotMatch(ui.els["trace-detail"].innerHTML, /private-id|SYNTHETIC_DO_NOT_RENDER/);
+  assert.equal(ui.els["trace-copy"].disabled, true);
+  assert.doesNotMatch(ui.window.location.href, /trace=private-id/);
+});
+
+test("index auth loss fences pending task registry evidence and preserves unknown metrics", async () => {
+  let indexReads = 0;
+  const pendingEvidence = deferred();
+  const ui = harness({ response: url => {
+    if (url.includes("?limit=")) return Promise.resolve(++indexReads === 1
+      ? ok({ traces: [trace("private-task")], total: 1, outcome: "all" })
+      : { ok: false, status: 401 });
+    if (url.endsWith("/evidence")) return pendingEvidence.promise;
+    return Promise.resolve(ok(detail("private-task", true)));
+  }});
+  await sleep(22);
+  inspectEvidence(ui);
+  assert.equal(ui.calls.length, 3);
+  ui.els["trace-refresh"].fire("click");
+  await sleep(22);
+  pendingEvidence.resolve(ok(mockEvidence("private-task", [taskEvidence("stale-task")])));
+  await sleep(22);
+  assert.equal(ui.els["trace-detail"].evidence, null);
+  assert.doesNotMatch(ui.els["trace-detail"].innerHTML, /stale-task|private-task|SYNTHETIC_DO_NOT_RENDER/);
+  assert.equal(ui.els["trace-copy"].disabled, true);
+  assert.equal(ui.els["trace-total-metric"].textContent, "—");
+  assert.equal(ui.els["trace-loaded-metric"].textContent, "—");
+  assert.equal(ui.els["trace-failed-metric"].textContent, "—");
+});
