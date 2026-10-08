@@ -160,3 +160,44 @@ test('real browser: axe WCAG 2.1 A/AA mobile audit on synthetic trace data', asy
   assert.equal(results.violations.length,0,'WCAG 2.1 A/AA automated violations');
  }finally{await x.close();}
 });
+
+test('real browser: tablet 768px keyboard-only selection and payload disclosure', async()=>{
+  const x=await setupBrowser(768);
+  try{
+    await x.page.goto(BASE+'/traces');
+    await x.page.locator('#trace-status').getByText(/matching all-outcome trace groups/).waitFor();
+    const geometry=await x.page.evaluate(()=>{
+      const panels=[...document.querySelectorAll('.trace-panel')];
+      const boxes=panels.map(p=>p.getBoundingClientRect());
+      return {width:document.documentElement.scrollWidth,
+        viewport:document.documentElement.clientWidth,
+        leftTop:boxes[0].top,leftBottom:boxes[0].bottom,
+        rightTop:boxes[1].top};
+    });
+    assert.ok(geometry.width<=geometry.viewport+1,JSON.stringify(geometry));
+    assert.ok(geometry.rightTop>=geometry.leftBottom-1,
+      'tablet panes should stack instead of squeezing horizontally: '+JSON.stringify(geometry));
+    const second=x.page.locator('#trace-list button.trace-row').nth(1);
+    await second.focus();
+    assert.equal(await second.evaluate(e=>document.activeElement===e),true);
+    await x.page.keyboard.press('Enter');
+    await x.page.locator('#trace-detail .trace-id').getByText('completed-b').waitFor();
+    const details=x.page.locator('.trace-event details').first();
+    await details.locator('summary').focus();
+    await x.page.keyboard.press('Enter');
+    await x.page.waitForFunction(()=>{
+      const d=document.querySelector('.trace-event details');
+      return d && d.open && d.querySelector('pre').textContent.includes('VISIBLE_ONLY_ON_DISCLOSURE');
+    });
+    await x.page.keyboard.press('Enter');
+    await x.page.waitForFunction(()=>{
+      const d=document.querySelector('.trace-event details');
+      return d && !d.open && d.querySelector('pre').textContent === '';
+    });
+    const AxeBuilder=require('@axe-core/playwright').default;
+    const report=await new AxeBuilder({page:x.page})
+      .withTags(['wcag2a','wcag2aa','wcag21a','wcag21aa']).analyze();
+    assert.equal(report.violations.length,0,
+      'tablet automated axe violations: '+report.violations.map(v=>v.id).join(','));
+  }finally{await x.close();}
+});
