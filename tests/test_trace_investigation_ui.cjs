@@ -117,7 +117,7 @@ function harness({ initialUrl = "https://assistx.invalid/traces", response } = {
 test("HTML has accessible navigation, scoped metrics, and event disclosure contract", () => {
   for (const needle of [
     'aria-current="page"', 'role="status"', 'id="trace-total-metric"',
-    'id="trace-failed-metric"', 'Outcome · loaded page only',
+    'id="trace-failed-metric"', 'Outcome · all indexed history',
     'id="trace-permalink"', 'id="trace-copy"',
     'not a complete tool-call audit ledger', 'aria-label="Previous page of traces"'
   ]) assert.ok(template.includes(needle), needle);
@@ -170,19 +170,24 @@ test("permalink opens a trace outside the first index page; event content stays 
   assert.equal(ui.els["trace-permalink"].getAttribute("aria-disabled"), "false");
 });
 
-test("outcome filter affects current page, not server query or global counts", async () => {
+test("outcome filter queries the entire indexed history before pagination", async () => {
   const ui = harness({ response: url => Promise.resolve(ok(url.includes("?limit=")
-    ? { traces: [trace("bad", "failed"), trace("good", "completed")], total: 930, offset: 0 }
-    : detail("bad"))) });
+    ? url.includes("outcome=failed")
+      ? { traces: [trace("bad", "failed")], total: 76, offset: 0, outcome: "failed" }
+      : { traces: [trace("bad", "failed"), trace("good", "completed")], total: 930, offset: 0 }
+    : detail(url.endsWith("good") ? "good" : "bad"))) });
   await sleep(20);
   const baselineCalls = ui.calls.length;
   ui.els["trace-outcome"].fire("change", { target: { value: "failed" } });
+  await sleep(20);
+  assert.ok(ui.calls.length > baselineCalls);
+  assert.match(ui.calls.join(" "), /outcome=failed/);
   assert.match(ui.els["trace-list"].innerHTML, /bad/);
   assert.doesNotMatch(ui.els["trace-list"].innerHTML, /good/);
-  assert.equal(ui.els["trace-total-metric"].textContent, "930");
+  assert.equal(ui.els["trace-total-metric"].textContent, "76");
   assert.equal(ui.els["trace-failed-metric"].textContent, "1");
-  assert.equal(ui.calls.length, baselineCalls);
-  assert.match(ui.els["trace-status"].textContent, /this page only/);
+  assert.match(ui.window.location.href, /outcome=failed/);
+  assert.match(ui.els["trace-status"].textContent, /matching failed trace groups/);
 });
 
 test("authentication failure is explicit with retry and does not invoke writes", async () => {
@@ -233,4 +238,77 @@ test("stale search response cannot override newer correlation-ID search", async 
   await sleep(20);
   assert.doesNotMatch(ui.els["trace-list"].innerHTML, /stale-match/);
   assert.equal(ui.els["trace-total-metric"].textContent, "1");
+});
+
+
+test("deep links preserve a global outcome filter for results beyond page one", async () => {
+  const ui = harness({
+    initialUrl: "https://assistx.invalid/traces?outcome=failed&trace=old-failure",
+    response: url => Promise.resolve(ok(url.includes("?limit=")
+      ? { traces: [trace("latest-failure", "failed")], total: 74, offset: 0, outcome: "failed" }
+      : detail("old-failure")))
+  });
+  await sleep(28);
+  assert.equal(ui.els["trace-outcome"].value, "failed");
+  assert.equal(ui.els["trace-total-metric"].textContent, "74");
+  assert.match(ui.calls[0], /outcome=failed/);
+  assert.match(ui.calls.join(" "), /\/api\/traces\/old-failure/);
+  assert.match(ui.els["trace-permalink"].href, /outcome=failed/);
+  assert.match(ui.els["trace-permalink"].href, /trace=old-failure/);
+});
+
+test("server-side filtered pagination navigates beyond the first 50 results", async () => {
+  const first = Array.from({ length: 50 }, (_, i) => trace("failed-" + i, "failed"));
+  const next = Array.from({ length: 13 }, (_, i) => trace("older-failed-" + i, "failed"));
+  const ui = harness({
+    initialUrl: "https://assistx.invalid/traces?outcome=failed",
+    response: url => Promise.resolve(ok(url.includes("?limit=")
+      ? { traces: url.includes("offset=50") ? next : first,
+          total: 63, offset: url.includes("offset=50") ? 50 : 0, outcome: "failed" }
+      : detail("failed-0")))
+  });
+  await sleep(30);
+  assert.equal(ui.els["trace-loaded-metric"].textContent, "50");
+  assert.equal(ui.els["trace-next"].disabled, false);
+  ui.els["trace-next"].fire("click");
+  await sleep(25);
+  assert.match(ui.calls.join(" "), /offset=50&outcome=failed/);
+  assert.equal(ui.els["trace-loaded-metric"].textContent, "13");
+  assert.equal(ui.els["trace-total-metric"].textContent, "63");
+  assert.equal(ui.els["trace-prev"].disabled, false);
+  assert.equal(ui.els["trace-next"].disabled, true);
+  assert.match(ui.els["trace-list"].innerHTML, /older-failed-0/);
+});
+
+test("unsupported older backend cannot silently impersonate a global filter", async () => {
+  const ui = harness({
+    initialUrl: "https://assistx.invalid/traces?outcome=failed",
+    response: () => Promise.resolve(ok({
+      traces: [trace("unfiltered", "completed")], total: 200, offset: 0
+    }))
+  });
+  await sleep(25);
+  assert.match(ui.els["trace-status"].textContent, /Global outcome filtering is not yet available/);
+  assert.equal(ui.els["trace-total-metric"].textContent, "—");
+  assert.doesNotMatch(ui.els["trace-list"].innerHTML, /unfiltered/);
+});
+
+test("an old unfiltered response cannot replace a newer global failure selection", async () => {
+  const old = deferred();
+  const ui = harness({
+    response: url => {
+      if (url.includes("?limit=") && !url.includes("outcome=")) return old.promise;
+      if (url.includes("outcome=failed"))
+        return Promise.resolve(ok({ traces: [trace("new-failure", "failed")],
+                                    total: 12, offset: 0, outcome: "failed" }));
+      return Promise.resolve(ok(detail("new-failure")));
+    }
+  });
+  ui.els["trace-outcome"].fire("change", { target: { value: "failed" } });
+  await sleep(20);
+  old.resolve(ok({ traces: [trace("old-success", "completed")], total: 999 }));
+  await sleep(20);
+  assert.match(ui.els["trace-list"].innerHTML, /new-failure/);
+  assert.doesNotMatch(ui.els["trace-list"].innerHTML, /old-success/);
+  assert.equal(ui.els["trace-total-metric"].textContent, "12");
 });
