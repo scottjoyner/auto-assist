@@ -1201,46 +1201,84 @@ def list_traces(
     limit: int = 50,
     offset: int = 0,
     search: Optional[str] = None,
+    outcome: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """List historical traces, newest first, for the trace history viewer.
+    """Read-only, bounded history query with an optional *global* outcome filter.
 
-    Aggregates in the database rather than hydrating each trace: at ~85k trace
-    groups, calling get_trace() per row to build a list would be unusable.
+    Failed takes precedence over completed/accepted. The same group predicates
+    are applied to the total count and to the paginated result: filtering the
+    50 displayed rows is not equivalent to filtering the historical index.
+    No payloads, arguments, or outputs are fetched in this index endpoint.
     """
+    from neo4j import Query as ReadOnlyQuery
+
+    if outcome not in (None, "failed", "completed", "open"):
+        raise ValueError("Unsupported trace outcome")
+    if search is not None and len(search) > 128:
+        raise ValueError("Correlation ID search must be <=128 characters")
+
     limit = max(1, min(int(limit), 200))
     offset = max(0, int(offset))
-    match = "MATCH (g:TraceGroup)-[:HAS_EVENT]->(t:TraceEvent)"
     params: Dict[str, Any] = {"limit": limit, "offset": offset}
-    where = ""
+    # An index row requires at least one trace event. Count only groups that
+    # can actually appear in the page, including when no outcome is supplied.
+    clauses: List[str] = [
+        "EXISTS { MATCH (g)-[:HAS_EVENT]->(:TraceEvent) }",
+    ]
     if search:
-        match += " WHERE toLower(g.correlation_id) CONTAINS toLower($search)"
+        clauses.append("toLower(g.correlation_id) CONTAINS toLower($search)")
         params["search"] = search
-    with neo._session() as s:
-        total = s.run(
-            "MATCH (g:TraceGroup) " + ("WHERE toLower(g.correlation_id) CONTAINS toLower($search) " if search else "")
-            + "RETURN count(DISTINCT g) AS n",
-            {"search": search} if search else {},
+
+    # Constant Cypher fragments only; never interpolate user input into
+    # executable graph syntax. Filtered counts exclude empty trace groups.
+    failure = (
+        "EXISTS { MATCH (g)-[:HAS_EVENT]->(failed:TraceEvent) "
+        "WHERE failed.event_type ENDS WITH '.failed' }"
+    )
+    completed = (
+        "EXISTS { MATCH (g)-[:HAS_EVENT]->(done:TraceEvent) "
+        "WHERE done.event_type ENDS WITH '.completed' "
+        "OR done.event_type ENDS WITH '.accepted' }"
+    )
+    if outcome is not None:
+        if outcome == "failed":
+            clauses.append(failure)
+        elif outcome == "completed":
+            clauses.extend(("NOT " + failure, completed))
+        else:
+            clauses.extend(("NOT " + failure, "NOT " + completed))
+    where = " WHERE " + " AND ".join(clauses) if clauses else " "
+
+    count_cypher = (
+        "MATCH (g:TraceGroup)" + where + " RETURN count(g) AS n"
+    )
+    page_cypher = (
+        "MATCH (g:TraceGroup)" + where
+        + """
+        MATCH (g)-[:HAS_EVENT]->(t:TraceEvent)
+        WITH g, count(t) AS events, min(t.ts_ms) AS first_ts,
+             max(t.ts_ms) AS last_ts, collect(DISTINCT t.event_type) AS types
+        WITH g, events, first_ts, last_ts, types,
+             CASE
+               WHEN any(x IN types WHERE x ENDS WITH '.failed') THEN 'failed'
+               WHEN any(x IN types WHERE x ENDS WITH '.completed')
+                 OR any(x IN types WHERE x ENDS WITH '.accepted') THEN 'completed'
+               ELSE 'open'
+             END AS outcome
+        RETURN g.correlation_id AS correlation_id, events, first_ts,
+               last_ts, types, outcome
+        ORDER BY last_ts DESC
+        SKIP $offset LIMIT $limit
+        """
+    )
+    # Neo4j transaction timeout limits the impact of broad filters on a live
+    # cluster; slow queries fail visibly instead of silently yielding 0.
+    with neo._session() as session:
+        total = session.run(
+            ReadOnlyQuery(count_cypher, timeout=4.0), params
         ).single()["n"]
-        rows = s.run(
-            match
-            + """
-            WITH g, count(t) AS events, min(t.ts_ms) AS first_ts, max(t.ts_ms) AS last_ts,
-                 collect(DISTINCT t.event_type) AS types
-            // Outcome is the single most useful thing to scan in a list of ~85k
-            // traces. Currently ~95% of execution stages fail, so a plain
-            // event-count list would be unreadable.
-            WITH g, events, first_ts, last_ts, types,
-                 CASE
-                   WHEN any(x IN types WHERE x ENDS WITH ".failed") THEN "failed"
-                   WHEN any(x IN types WHERE x ENDS WITH ".completed")
-                     OR any(x IN types WHERE x ENDS WITH ".accepted") THEN "completed"
-                   ELSE "open"
-                 END AS outcome
-            RETURN g.correlation_id AS correlation_id, events, first_ts, last_ts, types, outcome
-            ORDER BY last_ts DESC
-            SKIP $offset LIMIT $limit
-            """,
-            params,
+        rows = session.run(
+            ReadOnlyQuery(page_cypher, timeout=4.0), params
         )
         traces = [
             {
@@ -1258,7 +1296,10 @@ def list_traces(
             }
             for row in rows
         ]
-    return {"traces": traces, "total": total, "limit": limit, "offset": offset}
+    return {
+        "traces": traces, "total": total, "limit": limit, "offset": offset,
+        "outcome": outcome or "all",
+    }
 
 
 def get_trace(neo: Neo4jClient, correlation_id: str) -> Optional[Dict[str, Any]]:
