@@ -246,3 +246,36 @@ def test_missing_authoritative_claim_fails_before_writing(tmp_path, monkeypatch)
     outcomes = [row[1] for row in observed if row[0].endswith("/complete")]
     assert outcomes[0]["status"] == "FAILED"
     assert not (root / "journal.jsonl").exists()
+
+
+def test_conflicting_explicit_llm_type_cannot_bypass_trace_fence(tmp_path, monkeypatch):
+    root = prepared_root(tmp_path)
+    monkeypatch.setenv("FLEET_TRACE_EXECUTION_AUDIT_ROOT", str(root))
+    monkeypatch.setenv("FLEET_TRACE_PROBE_ENABLED", "true")
+    task = make_task()
+    task["task_type"] = "llm"  # hostile type override, canonical markers remain trace_probe
+    events = []
+
+    def fake_http(method, url, *, data=None, **kwargs):
+        events.append((url, data))
+        if url.endswith("/claim"):
+            return (200, {"claimed": True, "task": {**task, "claim_id": "claim-fenced"}})
+        return (200, {"ok": True})
+
+    def execution_must_never_run(*args, **kwargs):
+        raise AssertionError("normal LLM executor was wrongly reached")
+
+    monkeypatch.setattr(fleet_node_agent, "_http", fake_http)
+    monkeypatch.setattr(fleet_node_agent, "execute_task", execution_must_never_run)
+    fleet_node_agent._claim_and_run(
+        assistx_url="http://test.invalid",
+        router_url="http://not-used.invalid",
+        auth=None,
+        node_id="node-a",
+        caps=["trace-probe"],
+        task=task,
+        lmstudio_url=None,
+    )
+    completions = [row[1] for row in events if row[0].endswith("/complete")]
+    assert len(completions) == 1 and completions[0]["status"] == "FAILED"
+    assert not (root / "journal.jsonl").exists()

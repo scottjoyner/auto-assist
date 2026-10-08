@@ -488,8 +488,9 @@ def _claim_and_run(
     success = False
     try:
         task_type = str(task.get("task_type") or "").lower()
-        if not task_type and (task.get("kind") == "trace_probe" or task.get("ticket_type") == "trace_probe"):
-            # Even partially malformed trace tasks must never fall through to LLM.
+        if task.get("kind") == "trace_probe" or task.get("ticket_type") == "trace_probe":
+            # Trace markers override a conflicting task_type. An invalid trace
+            # task must never fall through to ordinary LLM or shell execution.
             task_type = "trace_probe"
         if not task_type:
             _has_prompt = bool(
