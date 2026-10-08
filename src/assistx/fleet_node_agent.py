@@ -66,6 +66,7 @@ def _http(
     data: dict | None = None,
     headers: dict[str, str] | None = None,
     timeout: int = 30,
+    allow_redirects: bool = True,
 ) -> tuple[int, Any]:
     req = urllib.request.Request(url, method=method)
     if auth:
@@ -79,7 +80,16 @@ def _http(
     if data is not None:
         req.data = json.dumps(data).encode()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        if allow_redirects:
+            response = urllib.request.urlopen(req, timeout=timeout)
+        else:
+
+            class _RejectRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, request, fp, code, msg, headers, newurl):
+                    return None
+
+            response = urllib.request.build_opener(_RejectRedirect()).open(req, timeout=timeout)
+        with response as resp:
             raw = resp.read().decode()
             try:
                 return resp.status, json.loads(raw) if raw else {}
@@ -92,6 +102,11 @@ def _http(
             return exc.code, {"detail": str(exc)}
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return 0, {"detail": str(exc)}
+
+
+def _trace_http(*args: Any, **kwargs: Any) -> tuple[int, Any]:
+    """Trace task transport: refuse HTTP redirects on requests with node tokens."""
+    return _http(*args, allow_redirects=False, **kwargs)
 
 
 def _detect_hostname() -> str:
@@ -474,9 +489,10 @@ def _claim_and_run(
         except (TraceDenied, ImportError):
             return False
     trace_headers = {"X-Fleet-Node-Token": os.environ["FLEET_NODE_AUTH_TOKEN"]} if trace_candidate else None
+    request_http = _trace_http if trace_candidate else _http
 
     session_id = f"{node_id}-{uuid.uuid4().hex[:8]}"
-    status, claim = _http(
+    status, claim = request_http(
         "POST",
         f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/claim",
         auth=auth,
@@ -499,7 +515,7 @@ def _claim_and_run(
 
     def _heartbeat() -> None:
         while not stop_heartbeat.wait(15):
-            _http(
+            request_http(
                 "POST",
                 f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/heartbeat",
                 auth=auth,
@@ -556,7 +572,7 @@ def _claim_and_run(
                 assistx_url=assistx_url,
                 auth=auth,
                 env=dict(os.environ),
-                http=_http,
+                http=request_http,
             )
             success = result.get("status") == "DONE" and result.get("assistx_claim_verified") is True
         elif task_type == "script":
@@ -625,7 +641,7 @@ def _claim_and_run(
 
     # AssistX exposes a single completion endpoint; failures are reported via
     # POST /complete with status=FAILED (no separate /fail route exists).
-    _http(
+    request_http(
         "POST",
         f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/complete",
         auth=auth,
@@ -651,7 +667,17 @@ def _poll_once(
     caps: list[str],
     lmstudio_url: str | None,
 ) -> bool:
-    status, body = _http(
+    poll_http = _http
+    if "trace-probe" in caps:
+        from .trace_claim_live_executor import require_pinned_issuer
+        from .trace_execution_adapter import TraceDenied
+
+        try:
+            require_pinned_issuer(assistx_url, dict(os.environ))
+        except TraceDenied:
+            return False
+        poll_http = _trace_http
+    status, body = poll_http(
         "GET",
         f"{assistx_url.rstrip('/')}/api/agent/tasks?state=READY&limit=20",
         auth=auth,

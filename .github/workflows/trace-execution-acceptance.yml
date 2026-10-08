@@ -48,6 +48,7 @@ jobs:
             src/assistx/trace_claim_live_executor.py \
             tests/test_trace_claim_lease.py \
             tests/test_trace_claim_live_executor.py \
+            tests/test_trace_http_redirect.py \
             tests/test_trace_execution_adapter.py \
             scripts/trace_claim_lease_staging_canary.py \
             scripts/trace_claim_live_platform_smoke.py
@@ -60,6 +61,7 @@ jobs:
         run: |
           pytest -q \
             tests/test_trace_claim_live_executor.py \
+            tests/test_trace_http_redirect.py \
             tests/test_trace_claim_lease.py \
             tests/test_trace_shadow_grant.py \
             tests/test_trace_execution_shadow_backup.py \

@@ -197,3 +197,32 @@ writer cannot safely archive beyond 8 MiB; the 7 MiB stop gate is temporary
 backpressure, **not** full long-term retention/offload or a reason to trim
 history. Do not deploy a real issuer or promote unrestricted execution until
 these and the prior key/CI/cancellation gates are accepted.
+
+
+## Redirect-resistant authenticated trace transport
+
+**2026-10-08 acceptance under issue #126:** Trace-capable node polling and
+credential-bearing claim, heartbeat, lease, status and completion requests
+now use a nonredirecting urllib opener. All HTTP 3xx responses fail closed:
+the worker does not contact redirect targets. The ordinary non-trace HTTP
+path retains its legacy behavior, avoiding unrelated worker disruption.
+
+**Prediction:** A secondary local HTTP listener must receive *zero*
+requests, including when the primary listener responds 301/302/303/307/308
+to a fixture-authenticated POST. Relative same-origin redirection must
+not be followed. The credentialed trace-capable GET poll must also refuse
+redirects before fetching work. Non-trace urllib behavior should remain
+unchanged.
+
+**Observation:** `tests/test_trace_http_redirect.py` runs two real
+loopback HTTP listeners with fixture-only credentials and verifies zero
+second-listener requests. Redirect tests cover claim, heartbeat, lease
+proof, current-status, completion and task polling, plus no-redirect
+success. Existing tests and new redirect tests: **160 passed** locally.
+No real node credentials, persistent claims, production issuer or shell
+execution were involved. The suite is now part of dedicated trace CI.
+
+**Limit:** TLS certificate verification, live token registration,
+independently witnessed revocation and authenticated production issuer
+availability still require deployment acceptance. These tests validate
+transport redirects, not full runtime production security.
