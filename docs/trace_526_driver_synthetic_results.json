@@ -1,0 +1,930 @@
+{
+  "concurrent": {
+    "1": [
+      {
+        "ms": 829.13
+      }
+    ],
+    "3": [
+      {
+        "ms": 1461.43
+      },
+      {
+        "ms": 2168.83
+      },
+      {
+        "ms": 2290.62
+      }
+    ]
+  },
+  "driver_timeout_seconds": 4,
+  "driver_version": "6.2",
+  "events_expected": 170000,
+  "exact_server_version": "5.26.30",
+  "expected_counts": {
+    "completed": 34000,
+    "failed": 34000,
+    "open": 17000
+  },
+  "group_count_expected": 85000,
+  "isolated": true,
+  "network": "docker internal only, inspected container bridge IP",
+  "note": "single CPU; 2200MiB; fully synthetic; staging only",
+  "production_neo4j_access": false,
+  "profile_parse_correction": "Neo4j driver uses operatorType/dbHits camelCase keys. Plan profiles refreshed read-only after original driver samples, not part of the original five-run timings.",
+  "results": {
+    "completed": {
+      "count_verified": 34000,
+      "profile_count": {
+        "operator_count": 19,
+        "operator_nodes": [
+          {
+            "db_hits": 0,
+            "estimated_rows": 1.0,
+            "operator": "ProduceResults@neo4j",
+            "rows": 1
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 1.0,
+            "operator": "EagerAggregation@neo4j",
+            "rows": 1
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 7100.484168832421,
+            "operator": "Apply@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 7715.882830186432,
+            "operator": "Apply@neo4j",
+            "rows": 51000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Apply@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 85001,
+            "estimated_rows": 85000.0,
+            "operator": "NodeByLabelScan@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Limit@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 170000,
+            "estimated_rows": 85000.0,
+            "operator": "Filter@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 170000,
+            "estimated_rows": 85000.0,
+            "operator": "Expand(All)@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 85000.0,
+            "operator": "Argument@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 7715.882830186432,
+            "operator": "Limit@neo4j",
+            "rows": 51000
+          },
+          {
+            "db_hits": 374000,
+            "estimated_rows": 6385.312127932026,
+            "operator": "Filter@neo4j",
+            "rows": 51000
+          },
+          {
+            "db_hits": 221000,
+            "estimated_rows": 108042.50639478893,
+            "operator": "Expand(All)@neo4j",
+            "rows": 136000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Argument@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 7100.484168832421,
+            "operator": "Anti@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 615.398661354011,
+            "operator": "Limit@neo4j",
+            "rows": 17000
+          },
+          {
+            "db_hits": 204000,
+            "estimated_rows": 462.95296981118594,
+            "operator": "Filter@neo4j",
+            "rows": 17000
+          },
+          {
+            "db_hits": 136000,
+            "estimated_rows": 15431.765660372865,
+            "operator": "Expand(All)@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 7715.882830186432,
+            "operator": "Argument@neo4j",
+            "rows": 51000
+          }
+        ],
+        "total_reported_db_hits": 1360001
+      },
+      "profile_page": {
+        "operator_count": 27,
+        "operator_nodes": [
+          {
+            "db_hits": 0,
+            "estimated_rows": 50.0,
+            "operator": "ProduceResults@neo4j",
+            "rows": 50
+          },
+          {
+            "db_hits": 100,
+            "estimated_rows": 50.0,
+            "operator": "Projection@neo4j",
+            "rows": 50
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 50.0,
+            "operator": "Skip@neo4j",
+            "rows": 50
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 50.0,
+            "operator": "Limit@neo4j",
+            "rows": 50
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 50.0,
+            "operator": "Projection@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 50.0,
+            "operator": "Sort@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 119.16781586344881,
+            "operator": "OrderedAggregation@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 204000,
+            "estimated_rows": 14200.968337664843,
+            "operator": "CacheProperties@neo4j",
+            "rows": 68000
+          },
+          {
+            "db_hits": 136000,
+            "estimated_rows": 14200.968337664843,
+            "operator": "Filter@neo4j",
+            "rows": 68000
+          },
+          {
+            "db_hits": 102000,
+            "estimated_rows": 14200.968337664845,
+            "operator": "Expand(All)@neo4j",
+            "rows": 68000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 7100.484168832421,
+            "operator": "Apply@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 7715.882830186432,
+            "operator": "Apply@neo4j",
+            "rows": 51000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Apply@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 85001,
+            "estimated_rows": 85000.0,
+            "operator": "NodeByLabelScan@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Limit@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 170000,
+            "estimated_rows": 85000.0,
+            "operator": "Filter@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 170000,
+            "estimated_rows": 85000.0,
+            "operator": "Expand(All)@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 85000.0,
+            "operator": "Argument@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 7715.882830186432,
+            "operator": "Limit@neo4j",
+            "rows": 51000
+          },
+          {
+            "db_hits": 374000,
+            "estimated_rows": 6385.312127932026,
+            "operator": "Filter@neo4j",
+            "rows": 51000
+          },
+          {
+            "db_hits": 221000,
+            "estimated_rows": 108042.50639478893,
+            "operator": "Expand(All)@neo4j",
+            "rows": 136000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Argument@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 7100.484168832421,
+            "operator": "Anti@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 615.398661354011,
+            "operator": "Limit@neo4j",
+            "rows": 17000
+          },
+          {
+            "db_hits": 204000,
+            "estimated_rows": 462.95296981118594,
+            "operator": "Filter@neo4j",
+            "rows": 17000
+          },
+          {
+            "db_hits": 136000,
+            "estimated_rows": 15431.765660372865,
+            "operator": "Expand(All)@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 7715.882830186432,
+            "operator": "Argument@neo4j",
+            "rows": 51000
+          }
+        ],
+        "total_reported_db_hits": 1802101
+      },
+      "sequential": {
+        "count": {
+          "max_ms": 898.76,
+          "median_ms": 221.51,
+          "ms": [
+            898.76,
+            214.74,
+            205.35,
+            260.25,
+            221.51
+          ],
+          "rows_returned": 1
+        },
+        "page": {
+          "max_ms": 1188.25,
+          "median_ms": 411.96,
+          "ms": [
+            1188.25,
+            409.95,
+            387.33,
+            411.96,
+            424.6
+          ],
+          "rows_returned": 50
+        }
+      }
+    },
+    "failed": {
+      "count_verified": 34000,
+      "profile_count": {
+        "operator_count": 13,
+        "operator_nodes": [
+          {
+            "db_hits": 0,
+            "estimated_rows": 1.0,
+            "operator": "ProduceResults@neo4j",
+            "rows": 1
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 1.0,
+            "operator": "EagerAggregation@neo4j",
+            "rows": 1
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 4308.5940564418,
+            "operator": "Apply@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Apply@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 85001,
+            "estimated_rows": 85000.0,
+            "operator": "NodeByLabelScan@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Limit@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 170000,
+            "estimated_rows": 85000.0,
+            "operator": "Filter@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 170000,
+            "estimated_rows": 85000.0,
+            "operator": "Expand(All)@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 85000.0,
+            "operator": "Argument@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 4308.5940564418,
+            "operator": "Limit@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 340000,
+            "estimated_rows": 3241.275191843668,
+            "operator": "Filter@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 221000,
+            "estimated_rows": 108042.50639478893,
+            "operator": "Expand(All)@neo4j",
+            "rows": 136000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Argument@neo4j",
+            "rows": 85000
+          }
+        ],
+        "total_reported_db_hits": 986001
+      },
+      "profile_page": {
+        "operator_count": 21,
+        "operator_nodes": [
+          {
+            "db_hits": 0,
+            "estimated_rows": 50.0,
+            "operator": "ProduceResults@neo4j",
+            "rows": 50
+          },
+          {
+            "db_hits": 100,
+            "estimated_rows": 50.0,
+            "operator": "Projection@neo4j",
+            "rows": 50
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 50.0,
+            "operator": "Skip@neo4j",
+            "rows": 50
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 50.0,
+            "operator": "Limit@neo4j",
+            "rows": 50
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 50.00000000000001,
+            "operator": "Projection@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 50.00000000000001,
+            "operator": "Sort@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 92.82881079106636,
+            "operator": "OrderedAggregation@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 204000,
+            "estimated_rows": 8617.1881128836,
+            "operator": "CacheProperties@neo4j",
+            "rows": 68000
+          },
+          {
+            "db_hits": 136000,
+            "estimated_rows": 8617.1881128836,
+            "operator": "Filter@neo4j",
+            "rows": 68000
+          },
+          {
+            "db_hits": 68000,
+            "estimated_rows": 8617.1881128836,
+            "operator": "Expand(All)@neo4j",
+            "rows": 68000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 4308.5940564418,
+            "operator": "Apply@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Apply@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 85001,
+            "estimated_rows": 85000.0,
+            "operator": "NodeByLabelScan@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Limit@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 170000,
+            "estimated_rows": 85000.0,
+            "operator": "Filter@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 170000,
+            "estimated_rows": 85000.0,
+            "operator": "Expand(All)@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 85000.0,
+            "operator": "Argument@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 4308.5940564418,
+            "operator": "Limit@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 340000,
+            "estimated_rows": 3241.275191843668,
+            "operator": "Filter@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 221000,
+            "estimated_rows": 108042.50639478893,
+            "operator": "Expand(All)@neo4j",
+            "rows": 136000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Argument@neo4j",
+            "rows": 85000
+          }
+        ],
+        "total_reported_db_hits": 1394101
+      },
+      "sequential": {
+        "count": {
+          "max_ms": 1221.14,
+          "median_ms": 180.68,
+          "ms": [
+            1221.14,
+            219.55,
+            180.68,
+            109.55,
+            109.0
+          ],
+          "rows_returned": 1
+        },
+        "page": {
+          "max_ms": 1496.15,
+          "median_ms": 412.56,
+          "ms": [
+            1496.15,
+            424.03,
+            412.56,
+            361.66,
+            381.41
+          ],
+          "rows_returned": 50
+        }
+      }
+    },
+    "open": {
+      "count_verified": 17000,
+      "profile_count": {
+        "operator_count": 20,
+        "operator_nodes": [
+          {
+            "db_hits": 0,
+            "estimated_rows": 1.0,
+            "operator": "ProduceResults@neo4j",
+            "rows": 1
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 1.0,
+            "operator": "EagerAggregation@neo4j",
+            "rows": 1
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 42612.17497212024,
+            "operator": "Apply@neo4j",
+            "rows": 17000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 46305.37036720804,
+            "operator": "Apply@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Apply@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 85001,
+            "estimated_rows": 85000.0,
+            "operator": "NodeByLabelScan@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Limit@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 170000,
+            "estimated_rows": 85000.0,
+            "operator": "Filter@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 170000,
+            "estimated_rows": 85000.0,
+            "operator": "Expand(All)@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 85000.0,
+            "operator": "Argument@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 46305.37036720804,
+            "operator": "Anti@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 7715.882830186427,
+            "operator": "Limit@neo4j",
+            "rows": 51000
+          },
+          {
+            "db_hits": 374000,
+            "estimated_rows": 6385.312127932026,
+            "operator": "Filter@neo4j",
+            "rows": 51000
+          },
+          {
+            "db_hits": 221000,
+            "estimated_rows": 108042.50639478893,
+            "operator": "Expand(All)@neo4j",
+            "rows": 136000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Argument@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 42612.17497212024,
+            "operator": "Anti@neo4j",
+            "rows": 17000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 3693.195395087794,
+            "operator": "Limit@neo4j",
+            "rows": 17000
+          },
+          {
+            "db_hits": 136000,
+            "estimated_rows": 2778.322222032482,
+            "operator": "Filter@neo4j",
+            "rows": 17000
+          },
+          {
+            "db_hits": 85000,
+            "estimated_rows": 92610.74073441607,
+            "operator": "Expand(All)@neo4j",
+            "rows": 51000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 46305.37036720804,
+            "operator": "Argument@neo4j",
+            "rows": 34000
+          }
+        ],
+        "total_reported_db_hits": 1241001
+      },
+      "profile_page": {
+        "operator_count": 28,
+        "operator_nodes": [
+          {
+            "db_hits": 0,
+            "estimated_rows": 50.0,
+            "operator": "ProduceResults@neo4j",
+            "rows": 50
+          },
+          {
+            "db_hits": 100,
+            "estimated_rows": 50.0,
+            "operator": "Projection@neo4j",
+            "rows": 50
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 50.0,
+            "operator": "Skip@neo4j",
+            "rows": 50
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 50.0,
+            "operator": "Limit@neo4j",
+            "rows": 50
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 50.0,
+            "operator": "Projection@neo4j",
+            "rows": 17000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 50.0,
+            "operator": "Sort@neo4j",
+            "rows": 17000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 291.9320981739426,
+            "operator": "OrderedAggregation@neo4j",
+            "rows": 17000
+          },
+          {
+            "db_hits": 102000,
+            "estimated_rows": 85224.34994424049,
+            "operator": "CacheProperties@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 68000,
+            "estimated_rows": 85224.34994424049,
+            "operator": "Filter@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 51000,
+            "estimated_rows": 85224.34994424049,
+            "operator": "Expand(All)@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 42612.17497212024,
+            "operator": "Apply@neo4j",
+            "rows": 17000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 46305.37036720804,
+            "operator": "Apply@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Apply@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 85001,
+            "estimated_rows": 85000.0,
+            "operator": "NodeByLabelScan@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Limit@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 170000,
+            "estimated_rows": 85000.0,
+            "operator": "Filter@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 170000,
+            "estimated_rows": 85000.0,
+            "operator": "Expand(All)@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 85000.0,
+            "operator": "Argument@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 46305.37036720804,
+            "operator": "Anti@neo4j",
+            "rows": 34000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 7715.882830186427,
+            "operator": "Limit@neo4j",
+            "rows": 51000
+          },
+          {
+            "db_hits": 374000,
+            "estimated_rows": 6385.312127932026,
+            "operator": "Filter@neo4j",
+            "rows": 51000
+          },
+          {
+            "db_hits": 221000,
+            "estimated_rows": 108042.50639478893,
+            "operator": "Expand(All)@neo4j",
+            "rows": 136000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 54021.253197394464,
+            "operator": "Argument@neo4j",
+            "rows": 85000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 42612.17497212024,
+            "operator": "Anti@neo4j",
+            "rows": 17000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 3693.195395087794,
+            "operator": "Limit@neo4j",
+            "rows": 17000
+          },
+          {
+            "db_hits": 136000,
+            "estimated_rows": 2778.322222032482,
+            "operator": "Filter@neo4j",
+            "rows": 17000
+          },
+          {
+            "db_hits": 85000,
+            "estimated_rows": 92610.74073441607,
+            "operator": "Expand(All)@neo4j",
+            "rows": 51000
+          },
+          {
+            "db_hits": 0,
+            "estimated_rows": 46305.37036720804,
+            "operator": "Argument@neo4j",
+            "rows": 34000
+          }
+        ],
+        "total_reported_db_hits": 1462101
+      },
+      "sequential": {
+        "count": {
+          "max_ms": 536.01,
+          "median_ms": 259.21,
+          "ms": [
+            536.01,
+            259.21,
+            226.04,
+            299.06,
+            201.41
+          ],
+          "rows_returned": 1
+        },
+        "page": {
+          "max_ms": 891.54,
+          "median_ms": 302.48,
+          "ms": [
+            891.54,
+            310.33,
+            302.48,
+            301.38,
+            298.77
+          ],
+          "rows_returned": 50
+        }
+      }
+    }
+  },
+  "schema": "trace-526-synthetic-driver-v1",
+  "version_expected": "5.26"
+}
