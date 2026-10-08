@@ -1,0 +1,45 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,booktabs,hyperref}
+\title{Bounded Trace-Source Claim Integrity and Replay Admission for Fleet Observability}
+\author{AssistX fleet observability --- preliminary engineering research}
+\date{October 8, 2026}
+\begin{document}
+\maketitle
+\begin{abstract}
+A fleet trace UI may correlate a task, a node ID and a worker label without independently proving who executed work. We inspect the actual AssistX source-authentication boundary and introduce a \emph{sandbox-only} source-claim HMAC verification contract. Claims bind source node, agent, service, generation, event identity and digest, correlation and task IDs, and short-lived nonce/timestamps; a local SQLite replay journal records synthetic admission. An expanded isolated test suite passed 102 Python tests (54 new verifier cases plus 48 earlier trace tests) and 20 existing JavaScript interaction tests. This is evidence of limited software checks, \emph{not} physical executor attestation, independently witnessed audit custody or production readiness.
+\end{abstract}
+\section{Motivation}
+In a graph-backed fleet trace history, a \texttt{TraceEvent} can explicitly link to a \texttt{Task}, whose mutable projected \texttt{node\_id} may equal a \texttt{SwarmNode} registry key. However, assignment payloads and node-registration strings are not independent proofs that the physical machine executed the task. The existing static node-token verifier also lacks a binding to the specific event, generation and task. Our preregistered goal was not to declare this equality authoritative but to define and measure the minimum local integrity/replay contract needed before future source-attested identity research.
+\section{Protocol proposal}
+Let $c$ be a canonical versioned claim with key identifier $k$, registered node $n$, agent $a$, source $s$, source generation $g$, trace correlation $r$, task $t$, event identity $e$, event SHA-256 digest $h$, issue/expiry timestamps and nonce $u$. For domain-separation string $D$ and canonical JSON serialization $J$, define
+\[
+\mathrm{MAC}(c)=\mathrm{HMAC}_{\mathrm{SHA256}}(K_k, D\Vert J(c)).
+\]
+The HMAC construction is specified by NIST FIPS 198-1 \cite{fips198}. Only registered, active keys satisfying the exact $k,n,a,s,g$ tuple can pass; independently supplied expected $r,t,e,h$ must also match, and the time window is bounded by 120 seconds, allowing at most 10 seconds of future skew. The research verifier uses a constant-time MAC comparison, strict JSON fields/unique keys, valid UUID, fixed-length digests and bounded identifiers. The key is never loaded from the event or stored in the graph.
+\section{Synthetic replay admission}
+A caller-provided \emph{test-only} SQLite database with unique $(k,u)$ and $(k,e)$ keys rejects repeated nonce and event admissions, including attempts after reopening the database. \texttt{BEGIN IMMEDIATE}, WAL, FULL synchronous setting and inode/device continuity checks reduce some ordinary crash/race and ledger-swap hazards. A missing ledger cannot yield replay-accepted status. Critically, this is \emph{not} an independently witnessed append-only ledger: a rollback before verifier reinitialization remains possible. Production key-management trust anchors and metadata governance require much stronger controls \cite{nist57}.
+\section{Evaluation}
+\begin{table}[h]\centering
+\caption{Synthetic evidence, not fleet or hardware attestation.}
+\begin{tabular}{ll}\toprule
+Acceptance area & Observed\\\midrule
+MAC/node/agent/service/generation binding & Pass (synthetic)\\
+Tampered hashes, tasks and trace identities & Reject\\
+Revoked/rotated and expired/future keys & Reject\\
+Concurrent replay, persisted nonce/event replay & Reject all but first\\
+Ledger replacement and symlink swap & Fail closed (running verifier)\\
+Full Python test suite & 102 passed\\
+Existing trace UI JavaScript suite & 20 passed\\
+Independently attested physical execution & Not demonstrated\\
+Externally immutable historical trace custody & Not demonstrated\\\bottomrule
+\end{tabular}
+\end{table}
+\section{Threats to validity and acceptance}
+The verifier receives its trust registry and expected event digest from the caller. If those inputs originate from the same untrusted producer, a valid MAC merely confirms self-consistency. A shared symmetric key can be used by either party possessing it; it does not authenticate tamper-resistant hardware. Local SQLite is mutable, so the test journal cannot prove independent anti-rollback or WORM custody. No live fleet keys, private trace content, Neo4j production records or deployment interfaces were accessed. This result must not be conflated with NIST-compliant deployed key management or all-history trace preservation \cite{nist92}. A next experiment must specify trusted enrollment, compromised-key response, independently verified event digest, durable external witnessing and reconciliation after storage rollback. This manuscript is an arXiv-style \emph{draft}, not compiled, submitted or peer reviewed.
+\begin{thebibliography}{9}
+\bibitem{fips198} NIST, \emph{The Keyed-Hash Message Authentication Code (HMAC)}, FIPS 198-1 (2008). \url{https://doi.org/10.6028/NIST.FIPS.198-1}.
+\bibitem{nist57} E. Barker, \emph{Recommendation for Key Management: Part 1 --- General}, NIST SP 800-57 Part 1 Rev. 5 (2020). \url{https://doi.org/10.6028/NIST.SP.800-57pt1r5}.
+\bibitem{nist92} K. Kent and M. Souppaya, \emph{Guide to Computer Security Log Management}, NIST SP 800-92 (2006). \url{https://doi.org/10.6028/NIST.SP.800-92}.
+\end{thebibliography}
+\end{document}
