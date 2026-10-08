@@ -58,6 +58,10 @@ function element(id) {
       },
     });
     dom.querySelectorAll = selector => selector === "details[data-event-index]" ? dom.details : [];
+    dom.focusedSelector = null;
+    dom.querySelector = selector =>
+      ["button.trace-context-chip.selected", ".trace-context h3"].includes(selector)
+        ? { focus() { dom.focusedSelector = selector; } } : null;
   }
   return dom;
 }
@@ -366,6 +370,8 @@ test("context panel groups recorded IDs and filters only the loaded timeline", a
   assert.match(ui.els["trace-detail"].innerHTML, /2 of 3 events/);
   assert.doesNotMatch(ui.els["trace-detail"].innerHTML, /route\.selected/);
   assert.match(ui.els["trace-detail"].innerHTML, /assignment\.claimed/);
+  assert.equal(ui.els["trace-detail"].focusedSelector, "button.trace-context-chip.selected",
+    "keyboard focus should remain on the selected context value");
   assert.equal(ui.calls.length, count, "context selection must not create graph queries");
   ui.els["trace-detail"].fire("click", {
     target: { closest(selector) {
@@ -374,6 +380,8 @@ test("context panel groups recorded IDs and filters only the loaded timeline", a
   });
   assert.match(ui.els["trace-detail"].innerHTML, /3 of 3 events/);
   assert.match(ui.els["trace-detail"].innerHTML, /route\.selected/);
+  assert.equal(ui.els["trace-detail"].focusedSelector, ".trace-context h3",
+    "reset focus returns to the context heading");
   assert.equal(ui.calls.length, count);
 });
 
