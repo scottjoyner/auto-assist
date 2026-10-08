@@ -1,0 +1,4 @@
+--- traces-before.html
++++ traces-after.html
+@@ -134,0 +135 @@
++  {% include "provider_burn_panel.html" ignore missing %}

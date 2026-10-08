@@ -1,6 +1,5 @@
 [Unit]
 Description=Read-only AssistX provider burn snapshot and trace panel refresh
-Documentation=docs/assistx_provider_burn_live_compatibility_20261008.md
 ConditionPathExists=/home/scott/.local/lib/fleet/assistx-provider-burn-20261008/scripts/refresh_assistx_free_burn.sh
 
 [Service]

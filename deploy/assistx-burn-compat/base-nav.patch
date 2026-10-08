@@ -1,0 +1,4 @@
+--- base-before.html
++++ base-after.html
+@@ -40,0 +41 @@
++      <a href="/traces#provider-burn">TRACES + BURN</a>
