@@ -1,0 +1,76 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\title{Non-Generative Endpoint Monitoring for Free-Model Agent Fleets:\\
+Baseline Measurements and a Prospective Validation Protocol}
+\author{Fleet Experiment Working Draft}
+\date{October 7, 2026}
+\begin{document}
+\maketitle
+\begin{abstract}
+Free language-model endpoints may expose healthy catalogs even while
+generation is throttled. We implement separate metadata-only presence checks
+and model-attributed inference traces. On an x1-370 pilot, five of eight
+catalog, health, or CLI checks were reachable, two direct providers lacked
+credentials, and a local OmniRoute dashboard was unavailable. No model
+generation was requested by the monitor. A read-only scan of two distinct
+OpenCode SQLite databases found 49 unique sessions over one day and one orphan.
+This baseline establishes instrumentation, not statistically significant
+improvements in inference availability or quality.
+\end{abstract}
+\section{Problem and Prior Work}
+OpenRouter documents a separate public model catalog from completions
+\cite{openrouter}; Cohere similarly exposes an authenticated model-list API
+\cite{cohere}. xAI publishes token-based API prices \cite{xai}; free consumer
+chat access is not proof of free developer API eligibility.
+Catalog success is therefore a \emph{metadata presence} signal only.
+\section{Methods}
+The monitor performs a bounded GET or CLI version check for one endpoint per
+configured provider and persists no response bodies or credentials. Request
+intervals are 15 minutes for local surfaces and 30 for remote catalogs;
+429/503 responses suppress requests for at least one hour and 401/402/403 for
+24 hours. Independent model-generation canaries require explicit guarded
+admission, final manifests, exact model attribution, and verified zero cost.
+The token census uses read-only SQLite with session-ID deduplication across
+the account and isolated runtime databases; incomplete sessions remain
+incomplete.
+
+\section{Observed Baseline}
+On October 7, OpenRouter catalog, Kilo anonymous catalog, auto-router health,
+LM Studio catalog, and OpenCode CLI checks succeeded. Direct Cohere and xAI
+had no usable monitor credentials. The default OmniRoute health address was
+unreachable. Monitoring itself generated zero model tokens. A separately
+guarded StepFun canary produced 805 output and 10,973 input tokens in 15.01
+seconds, but its engineering review conclusion was rejected as unsupported.
+The dual-database census counted 49 distinct recent sessions and one orphan
+with a missing clean stop. These are observations, not claimed predictions.
+
+\section{Prospective Hypotheses and Acceptance}
+The baseline preceded this protocol; no retrospective preregistration is
+claimed. For the \emph{next} observation window we predict (H1) cached checks
+make zero requests until each provider's next due time; (H2) a 429 on one
+provider does not generate a retry storm on others; (H3) all presence polls
+continue to consume zero inference tokens; and (H4) the census preserves
+identities from both databases. Acceptance requires raw timestamps, response
+codes, timeouts, manifest hash evidence, independently inspected procedural
+quality, and tests for interval and cooldown enforcement. No unattended
+generation or paid provider fallback is authorized.
+
+\section{Limitations}
+One healthy catalog does not prove availability of any model. Credentials
+and upstream quota entitlement remain unknown for some providers. An hourly
+ChatGPT recurring watch is scheduled, but no systemd timer has been installed
+on the host; neither mechanism supplies distributed fleet-wide admission.
+\begin{thebibliography}{9}
+\bibitem{openrouter} OpenRouter. List all models and their properties.
+\url{https://openrouter.ai/docs/api/api-reference/models/get-models}
+(accessed October 2026).
+\bibitem{cohere} Cohere. List Models, API Reference.
+\url{https://docs.cohere.com/v2/reference/list-models}
+(accessed October 2026).
+\bibitem{xai} xAI. API Pricing.
+\url{https://docs.x.ai/developers/pricing}
+(accessed October 2026).
+\end{thebibliography}
+\end{document}
