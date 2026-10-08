@@ -107,6 +107,8 @@
     }).join("");
   }
   function clearSelection(message) {
+    evidenceRequest++;
+    currentEvidence = null;
     state.selected = null;
     currentTrace = null;
     state.detailRequest++;
@@ -173,6 +175,8 @@
     return data;
   }
   var currentTrace = null;
+  var evidenceRequest = 0;
+  var currentEvidence = null;
   var contextFields = {
     source: "Recorded source",
     task_id: "Task IDs",
@@ -180,11 +184,18 @@
     route_id: "Route IDs",
     assignment_id: "Assignment IDs"
   };
+  function evidenceInspector() {
+    return '<div class="trace-evidence"><button type="button" class="trace-inspect-evidence">' +
+      'Inspect task / registry evidence (read-only)</button>' +
+      '<div class="trace-evidence-results" role="status" aria-live="polite">' +
+      'Not inspected. A registry match does not attest who executed this trace.</div></div>';
+  }
   function contextPanel(trace, filter) {
     var ctx = trace.context;
     if (!ctx || ctx.schema !== "trace-context-v1" || !ctx.fields) {
       return '<section class="trace-context" aria-label="Recorded context">' +
-        '<h3>Recorded context</h3><p class="trace-context-note">Context metadata not available for this trace. No node or agent identity is inferred.</p></section>';
+        '<h3>Recorded context</h3><p class="trace-context-note">Context metadata not available for this trace. No node or agent identity is inferred.</p>' +
+        evidenceInspector() + '</section>';
     }
     var sections = Object.keys(contextFields).map(function (field) {
       var entries = Array.isArray(ctx.fields[field]) ? ctx.fields[field] : [];
@@ -206,7 +217,8 @@
       '<p class="trace-context-note">From event properties, not independently verified identities. Source labels are not confirmed agents or machines.</p></div>' +
       (filter ? '<button type="button" class="trace-clear-context">All trace events</button>' : '') + '</div>' +
       '<div class="trace-context-groups">' + sections + '</div>' +
-      '<p class="trace-context-foot">Node/agent identity: not established by this trace index. No task or fleet execution actions are available here.</p></section>';
+      '<p class="trace-context-foot">Node/agent identity: not established by this trace index. No task or fleet execution actions are available here.</p>' +
+      evidenceInspector() + '</section>';
   }
   function renderDetail(trace, filter) {
     currentTrace = trace;
@@ -246,6 +258,7 @@
         '</article>';
     }).join("") + "</div>" :
       '<p class="trace-empty">No loaded events match this recorded value.</p>');
+    if (currentEvidence) paintEvidence(currentEvidence);
     $("trace-detail").querySelectorAll("details[data-event-index]").forEach(function (node) {
       node.addEventListener("toggle", function () {
         if (!node.open) {
@@ -260,8 +273,72 @@
       });
     });
   }
+  function paintEvidence(evidence) {
+    var host = $("trace-detail").querySelector(".trace-evidence-results");
+    if (!host) return;
+    if (!evidence || evidence.schema !== "trace-task-evidence-v1" ||
+        evidence.node_or_agent_verified !== false ||
+        evidence.source_authenticated !== false ||
+        evidence.graph_write_permitted !== false ||
+        evidence.correlation_id !== state.selected ||
+        evidence.trust !== "unverified_correspondence_not_execution_attestation" ||
+        !Array.isArray(evidence.tasks)) {
+      host.textContent = "Evidence schema unavailable. No node or agent attribution established.";
+      return;
+    }
+    if (!evidence.tasks.length) {
+      host.textContent = "No corroborated task relationship recorded for this trace.";
+      return;
+    }
+    var descriptions = {
+      not_recorded: "No node ID recorded",
+      not_registered: "Node ID not found in registry",
+      registry_id_match_unverified: "Registry ID matches; identity unverified",
+      ambiguous_registry_id: "Ambiguous registry ID: multiple records"
+    };
+    host.innerHTML = evidence.tasks.slice(0, 12).map(function (t) {
+      if (!t || typeof t.task_id !== "string" ||
+          t.task_provenance !== "trace_event_relationship_and_property" ||
+          t.projection_provenance !== "assignment_projection_unverified" ||
+          t.node_or_agent_verified !== false ||
+          !Object.prototype.hasOwnProperty.call(descriptions, t.registry_state)) return "";
+      var fields = [
+        ["Task", t.task_id],
+        ["Status (projection)", t.task_status],
+        ["Worker (unverified)", t.worker_id],
+        ["Node (unverified)", t.node_id]
+      ];
+      return '<article class="trace-evidence-card"><div class="trace-evidence-label">' +
+        esc(descriptions[t.registry_state]) + '</div>' +
+        fields.map(function (f) {
+          return '<div><span>' + esc(f[0]) + '</span><strong>' +
+            esc(typeof f[1] === "string" && f[1] ? f[1].slice(0,128) : "Not recorded") +
+            '</strong></div>';
+        }).join("") + '</article>';
+    }).join("") +
+      (evidence.truncated ? '<p class="trace-context-note">Additional task links omitted. This is a bounded view.</p>' : '') +
+      '<p class="trace-context-foot">Registry matches are unverified ID correspondence, not execution, node, or agent attestation. No actions or remote links.</p>';
+  }
   $("trace-detail").addEventListener("click", function (event) {
     if (!currentTrace) return;
+    var inspect = event.target.closest("button.trace-inspect-evidence");
+    if (inspect) {
+      var cid = state.selected;
+      var generation = ++evidenceRequest;
+      var results = $("trace-detail").querySelector(".trace-evidence-results");
+      if (results) results.textContent = "Checking recorded task and registry IDs…";
+      request("/api/traces/" + encodeURIComponent(cid) + "/evidence").then(function (response) {
+        if (generation !== evidenceRequest || cid !== state.selected) return;
+        currentEvidence = response;
+        paintEvidence(response);
+      }).catch(function (err) {
+        if (generation !== evidenceRequest || cid !== state.selected) return;
+        currentEvidence = null;
+        var panel = $("trace-detail").querySelector(".trace-evidence-results");
+        if (panel) panel.textContent = errorLabel(err) + " No identity was verified.";
+      });
+      return;
+    }
     var reset = event.target.closest("button.trace-clear-context");
     if (reset) {
       renderDetail(currentTrace, null);
@@ -286,6 +363,8 @@
   });
   function select(cid) {
     if (!cid) return;
+    evidenceRequest++;
+    currentEvidence = null;
     state.selected = cid;
     currentTrace = null;
     var sequence = ++state.detailRequest;
