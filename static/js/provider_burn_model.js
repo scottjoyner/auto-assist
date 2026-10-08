@@ -111,11 +111,11 @@
     var delta = unique[unique.length - 1].value - unique[0].value;
     if (delta <= 0) { output.forecast_reason = "zero_measured_burn"; return output; }
     var rateMs = delta / (unique[unique.length - 1].at - unique[0].at);
+    output.burn_per_hour = rateMs * 3600000;
     var exhaustionMs = now + output.remaining / rateMs;
     if (!Number.isFinite(exhaustionMs) || exhaustionMs >= reset) {
       output.forecast_reason = "not_before_reset"; return output;
     }
-    output.burn_per_hour = rateMs * 3600000;
     output.projected_exhaustion_at = new Date(exhaustionMs).toISOString();
     output.forecast_reason = null;
     return output;
