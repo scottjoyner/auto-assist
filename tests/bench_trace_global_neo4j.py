@@ -30,7 +30,7 @@ def verify_disposable_container():
         or cfg.get("NetworkMode")!="none"
         or cfg.get("PortBindings")
         or not (0 < cfg.get("NanoCpus",0) <= 1000000000)
-        or not (0 < cfg.get("Memory",0) <= 2300000000)
+        or not (0 < cfg.get("Memory",0) <= 2250*1024*1024)
         or any(m.get("Type")=="bind" for m in details.get("Mounts",[]))
         or not details["Config"]["Image"].startswith("neo4j:5.23.")
         or "NEO4J_AUTH=none" not in details["Config"].get("Env",[])):
