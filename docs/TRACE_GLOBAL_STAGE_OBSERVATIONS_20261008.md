@@ -53,3 +53,9 @@ Source: `tests/test_trace_browser_acceptance.cjs`. The tests need a local instal
 | Full-fidelity historical tool-call retention | **Separate open issue #117** |
 
 **Decision:** retain both PRs as **draft**. The next narrow slice should improve graph query-plan evidence with a consistent Neo4j 5.26 staging setup and persistent driver benchmarking, plus keyboard/screen-reader testing against a verified authenticated deployment under operator review. No deployment, production Neo4j changes, NAS writes or provider routing changes have been made.
+
+
+
+## Post-benchmark safety verification
+
+After the isolated graph was removed, the reusable benchmark gained a strict `docker inspect` preflight and **11 synthetic admission tests** (`tests/test_trace_bench_guard.py`). The guard rejects any unexpected container name, network access, published ports, bind-mounted data, image, authentication mode, CPU/memory budget, non-running state or absent container. It explicitly accepts the documented 2,200 MiB memory cap. The check is performed before any synthetic seed command can execute. **11/11 guard tests passed**, and the original 17 query-contract Python tests still passed (28 combined). The 85k actual staging measurement was made **before** this guard was introduced; its operator had independently checked the same isolation properties and removed the container. These new unit tests are not a repeat of the 85k load test.
