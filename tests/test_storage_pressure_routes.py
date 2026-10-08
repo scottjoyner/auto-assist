@@ -77,13 +77,24 @@ def test_missing_invalid_too_large_fail_closed(tmp_path):
                                     observed_epoch=time.time()+700)))
     assert project_storage_report(path)["reason"]=="invalid_timestamp"
 
+def test_missing_capacity_when_ok_claimed_fails_closed(tmp_path):
+    path=tmp_path/"report.json"
+    row=dict(fixture(time.time()), nas_l5_admission="GO")
+    row.pop("ssd_available_bytes")
+    path.write_text(json.dumps(row))
+    d=project_storage_report(path)
+    assert d["state"] == "degraded"
+    assert d["nas_new_background_copy_permitted"] is False
+    assert d["ssd_available_bytes"] is None
+
 def test_report_never_turns_receipt_into_release_authority(tmp_path):
     path=tmp_path/"report.json"
     path.write_text(json.dumps(dict(fixture(time.time()),
                       nas_l5_admission="GO",automatic_cleanup_allowed=True,
                       source_release_blocked=False,reclaimed_bytes=1000)))
     result=project_storage_report(path)
-    assert result["nas_new_background_copy_permitted"] is True
+    assert result["nas_l5_observed_go"] is True
+    assert result["nas_new_background_copy_permitted"] is False
     assert result["source_release_blocked"] is True
     assert result["automatic_cleanup_allowed"] is False
     assert result["reclaimed_bytes"]==0

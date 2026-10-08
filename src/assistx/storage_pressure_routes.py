@@ -36,6 +36,7 @@ def unavailable(reason: str) -> dict:
             "ssd_severity": "unknown", "ssd_used_percent": None,
             "ssd_available_bytes": None, "nas_available_bytes": None,
             "nas_used_percent": None, "nas_l5_admission": "UNKNOWN",
+            "nas_l5_observed_go": False,
             "nas_new_background_copy_permitted": False,
             "nas_btrfs_error_count": None, "root_census_complete": False,
             "published_nas_manifest_bytes": None,
@@ -65,14 +66,19 @@ def project_storage_report(path: Path = DEFAULT_REPORT, *, now: float | None = N
         severity = "unknown"
     age = now - stamp
     fresh = age <= MAX_AGE_SECONDS
-    ok = data.get("observation_ok") is True
+    ok = (data.get("observation_ok") is True
+          and severity in ("warning","critical","healthy")
+          and _positive_number(data.get("ssd_available_bytes")) is not None
+          and _positive_number(data.get("nas_available_bytes")) is not None
+          and _positive_number(data.get("ssd_used_percent")) is not None
+          and _positive_number(data.get("nas_used_percent")) is not None)
     state = ("fresh" if fresh and ok else
              "stale" if not fresh else "degraded")
     ssd_used = _positive_number(data.get("ssd_used_percent"))
     nas_used = _positive_number(data.get("nas_used_percent"))
     if ssd_used is not None and ssd_used > 100: ssd_used = None
     if nas_used is not None and nas_used > 100: nas_used = None
-    allow = state == "fresh" and admission == "GO" and ok
+    observed_go = state == "fresh" and admission == "GO" and ok
     return {
         "schema": SCHEMA, "read_only": True, "state": state,
         "observed_epoch": stamp, "age_seconds": round(max(0,age)),
@@ -83,7 +89,10 @@ def project_storage_report(path: Path = DEFAULT_REPORT, *, now: float | None = N
         "nas_available_bytes": _positive_number(data.get("nas_available_bytes")) if ok and fresh else None,
         "nas_used_percent": nas_used if ok and fresh else None,
         "nas_l5_admission": admission if fresh else "UNKNOWN",
-        "nas_new_background_copy_permitted": allow,
+        "nas_l5_observed_go": observed_go,
+        # A sampled GO never authorizes execution: a new write must obtain
+        # a new admission decision directly from the guarded offload worker.
+        "nas_new_background_copy_permitted": False,
         "nas_btrfs_error_count": _positive_number(data.get("nas_btrfs_error_count")) if fresh else None,
         "root_census_complete": data.get("root_census_complete") is True,
         "published_nas_manifest_bytes": _positive_number(data.get("published_nas_manifest_bytes")) if fresh else None,

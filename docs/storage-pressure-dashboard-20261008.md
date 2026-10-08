@@ -51,3 +51,13 @@ Do not claim the new API or UI is live until that check passes.
 The normal background NAS transfer admission continues to report HOLD during
 high utilization, and root-only allocation accounting remains pending.
 Sources remain retained, and no SSD bytes have been reclaimed.
+
+## Safety clarification: snapshots are not execution leases
+
+A 15-minute-old NAS L5 GO is descriptive telemetry, not actionable admission.
+The sanitized producer now exports nas_l5_observed_go separately from
+nas_new_background_copy_permitted. The latter is ALWAYS false in dashboard
+snapshots regardless of the observed decision. The only actual write permission
+is a freshly queried L5 GO obtained by offload_pilot.py immediately before
+staging a new upload; source deletion is never authorized by admission.
+The authenticated AssistX read-only consumer enforces the same distinction.
