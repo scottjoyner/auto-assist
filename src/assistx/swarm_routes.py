@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -433,15 +433,18 @@ def api_voice_policy(
 
 @router.get("/api/traces")
 def api_list_traces(
-    limit: int = 50,
-    offset: int = 0,
-    search: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    search: Optional[str] = Query(default=None, max_length=128),
+    outcome: Optional[Literal["failed", "completed", "open"]] = None,
     user: str = Depends(_default_auth),
 ):
-    """Historical trace index, newest first, for the trace history viewer."""
+    """Read-only global outcome filtering for the authenticated trace index."""
     neo = _neo()
     try:
-        return list_traces(neo, limit=limit, offset=offset, search=search)
+        return list_traces(
+            neo, limit=limit, offset=offset, search=search, outcome=outcome
+        )
     finally:
         neo.close()
 

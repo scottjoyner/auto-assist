@@ -2,8 +2,11 @@
 (function () {
   "use strict";
   var PAGE_SIZE = 50;
+  var initialOutcome = new URL(window.location.href).searchParams.get("outcome");
+  var permittedOutcomes = ["all", "failed", "completed", "open"];
   var state = {
-    offset: 0, search: "", outcome: "all", total: 0, rows: [],
+    offset: 0, search: "", outcome: permittedOutcomes.indexOf(initialOutcome) >= 0 ? initialOutcome : "all",
+    total: 0, rows: [],
     selected: null, listRequest: 0, detailRequest: 0,
     deepLink: new URL(window.location.href).searchParams.get("trace") || null
   };
@@ -34,6 +37,8 @@
     var url = new URL(window.location.href);
     if (cid) url.searchParams.set("trace", cid);
     else url.searchParams.delete("trace");
+    if (state.outcome !== "all") url.searchParams.set("outcome", state.outcome);
+    else url.searchParams.delete("outcome");
     link.href = url.pathname + url.search;
     link.setAttribute("aria-disabled", cid ? "false" : "true");
     link.tabIndex = cid ? 0 : -1;
@@ -43,6 +48,8 @@
     var url = new URL(window.location.href);
     if (cid) url.searchParams.set("trace", cid);
     else url.searchParams.delete("trace");
+    if (state.outcome !== "all") url.searchParams.set("outcome", state.outcome);
+    else url.searchParams.delete("outcome");
     window.history.replaceState(null, "", url.pathname + url.search + url.hash);
     setSelectedTools(cid);
   }
@@ -55,7 +62,11 @@
       });
   }
   function errorLabel(err) {
-    return err && err.message === "AUTH" ? "Authentication required or expired." : "The trace service is temporarily unavailable.";
+    if (err && err.message === "AUTH") return "Authentication required or expired.";
+    if (err && err.message === "SERVER_FILTER_UNAVAILABLE") {
+      return "Global outcome filtering is not yet available on this server version.";
+    }
+    return "The trace service is temporarily unavailable.";
   }
   function placeholder(title, message) {
     return '<div class="trace-placeholder"><span aria-hidden="true">⌁</span><h3>' + esc(title) +
@@ -74,13 +85,12 @@
     $("trace-total").textContent = "of " + Number(state.total).toLocaleString();
   }
   function paintList() {
-    var shown = state.rows.filter(function (t) {
-      return state.outcome === "all" || t.outcome === state.outcome;
-    });
+    // The server applies global outcome filtering before pagination.
+    var shown = state.rows;
     if (!shown.length) {
       $("trace-list").innerHTML = '<p class="trace-empty">' +
-        (state.rows.length ? "No " + esc(state.outcome) + " traces on this page. Try All on page or navigate to another page." :
-          "No traces match this correlation-ID search.") + "</p>";
+        (state.outcome === "all" ? "No traces match this correlation-ID search." :
+          "No " + esc(state.outcome) + " traces match across the indexed history. Try All outcomes.") + "</p>";
       return;
     }
     $("trace-list").innerHTML = shown.map(function (t) {
@@ -109,13 +119,19 @@
     $("trace-list").innerHTML = '<p class="trace-empty">Loading results…</p>';
     var url = "/api/traces?limit=" + PAGE_SIZE + "&offset=" + state.offset;
     if (state.search) url += "&search=" + encodeURIComponent(state.search);
+    if (state.outcome !== "all") url += "&outcome=" + encodeURIComponent(state.outcome);
     request(url).then(function (data) {
+      if ((data.outcome || "all") !== state.outcome) {
+        throw new Error("SERVER_FILTER_UNAVAILABLE");
+      }
       if (sequence !== state.listRequest) return;
       state.total = Number(data.total) || 0;
       state.rows = Array.isArray(data.traces) ? data.traces : [];
       paintMetrics();
       paintList();
-      status("Loaded " + state.rows.length + " trace groups · " + when(Date.now()) + " · ID search only", false);
+      status("Loaded " + state.rows.length + " of " + state.total +
+        " matching " + (state.outcome === "all" ? "all-outcome" : state.outcome) +
+        " trace groups · " + when(Date.now()), false);
       var desired = state.deepLink;
       state.deepLink = null;
       if (desired) select(desired);
@@ -127,6 +143,12 @@
       state.rows = [];
       state.total = 0;
       paintMetrics();
+      // A failed read means the count is unknown, never a verified zero.
+      ["trace-total-metric", "trace-loaded-metric", "trace-failed-metric"].forEach(function (id) {
+        $(id).textContent = "—";
+      });
+      $("trace-range").textContent = "—";
+      $("trace-total").textContent = "";
       $("trace-list").innerHTML = '<div class="trace-empty">' + esc(errorLabel(err)) +
         '<br><button type="button" class="trace-retry" id="trace-retry">Try again</button></div>';
       status(errorLabel(err) + " No data was changed.", true);
@@ -219,9 +241,11 @@
     loadIndex();
   });
   $("trace-outcome").addEventListener("change", function (e) {
-    state.outcome = e.target.value;
-    paintList();
-    status("Outcome filter applies to the " + state.rows.length + " loaded results on this page only.", false);
+    state.outcome = permittedOutcomes.indexOf(e.target.value) >= 0 ? e.target.value : "all";
+    state.offset = 0;
+    state.deepLink = null;
+    clearSelection();
+    loadIndex();
   });
   var searchTimer;
   $("trace-search").addEventListener("input", function () {
@@ -268,6 +292,7 @@
     if (id) select(id);
     else clearSelection();
   });
+  $("trace-outcome").value = state.outcome;
   setSelectedTools(null);
   loadIndex();
 })();

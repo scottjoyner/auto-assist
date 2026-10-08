@@ -1,0 +1,106 @@
+{
+  "concurrency": 5,
+  "data": [
+    {
+      "label": "failed",
+      "latency_ms": 2243.07,
+      "returned": 50,
+      "status": "ok"
+    },
+    {
+      "label": "completed",
+      "latency_ms": 2564.54,
+      "returned": 50,
+      "status": "ok"
+    },
+    {
+      "label": "open",
+      "latency_ms": 2539.89,
+      "returned": 50,
+      "status": "ok"
+    },
+    {
+      "label": "failed",
+      "latency_ms": 2448.01,
+      "returned": 50,
+      "status": "ok"
+    },
+    {
+      "label": "open",
+      "latency_ms": 2628.23,
+      "returned": 50,
+      "status": "ok"
+    },
+    {
+      "label": "failed",
+      "latency_ms": 2500.89,
+      "returned": 50,
+      "status": "ok"
+    },
+    {
+      "label": "completed",
+      "latency_ms": 2925.05,
+      "returned": 50,
+      "status": "ok"
+    },
+    {
+      "label": "open",
+      "latency_ms": 2815.56,
+      "returned": 50,
+      "status": "ok"
+    },
+    {
+      "label": "failed",
+      "latency_ms": 2509.01,
+      "returned": 50,
+      "status": "ok"
+    },
+    {
+      "label": "open",
+      "latency_ms": 2901.91,
+      "returned": 50,
+      "status": "ok"
+    },
+    {
+      "label": "failed",
+      "latency_ms": 1982.4,
+      "returned": 50,
+      "status": "ok"
+    },
+    {
+      "label": "completed",
+      "latency_ms": 2680.02,
+      "returned": 50,
+      "status": "ok"
+    },
+    {
+      "label": "open",
+      "latency_ms": 2377.95,
+      "returned": 50,
+      "status": "ok"
+    },
+    {
+      "label": "failed",
+      "latency_ms": 2093.47,
+      "returned": 50,
+      "status": "ok"
+    },
+    {
+      "label": "open",
+      "latency_ms": 2590.6,
+      "returned": 50,
+      "status": "ok"
+    }
+  ],
+  "failures": 0,
+  "fixture": "isolated synthetic 5.26.30",
+  "max_request_ms": 2925.05,
+  "median_request_ms": 2539.89,
+  "note": "15 synthetic requests only, each 2 read queries with 4s driver cap",
+  "production_sla_proven": false,
+  "requests": 15,
+  "schema": "trace-526-concurrency-screen-v1",
+  "successful": 15,
+  "user_data_access": false,
+  "waves": 3
+}
