@@ -33,7 +33,8 @@ def audit_bytes(root):
     with path.open("rb") as f:
         data = f.read(MAX_READ + 1)
     after = path.lstat()
-    identity = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
+    def identity(item):
+        return (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
     if identity(before) != identity(after) or len(data) != after.st_size:
         raise ValueError("audit_journal_changed_during_read")
     return data, identity(before)
