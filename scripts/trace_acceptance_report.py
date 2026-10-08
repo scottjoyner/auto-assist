@@ -126,6 +126,11 @@ def create_report(
             minimum = MIN_CASES.get(test_id, 1)
             passed = len(cases) >= minimum and all(state == "passed" for state in cases)
             checks.append({
+                "gate_id": gate,
+                "observed_at": observed_at,
+                "repository_revision": tested if SHA.fullmatch(tested) else None,
+                "node": None,
+                "artifact_uri": run_url or None,
                 "test_id": test_id,
                 "result": "pass" if passed else "blocked",
                 "case_count": len(cases),
@@ -178,7 +183,15 @@ def validate_report(report: dict) -> None:
         if len(item.get("checks", [])) != len(REQUIRED[gate_id]):
             raise ValueError("missing_checks:" + gate_id)
         for check in item["checks"]:
-            if check.get("provenance") != PROVENANCE or check.get("result") not in {"pass", "blocked"}:
+            if (
+                check.get("gate_id") != gate_id
+                or check.get("observed_at") != report.get("observed_at")
+                or check.get("repository_revision") != report.get("tested_checkout_sha")
+                or check.get("artifact_uri") != report.get("evidence_run_url")
+                or check.get("node") is not None
+                or check.get("provenance") != PROVENANCE
+                or check.get("result") not in {"pass", "blocked"}
+            ):
                 raise ValueError("unsafe_evidence:" + gate_id)
     if report.get("collector_errors") and any(
         gate["fixture_status"] == "fixture_pass" for gate in report["gates"].values()
@@ -186,15 +199,43 @@ def validate_report(report: dict) -> None:
         raise ValueError("fixture_pass_with_collector_errors")
 
 
+def verify_report(
+    saved: dict, junit: Path, *, head: str, base: str, tested: str
+) -> None:
+    """Independently recompute a report from JUnit and trusted workflow revisions."""
+    validate_report(saved)
+    if not junit.is_file():
+        raise ValueError("evidence_junit_unavailable")
+    if any(not SHA.fullmatch(value) for value in (head, base, tested)):
+        raise ValueError("expected_revision_unverified")
+    if saved.get("collector_errors"):
+        raise ValueError("collector_errors_present")
+    expected = create_report(
+        junit, head=head, base=base, tested=tested,
+        observed_at=saved.get("observed_at"),
+        run_url=saved.get("evidence_run_url") or "",
+    )
+    if expected != saved:
+        raise ValueError("acceptance_report_evidence_mismatch")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--junit", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--verify-report", type=Path)
     parser.add_argument("--head", default="")
     parser.add_argument("--base", default="")
     parser.add_argument("--tested", default="")
     parser.add_argument("--run-url", default="")
     args = parser.parse_args()
+    if args.verify_report is not None:
+        saved = json.loads(args.verify_report.read_text(encoding="utf-8"))
+        verify_report(saved, args.junit, head=args.head, base=args.base, tested=args.tested)
+        print("trace acceptance artifact: VERIFIED (production promotion remains BLOCKED)")
+        return 0
+    if args.output is None:
+        parser.error("--output is required unless --verify-report is supplied")
     report = create_report(args.junit, head=args.head, base=args.base,
                            tested=args.tested, run_url=args.run_url)
     validate_report(report)
