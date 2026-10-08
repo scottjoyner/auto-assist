@@ -2,166 +2,101 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <title>Trace history — AssistX</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <link rel="stylesheet" href="{{ url_for('static', path='css/control_room.css') }}">
-  <style>
-    .trace-grid {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr);
-      gap: 12px;
-      margin-top: 12px;
-    }
-    @media (min-width: 1280px) {
-      .trace-grid { grid-template-columns: minmax(0, 460px) minmax(0, 1fr); }
-      .trace-side { grid-column: 1; }
-      .trace-main { grid-column: 2; }
-    }
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 12px 14px;
-    }
-    .panel h2 {
-      margin: 0 0 10px;
-      font-size: 13px;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      opacity: 0.75;
-    }
-    .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
-    .toolbar input[type="search"] {
-      flex: 1;
-      background: var(--panel-2, #12161c);
-      border: 1px solid var(--line);
-      border-radius: 7px;
-      color: inherit;
-      padding: 7px 10px;
-      font: inherit;
-      font-size: 13px;
-    }
-    .toolbar button {
-      background: var(--panel-2, #12161c);
-      border: 1px solid var(--line);
-      border-radius: 7px;
-      color: inherit;
-      cursor: pointer;
-      padding: 7px 12px;
-      font: inherit;
-      font-size: 13px;
-    }
-    .toolbar button:disabled { opacity: 0.4; cursor: default; }
-    .trace-list { max-height: 62vh; overflow-y: auto; margin: 0 -4px; }
-    .trace-row {
-      border: 1px solid transparent;
-      border-radius: 7px;
-      cursor: pointer;
-      padding: 8px 10px;
-      margin-bottom: 3px;
-    }
-    .trace-row:hover { background: var(--panel-2, #12161c); }
-    .trace-row.selected { border-color: var(--accent, #4f9dff); background: var(--panel-2, #12161c); }
-    .trace-row .cid {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 12px;
-      opacity: 0.9;
-    }
-    .trace-row .meta {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      font-size: 11px;
-      opacity: 0.65;
-      margin-top: 3px;
-    }
-    .badge {
-      border-radius: 999px;
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.04em;
-      padding: 1px 7px;
-      text-transform: uppercase;
-    }
-    .badge.failed { background: #4a1d22; color: #ff8f8f; }
-    .badge.completed { background: #17351f; color: #7fd39a; }
-    .badge.open { background: #2b2f36; color: #a8b0bb; }
-    .pager {
-      display: flex;
-      gap: 8px;
-      justify-content: space-between;
-      align-items: center;
-      margin-top: 10px;
-      font-size: 12px;
-      opacity: 0.75;
-    }
-    .timeline { display: flex; flex-direction: column; gap: 0; }
-    .event {
-      border-left: 2px solid var(--line);
-      padding: 0 0 14px 14px;
-      position: relative;
-    }
-    .event::before {
-      content: "";
-      position: absolute;
-      left: -5px;
-      top: 4px;
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--accent, #4f9dff);
-    }
-    .event.failed::before { background: #ff6b6b; }
-    .event .etype { font-size: 13px; font-weight: 600; }
-    .event .emeta { font-size: 11px; opacity: 0.6; margin-top: 2px; }
-    .event pre {
-      margin: 6px 0 0;
-      padding: 8px 10px;
-      background: var(--panel-2, #12161c);
-      border-radius: 7px;
-      font-size: 11px;
-      overflow-x: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-    .empty { opacity: 0.55; font-size: 13px; padding: 18px 4px; }
-    .summary-row { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; opacity: 0.8; margin-bottom: 10px; }
-    .summary-row b { font-weight: 600; }
-  </style>
+  <meta name="color-scheme" content="dark"/>
+  <title>Trace investigations — AssistX Fleet</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='css/control_room.css') }}"/>
+  <link rel="stylesheet" href="{{ url_for('static', path='css/traces.css') }}"/>
+  <script defer src="{{ url_for('static', path='js/traces.js') }}"></script>
 </head>
 <body>
-  <h1>Trace history</h1>
-  <p class="empty" style="padding-top:0">
-    Historical router traces, newest first. Select a trace to see its event timeline.
-  </p>
-
-  <div class="trace-grid">
-    <div class="trace-side">
-      <div class="panel">
-        <h2>Traces</h2>
-        <div class="toolbar">
-          <input type="search" id="trace-search" placeholder="filter by correlation id…" autocomplete="off"/>
-          <button id="trace-prev" disabled>&larr;</button>
-          <button id="trace-next" disabled>&rarr;</button>
-        </div>
-        <div id="trace-summary" class="summary-row"></div>
-        <div class="trace-list" id="trace-list"></div>
-        <div class="pager">
-          <span id="trace-range">&mdash;</span>
-          <span id="trace-total"></span>
+  <div class="trace-shell">
+    <a class="skip-link" href="#trace-detail-heading">Skip to trace detail</a>
+    <header class="trace-topbar">
+      <div class="trace-brand">
+        <span class="trace-mark" aria-hidden="true">AX<span>/</span></span>
+        <div>
+          <div class="trace-eyebrow">AssistX / Fleet observability</div>
+          <h1>Trace investigations</h1>
         </div>
       </div>
+      <nav class="trace-nav" aria-label="Fleet observability">
+        <a class="active" href="/traces" aria-current="page">Trace history</a>
+        <span class="trace-nav-pending" title="Provider usage page is staged, not available in the running service">Usage &amp; burn · staged</span>
+        <a href="/fleet-dashboard">Fleet dashboard</a>
+        <a href="/control-room">Control room</a>
+      </nav>
+    </header>
+
+    <section class="trace-intro" aria-label="Trace index scope">
+      <div>
+        <p class="trace-eyebrow">Historical router events · observation only</p>
+        <p class="trace-lede">Find a run, inspect its event sequence, and share its correlation ID.
+          Router events are an investigative index, <strong>not a complete tool-call audit ledger.</strong></p>
+      </div>
+      <button id="trace-refresh" type="button" class="trace-action">↻ Refresh index</button>
+    </section>
+
+    <div class="trace-metrics" aria-label="Loaded page summary">
+      <div class="trace-metric"><span>Matching trace groups</span><strong id="trace-total-metric">—</strong><small>Across current correlation-ID search</small></div>
+      <div class="trace-metric"><span>Loaded on this page</span><strong id="trace-loaded-metric">—</strong><small>Results returned by the server</small></div>
+      <div class="trace-metric"><span>Failures on this page</span><strong id="trace-failed-metric">—</strong><small>Not an all-history failure count</small></div>
     </div>
 
-    <div class="trace-main">
-      <div class="panel">
-        <h2>Timeline</h2>
-        <div id="trace-detail"><div class="empty">Select a trace on the left.</div></div>
-      </div>
-    </div>
+    <p id="trace-status" class="trace-status" role="status" aria-live="polite">Connecting to authenticated trace index…</p>
+
+    <main class="trace-grid">
+      <section class="trace-panel trace-side" aria-labelledby="trace-list-heading">
+        <div class="trace-panel-head">
+          <div><h2 id="trace-list-heading">Trace index</h2><p>Newest activity first · 50 per page</p></div>
+          <span class="trace-readonly">READ ONLY</span>
+        </div>
+        <form id="trace-search-form" class="trace-controls" role="search">
+          <label for="trace-search">Correlation ID</label>
+          <div class="trace-search-line">
+            <input type="search" id="trace-search" placeholder="Search trace IDs" autocomplete="off" spellcheck="false"/>
+            <button type="button" id="trace-clear" class="trace-icon" aria-label="Clear search" title="Clear search">×</button>
+          </div>
+          <label for="trace-outcome">Outcome · loaded page only</label>
+          <select id="trace-outcome">
+            <option value="all">All on page</option>
+            <option value="failed">Failed on page</option>
+            <option value="completed">Completed on page</option>
+            <option value="open">Open on page</option>
+          </select>
+          <p class="trace-help">The server searches correlation IDs, not event payloads. Outcome filtering affects only these loaded results.</p>
+        </form>
+        <div id="trace-list" class="trace-list" role="group" aria-label="Trace results">
+          <p class="trace-empty">Loading trace index…</p>
+        </div>
+        <footer class="trace-pager">
+          <button type="button" id="trace-prev" aria-label="Previous page of traces" disabled>← Previous</button>
+          <span class="trace-page-counter"><span id="trace-range">—</span> <span id="trace-total"></span></span>
+          <button type="button" id="trace-next" aria-label="Next page of traces" disabled>Next →</button>
+        </footer>
+      </section>
+
+      <section class="trace-panel trace-main" aria-labelledby="trace-detail-heading">
+        <div class="trace-panel-head">
+          <div><h2 id="trace-detail-heading">Event timeline</h2><p id="trace-detail-caption">Select a trace to inspect its recorded steps</p></div>
+          <div class="trace-detail-actions">
+            <button type="button" id="trace-copy" disabled>Copy ID</button>
+            <a id="trace-permalink" href="/traces" aria-disabled="true" tabindex="-1">Share link ↗</a>
+          </div>
+        </div>
+        <div id="trace-detail" class="trace-detail" aria-live="polite">
+          <div class="trace-placeholder">
+            <span aria-hidden="true">⌁</span>
+            <h3>Ready to investigate</h3>
+            <p>Select a trace from the index to view its event timeline and optional payload details.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+    <footer class="trace-footnote">
+      <span>Evidence note · indexed router events can be incomplete and are not authoritative full-output retention evidence.</span>
+      <span>Data access remains controlled by existing AssistX authentication.</span>
+    </footer>
   </div>
-
-  <script src="/static/js/traces.js"></script>
 </body>
 </html>
