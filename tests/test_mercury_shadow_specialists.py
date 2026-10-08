@@ -27,8 +27,11 @@ class Gate:
         self.calls.append("acquire")
         if self.deny:
             return None
+        role = m.SPECIALISTS[task.role]
         return m.Lease("synthetic-lease-one", "wrong" if self.wrong_group else task.group,
-                       0 if self.expired else 20000)
+                       0 if self.expired else 20000, task.task_id, task.node_id,
+                       task.model, task.role, task.attempt_id, task.authority_epoch,
+                       role.input_cap, role.output_cap)
 
     def renew(self, lease, task):
         self.calls.append("renew")
