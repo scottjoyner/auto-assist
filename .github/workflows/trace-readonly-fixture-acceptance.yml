@@ -1,0 +1,47 @@
+name: trace-readonly-fixture-acceptance
+
+on:
+  pull_request:
+    paths:
+      - "scripts/trace_claim_lease_platform_smoke.py"
+      - "tests/test_trace_claim_lease_platform_smoke.py"
+      - ".github/workflows/trace-readonly-fixture-acceptance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-negative-admission:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ASSISTX_TRACE_LEASE_ISSUER_ENABLED: "false"
+      FLEET_TRACE_PROBE_ENABLED: "false"
+      FLEET_TRACE_REAL_EXECUTION_ENABLED: "false"
+      FLEET_UNSAFE_SHELL_TASKS_ENABLED: "false"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: src
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install pinned requirements
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Lint and smoke tests
+        run: |
+          ruff check scripts/trace_claim_lease_platform_smoke.py tests/test_trace_claim_lease_platform_smoke.py
+          python -m pytest -q tests/test_trace_claim_lease_platform_smoke.py
+          python scripts/trace_claim_lease_platform_smoke.py --node-id xwing
+          python scripts/trace_claim_lease_platform_smoke.py --node-id scotts-macbook-air
+      - name: Report tested source and script hash (not physical acceptance)
+        run: |
+          git rev-parse HEAD
+          sha256sum scripts/trace_claim_lease_platform_smoke.py
+          echo "Fixture-only CI: production_dispatch_authorized=false"
