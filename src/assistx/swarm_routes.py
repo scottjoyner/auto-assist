@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,6 +20,7 @@ from .swarm_core import (
     delete_model_endpoint,
     fail_task,
     get_trace,
+    get_trace_task_evidence,
     list_capabilities,
     list_traces,
     list_model_endpoints,
@@ -463,6 +464,22 @@ def api_get_trace(
                 detail=f"No trace found for correlation_id={correlation_id}",
             )
         return trace
+    finally:
+        neo.close()
+
+
+@router.get("/api/traces/{correlation_id}/evidence")
+def api_trace_task_evidence(
+    correlation_id: str = Path(min_length=1, max_length=128),
+    user: str = Depends(_default_auth),
+):
+    """Opt-in, read-only task/registry comparison: never execution attestation."""
+    neo = _neo()
+    try:
+        evidence = get_trace_task_evidence(neo, correlation_id)
+        if evidence is None:
+            raise HTTPException(status_code=404, detail="Trace not found")
+        return evidence
     finally:
         neo.close()
 
