@@ -87,3 +87,92 @@ def test_existing_trace_is_not_reused(tmp_path):
     (args.trace_dir / "pilot-1.stdout.jsonl").write_text("{}\n")
     report = guard.run(args)
     assert report == {"status": "blocked", "reason": "trace_name_already_exists"}
+
+
+
+def test_provider_preflight_requires_recent_healthy_catalog(tmp_path):
+    import os
+    p = tmp_path / 'presence.json'
+    def put(status, checked):
+        guard.atomic_json(p, {'schema': 'provider-presence/v1', 'providers': {
+            'kilo_anonymous': {'status': status, 'checked_epoch': checked}}})
+    assert guard.provider_preflight(p, now=1000)['reason'] == 'missing_presence_state'
+    put('catalog_reachable', 900)
+    assert guard.provider_preflight(p, now=1000)['allowed'] is True
+    put('rate_limited', 1000)
+    assert guard.provider_preflight(p, now=1000)['reason'] == 'provider_rate_limited'
+    put('auth_or_billing_blocked', 1000)
+    assert guard.provider_preflight(p, now=1000)['allowed'] is False
+    put('catalog_reachable', -3000)
+    assert guard.provider_preflight(p, now=1000)['reason'] == 'stale_presence'
+
+
+def test_untrusted_provider_state_fails_closed(tmp_path):
+    p = tmp_path / 'presence.json'
+    p.write_text('{}')
+    p.chmod(0o644)
+    assert guard.provider_preflight(p)['reason'] == 'untrusted_presence_state'
+    p.chmod(0o600)
+    assert guard.provider_preflight(p)['reason'] == 'invalid_presence_state'
+
+
+def test_provider_denial_records_decision_without_starting_agent(tmp_path):
+    from types import SimpleNamespace
+    args = SimpleNamespace(
+        guard_root=tmp_path / 'guard',
+        trace_dir=tmp_path / 'traces',
+        state=tmp_path / 'state' / 'live.jsonl',
+        title='denied-pilot', presence_state=tmp_path / 'absent.json')
+    result = guard.run(args)
+    assert result == {'status': 'blocked', 'reason': 'missing_presence_state'}
+    audit = json.loads((args.guard_root / 'denied-pilot.admission.json').read_text())
+    assert audit['provider'] == 'kilo_anonymous'
+    assert audit['status'] == 'blocked'
+
+
+
+def make_recent_db(path, rows):
+    import sqlite3
+    connection = sqlite3.connect(path)
+    connection.execute(
+        'CREATE TABLE session(id TEXT, model TEXT, tokens_input INTEGER, '
+        'tokens_output INTEGER, cost REAL, time_updated INTEGER)')
+    connection.executemany('INSERT INTO session VALUES (?,?,?,?,?,?)', rows)
+    connection.commit()
+    connection.close()
+
+
+def test_recent_budget_dedupes_both_databases(tmp_path):
+    a, b = tmp_path / 'a.db', tmp_path / 'b.db'
+    model = json.dumps({'providerID': 'kilo_free', 'id': 'one:free'})
+    row = ('session-1', model, 10000, 300, 0.0, 1000000)
+    make_recent_db(a, [row])
+    make_recent_db(b, [row])
+    result = guard.recent_kilo_usage_preflight((a, b), now=1100)
+    assert result['allowed'] is True
+    assert result['sessions'] == 1
+    assert result['input_tokens'] == 10000
+
+
+def test_provider_burst_blocks_without_new_tokens(tmp_path):
+    a, b = tmp_path / 'a.db', tmp_path / 'b.db'
+    model = json.dumps({'providerID': 'kilo', 'id': 'two:free'})
+    make_recent_db(a, [('session-2', model, 65000, 50, 0.0, 1000000)])
+    make_recent_db(b, [])
+    result = guard.recent_kilo_usage_preflight((a, b), now=1100)
+    assert result['allowed'] is False
+    assert result['reason'] == 'recent_provider_activity_cap'
+
+
+def test_recent_budget_fails_closed_on_missing_db(tmp_path):
+    result = guard.recent_kilo_usage_preflight(
+        (tmp_path / 'missing.db',), now=1100)
+    assert result['reason'] == 'usage_database_missing'
+
+
+def test_recent_usage_cost_blocks(tmp_path):
+    a = tmp_path / 'a.db'
+    model = json.dumps({'providerID': 'kilo_free', 'id': 'free'})
+    make_recent_db(a, [('session', model, 1, 1, 0.12, 1000000)])
+    result = guard.recent_kilo_usage_preflight((a,), now=1100)
+    assert result['reason'] == 'recent_nonzero_provider_cost'

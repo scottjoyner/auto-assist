@@ -13,11 +13,16 @@ import os
 import pwd
 from pathlib import Path
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
 
 DEFAULT_ROOT = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local/state/auto-assist/guarded-free"
+DEFAULT_PRESENCE = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local/state/auto-assist/provider-presence.json"
+ACCOUNT_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
+DEFAULT_DBS = (ACCOUNT_HOME / ".local/share/opencode/opencode.db",
+               ACCOUNT_HOME / ".local/share/mcp/dc-isolated/.home/.local/share/opencode/opencode.db")
 
 def atomic_json(path: Path, obj: dict) -> None:
     tmp = path.with_suffix(".tmp")
@@ -81,6 +86,91 @@ def active_pid(state: Path, title: str) -> int | None:
             return pid
     return None
 
+def provider_preflight(path: Path, *, now: float | None = None,
+                       provider_id: str = "kilo_anonymous",
+                       max_age: int = 3600) -> dict:
+    """Fail closed on missing/stale/blocked provider metadata.
+
+    Catalog health is a necessary admission signal, never proof of a usable
+    model or of remaining free quota. Other harnesses must opt in separately.
+    """
+    now = time.time() if now is None else now
+    try:
+        stat = path.lstat()
+        if not path.is_file() or path.is_symlink() or stat.st_uid != os.getuid() or stat.st_mode & 0o077:
+            return {"allowed": False, "reason": "untrusted_presence_state"}
+        state = json.loads(path.read_text())
+        if not isinstance(state, dict) or state.get("schema") != "provider-presence/v1":
+            return {"allowed": False, "reason": "invalid_presence_state"}
+        record = state.get("providers", {}).get(provider_id)
+        if not isinstance(record, dict):
+            return {"allowed": False, "reason": "provider_not_monitored"}
+        checked = record.get("checked_epoch")
+        if not isinstance(checked, (int, float)) or checked > now + 60 or checked < now - max_age:
+            return {"allowed": False, "reason": "stale_presence"}
+        status = record.get("status")
+        if status != "catalog_reachable":
+            return {"allowed": False, "reason": "provider_" + str(status or "unknown")}
+        return {"allowed": True, "reason": "catalog_healthy_not_inference_proof"}
+    except FileNotFoundError:
+        return {"allowed": False, "reason": "missing_presence_state"}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {"allowed": False, "reason": "invalid_presence_state"}
+
+
+def recent_kilo_usage_preflight(databases=DEFAULT_DBS, *, now: float | None = None,
+                                window_seconds: int = 900, max_input: int = 60000,
+                                max_output: int = 6000, max_sessions: int = 3) -> dict:
+    """Conservative local recent-activity cap across account and isolated DBs.
+
+    Session lifetime usage is charged if the session was updated in the window,
+    so this overestimates true per-window usage. It is NOT an upstream quota.
+    """
+    now = time.time() if now is None else now
+    cutoff_ms = int((now - window_seconds) * 1000)
+    by_id = {}
+    for db in databases:
+        if not db.is_file():
+            return {"allowed": False, "reason": "usage_database_missing"}
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=3)
+            try:
+                con.execute("PRAGMA query_only=ON")
+                rows = con.execute(
+                    "SELECT id,model,tokens_input,tokens_output,cost FROM session "
+                    "WHERE time_updated>=? ORDER BY time_updated DESC LIMIT 2001",
+                    (cutoff_ms,)
+                ).fetchall()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return {"allowed": False, "reason": "usage_database_error"}
+        if len(rows) > 2000:
+            return {"allowed": False, "reason": "usage_window_truncated"}
+        for sid, model_raw, input_tokens, output_tokens, cost in rows:
+            try:
+                model = json.loads(model_raw or "{}")
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(model, dict) or model.get("providerID") not in ("kilo", "kilo_free"):
+                continue
+            previous = by_id.get(sid, (0, 0, 0))
+            by_id[sid] = (
+                max(previous[0], max(0, input_tokens or 0)),
+                max(previous[1], max(0, output_tokens or 0)),
+                max(previous[2], max(0, cost or 0)),
+            )
+    input_total = sum(x[0] for x in by_id.values())
+    output_total = sum(x[1] for x in by_id.values())
+    detail = {"sessions": len(by_id), "input_tokens": input_total,
+              "output_tokens": output_total, "window_seconds": window_seconds}
+    if any(x[2] > 0 for x in by_id.values()):
+        return {"allowed": False, "reason": "recent_nonzero_provider_cost", **detail}
+    if len(by_id) >= max_sessions or input_total >= max_input or output_total >= max_output:
+        return {"allowed": False, "reason": "recent_provider_activity_cap", **detail}
+    return {"allowed": True, "reason": "within_conservative_local_window", **detail}
+
+
 def run(args: argparse.Namespace) -> dict:
     root = args.guard_root
     root.mkdir(parents=True, exist_ok=True)
@@ -107,6 +197,21 @@ def run(args: argparse.Namespace) -> dict:
         stdout_trace = args.trace_dir / f"{args.title}.stdout.jsonl"
         if stdout_trace.exists():
             return {"status": "blocked", "reason": "trace_name_already_exists"}
+        admission = provider_preflight(getattr(args, "presence_state", DEFAULT_PRESENCE))
+        if not admission["allowed"]:
+            denial = {"status": "blocked", "reason": admission["reason"],
+                      "provider": "kilo_anonymous", "title": args.title,
+                      "checked_epoch": round(time.time(), 3)}
+            atomic_json(root / f"{args.title}.admission.json", denial)
+            return {"status": "blocked", "reason": admission["reason"]}
+        budget = recent_kilo_usage_preflight()
+        if not budget["allowed"]:
+            denial = {"status": "blocked", "reason": budget["reason"],
+                      "provider": "kilo_anonymous", "title": args.title,
+                      "recent_usage": {k: v for k, v in budget.items() if k not in ("allowed", "reason")},
+                      "checked_epoch": round(time.time(), 3)}
+            atomic_json(root / f"{args.title}.admission.json", denial)
+            return {"status": "blocked", "reason": budget["reason"]}
         command = [sys.executable, str(args.launcher), "--model", args.model,
                    "--objective", args.objective, "--worktree", str(args.worktree),
                    "--title", args.title, "--state", str(args.state),
@@ -193,6 +298,7 @@ def main() -> int:
     parser.add_argument("--trace-dir", type=Path, required=True)
     parser.add_argument("--launcher", type=Path, default=Path(__file__).with_name("launch_kilo_exact.py"))
     parser.add_argument("--guard-root", type=Path, default=DEFAULT_ROOT)
+    parser.add_argument("--presence-state", type=Path, default=DEFAULT_PRESENCE)
     parser.add_argument("--max-input", type=int, default=60000)
     parser.add_argument("--max-output", type=int, default=4000)
     parser.add_argument("--max-steps", type=int, default=3)

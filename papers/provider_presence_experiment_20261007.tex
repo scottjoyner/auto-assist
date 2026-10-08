@@ -57,11 +57,35 @@ codes, timeouts, manifest hash evidence, independently inspected procedural
 quality, and tests for interval and cooldown enforcement. No unattended
 generation or paid provider fallback is authorized.
 
+\section{Follow-on Observation: October 7, 2026}
+After specifying H1--H4, we installed a persistent, read-only systemd user
+timer on x1-370 at a 15-minute cadence. The service was observed to return
+exit status 0 and was configured to run a private copy of the monitoring
+script outside the temporary Git worktree. Remote catalog checks remain
+bounded to one request per endpoint every 30 minutes. Local tests
+successfully exercised independent per-provider cooldowns, without using
+generation APIs. The subsequent focused suite passed 45 tests.
+
+A guarded Kilo admission preflight now requires a fresh, privately owned
+provider-state snapshot and conservative local usage evidence from both
+OpenCode databases. Sessions are deduplicated and a 15-minute gate accounts
+for recently updated sessions' lifetime usage. A separate historical
+session remained orphaned, with 2,648,964 input tokens and a last finish
+reason of tool-calls, illustrating why final trace quality must not be
+inferred from model or catalog availability. No additional generation run
+was performed for this follow-on experiment. The original hypotheses
+were supported by local tests and monitoring checks only; a multi-day
+unattended reliability trial has not yet been completed.
+
 \section{Limitations}
 One healthy catalog does not prove availability of any model. Credentials
-and upstream quota entitlement remain unknown for some providers. An hourly
-ChatGPT recurring watch is scheduled, but no systemd timer has been installed
-on the host; neither mechanism supplies distributed fleet-wide admission.
+and upstream quota entitlement remain unknown for some providers.
+The installed user timer does not guarantee a successful network connection
+or maintain a continuous model session. Observed recent-token totals may
+overestimate usage because they count entire lifetimes of sessions updated
+within the window. Both admission gates are local to one machine and do not
+supply fleet-wide atomic reservations; independent clients and hosts can
+still exceed a shared upstream provider limit.
 \begin{thebibliography}{9}
 \bibitem{openrouter} OpenRouter. List all models and their properties.
 \url{https://openrouter.ai/docs/api/api-reference/models/get-models}

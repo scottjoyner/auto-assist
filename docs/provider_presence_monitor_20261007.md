@@ -25,9 +25,15 @@ the independently rate-limited exact-model launcher, with trace manifests.
 Default private state:
 `/home/scott/.local/state/auto-assist/provider-presence.json`.
 
-The single-run executable is ready. Periodic service installation was not
-confirmed during this pass; do not claim unattended freshness until an actual
-timer and next tick have been verified.
+The systemd user service and timer were installed and verified on x1-370
+on October 7. The 15-minute timer launches a private, persistent copy under
+`/home/scott/.local/lib/fleet/provider_presence_watch.py`, independent of
+this Git worktree. Install/update with
+`bash scripts/install_provider_presence_timer.sh`, then verify
+`systemctl --user list-timers --all` and
+`systemctl --user show fleet-provider-presence.service -p Result -p ExecMainStatus`.
+The service exits after each metadata-only pass; it does not keep an
+inference connection or paid model alive.
 
 ## Limits and operational policy
 Catalog probes every 30 minutes, local health/CLI every 15 minutes if
