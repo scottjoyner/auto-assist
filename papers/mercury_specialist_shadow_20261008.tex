@@ -79,4 +79,39 @@ admission and that real SDK cancellation cannot emit further tokens after
 revocation; these are blockers, not inferred successes. No free-provider
 testing authorization was granted by this follow-on experiment.
 
+
+\section{Pinned Mercury streaming boundary: an offline falsification}
+The next mock-only research pass pins Mercury to Git revision
+\texttt{1be98293ace567092b961346d95363284f6e71cf}. We patch the actual
+\texttt{bot-turn.ts} callsite in an isolated, non-deployed source checkout,
+replacing the \texttt{streamText} invocation with a fixture-only injected
+stream constructor. A valid external synthetic lease, exact trusted task
+binding, mock coordinator renewal, mock custody acknowledgement, and
+explicit fixture factory must all be present before even fake token events
+may be consumed. Without these inputs, all direct ingress paths deny.
+
+\subsection{Prediction and test method}
+The engineering protocol was recorded before the new tests. We predicted
+zero launched fixtures on missing admission or altered identity/epoch/quota;
+renewal before each emitted stream event and periodically during stalled
+streams; cancellation on authority loss, time expiry and parent abort;
+denial on failed custody acknowledgements; and no direct SDK fallback.
+The standalone harness uses Node's TypeScript stripping and an injected
+\emph{no-network} async iterable. No npm install, provider SDK, credentials,
+or Mercury daemon are required or used.
+
+\subsection{Observed results and limitations}
+Twelve native fixture tests passed; the pre-existing 69 Python mock-boundary
+tests remained green, for 81 focused offline checks across separate harnesses.
+The patch passed \texttt{git apply --check} against the pinned pristine source;
+the modified bot-turn file passed a Node parser check. Five initial native
+tests failed because the first test harness produced async-generator methods
+rather than iterable generator instances; this fixture error was corrected
+before the final twelve passing tests. The measured behavior proves neither
+actual Mercury BotManager invocation nor AI SDK stream cancellation:
+those paths deliberately cannot run through the fixture-only shim.
+No real upstream token budget, independent WORM witness, physical node
+contention, or accepted model output was measured. Any claim of
+production-safe provider dispatch would exceed the evidence.
+
 \end{document}
