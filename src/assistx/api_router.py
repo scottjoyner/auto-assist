@@ -37,6 +37,7 @@ from .doctor_routes import build_doctor_router
 from .passive_events import build_passive_event_router
 from .passive_status import build_passive_status_router
 from .provider_burn_routes import build_provider_burn_router
+from .storage_pressure_routes import build_storage_pressure_router
 from .recovery_island_routes import build_recovery_island_router
 from .recovery_mode import build_recovery_mode_router, install_recovery_shadow_mode
 from .router_integration import build_router_integration_router
@@ -141,6 +142,7 @@ app.include_router(build_voice_identity_router(_neo, auth_dependency=auth))
 app.include_router(build_doctor_router())
 app.include_router(build_passive_status_router(_neo, auth_dependency=auth))
 app.include_router(build_provider_burn_router(auth, templates))
+app.include_router(build_storage_pressure_router(auth))
 app.include_router(build_passive_event_router(_neo, auth_dependency=auth))
 app.include_router(build_devices_router())
 app.include_router(build_feeds_router())

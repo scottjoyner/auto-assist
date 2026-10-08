@@ -54,6 +54,28 @@
     </div>
   </section>
 
+  <section class="card" id="section-storage-pressure">
+    <div class="section-header">
+      <div>
+        <h3>Fleet storage pressure &amp; NAS offload</h3>
+        <p class="kicker">Read-only measurements. Copy admission never authorizes deletion or recovery-custody release.</p>
+      </div>
+      <a class="btn secondary" href="/api/fleet/storage-pressure" target="_blank">Storage JSON</a>
+    </div>
+    <div class="metric-grid mt-3">
+      <div class="metric"><div class="metric-label">SSD4TB used</div>
+        <div class="metric-value" id="storage-ssd-used">—</div></div>
+      <div class="metric"><div class="metric-label">SSD4TB free</div>
+        <div class="metric-value" id="storage-ssd-free">—</div></div>
+      <div class="metric"><div class="metric-label">NAS free</div>
+        <div class="metric-value" id="storage-nas-free">—</div></div>
+      <div class="metric"><div class="metric-label">NAS L5 admission</div>
+        <div class="metric-value" id="storage-admission">Unknown</div></div>
+    </div>
+    <p class="kicker mt-3" id="storage-observation-state">Awaiting storage observation…</p>
+    <p class="kicker" id="storage-custody-state">Source-release BLOCKED; automatic cleanup disabled.</p>
+  </section>
+
   <section class="card half" id="section-nodes">
     <div class="section-header">
       <div>
@@ -702,7 +724,41 @@
     wrap.innerHTML = html;
   }
 
+  async function refreshStoragePressure() {
+    const text = (id, value) => { document.getElementById(id).textContent = value; };
+    const unavailable = (why) => {
+      text('storage-ssd-used', '—');
+      text('storage-ssd-free', '—');
+      text('storage-nas-free', '—');
+      text('storage-admission', 'UNKNOWN');
+      text('storage-observation-state', why);
+      text('storage-custody-state', 'Source-release BLOCKED; automatic cleanup disabled.');
+    };
+    try {
+      const response = await fetch('/api/fleet/storage-pressure', {cache: 'no-store'});
+      if (!response.ok) return unavailable('Storage observation unavailable (HTTP ' + response.status + ')');
+      const value = await response.json();
+      if (value.state !== 'fresh' || value.observation_ok !== true) {
+        return unavailable('Storage observation ' + (value.state || 'unavailable') +
+                           '; refusing stale admission or capacity readings.');
+      }
+      const gib = n => typeof n === 'number' && Number.isFinite(n)
+        ? (n / (1024 ** 3)).toFixed(1) + ' GiB' : '—';
+      text('storage-ssd-used', typeof value.ssd_used_percent === 'number'
+           ? value.ssd_used_percent.toFixed(1) + '%' : '—');
+      text('storage-ssd-free', gib(value.ssd_available_bytes));
+      text('storage-nas-free', gib(value.nas_available_bytes));
+      text('storage-admission', value.nas_l5_admission || 'UNKNOWN');
+      text('storage-observation-state', 'Fresh read-only fleet storage observation; root census ' +
+           (value.root_census_complete ? 'complete' : 'pending') + '.');
+      text('storage-custody-state', 'Source-release BLOCKED; automatic cleanup disabled.');
+    } catch (_error) {
+      unavailable('Storage observation request failed; fail-closed.');
+    }
+  }
+
   async function refresh() {
+    void refreshStoragePressure();
     const [data, controlRoom] = await Promise.all([loadDashboard(), loadControlRoom()]);
     renderServiceHealth(controlRoom);
     if (data) {
