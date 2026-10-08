@@ -55,6 +55,10 @@ REQUIRED = {
     ),
     "ci_baseline": (),
 }
+MIN_CASES = {
+    "test_trace_claim_lease::test_issuer_fails_closed_for_noncurrent_claims": 17,
+    "test_trace_claim_live_executor::test_disabled_or_missing_prerequisite_denies_before_http": 4,
+}
 BLOCKERS = {
     "lease_freshness": ["deployed_authenticated_issuer_absent", "monotonic_fencing_unproven"],
     "revocation_supersession": ["real_revocation_and_midflight_cancellation_unproven"],
@@ -119,13 +123,18 @@ def create_report(
         checks = []
         for test_id in required:
             cases = tests.get(test_id, [])
-            passed = bool(cases) and all(state == "passed" for state in cases)
+            minimum = MIN_CASES.get(test_id, 1)
+            passed = len(cases) >= minimum and all(state == "passed" for state in cases)
             checks.append({
                 "test_id": test_id,
                 "result": "pass" if passed else "blocked",
                 "case_count": len(cases),
+                "required_case_count": minimum,
                 "reason": None if passed else (
-                    "missing_test" if not cases else "failed_skipped_or_errored"
+                    "missing_test" if not cases else (
+                        "insufficient_case_coverage" if len(cases) < minimum
+                        else "failed_skipped_or_errored"
+                    )
                 ),
                 "provenance": PROVENANCE,
                 "evidence_digest": digest,
