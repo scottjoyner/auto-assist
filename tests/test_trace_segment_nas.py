@@ -277,3 +277,11 @@ def test_simultaneous_publishers_share_one_signed_custody_record(case):
     assert all(r["ok"] for r in results)
     assert sorted(r["reused"] for r in results) == [False, True]
     assert len(nas._witness_rows(case["witness"] / "published.jsonl", case["key"])) == 1
+
+
+def test_publisher_rejects_insecure_destination_before_writing(case):
+    case["destination"].chmod(0o755)
+    with pytest.raises(TraceDenied, match="nas_destination_permissions_unsafe"):
+        publish(case)
+    assert not list(case["destination"].iterdir())
+    assert not list(case["witness"].iterdir())

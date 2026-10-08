@@ -89,3 +89,23 @@ The protected production AssistX issuer still lacks real deployment and
 physical committed-claim acceptance. Continue from [AssistX PR #119](https://github.com/scottjoyner/auto-assist/pull/119),
 [production issue #120](https://github.com/scottjoyner/auto-assist/issues/120),
 and [NAS issue #127](https://github.com/scottjoyner/auto-assist/issues/127).
+
+
+## Additional live mount permission result (read-only)
+
+The real CIFS share advertises `vers=3.0`, `file_mode=0755`,
+`dir_mode=0755`, `nounix` and `noperm`. Its existing
+`/nas/desktop-commander-traces` directory also reports `0755`,
+although owned by the local caller. These settings do **not** prove the
+owner-private `0600` encrypted files and `0700` directories required by
+the local custody verifier, or server-side permission enforcement.
+
+The NAS publisher and verifier therefore now reject a destination
+directory that fails the owner-private mode/ownership check **before**
+creating any archive object. A dedicated appropriately restricted
+mount/namespace, verified against server-side ACL policy, is a prerequisite
+for an actual CIFS write pilot. **Do not remount the shared production
+`/nas` tree** merely to satisfy this component, as other services rely
+on it. A targeted read-only check confirmed
+`LIVE_CIFS_OWNER_PRIVATE_GATE=DENIED_AS_EXPECTED` with no NAS writes.
+The existing 7 MiB journal stop remains active.

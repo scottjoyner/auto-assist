@@ -182,6 +182,10 @@ def publish_bundle(
     ):
         raise TraceDenied("nas_source_or_witness_not_local")
     assert_mount(destination, expected_source=expected_mount_source, expected_target=expected_mount_target)
+    try:
+        _private(destination)
+    except TraceDenied as exc:
+        raise TraceDenied("nas_destination_permissions_unsafe") from exc
     raw = verify_bundle(source, node_id=node_id, passphrase=passphrase, signing_key=signing_key)
     bundle, names = _index_for_bundle(source)
     journal_hash = digest(raw)
@@ -314,6 +318,10 @@ def verify_published_bundle(
     if witness_root.resolve().is_relative_to(Path(expected_mount_target).resolve(strict=True)):
         raise TraceDenied("nas_witness_not_local")
     assert_mount(destination, expected_source=expected_mount_source, expected_target=expected_mount_target)
+    try:
+        _private(destination)
+    except TraceDenied as exc:
+        raise TraceDenied("nas_destination_permissions_unsafe") from exc
     rows = _witness_rows(witness_root / "published.jsonl", signing_key)
     candidates = [r for r in rows if r.get("node_id") == node_id and r.get("journal_sha256") == journal_sha256]
     if len(candidates) != 1:
