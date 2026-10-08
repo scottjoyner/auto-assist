@@ -1,0 +1,37 @@
+name: mercury-deny-mock-contract
+
+on:
+  pull_request:
+    paths:
+      - "scripts/mercury_deny_only_mock.py"
+      - "tests/test_mercury_deny_only_mock.py"
+      - ".github/workflows/mercury-deny-mock-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deny-mock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile static contract
+        run: python -m py_compile scripts/mercury_deny_only_mock.py tests/test_mercury_deny_only_mock.py
+      - name: Run offline deny-only contract tests
+        run: python -m unittest discover -s tests -p 'test_mercury_deny_only_mock.py' -v
+      - name: Confirm no provider execution
+        run: |
+          python - <<'PY'
+          from scripts.mercury_deny_only_mock import evaluate_mock, good_synthetic_request
+          r = evaluate_mock(good_synthetic_request())
+          assert r["decision"] == "DENY"
+          assert r["provider_calls"] == 0
+          assert r["production_execution_commands"] == 0
+          assert r["dispatch_authorized"] is False
+          print("PASS: mock only; provider_calls=0; production_execution_commands=0")
+          PY
