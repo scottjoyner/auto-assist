@@ -144,3 +144,14 @@ on the actual Mac; `_detect_capabilities(None)` did **not** advertise
 `trace-probe` when the production flags were unset. No Mac production
 worker was restarted or replaced. This replaces an earlier version that
 could break lightweight nodes merely by importing optional crypto.
+
+### CI compatibility correction (follow-up)
+
+The first GitHub run of the dedicated `trace-execution-acceptance` job
+**passed**. The same PR's broad `ci` job stopped at Ruff `UP017`, which
+tries to replace `timezone.utc` with `datetime.UTC` even though the actual
+Mac Python 3.9 runtime does not support `datetime.UTC`. The worker now
+has a single-line `# noqa: UP017` compatibility exception, preserving
+repo-wide lint policy. This exception passed the exact blocking CI Ruff
+rule selection locally. The broad CI test-phase baseline remains a separate
+release hold until its next run and comparison with main.

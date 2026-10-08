@@ -56,7 +56,7 @@ def _trace_candidate(task: dict[str, Any]) -> bool:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(timezone.utc).isoformat()  # noqa: UP017 -- macOS Python 3.9 compatibility
 
 
 def _http(
