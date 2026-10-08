@@ -54,3 +54,8 @@ PYTHONPATH=src python3 -m pytest -q tests/test_trace_bench_guard.py \
 ```
 
 **28 tests passed (11 benchmark-admission guards + 17 API/query contracts).** The benchmark refuses to run unless a locally inspected container matches the exact disposable name, disconnected network, 5.23 image, no bind mounts/ports, no auth, and the documented capped CPU/memory. The 85k measurement was collected before the guard was added, and is not a measurement of the guarded version; subsequent unit verification proved its admission behavior only. Always remove the test container and anonymous volumes following a deliberate experiment.
+
+
+## Exploratory tablet/keyboard continuation (October 8)
+
+The synthetic Chromium suite was expanded after its original preregistration with a **768px tablet** keyboard smoke: responsive single-column stacking/no horizontal overflow, focus and `Enter` to select a trace, `Enter` to expand/collapse event details, clearing the payload on close, and an axe WCAG 2.1 A/AA tablet scan. **6/6 real browser tests now pass**, with zero reported automated axe violations on the synthetic mobile and tablet fixtures. This additional UI check is **exploratory rather than separately preregistered**, and still does not replace a screen reader or a logged-in production browser acceptance.
