@@ -90,13 +90,18 @@ def main():
             "() => document.querySelector('#trace-detail').textContent.includes('router.started')")
         check(page.evaluate("() => document.activeElement?.dataset?.cid === 'two'"),
               "Enter selection preserves keyboard focus")
+        check(page.evaluate("() => getComputedStyle(document.activeElement).outlineStyle !== 'none'"),
+              "keyboard focus has visible outline")
 
         check("CANARY_SECRET" not in page.locator("#trace-detail").inner_text(),
               "collapsed payload not in rendered DOM")
         disclosure = page.locator("#trace-detail details").first
+        calls_before_disclosure = len(calls)
         disclosure.locator("summary").click()
         page.wait_for_function(
             "() => document.querySelector('#trace-detail details pre').textContent.includes('CANARY_SECRET')")
+        check(len(calls) == calls_before_disclosure,
+              "event disclosure issues no additional API request")
         check(True, "deliberate disclosure renders event data")
         disclosure.locator("summary").click()
         page.wait_for_function(
@@ -116,6 +121,17 @@ def main():
         check(page.locator("#trace-copy").is_disabled(), "401 disables copy")
         check("outside-first-page" not in page.locator("#trace-detail").inner_text(),
               "401 clears stale detail")
+
+        for transient_status in (429, 503):
+            mode["index"] = transient_status
+            page.locator("#trace-refresh").click()
+            page.wait_for_function("() => document.querySelector('#trace-status').textContent.includes('temporarily unavailable')")
+            check(page.locator("#trace-retry").count() == 1,
+                  f"HTTP {transient_status} exposes index retry")
+            mode["index"] = 200
+            page.locator("#trace-retry").click()
+            page.locator(".trace-row").first.wait_for()
+            check(True, f"HTTP {transient_status} retry restores trace index")
 
         mode.update(index=200, detail=503)
         page.locator("#trace-refresh").click()
