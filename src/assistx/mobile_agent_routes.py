@@ -20,6 +20,13 @@ import httpx
 _TAILSCALE_LOGIN_HEADER = "Tailscale-User-Login"
 _mobile_security = HTTPBasic(auto_error=False)
 
+# Ephemeral, process-local binding: a browser/mobile conversation may only resume
+# a Hermes session that this API previously issued to the same authenticated
+# user + conversation key. Restarts intentionally discard the binding; clients
+# still resend bounded message history and can safely establish a new session.
+_HERMES_CONVERSATION_BINDINGS: dict[tuple[str, str], str] = {}
+_HERMES_CONVERSATION_BINDING_LIMIT = 1024
+
 
 class MobileAgentMessageIn(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -103,6 +110,40 @@ def _account_id(login: str) -> str:
     return f"tailscale:{digest}"
 
 
+def _hermes_binding_key(user: str, conversation_key: str | None) -> tuple[str, str] | None:
+    normalized_key = (conversation_key or "").strip()[:256]
+    if not normalized_key:
+        return None
+    return (user.strip().lower(), normalized_key)
+
+
+def _bound_hermes_resume_session(
+    user: str,
+    conversation_key: str | None,
+    requested_session_id: str | None,
+) -> str | None:
+    key = _hermes_binding_key(user, conversation_key)
+    requested = (requested_session_id or "").strip()[:128]
+    if key is None or not requested:
+        return None
+    return requested if _HERMES_CONVERSATION_BINDINGS.get(key) == requested else None
+
+
+def _remember_hermes_session(
+    user: str,
+    conversation_key: str | None,
+    session_id: str | None,
+) -> None:
+    key = _hermes_binding_key(user, conversation_key)
+    session = (session_id or "").strip()[:128]
+    if key is None or not session:
+        return
+    if key not in _HERMES_CONVERSATION_BINDINGS and len(_HERMES_CONVERSATION_BINDINGS) >= _HERMES_CONVERSATION_BINDING_LIMIT:
+        oldest = next(iter(_HERMES_CONVERSATION_BINDINGS))
+        _HERMES_CONVERSATION_BINDINGS.pop(oldest, None)
+    _HERMES_CONVERSATION_BINDINGS[key] = session
+
+
 def _prompt_from_messages(messages: Iterable[MobileAgentMessageIn]) -> str:
     sections: list[str] = [
         "You are serving the authenticated Kipnerter mobile assistant conversation below.",
@@ -136,13 +177,20 @@ def _run_hermes(
     timeout: int,
     model: Optional[str],
     provider: str,
+    resume_session_id: Optional[str] = None,
 ) -> dict[str, Any]:
     # Import lazily so API startup and contract tests do not require the Hermes
     # executable. The executor itself remains server-side and receives its own
     # claim-scoped router credentials; no executor token is ever sent to iOS.
     from .agents.hermes_agent_adapter import run_hermes
 
-    return run_hermes(prompt, timeout=timeout, model=model, provider=provider)
+    return run_hermes(
+        prompt,
+        timeout=timeout,
+        model=model,
+        provider=provider,
+        resume_session_id=resume_session_id,
+    )
 
 
 def _mobile_agent_failure_code(result: dict[str, Any]) -> str:
@@ -794,12 +842,24 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
 
         prompt = _prompt_from_messages(body.messages)
         model_override = _requested_hermes_model(body.model)
+        conversation_key = (x_hermes_session_key or "").strip()[:256]
+        client_session = (x_hermes_session_id or "").strip()[:128]
+        resume_session = _bound_hermes_resume_session(
+            user,
+            conversation_key,
+            client_session,
+        )
+        run_kwargs: dict[str, Any] = {
+            "timeout": _agent_timeout(),
+            "model": model_override,
+            "provider": os.getenv("HERMES_PROVIDER", "assistx-router").strip() or "assistx-router",
+        }
+        if resume_session:
+            run_kwargs["resume_session_id"] = resume_session
         result = await asyncio.to_thread(
             _run_hermes,
             prompt,
-            timeout=_agent_timeout(),
-            model=model_override,
-            provider=os.getenv("HERMES_PROVIDER", "assistx-router").strip() or "assistx-router",
+            **run_kwargs,
         )
         if not result.get("success"):
             error = _mobile_agent_failure_code(result)
@@ -813,16 +873,18 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
             raise HTTPException(status_code=502, detail={"error": "empty_hermes_response", "executor": "hermes"})
 
         server_session = str(result.get("session_id") or "").strip()
-        client_session = (x_hermes_session_id or "").strip()[:128]
         session_id = server_session[:128] or client_session or "kipnerter-hermes"
+        if server_session and conversation_key:
+            _remember_hermes_session(user, conversation_key, server_session)
         response_model = body.model.strip() or "hermes-agent"
         headers = {
             "X-Kipnerter-Agent-Executor": "hermes",
             "X-Hermes-Session-Id": session_id,
+            "X-Hermes-Session-Resumed": "true" if resume_session else "false",
             "Cache-Control": "no-store",
         }
-        if x_hermes_session_key:
-            headers["X-Kipnerter-Conversation-Key"] = x_hermes_session_key.strip()[:256]
+        if conversation_key:
+            headers["X-Kipnerter-Conversation-Key"] = conversation_key
 
         if not body.stream:
             return JSONResponse(

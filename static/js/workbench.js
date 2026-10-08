@@ -292,10 +292,12 @@
       }
 
       const sessionId = response.headers.get('X-Hermes-Session-Id');
+      const sessionResumed = response.headers.get('X-Hermes-Session-Resumed') === 'true';
       if (sessionId) {
         state.sessionId = sessionId;
         sessionStorage.setItem(SESSION_ID_KEY, sessionId);
-        text('workbench-session-chip', `session ${short(sessionId, 10)}`);
+        const continuity = sessionResumed ? ' · resumed' : '';
+        text('workbench-session-chip', `session ${short(sessionId, 10)}${continuity}`);
       }
 
       pending.item.classList.remove('pending');
