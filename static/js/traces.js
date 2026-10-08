@@ -97,6 +97,13 @@
         '<span>' + esc(duration(t.duration_ms)) + '</span>' +
         '<span>' + esc(when(t.last_ts_ms)) + '</span></span></button>';
     }).join("");
+    // Replacing innerHTML removes the focused button; transfer focus to its new peer.
+    if (focusedCid !== null) {
+      var replacement = Array.from($("trace-list").querySelectorAll("button.trace-row")).find(function (row) {
+        return row.dataset.cid === focusedCid;
+      });
+      if (replacement) replacement.focus();
+    }
   }
   function clearSelection(message) {
     state.selected = null;
