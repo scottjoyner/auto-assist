@@ -312,3 +312,133 @@ test("an old unfiltered response cannot replace a newer global failure selection
   assert.doesNotMatch(ui.els["trace-list"].innerHTML, /old-success/);
   assert.equal(ui.els["trace-total-metric"].textContent, "12");
 });
+
+
+test("context panel groups recorded IDs and filters only the loaded timeline", async () => {
+  const data = {
+    correlation_id: "investigate-1", current_state: "running",
+    events: [
+      { event_type: "dispatch.accepted", source: "router", task_id: "task-a",
+        ts_ms: 1000, payload_json: '{"fixture_secret":"DO_NOT_INLINE"}' },
+      { event_type: "route.selected", source: "router", task_id: "task-b",
+        ts_ms: 2000 },
+      { event_type: "assignment.claimed", source: "worker", task_id: "task-a",
+        assignment_id: "assignment-1", ts_ms: 3000 },
+    ],
+    context: {
+      schema: "trace-context-v1", source_semantics: "producer_label_not_verified_node_or_agent",
+      node_or_agent_verified: false, payload_inspected: false,
+      fields: {
+        source: [
+          { value: "router", events: 2, provenance: "trace_event_property" },
+          { value: "worker", events: 1, provenance: "trace_event_property" }
+        ],
+        task_id: [
+          { value: "task-a", events: 2, provenance: "trace_event_property" },
+          { value: "task-b", events: 1, provenance: "trace_event_property" }
+        ],
+        dispatch_id: [], route_id: [],
+        assignment_id: [{ value: "assignment-1", events: 1, provenance: "trace_event_property" }]
+      },
+      missing: ["dispatch_id", "route_id"], truncated: []
+    }
+  };
+  const ui = harness({ response: url => Promise.resolve(ok(url.includes("?limit=")
+    ? { traces: [trace("investigate-1")], total: 1, outcome: "all" }
+    : data)) });
+  await sleep(30);
+  assert.match(ui.els["trace-detail"].innerHTML, /Recorded context/);
+  assert.match(ui.els["trace-detail"].innerHTML, /task-a/);
+  assert.match(ui.els["trace-detail"].innerHTML, /task-b/);
+  assert.match(ui.els["trace-detail"].innerHTML, /Node\/agent identity: not established/);
+  assert.match(ui.els["trace-detail"].innerHTML, /3 of 3 events/);
+  assert.doesNotMatch(ui.els["trace-detail"].innerHTML, /DO_NOT_INLINE/);
+  const count = ui.calls.length;
+
+  const chip = {
+    getAttribute(name) { return name === "data-context-field" ? "task_id" : "task-a"; }
+  };
+  ui.els["trace-detail"].fire("click", {
+    target: { closest(selector) {
+      return selector === "button.trace-context-chip" ? chip : null;
+    } }
+  });
+  assert.match(ui.els["trace-detail"].innerHTML, /2 of 3 events/);
+  assert.doesNotMatch(ui.els["trace-detail"].innerHTML, /route\.selected/);
+  assert.match(ui.els["trace-detail"].innerHTML, /assignment\.claimed/);
+  assert.equal(ui.calls.length, count, "context selection must not create graph queries");
+  ui.els["trace-detail"].fire("click", {
+    target: { closest(selector) {
+      return selector === "button.trace-clear-context" ? {} : null;
+    } }
+  });
+  assert.match(ui.els["trace-detail"].innerHTML, /3 of 3 events/);
+  assert.match(ui.els["trace-detail"].innerHTML, /route\.selected/);
+  assert.equal(ui.calls.length, count);
+});
+
+test("unknown context is clearly unavailable, never inferred from payload claims", async () => {
+  const ui = harness({ response: url => Promise.resolve(ok(url.includes("?limit=")
+    ? { traces: [trace("legacy")], total: 1, outcome: "all" }
+    : {
+      correlation_id: "legacy", events: [
+        { source: "router", event_type: "assignment.claimed", ts_ms: 10,
+          payload_json: '{"node_id":"claimed-node","task_id":"untrusted-task"}' }
+      ]
+    })) });
+  await sleep(25);
+  assert.match(ui.els["trace-detail"].innerHTML, /Context metadata not available/);
+  assert.match(ui.els["trace-detail"].innerHTML, /No node or agent identity is inferred/);
+  assert.doesNotMatch(ui.els["trace-detail"].innerHTML, /claimed-node|untrusted-task/);
+});
+
+test("malicious context values are escaped and never treated as navigation links", async () => {
+  const malicious = '<img src=x onerror="alert(1)">';
+  const ui = harness({ response: url => Promise.resolve(ok(url.includes("?limit=")
+    ? { traces: [trace("unsafe")], total: 1, outcome: "all" }
+    : {
+      correlation_id: "unsafe", events: [{ event_type: "route.selected", source: "s",
+        ts_ms: 12, route_id: malicious }],
+      context: {
+        schema: "trace-context-v1", truncated: [], fields: {
+          source: [], task_id: [], dispatch_id: [],
+          route_id: [{ value: malicious, events: 1, provenance: "trace_event_property" }],
+          assignment_id: [],
+        }
+      }
+    })) });
+  await sleep(25);
+  const html = ui.els["trace-detail"].innerHTML;
+  assert.ok(html.includes("&lt;img"));
+  assert.ok(!html.includes('<img src=x onerror='));
+  assert.ok(!html.includes("href=" + malicious));
+  assert.match(html, /trace-context-chip/);
+});
+
+test("context filters reject unknown or fabricated field assertions", async () => {
+  const ui = harness({ response: url => Promise.resolve(ok(url.includes("?limit=")
+    ? { traces: [trace("guard")], total: 1, outcome: "all" }
+    : {
+      correlation_id: "guard", events: [{ event_type: "route.selected", source: "router",
+        task_id: "real-task", ts_ms: 12 }],
+      context: {
+        schema: "trace-context-v1", truncated: [], fields: {
+          source: [], task_id: [
+            { value: "real-task", events: 1, provenance: "trace_event_property" }
+          ], dispatch_id: [], route_id: [], assignment_id: []
+        }
+      }
+    })) });
+  await sleep(24);
+  const before = ui.els["trace-detail"].innerHTML;
+  const action = (field,value) => ui.els["trace-detail"].fire("click", {
+    target: { closest(selector) { return selector === "button.trace-context-chip"
+      ? { getAttribute(name) {
+        return name === "data-context-field" ? field : value;
+      }} : null; }}
+  });
+  action("node_id", "pretend-node");
+  assert.equal(ui.els["trace-detail"].innerHTML, before);
+  action("task_id", "invented-task");
+  assert.equal(ui.els["trace-detail"].innerHTML, before);
+});
