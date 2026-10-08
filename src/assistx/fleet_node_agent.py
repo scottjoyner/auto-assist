@@ -96,6 +96,19 @@ def _detect_hostname() -> str:
 
 def _detect_capabilities(lmstudio_url: str | None) -> tuple[list[str], list[str]]:
     caps = set(DEFAULT_CAPS)
+    # Advertise only when the operator opted in and local audit storage is safe.
+    if os.getenv("FLEET_TRACE_PROBE_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
+        from .trace_execution_adapter import TraceDenied, TraceReceiptStore
+
+        try:
+            TraceReceiptStore(
+                os.getenv("FLEET_TRACE_EXECUTION_AUDIT_ROOT", ""),
+                node_id=_detect_hostname(),
+            )
+        except TraceDenied:
+            pass  # Deny admission when preflight storage is unavailable.
+        else:
+            caps.add("trace-probe")
     models: list[str] = []
 
     if lmstudio_url:
@@ -458,7 +471,8 @@ def _claim_and_run(
         # 404/409/etc: task gone, drained, or claimed elsewhere. Report no-work
         # so the caller sleeps instead of hot-looping on the same task.
         return False
-    claim_id = claim.get("claim_id")
+    claimed_task = claim.get("task") if isinstance(claim.get("task"), dict) else {}
+    claim_id = claim.get("claim_id") or claimed_task.get("claim_id")
 
     stop_heartbeat = threading.Event()
 
@@ -495,7 +509,32 @@ def _claim_and_run(
                 raw_payload = json.loads(task["payload_json"])
             except (json.JSONDecodeError, TypeError):
                 raw_payload = {}
-        if task_type == "script":
+        if task_type == "trace_probe":
+            from .trace_execution_adapter import TraceDenied, run_trace_probe
+
+            if not claimed_task or not claim.get("claimed"):
+                raise TraceDenied("missing_authoritative_claim")
+            if str(claimed_task.get("id") or claimed_task.get("task_id") or "") != task_id:
+                raise TraceDenied("claim_task_identity_mismatch")
+            if claimed_task.get("task_type") != "trace_probe":
+                raise TraceDenied("claimed_task_type_mismatch")
+            authoritative = dict(claimed_task)
+            if authoritative.get("payload_json"):
+                try:
+                    authoritative["payload"] = json.loads(authoritative["payload_json"])
+                except (ValueError, TypeError) as exc:
+                    raise TraceDenied("invalid_claimed_payload_json") from exc
+            outcome = run_trace_probe(
+                authoritative,
+                node_id=node_id,
+                claim_id=claim_id,
+                audit_root=os.getenv("FLEET_TRACE_EXECUTION_AUDIT_ROOT", ""),
+                enabled=os.getenv("FLEET_TRACE_PROBE_ENABLED", "false").lower()
+                in {"1", "true", "yes", "on"},
+            )
+            success = outcome["status"] == "DONE"
+            result = outcome
+        elif task_type == "script":
             # Script tasks are allowlisted recovery runbooks only. Generic
             # command execution was removed with the strict executor (9d8751a5).
             runbook = raw_payload.get("runbook") if isinstance(raw_payload, dict) else None
