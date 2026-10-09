@@ -730,3 +730,67 @@ test("type search can show no matches and clear without a graph read", async()=>
   assert.match(ui.els["trace-detail"].innerHTML,/router.started/);
   assert.equal(ui.calls.length,prior);
 });
+
+test("paged workbench never passively fetches payloads or legacy full detail", async () => {
+  const ui=harness({response:url=>Promise.resolve(ok(url.includes("/api/traces?")
+    ? {traces:[trace("no-passive")],total:1,outcome:"all"}
+    :detail("no-passive",true)))});
+  await sleep(25);
+  assert.equal(ui.calls.length,2);
+  assert.match(ui.calls[1],/\/timeline\?limit=80/);
+  assert.ok(!ui.calls.some(url=>url.endsWith("/api/traces/no-passive")));
+  assert.ok(!ui.calls.some(url=>url.endsWith("/payload-preview")));
+  const disclosure=ui.els["trace-detail"].details[0];
+  disclosure.toggle(true);
+  await sleep(20);
+  assert.equal(ui.calls.length,3);
+  assert.ok(ui.calls.at(-1).endsWith("/payload-preview"));
+  assert.match(disclosure.querySelector("pre").textContent,/SYNTHETIC_DO_NOT_RENDER/);
+  disclosure.toggle(false);
+  assert.equal(disclosure.querySelector("pre").textContent,"");
+});
+
+test("disabled new endpoint fails closed without any legacy GET", async () => {
+  const ui=harness({response:url=>Promise.resolve(url.includes("/timeline?")
+    ? {ok:false,status:503}
+    :ok({traces:[trace("flag-off")],total:1,outcome:"all"}))});
+  await sleep(25);
+  assert.match(ui.els["trace-detail"].innerHTML,/Timeline unavailable/);
+  assert.match(ui.els["trace-detail"].innerHTML,/legacy unbounded detail is intentionally unavailable/);
+  assert.equal(ui.calls.length,2);
+  assert.ok(ui.calls.at(-1).includes("/timeline?limit=80"));
+});
+
+test("invalid paged schema and unexpected event properties are never displayed", async () => {
+  const fake={
+    schema:"trace-event-page-v1",correlation_id:"bad-projection",metadata_only:true,
+    historical_retention_proven:false,source_snapshot_immutable:false,
+    returned:1,has_more:false,next_cursor:null,
+    events:[{event_id:"event-1",ts_ms:25,event_type:"task.started",
+      payload_json:"NEVER_RETURN_PRIVATE_PAYLOAD"}]
+  };
+  const ui=harness({response:url=>Promise.resolve(ok(url.includes("/api/traces?")
+    ? {traces:[trace("bad-projection")],total:1,outcome:"all"} :fake))});
+  await sleep(25);
+  assert.match(ui.els["trace-detail"].innerHTML,/Invalid paged trace response/);
+  assert.doesNotMatch(ui.els["trace-detail"].innerHTML,/NEVER_RETURN_PRIVATE_PAYLOAD/);
+  assert.equal(ui.calls.length,2);
+});
+
+test("equal-timestamp pagination loads one request per 80 events with no legacy detail", async () => {
+  const events=Array.from({length:1001},(_,i)=>({
+    event_id:"synthetic-event-"+String(i).padStart(4,"0"),
+    ts_ms:1780000000000,event_type:"task.progress",source:"fixture"
+  }));
+  const ui=harness({response:url=>Promise.resolve(ok(url.includes("/api/traces?")
+    ? {traces:[trace("tie-1001")],total:1,outcome:"all"}
+    : {correlation_id:"tie-1001",events}))});
+  await sleep(30);
+  assert.equal((ui.els["trace-detail"].innerHTML.match(/<article class="trace-event/g)||[]).length,80);
+  ui.els["trace-detail"].fire("click",{target:{closest:s=>s==="button.trace-show-earlier"?{}:null}});
+  await sleep(30);
+  assert.equal((ui.els["trace-detail"].innerHTML.match(/<article class="trace-event/g)||[]).length,160);
+  assert.equal(ui.calls.length,3);
+  assert.ok(ui.calls.at(-1).includes("/timeline?limit=80&cursor="));
+  assert.ok(!ui.calls.some(url=>url.endsWith("/api/traces/tie-1001")));
+});
