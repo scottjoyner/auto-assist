@@ -208,3 +208,92 @@ def test_snapshot_rollback_replays_previously_consumed_nonce():
         shutil.copyfile(snapshot,p)
         assert Custody(p,epoch,graph,pub).record_observation_once(
             data,sig,**expected).recorded
+
+
+def test_signed_record_is_not_automatic_physical_slot_release():
+    """A valid pinned receipt does not invoke the old physical-slot API."""
+    from assistx.trace_durable_ledger_research import (
+        DurableTraceReadLedger,bootstrap_disposable_fixture,
+    )
+    with fixture() as (p,epoch,graph,pub,data,sig,expected):
+        ledger_root=Path(p).parent.parent/(
+            "assistx-trace-ledger-test-"+uuid.uuid4().hex)
+        ledger_root.mkdir(mode=0o700)
+        ledger_path=str(ledger_root/"trace-ledger-test.sqlite")
+        try:
+            # Key deliberately unrelated to receiver's key. No path through
+            # this receipt recorder can acknowledge old ledger termination.
+            external=Ed25519PrivateKey.generate().public_key().public_bytes(
+                serialization.Encoding.Raw,serialization.PublicFormat.Raw)
+            bootstrap_disposable_fixture(ledger_path,epoch,1)
+            ledger=DurableTraceReadLedger(ledger_path,epoch,external)
+            assert ledger.acquire(data["query_ref"]).token
+            assert ledger.inspect()==1
+            custody=Custody(p,epoch,graph,pub)
+            assert custody.record_observation_once(data,sig,**expected).recorded
+            assert ledger.inspect()==1
+            assert ledger.acquire("replacement-while-uncertain").reason=="full"
+            assert not custody.record_observation_once(data,sig,**expected).recorded
+            assert ledger.inspect()==1
+        finally:
+            shutil.rmtree(ledger_root)
+
+
+def test_same_token_with_new_nonce_and_new_signature_is_not_rearmed():
+    with fixture() as (p,epoch,graph,pub,data,sig,expected):
+        # Re-signing a claim with a new nonce cannot reopen a consumed token.
+        key=Ed25519PrivateKey.generate()
+        own=key.public_key().public_bytes(
+            serialization.Encoding.Raw,serialization.PublicFormat.Raw)
+        # Fresh fixture pinning must happen independently from the receipt.
+        new_root=Path(p).parent.parent/(
+            "assistx-receipt-test-"+uuid.uuid4().hex)
+        new_root.mkdir(mode=0o700)
+        other_path=str(new_root/"receiver-custody.sqlite")
+        try:
+            bootstrap_disposable_custody(other_path,epoch,graph,own)
+            custody=Custody(other_path,epoch,graph,own)
+            first=receiver_sign_only(data,key)
+            assert custody.record_observation_once(data,first,**expected).recorded
+            changed=dict(data,receiver_nonce=str(uuid.uuid4()))
+            another=receiver_sign_only(changed,key)
+            second=custody.record_observation_once(
+                changed,another,
+                **{**expected,"expected_receiver_nonce":changed["receiver_nonce"]})
+            assert not second.recorded
+            assert second.reason=="duplicate_or_replayed_receipt"
+            assert custody.count()==1
+        finally:
+            shutil.rmtree(new_root)
+
+
+def test_same_server_transaction_different_token_denied_conservatively():
+    with fixture() as (p,epoch,graph,pub,data,sig,expected):
+        custody=Custody(p,epoch,graph,pub)
+        assert custody.record_observation_once(data,sig,**expected).recorded
+        # A new token may not claim the same graph/server transaction;
+        # transaction ID recycling may falsely strand capacity, by design.
+        key=Ed25519PrivateKey.generate()
+        own=key.public_key().public_bytes(
+            serialization.Encoding.Raw,serialization.PublicFormat.Raw)
+        new_root=Path(p).parent.parent/(
+            "assistx-receipt-test-"+uuid.uuid4().hex)
+        new_root.mkdir(mode=0o700)
+        path2=str(new_root/"receiver-custody.sqlite")
+        try:
+            bootstrap_disposable_custody(path2,epoch,graph,own)
+            custody2=Custody(path2,epoch,graph,own)
+            existing=receiver_sign_only(data,key)
+            assert custody2.record_observation_once(data,existing,**expected).recorded
+            alternative=dict(data,token="c"*32,receiver_nonce=str(uuid.uuid4()),
+                             query_ref="replacement")
+            result=custody2.record_observation_once(
+                alternative,receiver_sign_only(alternative,key),
+                expected_token=alternative["token"],
+                expected_query_ref=alternative["query_ref"],
+                expected_transaction_id=data["server_transaction_id"],
+                expected_receiver_nonce=alternative["receiver_nonce"])
+            assert not result.recorded
+            assert result.reason=="duplicate_or_replayed_receipt"
+        finally:
+            shutil.rmtree(new_root)
