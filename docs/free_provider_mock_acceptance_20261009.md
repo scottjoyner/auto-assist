@@ -27,7 +27,7 @@ lease witness must be denied. Router aliases are not independent quota proof.
 - 401/402/403/429/503 responses cause shared-circuit reporting and local
   cooldown. Unavailable reporting causes quarantine. Missing or nonzero
   usage receipts quarantine as well. No paid fallback or blind retry.
-- 126/126 offline pytest cases pass on x1-370 and xwing, asserting zero mock provider
+- 135/135 offline pytest cases pass on x1-370 and xwing, asserting zero mock provider
   invocations before admission on all negative controls. For simulated
   in-flight stream failure, exactly the pre-loss mock steps can execute;
   no later steps execute after lost authority or lease expiry.
@@ -77,7 +77,7 @@ release, xwing reacquired; zero leases and local audit OK. A remote
 copied-state experiment was blocked before execution, so split-brain
 safety is NOT claimed. The mock adapter now refuses success on missing
 or malformed final release receipts and quarantines the quota group,
-bringing isolated tests to 126/126.
+bringing isolated tests to 135/135.
 
 ## Strict parsing and uncertain-admission hardening (2026-10-09)
 
@@ -90,8 +90,20 @@ responses or a dropped authority connection after a possible commit
 quarantine the synthetic shared upstream group; a normal slot/limit denial
 does not quarantine and can be retried after conditions change.
 
-Observed: 126/126 targeted isolated tests PASS independently on x1-370
+Observed: 135/135 targeted isolated tests PASS independently on x1-370
 and physical xwing; py_compile PASS; no real provider generation or token
 usage. This is an offline simulation and no trusted remote issuer,
 application authentication, independent quota provenance or physical
 stream preemption has been established.
+
+## Shared circuit trip receipt validation
+
+HTTP 401/402/403/429/503 circuit notifications must return an exact
+boolean accepted flag and the same physical upstream quota group.
+Missing/false/string-valued acceptance or wrong-group acknowledgments
+quarantine the synthetic group. Unclassified upstream failures likewise
+quarantine instead of initiating retries or paid fallback.
+
+The resulting isolated suite passes 135/135 on x1-370 and xwing, with
+both test directories disposable on the second host. No live provider
+requests, production router changes, or real quota measurements.
