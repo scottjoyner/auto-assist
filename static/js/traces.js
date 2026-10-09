@@ -32,6 +32,7 @@
   }
   function setSelectedTools(cid) {
     $("trace-copy").disabled = !cid;
+    updateLiveButton();
     var link = $("trace-permalink");
     var url = new URL(window.location.href);
     if (cid) url.searchParams.set("trace", cid);
@@ -129,6 +130,7 @@
     }
   }
   function clearSelection(message) {
+    stopLiveFollow(true);
     evidenceRequest++;
     currentEvidence = null;
     state.selected = null;
@@ -180,6 +182,7 @@
       state.detailRequest++;
       state.detailLoaded = false;
       if (err && err.message === "AUTH") {
+        stopLiveFollow(true);
         state.selected = null;
         persistSelection(null);
       } else {
@@ -272,8 +275,9 @@
         context: contextFromLoadedPages(loaded) };
       currentTrace = trace;
       timelineLoading = false;
-      renderDetail(trace, activeContextFilter);
       state.detailLoaded = true;
+      updateLiveButton();
+      renderDetail(trace, activeContextFilter);
     }).catch(function (err) {
       if (sequence !== state.detailRequest || cid !== state.selected) return;
       timelineLoading = false;
@@ -292,6 +296,18 @@
   var currentTrace = null;
   var TIMELINE_BATCH = 80;
   var TIMELINE_RETAIN_MAX = 800; // Sliding metadata window; refresh returns to newest.
+  var LIVE_INTERVAL_MS = 2000;
+  var LIVE_MAX_PAGES = 4;
+  var liveEnabled = false;
+  var liveTimer = null;
+  var livePolling = false;
+  var liveGeneration = 0;
+  var liveGapPossible = false;
+  var liveLastPollMs = null;
+  var liveLastNew = 0;
+  var liveLastPages = 0;
+  var livePollError = "";
+  var liveWindowTrimmed = false;
   var timelineLimit = TIMELINE_BATCH;
   var timelineTypeQuery = "";
   var activeContextFilter = null;
@@ -303,6 +319,188 @@
   var previewRequest = 0;
   var evidenceRequest = 0;
   var currentEvidence = null;
+  function updateLiveButton() {
+    var button = $("trace-live");
+    if (!button) return;
+    var available = !!(state.selected && state.detailLoaded && currentTrace &&
+      (!liveWindowTrimmed || liveEnabled));
+    button.disabled = !available;
+    button.setAttribute("aria-pressed", liveEnabled ? "true" : "false");
+    button.textContent = liveEnabled ? "Pause live" : "Follow live";
+    button.title = liveWindowTrimmed && !liveEnabled
+      ? "Reload this trace before resuming live follow; the 800-event client window was capped."
+      : "Poll bounded metadata pages for newly indexed events.";
+  }
+  function stopLiveFollow(resetHealth) {
+    if (liveTimer) clearTimeout(liveTimer);
+    liveTimer = null;
+    liveEnabled = false;
+    livePolling = false;
+    liveGeneration++;
+    if (resetHealth) {
+      liveGapPossible = false;
+      liveLastPollMs = null;
+      liveLastNew = 0;
+      liveLastPages = 0;
+      livePollError = "";
+      liveWindowTrimmed = false;
+    }
+    updateLiveButton();
+  }
+  function scheduleLiveFollow(delay) {
+    if (!liveEnabled) return;
+    if (liveTimer) clearTimeout(liveTimer);
+    liveTimer = setTimeout(function () {
+      liveTimer = null;
+      pollLiveFollow();
+    }, delay == null ? LIVE_INTERVAL_MS : delay);
+  }
+  function validLivePage(page, cid, seenCursors) {
+    if (!page || page.schema !== "trace-event-page-v1" ||
+        page.correlation_id !== cid || page.metadata_only !== true ||
+        page.historical_retention_proven !== false ||
+        page.source_snapshot_immutable !== false ||
+        !Array.isArray(page.events) || page.events.length > TIMELINE_BATCH ||
+        page.returned !== page.events.length || typeof page.has_more !== "boolean" ||
+        (page.has_more && (typeof page.next_cursor !== "string" ||
+          !page.next_cursor || seenCursors.has(page.next_cursor))) ||
+        (!page.has_more && page.next_cursor != null)) return false;
+    var allowed = ["event_id", "ts_ms", "event_type", "source",
+      "task_id", "dispatch_id", "route_id", "assignment_id"];
+    var ids = new Set();
+    var last = null;
+    for (var i = 0; i < page.events.length; i++) {
+      var event = page.events[i];
+      if (!event || typeof event.event_id !== "string" || !event.event_id ||
+          !Number.isSafeInteger(event.ts_ms) || event.ts_ms < 0 ||
+          ids.has(event.event_id) ||
+          Object.keys(event).some(function (key) { return allowed.indexOf(key) < 0; })) return false;
+      if (last && (event.ts_ms > last.ts_ms ||
+          (event.ts_ms === last.ts_ms && event.event_id >= last.event_id))) return false;
+      ids.add(event.event_id);
+      last = event;
+    }
+    return !page.has_more || page.events.length > 0;
+  }
+  function liveHealthMarkup() {
+    if (!liveEnabled && !liveLastPollMs && !liveGapPossible && !livePollError) return "";
+    var newest = currentTrace && currentTrace._newestFirst && currentTrace._newestFirst[0];
+    var age = newest && Number.isSafeInteger(newest.ts_ms)
+      ? Math.max(0, Date.now() - newest.ts_ms) : null;
+    var label = liveEnabled ? "Live follow on" : "Live follow paused";
+    var className = "trace-live-health";
+    if (livePollError) {
+      label += " · " + livePollError;
+      className += " is-error";
+    } else if (liveGapPossible) {
+      label += " · possible observation gap";
+      className += " is-gap";
+    } else if (liveWindowTrimmed) {
+      label += " · 800-event client window capped";
+      className += " is-gap";
+    }
+    if (liveLastPollMs) label += " · last poll " + when(liveLastPollMs);
+    if (liveLastPages) label += " · " + liveLastPages + " page" + (liveLastPages === 1 ? "" : "s");
+    if (liveLastNew) label += " · +" + liveLastNew + " event" + (liveLastNew === 1 ? "" : "s");
+    if (age !== null) label += " · newest indexed age " + duration(age);
+    return '<span class="' + className + '">' + esc(label) + '</span>';
+  }
+  function pollLiveFollow() {
+    if (!liveEnabled) return;
+    if (livePolling || !state.selected || !state.detailLoaded || !currentTrace) {
+      scheduleLiveFollow(500);
+      return;
+    }
+    livePolling = true;
+    var generation = liveGeneration;
+    var sequence = state.detailRequest;
+    var cid = state.selected;
+    var known = new Set((currentTrace._newestFirst || []).map(function (e) { return e.event_id; }));
+    var newEvents = [];
+    var newIds = new Set();
+    var seenCursors = new Set();
+    var cursor = null;
+    var pages = 0;
+    var reachedKnown = false;
+
+    function onePage() {
+      var url = "/api/traces/" + encodeURIComponent(cid) + "/timeline?limit=" + TIMELINE_BATCH;
+      if (cursor) url += "&cursor=" + encodeURIComponent(cursor);
+      return request(url).then(function (page) {
+        if (!liveEnabled || generation !== liveGeneration ||
+            sequence !== state.detailRequest || cid !== state.selected) return "STALE";
+        if (!validLivePage(page, cid, seenCursors)) throw new Error("INVALID_PAGE");
+        pages++;
+        if (cursor) seenCursors.add(cursor);
+        for (var i = 0; i < page.events.length; i++) {
+          var event = page.events[i];
+          if (known.has(event.event_id)) {
+            reachedKnown = true;
+            break;
+          }
+          if (!newIds.has(event.event_id)) {
+            newIds.add(event.event_id);
+            newEvents.push(event);
+          }
+        }
+        if (reachedKnown || !page.has_more || !page.next_cursor || pages >= LIVE_MAX_PAGES) return null;
+        cursor = page.next_cursor;
+        return onePage();
+      });
+    }
+
+    onePage().then(function (result) {
+      if (result === "STALE" || !liveEnabled || generation !== liveGeneration ||
+          sequence !== state.detailRequest || cid !== state.selected) return;
+      liveLastPollMs = Date.now();
+      liveLastPages = pages;
+      liveLastNew = newEvents.length;
+      livePollError = "";
+      liveGapPossible = known.size > 0 && !reachedKnown;
+
+      if (newEvents.length) {
+        var merged = [];
+        var mergedIds = new Set();
+        newEvents.concat(currentTrace._newestFirst || []).forEach(function (event) {
+          if (!mergedIds.has(event.event_id)) {
+            mergedIds.add(event.event_id);
+            merged.push(event);
+          }
+        });
+        if (merged.length > TIMELINE_RETAIN_MAX) {
+          merged = merged.slice(0, TIMELINE_RETAIN_MAX);
+          liveWindowTrimmed = true;
+          timelineHasMore = true;
+        }
+        currentTrace._newestFirst = merged;
+        currentTrace.events = merged.slice().reverse();
+        currentTrace.context = contextFromLoadedPages(merged);
+      }
+      updateLiveButton();
+      renderDetail(currentTrace, activeContextFilter);
+      status(liveGapPossible
+        ? "Live follow reached its bounded read budget without reconnecting to already-loaded history; possible gap."
+        : "Live follow checked " + pages + " bounded metadata page" + (pages === 1 ? "" : "s") +
+          (newEvents.length ? " and observed " + newEvents.length + " new event(s)." : "; no new events observed."),
+        liveGapPossible);
+    }).catch(function (err) {
+      if (!liveEnabled || generation !== liveGeneration ||
+          sequence !== state.detailRequest || cid !== state.selected) return;
+      if (err && err.message === "AUTH") {
+        stopLiveFollow(true);
+        clearSelection();
+        status(errorLabel(err) + " Live metadata cleared.", true);
+        return;
+      }
+      livePollError = errorLabel(err);
+      stopLiveFollow(false);
+      if (currentTrace) renderDetail(currentTrace, activeContextFilter);
+      status("Live follow paused: " + livePollError, true);
+    }).finally(function () {
+      livePolling = false;
+      if (liveEnabled) scheduleLiveFollow(LIVE_INTERVAL_MS);
+    });
+  }
   var contextFields = {
     source: "Recorded source",
     task_id: "Task IDs",
@@ -356,7 +554,8 @@
       '<span class="trace-id">' + esc(cid) + '</span>' +
       '<div class="trace-detail-stats"><span>Index outcome · ' + esc(trace.current_state || "Unknown") + '</span>' +
       '<span>' + events.length + ' loaded events' + (timelineHasMore ? ' · earlier pages available' : '') +
-      '</span><span>Earliest loaded · ' + esc(when(first)) + '</span></div></div>';
+      '</span><span>Earliest loaded · ' + esc(when(first)) + '</span>' +
+      liveHealthMarkup() + '</div></div>';
     var visible = events.map(function (e, i) { return { event: e, index: i }; })
       .filter(function (item) {
         return (!filter || item.event[filter.field] === filter.value) &&
@@ -365,7 +564,7 @@
       });
     // Bound the timeline DOM, never the source evidence nor claimed history.
     var windowed = visible.slice(-timelineLimit);
-    var hasEarlier = timelineHasMore || windowed.length < visible.length;
+    var hasEarlier = !liveWindowTrimmed && (timelineHasMore || windowed.length < visible.length);
     var context = contextPanel(trace, filter);
     if (!events.length) {
       $("trace-detail").innerHTML = head + context +
@@ -387,7 +586,8 @@
       '<p class="trace-window-status" role="status" aria-live="polite">Showing latest ' +
       windowed.length + ' of ' + visible.length + ' matching loaded events' +
       (timelineHasMore ? '; additional older pages may exist.' : '.') +
-      ' Up to 800 retained client-side; refresh returns to newest.</p>' +
+      (liveWindowTrimmed ? ' Older loaded metadata was dropped after the 800-event client cap; reselect this trace to browse history.' : '') +
+      ' Up to 800 retained client-side; reselecting returns to newest.</p>' +
       (timelineLoading ? '<p role="status">Loading one bounded earlier page…</p>' : '') +
       (timelineError ? '<p class="trace-empty" role="alert">' + esc(timelineError) + '</p>' : '') +
       (hasEarlier && !timelineLoading ? '<button type="button" class="trace-show-earlier">' +
@@ -575,6 +775,7 @@
   });
   function select(cid) {
     if (!cid) return;
+    stopLiveFollow(true);
     evidenceRequest++;
     currentEvidence = null;
     state.selected = cid;
@@ -649,6 +850,29 @@
     $("trace-search").focus();
   });
   $("trace-refresh").addEventListener("click", loadIndex);
+  $("trace-live").addEventListener("click", function () {
+    if (!state.selected || !state.detailLoaded || !currentTrace) return;
+    if (liveEnabled) {
+      stopLiveFollow(false);
+      renderDetail(currentTrace, activeContextFilter);
+      status("Live follow paused by operator; no background metadata polling is active.", false);
+      return;
+    }
+    if (liveWindowTrimmed) {
+      status("Reselect this trace before resuming live follow; the bounded client window was already capped.", true);
+      return;
+    }
+    liveEnabled = true;
+    liveGeneration++;
+    liveGapPossible = false;
+    livePollError = "";
+    liveLastNew = 0;
+    liveLastPages = 0;
+    updateLiveButton();
+    renderDetail(currentTrace, activeContextFilter);
+    status("Live follow enabled for the selected trace; metadata-only polling is bounded to four pages per poll.", false);
+    scheduleLiveFollow(0);
+  });
   $("trace-copy").addEventListener("click", function () {
     if (!state.selected) return;
     if (!navigator.clipboard || !navigator.clipboard.writeText) {

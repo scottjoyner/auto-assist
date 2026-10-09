@@ -14,7 +14,7 @@ const IDS = [
   "trace-list", "trace-detail", "trace-detail-caption", "trace-status",
   "trace-total-metric", "trace-loaded-metric", "trace-failed-metric",
   "trace-prev", "trace-next", "trace-range", "trace-total",
-  "trace-refresh", "trace-copy", "trace-permalink", "trace-search",
+  "trace-refresh", "trace-live", "trace-copy", "trace-permalink", "trace-search",
   "trace-search-form", "trace-clear", "trace-outcome"
 ];
 
@@ -172,7 +172,7 @@ test("HTML has accessible navigation, scoped metrics, and event disclosure contr
   for (const needle of [
     'aria-current="page"', 'role="status"', 'id="trace-total-metric"',
     'id="trace-failed-metric"', 'Outcome · all indexed history',
-    'id="trace-permalink"', 'id="trace-copy"',
+    'id="trace-permalink"', 'id="trace-copy"', 'id="trace-live"',
     'not a complete tool-call audit ledger', 'aria-label="Previous page of traces"'
   ]) assert.ok(template.includes(needle), needle);
   assert.ok(template.includes("Usage &amp; burn · staged"));
@@ -813,4 +813,79 @@ test("payload-preview 403 is explicit and keeps authorized metadata investigatio
   assert.match(ui.els["trace-detail"].innerHTML,/router.started/);
   assert.match(ui.window.location.href,/scope-denied/);
   assert.equal(ui.calls.filter(x=>x.endsWith("/payload-preview")).length,1);
+});
+
+
+test("live follow is opt-in, metadata-only, and can be paused", async () => {
+  let detailReads = 0;
+  const oldEvent = {
+    event_id:"live-old",event_type:"router.started",source:"fixture",
+    ts_ms:Date.parse("2026-10-09T10:00:00Z")
+  };
+  const newEvent = {
+    event_id:"live-new",event_type:"task.progress",source:"fixture",
+    ts_ms:Date.parse("2026-10-09T10:00:02Z")
+  };
+  const ui = harness({ response: url => {
+    if (url.includes("?limit=")) return Promise.resolve(ok({
+      traces:[trace("live-one","open")],total:1,outcome:"all"
+    }));
+    detailReads++;
+    return Promise.resolve(ok({
+      correlation_id:"live-one",current_state:"open",
+      events: detailReads === 1 ? [oldEvent] : [newEvent,oldEvent]
+    }));
+  }});
+  await sleep(30);
+  const afterInitial = ui.calls.length;
+  await sleep(30);
+  assert.equal(ui.calls.length, afterInitial, "live mode is off by default");
+  assert.equal(ui.els["trace-live"].getAttribute("aria-pressed"), "false");
+
+  ui.els["trace-live"].fire("click");
+  await sleep(35);
+  assert.equal(ui.els["trace-live"].getAttribute("aria-pressed"), "true");
+  assert.match(ui.els["trace-detail"].innerHTML, /task\.progress/);
+  assert.ok(ui.calls.length > afterInitial);
+  assert.ok(ui.calls.slice(afterInitial).every(x => x.includes("/timeline?limit=80")));
+  assert.ok(!ui.calls.some(x => x.endsWith("/payload-preview")));
+  assert.ok(!ui.calls.some(x => x.endsWith("/api/traces/live-one")));
+
+  const beforePause = ui.calls.length;
+  ui.els["trace-live"].fire("click");
+  assert.equal(ui.els["trace-live"].getAttribute("aria-pressed"), "false");
+  assert.match(ui.els["trace-status"].textContent, /paused by operator/);
+  await sleep(35);
+  assert.equal(ui.calls.length, beforePause);
+});
+
+test("live follow reports possible gap when four-page catch-up cannot reach known history", async () => {
+  let detailReads = 0;
+  const known = {
+    event_id:"known-anchor",event_type:"router.started",source:"fixture",ts_ms:1000
+  };
+  const burst = Array.from({length:321}, (_,i) => ({
+    event_id:"burst-"+String(321-i).padStart(4,"0"),
+    event_type:"task.progress",source:"fixture",ts_ms:5000-i
+  }));
+  const ui = harness({ response: url => {
+    if (url.includes("?limit=")) return Promise.resolve(ok({
+      traces:[trace("gap-one","open")],total:1,outcome:"all"
+    }));
+    detailReads++;
+    return Promise.resolve(ok({
+      correlation_id:"gap-one",current_state:"open",
+      events: detailReads === 1 ? [known] : burst.concat([known])
+    }));
+  }});
+  await sleep(30);
+  const initialTimelineReads = ui.calls.filter(x => x.includes("/timeline?limit=80")).length;
+  ui.els["trace-live"].fire("click");
+  await sleep(55);
+  const timelineReads = ui.calls.filter(x => x.includes("/timeline?limit=80")).length;
+  assert.equal(timelineReads - initialTimelineReads, 4, "one live poll is capped at four metadata pages");
+  assert.match(ui.els["trace-detail"].innerHTML, /possible observation gap/);
+  assert.match(ui.els["trace-status"].textContent, /possible gap/);
+  assert.ok(!ui.calls.some(x => x.endsWith("/payload-preview")));
+  ui.els["trace-live"].fire("click");
 });
