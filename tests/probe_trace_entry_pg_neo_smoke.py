@@ -144,7 +144,15 @@ def run():
 
         uri = "bolt://" + neo_ip + ":7687"
         with GraphDatabase.driver(uri, auth=None, connection_timeout=3) as driver:
-            driver.verify_connectivity()
+            deadline = time.monotonic() + 65
+            while time.monotonic() < deadline:
+                try:
+                    driver.verify_connectivity()
+                    break
+                except Exception:
+                    time.sleep(2)
+            else:
+                raise RuntimeError("NEO4J_FIXTURE_NOT_READY")
             graph = Graph(driver)
             with tempfile.TemporaryDirectory(prefix="assistx-entry-audit-") as folder:
                 ledger = SqliteResearchJournal(Path(folder) / "evidence.sqlite")
