@@ -27,8 +27,19 @@ lease witness must be denied. Router aliases are not independent quota proof.
 - 401/402/403/429/503 responses cause shared-circuit reporting and local
   cooldown. Unavailable reporting causes quarantine. Missing or nonzero
   usage receipts quarantine as well. No paid fallback or blind retry.
-- 45/45 offline pytest cases pass on x1-370, asserting zero mock provider
-  invocations on negative admissions.
+- 66/66 offline pytest cases pass on x1-370, asserting zero mock provider
+  invocations before admission on all negative controls. For simulated
+  in-flight stream failure, exactly the pre-loss mock steps can execute;
+  no later steps execute after lost authority or lease expiry.
+- Route qualification additionally requires a separate synthetic trusted
+  authority to witness the requested and resolved model, account, quota
+  group, proof reference, zero-cost price fields and epoch. Self-declared
+  extra quota pools or altered $0 evidence are denied before lease request.
+- Per-group cooldown and quarantine prevents a second Kilo/OpenRouter
+  alias mapped to the SAME upstream pool from bypassing a 429/503.
+- Bounded mock streaming (1-16 steps, synthetic clock increments) has
+  renewed lease and witness checks before each subsequent step; simulated
+  revocation, expiry or partition cancels remaining mock work.
 - Existing SQLite pilot from commit 648683e4 was separately loaded to
   ephemeral /tmp under a temporary SQLite database with one slot and one
   request/window. Two synthetic routes shared one quota group: first
@@ -44,9 +55,12 @@ lease witness must be denied. Router aliases are not independent quota proof.
    account entitlement or independent usage receipts.
 3. Live OpenCode registry entries for Cohere, Z.AI, Kilo, OpenRouter,
    OpenCode and Cerebras do not establish distinct physical quota groups.
+   Local group cooldown state is NOT shared fleet-wide and depends on a
+   working central trip circuit; the mock quarantine only proves local denial.
 4. Knowledge governance FREE-PROVIDER-LEASE-NEXT-CHECKPOINT.md remains a
    production HOLD pending operator scope acceptance, credential custody,
-   async cancellation, cross-node loss/replay tests, and trace archiving.
+   REAL async cancellation, cross-node loss/replay tests, and trace archiving.
+   Bounded synchronous mock steps are not proof of real stream preemption.
 5. No changes to existing auto-assist PR #119 lease issuer, PR #121 frontend,
    production services, NAS, credentials, router or provider clients.
 
