@@ -59,9 +59,21 @@ def container_exact(cid: str, name: str, image: str) -> None:
             or item.get("Image") != image
             or host.get("NetworkMode") != NETWORK
             or bool(host.get("PortBindings")) or bool(host.get("Binds"))
-            or bool(item.get("Mounts")) or not host.get("ReadonlyRootfs")
-            or host.get("Privileged")):
+            or not host.get("ReadonlyRootfs") or host.get("Privileged")):
         raise RuntimeError("disposable container fence broken")
+    mounts = item.get("Mounts") or []
+    if name == REDIS:
+        if mounts:
+            raise RuntimeError("disposable Redis has unexpected volume")
+    elif name == CLIENT:
+        allowed = {"/work/src", "/work/canary.py"}
+        if (len(mounts) != 2
+                or {m.get("Destination") for m in mounts} != allowed
+                or any(m.get("Type") != "bind" or m.get("RW") is not False
+                       for m in mounts)):
+            raise RuntimeError("client mounts are not read-only source files")
+    else:
+        raise RuntimeError("unknown test container")
 
 
 def main(argv: list[str] | None = None) -> int:
