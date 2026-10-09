@@ -67,7 +67,7 @@ def test_success_uses_only_allowlisted_static_cypher():
 
 
 @pytest.mark.parametrize("plan_id,params", [
-    ("RETURN 1", {}), ("unknown", {}), ("approved_read", {}),
+    ("RETURN 1", {}), ("unknown", {}), ([], {}), ("approved_read", {}),
     ("approved_read", {"value": 1, "extra": 2}),
     ("approved_read", {"value": {"nested": "untrusted"}}),
     ("approved_read", {"value": float("nan")}),
