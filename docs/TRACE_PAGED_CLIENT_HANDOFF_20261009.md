@@ -13,7 +13,7 @@ This draft stacks on #177, which stacks on progressive timeline #175. Neither ch
 ## Validation
 - Reused the existing 25 Node VM regression definitions after routing their synthetic legacy fixtures through an in-test metadata-only paging adapter.
 - Added four synthetic checks: no passive payload / no legacy GET; default-disabled 503 fail-closed; invalid schema / extraneous payload rejection; equal-timestamp 1001-event page navigation.
-- **29/29 passed in an isolated V8-based adaptation of the Node VM harness** before the final bounded-window presentation adjustment, with JavaScript syntax compilation passing after that adjustment. This is NOT an authentic `node --test` execution, native Chromium test, or physical authenticated browser acceptance.
+- **29/29 passed in an isolated V8-based adaptation of the Node VM harness on the final bounded-window client revision**, and JavaScript syntax compilation passed. This is NOT an authentic `node --test` execution, native Chromium test, or physical authenticated browser acceptance.
 - The backend's previously reported 131 Python and 25 Node tests belong to **#177**, not to this child's validation.
 - No deployment, Neo4j graph access, NAS write, fleet execution, router mutation, or production flag activation was performed.
 
