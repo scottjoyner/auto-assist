@@ -214,6 +214,11 @@ def test_fastapi_route_filters_before_paging_and_requires_auth(monkeypatch):
         swarm_routes, "_admit_trace_index",
         lambda req: admitted.append(req.client.host if req.client else "unknown"),
     )
+    from contextlib import contextmanager
+    @contextmanager
+    def isolated_capacity():
+        yield
+    monkeypatch.setattr(swarm_routes, "_hold_trace_index_capacity", isolated_capacity)
     # api.py injects its authentication dependency in production. Reproduce
     # that integration explicitly; the bare router alone has a test fallback.
     from fastapi import HTTPException

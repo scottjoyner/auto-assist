@@ -136,11 +136,14 @@ def test_authentication_dependency_precedes_admission_in_handler():
         "src/assistx/swarm_routes.py").read_text())
     handler=next(x for x in tree.body if isinstance(x,ast.FunctionDef)
                  and x.name=="api_list_traces")
-    guard_index=next(i for i,x in enumerate(handler.body)
+    # Lease acquired before rate budget; both before opening a graph.
+    entry=next(x for x in handler.body if isinstance(x,ast.With))
+    assert ast.unparse(entry.items[0].context_expr)=="_hold_trace_index_capacity()"
+    guard_index=next(i for i,x in enumerate(entry.body)
                      if isinstance(x,ast.Expr) and isinstance(x.value,ast.Call)
                      and isinstance(x.value.func,ast.Name)
                      and x.value.func.id=="_admit_trace_index")
-    neo_index=next(i for i,x in enumerate(handler.body)
+    neo_index=next(i for i,x in enumerate(entry.body)
                    if isinstance(x,ast.Assign) and isinstance(x.value,ast.Call)
                    and isinstance(x.value.func,ast.Name)
                    and x.value.func.id=="_neo")
