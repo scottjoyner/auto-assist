@@ -307,6 +307,7 @@ def test_a_copied_local_journal_is_not_distributed_single_authority():
         try:
             copy=str(Path(second)/"receiver-replay-test.sqlite")
             shutil.copyfile(path,copy)
+            Path(copy).chmod(0o600)  # correct permissions still do not solve split-brain
             other=ReceiverReplayCustody(copy,expected_epoch=receipt["epoch"],
                 expected_graph_id=receipt["graph_container_id"],
                 trusted_public_key=pub,approved_signer_sha256=digest)
