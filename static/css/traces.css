@@ -140,3 +140,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .trace-evidence-card>div:not(.trace-evidence-label) { display:flex; flex-wrap:wrap; gap:4px 12px; justify-content:space-between; }
 .trace-evidence-card span { color:var(--muted); font:.69rem var(--mono); }
 .trace-evidence-card strong { color:var(--text); font:.72rem var(--mono); font-weight:550; overflow-wrap:anywhere; max-width:100%; }
+
+/* Progressive, type-only investigation of the already-loaded event timeline. */
+.trace-local-filter { display: grid; gap: 7px; padding: 12px 0 15px; max-width: 550px; }
+.trace-local-filter label { font-size: .75rem; font-weight: 700; color: var(--text-secondary); }
+.trace-local-filter-row { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; }
+.trace-local-filter input { min-width: 165px; width: 100%; max-width: 360px; min-height: 42px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 6px; background: #0d161a; color: var(--text); font-size: .84rem; }
+.trace-local-filter p { color: var(--muted); font-size: .7rem; line-height: 1.5; }
+.trace-local-filter button, .trace-show-earlier { border: 1px solid var(--line-hot); border-radius: 6px;
+  padding: 9px 13px; background: #0c171b; color: var(--text-primary); cursor: pointer; font: 700 .72rem var(--mono); }
+.trace-window-status { color: var(--text-secondary); font: .72rem var(--mono); margin: 7px 0 13px; }
+.trace-show-earlier { width: 100%; text-align: center; margin-bottom: 18px; }
+.trace-show-earlier:hover, .trace-local-filter button:hover { border-color: var(--cyan); }
+@media (max-width: 600px) { .trace-local-filter-row { flex-direction: column; }
+  .trace-local-filter input { max-width: 100%; }
+}
