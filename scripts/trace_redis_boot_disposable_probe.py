@@ -31,11 +31,12 @@ def cmd(*parts: str, timeout: int = 12) -> str:
     return result.stdout.decode("utf-8", errors="replace").strip()
 
 
-def verify_container(expected_image_id: str) -> None:
+def verify_container(expected_image_id: str, expected_container_id: str) -> None:
     obj = json.loads(cmd("docker", "inspect", "--type", "container", NAME))[0]
     host = obj.get("HostConfig") or {}
     if (
         obj.get("Name") != "/" + NAME
+        or obj.get("Id") != expected_container_id
         or obj.get("Image") != expected_image_id
         or not obj.get("State", {}).get("Running")
         or host.get("NetworkMode") != "none"
@@ -104,9 +105,9 @@ def main(argv: list[str] | None = None) -> int:
         print("HOLD:", type(exc).__name__)
         return 2
 
-    started = False
+    container_id: str | None = None
     try:
-        cmd(
+        container_id = cmd(
             "docker", "run", "--rm", "-d", "--pull", "never",
             "--name", NAME, "--network", "none", "--read-only",
             "--tmpfs", "/data:rw,nosuid,size=16m,mode=1777",
@@ -116,8 +117,9 @@ def main(argv: list[str] | None = None) -> int:
             "--memory", "128m", "--pids-limit", "32", IMAGE,
             "redis-server", "--save", "", "--appendonly", "no",
         )
-        started = True
-        verify_container(args.expected_image_id)
+        if len(container_id) != 64 or any(c not in "0123456789abcdef" for c in container_id):
+            raise RuntimeError("invalid disposable container identity")
+        verify_container(args.expected_image_id, container_id)
         redis = DockerRedis()
         for _ in range(30):
             try:
@@ -162,9 +164,9 @@ def main(argv: list[str] | None = None) -> int:
         before = redis.cli("EXISTS", "traceidx:{assistx-trace-index-v2}:active:fleet")
         if before != "1":
             raise RuntimeError("synthetic lease absent before Redis restart")
-        verify_container(args.expected_image_id)
-        cmd("docker", "restart", NAME, timeout=18)
-        verify_container(args.expected_image_id)
+        verify_container(args.expected_image_id, container_id)
+        cmd("docker", "restart", container_id, timeout=18)
+        verify_container(args.expected_image_id, container_id)
         for _ in range(20):
             try:
                 current = redis.info()["run_id"]
@@ -193,9 +195,9 @@ def main(argv: list[str] | None = None) -> int:
         print("ISOLATED_RESTART_PROBE_FAIL_OR_INCONCLUSIVE")
         return 1
     finally:
-        if started:
+        if container_id is not None and len(container_id) == 64:
             subprocess.run(
-                ["docker", "stop", "-t", "2", NAME],
+                ["docker", "stop", "-t", "2", container_id],
                 capture_output=True, timeout=10, check=False,
             )
 
