@@ -163,8 +163,20 @@ def run():
             proc=ctx.Process(target=_worker,args=(f"bolt://127.0.0.1:{proxy.local_port}",marker,ready,worker_output))
             proc.start()
             try:
-                if not ready.wait(6) or not proxy.accepted.wait(6):
-                    raise RuntimeError("WORKER_OR_PROXY_NOT_READY")
+                started_ok = ready.wait(6)
+                accepted_ok = proxy.accepted.wait(6)
+                if not (started_ok and accepted_ok):
+                    report = None
+                    try:
+                        report = worker_output.get_nowait()
+                    except Exception:
+                        pass
+                    raise RuntimeError(
+                        "WORKER_OR_PROXY_NOT_READY: "
+                        f"ready={started_ok} accepted={accepted_ok} "
+                        f"worker_alive={proc.is_alive()} relay_stopped={proxy.stop.is_set()} "
+                        f"worker_outcome={report}"
+                    )
                 observed=[]
                 deadline=time.monotonic()+7
                 while time.monotonic()<deadline and proc.is_alive() and not observed:
