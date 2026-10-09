@@ -12,6 +12,8 @@ from assistx.trace_detail_pages import (
     get_trace_page, get_trace_payload_preview
 )
 from assistx import swarm_routes
+from assistx.trace_preview_access import basic_preview_permitted
+from fastapi.security import HTTPBasicCredentials
 
 
 def event(i, ts=100):
@@ -184,8 +186,16 @@ def app_with_fixture(monkeypatch, enable):
     def injected(request, credentials):
         if credentials is None or credentials.username!="fixture":
             raise HTTPException(status_code=401,detail="Authentication required")
-        return "fixture-operator"
+        return "fixture"
     monkeypatch.setattr(swarm_routes,"_injected_auth_dependency",injected)
+    monkeypatch.setattr(swarm_routes,"_trace_metadata_authorizer",
+        lambda principal, credentials: basic_preview_permitted(
+            principal, credentials, configured_user="fixture",
+            configured_password="pw", allowed_users="fixture"))
+    monkeypatch.setattr(swarm_routes,"_trace_preview_authorizer",
+        lambda principal, credentials: basic_preview_permitted(
+            principal, credentials, configured_user="fixture",
+            configured_password="pw", allowed_users="fixture"))
     return TestClient(app),stored
 
 
@@ -245,3 +255,64 @@ def test_metadata_page_has_no_store_and_never_projects_private_payload(monkeypat
     assert result.json()["metadata_only"] is True
     assert all("payload_json" not in row for row in result.json()["events"])
     assert store[-1].closed
+
+
+def test_preview_basic_scope_is_independent_of_header_principal():
+    basic = HTTPBasicCredentials(username="fixture", password="pw")
+    def permitted(principal, credentials=basic, users="fixture"):
+        return basic_preview_permitted(principal, credentials,
+            configured_user="fixture", configured_password="pw",
+            allowed_users=users)
+    assert permitted("fixture") is True
+    assert permitted("fixture", None) is False  # header identity alone
+    assert permitted("spoofed-operator") is False  # forwarded-header precedence
+    assert permitted("fixture", HTTPBasicCredentials(username="fixture", password="bad")) is False
+    assert permitted("fixture", HTTPBasicCredentials(username="other", password="pw")) is False
+    assert permitted("fixture", users="") is False
+    assert permitted("fixture", users="unrelated") is False
+    assert permitted("fixture", users="a" * 1025) is False
+
+
+def test_preview_scope_denial_never_opens_neo(monkeypatch):
+    client, store = app_with_fixture(monkeypatch, True)
+    for validator, expected in [(None, 503), (lambda *_: False, 403),
+                                (lambda *_: (_ for _ in ()).throw(RuntimeError("broken")), 403)]:
+        monkeypatch.setattr(swarm_routes, "_trace_preview_authorizer", validator)
+        response = client.post("/api/traces/cid-one/payload-preview",
+            auth=("fixture", "pw"), json={"event_id":"evt-0001"})
+        assert response.status_code == expected
+        assert response.headers.get("cache-control") == "no-store, private"
+        assert store == []
+
+
+def test_preview_forged_identity_header_without_basic_denied_before_graph(monkeypatch):
+    client, store = app_with_fixture(monkeypatch, True)
+    monkeypatch.setattr(swarm_routes, "_injected_auth_dependency",
+        lambda request, credentials: request.headers.get("X-Synthetic-Proxy-Identity")
+            or (_ for _ in ()).throw(HTTPException(status_code=401)))
+    response = client.post("/api/traces/cid-one/payload-preview",
+        headers={"X-Synthetic-Proxy-Identity":"fixture"}, json={"event_id":"evt-0001"})
+    assert response.status_code == 403
+    assert store == []
+
+
+def test_metadata_forged_header_and_broken_policy_denied_before_graph(monkeypatch):
+    client, store = app_with_fixture(monkeypatch, True)
+    monkeypatch.setattr(swarm_routes, "_injected_auth_dependency",
+        lambda request, credentials: request.headers.get("X-Synthetic-Proxy-Identity")
+            or (_ for _ in ()).throw(HTTPException(status_code=401)))
+    response=client.get("/api/traces/cid-one/timeline",
+        headers={"X-Synthetic-Proxy-Identity":"fixture"})
+    assert response.status_code == 403
+    assert response.headers.get("cache-control") == "no-store, private"
+    assert store == []
+    monkeypatch.setattr(swarm_routes, "_trace_metadata_authorizer", None)
+    response=client.get("/api/traces/cid-one/timeline",
+        auth=("fixture","pw"), headers={"X-Synthetic-Proxy-Identity":"fixture"})
+    assert response.status_code == 503
+    assert store == []
+    monkeypatch.setattr(swarm_routes, "_trace_metadata_authorizer", lambda *_: False)
+    response=client.get("/api/traces/cid-one/timeline",
+        auth=("fixture","pw"), headers={"X-Synthetic-Proxy-Identity":"fixture"})
+    assert response.status_code == 403
+    assert store == []

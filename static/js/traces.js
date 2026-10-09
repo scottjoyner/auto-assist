@@ -1,4 +1,4 @@
-/* AssistX authenticated trace investigation. GET only, no operational authority. */
+/* AssistX authenticated trace investigation: metadata GET and explicit preview POST only. No operational authority. */
 (function () {
   "use strict";
   var PAGE_SIZE = 50;
@@ -41,7 +41,7 @@
     link.href = url.pathname + url.search;
     link.setAttribute("aria-disabled", cid ? "false" : "true");
     link.tabIndex = cid ? 0 : -1;
-    $("trace-detail-caption").textContent = cid ? "Recorded context and event sequence · payloads collapsed by default" : "Select a trace to inspect its recorded steps";
+    $("trace-detail-caption").textContent = cid ? "Paged event metadata · event payloads never downloaded until opened" : "Select a trace to inspect its recorded steps";
   }
   function persistSelection(cid) {
     var url = new URL(window.location.href);
@@ -52,16 +52,30 @@
     window.history.replaceState(null, "", url.pathname + url.search + url.hash);
     setSelectedTools(cid);
   }
-  function request(url) {
-    return fetch(url, { credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } })
-      .then(function (response) {
-        if (response.status === 401 || response.status === 403) throw new Error("AUTH");
-        if (!response.ok) throw new Error("HTTP " + response.status);
-        return response.json();
-      });
+  function request(url, options) {
+    var preview = options && options.preview;
+    return fetch(url, {
+      method: preview ? "POST" : "GET",
+      credentials: "same-origin", cache: "no-store",
+      headers: preview ? { Accept: "application/json", "Content-Type": "application/json" } : { Accept: "application/json" },
+      body: preview ? JSON.stringify({ event_id: options.eventId }) : undefined
+    }).then(function (response) {
+      if (response.status === 401) throw new Error("AUTH");
+      if (response.status === 403) throw new Error("FORBIDDEN");
+      if (response.status === 503) throw new Error("PAGING_DISABLED");
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      return response.json();
+    });
   }
   function errorLabel(err) {
     if (err && err.message === "AUTH") return "Authentication required or expired.";
+    if (err && err.message === "FORBIDDEN") return "Access denied by operator authorization policy.";
+    if (err && err.message === "PAGING_DISABLED") {
+      return "Bounded trace paging is disabled on this server; legacy unbounded detail is intentionally unavailable.";
+    }
+    if (err && err.message === "INVALID_PAGE") {
+      return "Invalid paged trace response; legacy full-detail fallback is prohibited.";
+    }
     if (err && err.message === "SERVER_FILTER_UNAVAILABLE") {
       return "Global outcome filtering is not yet available on this server version.";
     }
@@ -122,6 +136,11 @@
     timelineLimit = TIMELINE_BATCH;
     timelineTypeQuery = "";
     activeContextFilter = null;
+    timelineCursor = null;
+    timelineHasMore = false;
+    timelineLoading = false;
+    timelineError = "";
+    previewRequest++;
     state.detailLoaded = false;
     state.detailRequest++;
     persistSelection(null);
@@ -181,25 +200,107 @@
       if (sequence === state.listRequest) $("trace-refresh").disabled = false;
     });
   }
-  function payloadData(event) {
-    var ignored = ["event_type", "source", "ts", "ts_ms", "correlation_id", "event_id", "payload_json", "created_at", "created_at_ts"];
-    var data = {};
-    if (event.payload_json != null) {
-      try {
-        var inner = JSON.parse(event.payload_json);
-        data = inner && typeof inner === "object" && !Array.isArray(inner) ? inner : { value: inner };
-      } catch (_) { data = { note: "Payload was not valid JSON; original content withheld." }; }
-    }
-    Object.keys(event).forEach(function (key) {
-      if (ignored.indexOf(key) < 0) data[key] = event[key];
+  // Context chips are derived exclusively from the metadata pages actually fetched.
+  // Never infer a trace-wide total or use a full-detail/context hydration request.
+  function contextFromLoadedPages(events) {
+    var fields = {};
+    var truncated = [];
+    Object.keys(contextFields).forEach(function (field) {
+      var counts = new Map();
+      events.forEach(function (event) {
+        var value = event[field];
+        if (typeof value === "string" && value && value.length <= 160 &&
+            !/[\x00-\x1f\x7f]/.test(value)) {
+          counts.set(value, (counts.get(value) || 0) + 1);
+        }
+      });
+      if (counts.size > 30) truncated.push(field);
+      fields[field] = Array.from(counts).slice(0, 30).map(function (pair) {
+        return { value: pair[0], events: pair[1], provenance: "trace_event_property" };
+      });
     });
-    return data;
+    return { schema: "trace-context-v1", fields: fields, truncated: truncated,
+      loaded_pages_only: true };
+  }
+  function validPage(page, cid, preceding, seenCursors) {
+    if (!page || page.schema !== "trace-event-page-v1" ||
+        page.correlation_id !== cid || page.metadata_only !== true ||
+        page.historical_retention_proven !== false || page.source_snapshot_immutable !== false ||
+        !Array.isArray(page.events) || page.events.length > TIMELINE_BATCH ||
+        page.returned !== page.events.length || typeof page.has_more !== "boolean" ||
+        (page.has_more && (typeof page.next_cursor !== "string" ||
+          !page.next_cursor || page.next_cursor === timelineCursor ||
+          seenCursors.has(page.next_cursor))) ||
+        (!page.has_more && page.next_cursor != null)) return false;
+    var allowed = ["event_id", "ts_ms", "event_type", "source",
+      "task_id", "dispatch_id", "route_id", "assignment_id"];
+    var seen = new Set(preceding.map(function (e) { return e.event_id; }));
+    var last = preceding.length ? preceding[preceding.length - 1] : null;
+    for (var i = 0; i < page.events.length; i++) {
+      var event = page.events[i];
+      if (!event || typeof event.event_id !== "string" || !event.event_id ||
+          !Number.isSafeInteger(event.ts_ms) || event.ts_ms < 0 ||
+          seen.has(event.event_id) ||
+          Object.keys(event).some(function (key) { return allowed.indexOf(key) < 0; })) return false;
+      if (last && (event.ts_ms > last.ts_ms ||
+          (event.ts_ms === last.ts_ms && event.event_id >= last.event_id))) return false;
+      seen.add(event.event_id);
+      last = event;
+    }
+    return !page.has_more || page.events.length > 0;
+  }
+  function loadTimelinePage(cid, sequence, cursor) {
+    if (timelineLoading) return;
+    timelineLoading = true;
+    timelineError = "";
+    var pageUrl = "/api/traces/" + encodeURIComponent(cid) + "/timeline?limit=" + TIMELINE_BATCH;
+    if (cursor) pageUrl += "&cursor=" + encodeURIComponent(cursor);
+    if (cursor && currentTrace) renderDetail(currentTrace, activeContextFilter);
+    return request(pageUrl).then(function (page) {
+      if (sequence !== state.detailRequest || cid !== state.selected) return;
+      var preceding = currentTrace && currentTrace._newestFirst ? currentTrace._newestFirst : [];
+      if (!validPage(page, cid, preceding, timelineSeenCursors)) throw new Error("INVALID_PAGE");
+      if (cursor) timelineSeenCursors.add(cursor);
+      var loaded = preceding.concat(page.events).slice(-TIMELINE_RETAIN_MAX);
+      timelineCursor = page.next_cursor;
+      timelineHasMore = page.has_more;
+      timelineLimit = loaded.length;
+      var indexRow = state.rows.find(function (row) { return row.correlation_id === cid; });
+      var trace = { correlation_id: cid,
+        current_state: indexRow ? (indexRow.outcome || "Unknown") : "Unknown",
+        _newestFirst: loaded, events: loaded.slice().reverse(),
+        context: contextFromLoadedPages(loaded) };
+      currentTrace = trace;
+      timelineLoading = false;
+      renderDetail(trace, activeContextFilter);
+      state.detailLoaded = true;
+    }).catch(function (err) {
+      if (sequence !== state.detailRequest || cid !== state.selected) return;
+      timelineLoading = false;
+      if (err && err.message === "AUTH") {
+        clearSelection();
+        status(errorLabel(err) + " Event metadata cleared.", true);
+        return;
+      }
+      timelineError = errorLabel(err);
+      if (currentTrace) renderDetail(currentTrace, activeContextFilter);
+      else $("trace-detail").innerHTML = placeholder("Timeline unavailable",
+        timelineError + " Select another trace or refresh to try again.");
+      status("Could not load bounded timeline: " + timelineError, true);
+    });
   }
   var currentTrace = null;
   var TIMELINE_BATCH = 80;
+  var TIMELINE_RETAIN_MAX = 800; // Sliding metadata window; refresh returns to newest.
   var timelineLimit = TIMELINE_BATCH;
   var timelineTypeQuery = "";
   var activeContextFilter = null;
+  var timelineCursor = null;
+  var timelineHasMore = false;
+  var timelineLoading = false;
+  var timelineError = "";
+  var timelineSeenCursors = new Set();
+  var previewRequest = 0;
   var evidenceRequest = 0;
   var currentEvidence = null;
   var contextFields = {
@@ -239,7 +340,7 @@
     }).join("");
     return '<section class="trace-context" aria-label="Recorded context">' +
       '<div class="trace-context-heading"><div><h3 tabindex="-1">Recorded context</h3>' +
-      '<p class="trace-context-note">From event properties, not independently verified identities. Source labels are not confirmed agents or machines.</p></div>' +
+      '<p class="trace-context-note">Loaded metadata pages only (not all history). Source labels are not verified agents or machines.</p></div>' +
       (filter ? '<button type="button" class="trace-clear-context">All trace events</button>' : '') + '</div>' +
       '<div class="trace-context-groups">' + sections + '</div>' +
       '<p class="trace-context-foot">Node/agent identity: not established by this trace index. No task or fleet execution actions are available here.</p>' +
@@ -253,8 +354,9 @@
     var cid = String(trace.correlation_id || state.selected || "");
     var head = '<div class="trace-detail-summary"><span class="trace-eyebrow">Correlation ID</span>' +
       '<span class="trace-id">' + esc(cid) + '</span>' +
-      '<div class="trace-detail-stats"><span>State · ' + esc(trace.current_state || "Unknown") + '</span>' +
-      '<span>' + events.length + ' events</span><span>Started · ' + esc(when(first)) + '</span></div></div>';
+      '<div class="trace-detail-stats"><span>Index outcome · ' + esc(trace.current_state || "Unknown") + '</span>' +
+      '<span>' + events.length + ' loaded events' + (timelineHasMore ? ' · earlier pages available' : '') +
+      '</span><span>Earliest loaded · ' + esc(when(first)) + '</span></div></div>';
     var visible = events.map(function (e, i) { return { event: e, index: i }; })
       .filter(function (item) {
         return (!filter || item.event[filter.field] === filter.value) &&
@@ -263,19 +365,19 @@
       });
     // Bound the timeline DOM, never the source evidence nor claimed history.
     var windowed = visible.slice(-timelineLimit);
-    var hasEarlier = windowed.length < visible.length;
+    var hasEarlier = timelineHasMore || windowed.length < visible.length;
     var context = contextPanel(trace, filter);
     if (!events.length) {
       $("trace-detail").innerHTML = head + context +
         placeholder("No timeline events", "This trace has no event records available.");
       return;
     }
-    // Only events in this already-loaded trace are filtered. No extra API call.
-    // Payloads remain in memory until an explicit event disclosure opens.
+    // Only fetched metadata is filtered. Payloads are never included in metadata responses.
     $("trace-detail").innerHTML = head + context +
       '<div class="trace-timeline-header">' +
       '<h3>' + (filter || timelineTypeQuery ? "Matching events" : "Recorded event timeline") + '</h3>' +
-      '<span>' + visible.length + ' of ' + events.length + ' events</span></div>' +
+      '<span>' + visible.length + ' of ' + events.length + ' loaded events' +
+      (timelineHasMore ? ' · older events not loaded' : '') + '</span></div>' +
       '<div class="trace-local-filter"><label for="trace-type-query">Find event types · loaded trace only</label>' +
       '<div class="trace-local-filter-row"><input id="trace-type-query" type="search" ' +
       'maxlength="80" autocomplete="off" spellcheck="false" ' +
@@ -283,8 +385,14 @@
       (timelineTypeQuery ? '<button type="button" class="trace-clear-type">Clear type search</button>' : '') +
       '</div><p>Matches event-type names only, never payloads. Not an all-history query.</p></div>' +
       '<p class="trace-window-status" role="status" aria-live="polite">Showing latest ' +
-      windowed.length + ' of ' + visible.length + ' matching loaded events.</p>' +
-      (hasEarlier ? '<button type="button" class="trace-show-earlier">Show up to 80 earlier events</button>' : '') +
+      windowed.length + ' of ' + visible.length + ' matching loaded events' +
+      (timelineHasMore ? '; additional older pages may exist.' : '.') +
+      ' Up to 800 retained client-side; refresh returns to newest.</p>' +
+      (timelineLoading ? '<p role="status">Loading one bounded earlier page…</p>' : '') +
+      (timelineError ? '<p class="trace-empty" role="alert">' + esc(timelineError) + '</p>' : '') +
+      (hasEarlier && !timelineLoading ? '<button type="button" class="trace-show-earlier">' +
+        (timelineHasMore ? 'Load up to 80 earlier events' : 'Show already loaded earlier events') +
+        '</button>' : '') +
       (visible.length ? '<div class="trace-timeline">' + windowed.map(function (item) {
       var e = item.event;
       var i = item.index;
@@ -294,22 +402,48 @@
         '<span class="trace-event-type">' + esc(e.event_type || "event") + '</span>' +
         '<div class="trace-event-meta">' + esc(e.source || "Unknown source") + " · " +
         esc(when(e.ts_ms)) + esc(elapsed) + '</div>' +
-        '<details data-event-index="' + i + '"><summary>Show event fields (may contain operational data)</summary><pre></pre></details>' +
+        '<details data-event-index="' + i + '"><summary>Request payload preview (up to 4,096 characters; may contain sensitive data)</summary><pre></pre></details>' +
         '</article>';
     }).join("") + "</div>" :
       '<p class="trace-empty">No loaded events match the selected context and event-type search.</p>');
     if (currentEvidence) paintEvidence(currentEvidence);
     $("trace-detail").querySelectorAll("details[data-event-index]").forEach(function (node) {
+      var disclosure = 0;
       node.addEventListener("toggle", function () {
-        if (!node.open) {
-          node.querySelector("pre").textContent = "";
-          return;
-        }
-        var event = events[Number(node.getAttribute("data-event-index"))] || {};
-        var text;
-        try { text = JSON.stringify(payloadData(event), null, 2); } catch (_) { text = "Fields cannot be formatted."; }
-        node.querySelector("pre").textContent = text && text !== "{}" ? text.slice(0, 65536) +
-          (text.length > 65536 ? "\n[Display limited to 64 KiB; source unchanged]" : "") : "No additional event fields.";
+        var generation = ++disclosure;
+        var target = node.querySelector("pre");
+        if (!node.open) { target.textContent = ""; return; }
+        var item = events[Number(node.getAttribute("data-event-index"))];
+        if (!item || !item.event_id) { target.textContent = "No event identifier available."; return; }
+        // A human opening this disclosure is the ONLY trigger for payload access.
+        target.textContent = "Requesting an explicit bounded preview…";
+        var cid = state.selected;
+        var sequence = state.detailRequest;
+        request("/api/traces/" + encodeURIComponent(cid) + "/payload-preview",
+          { preview: true, eventId: item.event_id }).then(function (preview) {
+            if (generation !== disclosure || !node.open ||
+                sequence !== state.detailRequest || cid !== state.selected) return;
+            if (!preview || preview.schema !== "trace-payload-preview-v1" ||
+                preview.correlation_id !== cid || preview.event_id !== item.event_id ||
+                typeof preview.payload_preview !== "string" ||
+                preview.payload_preview.length > 4096 ||
+                typeof preview.truncated !== "boolean" ||
+                preview.historical_retention_proven !== false) {
+              target.textContent = "Invalid payload preview response; data withheld.";
+              return;
+            }
+            target.textContent = (preview.payload_preview || "No payload recorded.") +
+              (preview.truncated ? "\n[Preview truncated to 4,096 characters]" : "");
+          }).catch(function (err) {
+            if (generation !== disclosure || !node.open ||
+                sequence !== state.detailRequest || cid !== state.selected) return;
+            if (err && err.message === "AUTH") {
+              clearSelection();
+              status(errorLabel(err) + " Previews cleared.", true);
+              return;
+            }
+            target.textContent = errorLabel(err) + " Preview not retained.";
+          });
       });
     });
   }
@@ -381,8 +515,12 @@
     }
     var earlier = event.target.closest("button.trace-show-earlier");
     if (earlier) {
-      timelineLimit += TIMELINE_BATCH;
-      renderDetail(currentTrace, activeContextFilter);
+      if (timelineHasMore) {
+        loadTimelinePage(state.selected, state.detailRequest, timelineCursor);
+      } else {
+        timelineLimit += TIMELINE_BATCH;
+        renderDetail(currentTrace, activeContextFilter);
+      }
       var next = $("trace-detail").querySelector("button.trace-show-earlier") ||
         $("trace-detail").querySelector("#trace-type-query");
       if (next && typeof next.focus === "function") next.focus();
@@ -444,20 +582,19 @@
     timelineLimit = TIMELINE_BATCH;
     timelineTypeQuery = "";
     activeContextFilter = null;
+    timelineCursor = null;
+    timelineHasMore = false;
+    timelineLoading = false;
+    timelineError = "";
+    timelineSeenCursors = new Set();
+    previewRequest++;
     state.detailLoaded = false;
     var sequence = ++state.detailRequest;
     persistSelection(cid);
     paintList();
     $("trace-detail").innerHTML = placeholder("Loading timeline", "Retrieving selected trace events…");
-    request("/api/traces/" + encodeURIComponent(cid)).then(function (detail) {
-      if (sequence !== state.detailRequest) return;
-      renderDetail(detail);
-      state.detailLoaded = true;
-    }).catch(function (err) {
-      if (sequence !== state.detailRequest) return;
-      $("trace-detail").innerHTML = placeholder("Timeline unavailable", errorLabel(err) + " Select another trace or refresh to try again.");
-      status("Could not load selected timeline: " + errorLabel(err), true);
-    });
+    // Fail closed when experimental paging is off; never call legacy full detail.
+    loadTimelinePage(cid, sequence, null);
   }
   $("trace-list").addEventListener("click", function (event) {
     var row = event.target.closest("button.trace-row");

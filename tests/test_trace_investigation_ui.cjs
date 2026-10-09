@@ -96,7 +96,7 @@ function deferred() {
 const ok = value => ({ ok: true, status: 200, json: async () => value });
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-function harness({ initialUrl = "https://assistx.invalid/traces", response } = {}) {
+function harness({ initialUrl = "https://assistx.invalid/traces", response, previewResponse } = {}) {
   const els = Object.fromEntries(IDS.map(id => [id, element(id)]));
   const calls = [];
   const actions = [];
@@ -109,9 +109,55 @@ function harness({ initialUrl = "https://assistx.invalid/traces", response } = {
     history: { replaceState(_, __, url) { window.location.href = new URL(url, window.location.href).href; } },
     addEventListener(name, fn) { actions[name] = fn; }
   };
-  const fetch = url => {
+  // Translate older synthetic test fixtures to the paged, metadata-only contract.
+  const fixtures = new Map();
+  const fetch = (url, options = {}) => {
     calls.push(url);
-    if (!url.startsWith("/api/traces")) throw Error("UI attempted non-read-only endpoint");
+    if (!url.startsWith("/api/traces")) throw Error("UI attempted non-trace endpoint");
+    if (url.endsWith("/payload-preview")) {
+      assert.equal(options.method,"POST");
+      if (previewResponse) return Promise.resolve(previewResponse(url,options));
+      const cid = decodeURIComponent(url.split("/api/traces/")[1].split("/payload-preview")[0]);
+      const eventId = JSON.parse(options.body).event_id;
+      const e = (fixtures.get(cid)||[]).find(x => x.event_id === eventId);
+      return Promise.resolve(e ? ok({
+        schema:"trace-payload-preview-v1", correlation_id:cid,event_id:eventId,
+        payload_preview:String(e.payload_json||"").slice(0,4096),
+        truncated:String(e.payload_json||"").length>4096,
+        historical_retention_proven:false
+      }) : {ok:false,status:404});
+    }
+    if (url.includes("/timeline?limit=80")) {
+      assert.equal(options.method,"GET");
+      const path = url.split("/api/traces/")[1].split("/timeline?")[0];
+      const cid = decodeURIComponent(path);
+      const cursor = url.includes("&cursor=")
+        ? decodeURIComponent(url.split("&cursor=")[1]) : "";
+      const offset = cursor ? Number(cursor.replace("fixture-cursor-","")) : 0;
+      return Promise.resolve(response ? response("/api/traces/"+encodeURIComponent(cid)) :
+        ok({correlation_id:cid,events:[]})).then(async raw => {
+        if (!raw.ok) return raw;
+        const detailFixture = await raw.json();
+        if (detailFixture.schema === "trace-event-page-v1") return ok(detailFixture);
+        const events = (detailFixture.events||[]).map((event,i) => ({
+          event_id:event.event_id||"fixture-event-"+i,...event
+        })).sort((a,b) => b.ts_ms-a.ts_ms ||
+          (a.event_id<b.event_id?1:a.event_id>b.event_id?-1:0));
+        fixtures.set(cid,events);
+        const metadata = events.slice(offset,offset+80).map(event => {
+          const {payload_json,...rest} = event;
+          return rest;
+        });
+        const more = offset+80 < events.length;
+        return ok({
+          schema:"trace-event-page-v1",correlation_id:cid,metadata_only:true,
+          historical_retention_proven:false,source_snapshot_immutable:false,
+          events:metadata,returned:metadata.length,has_more:more,
+          next_cursor:more?"fixture-cursor-"+(offset+80):null
+        });
+      });
+    }
+    assert.equal(options.method||"GET","GET");
     return response ? response(url) : Promise.resolve(ok({ total: 0, offset: 0, traces: [] }));
   };
   vm.runInNewContext(script, {
@@ -134,8 +180,10 @@ test("HTML has accessible navigation, scoped metrics, and event disclosure contr
   assert.ok(style.includes("@media (max-width: 600px)"));
   assert.ok(style.includes(":focus-visible"));
   assert.ok(script.includes('details data-event-index'));
-  assert.ok(script.includes("node.querySelector(\"pre\").textContent"));
-  assert.doesNotMatch(script, /POST|DELETE|PATCH|PUT/);
+  assert.ok(script.includes('var target = node.querySelector("pre")'));
+  assert.ok(script.includes('method: preview ? "POST" : "GET"'));
+  assert.doesNotMatch(script,/\\bDELETE\\b|\\bPATCH\\b|\\bPUT\\b/);
+  assert.ok(!script.includes('request("/api/traces/" + encodeURIComponent(cid))'));
 });
 
 test("index metric totals distinguish global matches from page-only failures", async () => {
@@ -171,6 +219,7 @@ test("permalink opens a trace outside the first index page; event content stays 
   assert.ok(disclosure, "event payload uses a deferred disclosure");
   assert.equal(disclosure.querySelector("pre").textContent, "");
   disclosure.toggle(true);
+  await sleep(20);
   assert.match(disclosure.querySelector("pre").textContent, /SYNTHETIC_DO_NOT_RENDER/);
   disclosure.toggle(false);
   assert.equal(disclosure.querySelector("pre").textContent, "");
@@ -359,7 +408,7 @@ test("context panel groups recorded IDs and filters only the loaded timeline", a
   assert.match(ui.els["trace-detail"].innerHTML, /task-a/);
   assert.match(ui.els["trace-detail"].innerHTML, /task-b/);
   assert.match(ui.els["trace-detail"].innerHTML, /Node\/agent identity: not established/);
-  assert.match(ui.els["trace-detail"].innerHTML, /3 of 3 events/);
+  assert.match(ui.els["trace-detail"].innerHTML, /3 of 3 loaded events/);
   assert.doesNotMatch(ui.els["trace-detail"].innerHTML, /DO_NOT_INLINE/);
   const count = ui.calls.length;
 
@@ -371,7 +420,7 @@ test("context panel groups recorded IDs and filters only the loaded timeline", a
       return selector === "button.trace-context-chip" ? chip : null;
     } }
   });
-  assert.match(ui.els["trace-detail"].innerHTML, /2 of 3 events/);
+  assert.match(ui.els["trace-detail"].innerHTML, /2 of 3 loaded events/);
   assert.doesNotMatch(ui.els["trace-detail"].innerHTML, /route\.selected/);
   assert.match(ui.els["trace-detail"].innerHTML, /assignment\.claimed/);
   assert.equal(ui.els["trace-detail"].focusedSelector, "button.trace-context-chip.selected",
@@ -382,7 +431,7 @@ test("context panel groups recorded IDs and filters only the loaded timeline", a
       return selector === "button.trace-clear-context" ? {} : null;
     } }
   });
-  assert.match(ui.els["trace-detail"].innerHTML, /3 of 3 events/);
+  assert.match(ui.els["trace-detail"].innerHTML, /3 of 3 loaded events/);
   assert.match(ui.els["trace-detail"].innerHTML, /route\.selected/);
   assert.equal(ui.els["trace-detail"].focusedSelector, ".trace-context h3",
     "reset focus returns to the context heading");
@@ -399,8 +448,8 @@ test("unknown context is clearly unavailable, never inferred from payload claims
       ]
     })) });
   await sleep(25);
-  assert.match(ui.els["trace-detail"].innerHTML, /Context metadata not available/);
-  assert.match(ui.els["trace-detail"].innerHTML, /No node or agent identity is inferred/);
+  assert.match(ui.els["trace-detail"].innerHTML, /Loaded metadata pages only/);
+  assert.match(ui.els["trace-detail"].innerHTML, /Node.agent identity: not established/);
   assert.doesNotMatch(ui.els["trace-detail"].innerHTML, /claimed-node|untrusted-task/);
 });
 
@@ -421,7 +470,7 @@ test("malicious context values are escaped and never treated as navigation links
     })) });
   await sleep(25);
   const html = ui.els["trace-detail"].innerHTML;
-  assert.ok(html.includes("&lt;img"));
+  assert.ok(html.includes("&lt;img"),"escaped context HTML absent: "+html.slice(0,600));
   assert.ok(!html.includes('<img src=x onerror='));
   assert.ok(!html.includes("href=" + malicious));
   assert.match(html, /trace-context-chip/);
@@ -593,6 +642,7 @@ test("index authentication loss clears expanded sensitive detail and disables co
   await sleep(25);
   const disclosure = ui.els["trace-detail"].details[0];
   disclosure.toggle(true);
+  await sleep(20);
   assert.match(disclosure.querySelector("pre").textContent, /SYNTHETIC_DO_NOT_RENDER/);
   ui.els["trace-refresh"].fire("click");
   await sleep(25);
@@ -615,17 +665,19 @@ test("long trace renders only latest 80 summaries and progressively reveals earl
   let html=ui.els["trace-detail"].innerHTML;
   assert.equal((html.match(/class="trace-event"/g)||[]).length,79); // last card has failed class
   assert.equal((html.match(/class="trace-event failed"/g)||[]).length,1);
-  assert.match(html,/Showing latest 80 of 1000 matching loaded events/);
-  assert.match(html,/Show up to 80 earlier events/);
+  assert.match(html,/Showing latest 80 of 80 matching loaded events/);
+  assert.match(html,/Load up to 80 earlier events/);
   assert.doesNotMatch(html,/NEVER_INLINE_/);
   const firstCalls=ui.calls.length;
   ui.els["trace-detail"].fire("click",{target:{closest(selector){
     return selector==="button.trace-show-earlier"?{}:null;
   }}});
+  await sleep(25);
   html=ui.els["trace-detail"].innerHTML;
   assert.equal((html.match(/<article class="trace-event/g)||[]).length,160);
-  assert.match(html,/Showing latest 160 of 1000 matching loaded events/);
-  assert.equal(ui.calls.length,firstCalls,"local timeline expansion must never fetch more data");
+  assert.match(html,/Showing latest 160 of 160 matching loaded events/);
+  assert.equal(ui.calls.length,firstCalls+1,"earlier navigation fetches one bounded page");
+  assert.ok(ui.calls.at(-1).includes("/timeline?limit=80&cursor="));
 });
 
 test("event-type search does not index payloads, intersects context and resets on trace change",async()=>{
@@ -648,14 +700,14 @@ test("event-type search does not index payloads, intersects context and resets o
   const before=ui.calls.length;
   ui.els["trace-detail"].fire("input",{target:{id:"trace-type-query",value:"FAILED",selectionStart:6}});
   let html=ui.els["trace-detail"].innerHTML;
-  assert.match(html,/2 of 3 events/);
+  assert.match(html,/2 of 3 loaded events/);
   assert.doesNotMatch(html,/task\.started/);
   assert.doesNotMatch(html,/CANARY_SENSITIVE|OTHER_CANARY|ERROR_MARKER/);
   assert.equal(ui.calls.length,before);
   const chip={getAttribute:k=>k==="data-context-field"?"task_id":"alpha"};
   ui.els["trace-detail"].fire("click",{target:{closest:s=>s==="button.trace-context-chip"?chip:null}});
   html=ui.els["trace-detail"].innerHTML;
-  assert.match(html,/1 of 3 events/);
+  assert.match(html,/1 of 3 loaded events/);
   assert.match(html,/task\.failed/);
   assert.doesNotMatch(html,/route\.failed/);
   ui.els["trace-list"].fire("click",{target:{closest:()=>({dataset:{cid:"two"}})}});
@@ -674,8 +726,91 @@ test("type search can show no matches and clear without a graph read", async()=>
   const prior=ui.calls.length;
   ui.els["trace-detail"].fire("input",{target:{id:"trace-type-query",value:"nomatches",selectionStart:9}});
   assert.match(ui.els["trace-detail"].innerHTML,/No loaded events match/);
-  assert.match(ui.els["trace-detail"].innerHTML,/0 of 1 events/);
+  assert.match(ui.els["trace-detail"].innerHTML,/0 of 1 loaded events/);
   ui.els["trace-detail"].fire("click",{target:{closest:s=>s==="button.trace-clear-type"?{}:null}});
   assert.match(ui.els["trace-detail"].innerHTML,/router.started/);
   assert.equal(ui.calls.length,prior);
+});
+
+test("paged workbench never passively fetches payloads or legacy full detail", async () => {
+  const ui=harness({response:url=>Promise.resolve(ok(url.includes("/api/traces?")
+    ? {traces:[trace("no-passive")],total:1,outcome:"all"}
+    :detail("no-passive",true)))});
+  await sleep(25);
+  assert.equal(ui.calls.length,2);
+  assert.match(ui.calls[1],/\/timeline\?limit=80/);
+  assert.ok(!ui.calls.some(url=>url.endsWith("/api/traces/no-passive")));
+  assert.ok(!ui.calls.some(url=>url.endsWith("/payload-preview")));
+  const disclosure=ui.els["trace-detail"].details[0];
+  disclosure.toggle(true);
+  await sleep(20);
+  assert.equal(ui.calls.length,3);
+  assert.ok(ui.calls.at(-1).endsWith("/payload-preview"));
+  assert.match(disclosure.querySelector("pre").textContent,/SYNTHETIC_DO_NOT_RENDER/);
+  disclosure.toggle(false);
+  assert.equal(disclosure.querySelector("pre").textContent,"");
+});
+
+test("disabled new endpoint fails closed without any legacy GET", async () => {
+  const ui=harness({response:url=>Promise.resolve(url.includes("/api/traces?")
+    ? ok({traces:[trace("flag-off")],total:1,outcome:"all"})
+    : {ok:false,status:503})});
+  await sleep(25);
+  assert.match(ui.els["trace-detail"].innerHTML,/Timeline unavailable/);
+  assert.match(ui.els["trace-detail"].innerHTML,/legacy unbounded detail is intentionally unavailable/);
+  assert.equal(ui.calls.length,2);
+  assert.ok(ui.calls.at(-1).includes("/timeline?limit=80"));
+});
+
+test("invalid paged schema and unexpected event properties are never displayed", async () => {
+  const fake={
+    schema:"trace-event-page-v1",correlation_id:"bad-projection",metadata_only:true,
+    historical_retention_proven:false,source_snapshot_immutable:false,
+    returned:1,has_more:false,next_cursor:null,
+    events:[{event_id:"event-1",ts_ms:25,event_type:"task.started",
+      payload_json:"NEVER_RETURN_PRIVATE_PAYLOAD"}]
+  };
+  const ui=harness({response:url=>Promise.resolve(ok(url.includes("/api/traces?")
+    ? {traces:[trace("bad-projection")],total:1,outcome:"all"} :fake))});
+  await sleep(25);
+  assert.match(ui.els["trace-detail"].innerHTML,/Invalid paged trace response/);
+  assert.doesNotMatch(ui.els["trace-detail"].innerHTML,/NEVER_RETURN_PRIVATE_PAYLOAD/);
+  assert.equal(ui.calls.length,2);
+});
+
+test("equal-timestamp pagination loads one request per 80 events with no legacy detail", async () => {
+  const events=Array.from({length:1001},(_,i)=>({
+    event_id:"synthetic-event-"+String(i).padStart(4,"0"),
+    ts_ms:1780000000000,event_type:"task.progress",source:"fixture"
+  }));
+  const ui=harness({response:url=>Promise.resolve(ok(url.includes("/api/traces?")
+    ? {traces:[trace("tie-1001")],total:1,outcome:"all"}
+    : {correlation_id:"tie-1001",events}))});
+  await sleep(30);
+  assert.equal((ui.els["trace-detail"].innerHTML.match(/<article class="trace-event/g)||[]).length,80);
+  ui.els["trace-detail"].fire("click",{target:{closest:s=>s==="button.trace-show-earlier"?{}:null}});
+  await sleep(30);
+  assert.equal((ui.els["trace-detail"].innerHTML.match(/<article class="trace-event/g)||[]).length,160);
+  assert.equal(ui.calls.length,3);
+  assert.ok(ui.calls.at(-1).includes("/timeline?limit=80&cursor="));
+  assert.ok(!ui.calls.some(url=>url.endsWith("/api/traces/tie-1001")));
+});
+
+
+test("payload-preview 403 is explicit and keeps authorized metadata investigation", async () => {
+  const ui=harness({
+    response:url=>Promise.resolve(ok(url.includes("/api/traces?")
+      ? {traces:[trace("scope-denied")],total:1,outcome:"all"} : detail("scope-denied",true))),
+    previewResponse:()=>({ok:false,status:403})
+  });
+  await sleep(26);
+  assert.match(ui.els["trace-detail"].innerHTML,/router.started/);
+  const disclosure=ui.els["trace-detail"].details[0];
+  disclosure.toggle(true);
+  await sleep(20);
+  assert.match(disclosure.querySelector("pre").textContent,/Access denied by operator authorization policy/);
+  assert.doesNotMatch(disclosure.querySelector("pre").textContent,/SYNTHETIC_DO_NOT_RENDER/);
+  assert.match(ui.els["trace-detail"].innerHTML,/router.started/);
+  assert.match(ui.window.location.href,/scope-denied/);
+  assert.equal(ui.calls.filter(x=>x.endsWith("/payload-preview")).length,1);
 });
