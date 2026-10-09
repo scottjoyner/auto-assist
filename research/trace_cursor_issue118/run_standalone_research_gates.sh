@@ -3,7 +3,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$here"
-for suite in test_guard_standalone.py test_source_history_coverage.py test_orphan_integrity_review.py; do
+for suite in test_guard_standalone.py test_source_history_coverage.py test_orphan_integrity_review.py test_tiered_retention_triage.py test_safe_drain_readiness.py; do
   echo "Running $suite (isolated synthetic inputs)"
   PYTHONDONTWRITEBYTECODE=1 python3 -B "$suite"
 done
