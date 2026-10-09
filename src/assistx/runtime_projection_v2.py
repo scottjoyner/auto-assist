@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import APIRouter, Depends, HTTPException
 
 from . import runtime_projection as legacy
+from .fleet_routing_projection import benchmark_projection_index, node_routing_policy_index
 
 
 _ALGORITHM = "Ed25519"
@@ -114,6 +115,40 @@ def build_runtime_projection(
     signer = private_key or load_private_key()
     document["signature"] = projection_signature(document, signer)
     return document
+
+
+def _apply_benchmark_routing(
+    document: dict[str, Any], neo_factory: Callable[[], Any]
+) -> None:
+    """Read-only annotation of pre-admitted models; never create admission.
+
+    The Neo4j policy/benchmark index can provide evidence only for a model
+    already selected by the approved runtime projection. Absent policy is
+    explicitly observer-only. This function is NOT an authorization decision
+    and does not create providers, model loadouts, or additional routes.
+    """
+    policy_by_node = node_routing_policy_index(neo_factory)
+    benchmark_by_model = benchmark_projection_index(neo_factory)
+    for provider in document.get("providers", []):
+        node_id = str(provider.get("node_id") or "")
+        policy = policy_by_node.get(node_id) or {}
+        # Policy might be incomplete or stale: missing controls must deny.
+        restrictive = {
+            "routing_roles": policy.get("routing_roles") if isinstance(
+                policy.get("routing_roles"), list) else [],
+            "worker_mode": str(policy.get("worker_mode") or "observer_only"),
+            "allow_agent_runtime": policy.get("allow_agent_runtime") is True,
+            "allow_code_execution": policy.get("allow_code_execution") is True,
+        }
+        provider.update(restrictive)
+        for model in provider.get("models", []):
+            if not isinstance(model, dict):
+                continue
+            key = (node_id, str(model.get("alias") or ""))
+            measured = benchmark_by_model.get(key) or {}
+            model.update(restrictive)
+            scores = measured.get("task_family_scores")
+            model["task_family_scores"] = scores if isinstance(scores, dict) else {}
 
 
 # Narrow compatibility exports for the authenticated mobile runtime catalog.
