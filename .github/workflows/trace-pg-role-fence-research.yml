@@ -1,0 +1,41 @@
+name: trace-pg-role-fence-research (offline only)
+
+on:
+  pull_request:
+    paths:
+      - "research/trace_pg_privilege_fence.sql"
+      - "tests/probe_trace_pg_privileged_roles.py"
+      - "tests/test_trace_pg_privilege_guards.py"
+      - "docs/TRACE_PG_ROLE_FENCE_RESEARCH_20261009.md"
+      - ".github/workflows/trace-pg-role-fence-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-role-fence-guards:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Exact source checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install research guard requirements
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m pip install "psycopg[binary]>=3.2,<4"
+      - name: Prove fail-closed fixture and SQL grants without Docker
+        env:
+          PYTHONPATH: src:tests
+        run: |
+          python -m pytest -q \
+            tests/test_trace_pg_privilege_guards.py \
+            tests/test_trace_pg_authority_guards.py
+      # Physical runs are operator-triggered on named disposable Docker.
+      # CI must not create databases, distribute credentials or invoke SSH.
