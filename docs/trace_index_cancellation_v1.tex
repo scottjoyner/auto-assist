@@ -1,0 +1,42 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs,amsmath,hyperref}
+\title{Soft Trace-Index Leases Do Not Establish Physical Query Fencing:\\ A Synthetic Neo4j Timeout Counterexample}
+\author{AssistX fleet observability research --- working draft}
+\date{October 8, 2026}
+\begin{document}
+\maketitle
+\begin{abstract}
+Authenticated historical trace search requires bounded database occupancy across fleet API workers. We evaluate a draft Redis token lease controlling three concurrent historical-index reads, with thirty-second server-clock expiry, alongside Neo4j 5.26 driver transaction timeouts. A deterministic simulated Redis-clock negative control shows that a physically active old query may survive lease expiry while a successor is admitted, so the nominal occupancy count can underestimate live query count. On a disconnected, disposable Neo4j 5.26.30 staging instance, one 1\,ms transaction-timeout probe returned a timeout error in 159\,ms client wall time, whereas 30\,ms and 200\,ms requests completed normally with client wall times of 568\,ms and 476\,ms, respectively. These measurements do not establish server query duration or transport-failure cancellation. Thirteen new fault-isolation tests brought the scoped suite to 78 passing Python tests. Production activation remains disallowed pending independent hard deadline, ownership and cancellation acceptance.
+\end{abstract}
+\section{Preregistered question}
+Previous AssistX research established a fail-closed global Redis lease cap with exact-token release and thirty-second expiry. The open question was whether that lease and individual four-second Neo4j read query timeouts prove that no more than three database reads execute physically at once. The preregistered protocol and its controlled post-inconclusive amendment are documented in \texttt{TRACE\_INDEX\_CANCELLATION\_PROSPECTUS\_20261008.md}.
+\section{Logical capacity versus physical concurrency}
+Let $L(t)$ be the set of non-expired Redis lease tokens at time $t$, and $Q(t)$ the set of actually executing database queries. Redis controls $|L(t)|\leq C$ for configured capacity $C$, but cannot independently force $Q(t)$ to stop at lease expiry. Consider $C=1$. A query $q_1$ acquires token $\ell_1$, remains executing past the lease deadline, and has no confirmed server cancellation. Redis expires $\ell_1$ and admits $q_2$ with $\ell_2$. Thus
+\[
+|L(t)|=1\leq C,\qquad |Q(t)|=2>C.
+\]
+Exact-token release protects successor ownership but cannot retroactively terminate $q_1$. A synthetic Redis-clock test reproduces this counterexample without any fleet resources. This is a negative assertion about guarantees, not a claim that the production incident occurred.
+\section{Isolated driver observation}
+A disposable, network-isolated Neo4j 5.26.30 server with one CPU and 2{,}200\,MiB memory executed only synthetic read-only range calculations. The first small-range experiment completed despite tiny requested timeouts and did not exercise cancellation. A preregistered amendment increased arithmetic cost and corrected an inspector query that had counted itself.
+
+\begin{table}[h]\centering
+\caption{Amended probe: request timeout is not end-to-end wall time.}
+\begin{tabular}{lll}\toprule
+Neo4j requested timeout & Python client wall time & Result\\\midrule
+1\,ms & 158.52\,ms & transaction timeout error\\
+30\,ms & 568.14\,ms & completed\\
+200\,ms & 475.55\,ms & completed\\\bottomrule
+\end{tabular}
+\end{table}
+Subsequent read-only transaction inspection showed zero active benchmark range queries, and a health read succeeded after each probe. The Neo4j Python manual documents Query timeouts as transaction execution controls, not universal bounds over client orchestration and transport \cite{neoquery}. Neo4j documents the ability to view and terminate transactions separately \cite{neoops}; neither feature by itself proves physical fencing under network partitions.
+\section{Tests, limitations and decisions}
+Thirteen new synthetic tests exercise the expiry-overlap counterexample and fail-closed staging-target admission. The combined selected admission, lease, outcome and cancellation suite passed 78 Python tests. No production graph, Redis, trace contents, NAS data or AssistX services were touched. The staging database, anonymous volumes and internal network were removed after the experiment. The finite trial has not simulated worker death with an unacknowledged server transaction, driver transport blackholes, Redis failover, credentialed multiworker API traffic or proxy identity. We therefore retain a \emph{NO-GO} on activating the draft in-flight admission feature. Next evidence must bind query identities, cancellation acknowledgment and conservative capacity accounting, with operator-approved rollout only after real containment and reverse-proxy fairness tests.
+\section{Status}
+This is an arXiv-style research manuscript draft. It has not been compiled, submitted or peer reviewed.
+\begin{thebibliography}{9}
+\bibitem{neoquery} Neo4j, \emph{Further query mechanisms}, Python Driver Manual. \url{https://neo4j.com/docs/python-manual/current/query-advanced/}.
+\bibitem{neoops} Neo4j, \emph{Show and terminate transactions}, Operations Manual. \url{https://neo4j.com/docs/operations-manual/current/database-internals/show-and-terminate-transactions/}.
+\bibitem{nist} K. Kent and M. Souppaya, \emph{Guide to Computer Security Log Management}, NIST SP 800-92 (2006). \url{https://doi.org/10.6028/NIST.SP.800-92}.
+\end{thebibliography}
+\end{document}
