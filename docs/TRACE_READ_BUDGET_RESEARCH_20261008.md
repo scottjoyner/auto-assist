@@ -28,7 +28,7 @@
 
 ## Reproducible guarded Redis 7 isolation trial (after initial synthetic checks)
 
-- Source script: `scripts/trace_read_budget_redis_canary.py`, which uses AST extraction of the **exact source-owned** `_ATOMIC_TRACE_BUDGET_LUA` string. It refuses execution unless the operator supplies both `--allow-isolated-docker-test` and the complete matching cached-image SHA256. No image pull is allowed.
+- Source script: `scripts/trace_read_budget_redis_canary.py`, which uses AST extraction of the **exact source-owned** `_ATOMIC_TRACE_BUDGET_LUA` string. It refuses execution unless the operator supplies both `--allow-isolated-docker-test` and the complete matching cached-image SHA256. No image pull is allowed; the launch argument is the **verified immutable image ID**, never the mutable tag, preventing a check-to-use retag race.
 - Cached Redis image used on x1-370: `sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99` (`redis:7-alpine`, cached locally). Do not assume the tag is immutable on another host.
 - Docker guard: `--rm --pull never --network none --ipc none --cpus 0.25 --memory 96m --pids-limit 64 --read-only --tmpfs /tmp:rw,nosuid,noexec,size=16m --cap-drop ALL --security-opt no-new-privileges --user 1000:1000`. Redis bound only to a temporary in-container UNIX socket; no mounts and no host ports. An additional `docker rm -f` cleanup runs on process exit/failure.
 - Reproduce only on an authorized isolated test host by obtaining the local SHA with `docker image inspect redis:7-alpine --format '{{.Id}}'`, reviewing the guard arguments and calling `python3 scripts/trace_read_budget_redis_canary.py --allow-isolated-docker-test --expected-image-id <inspected-id>`.
