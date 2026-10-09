@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -5,7 +6,10 @@ from fastapi.testclient import TestClient
 from assistx.api_router import app
 
 ROOT = Path(__file__).resolve().parents[1]
-AUTH = ("neo4j", "redacted-rotate-credentials")
+# tests/conftest.py seeds defaults for local runs; CI explicitly configures
+# different credentials. Exercise the credentials the app actually loaded,
+# never a hard-coded local test password.
+AUTH = (os.environ["BASIC_AUTH_USER"], os.environ["BASIC_AUTH_PASS"])
 
 
 def test_workbench_route_renders_chat_first_surface():
@@ -20,6 +24,26 @@ def test_workbench_route_renders_chat_first_surface():
     assert 'id="workbench-drawer"' in response.text
     assert "/static/js/workbench.js" in response.text
     assert "/static/css/workbench.css" in response.text
+
+
+def test_workbench_rejects_wrong_password_without_fallback():
+    client = TestClient(app)
+    response = client.get("/workbench", auth=(AUTH[0], AUTH[1] + "-wrong"))
+    assert response.status_code == 401
+
+
+def test_workbench_inheritance_does_not_boot_control_room_polling():
+    from jinja2 import Environment, FileSystemLoader
+
+    env = Environment(loader=FileSystemLoader(str(ROOT / "templates")), autoescape=True)
+    rendered = env.get_template("workbench.html").render()
+    assert "Agent Workbench" in rendered
+    assert 'id="workbench-messages"' in rendered
+    assert 'id="workbench-composer"' in rendered
+    assert 'id="workbench-drawer"' in rendered
+    assert "/static/js/workbench.js" in rendered
+    assert "/static/css/workbench.css" in rendered
+    assert "/static/js/control_room.js" not in rendered
 
 
 def test_workbench_uses_existing_hermes_agent_boundary_only():
@@ -72,3 +96,14 @@ def test_workbench_template_keeps_instrumentation_separate_from_chat():
     assert 'data-tab="execution"' in template
     assert 'data-tab="sessions"' in template
     assert 'data-tab="fleet"' in template
+
+
+def test_control_room_template_still_renders_after_workbench_inheritance_fix():
+    from jinja2 import Environment, FileSystemLoader
+
+    env = Environment(loader=FileSystemLoader(str(ROOT / "templates")), autoescape=True)
+    rendered = env.get_template("control_room.html").render()
+    assert "Fleet Control Room" in rendered
+    assert "/static/js/control_room.js" in rendered
+    assert "/static/js/workbench.js" not in rendered
+    assert 'id="summary-strip"' in rendered
