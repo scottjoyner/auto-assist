@@ -57,11 +57,21 @@
     return fetch(url, { credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } })
       .then(function (response) {
         if (response.status === 401 || response.status === 403) throw new Error("AUTH");
+        if (response.status === 429) {
+          var after = response.headers && response.headers.get &&
+            Number(response.headers.get("Retry-After"));
+          var delay = Number.isInteger(after) && after >= 1 && after <= 3600 ? after : 60;
+          throw new Error("TRACE_BUDGET:" + delay);
+        }
         if (!response.ok) throw new Error("HTTP " + response.status);
         return response.json();
       });
   }
   function errorLabel(err) {
+    if (err && String(err.message || "").startsWith("TRACE_BUDGET:")) {
+      return "Trace history query budget reached. Retry in " +
+        err.message.split(":")[1] + " seconds.";
+    }
     if (err && err.message === "AUTH") return "Authentication required or expired.";
     if (err && err.message === "SERVER_FILTER_UNAVAILABLE") {
       return "Global outcome filtering is not yet available on this server version.";

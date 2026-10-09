@@ -431,15 +431,35 @@ def api_voice_policy(
     }
 
 
+def _admit_trace_index(request: Request) -> None:
+    """Authorize first, then protect global index cost with shared Redis quota.
+
+    This runs from inside the already-authenticated GET route, not middleware.
+    Unauthenticated callers cannot consume the shared history-search budget.
+    """
+    from .rate_limiter import TRACE_INDEX_LIMITER
+
+    peer = request.client.host if request.client else "unknown"
+    allowed, _remaining, retry_after = TRACE_INDEX_LIMITER.check(peer)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Trace index query budget unavailable or exhausted",
+            headers={"Retry-After": str(max(1, int(retry_after)))},
+        )
+
+
 @router.get("/api/traces")
 def api_list_traces(
+    request: Request,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     search: Optional[str] = Query(default=None, max_length=128),
     outcome: Optional[Literal["failed", "completed", "open"]] = None,
     user: str = Depends(_default_auth),
 ):
-    """Read-only global outcome filtering for the authenticated trace index."""
+    """Authenticated, rate-admitted global outcome history index."""
+    _admit_trace_index(request)
     neo = _neo()
     try:
         return list_traces(

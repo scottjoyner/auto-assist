@@ -209,6 +209,11 @@ def test_fastapi_route_filters_before_paging_and_requires_auth(monkeypatch):
         return n
 
     monkeypatch.setattr(swarm_routes, "_neo", make_neo)
+    admitted = []
+    monkeypatch.setattr(
+        swarm_routes, "_admit_trace_index",
+        lambda req: admitted.append(req.client.host if req.client else "unknown"),
+    )
     # api.py injects its authentication dependency in production. Reproduce
     # that integration explicitly; the bare router alone has a test fallback.
     from fastapi import HTTPException
@@ -221,6 +226,7 @@ def test_fastapi_route_filters_before_paging_and_requires_auth(monkeypatch):
     unauth = client.get("/api/traces?outcome=failed")
     assert unauth.status_code in (401, 403)
     assert created == []
+    assert admitted == []  # Unauthenticated callers must not burn global quota.
 
     # Functional test bypasses auth only through FastAPI's explicit
     # dependency override, not by changing app/auth production code.
@@ -233,6 +239,7 @@ def test_fastapi_route_filters_before_paging_and_requires_auth(monkeypatch):
     assert body["limit"] == 1
     assert [row["correlation_id"] for row in body["traces"]] == ["fail-only"]
     assert len(created) == 1 and created[0].closed is True
+    assert len(admitted) == 1
 
     # Invalid category, excessive page size and overlong ID searches fail
     # during route input validation without opening a graph session.
@@ -241,6 +248,7 @@ def test_fastapi_route_filters_before_paging_and_requires_auth(monkeypatch):
         invalid = client.get("/api/traces?" + query)
         assert invalid.status_code == 422, (query[:30], invalid.status_code)
     assert len(created) == 1
+    assert len(admitted) == 1  # Validation failure did not spend quota.
 
 
 def test_read_only_aggregate_has_no_event_payload_projection():
