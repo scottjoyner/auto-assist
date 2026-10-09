@@ -18,7 +18,7 @@ events.reverse(); // descending event IDs for the equal-timestamp fixture
 const origin='https://trace-ui-fixture.invalid';
 async function fixture(width) {
  const browser=await chromium.launch({headless:true,
-  executablePath:'/home/scott/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome',
+  executablePath:process.env.ASSISTX_TRACE_TEST_CHROMIUM || chromium.executablePath(),
   args:['--no-sandbox','--disable-dev-shm-usage']});
  const context=await browser.newContext({viewport:{width,height:850}});
  const page=await context.newPage();
