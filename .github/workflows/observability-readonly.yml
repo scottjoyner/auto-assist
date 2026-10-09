@@ -52,9 +52,9 @@ jobs:
         env:
           PYTHONPATH: src
         run: |
-          python -m pytest -q tests/test_trace_outcome_filter.py \
-            tests/test_trace_context.py tests/test_trace_task_evidence.py \
-            tests/test_trace_bench_guard.py
+          python -m pytest -q tests/test_trace_read_auth_boundary.py \
+            tests/test_trace_outcome_filter.py tests/test_trace_context.py \
+            tests/test_trace_task_evidence.py tests/test_trace_bench_guard.py
 
   synthetic-chromium:
     runs-on: ubuntu-latest
