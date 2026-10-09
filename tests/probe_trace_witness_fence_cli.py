@@ -18,6 +18,7 @@ from pathlib import Path
 
 from assistx.trace_two_host_witness_research import (
     Witness,bootstrap_disposable_witness,verify_external_grant,
+    apply_witness_grant_to_primary,
 )
 from assistx.trace_two_host_authority_research import SingleAuthorityResearch
 
@@ -86,13 +87,12 @@ def two_step_admit(*,primary_db:str,witness_dir:str,epoch:str,
     try:
         authority=SingleAuthorityResearch(primary_db,pinned_epoch=epoch,
                pinned_graph_id=GRAPH,minimum_sequence=0)
-        result=authority.admit(query_ref)
+        result=apply_witness_grant_to_primary(
+            authority,witnessed,pinned_public,query_ref=query_ref)
         return {
-            "status":result.status,
+            **result,
             "primary_called":True,
             "witness_sequence":witnessed["grant"]["sequence"],
-            "primary_sequence":result.sequence,
-            "receiver_nonce_from_witness":witnessed["grant"]["receiver_nonce"],
             "witness_signature_verified":True,
             "physical_query_executed":False,
         }
