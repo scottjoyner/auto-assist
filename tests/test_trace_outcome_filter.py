@@ -213,7 +213,10 @@ def test_fastapi_route_filters_before_paging_and_requires_auth(monkeypatch):
     # that integration explicitly; the bare router alone has a test fallback.
     from fastapi import HTTPException
     def require_fixture_auth(request, credentials):
-        if credentials is None:
+        import hmac
+        if (credentials is None
+            or not hmac.compare_digest(credentials.username, "fixture-operator")
+            or not hmac.compare_digest(credentials.password, "synthetic-only-password")):
             raise HTTPException(status_code=401, detail="Authentication required")
         return credentials.username
     monkeypatch.setattr(swarm_routes, "_injected_auth_dependency", require_fixture_auth)
@@ -222,10 +225,18 @@ def test_fastapi_route_filters_before_paging_and_requires_auth(monkeypatch):
     assert unauth.status_code in (401, 403)
     assert created == []
 
-    # Functional test bypasses auth only through FastAPI's explicit
-    # dependency override, not by changing app/auth production code.
-    app.dependency_overrides[swarm_routes._default_auth] = lambda: "fixture-user"
-    ok = client.get("/api/traces?outcome=failed&limit=1&offset=1")
+    # Exercise the actual tightened GET route dependency using a known
+    # synthetic password. Do not override the authorization dependency.
+    bad = client.get(
+        "/api/traces?outcome=failed",
+        auth=("fixture-operator", "wrong-password"),
+    )
+    assert bad.status_code == 401
+    assert created == []
+    ok = client.get(
+        "/api/traces?outcome=failed&limit=1&offset=1",
+        auth=("fixture-operator", "synthetic-only-password"),
+    )
     assert ok.status_code == 200, ok.text[:300]
     body = ok.json()
     assert body["total"] == 2
@@ -238,7 +249,10 @@ def test_fastapi_route_filters_before_paging_and_requires_auth(monkeypatch):
     # during route input validation without opening a graph session.
     for query in ("outcome=failed%20DELETE", "limit=10000", "offset=-1",
                   "search=" + "a" * 129):
-        invalid = client.get("/api/traces?" + query)
+        invalid = client.get(
+            "/api/traces?" + query,
+            auth=("fixture-operator", "synthetic-only-password"),
+        )
         assert invalid.status_code == 422, (query[:30], invalid.status_code)
     assert len(created) == 1
 
