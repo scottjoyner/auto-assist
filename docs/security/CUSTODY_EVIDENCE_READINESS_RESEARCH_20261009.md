@@ -61,3 +61,20 @@ Example read-only invocation:
 GitHub Actions' default checkout may be shallow and **does not have to possess this pinned historical commit**. Its scoped CI tests the synthetically constructed historical Git snapshots offline instead. Any real-history check must use a verified local clone with the selected commit already available; do not add a broad public-history fetch merely to satisfy the test or mistake a missing commit for a clean history.
 
 **No authorization:** A single historical tree is not an exhaustive commit/ref history, a private clone inventory or evidence of independently authenticated rotation; the tool always rejects production or merge authority. Do not open public PRs that reproduce deleted sensitive file contents.
+
+
+## October 9, 2026, ~18:47–18:50 EDT — bounded locally reachable ref history
+
+Research-only tool option: `--local-ref-cap 1..128`. The validator enumerates at most `cap + 1` commit IDs from **locally reachable Git refs** using `git rev-list --all --max-count` and inspects the first `cap` tree *filenames* only, with explicit subprocess timeouts, fixed argv, no shell, `GIT_NO_LAZY_FETCH=1`, and `GIT_NO_REPLACE_OBJECTS=1`. If another sampled commit exists, it sets `local_ref_sample_truncated=true`; a non-truncated result only covers local refs present in the checked clone, **not the public repository's complete distribution**. It never prints paths or commit IDs, never reads file content, and always returns HOLD.
+
+**Physical x1-370, isolated read-only invocation on the #235 integration worktree:**
+
+- Previously pinned specific historical commit: **2 suspicious tracked file pathnames**.
+- Current Git index: **2 suspicious tracked pathnames**.
+- Bounded 64-commit sample: **64/64 commits with suspicious `.env`-variant pathnames**, **2 distinct suspicious paths**, **truncated=true**.
+- Bounded 128-commit sample: **128/128 commits with suspicious `.env`-variant pathnames**, **2 distinct suspicious paths**, **truncated=true**.
+- Both samples exit with `status=HOLD` and exit status **1**. Neither is a test of secret validity, nor a guarantee of full history coverage. This is risk metadata, **not** independently certified public-credential exposure scope.
+
+**Unit acceptance:** 25/25 Python `unittest` checks PASS on x1-370. Five additional negative tests cover capped-history truncation, previously removed tracked paths in earlier commits, invalid caps, unavailable Git, and distinct path counting without revealing names. Check the current PR head's exact GitHub Actions run for independent CI acceptance; previous head's green run is insufficient to accept this revision.
+
+**Operator urgency:** P0 #156 owner-controlled public exposure containment, independent key revocation/rotation, dependent consumer recovery and rollback, private postrotation verification and historical/clone/artifact handling are still required; none performed by this metadata scan. Do not interpret one clean index or a capped-history sample as permission to merge, deploy, cut over Basic auth or dispatch free-provider workers.
