@@ -1,0 +1,48 @@
+name: Trace graph-entry research (offline only)
+
+on:
+  pull_request:
+    paths:
+      - 'tests/trace_graph_entry*.py'
+      - 'tests/test_trace_graph_entry*.py'
+      - 'tests/probe_trace_entry*.py'
+      - '.github/workflows/trace-graph-entry-research.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused-offline:
+    name: Graph entry negative tests — no Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused test tooling
+        run: python -m pip install 'pytest>=8,<10'
+      - name: Compile research-only modules
+        run: |
+          python -m compileall -q tests/trace_graph_entry_research.py tests/trace_graph_entry_guarded.py tests/trace_graph_entry_research_journal.py tests/trace_graph_entry_metadata.py
+      - name: Run offline denial and journal tests
+        run: |
+          python -m pytest --noconftest -q \
+            tests/test_trace_graph_entry_research.py \
+            tests/test_trace_graph_entry_guarded.py \
+            tests/test_trace_graph_entry_metadata.py
+      - name: Verify physical probes remain manual-only
+        run: |
+          python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py
+          python - <<'PY'
+          from pathlib import Path
+          a = Path('tests/probe_trace_entry_network_isolation.py').read_text()
+          b = Path('tests/probe_trace_entry_pg_neo_smoke.py').read_text()
+          assert 'EXPLICIT_NETWORK_RESEARCH_OPT_IN_REQUIRED' in a
+          assert 'EXPLICIT_PG_NEO_RESEARCH_OPT_IN_REQUIRED' in b
+          assert '"production_authority": False' in a
+          assert '"production_authority": False' in b
+          print('Both physical probes remain explicit opt-in; CI never runs them.')
+          PY
