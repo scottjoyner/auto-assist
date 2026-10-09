@@ -167,8 +167,23 @@ class ReceiverReceiptCustody:
         if len(progress) != 1 or type(progress[0][0]) is not int or not _hex64(progress[0][1]):
             raise ValueError("CUSTODY_CHECKPOINT_CORRUPT")
         seq, head = progress[0]
-        if conn.execute("SELECT count(*) FROM received").fetchone()[0] != seq:
+        # Check every stored receipt commitment, not merely a row count.
+        # The externally pinned head is the trust anchor across process
+        # restarts; a replaced/reordered/tampered local receipt must deny.
+        rows = conn.execute(
+            "SELECT sequence,receipt_sha256 FROM received ORDER BY sequence"
+        ).fetchall()
+        if len(rows) != seq:
             raise ValueError("CUSTODY_SEQUENCE_INCONSISTENT")
+        current = _genesis(self.epoch, self.key_hash).head_sha256
+        for expected_index, (index, receipt_digest) in enumerate(rows, start=1):
+            if type(index) is not int or index != expected_index or not _hex64(receipt_digest):
+                raise ValueError("CUSTODY_RECEIPT_SEQUENCE_INVALID")
+            current = hashlib.sha256(
+                (current + ":" + str(index) + ":" + receipt_digest).encode("ascii")
+            ).hexdigest()
+        if current != head:
+            raise ValueError("CUSTODY_HASHCHAIN_DIVERGED")
         return PinnedCheckpoint(seq, head)
 
     @property
