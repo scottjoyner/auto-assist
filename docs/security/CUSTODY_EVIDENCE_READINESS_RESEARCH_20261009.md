@@ -44,3 +44,20 @@ The second command exits **1 intentionally**, with a JSON HOLD observation, even
 This project must **not** read Git blobs from historical environment backups, output secrets/hashes, delete or rewrite tracked secret-bearing files, modify repository visibility, rotate/restart services, grant execution, or waive the pre-existing `test_no_live_env_variant_is_already_tracked` failure. Deleting tracked files from the current tree alone is not proof of historical remediation.
 
 **Disposition:** issue #156 and integrated release remain P0 **NO-GO**. Separate gates #149 (trusted ingress), #148 (capacity/cancellation), authenticated provider quota/cost and independent trace custody also remain unproven.
+
+
+
+## October 9, 2026, ~18:00 EDT — bounded pinned-history metadata extension
+
+A new optional `--historical-commit` accepts **only one exact, 40-hex Git commit ID**. The checker performs `git cat-file -t` to ensure the ID refers to a **commit object** and `git ls-tree -r -z --name-only` to count suspicious historical pathnames. No file contents, values, commit bodies, historical secret hashes, or live container environments are read or surfaced. The existing current-index count remains independent.
+
+Read-only x1-370 observation (commit name already identified publicly in issue #156): selected Git commit `db734eeeb7f50ba501c53f20ecb2fd30c2a6d5c9` has **two** tracked `.env`-family variant pathnames; the currently tested draft worktree also has **two**. The output includes only the counts and observation digest, and returns **HOLD / exit 1**. This is proof of filename presence in one pinned Git historical snapshot, *not* proof of secret validity, the scope of all reachable refs, repository visibility changes, rotation completion, or historical cleanup.
+
+Additional negative tests simulate (a) deleting a sensitive filename from the current index while it remains in a pinned earlier commit, (b) a clean selected commit that still cannot authorize release, (c) arbitrary Git ref/revision expressions, (d) nonexistent IDs, and (e) Git tree-object hashes masquerading as commits. The standalone source branch has **20/20** tests expected once exact-head tests finish; use the CI status as authority for the actual count.
+
+Example read-only invocation:
+`python3 scripts/custody_evidence_readiness.py --repo . --historical-commit db734eeeb7f50ba501c53f20ecb2fd30c2a6d5c9`
+
+GitHub Actions' default checkout may be shallow and **does not have to possess this pinned historical commit**. Its scoped CI tests the synthetically constructed historical Git snapshots offline instead. Any real-history check must use a verified local clone with the selected commit already available; do not add a broad public-history fetch merely to satisfy the test or mistake a missing commit for a clean history.
+
+**No authorization:** A single historical tree is not an exhaustive commit/ref history, a private clone inventory or evidence of independently authenticated rotation; the tool always rejects production or merge authority. Do not open public PRs that reproduce deleted sensitive file contents.
