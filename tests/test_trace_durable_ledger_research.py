@@ -108,7 +108,7 @@ def test_threaded_and_multi_process_slots_serialized():
         assert len([x for x in result if x])==3
         assert guard.inspect()==3
     with fixture(3) as (guard,key,path,epoch,pub):
-        with ProcessPoolExecutor(max_workers=8) as pool:
+        with ProcessPoolExecutor(max_workers=8, mp_context=multiprocessing.get_context("spawn")) as pool:
             results=list(pool.map(worker_try,[(path,epoch,pub,n) for n in range(18)]))
         assert len([x for x in results if x])==3
         assert len(set(x for x in results if x))==3
@@ -117,7 +117,7 @@ def test_threaded_and_multi_process_slots_serialized():
 
 def test_worker_crash_strands_physical_capacity_without_reclaim():
     with fixture(1) as (guard,key,path,epoch,pub):
-        p=multiprocessing.Process(target=crash_worker,args=((path,epoch,pub),))
+        p=multiprocessing.get_context("spawn").Process(target=crash_worker,args=((path,epoch,pub),))
         p.start();p.join(10)
         assert p.exitcode==0
         # Separate process has departed without any remote termination proof.
@@ -200,7 +200,7 @@ def test_unsigned_worker_assertion_is_never_accepted_for_release():
 ])
 def test_preregistered_concurrent_1_3_5_10_occupancy(contenders,slots,expected):
     with fixture(slots) as (guard,key,path,epoch,pub):
-        with ProcessPoolExecutor(max_workers=contenders) as pool:
+        with ProcessPoolExecutor(max_workers=contenders, mp_context=multiprocessing.get_context("spawn")) as pool:
             answers=list(pool.map(worker_try,[
                 (path,epoch,pub,n) for n in range(contenders)]))
         assert sum(token is not None for token in answers)==expected
