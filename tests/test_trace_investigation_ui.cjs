@@ -179,7 +179,7 @@ test("HTML has accessible navigation, scoped metrics, and event disclosure contr
   assert.ok(style.includes("@media (max-width: 600px)"));
   assert.ok(style.includes(":focus-visible"));
   assert.ok(script.includes('details data-event-index'));
-  assert.ok(script.includes("node.querySelector(\"pre\").textContent"));
+  assert.ok(script.includes('var target = node.querySelector("pre")'));
   assert.ok(script.includes('method: preview ? "POST" : "GET"'));
   assert.doesNotMatch(script,/\\bDELETE\\b|\\bPATCH\\b|\\bPUT\\b/);
   assert.ok(!script.includes('request("/api/traces/" + encodeURIComponent(cid))'));
