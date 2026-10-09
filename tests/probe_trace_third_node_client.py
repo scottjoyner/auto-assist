@@ -10,6 +10,8 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
+import re
+import uuid
 import socket
 import subprocess
 
@@ -21,11 +23,16 @@ GRAPH="a"*64
 
 def submit(query_ref:str,epoch:str,*,fail_ssh=False)->dict:
     origin=socket.gethostname().split(".")[0]
+    try:
+        valid_epoch=(type(epoch) is str and str(uuid.UUID(epoch))==epoch
+                     and uuid.UUID(epoch).version==4)
+    except (TypeError,ValueError,AttributeError):
+        valid_epoch=False
     if (origin not in ("x1-370","xwing")
         or os.getenv("ASSISTX_THREEHOST_RESEARCH_ONLY")!="yes-disposable"
-        or not query_ref.startswith("synthetic-")
-        or len(query_ref)>120 or not query_ref.isascii()
-        or not isinstance(epoch,str) or len(epoch)!=36):
+        or type(query_ref) is not str
+        or re.fullmatch(r"synthetic-[A-Za-z0-9_.:-]{1,110}",query_ref) is None
+        or not valid_epoch):
         return {"status":"invalid-research-request","origin":origin}
     cmd=["ssh","-o","BatchMode=yes","-o","StrictHostKeyChecking=yes",
          "-o","ConnectTimeout=3","-o","ConnectionAttempts=1"]
@@ -46,6 +53,23 @@ def submit(query_ref:str,epoch:str,*,fail_ssh=False)->dict:
         if type(obj) is not dict or obj.get("host")!=TARGET or obj.get("status") not in (
             "admitted","full","authority-unavailable","invalid-query-ref"):
             return {"status":"untrusted-authority-response","origin":origin}
+        if obj["status"] in ("admitted","full"):
+            if (obj.get("query_ref")!=query_ref
+                or obj.get("epoch")!=epoch or obj.get("graph_id")!=GRAPH
+                or type(obj.get("sequence")) is not int
+                or obj["sequence"]<1 or obj.get("active")!=1):
+                return {"status":"untrusted-authority-response","origin":origin}
+            if obj["status"]=="admitted":
+                try:
+                    nonce_valid=(type(obj.get("receiver_nonce")) is str
+                        and uuid.UUID(obj["receiver_nonce"]).version==4
+                        and str(uuid.UUID(obj["receiver_nonce"]))==obj["receiver_nonce"])
+                except (TypeError,ValueError,AttributeError):
+                    nonce_valid=False
+                token=obj.get("token")
+                if (type(token) is not str or re.fullmatch("[0-9a-f]{32}",token) is None
+                    or not nonce_valid):
+                    return {"status":"untrusted-authority-response","origin":origin}
         return {"status":obj["status"],"origin":origin,
                 "sequence":obj.get("sequence"),"active":obj.get("active")}
     except (OSError,subprocess.TimeoutExpired,ValueError):
