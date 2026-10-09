@@ -110,8 +110,8 @@ def run():
         # Refuse release while server-side query is still observed. In this
         # research harness that policy is enforced by independent inspection,
         # NOT cryptographically by the DB or receipt signature.
-        duplicate=authority.acquire(f"extra-pg-{count}")
         if count>=3:
+            duplicate=authority.acquire(f"extra-pg-{count}")
             assert duplicate.token is None and duplicate.reason=="full"
         # Observers now wait for every physical session to terminate.
         for p in tasks:
