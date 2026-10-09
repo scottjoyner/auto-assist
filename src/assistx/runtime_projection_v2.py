@@ -152,6 +152,7 @@ def build_runtime_projection(
     private_key: Ed25519PrivateKey | None = None,
     key_id: str | None = None,
 ) -> dict[str, Any]:
+    signer = private_key or load_private_key()
     document = legacy.build_runtime_projection(
         neo_factory,
         secret=_INTERNAL_COMPAT_SECRET,
@@ -168,7 +169,6 @@ def build_runtime_projection(
     )
     document.pop("signature", None)
     document["checksum"] = legacy.projection_checksum(document)
-    signer = private_key or load_private_key()
     document["signature"] = projection_signature(document, signer)
     return document
 
