@@ -199,6 +199,8 @@ def provider_state(record: dict[str, Any], observed: dict[str, Any] | None = Non
     ``payment_required`` and is never auto-selected. ``observed`` may carry
     read-only signals (e.g. from trace analysis) that upgrade the state to
     rate_limited / quota_exhausted / payment_required without any spend.
+    
+    Enhanced to track explicit error observability for free-tier routes.
     """
     observed = observed or {}
     for state in ("payment_required", "quota_exhausted", "rate_limited"):
@@ -206,11 +208,11 @@ def provider_state(record: dict[str, Any], observed: dict[str, Any] | None = Non
             return state
     # Upstream free-provider capacity failures are temporary availability
     # failures, not evidence that the model is paid or permanently exhausted.
-    # Treat provider overload / HTTP 503 like a rate limit so pool ordering
+    # Treat provider overload / HTTP 503 / HTTP 429 like a rate limit so pool ordering
     # fails closed and can retry/fall through to another zero-cost lane.
     error_type = str(observed.get("error_type") or observed.get("kind") or "").lower()
     status_code = observed.get("status_code") or observed.get("statusCode")
-    if error_type in {"provider_overloaded", "overloaded"} or status_code == 503:
+    if error_type in {"provider_overloaded", "overloaded"} or status_code in {503, 429}:
         return "rate_limited"
     provider = str(record.get("provider") or "").lower()
     if provider and provider not in KNOWN_PROVIDERS:
