@@ -147,7 +147,9 @@ def _outbox() -> OutboxClient:
 # --- Auth ---
 # Injected from api.py so swarm routes use the same Basic Auth as legacy endpoints.
 _injected_auth_dependency = None
-# Separate deny-only capability: injected auth alone is not payload access.
+# Independent Basic-auth gates: trusted proxy header alone never permits
+# either new timeline metadata reads or sensitive payload previews.
+_trace_metadata_authorizer = None
 _trace_preview_authorizer = None
 security = HTTPBasic(auto_error=False)
 
@@ -155,6 +157,12 @@ security = HTTPBasic(auto_error=False)
 def set_auth_dependency(auth_func: Any) -> None:
     global _injected_auth_dependency
     _injected_auth_dependency = auth_func
+
+
+def set_trace_metadata_authorizer(authorizer: Any) -> None:
+    """Ensure independently verified Basic auth before paged graph reads."""
+    global _trace_metadata_authorizer
+    _trace_metadata_authorizer = authorizer
 
 
 def set_trace_preview_authorizer(authorizer: Any) -> None:
@@ -513,10 +521,21 @@ def api_get_trace_timeline(
     limit: int = Query(default=80, ge=1, le=100),
     cursor: Optional[str] = Query(default=None, max_length=720),
     user: str = Depends(_default_auth),
+    credentials: HTTPBasicCredentials | None = Depends(security),
 ):
-    """Experimental bounded metadata only; disabled by default."""
+    """Experimental metadata: independent Basic credential proof required."""
     _paged_trace_feature_gate()
     response.headers["Cache-Control"] = "no-store, private"
+    if _trace_metadata_authorizer is None:
+        raise HTTPException(status_code=503, detail="Trace metadata authorization unavailable",
+                            headers={"Cache-Control": "no-store, private"})
+    try:
+        permitted = _trace_metadata_authorizer(user, credentials)
+    except Exception:
+        permitted = False
+    if permitted is not True:
+        raise HTTPException(status_code=403, detail="Trace metadata not authorized",
+                            headers={"Cache-Control": "no-store, private"})
     try:
         neo = _neo()
         try:
