@@ -51,7 +51,11 @@ def summarize(inspected: list[dict[str, Any]]) -> dict[str, object]:
             result.append({"container": name, "state": "UNKNOWN", "groups": {},
                            "sensitive_variable_name_count": None})
             continue
-        variables = obj.get("Config", {}).get("Env", [])
+        config = obj.get("Config")
+        state = obj.get("State")
+        if not isinstance(config, dict) or not isinstance(state, dict):
+            raise ValueError("invalid Docker inspection structure")
+        variables = config.get("Env", [])
         if not isinstance(variables, list) or not all(
             isinstance(line, str) and "=" in line for line in variables
         ):
@@ -59,7 +63,7 @@ def summarize(inspected: list[dict[str, Any]]) -> dict[str, object]:
         keys = {line.partition("=")[0] for line in variables}
         result.append({
             "container": name,
-            "state": "RUNNING" if obj.get("State", {}).get("Running") is True else "STOPPED",
+            "state": "RUNNING" if state.get("Running") is True else "STOPPED",
             "groups": {
                 group: len(names.intersection(keys))
                 for group, names in GROUPS.items()
