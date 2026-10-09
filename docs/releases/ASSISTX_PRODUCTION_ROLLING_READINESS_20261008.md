@@ -64,3 +64,22 @@ Hard-stop: audit gap, misplaced secrets, lost checkpoint, wrong-node admission, 
 At the end publish immutable release SHAs/digests, CI workflow URLs, secret-free redacted evidence manifest, per-node measured observations, alert baseline, rollbacks tested, open defects and a timestamped knowledge handoff. A failed gate yields **NO-GO**, not a partial silent cutover.
 
 Related: [#139](https://github.com/scottjoyner/auto-assist/issues/139) calendar/rolling coordination, [#145](https://github.com/scottjoyner/auto-assist/issues/145) CI gates, [#137](https://github.com/scottjoyner/auto-assist/issues/137) observability acceptance, [#36](https://github.com/scottjoyner/auto-assist/issues/36) live deployment reconciliation.
+
+## 8. Read-only SSH maintenance preflight — October 8, 2026, ~22:45 EDT
+
+All figures are instantaneous snapshots from unattended SSH checks initiated by x1-370; no service mutations or benchmarks were performed. Used swap does not by itself prove ongoing swapping.
+
+| Node | SSH | Mem available | Swap used | Root used | Release action |
+| --- | --- | ---: | ---: | ---: | --- |
+| Lenovo | pass | 8,229 MiB | 262 MiB | 63% | Candidate rolling benchmark after service inventory |
+| Beelink Ryzen 7 | pass | 9,390 MiB | 2,877 MiB | 54% | **Storage/NAS recovery owner approval required** before inference drain |
+| Destroyer | pass | 5,067 MiB | 8,185 MiB | 84% | **Pressure preflight**: assess model memory, write headroom, checkpoints and active swap-in/out before benchmark |
+| Joyner | pass | 10,491 MiB | 2,292 MiB | 41% | Candidate, verify authorized service owner |
+| Optiplex | Tailscale additional authentication required | not recorded | not recorded | not recorded | **Blocked** until unattended access is attested; do not auto-resolve SSH identity or proceed |
+| Deathstar | Tailscale additional authentication required | not recorded | not recorded | not recorded | **Blocked** until unattended access and storage state attestations |
+| Xwing | pass | 23,211 MiB | 10,517 MiB | 63% | **Pressure preflight** and protected experiment/checkpoint ownership; avoid model unload without approval |
+| MacBook Air | permission denied (SSH publickey/password/keyboard-interactive) | not recorded | not recorded | not recorded | Not on rolling benchmark order; **not** an independently proven standby coordinator |
+| X1-370 | local read-only | ~60 GiB | ~7.9/8.0 GiB | 70% | Last only if independent coordinator and rollback custody demonstrated |
+| Raspberry Pi | intentionally excluded | not probed | not probed | not probed | **No outage / no benchmark / no configuration change** |
+
+**Reconciliation consequence:** current live access does not support an unconditional eight-node benchmark. Do not let SSH/browser/Tailscale reauthentication dialogs silently become operational approval. Recover access with owner-controlled credential paths, capture evidentiary source and identity, and reschedule any node that cannot pass preflight. Disk/swap pressure, particularly on Destroyer, must be measured against actual protected service and active I/O before any shutdown or stress test.
