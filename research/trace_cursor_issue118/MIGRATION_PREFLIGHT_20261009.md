@@ -26,7 +26,7 @@
 - Baseline hermetic source acceptance 9/9; candidate 19/19; clean patch replay 19/19, all passing.
 - One-pass local seal metadata index was observed at 0.025–0.051 seconds per scan on the live local ext4 spool, with no archive payload reads.
 - The installed collector SHA256 remained `fba0d51b9a73c9de5f4a69705b2c325b18417cd8e051400e8c30ec31f3bcdbfe`; **no collector was deployed**.
-- GitHub PR #208 exact-head CI is **red**: unit job reports 77 failed, 669 passed, 59 deselected; recovery-canary job 1 failed, 11 passed. Errors include repository source-binding schema mismatches and missing from_contract_payload. No failing stack trace in the retrieved unit log references this research-only path. Do not presume the whole-repo tests are green or the failure is proven preexisting without a verified main-head comparison.
+- On PR #208's previous head (bd204e98169a362d126896e3c75810a096b7c643), CI was **red**: unit job reported 77 failed, 669 passed, 59 deselected; recovery-canary job 1 failed, 11 passed. The newer documentation head requires a fresh exact-head check. Errors include repository source-binding schema mismatches and missing from_contract_payload. No failing stack trace in the retrieved unit log references this research-only path. Do not presume the whole-repo tests are green or the failure is proven preexisting without a verified main-head comparison.
 
 ## Closure gates and owner actions
 1. Reconcile the 144 currently unmatched cursor source keys with independent retained archives or source-owner historical audit, and investigate the 15 noncontiguous archived intervals. Preserve all retained bytes, no automatic rewind or delete.
