@@ -16,6 +16,7 @@ The offline prototype `src/assistx/trace_receiver_replay_custody_research.py` im
 
 - Prevalidated `trusted_public_key` bytes (32) and a separately operator-approved key SHA-256 fingerprint are passed to the custody constructor; it rejects digest mismatch and never loads a public key from the receipt. **The prototype cannot prove the supplied approved digest actually originated outside the request**. Production needs a trusted configuration/PKI/KMS-provisioning channel and protected operator review.
 - Explicit pinned UUIDv4 epoch, exact 64-char lowercase container ID, current schema and pre-existing SQLite file. Bootstrap only creates one **disposable research fixture**. Runtime opens with SQLite `mode=rw`, uses `BEGIN IMMEDIATE`, `synchronous=FULL`, a file-inode identity check, and mode permission restrictions. Missing, replaced, wrong-epoch, corrupt or locked journal fails closed rather than recreated.
+- The **preissued expectation** table requires an explicit `register_expected(admission_token, query_ref, receiver_nonce)` transaction **before** `record` will accept a signed receipt. This is not a source of admission authority: only a future separately authorized admission service could legitimately issue these expectations. A receiver or request client must never be given the power to self-register arbitrary expected evidence. The registration is local, nonexpiring, unique by nonce/token, and transitions `prepared → consumed` atomically with evidence recording.
 - The schema's **unique nonce, token and receipt digest** prevent replay/duplicate recording while the same authoritative local database survives. No TTL or auto-rearm. Restart retains previous recorded evidence. Separate local processes share a surviving file lock; this is not distributed consensus, NFS/CIFS locking or a fleet service.
 - A caller can provide an independently grounded `external_minimum_count` checkpoint, refusing startup if the local journal has fewer records. Within a surviving process, a monotonic high-water count detects a local database rollback *in the same inode*. Neither check defeats a **stale or attacker-controlled checkpoint**, nor can a file snapshot prevent duplicate acceptance by another host.
 - `record` returns `CustodyDecision(accepted=True, reason="observation-recorded-not-released")` after verification and durable journal commit; it **does not invoke any physical-query control or reservation release**.
@@ -30,9 +31,10 @@ PYTHONPATH=src python3 -m pytest -q \
   tests/test_trace_physical_probe_guardrails.py
 ```
 
-**94 passed** on native x1-370 research worktree. Included:
+**94 passed** on draft #223's original research worktree; child preissued-nonce tests are a separate acceptance gate. Included:
 
 - 1/3/5/10 concurrent identical-receipt waves; at most one record succeeds with a surviving local journal
+- independently preregistered nonce/token/query identity; unsigned/unregistered evidence, duplicate preregistration, mismatched token or query refuse before consumption
 - four **independent spawned processes** contend for the same receipt, at most one winner
 - survive close/reopen and reject duplicate receipt/token/nonce after restart
 - wrong Ed25519 signer, incorrect externally pinned fingerprint, epoch, token, graph, query ref, transaction ID, nonce, malformed server result or incorrect signature all deny
@@ -50,4 +52,4 @@ All tests use synthetic identities, local `/tmp` fixtures and generated ephemera
 - Independently verified trusted ingress #149, operator-role/PII privacy scope, p95/p99 latency and an owner-approved live staging rollback procedure.
 - **No auto-release, no trace paging activation, no staging/production merge, and do not close #148** on synthetic acceptance alone.
 
-**Disposition: locally durable replay protection demonstrated, globally safe replay protection falsified by copy/rollback controls. This research remains draft.**
+**Disposition: locally durable preissued evidence identity + replay protection demonstrated; globally safe replay protection falsified by copy/rollback controls. Registration is a synthetic local fixture, not an authenticated permission grant. This research remains draft.**

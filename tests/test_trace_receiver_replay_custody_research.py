@@ -54,6 +54,11 @@ def fixture():
         "observer_source":"guarded-disposable-direct-Neo4j",
         "terminal_verdict":"receiver-observed-terminated",
     }
+    assert custody.register_expected(
+        admission_token=observation["token"],
+        query_ref=observation["query_ref"],
+        receiver_nonce=observation["receiver_nonce"],
+    )
     expected={
         "expected_token":observation["token"],"expected_query_ref":observation["query_ref"],
         "expected_transaction_id":observation["server_transaction_id"],
@@ -233,7 +238,13 @@ def test_receiver_receipt_never_frees_existing_neo4j_admission_slot():
             result=ledger.acquire(receipt["query_ref"])
             assert result.token
             receipt["token"]=result.token
+            receipt["receiver_nonce"]=str(uuid.uuid4())
             expected["expected_token"]=result.token
+            expected["expected_receiver_nonce"]=receipt["receiver_nonce"]
+            assert custody.register_expected(
+                admission_token=result.token,
+                query_ref=receipt["query_ref"],
+                receiver_nonce=receipt["receiver_nonce"])
             signed=receiver_sign_only(receipt,private)
             assert custody.record(receipt,signed,**expected).accepted
             assert ledger.inspect()==1
@@ -316,3 +327,52 @@ def test_a_copied_local_journal_is_not_distributed_single_authority():
             assert other.record(receipt,sig,**expected).accepted
             assert custody.inspect()==1 and other.inspect()==1
         finally:root.cleanup()
+
+
+def test_valid_signature_without_preissued_request_nonce_is_denied():
+    root,path,custody,receipt,private,pub,digest,expected=fixture()
+    try:
+        receipt["receiver_nonce"]=str(uuid.uuid4())
+        expected["expected_receiver_nonce"]=receipt["receiver_nonce"]
+        signed=receiver_sign_only(receipt,private)
+        decision=custody.record(receipt,signed,**expected)
+        assert decision.accepted is False
+        assert decision.reason=="unregistered-receiver-nonce"
+        assert custody.inspect()==0
+    finally:root.cleanup()
+
+
+def test_preissue_rejects_duplicate_token_or_nonce_and_malformed_identity():
+    root,path,custody,receipt,private,pub,digest,expected=fixture()
+    try:
+        assert not custody.register_expected(
+            admission_token=receipt["token"],query_ref=receipt["query_ref"],
+            receiver_nonce=receipt["receiver_nonce"])
+        assert not custody.register_expected(
+            admission_token=receipt["token"],query_ref=receipt["query_ref"],
+            receiver_nonce=str(uuid.uuid4()))
+        assert not custody.register_expected(
+            admission_token="bad-token",query_ref=receipt["query_ref"],
+            receiver_nonce=str(uuid.uuid4()))
+        assert not custody.register_expected(
+            admission_token="c"*32,query_ref="../unsafe/path",
+            receiver_nonce=str(uuid.uuid4()))
+        assert custody.inspect()==0
+    finally:root.cleanup()
+
+
+def test_prepared_nonce_binds_token_and_query_even_with_valid_signature():
+    root,path,custody,receipt,private,pub,digest,expected=fixture()
+    try:
+        tampered=deepcopy(receipt)
+        tampered["token"]="c"*32
+        args={**expected,"expected_token":tampered["token"]}
+        signed=receiver_sign_only(tampered,private)
+        decision=custody.record(tampered,signed,**args)
+        assert not decision.accepted
+        assert decision.reason=="unexpected-token-or-query"
+        assert custody.inspect()==0
+        # Genuine preregistered evidence still records.
+        signed=receiver_sign_only(receipt,private)
+        assert custody.record(receipt,signed,**expected).accepted
+    finally:root.cleanup()

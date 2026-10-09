@@ -24,7 +24,7 @@ import uuid
 
 from .trace_receiver_evidence_research import canonical, verify_research_evidence
 
-SCHEMA="assistx-receiver-consumption-local-research-v1"
+SCHEMA="assistx-receiver-consumption-local-research-v2"
 FILENAME="receiver-replay-test.sqlite"
 
 
@@ -80,6 +80,11 @@ def bootstrap_disposable_custody(path: str, epoch: str, graph_id: str, key_diges
                 graph_id TEXT NOT NULL,
                 approved_signer_digest TEXT NOT NULL,
                 schema_version TEXT NOT NULL);
+            CREATE TABLE expected_receipts (
+                receiver_nonce TEXT NOT NULL PRIMARY KEY,
+                admission_token TEXT NOT NULL UNIQUE,
+                query_ref TEXT NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('prepared','consumed')));
             CREATE TABLE consumed (
                 epoch TEXT NOT NULL,
                 receiver_nonce TEXT NOT NULL PRIMARY KEY,
@@ -142,6 +147,31 @@ class ReceiverReplayCustody:
             raise ValueError("REPLAY_JOURNAL_BELOW_PINNED_CHECKPOINT")
         return count
 
+    def register_expected(self, *, admission_token: str, query_ref: str,
+                          receiver_nonce: str) -> bool:
+        """Register expected evidence BEFORE receiving a signed closure claim.
+
+        This is only *research receipt-preparation*, not query admission.
+        In production the admission authority, not the receiver or requester,
+        must control who can call this operation and durably bind these fields.
+        """
+        if (type(admission_token) is not str or len(admission_token)!=32
+            or any(c not in "0123456789abcdef" for c in admission_token)
+            or type(query_ref) is not str or not 1<=len(query_ref)<=128
+            or any(not (c.isascii() and (c.isalnum() or c in "-_:.")) for c in query_ref)
+            or not _uuid4(receiver_nonce)):
+            return False
+        try:
+            with _connect(self.path) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                self._validate(conn)
+                conn.execute("INSERT INTO expected_receipts VALUES (?,?,?,'prepared')",
+                             (receiver_nonce,admission_token,query_ref))
+                conn.commit()
+                return self._on_disk_identity()==self._identity
+        except (OSError,ValueError,sqlite3.Error):
+            return False
+
     def record(self, receipt:dict, signature:bytes, *, expected_token:str,
                expected_query_ref:str, expected_transaction_id:str,
                expected_receiver_nonce:str) -> CustodyDecision:
@@ -162,6 +192,19 @@ class ReceiverReplayCustody:
             with _connect(self.path) as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 count=self._validate(conn)
+                expected=conn.execute(
+                    "SELECT admission_token, query_ref, state FROM expected_receipts "
+                    "WHERE receiver_nonce=?", (receipt["receiver_nonce"],)
+                ).fetchone()
+                if expected is None:
+                    conn.rollback()
+                    return CustodyDecision(False,"unregistered-receiver-nonce",None)
+                if expected[0]!=receipt["token"] or expected[1]!=receipt["query_ref"]:
+                    conn.rollback()
+                    return CustodyDecision(False,"unexpected-token-or-query",None)
+                if expected[2]!="prepared":
+                    conn.rollback()
+                    return CustodyDecision(False,"duplicate-or-replayed-receipt",None)
                 # No TTL, no ON CONFLICT REPLACE. A duplicate receipt, token
                 # or nonce is rejected and does not create another decision.
                 conn.execute(
@@ -169,6 +212,9 @@ class ReceiverReplayCustody:
                     (self.epoch,receipt["receiver_nonce"],receipt["token"],
                      fingerprint,receipt["graph_container_id"],
                      receipt["server_transaction_id"],receipt["query_ref"]))
+                conn.execute("UPDATE expected_receipts SET state='consumed' "
+                             "WHERE receiver_nonce=? AND state='prepared'",
+                             (receipt["receiver_nonce"],))
                 conn.commit()
                 # Catch rollback/inode swaps within this process, but do NOT
                 # claim globally distributed monotonic checkpoint custody.
