@@ -5,6 +5,7 @@ No Redis service, live user credentials, real signing material or API routes.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 from threading import Lock, Thread
 
@@ -18,6 +19,7 @@ def module(name: str):
     spec = importlib.util.spec_from_file_location(name, SRC / (name + ".py"))
     assert spec is not None and spec.loader is not None
     result = importlib.util.module_from_spec(spec)
+    sys.modules[name] = result
     spec.loader.exec_module(result)
     return result
 
