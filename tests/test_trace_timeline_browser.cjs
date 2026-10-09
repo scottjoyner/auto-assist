@@ -7,12 +7,14 @@ const {chromium}=require('playwright');
 const root=path.resolve(__dirname,'..');
 const html=fs.readFileSync(path.join(root,'templates/traces.html'),'utf8')
  .replace(/\{\{\s*url_for\('static',\s*path='([^']+)'\)\s*\}\}/g, (_,v)=>'/static/'+v);
-const events=Array.from({length:1000},(_,i)=>({
+const events=Array.from({length:1001},(_,i)=>({
+  event_id:'event-'+String(i).padStart(4,'0'),
   event_type:i===999?'assignment.failed':i%7===0?'assignment.accepted':'router.started',
   source:'fictional-source',task_id:i%2?'task-X':'task-Y',
-  ts_ms:1791500000000+i,
+  ts_ms:1791500000000,
   payload_json:JSON.stringify({CANARY:'SYNTHETIC_ONLY_'+i})
 }));
+events.reverse(); // descending event IDs for the equal-timestamp fixture
 const origin='https://trace-ui-fixture.invalid';
 async function fixture(width) {
  const browser=await chromium.launch({headless:true,
@@ -24,7 +26,7 @@ async function fixture(width) {
  await page.route('**/*',async r=>{
    const u=new URL(r.request().url()),key=u.pathname;
    assert.equal(u.origin,origin,'No external network access permitted');
-   requests.push(key);
+   requests.push({path:key,method:r.request().method(),cursor:u.searchParams.get('cursor')});
    if(key==='/traces')return r.fulfill({status:200,contentType:'text/html',body:html});
    if(key.startsWith('/static/')){
      const f=path.join(root,key.slice(1));
@@ -33,12 +35,34 @@ async function fixture(width) {
    }
    if(key==='/api/traces')return r.fulfill({status:200,contentType:'application/json',
      body:JSON.stringify({outcome:'all',total:1,traces:[{correlation_id:'huge-synthetic-trace',
-       events:1000,outcome:'failed',last_ts_ms:1791500001000,duration_ms:1000}]})});
-   if(key==='/api/traces/huge-synthetic-trace')return r.fulfill({status:200,contentType:'application/json',
-     body:JSON.stringify({correlation_id:'huge-synthetic-trace',current_state:'failed',events,
-       context:{schema:'trace-context-v1',fields:{source:[],task_id:[
-         {value:'task-X',events:500,provenance:'trace_event_property'}],
-         dispatch_id:[],route_id:[],assignment_id:[]},truncated:[]}})});
+       events:1001,outcome:'failed',last_ts_ms:1791500001000,duration_ms:1000}]})});
+   if(key==='/api/traces/huge-synthetic-trace')
+     assert.fail('No legacy full-detail request permitted');
+   if(key==='/api/traces/huge-synthetic-trace/timeline'){
+     assert.equal(r.request().method(),'GET');
+     assert.equal(u.searchParams.get('limit'),'80');
+     const offset=u.searchParams.get('cursor')?Number(u.searchParams.get('cursor').replace('cursor-','')):0;
+     assert.ok(Number.isInteger(offset)&&offset>=0&&offset<=1001);
+     const page=events.slice(offset,offset+80).map(({payload_json,...e})=>e);
+     const has_more=offset+80<events.length;
+     return r.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
+       schema:'trace-event-page-v1',correlation_id:'huge-synthetic-trace',
+       metadata_only:true,source_snapshot_immutable:false,historical_retention_proven:false,
+       events:page,returned:page.length,has_more,
+       next_cursor:has_more?'cursor-'+(offset+80):null
+     })});
+   }
+   if(key==='/api/traces/huge-synthetic-trace/payload-preview'){
+     assert.equal(r.request().method(),'POST');
+     const id=JSON.parse(r.request().postData()).event_id;
+     const e=events.find(e=>e.event_id===id);
+     assert.ok(e);
+     return r.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
+       schema:'trace-payload-preview-v1',correlation_id:'huge-synthetic-trace',
+       event_id:id,payload_preview:e.payload_json.slice(0,4096),
+       truncated:e.payload_json.length>4096,historical_retention_proven:false
+     })});
+   }
    return r.fulfill({status:404,body:'Synthetic fixture unsupported route'});
  });
  return {browser,page,requests};
