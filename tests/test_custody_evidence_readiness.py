@@ -158,6 +158,74 @@ class CustodyContract(unittest.TestCase):
         self.assertIn("selected_history_snapshot_clean_not_comprehensive", o["reasons"])
         self.assertFalse(o["production_authorized"])
 
+    def _commit_fixture(self, title):
+        subprocess.run(
+            ["git", "-C", str(self.repo), "-c", "user.name=Research Fixture",
+             "-c", "user.email=research@invalid.example", "commit",
+             "-q", "--allow-empty", "-m", title], check=True,
+        )
+
+    def test_bounded_local_history_finds_removed_paths(self):
+        self.track("docs/fixture.txt")
+        self._commit_fixture("clean initial fixture")
+        self.track(".env.synthetic")
+        self._commit_fixture("synthetic historical name")
+        subprocess.run(["git", "-C", str(self.repo), "rm", "-q", "--",
+                        ".env.synthetic"], check=True)
+        self._commit_fixture("clean newest tree")
+        latest = mod.inspect(self.repo, local_ref_cap=1)
+        self.assertEqual(latest["local_ref_commits_sampled"], 1)
+        self.assertEqual(latest["local_ref_commits_with_env_variants"], 0)
+        self.assertTrue(latest["local_ref_sample_truncated"])
+        self.assertIn("local_ref_history_truncated", latest["reasons"])
+        wide = mod.inspect(self.repo, local_ref_cap=3)
+        self.assertEqual(wide["tracked_env_variant_count"], 0)
+        self.assertEqual(wide["local_ref_commits_sampled"], 3)
+        self.assertEqual(wide["local_ref_commits_with_env_variants"], 1)
+        self.assertEqual(wide["local_ref_distinct_env_variant_paths"], 1)
+        self.assertFalse(wide["local_ref_sample_truncated"])
+        self.assertIn("local_ref_only_not_global_custody", wide["reasons"])
+        self.assertEqual(wide["status"], "HOLD")
+        self.assertFalse(wide["merge_authorized"])
+        self.assertNotIn(".env.synthetic", json.dumps(wide))
+
+    def test_invalid_caps_never_run_or_authorize(self):
+        for cap in (0, -1, 129, True, False, 1.0, "8", {}, []):
+            with self.subTest(cap=str(cap)):
+                observation=mod.inspect(self.repo, local_ref_cap=cap)
+                self.assertIn("invalid_local_ref_history_cap", observation["reasons"])
+                self.assertIsNone(observation["local_ref_commits_with_env_variants"])
+                self.assertFalse(observation["production_authorized"])
+
+    def test_empty_repository_local_refs_are_not_global_clearance(self):
+        o=mod.inspect(self.repo, local_ref_cap=4)
+        self.assertEqual(o["local_ref_commits_sampled"], 0)
+        self.assertEqual(o["local_ref_distinct_env_variant_paths"], 0)
+        self.assertFalse(o["local_ref_sample_truncated"])
+        self.assertIn("local_ref_only_not_global_custody", o["reasons"])
+        self.assertEqual(o["status"],"HOLD")
+
+    def test_local_ref_history_git_error_is_hold(self):
+        o=mod.inspect(self.repo/"missing", local_ref_cap=12)
+        self.assertIn("local_ref_history_unavailable", o["reasons"])
+        self.assertIsNone(o["local_ref_distinct_env_variant_paths"])
+        self.assertFalse(o["merge_authorized"])
+
+    def test_local_history_counts_distinct_paths_not_contents(self):
+        self.track("docs/synthetic.txt")
+        self._commit_fixture("initial safe")
+        self.track(".env.test-foo")
+        self._commit_fixture("test path")
+        self.track("subdir/.env.test-bar")
+        self._commit_fixture("another test path")
+        o=mod.inspect(self.repo, local_ref_cap=8)
+        self.assertEqual(o["local_ref_distinct_env_variant_paths"], 2)
+        self.assertEqual(o["local_ref_commits_with_env_variants"], 2)
+        self.assertNotIn(".env.test-foo", json.dumps(o))
+        self.assertNotIn(".env.test-bar", json.dumps(o))
+        self.assertIn("local_refs_contain_historical_env_variants",o["reasons"])
+        self.assertFalse(o["production_authorized"])
+
     def test_tree_object_cannot_pose_as_historical_commit(self):
         self.track("docs/synthetic.txt")
         subprocess.run([
