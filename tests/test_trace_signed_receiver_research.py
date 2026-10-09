@@ -82,6 +82,13 @@ def test_signed_receiver_reports_applied_after_fence_advanced(signer):
     assert check(OP, [sign(private, row(boundary_term=2))], keys) is Classification.STALE_APPLIED
 
 
+def test_future_term_cannot_apply_before_receiver_term_advance(signer):
+    private, keys = signer
+    future_operation = replace(OP, term=2)
+    early = row(term=2, boundary_term=1)
+    assert check(future_operation, [sign(private, early)], keys) is Classification.STALE_APPLIED
+
+
 def test_identical_transport_repeats_are_not_second_effect(signer):
     private, keys = signer
     envelope = sign(private)
