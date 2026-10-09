@@ -68,6 +68,10 @@
 .trace-detail-summary { margin-bottom: 17px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
 .trace-detail-summary .trace-id { display: block; margin-top: 7px; font: 700 .82rem var(--mono); overflow-wrap: anywhere; color: var(--cyan); }
 .trace-detail-stats { display: flex; gap: 10px 20px; flex-wrap: wrap; margin-top: 14px; font: .72rem var(--mono); color: var(--text-secondary); }
+.trace-live-health { color: var(--cyan); }
+.trace-live-health.is-gap { color: #ffd57f; }
+.trace-live-health.is-error { color: var(--red); }
+#trace-live[aria-pressed="true"] { border-color: var(--cyan); background: rgba(70,231,255,.11); color: var(--cyan); }
 .trace-timeline { position: relative; padding-left: 18px; margin-left: 6px; border-left: 1px solid var(--line-hot); }
 .trace-event { position: relative; margin: 0 0 18px; padding: 0 0 16px 17px; }
 .trace-event:before { position: absolute; content: ""; width: 9px; height: 9px; background: var(--cyan); border: 2px solid var(--panel); border-radius: 50%; top: 4px; left: -24px; }
