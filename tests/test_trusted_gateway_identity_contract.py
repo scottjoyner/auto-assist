@@ -45,9 +45,9 @@ def _signed(claim):
     return blob, key.sign(gate.PREFIX + blob), public
 
 
-def _verify(blob, signature, pubkey, consume, **edits):
+def _verify(blob, sig, pubkey, consume, **edits):
     args = {
-        "claim_bytes": blob, "signature": signature,
+        "claim_bytes": blob, "signature": sig,
         "receiver_public_key": pubkey,
         "receiver_key_id": "synthetic-gateway-kid-1",
         "now_ms": NOW, "request_method": "GET",
