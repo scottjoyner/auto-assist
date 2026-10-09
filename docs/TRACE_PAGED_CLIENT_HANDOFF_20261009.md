@@ -13,12 +13,14 @@ This draft stacks on #177, which stacks on progressive timeline #175. Neither ch
 ## Validation
 - Reused the existing 25 Node VM regression definitions after routing their synthetic legacy fixtures through an in-test metadata-only paging adapter.
 - Added four synthetic checks: no passive payload / no legacy GET; default-disabled 503 fail-closed; invalid schema / extraneous payload rejection; equal-timestamp 1001-event page navigation.
-- **29/29 passed in an isolated V8-based adaptation of the Node VM harness on the final bounded-window client revision**, and JavaScript syntax compilation passed. This is NOT an authentic `node --test` execution, native Chromium test, or physical authenticated browser acceptance.
-- The backend's previously reported 131 Python and 25 Node tests belong to **#177**, not to this child's validation.
+- **x1-370 native Node.js 22.23.3: 29/29 passed** on an isolated PR checkout. This supersedes the earlier V8 adaptation.
+- **x1-370 Python 3.12.3: 131/131 passed** covering detail pages, context, outcome, task evidence and attestation (one unrelated Starlette deprecation warning).
+- **x1-370 real headless Chromium/Playwright synthetic fixture: 4/4 passed**: 375, 768 and 1440px event paging, equal timestamps, outcome/context/type filtering, deep links, deliberate preview POST, clearing disclosure, and keyboard focus. Mobile axe WCAG 2.1 A/AA scan found zero automated violations. No live credentials or production endpoint used.
+- Browser and Python tests were run after adapting the original full-detail synthetic fixture to bounded metadata pages; a local ephemeral Playwright package installation was not committed. These are not authenticated operator/device tests, manual screen-reader certification, or physical admission evidence.
 - No deployment, Neo4j graph access, NAS write, fleet execution, router mutation, or production flag activation was performed.
 
 ## Required gates before release
-- Run native `node --test tests/test_trace_investigation_ui.cjs` and Python regressions on the *final commit*. Run the existing 375/768/1440px Playwright suite; adapt its synthetic fixture to paged transport if necessary and inspect manual keyboard/focus/screen-reader behavior.
+- Confirm exact-head GitHub CI and rerun the local suites if implementation code changes; complete a manual screen-reader/keyboard review. Native Node, focused Python and synthetic Chromium suites are now passing locally.
 - Browser-authenticate and verify request-level network traces: one metadata page at selection, exactly one additional page per explicit click, **zero** legacy full-detail calls, zero payload requests prior to deliberate disclosure, and a single preview request per intentional expansion.
 - Negative cases: malformed/oversized cursors, 401/403, 422, 429, 503, service restart, rapid selection switches, closing a disclosure before the response, duplicate-timestamp cursor continuation, request cancellation/time budget and memory cap.
 - Close #148 physical query concurrency/cancellation admission and #149 trusted peer/proxy/auth boundaries. Decide role-scoped payload-preview privacy permissions and whether the legacy endpoint should be retired/gated for all callers (the frontend does not close backend exposure on its own).
