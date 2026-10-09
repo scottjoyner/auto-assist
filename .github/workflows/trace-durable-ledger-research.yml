@@ -1,0 +1,50 @@
+name: trace-durable-ledger-research (synthetic only)
+
+on:
+  pull_request:
+    paths:
+      - "src/assistx/trace_durable_ledger_research.py"
+      - "tests/test_trace_durable_ledger_research.py"
+      - "tests/test_trace_physical_probe_guardrails.py"
+      - "tests/probe_trace_physical_observer_526.py"
+      - "tests/probe_trace_physical_admission_526.py"
+      - "tests/probe_trace_terminate_tx_526.py"
+      - "docs/TRACE_PHYSICAL_WITNESS_20261009.md"
+      - "docs/TRACE_DURABLE_LEDGER_RESEARCH_20261009.md"
+      - ".github/workflows/trace-durable-ledger-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  research-negative-controls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install isolated research dependencies
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Durable ledger and falsification checks only
+        env:
+          ASSISTX_RUNTIME_PROFILE: test
+          ASSISTX_DEPENDENCY_MODE: compat
+        run: |
+          python -m pytest -q \
+            tests/test_trace_durable_ledger_research.py \
+            tests/test_trace_physical_probe_guardrails.py
+
+      # Never wire this test contract to runtime routes or production admission.
+      # A green test includes two intentional counterexamples: copied ledgers
+      # and a false-but-validly-signed closure claim.
