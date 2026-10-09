@@ -31,3 +31,4 @@ printf 'BASELINE: %s\n' "$(grep '^Ran ' baseline-acceptance.log | tail -1)"
 printf 'CANDIDATE: %s\n' "$(grep '^Ran ' candidate-acceptance.log | tail -1)"
 printf 'REPLAY: %s\n' "$(grep '^Ran ' patch-replay-acceptance.log | tail -1)"
 echo "PASS: source unchanged, original suite, candidate suite, fresh patch replay."
+
