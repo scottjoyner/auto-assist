@@ -44,12 +44,8 @@ def benchmark_projection_index(
                 str(row["node_id"]): {
                     "routing_roles": _json_list(row.get("roles_json")),
                     "worker_mode": str(row.get("worker_mode") or "observer_only"),
-                    "allow_agent_runtime": bool(
-                        row.get("allow_agent_runtime", False)
-                    ),
-                    "allow_code_execution": bool(
-                        row.get("allow_code_execution", False)
-                    ),
+                    "allow_agent_runtime": row.get("allow_agent_runtime") is True,
+                    "allow_code_execution": row.get("allow_code_execution") is True,
                 }
                 for row in node_rows
                 if row.get("node_id")
@@ -127,12 +123,8 @@ def node_routing_policy_index(
                 str(row["node_id"]): {
                     "routing_roles": _json_list(row.get("roles_json")),
                     "worker_mode": str(row.get("worker_mode") or "observer_only"),
-                    "allow_agent_runtime": bool(
-                        row.get("allow_agent_runtime", False)
-                    ),
-                    "allow_code_execution": bool(
-                        row.get("allow_code_execution", False)
-                    ),
+                    "allow_agent_runtime": row.get("allow_agent_runtime") is True,
+                    "allow_code_execution": row.get("allow_code_execution") is True,
                 }
                 for row in rows
                 if row.get("node_id")

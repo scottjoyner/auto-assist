@@ -28,13 +28,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      AUTO_ROUTER_SHA: fc821ea59c8fb2ede65c7e2eccb579858dde14ce
+      ASSISTX_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      AUTO_ROUTER_SHA: e8bd7cf5f49ebf6e95333744de34311cafd93789
       LMS_SHA: 6ec5476f72936ebe74a45104dadded53cb8b0885
       FLEET_PROFILES_SHA: bfe57f9b1529c511ead14cffebcd67d70b9b469c
     steps:
       - name: Checkout AssistX candidate
         uses: actions/checkout@v4
         with:
+          ref: ${{ env.ASSISTX_SHA }}
           path: auto-assist
 
       - name: Checkout pinned auto-router
@@ -114,7 +116,7 @@ jobs:
             --assistx-src auto-assist/src \
             --router-src auto-router/src \
             --matrix-out artifacts/cross-repository-contract.json \
-            --assistx-sha "${GITHUB_SHA}" \
+            --assistx-sha "${ASSISTX_SHA}" \
             --router-sha "${AUTO_ROUTER_SHA}" \
             --lms-sha "${LMS_SHA}" \
             --profiles-sha "${FLEET_PROFILES_SHA}"
@@ -122,7 +124,7 @@ jobs:
       - name: Record exact repository matrix
         run: |
           {
-            echo "assistx=${GITHUB_SHA}"
+            echo "assistx=${ASSISTX_SHA}"
             echo "auto-router=${AUTO_ROUTER_SHA}"
             echo "lms=${LMS_SHA}"
             echo "fleet-llm-profiles=${FLEET_PROFILES_SHA}"
