@@ -37,6 +37,13 @@ def main() -> int:
 
     from assistx import runtime_projection_v2 as producer
     from auto_router import runtime_projection_v2 as consumer
+    from auto_router.benchmark_routing_policy import benchmark_order
+    from auto_router.models import (
+        ExecutionStage,
+        ProviderCandidate,
+        RouterRequest,
+        StagePurpose,
+    )
 
     private_key = Ed25519PrivateKey.generate()
     public_pem = private_key.public_key().public_bytes(
@@ -184,6 +191,54 @@ def main() -> int:
     else:
         raise AssertionError("tampered projection expiry was accepted")
 
+    # A missing FleetNode policy must remain an explicit observer-only
+    # denial after the REAL consumer parses the signed payload.
+    producer.node_routing_policy_index = lambda _factory: {}
+    missing = producer.build_runtime_projection(
+        lambda: None,
+        private_key=private_key,
+        key_id="cross-repo-test",
+    )
+    missing_document, _ = consumer.validate_projection_document(
+        missing, now_ms=1_010_000,
+    )
+    missing_provider = missing_document.providers[0]
+    assert missing_provider.worker_mode == "observer_only"
+    assert missing_provider.models[0].worker_mode == "observer_only"
+    missing_candidate = ProviderCandidate(
+        provider=missing_provider,
+        model=missing_provider.models[0],
+        score=100.0,
+    )
+    for task_family in ("coding", "summarization", "general"):
+        request = RouterRequest(
+            request_id="cross-repo-deny-only",
+            route="chat_completions",
+            model="auto/fast",
+            metadata={"task_family": task_family},
+        )
+        stage = ExecutionStage(
+            purpose=StagePurpose.final,
+            candidates=[missing_candidate],
+        )
+        assert benchmark_order(stage, request).candidates == []
+
+    # No projection can be issued when a read-only routing graph query fails.
+    def synthetic_graph_outage(_factory):
+        raise OSError("synthetic graph outage")
+
+    producer.node_routing_policy_index = synthetic_graph_outage
+    try:
+        producer.build_runtime_projection(
+            lambda: None,
+            private_key=private_key,
+            key_id="cross-repo-test",
+        )
+    except producer.legacy.RuntimeProjectionBlocked:
+        pass
+    else:
+        raise AssertionError("graph outage failed open")
+
     signature_bytes = base64.urlsafe_b64decode(
         document["signature"] + "=" * ((4 - len(document["signature"]) % 4) % 4)
     )
@@ -205,6 +260,8 @@ def main() -> int:
             "expiry_tamper_rejected": True,
             "routing_metadata_retained": True,
             "routing_metadata_tamper_rejected": True,
+            "missing_policy_routing_denied": True,
+            "routing_graph_outage_denied": True,
         },
     }
     output = Path(args.matrix_out)
