@@ -1,0 +1,78 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,booktabs,hyperref}
+\title{Soft Cross-Worker Occupancy Leases for Read-Only Agent Trace Queries}
+\author{AssistX fleet engineering research --- working draft}
+\date{October 8, 2026}
+\begin{document}
+\maketitle
+\begin{abstract}
+Global trace-history queries can perform substantial graph expansion even when page
+sizes are small. A rolling-minute quota does not limit simultaneous executions.
+We prototype a Redis-server-time, token-bound occupancy lease applied after
+authentication and before read-only graph query execution, complementing an
+earlier atomic rate guard. Offline Python tests and isolated Redis 7 Lua tests
+verify a three-slot admission cap, stale-release denial and expiry-based crash
+recovery on synthetic requests. A composed ten-client test with a two-request
+peer quota admitted two and denied eight. The 30-second lease expires
+independently of request termination; hence this is a soft concurrency guard,
+not hard cancellation or proof of safe production admission.
+\end{abstract}
+\section{Motivation and preregistration}
+Earlier isolated Neo4j 5.26 experiments over 85,000 synthetic trace groups
+reported approximately $10^6$ graph DB hits for individual outcome-count and
+page queries. In-flight overlap therefore matters independently of per-minute
+request quotas. We preregistered a token-fenced lease design, server-owned time,
+positive and negative admission tests, crash expiry, and exact-release safety
+before implementing the current experiment.
+\section{Method}
+For active lease set $L(t)$ at server time $t$, the Redis Lua acquisition
+removes entries with expiry no greater than $t$ and grants a new unique token
+only when
+\[
+ |L(t)| < C, \quad C=3.
+\]
+The new entry expires at $t+30\,\mathrm{s}$. Release calls remove only the
+caller-specific cryptographically random token. A distinct Redis Lua
+rate-window check follows capacity acquisition. An occupied capacity
+refusal cannot charge the rolling-minute rate quota. A rate refusal releases
+the occupancy token before opening the graph. The request's finally block
+also releases tokens after success or exception. Redis Lua scripting executes
+atomically as documented by Redis \cite{redis_eval}; Redis TIME supplies
+the consistency clock \cite{redis_time}.
+\section{Observations}
+\begin{table}[h]\centering
+\caption{Disconnected Redis 7 with invented request tokens.}
+\begin{tabular}{rrrr}\toprule
+Simultaneous clients & Admitted & Denied & Global cap\\\midrule
+1&1&0&3\\
+3&3&0&3\\
+5&3&2&3\\
+10&3&7&3\\\bottomrule
+\end{tabular}
+\end{table}
+In a separate composed ten-client test with shared source identity,
+peer quota two and fleet minute quota five, two were admitted,
+one failed the rate window and seven failed global occupancy.
+Expiry and stale-release trials refused to free a successor's token.
+Across the new and prior API admission/query suites, 65 Python tests passed.
+These checks used only synthetic Redis tokens and mocked graph responses.
+No live production database, API, Redis, or trace payload was accessed.
+\section{Limitations}
+This protocol is a \emph{soft} occupancy guard. A query extending past the
+30-second TTL may overlap a successor without its Redis token, so the
+physical number of executing queries is not bounded under arbitrary stalls.
+Although each Neo4j read has a four-second timeout, persistent driver waits,
+cancellation paths and host faults require independent acceptance. Rate-limit
+fairness depends on a trusted reverse-proxy identity; the existing socket-peer
+key may merge multiple operators. Redis failover, production authentication,
+genuine browser behavior and end-to-end tool-call retention remain unproven.
+The work is not deployed and does not authorize live execution or graph writes.
+This arXiv-style manuscript has not been compiled, submitted or peer reviewed.
+\begin{thebibliography}{9}
+\bibitem{redis_eval} Redis, \emph{EVAL command}, \url{https://redis.io/docs/latest/commands/eval/}.
+\bibitem{redis_time} Redis, \emph{TIME command}, \url{https://redis.io/docs/latest/commands/time/}.
+\bibitem{nist92} K. Kent and M. Souppaya, \emph{Guide to Computer Security Log Management},
+NIST SP 800-92 (2006). \url{https://doi.org/10.6028/NIST.SP.800-92}.
+\end{thebibliography}
+\end{document}
