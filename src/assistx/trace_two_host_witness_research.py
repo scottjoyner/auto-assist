@@ -212,6 +212,49 @@ class Witness:
             return {"status":"witness-unavailable"}
 
 
+
+def apply_witness_grant_to_primary(primary, signed_row:dict, trusted_key:bytes,
+                                   *, query_ref:str)->dict:
+    """Bind primary reservation to the EXACT signed external token and nonce.
+
+    Research transaction only. A caller cannot rely on offline signature alone
+    under journal rollback/replay; production would also need a quorum-verified
+    live one-time consumption state and an unforgeable admission service.
+    """
+    if not verify_external_grant(signed_row,trusted_key,epoch=primary.epoch,
+                                 graph_id=primary.graph,query_ref=query_ref):
+        return {"status":"untrusted-witness-grant"}
+    grant=signed_row["grant"]
+    try:
+        # Import of an underscore helper stays confined to this uninstalled
+        # research adapter. No changes to the production graph admission path.
+        from .trace_two_host_authority_research import _connect
+        with _connect(primary.path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            capacity, sequence=primary._validate(conn)
+            active=conn.execute("SELECT count(*) FROM occupied").fetchone()[0]
+            if active>=capacity:
+                conn.rollback()
+                return {"status":"full"}
+            if sequence+1 != grant["sequence"]:
+                conn.rollback()
+                return {"status":"witness-sequence-divergent"}
+            conn.execute("INSERT INTO occupied VALUES(?,?,?,?)",
+                (grant["reservation_token"],query_ref,
+                 grant["receiver_nonce"],grant["sequence"]))
+            conn.execute("UPDATE owner SET sequence=? WHERE singleton=1",
+                         (grant["sequence"],))
+            conn.commit()
+            primary.floor=max(primary.floor,grant["sequence"])
+        if primary._identity()!=primary.identity:
+            return {"status":"primary-identity-uncertain"}
+        return {"status":"admitted","primary_sequence":grant["sequence"],
+                "reservation_token":grant["reservation_token"],
+                "receiver_nonce":grant["receiver_nonce"]}
+    except (OSError,ValueError,sqlite3.Error):
+        return {"status":"primary-unavailable"}
+
+
 def verify_external_grant(row:dict,pinned_public_key:bytes,*,epoch:str,graph_id:str,
                           query_ref:str)->bool:
     """Independent pinned trust: NEVER read signer from incoming row."""
