@@ -68,6 +68,13 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(obj["coverage"]["adjacent_overlap_or_reset_transitions"],1)
         self.assertEqual(obj["coverage"]["internal_uncovered_ranges_after_union"],0)
 
+    def test_negative_checkpoint_offset_is_not_accepted(self):
+        broken={"sources":{"dc:/path/negative":{"offset":-1}}}
+        result=summarize(broken,[])
+        self.assertEqual(result["coverage"]["invalid_cursor_record"],1)
+        self.assertEqual(result["group_summary"]["dc"]["cursors"],1)
+        self.assertNotIn("unmatched_zero_offset",result["group_summary"]["dc"])
+
     def test_bounded_spool_inventory(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
