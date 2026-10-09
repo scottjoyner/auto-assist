@@ -312,3 +312,17 @@ test("an old unfiltered response cannot replace a newer global failure selection
   assert.doesNotMatch(ui.els["trace-list"].innerHTML, /old-success/);
   assert.equal(ui.els["trace-total-metric"].textContent, "12");
 });
+
+test("server-side 429 shows bounded retry delay and unknown counts, never zero", async () => {
+  const ui = harness({
+    response: () => Promise.resolve({
+      ok: false, status: 429,
+      headers: { get(name) { return name === "Retry-After" ? "7" : null; } }
+    })
+  });
+  await sleep(25);
+  assert.match(ui.els["trace-status"].textContent, /Retry in 7 seconds/);
+  assert.equal(ui.els["trace-total-metric"].textContent, "—");
+  assert.match(ui.els["trace-list"].innerHTML, /Try again/);
+  assert.ok(ui.calls.every(x => x.startsWith("/api/traces")));
+});
