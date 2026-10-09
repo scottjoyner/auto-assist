@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.testclient import TestClient
 
@@ -503,3 +505,50 @@ def test_mobile_runtime_catalog_route_sanitizes_backend_failure(monkeypatch):
     assert response.status_code == 503
     assert response.json() == {"detail": {"error": "runtime_catalog_unavailable"}}
     assert "neo4j" not in response.text.lower()
+
+
+def test_current_mobile_projection_uses_existing_signed_v2_builder(monkeypatch):
+    """The mobile path must call the real v2 signing API, never a missing alias."""
+    import sys
+    from types import ModuleType
+    from assistx import runtime_projection_v2
+    from assistx.runtime_projection import RuntimeProjectionBlocked
+
+    seen = []
+    def fake_factory():
+        raise AssertionError("must not query Neo4j in projection adapter test")
+    # Only the _neo dependency is needed; don't import the heavyweight app
+    # (which requires LangGraph and live optional integrations) in this test.
+    fake_api = ModuleType("assistx.api")
+    fake_api._neo = fake_factory
+    monkeypatch.setitem(sys.modules, "assistx.api", fake_api)
+
+    def blocked(factory, *, ttl_seconds):
+        seen.append((factory, ttl_seconds))
+        raise RuntimeProjectionBlocked("synthetic no trusted signer")
+
+    monkeypatch.setattr(runtime_projection_v2, "build_runtime_projection", blocked)
+    monkeypatch.setenv("ASSISTX_RUNTIME_PROJECTION_TTL_SECONDS", "900")
+    with pytest.raises(RuntimeProjectionBlocked):
+        mobile._current_runtime_projection()
+    assert seen == [(fake_factory, 900)]
+
+
+def test_mobile_catalog_canonical_signed_projection_has_no_fallback_key(monkeypatch):
+    """A missing signing key remains a hard failure, not an unsigned catalog."""
+    from assistx import runtime_projection_v2
+    from assistx.runtime_projection import RuntimeProjectionBlocked
+
+    monkeypatch.delenv("ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_FILE", raising=False)
+    monkeypatch.delenv("ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_PEM", raising=False)
+    monkeypatch.setattr(
+        runtime_projection_v2.legacy, "build_runtime_projection",
+        lambda factory, **kwargs: {
+            "schema_version": "1", "source": "synthetic-test",
+            "generation": 1, "revision": "not-a-runtime-admission",
+            "generated_at_ms": 100, "expires_at_ms": 200,
+            "providers": [],
+        },
+    )
+    with pytest.raises(RuntimeProjectionBlocked, match="SIGNING_KEY_FILE"):
+        runtime_projection_v2.build_runtime_projection(lambda: None)
