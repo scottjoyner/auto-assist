@@ -22,7 +22,9 @@
 
 ## Observed fixture results
 
-- `tests/test_trace_fenced_staging_adapter.py`: **25/25 passing** against in-process fake Redis and fake query, covering normal release, rate/in-flight exhaustion, acquire failure, cleanup missing/timeout/malformed, query exceptions, successful renewal, renewal denial/outage, missed callback, ignored cancellation, timing failure, blocked renewal watchdog and no live route wiring.
+- `tests/test_trace_fenced_staging_adapter.py`: **38/38 passing** against in-process fake Redis and fake query, covering normal release, rate/in-flight exhaustion, acquire failure, cleanup missing/timeout/malformed, query exceptions, successful renewal, renewal denial/outage, missed callback, ignored cancellation, timing failure, blocked renewal watchdog and no live route wiring.
+- **Additional negative review after initial 25 tests:** input timing fields are now validated for numeric type, NaN, infinity and safe limits **before Redis acquisition**. A missing OS thread resource during watchdog startup now triggers an exact-nonce release attempt and fail-closed exception before entering the query, even when the release acknowledgment is unavailable. New tests cover malformed timing, denied thread creation and failed cleanup. The fixture initially expected invalid timing to acquire/release a slot; that assertion was updated to recognize safer pre-acquisition rejection, while lease-dependent timing still releases the slot.
+- Fresh local combined synthetic Python suite: **212/212 pass** after these corrections; one existing Starlette deprecation warning. Dedicated CI must be rechecked against the exact *updated* commit.
 - Existing upstream research suite must remain green on the same published head; dedicated read-only CI will include the new tests. Local fixture success is not a deployed API authentication or real Neo4j cancellation acceptance.
 - Failure lineage: earlier draft #150 identified double-metering from sibling #147, and draft #163 proved Redis Lua atomic quotas/leases with 3 accepted / 13 denied in a disposable concurrent test; this adapter **reuses** #163's single policy, does not layer #146/#147.
 
