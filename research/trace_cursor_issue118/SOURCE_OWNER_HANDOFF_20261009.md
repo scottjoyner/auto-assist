@@ -49,3 +49,4 @@ Original live source SHA256: fba0d51b9a73c9de5f4a69705b2c325b18417cd8e051400e8c3
 6. A local unsigned SHA receipt is not independent custody or source-generation proof across inode reuse; trust limitations must remain documented.
 
 Decision: READY FOR REVIEW/ISOLATED STAGING; NOT PRODUCTION-READY. Keep issue #118 OPEN; do not deploy over live collector or claim recovered historical records.
+
