@@ -164,6 +164,32 @@ def _default_auth(
     return "system"
 
 
+def _trace_read_auth(
+    request: Request,
+    credentials: HTTPBasicCredentials | None = Depends(security),
+) -> str:
+    """Require the installed operator auth boundary for sensitive trace reads.
+
+    A standalone router must *not* fall back to the permissive ``system``
+    identity in ``_default_auth`` or accept an unverified Basic username.
+    Production ``api.py`` installs its existing ``auth`` implementation.
+    """
+    if _injected_auth_dependency is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Trace read authentication is not configured",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    principal = _injected_auth_dependency(request, credentials)
+    if not isinstance(principal, str) or not principal.strip():
+        raise HTTPException(
+            status_code=401,
+            detail="Trace read authentication failed",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return principal
+
+
 def _optional_operator_auth(
     request: Request,
     credentials: HTTPBasicCredentials | None = Depends(security),
@@ -438,7 +464,7 @@ def api_list_traces(
     offset: int = Query(default=0, ge=0),
     search: Optional[str] = Query(default=None, max_length=128),
     outcome: Optional[Literal["failed", "completed", "open"]] = None,
-    user: str = Depends(_default_auth),
+    user: str = Depends(_trace_read_auth),
 ):
     """Read-only global outcome filtering for the authenticated trace index."""
     neo = _neo()
@@ -452,8 +478,8 @@ def api_list_traces(
 
 @router.get("/api/traces/{correlation_id}")
 def api_get_trace(
-    correlation_id: str,
-    user: str = Depends(_default_auth),
+    correlation_id: str = Path(min_length=1, max_length=128),
+    user: str = Depends(_trace_read_auth),
 ):
     neo = _neo()
     try:
@@ -471,7 +497,7 @@ def api_get_trace(
 @router.get("/api/traces/{correlation_id}/evidence")
 def api_trace_task_evidence(
     correlation_id: str = Path(min_length=1, max_length=128),
-    user: str = Depends(_default_auth),
+    user: str = Depends(_trace_read_auth),
 ):
     """Opt-in, read-only task/registry comparison: never execution attestation."""
     neo = _neo()
