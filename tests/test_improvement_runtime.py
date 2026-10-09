@@ -80,19 +80,13 @@ def build_evidence(repo, tmp_path):
     return value, env, prepared, evidence
 
 
-def test_workspace_records_whether_the_binding_matches_the_executed_head(tmp_path):
-    """The provenance the work packet carries has to be falsifiable.
+def test_workspace_source_binding_is_exact_and_mismatch_fails_closed(tmp_path):
+    """Do not mistake a claimed SHA for accepted repository provenance.
 
-    `prepare_repository` resolves HEAD itself and creates the worktree there. The
-    contract's source binding names the commit the task was derived from. Nothing
-    compared the two, so a task bound to commit X could execute against commit Y
-    while the packet asserted X -- and the packet now carries that binding, so
-    unreviewed provenance that is wrong is worse than none at all.
-
-    Reported, not enforced: a binding is documented as evidence that "grants
-    nothing on its own", so blocking on a mismatch would invent a gate the design
-    deliberately does not have. The point is that the record says which commit ran
-    and whether it is the one that was bound.
+    The authoritative `RepositorySourceBinding` contract now requires the
+    configured alias, exact repository/worktree realpaths and a pinned HEAD.
+    Earlier fixtures supplied only `head_sha` and asserted that a mismatch
+    could continue. That is incompatible with the current fail-closed verifier.
     """
     repo = initialized_repo(tmp_path)
     env = runtime_env(repo, tmp_path)
@@ -101,30 +95,37 @@ def test_workspace_records_whether_the_binding_matches_the_executed_head(tmp_pat
         capture_output=True, text=True, check=True,
     ).stdout.strip()
 
-    # No binding at all: absence is legitimate for non-repository tasks and must
-    # not read as a mismatch.
     plain = prepare_repository(contract(), task_id="t-plain", env=env)
     assert plain["ok"] is True
-    assert plain["source_binding_head_sha"] is None
-    assert plain["source_binding_matches"] is None
+    assert plain["head"] == head
+    assert plain["source_binding_verification"] is None
+    assert cleanup_worktree(plain)["cleaned"] is True
 
-    # Bound to the commit that will actually run: matches.
-    matching = dict(contract())
-    matching["source_binding"] = {"head_sha": head}
+    bound = {
+        "repository": "repo",
+        "repository_realpath": str(repo.resolve()),
+        "worktree_realpath": str(repo.resolve()),
+        "head_sha": head,
+        "dirty_expectation": "clean_required",
+    }
+    matching = dict(contract(), source_binding=bound)
     same = prepare_repository(matching, task_id="t-same", env=env)
     assert same["ok"] is True
     assert same["head"] == head
-    assert same["source_binding_matches"] is True
+    assert same["source_binding_verification"]["state"] == "MATCH"
+    assert same["source_binding_verification"]["accepted"] is True
+    assert cleanup_worktree(same)["cleaned"] is True
 
-    # Bound to some other commit: reported as a mismatch, still executed.
-    other = "b" * 40
-    bound_elsewhere = dict(contract())
-    bound_elsewhere["source_binding"] = {"head_sha": other}
-    different = prepare_repository(bound_elsewhere, task_id="t-diff", env=env)
-    assert different["ok"] is True, "a mismatch is reported, not enforced"
-    assert different["source_binding_head_sha"] == other
-    assert different["source_binding_matches"] is False
-    assert different["head"] == head
+    # A validly formed binding referring to a stale commit must be rejected
+    # *before* an executor worktree can be created; it is not a warning-only
+    # mismatch that could later authorize stale evidence or patch promotion.
+    wrong = dict(contract(), source_binding={**bound, "head_sha": "b" * 40})
+    rejected = prepare_repository(wrong, task_id="t-diff", env=env)
+    assert rejected["ok"] is False
+    assert rejected["reason"] == "repository_source_binding_rejected:HEAD_MISMATCH"
+    assert rejected["source_binding_verification"]["accepted"] is False
+    assert rejected["source_binding_verification"]["state"] == "HEAD_MISMATCH"
+    assert not list((tmp_path / "worktrees").glob("*"))
 
 
 def test_executor_uses_isolated_worktree_and_exports_signed_patch(tmp_path):
