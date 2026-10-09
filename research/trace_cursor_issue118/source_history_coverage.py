@@ -21,8 +21,22 @@ MAX_TOTAL_BYTES = 64 * 1024 * 1024
 def read_bounded_json(path: Path, limit: int) -> dict:
     if path.is_symlink():
         raise ValueError("symlink metadata denied")
-    with path.open("rb") as stream:
-        raw = stream.read(limit + 1)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("not regular metadata")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(limit + 1)
+        after = os.fstat(fd)
+        if (before.st_dev, before.st_ino, before.st_size,
+            before.st_mtime_ns, before.st_ctime_ns) != (
+            after.st_dev, after.st_ino, after.st_size,
+            after.st_mtime_ns, after.st_ctime_ns):
+            raise ValueError("metadata changed during bounded read")
+    finally:
+        os.close(fd)
     if len(raw) > limit:
         raise ValueError("metadata size limit exceeded")
     data = json.loads(raw)
@@ -92,7 +106,8 @@ def summarize(state: dict, manifests: list[dict]) -> dict:
             continue
         group = key.split(":",1)[0]
         groups[group]["cursors"] += 1
-        if type(record) is not dict or type(record.get("offset")) is not int:
+        if (type(record) is not dict or type(record.get("offset")) is not int
+                or record["offset"] < 0):
             totals["invalid_cursor_record"] += 1
             continue
         if record["offset"] > 0:
