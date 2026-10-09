@@ -13,6 +13,9 @@ on:
       - 'tests/test_workbench_ui.py'
       - 'scripts/free_subagent_supervisor.py'
       - 'tests/test_free_subagent_supervisor.py'
+      - 'src/assistx/runtime_projection_v2.py'
+      - 'tests/test_runtime_projection_v2.py'
+      - 'tests/test_mobile_runtime_catalog.py'
   workflow_dispatch:
 permissions:
   contents: read

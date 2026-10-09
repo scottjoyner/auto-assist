@@ -23,6 +23,10 @@ HOME="$clean_home" "${FREE_SUPERVISOR_PYTHON:-$PYTHON}" -m pytest --noconftest -
     src/assistx/contracts/schemas/repository_source_binding.py \
     src/assistx/llm/client.py \
     src/assistx/intent_orchestrator.py
+# Mobile runtime catalog must use the signed projection and deny absent keys.
+"$PYTHON" -m pytest --noconftest -q \
+    tests/test_mobile_runtime_catalog.py \
+    tests/test_runtime_projection_v2.py
 "$NODE" --test tests/test_provider_burn_model.cjs tests/test_trace_investigation_ui.cjs
 # Render the real inherited Jinja documents without importing FastAPI.
 "$PYTHON" - <<'PYTEST'

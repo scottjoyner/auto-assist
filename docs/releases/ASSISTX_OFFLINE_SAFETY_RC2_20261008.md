@@ -76,3 +76,15 @@ source_unavailable (unknown count), ok (measured count) or error
 The RC smoke now verifies all 34 free-subagent tests under a deliberately
 empty HOME, without provider/network activity or changes to admission.
 This remains read-only provenance, not accepted work or quota authority.
+
+## Signed mobile catalog compatibility: later slice
+
+Independent [auto-assist PR #165](https://github.com/scottjoyner/auto-assist/pull/165)
+restores two missing symbols imported by the mobile Tailnet catalog:
+RuntimeProjectionSigningError and build_runtime_projection_v2. The latter is
+a direct pass-through to the same Ed25519 signed v2 builder, NEVER the unsigned
+v1 projection. Signing failures remain typed, blocked and sanitized; expired
+projections cannot create runtime admission or expose backend coordinates.
+19/19 mobile/runtime signed projection tests passed locally. RC2 now includes
+these source-tested changes and runs the same suite in its dedicated CI job.
+No physical device, production signer or mobile gateway activation was tested.
