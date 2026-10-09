@@ -245,7 +245,7 @@ def test_fastapi_route_filters_before_paging_and_requires_auth(monkeypatch):
     # during route input validation without opening a graph session.
     for query in ("outcome=failed%20DELETE", "limit=10000", "offset=-1",
                   "search=" + "a" * 129):
-        invalid = client.get("/api/traces?" + query)
+        invalid = client.get("/api/traces?" + query, auth=("fixture-user", "fixture-pw"))
         assert invalid.status_code == 422, (query[:30], invalid.status_code)
     assert len(created) == 1
 
