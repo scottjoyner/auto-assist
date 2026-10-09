@@ -1,0 +1,1735 @@
+diff --git a/src/bots/bot-manager.ts b/src/bots/bot-manager.ts
+index ee4ce82..0542b08 100644
+--- a/src/bots/bot-manager.ts
++++ b/src/bots/bot-manager.ts
+@@ -21,6 +21,7 @@ import { createBotScheduleTool, type BotScheduler } from './tools/bot-schedule.j
+ import { createFleetStatusTool } from './tools/fleet-status.js';
+ import { createBotSpawnTool } from './tools/bot-spawn.js';
+ import { runBotTurn, isTransientFailure, type BotTurnMail, type BotActivityEvent } from './bot-turn.js';
++import type { FleetLeaseAuthority } from './fleet-provider-admission.js';
+ import { parsePersonaAccess, stripPersonaAccessSection } from './persona-access.js';
+ import { mergePathScopes } from './registry-factory.js';
+ import { synthesizeSkill, MIN_TOOLS_FOR_SYNTHESIS } from './skill-synthesis.js';
+@@ -76,6 +77,13 @@ export interface BotManagerDeps {
+   skillsRoot?: string;
+   /** Deliver turn output to the invoking surface (chat/telegram/api). */
+   notify?: (channelType: string, channelId: string, message: string) => Promise<void>;
++  /** Opt-in fleet authority. Without this the upstream Mercury behavior is unchanged. */
++  fleetAdmission?: {
++    authority: FleetLeaseAuthority;
++    resolveUpstreamGroup: (provider: string, model: string) => string | null;
++    maxInputTokens: number;
++    maxOutputTokens: number;
++  };
+ }
+ 
+ const MAX_TRANSIENT_ATTEMPTS = 3;
+@@ -107,6 +115,7 @@ export class BotManager {
+   private readonly config: MercuryConfig;
+   private readonly providers: ProviderRegistry;
+   private readonly tokenBudget: TokenBudget;
++  private readonly fleetAdmission?: BotManagerDeps['fleetAdmission'];
+   private readonly userMemoryFactory?: BotManagerDeps['userMemoryFactory'];
+   private readonly skillsRoot?: BotManagerDeps['skillsRoot'];
+   private notify?: BotManagerDeps['notify'];
+@@ -170,6 +179,7 @@ export class BotManager {
+     this.config = deps.config;
+     this.providers = deps.providers;
+     this.tokenBudget = deps.tokenBudget;
++    this.fleetAdmission = deps.fleetAdmission;
+     this.userMemoryFactory = deps.userMemoryFactory ?? ((botId, manifest) => {
+       // Default: per-bot namespace in the shared second-brain DB.
+       // scope 'none' = stateless bot. SQLite-less devices degrade to a
+@@ -671,6 +681,7 @@ export class BotManager {
+     const pending = this.drainMailbox(botId);
+     mail.push(...pending);
+ 
++    const selectedProvider = resolveProvider(this.providers, manifest);
+     return {
+       input: {
+         manifest,
+@@ -685,7 +696,13 @@ export class BotManager {
+         capabilities: registry,
+         tools,
+         userMemory,
+-        provider: resolveProvider(this.providers, manifest),
++        provider: selectedProvider,
++        fleetAdmission: this.fleetAdmission ? {
++          authority: this.fleetAdmission.authority,
++          upstreamGroup: this.fleetAdmission.resolveUpstreamGroup(selectedProvider.name, selectedProvider.getModel()),
++          maxInputTokens: this.fleetAdmission.maxInputTokens,
++          maxOutputTokens: this.fleetAdmission.maxOutputTokens,
++        } : undefined,
+         tokenBudget: this.tokenBudget,
+         abortSignal: signal,
+       },
+diff --git a/src/bots/bot-turn.test.ts b/src/bots/bot-turn.test.ts
+index 1fd5a9d..a82e3a9 100644
+--- a/src/bots/bot-turn.test.ts
++++ b/src/bots/bot-turn.test.ts
+@@ -14,7 +14,7 @@ vi.mock('ai', async (importOriginal) => {
+ });
+ 
+ import { streamText } from 'ai';
+-import { runBotTurn, classifyFailure, type BotActivityEvent, type BotTurnInput } from './bot-turn.js';
++import { runBotTurn, classifyFailure, isTransientFailure, type BotActivityEvent, type BotTurnInput } from './bot-turn.js';
+ import { MAX_AUTOMATIC_CONTINUATIONS } from '../core/execution-limits.js';
+ 
+ const mockedStreamText = vi.mocked(streamText);
+@@ -245,3 +245,110 @@ describe('runBotTurn live thinking events', () => {
+     expect(secondRound.length).toBeGreaterThan(0);
+   });
+ });
++
++
++describe('fleet-provider scoped BotManager dispatch boundary (offline only)', () => {
++  function authority(overrides: Record<string, unknown> = {}) {
++    return {
++      acquire: vi.fn(async (r: any) => ({ leaseId: 'lease-test-0001', ...r, expiresAtMs: Date.now() + 60_000 })),
++      renew: vi.fn(async (_r: any, l: any) => ({ ...l, expiresAtMs: Date.now() + 60_000 })),
++      release: vi.fn(async () => true),
++      ...overrides,
++    } as any;
++  }
++
++  function scoped(gate: any, overrides: Record<string, unknown> = {}) {
++    return turnInput({
++      jobId: 'job-test-0001',
++      fleetAdmission: {
++        authority: gate, upstreamGroup: 'synthetic-upstream',
++        maxInputTokens: 100, maxOutputTokens: 10,
++      },
++      ...overrides,
++    });
++  }
++
++  it('rejects missing authority before calling the real SDK boundary', async () => {
++    const result = await runBotTurn(scoped(null));
++    expect(result.status).toBe('failed');
++    expect(result.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(mockedStreamText).not.toHaveBeenCalled();
++  });
++
++  it('rejects unknown upstream group with no generation', async () => {
++    const gate = authority();
++    const result = await runBotTurn(scoped(gate, { fleetAdmission: {
++      authority: gate, upstreamGroup: null, maxInputTokens: 100, maxOutputTokens: 10,
++    } }));
++    expect(result.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(gate.acquire).not.toHaveBeenCalled();
++    expect(mockedStreamText).not.toHaveBeenCalled();
++  });
++
++  it('rejects coordinator denial without generation or retries', async () => {
++    const gate = authority({ acquire: vi.fn(async () => null) });
++    const result = await runBotTurn(scoped(gate));
++    expect(result.status).toBe('failed');
++    expect(result.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(mockedStreamText).not.toHaveBeenCalled();
++    expect(isTransientFailure(result.reasonCode!)).toBe(false);
++  });
++
++  it('admits only exact model and group and denies ALL tools for a scoped turn', async () => {
++    const gate = authority();
++    mockedStreamText.mockImplementationOnce(() => streamedResult({ text: 'mock reviewer result', finishReason: 'stop' }));
++    const outcome = await runBotTurn(scoped(gate, { tools: { run_command: { execute: () => 'unsafe' } } as any }));
++    expect(outcome.status).toBe('completed');
++    expect(outcome.output).toBe('mock reviewer result');
++    expect(mockedStreamText).toHaveBeenCalledTimes(1);
++    const opts = mockedStreamText.mock.calls[0][0] as any;
++    expect(opts.tools).toEqual({});
++    expect(opts.maxOutputTokens).toBe(10);
++    expect(gate.acquire).toHaveBeenCalledOnce();
++    expect(gate.renew.mock.calls.length).toBeGreaterThanOrEqual(2);
++    expect(gate.release).toHaveBeenCalledOnce();
++  });
++
++  it('rejects renewal failure before streamText is called', async () => {
++    const gate = authority({ renew: vi.fn(async () => null) });
++    const outcome = await runBotTurn(scoped(gate));
++    expect(outcome.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(mockedStreamText).not.toHaveBeenCalled();
++    expect(gate.release).toHaveBeenCalledOnce();
++  });
++
++  it('rejects a mismatched model identity returned by the authority', async () => {
++    const gate = authority({
++      acquire: vi.fn(async (r: any) => ({leaseId: 'lease-test-0001', ...r,
++        model: 'wrong-model', expiresAtMs: Date.now() + 60_000}))
++    });
++    const outcome = await runBotTurn(scoped(gate));
++    expect(outcome.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(mockedStreamText).not.toHaveBeenCalled();
++  });
++
++  it('a terminal release failure blocks success and is never retried', async () => {
++    const gate = authority({ release: vi.fn(async () => false) });
++    mockedStreamText.mockImplementationOnce(() => streamedResult({ text: 'reply', finishReason: 'stop' }));
++    const outcome = await runBotTurn(scoped(gate));
++    expect(outcome.status).toBe('failed');
++    expect(outcome.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(isTransientFailure(outcome.reasonCode!)).toBe(false);
++    expect(mockedStreamText).toHaveBeenCalledTimes(1);
++  });
++
++  it('provider token overrun aborts the composite streaming signal', async () => {
++    const gate = authority();
++    let wireSignal: AbortSignal | undefined;
++    mockedStreamText.mockImplementationOnce((opts: any) => {
++      wireSignal = opts.abortSignal;
++      opts.onStepFinish?.({ usage: { inputTokens: 500, outputTokens: 20 }, toolCalls: [] });
++      return streamedResult({ text: 'over budget', finishReason: 'stop' });
++    });
++    const outcome = await runBotTurn(scoped(gate));
++    expect(outcome.status).toBe('failed');
++    expect(outcome.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(wireSignal?.aborted).toBe(true);
++    expect(gate.release).toHaveBeenCalledOnce();
++  });
++});
+diff --git a/src/bots/bot-turn.ts b/src/bots/bot-turn.ts
+index c531765..204a282 100644
+--- a/src/bots/bot-turn.ts
++++ b/src/bots/bot-turn.ts
+@@ -1,4 +1,5 @@
+-import { streamText, stepCountIs } from 'ai';
++import { stepCountIs } from 'ai';
++import { FLEET_ADMISSION_SCOPE, streamText } from '../core/fleet-model-gateway.js';
+ import type { Tool } from 'ai';
+ import type { CapabilityRegistry } from '../capabilities/registry.js';
+ import type { UserMemoryStore } from '../memory/user-memory.js';
+@@ -10,6 +11,7 @@ import { MAX_AUTOMATIC_CONTINUATIONS } from '../core/execution-limits.js';
+ import { formatToolStep } from '../utils/tool-label.js';
+ import { logger } from '../utils/logger.js';
+ import type { BotManifest, BotTrigger } from './types.js';
++import { FleetAdmissionDenied, FleetTurnAdmission, type FleetLeaseAuthority } from './fleet-provider-admission.js';
+ 
+ /** Mailbox messages injected mid-turn (bot-to-bot or queued user input). */
+ export interface BotTurnMail {
+@@ -66,6 +68,13 @@ export interface BotTurnInput {
+   provider: BaseProvider;
+   tokenBudget: TokenBudget;
+   abortSignal: AbortSignal;
++  /** Injected by a trusted fleet caller; optional for unmodified standalone Mercury. */
++  fleetAdmission?: {
++    authority: FleetLeaseAuthority | null | undefined;
++    upstreamGroup: string | null;
++    maxInputTokens: number;
++    maxOutputTokens: number;
++  };
+   /** Real-time activity consumer (roster, live regions, web feed). */
+   onActivity?: (ev: BotActivityEvent) => void;
+ }
+@@ -120,6 +129,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+   const turnStartedAt = Date.now();
+   const toolsUsed = new Set<string>();
+   const onActivity = input.onActivity;
++  let fleetTurn: FleetTurnAdmission | undefined;
+   const emit = (ev: { kind: BotActivityEvent['kind']; label: string; detail?: string; stepIndex: number; status?: BotActivityEvent['status']; elapsedMs?: number; reasoningTail?: string; textTail?: string }): void => {
+     if (!onActivity) return;
+     try {
+@@ -139,8 +149,22 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+   };
+ 
+   try {
++    if (input.fleetAdmission) {
++      fleetTurn = await FleetTurnAdmission.open(input.fleetAdmission.authority, {
++        taskId: input.jobId ?? '',
++        botId: manifest.id,
++        provider: provider.name,
++        model: provider.getModel(),
++        upstreamGroup: input.fleetAdmission.upstreamGroup ?? '',
++        maxInputTokens: input.fleetAdmission.maxInputTokens,
++        maxOutputTokens: input.fleetAdmission.maxOutputTokens,
++      });
++    }
+     emit({ kind: 'turn-start', stepIndex: 0, label: input.prompt ? input.prompt.slice(0, 80) : 'Checking inbox' });
+     while (stepsRemaining > 0 && !abortSignal.aborted) {
++      // This is the BotManager's actual AI SDK dispatch boundary. Guarded
++      // requests must renew BEFORE invoking streamText, not at enqueue time.
++      if (fleetTurn) await fleetTurn.renewOrRevoke();
+       // streamText, not generateText: the deltas are the real-time feedback
+       // inside the bot's thread (reasoning + reply tails). Same options and
+       // step-count semantics; the result's final promises preserve the old
+@@ -150,9 +174,14 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+         model: provider.getModelInstance(),
+         system,
+         messages,
+-        tools,
++        // Synthetic phase forbids ALL tools during guarded generation.
++        // SDK tool invocations otherwise require their own hard cancellation.
++        tools: fleetTurn ? {} : tools,
+         stopWhen: stepCountIs(stepsRemaining),
+-        abortSignal,
++        maxOutputTokens: fleetTurn ? Math.max(1, fleetTurn.request.maxOutputTokens - tokensOut) : undefined,
++        // Non-serializable capability; SDK gateway strips it before invoking ai.
++        ...(fleetTurn ? { [FLEET_ADMISSION_SCOPE]: fleetTurn } : {}),
++        abortSignal: fleetTurn ? AbortSignal.any([abortSignal, fleetTurn.signal]) : abortSignal,
+         experimental_include: { requestBody: false },
+         experimental_onStepStart: () => {
+           stepIndex++;
+@@ -180,6 +209,11 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+             tokensIn += usage.inputTokens ?? 0;
+             tokensOut += usage.outputTokens ?? 0;
+           }
++          if (fleetTurn && (tokensIn > fleetTurn.request.maxInputTokens
++              || tokensOut > fleetTurn.request.maxOutputTokens)) {
++            fleetTurn.abortNow();
++            throw new FleetAdmissionDenied('observed_token_reservation_exceeded');
++          }
+           for (const tc of toolCalls ?? []) {
+             if (tc?.toolName) toolsUsed.add(String(tc.toolName));
+           }
+@@ -204,6 +238,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+         emit({ kind: 'thinking', stepIndex, label: 'thinking', reasoningTail, textTail });
+       };
+       for await (const part of stream.fullStream) {
++        fleetTurn?.assertLive();
+         if (part.type === 'reasoning-delta' && part.text) {
+           reasoningTail = (reasoningTail + part.text).slice(-THINKING_TAIL_CHARS);
+         } else if (part.type === 'text-delta' && part.text) {
+@@ -216,7 +251,9 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+       }
+       flushThinking();
+ 
++      fleetTurn?.assertLive();
+       const [finalText, finishReason] = await Promise.all([stream.text, stream.finishReason]);
++      fleetTurn?.assertLive();
+       const result = { text: finalText, finishReason };
+       lastResult = result;
+ 
+@@ -299,6 +336,8 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+       channelType: 'bot',
+     });
+ 
++    // A failed final renewal or release cannot report a successful run.
++    if (fleetTurn) await fleetTurn.close();
+     emit({ kind: 'turn-end', stepIndex, label: 'completed', status: 'done' });
+     return { status: 'completed', output, tokensIn, tokensOut, toolsUsed: [...toolsUsed] };
+   } catch (err: any) {
+@@ -314,13 +353,16 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+       tokensOut,
+       toolsUsed: [...toolsUsed],
+       error: err?.message ?? String(err),
+-      reasonCode: classifyFailure(err),
++      reasonCode: fleetTurn?.signal.aborted ? 'fleet_provider_admission_denied' : classifyFailure(err),
+     };
++  } finally {
++    if (fleetTurn) await fleetTurn.dispose();
+   }
+ }
+ 
+ /** Map a provider/tool error to a typed reason code (retry vs permanent). */
+ export function classifyFailure(err: any): string {
++  if (err instanceof FleetAdmissionDenied) return 'fleet_provider_admission_denied';
+   const msg = String(err?.message ?? err ?? '').toLowerCase();
+   if (/rate.?limit|429|too many requests/.test(msg)) return 'provider_rate_limit';
+   // Network blips ARE transient — ECONNRESET (connection dropped mid-read)
+diff --git a/src/bots/fleet-mock-coordinator.test.ts b/src/bots/fleet-mock-coordinator.test.ts
+new file mode 100644
+index 0000000..567d911
+--- /dev/null
++++ b/src/bots/fleet-mock-coordinator.test.ts
+@@ -0,0 +1,223 @@
++import { describe, expect, it, vi } from 'vitest';
++import { randomBytes, createHmac, randomUUID } from 'node:crypto';
++import { MockSignedFleetClient, MockSignedFleetCoordinator, type MockPolicy } from './fleet-mock-coordinator.js';
++import { FleetTurnAdmission } from './fleet-provider-admission.js';
++import { assertFleetRuntimeBootSafe } from '../core/fleet-boot-guard.js';
++import { MockLanguageModelV3 } from 'ai/test';
++import { runBotTurn } from './bot-turn.js';
++
++const keyA = randomBytes(32);
++const keyB = randomBytes(32);
++const policy: MockPolicy[] = [
++  { nodeId: 'node-x1', botId: 'reviewer', provider: 'fixture',
++    model: 'mock-model', upstreamGroup: 'shared-physical-account',
++    maxInputTokens: 100, maxOutputTokens: 10 },
++  { nodeId: 'node-xwing', botId: 'reviewer', provider: 'fixture',
++    model: 'mock-model', upstreamGroup: 'shared-physical-account',
++    maxInputTokens: 100, maxOutputTokens: 10 },
++];
++const req = {
++  taskId: 'mock-fleet-job-0001', botId: 'reviewer',
++  provider: 'fixture', model: 'mock-model',
++  upstreamGroup: 'shared-physical-account',
++  maxInputTokens: 100, maxOutputTokens: 10,
++};
++function fixture(now?: () => number) {
++  const server = new MockSignedFleetCoordinator({
++    keys: { 'node-x1': keyA, 'node-xwing': keyB },
++    policies: policy, now,
++  });
++  const clientA = new MockSignedFleetClient('node-x1', keyA, m => server.handle(m));
++  const clientB = new MockSignedFleetClient('node-xwing', keyB, m => server.handle(m));
++  return { server, clientA, clientB };
++}
++
++describe('authenticated in-process authority fixture, no network / vendor keys', () => {
++  it('two nodes contend against one shared authoritative slot; exactly one admitted', async () => {
++    const { clientA, clientB, server } = fixture();
++    const results = await Promise.all([
++      clientA.acquire(req),
++      clientB.acquire({ ...req, taskId: 'mock-fleet-job-0002' }),
++    ]);
++    expect(results.filter(Boolean)).toHaveLength(1);
++    expect(server.occupiedSlots()).toBe(1);
++    const winner = results[0] ? clientA : clientB;
++    await winner.release(results[0] ? req : { ...req, taskId: 'mock-fleet-job-0002' }, (results[0] ?? results[1])!);
++    expect(server.occupiedSlots()).toBe(0);
++  });
++
++  it('the second node succeeds only after verified release', async () => {
++    const { clientA, clientB } = fixture();
++    const lease = await clientA.acquire(req);
++    expect(lease).toBeTruthy();
++    expect(await clientB.acquire({ ...req, taskId: 'mock-fleet-job-0002' })).toBeNull();
++    expect(await clientA.release(req, lease!)).toBe(true);
++    expect(await clientB.acquire({ ...req, taskId: 'mock-fleet-job-0002' })).toBeTruthy();
++  });
++
++  it('a different model, upstream alias, bot or excessive token caps are denied', async () => {
++    const { clientA, server } = fixture();
++    for (const overrides of [
++      { model: 'paid-model' }, { upstreamGroup: 'fake-free-alias' },
++      { botId: 'other-bot' }, { maxInputTokens: 101 }, { maxOutputTokens: 11 },
++    ]) expect(await clientA.acquire({ ...req, ...overrides })).toBeNull();
++    expect(server.occupiedSlots()).toBe(0);
++  });
++
++  it('wrong HMAC node identity is denied, without a lease', async () => {
++    const { server } = fixture();
++    const impostor = new MockSignedFleetClient('node-xwing', keyA, m => server.handle(m));
++    await expect(impostor.acquire(req)).rejects.toThrow('mock_authentication_failed');
++    expect(server.occupiedSlots()).toBe(0);
++  });
++
++  it('a signed message cannot be replayed to acquire two different slots', async () => {
++    const { server } = fixture();
++    const payload = { nodeId: 'node-x1', nonce: randomUUID(), operation: 'acquire',
++      request: req, lease: null };
++    const mac = createHmac('sha256', keyA).update(JSON.stringify(payload)).digest('hex');
++    const message: any = { payload, mac };
++    expect(server.handle(message).payload.result).toBeTruthy();
++    expect(() => server.handle(message)).toThrow('mock_replayed_message');
++    expect(server.occupiedSlots()).toBe(1);
++  });
++
++  it('an altered signed request is refused', async () => {
++    const { server } = fixture();
++    const payload = { nodeId: 'node-x1', nonce: randomUUID(), operation: 'acquire',
++      request: req, lease: null };
++    const mac = createHmac('sha256', keyA).update(JSON.stringify(payload)).digest('hex');
++    const message: any = { payload: { ...payload, request: { ...req, model: 'changed' } }, mac };
++    expect(() => server.handle(message)).toThrow('mock_authentication_failed');
++    expect(server.occupiedSlots()).toBe(0);
++  });
++
++  it('an altered signed coordinator response is refused by the client', async () => {
++    const { server } = fixture();
++    const client = new MockSignedFleetClient('node-x1', keyA, msg => {
++      const answer = server.handle(msg);
++      return { ...answer, payload: { ...answer.payload, result: null } };
++    });
++    await expect(client.acquire(req)).rejects.toThrow('mock_response_authentication_failed');
++  });
++
++  it('partition removes authority: no client issues a fallback lease', async () => {
++    const { server, clientA, clientB } = fixture();
++    server.setAvailable(false);
++    await expect(clientA.acquire(req)).rejects.toThrow('mock_coordinator_partition');
++    await expect(clientB.acquire({ ...req, taskId: 'mock-fleet-job-0002' })).rejects.toThrow('mock_coordinator_partition');
++    expect(server.occupiedSlots()).toBe(0);
++  });
++
++  it('cross-client release of a lease is denied', async () => {
++    const { server, clientA, clientB } = fixture();
++    const lease = await clientA.acquire(req);
++    expect(lease).toBeTruthy();
++    expect(await clientB.release(req, lease!)).toBe(false);
++    expect(server.occupiedSlots()).toBe(1);
++    expect(await clientA.release(req, lease!)).toBe(true);
++  });
++
++  it('revocation before renew denies the original client', async () => {
++    const { server, clientA } = fixture();
++    const lease = await clientA.acquire(req);
++    server.revokeUpstream(req.upstreamGroup);
++    expect(await clientA.renew(req, lease!)).toBeNull();
++    expect(server.occupiedSlots()).toBe(0);
++  });
++
++  it('expiration permits a new owner and rejects the old lease', async () => {
++    let now = 1000;
++    const { clientA, clientB } = fixture(() => now);
++    const leaseA = await clientA.acquire(req);
++    now += 12001;
++    const leaseB = await clientB.acquire({ ...req, taskId: 'mock-fleet-job-0002' });
++    expect(leaseB).toBeTruthy();
++    expect(await clientA.renew(req, leaseA!)).toBeNull();
++  });
++
++  it('two independent authority copies can still split brain: a deliberate negative witness', async () => {
++    const s1 = fixture(), s2 = fixture();
++    const a = await s1.clientA.acquire(req);
++    const b = await s2.clientB.acquire({ ...req, taskId: 'mock-fleet-job-0002' });
++    expect(a).toBeTruthy();
++    expect(b).toBeTruthy();
++    expect(s1.server.occupiedSlots()).toBe(1);
++    expect(s2.server.occupiedSlots()).toBe(1);
++    // NOT a distributed-failover solution. One surviving authority required.
++  });
++});
++
++describe('startup and actual BotManager turn boundary', () => {
++  it('fleet runtime mode cannot launch a production process with test-only authority', () => {
++    vi.stubEnv('MERCURY_FLEET_MODEL_GATE', '1');
++    expect(() => assertFleetRuntimeBootSafe()).toThrow('fleet_provider_admission_denied');
++    vi.unstubAllEnvs();
++  });
++
++  it('ordinary startup remains unchanged if no fleet mode was requested', () => {
++    vi.stubEnv('MERCURY_FLEET_MODEL_GATE', undefined);
++    expect(() => assertFleetRuntimeBootSafe()).not.toThrow();
++    vi.unstubAllEnvs();
++  });
++
++  it('an admitted fake-client lease can guard the real SDK bot turn end to end', async () => {
++    vi.stubEnv('MERCURY_FLEET_MODEL_GATE', '1');
++    const { clientA, server } = fixture();
++    const mock = new MockLanguageModelV3({
++      doStream: async () => ({ stream: new ReadableStream<any>({
++        start(controller) {
++          controller.enqueue({ type: 'text-start', id: 'txt' });
++          controller.enqueue({ type: 'text-delta', id: 'txt', delta: 'signed fixture complete' });
++          controller.enqueue({ type: 'text-end', id: 'txt' });
++          controller.enqueue({ type: 'finish',
++            finishReason: { unified: 'stop', raw: undefined },
++            usage: { inputTokens: { total: 1, noCache: 1 },
++              outputTokens: { total: 2, text: 2 } },
++          });
++          controller.close();
++        },
++      }) }),
++    });
++    const recorded = vi.fn();
++    const output = await runBotTurn({
++      manifest: { id: 'reviewer', name: 'Reviewer', enabled: true, autonomy: {maxSteps: 2} } as any,
++      trigger: 'chat', jobId: req.taskId,
++      prompt: 'fixture review', persona: 'mock-only',
++      mail: [], pollMail: () => [],
++      sandbox: { workspace: '/tmp/fixture-bot', shared: '/tmp/fixture-shared' },
++      capabilities: {} as any, tools: {}, userMemory: null,
++      provider: { name: 'fixture', getModel: () => 'mock-model', getModelInstance: () => mock } as any,
++      tokenBudget: { recordUsage: recorded, getRemaining: () => 1000 } as any,
++      abortSignal: new AbortController().signal,
++      fleetAdmission: { authority: clientA, upstreamGroup: req.upstreamGroup,
++        maxInputTokens: 100, maxOutputTokens: 10 },
++    });
++    expect(output.status).toBe('completed');
++    expect(output.output).toBe('signed fixture complete');
++    expect(mock.doStreamCalls).toHaveLength(1);
++    expect(server.occupiedSlots()).toBe(0);
++    expect(recorded).toHaveBeenCalledTimes(1);
++    vi.unstubAllEnvs();
++  });
++
++  it('denied upstream model prevents a real SDK doStream on guarded bot turn', async () => {
++    vi.stubEnv('MERCURY_FLEET_MODEL_GATE', '1');
++    const { clientA } = fixture();
++    const mock = new MockLanguageModelV3({ doStream: async () => { throw Error('must not run'); } });
++    const output = await runBotTurn({
++      manifest: { id: 'reviewer', name: 'Reviewer', enabled: true } as any,
++      trigger: 'chat', jobId: req.taskId, prompt: 'fixture', persona: '',
++      mail: [], pollMail: () => [], sandbox: {workspace: '/tmp/mock', shared: '/tmp/none'},
++      capabilities: {} as any, tools: {}, userMemory: null,
++      provider: {name: 'fixture', getModel: () => 'forbidden-model', getModelInstance: () => mock} as any,
++      tokenBudget: {recordUsage: vi.fn(), getRemaining: () => 1000} as any,
++      abortSignal: new AbortController().signal,
++      fleetAdmission: {authority: clientA, upstreamGroup: req.upstreamGroup,
++        maxInputTokens: 100, maxOutputTokens: 10},
++    });
++    expect(output.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(mock.doStreamCalls).toHaveLength(0);
++    vi.unstubAllEnvs();
++  });
++});
+diff --git a/src/bots/fleet-mock-coordinator.ts b/src/bots/fleet-mock-coordinator.ts
+new file mode 100644
+index 0000000..11c5021
+--- /dev/null
++++ b/src/bots/fleet-mock-coordinator.ts
+@@ -0,0 +1,179 @@
++/**
++ * OFFLINE TEST FIXTURE ONLY.
++ *
++ * Signed messages between simulated fleet nodes and ONE memory-backed
++ * coordinator. No port, persistence, real keys, HTTP, or vendor quotas.
++ * A separate server instance is a separate unsafe authority; never use this
++ * module to authorize real Mercury services.
++ */
++import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
++import type { FleetLease, FleetLeaseAuthority, FleetLeaseRequest } from './fleet-provider-admission.js';
++
++export type MockOperation = 'acquire' | 'renew' | 'release';
++export interface MockPolicy {
++  nodeId: string;
++  botId: string;
++  provider: string;
++  model: string;
++  upstreamGroup: string;
++  maxInputTokens: number;
++  maxOutputTokens: number;
++}
++interface RequestMessage {
++  nodeId: string;
++  nonce: string;
++  operation: MockOperation;
++  request: FleetLeaseRequest;
++  lease: FleetLease | null;
++}
++interface SignedRequest { payload: RequestMessage; mac: string; }
++interface ResponseMessage {
++  nonce: string;
++  operation: MockOperation;
++  result: FleetLease | boolean | null;
++}
++interface SignedResponse { payload: ResponseMessage; mac: string; }
++
++function sign(key: Buffer, payload: unknown): string {
++  return createHmac('sha256', key).update(JSON.stringify(payload)).digest('hex');
++}
++
++function verified(key: Buffer, payload: unknown, mac: string): boolean {
++  if (typeof mac !== 'string' || !/^[a-f0-9]{64}$/.test(mac)) return false;
++  return timingSafeEqual(Buffer.from(mac, 'hex'), Buffer.from(sign(key, payload), 'hex'));
++}
++
++function requestIdentityMatches(a: FleetLeaseRequest, b: FleetLease): boolean {
++  return a.taskId === b.taskId && a.botId === b.botId
++    && a.provider === b.provider && a.model === b.model
++    && a.upstreamGroup === b.upstreamGroup;
++}
++
++/** Single-authority, process-local fixture with HMAC request/response custody. */
++export class MockSignedFleetCoordinator {
++  private keys: Map<string, Buffer>;
++  private readonly policies: readonly MockPolicy[];
++  private readonly seen = new Set<string>();
++  private readonly holders = new Map<string, { nodeId: string; lease: FleetLease }>();
++  private readonly ttlMs: number;
++  private readonly now: () => number;
++  private available = true;
++
++  constructor(opts: {
++    keys: Record<string, Buffer>;
++    policies: MockPolicy[];
++    ttlMs?: number;
++    now?: () => number;
++  }) {
++    this.keys = new Map(Object.entries(opts.keys).map(([id, key]) => [id, Buffer.from(key)]));
++    this.policies = opts.policies.map(p => ({ ...p }));
++    this.ttlMs = opts.ttlMs ?? 12_000;
++    this.now = opts.now ?? Date.now;
++    if (!Number.isInteger(this.ttlMs) || this.ttlMs < 100 || this.ttlMs > 120_000) {
++      throw Error('invalid_mock_ttl');
++    }
++    for (const [id, key] of this.keys) {
++      if (!/^[A-Za-z0-9_-]{3,128}$/.test(id) || key.length < 32) {
++        throw Error('invalid_mock_node_identity_or_key');
++      }
++    }
++  }
++
++  /** Partition / outage injection; transport throws, no permissive fallback. */
++  setAvailable(available: boolean): void { this.available = available; }
++
++  /** Operator-style revocation in the fixture (not remotely durable). */
++  revokeUpstream(group: string): void { this.holders.delete(group); }
++
++  /** Strictly test-only: shows how many slots are occupied. */
++  occupiedSlots(): number { return this.holders.size; }
++
++  handle(signed: SignedRequest): SignedResponse {
++    if (!this.available) throw Error('mock_coordinator_partition');
++    const payload = signed?.payload;
++    const nodeId = payload?.nodeId;
++    const key = this.keys.get(nodeId);
++    if (!key || !verified(key, payload, signed.mac)) {
++      throw Error('mock_authentication_failed');
++    }
++    if (!/^[0-9a-f-]{36}$/i.test(payload.nonce)) {
++      throw Error('mock_invalid_nonce');
++    }
++    const replayKey = nodeId + ':' + payload.nonce;
++    if (this.seen.has(replayKey)) throw Error('mock_replayed_message');
++    this.seen.add(replayKey);
++    const r = payload.request;
++    let result: FleetLease | boolean | null = null;
++    const allowed = this.policies.some(p =>
++      p.nodeId === nodeId && p.botId === r.botId && p.provider === r.provider
++      && p.model === r.model && p.upstreamGroup === r.upstreamGroup
++      && Number.isSafeInteger(r.maxInputTokens)
++      && Number.isSafeInteger(r.maxOutputTokens)
++      && r.maxInputTokens > 0 && r.maxOutputTokens > 0
++      && r.maxInputTokens <= p.maxInputTokens
++      && r.maxOutputTokens <= p.maxOutputTokens
++    );
++    const group = r.upstreamGroup;
++    const existing = this.holders.get(group);
++    if (existing && existing.lease.expiresAtMs <= this.now()) this.holders.delete(group);
++    const holder = this.holders.get(group);
++    if (allowed && payload.operation === 'acquire' && !payload.lease && !holder) {
++      const lease: FleetLease = { ...r, leaseId: randomUUID(), expiresAtMs: this.now() + this.ttlMs };
++      this.holders.set(group, { nodeId, lease });
++      result = { ...lease };
++    }
++    if (allowed && payload.operation === 'renew' && holder && payload.lease
++        && holder.nodeId === nodeId && holder.lease.leaseId === payload.lease.leaseId
++        && requestIdentityMatches(r, holder.lease)
++        && requestIdentityMatches(r, payload.lease)) {
++      const lease: FleetLease = { ...holder.lease, expiresAtMs: this.now() + this.ttlMs };
++      this.holders.set(group, { nodeId, lease });
++      result = { ...lease };
++    }
++    if (allowed && payload.operation === 'release' && holder && payload.lease
++        && holder.nodeId === nodeId && holder.lease.leaseId === payload.lease.leaseId
++        && requestIdentityMatches(r, holder.lease)
++        && requestIdentityMatches(r, payload.lease)) {
++      this.holders.delete(group);
++      result = true;
++    }
++    const response: ResponseMessage = { nonce: payload.nonce, operation: payload.operation, result };
++    return { payload: response, mac: sign(key, response) };
++  }
++}
++
++/** Authenticated fixture client. Only the server owns admission state. */
++export class MockSignedFleetClient implements FleetLeaseAuthority {
++  constructor(
++    private readonly nodeId: string,
++    private readonly key: Buffer,
++    private readonly transport: (message: SignedRequest) => SignedResponse,
++  ) {
++    if (key.length < 32) throw Error('invalid_mock_client_key');
++  }
++
++  private async call(
++    operation: MockOperation, request: FleetLeaseRequest, lease: FleetLease | null,
++  ): Promise<FleetLease | boolean | null> {
++    const payload: RequestMessage = {
++      nodeId: this.nodeId, nonce: randomUUID(), operation, request, lease,
++    };
++    const answer = await this.transport({ payload, mac: sign(this.key, payload) });
++    if (!answer || !verified(this.key, answer.payload, answer.mac)
++        || answer.payload.nonce !== payload.nonce
++        || answer.payload.operation !== operation) {
++      throw Error('mock_response_authentication_failed');
++    }
++    return answer.payload.result;
++  }
++
++  async acquire(request: FleetLeaseRequest): Promise<FleetLease | null> {
++    return await this.call('acquire', request, null) as FleetLease | null;
++  }
++  async renew(request: FleetLeaseRequest, lease: FleetLease): Promise<FleetLease | null> {
++    return await this.call('renew', request, lease) as FleetLease | null;
++  }
++  async release(request: FleetLeaseRequest, lease: FleetLease): Promise<boolean> {
++    return (await this.call('release', request, lease)) === true;
++  }
++}
+diff --git a/src/bots/fleet-mock-manager.integration.test.ts b/src/bots/fleet-mock-manager.integration.test.ts
+new file mode 100644
+index 0000000..fea4ca3
+--- /dev/null
++++ b/src/bots/fleet-mock-manager.integration.test.ts
+@@ -0,0 +1,113 @@
++/**
++ * Two isolated Mercury BotManager queues, one HMAC-signed mock coordinator.
++ * Tests the enqueue -> durable job -> runBotTurn -> real AI SDK mock call path.
++ * Never uses hosted models, shared prod queues or network provider transport.
++ */
++import { describe, expect, it, vi } from 'vitest';
++import { randomBytes } from 'node:crypto';
++import { mkdtempSync, rmSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { MockLanguageModelV3 } from 'ai/test';
++import { BotManager } from './bot-manager.js';
++import { BotStore } from './store.js';
++import { getDefaultConfig } from '../utils/config.js';
++import { MockSignedFleetClient, MockSignedFleetCoordinator } from './fleet-mock-coordinator.js';
++
++function completedStream(text: string, wait?: Promise<void>) {
++  return new ReadableStream<any>({
++    start(controller) {
++      controller.enqueue({ type: 'text-start', id: 't' });
++      void (async () => {
++        await wait;
++        controller.enqueue({ type: 'text-delta', id: 't', delta: text });
++        controller.enqueue({ type: 'text-end', id: 't' });
++        controller.enqueue({
++          type: 'finish', finishReason: { unified: 'stop', raw: undefined },
++          usage: { inputTokens: { total: 2, noCache: 2 },
++            outputTokens: { total: 2, text: 2 } },
++        });
++        controller.close();
++      })();
++    },
++  });
++}
++
++describe('two isolated BotManagers and a single mock lease authority', () => {
++  it('only one overlapping durable job may reach SDK doStream; both queues settle', async () => {
++    vi.stubEnv('MERCURY_FLEET_MODEL_GATE', '1');
++    const roots = [mkdtempSync(join(tmpdir(), 'merc-fleet-a-')),
++      mkdtempSync(join(tmpdir(), 'merc-fleet-b-'))];
++    const managers: BotManager[] = [];
++    try {
++      const key1 = randomBytes(32), key2 = randomBytes(32);
++      const policies = ['node-x1', 'node-xwing'].map(nodeId => ({
++        nodeId, botId: 'reviewer', provider: 'fixture', model: 'mock-model',
++        upstreamGroup: 'shared-quota-account', maxInputTokens: 100, maxOutputTokens: 10,
++      }));
++      const server = new MockSignedFleetCoordinator({
++        keys: { 'node-x1': key1, 'node-xwing': key2 }, policies,
++      });
++      const clients = [
++        new MockSignedFleetClient('node-x1', key1, message => server.handle(message)),
++        new MockSignedFleetClient('node-xwing', key2, message => server.handle(message)),
++      ];
++      let allowFirstToFinish!: () => void;
++      const firstFinish = new Promise<void>(resolve => { allowFirstToFinish = resolve; });
++      const modelA = new MockLanguageModelV3({ doStream: async () =>
++        ({ stream: completedStream('node A success', firstFinish) }) });
++      const modelB = new MockLanguageModelV3({ doStream: async () =>
++        ({ stream: completedStream('node B should never run') }) });
++      const models = [modelA, modelB];
++      for (let n = 0; n < 2; n++) {
++        const config = getDefaultConfig();
++        config.bots.maxConcurrent = 2;
++        const store = new BotStore(join(roots[n], 'bots'));
++        store.create({ id: 'reviewer', name: 'Reviewer', manifest: {enabled: true} });
++        const provider = {
++          name: 'fixture', model: 'mock-model',
++          getModel: () => 'mock-model', getModelInstance: () => models[n],
++        };
++        const manager = new BotManager({
++          config, store, userMemoryFactory: () => null,
++          providers: { get: () => provider, getDefault: () => provider } as any,
++          tokenBudget: {recordUsage: vi.fn(), getRemaining: () => 100000} as any,
++          fleetAdmission: {
++            authority: clients[n],
++            resolveUpstreamGroup: () => 'shared-quota-account',
++            maxInputTokens: 100, maxOutputTokens: 10,
++          },
++        });
++        managers.push(manager);
++      }
++
++      const a = managers[0].enqueue('reviewer', {trigger: 'chat', prompt: 'node A fixture'});
++      expect(a.accepted).toBe(true);
++      await vi.waitFor(() => expect(modelA.doStreamCalls.length).toBe(1));
++      expect(server.occupiedSlots()).toBe(1);
++
++      const b = managers[1].enqueue('reviewer', {trigger: 'chat', prompt: 'node B fixture'});
++      expect(b.accepted).toBe(true);
++      await vi.waitFor(() => {
++        const j = managers[1].getJournal('reviewer');
++        expect(j).toHaveLength(1);
++        expect(j[0].reasonCode).toBe('fleet_provider_admission_denied');
++      });
++      expect(modelB.doStreamCalls).toHaveLength(0);
++      expect(server.occupiedSlots()).toBe(1);
++
++      allowFirstToFinish();
++      await vi.waitFor(() => {
++        const j = managers[0].getJournal('reviewer');
++        expect(j).toHaveLength(1);
++        expect(j[0].state).toBe('completed');
++      });
++      expect(server.occupiedSlots()).toBe(0);
++      expect(managers[1].getDlq('reviewer')).toHaveLength(1);
++    } finally {
++      for (const manager of managers) manager.dispose();
++      for (const root of roots) rmSync(root, {recursive: true, force: true});
++      vi.unstubAllEnvs();
++    }
++  });
++});
+diff --git a/src/bots/fleet-provider-admission.node.check.mjs b/src/bots/fleet-provider-admission.node.check.mjs
+new file mode 100644
+index 0000000..cba45ed
+--- /dev/null
++++ b/src/bots/fleet-provider-admission.node.check.mjs
+@@ -0,0 +1,136 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import {
++  FleetTurnAdmission, FleetAdmissionDenied, validLease
++} from './fleet-provider-admission.ts';
++
++const request = {
++  taskId: 'job-fixture-0001', botId: 'reviewer', provider: 'fixture',
++  model: 'fixture-only', upstreamGroup: 'synthetic-upstream',
++  maxInputTokens: 100, maxOutputTokens: 10,
++};
++function fake(extra = {}) {
++  let busy = false;
++  const calls = [];
++  const gate = {
++    calls,
++    async acquire(r) {
++      calls.push('acquire');
++      if (busy) return null;
++      busy = true;
++      return { leaseId: 'lease-fixture-0001', ...r, expiresAtMs: Date.now() + 60000 };
++    },
++    async renew(r, l) {
++      calls.push('renew');
++      return { ...l, expiresAtMs: Date.now() + 60000 };
++    },
++    async release(r, l) {
++      calls.push('release');
++      busy = false;
++      return true;
++    },
++    ...extra
++  };
++  return gate;
++}
++const opts = { watchdogMs: 50 };
++
++test('missing coordinator denies without side effects', async () => {
++  await assert.rejects(FleetTurnAdmission.open(null, request), FleetAdmissionDenied);
++});
++test('unqualified group denies before authority call', async () => {
++  const gate = fake();
++  await assert.rejects(FleetTurnAdmission.open(gate, { ...request, upstreamGroup: 'unknown' }), FleetAdmissionDenied);
++  assert.deepEqual(gate.calls, []);
++});
++test('unknown paid provider not inferable from route: coordinator rejects', async () => {
++  const gate = fake({ acquire: async () => null });
++  await assert.rejects(FleetTurnAdmission.open(gate, { ...request, provider: 'paid-provider' }), FleetAdmissionDenied);
++});
++test('wrong upstream response denies (alias must match)', async () => {
++  const gate = fake({ acquire: async (r) => ({ leaseId: 'lease-fixture-0001', ...r,
++    upstreamGroup: 'untrusted-alias', expiresAtMs: Date.now() + 60000 }) });
++  await assert.rejects(FleetTurnAdmission.open(gate, request), FleetAdmissionDenied);
++});
++test('wrong model response denies (must bind exact dispatch)', async () => {
++  const gate = fake({ acquire: async (r) => ({ leaseId: 'lease-fixture-0001', ...r,
++    model: 'changed-after-admission', expiresAtMs: Date.now() + 60000 }) });
++  await assert.rejects(FleetTurnAdmission.open(gate, request), FleetAdmissionDenied);
++});
++test('acquire backend unavailable denies', async () => {
++  await assert.rejects(FleetTurnAdmission.open(fake({ acquire: async () => {throw Error('down')} }), request), FleetAdmissionDenied);
++});
++test('normal lifecycle acquire renew release with immutable identity', async () => {
++  const gate = fake();
++  const lease = await FleetTurnAdmission.open(gate, request, opts);
++  lease.assertLive();
++  await lease.renewOrRevoke();
++  await lease.close();
++  assert.equal(lease.signal.aborted, true);
++  assert.deepEqual(gate.calls, ['acquire', 'renew', 'renew', 'release']);
++  await lease.dispose();
++  assert.equal(gate.calls.filter(c => c === 'release').length, 1);
++});
++test('two same-upstream concurrent clients: only one can acquire', async () => {
++  const gate = fake();
++  const [a, b] = await Promise.allSettled([
++    FleetTurnAdmission.open(gate, request, opts),
++    FleetTurnAdmission.open(gate, { ...request, taskId: 'job-fixture-0002' }, opts)
++  ]);
++  assert.equal([a,b].filter(x => x.status === 'fulfilled').length, 1);
++  await (a.status === 'fulfilled' ? a.value : b.value).dispose();
++});
++test('renew unavailable aborts existing signal and prevents completion', async () => {
++  const gate = fake({ renew: async () => null });
++  const lease = await FleetTurnAdmission.open(gate, request, opts);
++  await assert.rejects(lease.renewOrRevoke(), FleetAdmissionDenied);
++  assert.equal(lease.signal.aborted, true);
++  await assert.rejects(lease.close(), FleetAdmissionDenied);
++  await lease.dispose();
++});
++test('changed lease ID on renew revokes instead of silently swapping generation', async () => {
++  const gate = fake({ renew: async (r,l) => ({ ...l, leaseId: 'lease-attacker-2' }) });
++  const lease = await FleetTurnAdmission.open(gate, request, opts);
++  await assert.rejects(lease.renewOrRevoke(), FleetAdmissionDenied);
++  assert.equal(lease.signal.aborted, true);
++  await lease.dispose();
++});
++test('timer revokes during quiet streaming gaps without a next chunk', async () => {
++  const gate = fake({ renew: async () => null });
++  const lease = await FleetTurnAdmission.open(gate, request, opts);
++  await new Promise(resolve => setTimeout(resolve, 110));
++  assert.equal(lease.signal.aborted, true);
++  await lease.dispose();
++});
++test('release failure cannot claim success', async () => {
++  const gate = fake({ release: async () => false });
++  const lease = await FleetTurnAdmission.open(gate, request, opts);
++  await assert.rejects(lease.close(), FleetAdmissionDenied);
++  assert.equal(lease.signal.aborted, true);
++  await lease.dispose();
++});
++test('expired fixture lease not accepted', async () => {
++  const gate = fake({ acquire: async r => ({ leaseId: 'lease-fixture-0001', ...r, expiresAtMs: Date.now()-1 }) });
++  await assert.rejects(FleetTurnAdmission.open(gate, request), FleetAdmissionDenied);
++});
++test('suspicious multi-day fake lease TTL denied', async () => {
++  const gate = fake({ acquire: async r => ({ leaseId: 'lease-fixture-0001', ...r, expiresAtMs: Date.now()+7*86400_000 }) });
++  await assert.rejects(FleetTurnAdmission.open(gate, request), FleetAdmissionDenied);
++});
++test('invalid cap / request injection fails before authority', async () => {
++  const gate = fake();
++  await assert.rejects(FleetTurnAdmission.open(gate, {...request, maxInputTokens: 0}), FleetAdmissionDenied);
++  await assert.rejects(FleetTurnAdmission.open(gate, {...request, taskId: '../escape'}), FleetAdmissionDenied);
++  assert.deepEqual(gate.calls, []);
++});
++test('invalid watchdog interval rejects and cleans up slot', async () => {
++  const gate = fake();
++  await assert.rejects(FleetTurnAdmission.open(gate,request,{watchdogMs:5}), FleetAdmissionDenied);
++  assert.deepEqual(gate.calls, ['acquire','release']);
++});
++test('strict identity matching on an otherwise valid lease', () => {
++  const l = {leaseId:'lease-fixture-0001', ...request, expiresAtMs:Date.now()+10000};
++  assert.equal(validLease(l,request,Date.now()),true);
++  assert.equal(validLease({...l,botId:'other'},request,Date.now()),false);
++  assert.equal(validLease({...l,taskId:'other'},request,Date.now()),false);
++});
+diff --git a/src/bots/fleet-provider-admission.ts b/src/bots/fleet-provider-admission.ts
+new file mode 100644
+index 0000000..102a36e
+--- /dev/null
++++ b/src/bots/fleet-provider-admission.ts
+@@ -0,0 +1,213 @@
++/**
++ * Experimental, opt-in, fail-closed provider-call admission for Mercury bot turns.
++ * NO network transport or credentials live here; an authenticated external
++ * coordinator must implement FleetLeaseAuthority before real deployment.
++ *
++ * Intentional first-slice limits: scoped turns get ZERO tools; a no-tool
++ * generation is the only operation protected by the watchdog. Other Mercury
++ * model invocation paths are NOT gated by this module.
++ */
++export interface FleetLeaseRequest {
++  taskId: string;
++  botId: string;
++  provider: string;
++  model: string;
++  upstreamGroup: string;
++  maxInputTokens: number;
++  maxOutputTokens: number;
++}
++
++export interface FleetLease {
++  leaseId: string;
++  taskId: string;
++  botId: string;
++  provider: string;
++  model: string;
++  upstreamGroup: string;
++  expiresAtMs: number;
++}
++
++export interface FleetLeaseAuthority {
++  acquire(request: FleetLeaseRequest): Promise<FleetLease | null>;
++  renew(request: FleetLeaseRequest, lease: FleetLease): Promise<FleetLease | null>;
++  release(request: FleetLeaseRequest, lease: FleetLease): Promise<boolean>;
++}
++
++export class FleetAdmissionDenied extends Error {
++  readonly reason: string;
++  constructor(reason: string) {
++    super('fleet_provider_admission_denied');
++    this.reason = reason;
++    this.name = 'FleetAdmissionDenied';
++  }
++}
++
++export const MIN_WATCHDOG_MS = 50;
++export const DEFAULT_WATCHDOG_MS = 1_000;
++export const MAX_LEASE_TTL_MS = 120_000;
++
++// Not exported: a lease must come from this module's successful acquire.
++const validPermitInstances = new WeakSet<object>();
++
++
++function nonEmpty(value: unknown, maxLength = 256): value is string {
++  return typeof value === 'string' && value.length > 0
++    && value.length <= maxLength && /^[a-zA-Z0-9_.:/@-]+$/.test(value);
++}
++
++function validRequest(r: FleetLeaseRequest): boolean {
++  return typeof r.taskId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/.test(r.taskId)
++    && typeof r.botId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/.test(r.botId)
++    && nonEmpty(r.provider) && nonEmpty(r.model)
++    && nonEmpty(r.upstreamGroup) && r.upstreamGroup !== 'unknown'
++    && Number.isSafeInteger(r.maxInputTokens) && r.maxInputTokens > 0
++    && Number.isSafeInteger(r.maxOutputTokens) && r.maxOutputTokens > 0;
++}
++
++/** The authority's response MUST bind to the exact physical upstream group. */
++export function validLease(lease: FleetLease | null | undefined,
++                           request: FleetLeaseRequest, nowMs: number): lease is FleetLease {
++  return !!lease && nonEmpty(lease.leaseId)
++    && lease.taskId === request.taskId && lease.botId === request.botId
++    && lease.provider === request.provider && lease.model === request.model
++    && lease.upstreamGroup === request.upstreamGroup
++    && Number.isFinite(lease.expiresAtMs)
++    && lease.expiresAtMs > nowMs
++    && lease.expiresAtMs - nowMs <= MAX_LEASE_TTL_MS;
++}
++
++/**
++ * Per-turn lease lifecycle. No retry or new acquire after revocation.
++ * Timer is active throughout an SDK streaming call (including silent gaps).
++ * A lease-lost error must be treated as PERMANENT by the caller.
++ */
++export class FleetTurnAdmission {
++  private revoked = false;
++  private closed = false;
++  private readonly controller = new AbortController();
++  private ticker?: ReturnType<typeof setInterval>;
++  private renewal?: Promise<void>;
++  private readonly authority: FleetLeaseAuthority;
++  readonly request: FleetLeaseRequest;
++  private lease: FleetLease;
++  private readonly clock: () => number;
++  private constructor(authority: FleetLeaseAuthority, request: FleetLeaseRequest,
++                      lease: FleetLease, clock: () => number) {
++    this.authority = authority;
++    this.request = request;
++    this.lease = lease;
++    this.clock = clock;
++  }
++
++  static async open(
++    authority: FleetLeaseAuthority | null | undefined,
++    request: FleetLeaseRequest,
++    opts: { clock?: () => number; watchdogMs?: number } = {},
++  ): Promise<FleetTurnAdmission> {
++    if (!authority || !validRequest(request)
++        || typeof authority.acquire !== 'function'
++        || typeof authority.renew !== 'function'
++        || typeof authority.release !== 'function') {
++      throw new FleetAdmissionDenied('missing_authority_or_unqualified_group');
++    }
++    const clock = opts.clock ?? Date.now;
++    let response: FleetLease | null;
++    try {
++      response = await authority.acquire(request);
++    } catch {
++      throw new FleetAdmissionDenied('acquire_unavailable');
++    }
++    if (!validLease(response, request, clock())) {
++      // If an unusable lease was issued, best-effort release; never generate.
++      const unusable: unknown = response;
++      if (typeof unusable === 'object' && unusable !== null
++          && 'leaseId' in unusable && typeof unusable.leaseId === 'string') {
++        try { await authority.release(request, unusable as FleetLease); } catch { /* must deny */ }
++      }
++      throw new FleetAdmissionDenied('acquire_rejected_or_mismatched');
++    }
++    const admission = new FleetTurnAdmission(authority, request, response, clock);
++    validPermitInstances.add(admission);
++    const watchdogMs = opts.watchdogMs ?? DEFAULT_WATCHDOG_MS;
++    if (!Number.isInteger(watchdogMs) || watchdogMs < MIN_WATCHDOG_MS || watchdogMs > 5_000) {
++      await admission.dispose();
++      throw new FleetAdmissionDenied('invalid_watchdog_interval');
++    }
++    admission.ticker = setInterval(() => {
++      void admission.renewOrRevoke().catch(() => {
++        admission.revoke();
++      });
++    }, watchdogMs);
++    admission.ticker.unref?.();
++    return admission;
++  }
++
++  static wasIssuedHere(value: unknown): value is FleetTurnAdmission {
++    return typeof value === 'object' && value !== null && validPermitInstances.has(value);
++  }
++
++  get signal(): AbortSignal { return this.controller.signal; }
++
++  assertLive(): void {
++    if (this.closed || this.revoked || !validLease(this.lease, this.request, this.clock())) {
++      this.revoke();
++      throw new FleetAdmissionDenied('expired_or_revoked');
++    }
++  }
++
++  /** Terminate the SDK request after observed quota overrun or policy denial. */
++  abortNow(): void { this.revoke(); }
++
++  private revoke(): void {
++    this.revoked = true;
++    if (!this.controller.signal.aborted) this.controller.abort();
++  }
++
++  async renewOrRevoke(): Promise<void> {
++    this.assertLive();
++    if (!this.renewal) {
++      const current = this.lease;
++      this.renewal = (async () => {
++        let fresh: FleetLease | null;
++        try { fresh = await this.authority.renew(this.request, current); }
++        catch { fresh = null; }
++        if (!validLease(fresh, this.request, this.clock()) || fresh.leaseId !== current.leaseId) {
++          this.revoke();
++          throw new FleetAdmissionDenied('renewal_failed_or_mismatched');
++        }
++        if (!this.revoked) this.lease = fresh;
++      })().finally(() => { this.renewal = undefined; });
++    }
++    await this.renewal;
++    this.assertLive();
++  }
++
++  /** Must succeed before the caller reports a successful task. */
++  async close(): Promise<void> {
++    this.assertLive();
++    this.stopTimer();
++    // Do not mark as successful if the final renewal is missing.
++    await this.renewOrRevoke();
++    this.closed = true;
++    let released = false;
++    try { released = await this.authority.release(this.request, this.lease); }
++    catch { /* deny completion */ }
++    this.revoke();
++    if (!released) throw new FleetAdmissionDenied('release_unverified');
++  }
++
++  /** Failure cleanup: never masks the original error, no new generation. */
++  async dispose(): Promise<void> {
++    this.stopTimer();
++    if (this.closed) return;
++    this.closed = true;
++    this.revoke();
++    try { await this.authority.release(this.request, this.lease); }
++    catch { /* failure is recorded by the external authority */ }
++  }
++
++  private stopTimer(): void {
++    if (this.ticker) clearInterval(this.ticker);
++    this.ticker = undefined;
++  }
++}
+diff --git a/src/bots/fleet-provider-stream.integration.test.ts b/src/bots/fleet-provider-stream.integration.test.ts
+new file mode 100644
+index 0000000..dea8d42
+--- /dev/null
++++ b/src/bots/fleet-provider-stream.integration.test.ts
+@@ -0,0 +1,139 @@
++/**
++ * Real ai.streamText + ai/test MockLanguageModelV3. Absolutely no HTTP
++ * inference, credentials, providers, or installed Mercury services.
++ * Do NOT vi.mock('ai') here: this tests the actual SDK stream pipeline.
++ */
++import { describe, it, expect, vi } from 'vitest';
++import { MockLanguageModelV3 } from 'ai/test';
++import { runBotTurn } from './bot-turn.js';
++
++function gate(override: Partial<Record<'acquire' | 'renew' | 'release', any>> = {}) {
++  return {
++    acquire: vi.fn(async (r: any) => ({
++      ...r, leaseId: 'lease-sdk-0001', expiresAtMs: Date.now() + 60_000,
++    })),
++    renew: vi.fn(async (_r: any, l: any) => ({
++      ...l, expiresAtMs: Date.now() + 60_000,
++    })),
++    release: vi.fn(async () => true),
++    ...override,
++  };
++}
++
++function makeInput(model: MockLanguageModelV3, authority: any) {
++  return {
++    manifest: { id: 'audit-bot', name: 'Audit bot', enabled: true,
++      autonomy: { maxSteps: 2 } },
++    trigger: 'api' as const,
++    jobId: 'mock-sdk-task-0001',
++    prompt: 'return bounded fixture result',
++    persona: 'read-only experiment',
++    mail: [],
++    pollMail: () => [],
++    sandbox: { workspace: '/tmp/mock-merc-ws', shared: '/tmp/mock-merc-shared' },
++    capabilities: {} as any,
++    tools: { run_command: { execute: async () => 'unsafe' } as any },
++    userMemory: null,
++    provider: {
++      name: 'fixture',
++      getModel: () => 'fixture-model',
++      getModelInstance: () => model,
++    } as any,
++    tokenBudget: { recordUsage: vi.fn(), getRemaining: () => 99999 } as any,
++    abortSignal: new AbortController().signal,
++    fleetAdmission: {
++      authority, upstreamGroup: 'synthetic-upstream',
++      maxInputTokens: 100, maxOutputTokens: 20,
++    },
++  };
++}
++
++function finish() {
++  return {
++    type: 'finish' as const,
++    finishReason: { unified: 'stop' as const, raw: undefined },
++    usage: {
++      inputTokens: { total: 5, noCache: 5, cacheRead: undefined, cacheWrite: undefined },
++      outputTokens: { total: 2, text: 2, reasoning: undefined },
++    },
++  };
++}
++
++describe('actual SDK-stream transport: mock language model, no network', () => {
++  it('denied admission never invokes the SDK model doStream', async () => {
++    const model = new MockLanguageModelV3({
++      doStream: async () => { throw Error('provider must not start'); },
++    });
++    const authority = gate({ acquire: vi.fn(async () => null) });
++    const output = await runBotTurn(makeInput(model, authority));
++    expect(output.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(model.doStreamCalls).toHaveLength(0);
++  });
++
++  it('real SDK stream completes only with a valid lease and cannot run a tool', async () => {
++    const model = new MockLanguageModelV3({
++      doStream: async () => ({
++        stream: new ReadableStream({
++          start(controller) {
++            controller.enqueue({ type: 'text-start', id: 'txt' });
++            controller.enqueue({ type: 'text-delta', id: 'txt', delta: 'bounded mock' });
++            controller.enqueue({ type: 'text-end', id: 'txt' });
++            controller.enqueue(finish());
++            controller.close();
++          },
++        }),
++      }),
++    });
++    const authority = gate();
++    const opts = makeInput(model, authority);
++    const output = await runBotTurn(opts);
++    expect(output.status).toBe('completed');
++    expect(output.output).toBe('bounded mock');
++    expect(model.doStreamCalls).toHaveLength(1);
++    expect(authority.acquire).toHaveBeenCalledOnce();
++    expect(authority.renew.mock.calls.length).toBeGreaterThanOrEqual(2);
++    expect(authority.release).toHaveBeenCalledOnce();
++    expect(opts.tokenBudget.recordUsage).toHaveBeenCalledOnce();
++  });
++
++  it('quiet SDK stream receives an abort when watchdog renewal is rejected', async () => {
++    let observedAbort = false;
++    let started = false;
++    const model = new MockLanguageModelV3({
++      doStream: async (options) => ({
++        stream: new ReadableStream({
++          start(controller) {
++            started = true;
++            controller.enqueue({ type: 'text-start', id: 'txt' });
++            controller.enqueue({ type: 'text-delta', id: 'txt', delta: 'partial' });
++            options.abortSignal?.addEventListener('abort', () => {
++              observedAbort = true;
++              controller.error(new Error('mock transport aborted'));
++            }, { once: true });
++            // Intentionally never finish. Only the lease watchdog can stop it.
++          },
++        }),
++      }),
++    });
++    const authority = gate({
++      renew: vi.fn()
++        .mockImplementationOnce(async (_r: any, l: any) => ({
++          ...l, expiresAtMs: Date.now() + 60_000,
++        }))
++        .mockImplementationOnce(async (_r: any, l: any) => ({
++          ...l, expiresAtMs: Date.now() + 60_000,
++        }))
++        .mockImplementation(async () => null),
++    });
++    const output = await Promise.race([
++      runBotTurn(makeInput(model, authority)),
++      new Promise<never>((_resolve, reject) =>
++        setTimeout(() => reject(new Error('mock abort exceeded 2500ms')), 2500)),
++    ]);
++    expect(started).toBe(true);
++    expect(observedAbort).toBe(true);
++    expect(output.status).not.toBe('completed');
++    expect(output.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(authority.release).toHaveBeenCalledOnce();
++  });
++});
+diff --git a/src/core/agent.ts b/src/core/agent.ts
+index 271361d..a6fcce2 100644
+--- a/src/core/agent.ts
++++ b/src/core/agent.ts
+@@ -1,4 +1,5 @@
+-import { generateText, streamText, stepCountIs } from 'ai';
++import { stepCountIs } from 'ai';
++import { generateText, streamText } from './fleet-model-gateway.js';
+ import path from 'node:path';
+ import { homedir } from 'node:os';
+ import { existsSync, readdirSync } from 'node:fs';
+diff --git a/src/core/fleet-boot-guard.ts b/src/core/fleet-boot-guard.ts
+new file mode 100644
+index 0000000..a134e70
+--- /dev/null
++++ b/src/core/fleet-boot-guard.ts
+@@ -0,0 +1,13 @@
++/**
++ * Production startup must refuse this experimental fleet mode.
++ * The memory-backed HMAC coordinator is test-only and cannot grant provider
++ * or process admission. Fail BEFORE registering runtime PID or loading keys.
++ */
++import { FleetAdmissionDenied } from '../bots/fleet-provider-admission.js';
++import { isFleetModelGateEnabled } from './fleet-model-gateway.js';
++
++export function assertFleetRuntimeBootSafe(): void {
++  if (isFleetModelGateEnabled()) {
++    throw new FleetAdmissionDenied('fleet_boot_requires_authenticated_durable_authority');
++  }
++}
+diff --git a/src/core/fleet-model-gateway.test.ts b/src/core/fleet-model-gateway.test.ts
+new file mode 100644
+index 0000000..ccf30e7
+--- /dev/null
++++ b/src/core/fleet-model-gateway.test.ts
+@@ -0,0 +1,185 @@
++import { afterEach, describe, expect, it, vi } from 'vitest';
++import { MockLanguageModelV3 } from 'ai/test';
++import { generateText, streamText, FLEET_ADMISSION_SCOPE, isFleetModelGateEnabled } from './fleet-model-gateway.js';
++import { FleetAdmissionDenied, FleetTurnAdmission } from '../bots/fleet-provider-admission.js';
++import fs from 'node:fs';
++import path from 'node:path';
++import ts from 'typescript';
++
++afterEach(() => vi.unstubAllEnvs());
++
++function finish() {
++  return {
++    type: 'finish' as const,
++    finishReason: { unified: 'stop' as const, raw: undefined },
++    usage: {
++      inputTokens: { total: 2, noCache: 2, cacheRead: undefined, cacheWrite: undefined },
++      outputTokens: { total: 2, text: 2, reasoning: undefined },
++    },
++  };
++}
++
++function model() {
++  return new MockLanguageModelV3({
++    doStream: async () => ({
++      stream: new ReadableStream<any>({
++        start(controller) {
++          controller.enqueue({ type: 'text-start', id: 't' });
++          controller.enqueue({ type: 'text-delta', id: 't', delta: 'mock pass' });
++          controller.enqueue({ type: 'text-end', id: 't' });
++          controller.enqueue(finish());
++          controller.close();
++        },
++      }),
++    }),
++  });
++}
++
++function authority() {
++  return {
++    acquire: vi.fn(async (r: any) => ({ ...r, leaseId: 'lease-fleet-0001', expiresAtMs: Date.now() + 60_000 })),
++    renew: vi.fn(async (_r: any, l: any) => ({ ...l, expiresAtMs: Date.now() + 60_000 })),
++    release: vi.fn(async () => true),
++  };
++}
++
++const request = {
++  taskId: 'sdk-fleet-task-0001', botId: 'guarded-bot', provider: 'fixture',
++  model: 'fixture-model', upstreamGroup: 'synthetic-upstream',
++  maxInputTokens: 100, maxOutputTokens: 10,
++};
++
++describe('fleet-wide direct SDK model gate (mock-only)', () => {
++  it('an unknown fleet mode is treated as armed, not permissive', () => {
++    vi.stubEnv('MERCURY_FLEET_MODEL_GATE', 'typo-that-must-deny');
++    expect(isFleetModelGateEnabled()).toBe(true);
++    const m = model();
++    expect(() => streamText({ model: m, prompt: 'test' })).toThrow(FleetAdmissionDenied);
++    expect(m.doStreamCalls).toHaveLength(0);
++  });
++
++  it('unscoped direct generateText is denied before a provider request', () => {
++    vi.stubEnv('MERCURY_FLEET_MODEL_GATE', 'deny_unscoped');
++    const m = model();
++    expect(() => generateText({ model: m, prompt: 'test' })).toThrow(FleetAdmissionDenied);
++    expect(m.doGenerateCalls).toHaveLength(0);
++  });
++
++  it('unscoped direct streamText is denied before the model doStream', () => {
++    vi.stubEnv('MERCURY_FLEET_MODEL_GATE', 'deny_unscoped');
++    const m = model();
++    expect(() => streamText({ model: m, prompt: 'test' })).toThrow(FleetAdmissionDenied);
++    expect(m.doStreamCalls).toHaveLength(0);
++  });
++
++  it('fake lease object cannot smuggle direct model access', () => {
++    vi.stubEnv('MERCURY_FLEET_MODEL_GATE', 'deny_unscoped');
++    const m = model();
++    const forged = { assertLive() {}, signal: new AbortController().signal };
++    expect(() => streamText({
++      model: m, prompt: 'test', [FLEET_ADMISSION_SCOPE]: forged,
++    } as any)).toThrow(FleetAdmissionDenied);
++    expect(m.doStreamCalls).toHaveLength(0);
++  });
++
++  it('rejects an unminted object carrying the real lease prototype', () => {
++    vi.stubEnv('MERCURY_FLEET_MODEL_GATE', '1');
++    const forged = Object.create(FleetTurnAdmission.prototype);
++    const m = model();
++    expect(() => streamText({model: m, prompt: 'test',
++      [FLEET_ADMISSION_SCOPE]: forged} as any)).toThrow(FleetAdmissionDenied);
++    expect(m.doStreamCalls).toHaveLength(0);
++  });
++
++  it('a genuine live lease admits exactly one SDK mock-stream request', async () => {
++    vi.stubEnv('MERCURY_FLEET_MODEL_GATE', 'deny_unscoped');
++    const gate = authority();
++    const permit = await FleetTurnAdmission.open(gate, request);
++    const m = model();
++    const stream = streamText({
++      model: m, prompt: 'test', tools: {},
++      [FLEET_ADMISSION_SCOPE]: permit,
++      abortSignal: permit.signal,
++    } as any);
++    expect(await stream.text).toBe('mock pass');
++    expect(m.doStreamCalls).toHaveLength(1);
++    await permit.close();
++    expect(gate.release).toHaveBeenCalledOnce();
++  });
++
++  it('a genuine live lease cannot permit any tool-capable SDK request', async () => {
++    vi.stubEnv('MERCURY_FLEET_MODEL_GATE', 'deny_unscoped');
++    const gate = authority();
++    const permit = await FleetTurnAdmission.open(gate, request);
++    const m = model();
++    const invalidToolRequest = {
++      model: m, prompt: 'test',
++      tools: { run_command: { execute: async () => 'no' } } as any,
++      [FLEET_ADMISSION_SCOPE]: permit,
++    };
++    expect(() => streamText(invalidToolRequest)).toThrow(FleetAdmissionDenied);
++    expect(m.doStreamCalls).toHaveLength(0);
++    await permit.dispose();
++  });
++
++  it('an expired/revoked lease cannot be reused in SDK generation', async () => {
++    vi.stubEnv('MERCURY_FLEET_MODEL_GATE', 'deny_unscoped');
++    const gate = authority();
++    const permit = await FleetTurnAdmission.open(gate, request);
++    await permit.dispose();
++    const m = model();
++    const staleRequest = {model: m, prompt: 'test', [FLEET_ADMISSION_SCOPE]: permit};
++    expect(() => streamText(staleRequest)).toThrow(FleetAdmissionDenied);
++    expect(m.doStreamCalls).toHaveLength(0);
++  });
++
++  it('an explicit off-looking flag still prevents unscoped SDK generation', async () => {
++    vi.stubEnv('MERCURY_FLEET_MODEL_GATE', 'off');
++    expect(isFleetModelGateEnabled()).toBe(true);
++    const m = model();
++    expect(() => streamText({model: m, prompt: 'test'})).toThrow(FleetAdmissionDenied);
++    expect(m.doStreamCalls).toHaveLength(0);
++  });
++});
++
++describe('source callsite coverage: no unguarded direct AI SDK model import', () => {
++  it('guards all direct generateText/streamText imports throughout production source', () => {
++    const root = path.resolve(import.meta.dirname, '..');
++    const violations: string[] = [];
++    const seen = new Set<string>();
++    function scan(dir: string) {
++      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
++        const full = path.join(dir, entry.name);
++        if (entry.isDirectory()) { scan(full); continue; }
++        if (!entry.isFile() || !/\.[cm]?[jt]sx?$/.test(entry.name) || /\.(test|spec)\./.test(entry.name)) continue;
++        const rel = path.relative(root, full).replaceAll(path.sep, '/');
++        const source = fs.readFileSync(full, 'utf8');
++        const ast = ts.createSourceFile(rel, source, ts.ScriptTarget.Latest, true);
++        for (const stmt of ast.statements) {
++          if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)
++              || stmt.moduleSpecifier.text !== 'ai') continue;
++          const clause = stmt.importClause;
++          if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
++            violations.push(rel + ': namespace import of ai');
++          } else if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
++            for (const spec of clause.namedBindings.elements) {
++              const name = (spec.propertyName ?? spec.name).text;
++              if (name === 'generateText' || name === 'streamText') {
++                if (rel !== 'core/fleet-model-gateway.ts') {
++                  violations.push(rel + ': direct import ' + name);
++                }
++                seen.add(rel);
++              }
++            }
++          }
++        }
++        if (/\brequire\(['"]ai['"]\)|\bimport\(['"]ai['"]\)/.test(source)) {
++          violations.push(rel + ': dynamic ai import requires audit');
++        }
++      }
++    }
++    scan(root);
++    expect(violations).toEqual([]);
++    expect(seen.has('core/fleet-model-gateway.ts')).toBe(true);
++  });
++});
+diff --git a/src/core/fleet-model-gateway.ts b/src/core/fleet-model-gateway.ts
+new file mode 100644
+index 0000000..f2f2da4
+--- /dev/null
++++ b/src/core/fleet-model-gateway.ts
+@@ -0,0 +1,52 @@
++/**
++ * Experimental fleet-wide AI SDK ingress. Enabled ONLY when the environment
++ * contains MERCURY_FLEET_MODEL_GATE (any defined value).
++ * Standalone upstream behavior is unchanged when unset.
++ *
++ * This does NOT issue provider permits or authenticate lease authorities:
++ * only the independently admitted bot turn has a live FleetTurnAdmission.
++ * Other callers fail before SDK model dispatch. No token/secret logging.
++ */
++import { generateText as sdkGenerateText, streamText as sdkStreamText } from 'ai';
++import { FleetAdmissionDenied, FleetTurnAdmission } from '../bots/fleet-provider-admission.js';
++
++/** Unique, non-string scope marker removed before calling the vendor SDK. */
++export const FLEET_ADMISSION_SCOPE: unique symbol = Symbol('mercury.fleet.admitted');
++export type FleetScopedOptions = { [FLEET_ADMISSION_SCOPE]?: FleetTurnAdmission };
++
++export function isFleetModelGateEnabled(): boolean {
++  // Any defined value, including 'off', denies unscoped generation.
++  return process.env.MERCURY_FLEET_MODEL_GATE !== undefined;
++}
++
++export function assertFleetModelPermission(scope?: unknown): void {
++  if (scope !== undefined && scope !== null) {
++    if (!FleetTurnAdmission.wasIssuedHere(scope)) {
++      throw new FleetAdmissionDenied('invalid_fleet_sdk_scope');
++    }
++    scope.assertLive();
++  } else if (isFleetModelGateEnabled()) {
++    throw new FleetAdmissionDenied('unscoped_sdk_generation_disabled');
++  }
++}
++
++/** Every direct generateText request is denied in experimental fleet mode. */
++export const generateText: typeof sdkGenerateText = ((options: any) => {
++  assertFleetModelPermission();
++  return sdkGenerateText(options);
++}) as typeof sdkGenerateText;
++
++/**
++ * Scoped streamText requests pass only after a valid lease. The symbol is
++ * stripped before the SDK receives options. No tools can run when scoped;
++ * caller also explicitly sends an empty tool map.
++ */
++export const streamText: typeof sdkStreamText = ((options: any) => {
++  const scope = options?.[FLEET_ADMISSION_SCOPE] as unknown;
++  assertFleetModelPermission(scope);
++  if (FleetTurnAdmission.wasIssuedHere(scope) && options.tools && Object.keys(options.tools).length) {
++    throw new FleetAdmissionDenied('fleet_sdk_tools_forbidden');
++  }
++  const { [FLEET_ADMISSION_SCOPE]: ignored, ...sdkOptions } = options ?? {};
++  return sdkStreamText(sdkOptions);
++}) as typeof sdkStreamText;
+diff --git a/src/core/sub-agent.ts b/src/core/sub-agent.ts
+index 45f5b43..9416d6b 100644
+--- a/src/core/sub-agent.ts
++++ b/src/core/sub-agent.ts
+@@ -1,4 +1,5 @@
+-import { generateText, stepCountIs } from 'ai';
++import { stepCountIs } from 'ai';
++import { generateText } from './fleet-model-gateway.js';
+ import type { ChannelMessage } from '../types/channel.js';
+ import type { SubAgentConfig, SubAgentResult, SubAgentStatus } from '../types/agent.js';
+ import type { ProviderRegistry } from '../providers/registry.js';
+diff --git a/src/index.ts b/src/index.ts
+index 61ca953..2c95d1b 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -53,6 +53,7 @@ import { ShortTermMemory, LongTermMemory, EpisodicMemory, migrateLegacyMemory }
+ import { buildConversationHistoryPayload, CloudSessionSynchronizer, SessionRepository } from './sessions/index.js';
+ import { UserMemoryStore } from './memory/user-memory.js';
+ import { BotManager } from './bots/bot-manager.js';
++import { assertFleetRuntimeBootSafe } from './core/fleet-boot-guard.js';
+ import { isBetterSqlite3Available } from './memory/second-brain-db.js';
+ import { ProviderRegistry } from './providers/registry.js';
+ import { Agent } from './core/agent.js';
+@@ -2313,6 +2314,9 @@ function runPlatformDoctor(): void {
+ }
+ 
+ async function runAgent(isDaemon: boolean = false): Promise<void> {
++  // Never register a live process or load provider credentials under a test-only
++  // fleet gate: a real authenticated/durable authority is not wired yet.
++  assertFleetRuntimeBootSafe();
+   const runtimeMode = isDaemon ? 'daemon' : 'foreground';
+   registerRuntimeProcess(runtimeMode);
+ 
+diff --git a/src/providers/anthropic.ts b/src/providers/anthropic.ts
+index b8ec40f..896b63b 100644
+--- a/src/providers/anthropic.ts
++++ b/src/providers/anthropic.ts
+@@ -1,5 +1,5 @@
+ import { createAnthropic } from '@ai-sdk/anthropic';
+-import { generateText, streamText } from 'ai';
++import { generateText, streamText } from '../core/fleet-model-gateway.js';
+ import { BaseProvider } from './base.js';
+ import type { ProviderConfig } from '../utils/config.js';
+ import type { LLMResponse, LLMStreamChunk } from './base.js';
+diff --git a/src/providers/mercury-cloud.ts b/src/providers/mercury-cloud.ts
+index 0aa68a8..b5584b5 100644
+--- a/src/providers/mercury-cloud.ts
++++ b/src/providers/mercury-cloud.ts
+@@ -1,5 +1,5 @@
+ import { createOpenAI } from '@ai-sdk/openai';
+-import { generateText, streamText } from 'ai';
++import { generateText, streamText } from '../core/fleet-model-gateway.js';
+ import { BaseProvider } from './base.js';
+ import type { ProviderConfig } from '../utils/config.js';
+ import type { LLMResponse, LLMStreamChunk } from './base.js';
+diff --git a/src/providers/openai-compat.ts b/src/providers/openai-compat.ts
+index ff9530a..94e1033 100644
+--- a/src/providers/openai-compat.ts
++++ b/src/providers/openai-compat.ts
+@@ -1,5 +1,5 @@
+ import { createOpenAI } from '@ai-sdk/openai';
+-import { generateText, streamText } from 'ai';
++import { generateText, streamText } from '../core/fleet-model-gateway.js';
+ import { BaseProvider } from './base.js';
+ import type { ProviderConfig } from '../utils/config.js';
+ import type { LLMResponse, LLMStreamChunk } from './base.js';
+diff --git a/src/web/api/kanban.ts b/src/web/api/kanban.ts
+index 878b1bf..1fc4b9a 100644
+--- a/src/web/api/kanban.ts
++++ b/src/web/api/kanban.ts
+@@ -1,6 +1,6 @@
+ import { Hono } from 'hono';
+ import { readFileSync, existsSync, statSync } from 'node:fs';
+-import { generateText } from 'ai';
++import { generateText } from '../../core/fleet-model-gateway.js';
+ import type { SubAgentSupervisor } from '../../core/supervisor.js';
+ import type { BoardManager } from '../../core/board-manager.js';
+ import type { ProviderRegistry } from '../../providers/registry.js';
+diff --git a/src/web/api/workspace-ide.ts b/src/web/api/workspace-ide.ts
+index 7849242..d50a966 100644
+--- a/src/web/api/workspace-ide.ts
++++ b/src/web/api/workspace-ide.ts
+@@ -3,7 +3,7 @@ import { execSync, spawn } from 'node:child_process';
+ import { existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';
+ import { join, resolve, relative, extname, basename } from 'node:path';
+ import { getMercuryHome, loadConfig } from '../../utils/config.js';
+-import { generateText } from 'ai';
++import { generateText } from '../../core/fleet-model-gateway.js';
+ import type { ProviderRegistry } from '../../providers/registry.js';
+ import { resolveShell } from '../../utils/platform.js';
