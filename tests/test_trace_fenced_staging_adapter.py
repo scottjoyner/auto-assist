@@ -151,11 +151,14 @@ def test_failed_cancel_hook_does_not_turn_lost_authority_into_success():
     adapter.StagingParameters(watchdog_join_seconds=0),
     adapter.StagingParameters(watchdog_join_seconds=30),
 ])
-def test_invalid_staging_timing_releases_existing_lease(parameters):
+def test_invalid_staging_timing_never_orphans_a_lease(parameters):
     db = FakeRedis()
     with pytest.raises(adapter.FencedReadUnavailable):
         run(db, params=parameters)
-    assert db.calls == ["acquire", "release"]
+    # Invalid local types/bounds are rejected before acquisition; lease-specific
+    # validation after admission must release the already-acquired slot.
+    expected = ["acquire", "release"] if parameters.heartbeat_seconds == 8 else []
+    assert db.calls == expected
 
 
 def test_cancellation_protocol_is_required_before_quota_access():
@@ -218,4 +221,40 @@ def test_query_failure_and_release_outage_preserve_fail_closed_disposition():
 
     with pytest.raises(adapter.FencedReadUnavailable):
         run(db, query=query)
+    assert db.calls == ["acquire", "release"]
+
+
+@pytest.mark.parametrize("value", [None, "0.1", True, float("nan"), float("inf"), -1])
+def test_invalid_heartbeat_type_or_value_is_rejected_before_acquire(value):
+    db = FakeRedis()
+    with pytest.raises(adapter.FencedReadUnavailable):
+        run(db, params=adapter.StagingParameters(heartbeat_seconds=value))
+    assert db.calls == []
+
+
+@pytest.mark.parametrize("value", [None, "3", False, float("nan"), float("-inf")])
+def test_invalid_join_timeout_rejected_before_acquire(value):
+    db = FakeRedis()
+    with pytest.raises(adapter.FencedReadUnavailable):
+        run(db, params=adapter.StagingParameters(watchdog_join_seconds=value))
+    assert db.calls == []
+
+
+def test_watchdog_start_failure_attempts_exact_nonce_cleanup(monkeypatch):
+    db = FakeRedis()
+    monkeypatch.setattr(adapter.Thread, "start", lambda self: (_ for _ in ()).throw(
+        RuntimeError("synthetic thread resources exhausted")
+    ))
+    with pytest.raises(adapter.FencedReadUnavailable, match="watchdog could not start"):
+        run(db, query=lambda _: pytest.fail("must not start query"))
+    assert db.calls == ["acquire", "release"]
+
+
+def test_watchdog_start_and_cleanup_failure_both_fail_closed(monkeypatch):
+    db = FakeRedis(release=TimeoutError("synthetic cleanup ack missing"))
+    monkeypatch.setattr(adapter.Thread, "start", lambda self: (_ for _ in ()).throw(
+        RuntimeError("watchdog start denied")
+    ))
+    with pytest.raises(adapter.FencedReadUnavailable):
+        run(db, query=lambda _: pytest.fail("query must not start"))
     assert db.calls == ["acquire", "release"]
