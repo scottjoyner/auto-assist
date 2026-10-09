@@ -1,6 +1,7 @@
 """No-network staging adapter acceptance with synthetic Redis/query only."""
 from __future__ import annotations
 
+import asyncio
 from threading import Event
 import time
 
@@ -258,3 +259,22 @@ def test_watchdog_start_and_cleanup_failure_both_fail_closed(monkeypatch):
     with pytest.raises(adapter.FencedReadUnavailable):
         run(db, query=lambda _: pytest.fail("query must not start"))
     assert db.calls == ["acquire", "release"]
+
+
+def test_asyncio_cancelled_error_never_skips_owned_release():
+    db = FakeRedis()
+    with pytest.raises(asyncio.CancelledError):
+        run(db, query=lambda _: (_ for _ in ()).throw(asyncio.CancelledError()))
+    assert db.calls == ["acquire", "release"]
+
+
+def test_asyncio_cancelled_error_after_lease_revocation_reports_unavailable():
+    db = FakeRedis(renew=0)
+    cancellation_requested = []
+    def query(cancelled):
+        assert cancelled.wait(.25)
+        raise asyncio.CancelledError()
+    with pytest.raises(adapter.FencedReadUnavailable):
+        run(db, query=query, cancel=lambda: cancellation_requested.append(True))
+    assert cancellation_requested == [True]
+    assert db.calls[0] == "acquire" and db.calls[-1] == "release"
