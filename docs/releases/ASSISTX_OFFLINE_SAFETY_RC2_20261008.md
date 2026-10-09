@@ -50,3 +50,16 @@ CHECKPOINT_NOT_REACHED.
 
 **Rollback:** remove this standalone RC2 worktree/branch. No process,
 service, model, router, graph or NAS was modified by this overlay.
+
+## Workbench-auth follow-up (October 8, 2026)
+
+Independent PR #153 CI established that using configured credentials resolves
+the original 401, but then rendered the wrong page (Fleet Control Room).
+Source inspection proved that workbench.html inherited base.html without
+defined Jinja content/head/scripts slots; the child markup was discarded.
+PR #153's follow-up adds those Jinja slots without changing auth middleware,
+keeping Control Room defaults, and suppressing control_room.js on workbench.
+RC2 now includes the same source files and a standalone Jinja regression
+that must run in local smoke and dedicated CI.
+Wrong-password 401 and authenticated API 200 remain separate full-stack
+CI checks; no local runtime execution was made.
