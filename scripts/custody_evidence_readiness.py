@@ -70,6 +70,12 @@ def _historical_env_count(repo: Path, commit_sha: str | None) -> tuple[int | Non
     if not isinstance(commit_sha, str) or not COMMIT_ID.fullmatch(commit_sha):
         return None, "invalid_historical_commit_id"
     try:
+        obj = subprocess.run(
+            ["git", "-C", str(repo), "cat-file", "-t", commit_sha],
+            capture_output=True, check=False, timeout=10,
+        )
+        if obj.returncode != 0 or obj.stdout.strip() != b"commit":
+            return None, "historical_revision_not_a_commit"
         p = subprocess.run(
             ["git", "-C", str(repo), "ls-tree", "-r", "-z",
              "--name-only", commit_sha],
