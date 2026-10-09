@@ -1,0 +1,38 @@
+name: trace-shared-pg-authority-research (offline only)
+
+on:
+  pull_request:
+    paths:
+      - "src/assistx/trace_pg_authority_research.py"
+      - "tests/probe_trace_pg_authority.py"
+      - "tests/test_trace_pg_authority_guards.py"
+      - "docs/TRACE_PG_SHARED_AUTHORITY_RESEARCH_20261009.md"
+      - ".github/workflows/trace-shared-pg-authority-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pg-authority-offline-guards:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout pinned PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install repository test dependencies
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Research opt-in, unsafe-DSN and forged-input negatives
+        run: |
+          python -m pytest -q \
+            tests/test_trace_pg_authority_guards.py \
+            tests/test_trace_physical_probe_guards.py \
+            tests/test_trace_durable_ledger_research.py
+      # Do not auto-run PostgreSQL/Docker physical probes in hosted CI.
+      # A green build does not close distributed #148 or ingress #149.
