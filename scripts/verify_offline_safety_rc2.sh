@@ -12,6 +12,13 @@ cd "$(dirname "$0")/.."
     tests/test_mercury_shadow_specialists.py \
     tests/test_mercury_mock_authority_acceptance.py \
     tests/test_mercury_deny_only_mock.py
+# A clean HOME must not depend on an operator's OpenCode history.
+clean_home="$(mktemp -d /tmp/assistx-free-session-ci-XXXX)"
+trap 'rmdir "$clean_home" 2>/dev/null || true' EXIT
+# Locally, pytest may live in HOME-scoped user-site packages; a caller can
+# explicitly select a preinstalled venv. CI uses its setup-python interpreter.
+HOME="$clean_home" "${FREE_SUPERVISOR_PYTHON:-$PYTHON}" -m pytest --noconftest -q \
+    tests/test_free_subagent_supervisor.py
 "$PYTHON" -m py_compile \
     src/assistx/contracts/schemas/repository_source_binding.py \
     src/assistx/llm/client.py \

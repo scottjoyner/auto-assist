@@ -11,6 +11,8 @@ on:
       - 'tests/test_llm_output_integrity.py'
       - 'tests/test_system_one_receipt.py'
       - 'tests/test_workbench_ui.py'
+      - 'scripts/free_subagent_supervisor.py'
+      - 'tests/test_free_subagent_supervisor.py'
   workflow_dispatch:
 permissions:
   contents: read

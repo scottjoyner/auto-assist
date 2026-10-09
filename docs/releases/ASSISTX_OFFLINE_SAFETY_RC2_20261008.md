@@ -63,3 +63,16 @@ RC2 now includes the same source files and a standalone Jinja regression
 that must run in local smoke and dedicated CI.
 Wrong-password 401 and authenticated API 200 remain separate full-stack
 CI checks; no local runtime execution was made.
+
+## Read-only OpenCode session and trace provenance, later slice
+
+The separate [auto-assist PR #164](https://github.com/scottjoyner/auto-assist/pull/164)
+corrects a fleet-to-CI drift: a test implicitly required a developer's
+OpenCode database, and an absent trace database caused trace fields to
+disappear. The new clean-HOME fixture proves SQLite mode=ro / query_only
+against a temporary seeded database. Trace projections explicitly label
+source_unavailable (unknown count), ok (measured count) or error
+(unknown count). A failing exporter does not leak raw exception details.
+The RC smoke now verifies all 34 free-subagent tests under a deliberately
+empty HOME, without provider/network activity or changes to admission.
+This remains read-only provenance, not accepted work or quota authority.
