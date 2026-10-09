@@ -1,0 +1,30 @@
+name: rc2-bridge-auth-negative
+
+on:
+  pull_request:
+    paths:
+      - "scripts/run_rc2_bridge_auth_isolated.py"
+      - "tests/test_rc2_bridge_auth_disposable_guard.py"
+      - ".github/workflows/rc2-bridge-auth-negative.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-docker-guards:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run no-Docker synthetic guards
+        run: |
+          python -m pip install pytest
+          python -m py_compile scripts/run_rc2_bridge_auth_isolated.py tests/test_rc2_bridge_auth_disposable_guard.py
+          python -m pytest --noconftest -q tests/test_rc2_bridge_auth_disposable_guard.py
