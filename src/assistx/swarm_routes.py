@@ -450,15 +450,51 @@ def api_voice_policy(
     }
 
 
+def _legacy_trace_read_guard(
+    response: Response, user: str,
+    credentials: HTTPBasicCredentials | None,
+    *, payload_bearing: bool = False,
+) -> None:
+    """Independent Basic operator proof before ANY legacy trace graph access.
+
+    Injected identity can originate in an unverified proxy header. It is not
+    sufficient authorization for trace evidence or historical event payloads.
+    Legacy full-detail access is disabled by default and additionally uses the
+    stricter explicit preview allowlist. Never use this as physical ingress
+    or per-query admission attestation.
+    """
+    response.headers["Cache-Control"] = "no-store, private"
+    if _injected_auth_dependency is None:
+        raise HTTPException(status_code=503, detail="Trace authentication unavailable",
+                            headers={"Cache-Control": "no-store, private"})
+    if payload_bearing and os.getenv("ASSISTX_LEGACY_TRACE_DETAIL_ENABLED", "0") != "1":
+        raise HTTPException(status_code=503, detail="Legacy trace detail disabled",
+                            headers={"Cache-Control": "no-store, private"})
+    policy = _trace_preview_authorizer if payload_bearing else _trace_metadata_authorizer
+    if policy is None:
+        raise HTTPException(status_code=503, detail="Trace authorization unavailable",
+                            headers={"Cache-Control": "no-store, private"})
+    try:
+        allowed = policy(user, credentials)
+    except Exception:
+        allowed = False
+    if allowed is not True:
+        raise HTTPException(status_code=403, detail="Trace read not authorized",
+                            headers={"Cache-Control": "no-store, private"})
+
+
 @router.get("/api/traces")
 def api_list_traces(
+    response: Response,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     search: Optional[str] = Query(default=None, max_length=128),
     outcome: Optional[Literal["failed", "completed", "open"]] = None,
     user: str = Depends(_default_auth),
+    credentials: HTTPBasicCredentials | None = Depends(security),
 ):
-    """Read-only global outcome filtering for the authenticated trace index."""
+    """Read-only global outcome filtering with independent Basic scope."""
+    _legacy_trace_read_guard(response, user, credentials)
     neo = _neo()
     try:
         return list_traces(
@@ -470,9 +506,12 @@ def api_list_traces(
 
 @router.get("/api/traces/{correlation_id}")
 def api_get_trace(
-    correlation_id: str,
+    response: Response,
+    correlation_id: str = Path(min_length=1, max_length=128),
     user: str = Depends(_default_auth),
+    credentials: HTTPBasicCredentials | None = Depends(security),
 ):
+    _legacy_trace_read_guard(response, user, credentials, payload_bearing=True)
     neo = _neo()
     try:
         trace = get_trace(neo, correlation_id)
@@ -488,10 +527,13 @@ def api_get_trace(
 
 @router.get("/api/traces/{correlation_id}/evidence")
 def api_trace_task_evidence(
+    response: Response,
     correlation_id: str = Path(min_length=1, max_length=128),
     user: str = Depends(_default_auth),
+    credentials: HTTPBasicCredentials | None = Depends(security),
 ):
-    """Opt-in, read-only task/registry comparison: never execution attestation."""
+    """Opt-in task/registry comparison: authenticated, not attested execution."""
+    _legacy_trace_read_guard(response, user, credentials)
     neo = _neo()
     try:
         evidence = get_trace_task_evidence(neo, correlation_id)
