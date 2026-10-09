@@ -168,3 +168,97 @@ def test_untrusted_witness_reply_does_not_touch_primary(monkeypatch):
                         epoch=str(uuid.uuid4()),query_ref="synthetic-first",
                         pinned_pub=b"z"*32)
     assert row["status"]=="untrusted-witness-response"
+
+
+def test_signed_witness_grant_is_exact_primary_token_nonce_and_sequence():
+    from assistx.trace_two_host_authority_research import (
+        bootstrap_research,SingleAuthorityResearch,
+    )
+    from assistx.trace_two_host_witness_research import apply_witness_grant_to_primary
+    folder,epoch,pub,w=fixture()
+    with tempfile.TemporaryDirectory(
+        prefix="assistx-twohost-authority-test-",dir="/tmp") as owner_dir:
+        try:
+            db=str(Path(owner_dir)/"authority-test.sqlite")
+            bootstrap_research(db,epoch=epoch,graph_id=GRAPH,capacity=1)
+            primary=SingleAuthorityResearch(
+                db,pinned_epoch=epoch,pinned_graph_id=GRAPH,minimum_sequence=0)
+            row=w.reserve("synthetic-first")
+            result=apply_witness_grant_to_primary(primary,row,pub,query_ref="synthetic-first")
+            assert result["status"]=="admitted"
+            assert result["reservation_token"]==row["grant"]["reservation_token"]
+            assert result["receiver_nonce"]==row["grant"]["receiver_nonce"]
+            assert result["primary_sequence"]==row["grant"]["sequence"]==1
+            assert primary.snapshot()["active"]==1
+            assert apply_witness_grant_to_primary(
+                primary,row,pub,query_ref="synthetic-first")["status"]=="full"
+        finally:shutil.rmtree(folder)
+
+
+def test_untrusted_witness_does_not_touch_primary():
+    from assistx.trace_two_host_authority_research import (
+        bootstrap_research,SingleAuthorityResearch,
+    )
+    from assistx.trace_two_host_witness_research import apply_witness_grant_to_primary
+    folder,epoch,pub,w=fixture()
+    with tempfile.TemporaryDirectory(
+        prefix="assistx-twohost-authority-test-",dir="/tmp") as owner_dir:
+        try:
+            db=str(Path(owner_dir)/"authority-test.sqlite")
+            bootstrap_research(db,epoch=epoch,graph_id=GRAPH)
+            primary=SingleAuthorityResearch(db,pinned_epoch=epoch,
+                                             pinned_graph_id=GRAPH,minimum_sequence=0)
+            row=w.reserve("synthetic-first")
+            forged=dict(row)
+            forged["signature_hex"]="00"*64
+            denied=apply_witness_grant_to_primary(
+                primary,forged,pub,query_ref="synthetic-first")
+            assert denied["status"]=="untrusted-witness-grant"
+            assert primary.snapshot()["active"]==0
+        finally:shutil.rmtree(folder)
+
+
+def test_replay_of_old_signed_grant_after_owner_rollback_still_admits_negative_control():
+    from assistx.trace_two_host_authority_research import (
+        bootstrap_research,SingleAuthorityResearch,
+    )
+    from assistx.trace_two_host_witness_research import apply_witness_grant_to_primary
+    folder,epoch,pub,w=fixture()
+    with tempfile.TemporaryDirectory(
+        prefix="assistx-twohost-authority-test-",dir="/tmp") as owner_dir:
+        try:
+            db=str(Path(owner_dir)/"authority-test.sqlite")
+            bootstrap_research(db,epoch=epoch,graph_id=GRAPH)
+            snapshot=Path(owner_dir)/"empty-snapshot"
+            shutil.copyfile(db,snapshot)
+            row=w.reserve("synthetic-first")
+            before=SingleAuthorityResearch(db,pinned_epoch=epoch,
+                                            pinned_graph_id=GRAPH,minimum_sequence=0)
+            assert apply_witness_grant_to_primary(
+                before,row,pub,query_ref="synthetic-first")["status"]=="admitted"
+            assert w.snapshot()["active"]==1
+            shutil.copyfile(snapshot,db)
+            # With a current external high-water checkpoint, refusal holds.
+            with pytest.raises(ValueError):
+                SingleAuthorityResearch(db,pinned_epoch=epoch,
+                                         pinned_graph_id=GRAPH,minimum_sequence=1)
+            # Deliberate vulnerability counterexample: stale x1 checkpoint
+            # and replayed offline signed grant can rearm primary even while
+            # xwing's witness still remembers it is occupied.
+            stale=SingleAuthorityResearch(db,pinned_epoch=epoch,
+                                          pinned_graph_id=GRAPH,minimum_sequence=0)
+            assert apply_witness_grant_to_primary(
+                stale,row,pub,query_ref="synthetic-first")["status"]=="admitted"
+            assert w.snapshot()["active"]==1
+        finally:shutil.rmtree(folder)
+
+
+def test_witness_committed_but_primary_unavailable_strands_capacity():
+    folder,epoch,pub,w=fixture()
+    try:
+        row=w.reserve("synthetic-first")
+        assert row["status"]=="reserved"
+        assert w.snapshot()["active"]==1
+        # A crashed primary cannot force the witness to forget this slot.
+        assert w.reserve("synthetic-after-primary-crash")["status"]=="full"
+    finally:shutil.rmtree(folder)
