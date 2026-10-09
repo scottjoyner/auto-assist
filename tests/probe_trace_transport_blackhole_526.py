@@ -159,6 +159,23 @@ def run():
             assert len(response) == 1 and response[0]["transactionId"] == txid
             assert "terminated" in response[0]["message"].lower(), response
 
+            # A successful TERMINATE command may mark a query cancelled
+            # without making the old transaction disappear: the intentionally
+            # stalled Bolt socket is still open. NEVER mint or accept a
+            # receipt solely from that command response.
+            parent.send({"kind":"close", "txid":txid, "token":reservation.token,
+                         "query_ref":"blackhole-remote-query", "epoch":epoch})
+            assert parent.poll(12), "POST_TERMINATE_WITNESS_UNAVAILABLE"
+            preliminary = parent.recv()
+            assert preliminary["status"] == "still-active", preliminary
+            assert ledger.inspect() == 1
+            assert ledger.acquire("post-terminate-command-pre-physical-closure").token is None
+
+            # Now end the transport on BOTH ends, rather than merely making
+            # the client disappear. Only then ask the independent witness
+            # for a signed observed-absence receipt.
+            proxy.quit.set()
+            proxy.blackout.clear()
             parent.send({"kind":"close", "txid":txid, "token":reservation.token,
                          "query_ref":"blackhole-remote-query", "epoch":epoch})
             assert parent.poll(12), "CLOSURE_WITNESS_UNAVAILABLE"
@@ -166,7 +183,7 @@ def run():
             assert proof["status"] == "observed-absent", proof
             assert ledger.acknowledge_remote_closure(proof["receipt"], proof["signature"])
             assert ledger.inspect() == 0
-            assert ledger.acquire("successor-only-after-remote-terminate").token
+            assert ledger.acquire("successor-only-after-observed-physical-closure").token
             parent.send({"kind":"shutdown"})
             witness.join(4)
             assert witness.exitcode == 0
@@ -180,6 +197,8 @@ def run():
                 "server_transaction_active_after_worker_sigkill":True,
                 "capacity_denied_during_ambiguous_state":True,
                 "independent_terminate_response":response[0]["message"],
+                "terminate_command_alone_did_not_close_transaction":True,
+                "slot_held_until_stalled_transport_closed":True,
                 "witness_observed_absence_then_signed":True,
                 "signed_receipt_released_one_slot":True,
                 "distributed_and_partition_safety_proven":False,
