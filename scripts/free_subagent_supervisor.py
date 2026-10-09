@@ -904,6 +904,18 @@ def emit_projection(
     }
 
     # Read-only trace exporter integration (never mutates state).
+    # Explicitly distinguish "no source" from "source queried, zero rows".
+    # A missing DB cannot truthfully contribute a zero-record observation.
+    if trace_exporter_path is not None:
+        projection.update({
+            "trace_exporter_status": "source_unavailable",
+            "trace_records_count": None,
+            "trace_records_sample": [],
+            "trace_provider_summary": {},
+            "trace_route_kind_summary": {},
+            "trace_model_attribution_summary": {},
+            "trace_unresolved_router_aliases": [],
+        })
     if trace_exporter_path and trace_exporter_path.exists():
         try:
             import importlib.util
@@ -918,6 +930,7 @@ def emit_projection(
             if opencode_db_path.exists():
                 raw_records = trace_exporter_module.export_sessions(opencode_db_path)
                 trace_records = [_annotate_trace_session(r) for r in raw_records]
+                projection["trace_exporter_status"] = "ok"
                 projection["trace_records_count"] = len(trace_records)
                 projection["trace_records_sample"] = [
                     {
@@ -971,7 +984,14 @@ def emit_projection(
                             }
                         )
         except Exception as e:
-            projection["trace_exporter_error"] = str(e)
+            projection["trace_exporter_status"] = "error"
+            projection["trace_records_count"] = None
+            projection["trace_records_sample"] = []
+            projection["trace_provider_summary"] = {}
+            projection["trace_route_kind_summary"] = {}
+            projection["trace_model_attribution_summary"] = {}
+            projection["trace_unresolved_router_aliases"] = []
+            projection["trace_exporter_error"] = type(e).__name__
 
     return projection
 

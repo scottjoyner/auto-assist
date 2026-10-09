@@ -148,3 +148,44 @@ def test_private_key_file_requires_strict_permissions(tmp_path, monkeypatch):
 
     path.chmod(0o600)
     assert isinstance(runtime_projection_v2.load_private_key(), Ed25519PrivateKey)
+
+
+
+def test_mobile_v2_builder_is_identical_signed_ed25519_contract(monkeypatch):
+    _install_fixtures(monkeypatch)
+    key = Ed25519PrivateKey.generate()
+    document = runtime_projection_v2.build_runtime_projection_v2(
+        lambda: None,
+        private_key=key,
+        key_id="mobile-runtime-key-2026",
+        ttl_seconds=60,
+        now_ms=1_000_000,
+    )
+    assert document["schema_version"] == "2"
+    assert document["signature_algorithm"] == "Ed25519"
+    assert document["signature_key_id"] == "mobile-runtime-key-2026"
+    key.public_key().verify(
+        _decode(document["signature"]),
+        runtime_projection_v2.signing_message(document),
+    )
+
+
+def test_mobile_v2_builder_fails_closed_when_signer_missing(monkeypatch):
+    _install_fixtures(monkeypatch)
+    monkeypatch.delenv("ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_FILE", raising=False)
+    monkeypatch.delenv("ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_PEM", raising=False)
+    with pytest.raises(runtime_projection_v2.RuntimeProjectionSigningError):
+        runtime_projection_v2.build_runtime_projection_v2(
+            lambda: None, ttl_seconds=60, now_ms=1_000_000,
+        )
+
+
+def test_missing_signer_file_is_sanitized_signing_denial(tmp_path, monkeypatch):
+    missing = tmp_path / "sensitive-local-private-key.pem"
+    monkeypatch.setenv("ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_FILE", str(missing))
+    with pytest.raises(
+        runtime_projection_v2.RuntimeProjectionSigningError,
+        match="signing key is unavailable",
+    ) as captured:
+        runtime_projection_v2.load_private_key()
+    assert str(missing) not in str(captured.value)

@@ -173,61 +173,100 @@ def test_sqlite_session_history_is_not_treated_as_concurrent_process_duplication
     assert supervisor.detect_duplicate_worktrees(records) == []
 
 
-def test_discover_live_sessions_readonly_query_only():
-    import sys, sqlite3
-    sys.path.insert(0, "scripts")
-    from free_subagent_supervisor import discover_live_sessions, _opencode_db_uri
-    result = discover_live_sessions(query_only=True)
-    assert isinstance(result, list)
-    # Verify path derived from HOME (not a literal hardcoded /home/scott in source)
-    db_uri = _opencode_db_uri()
-    assert db_uri.startswith("file:")
-    assert "opencode.db" in db_uri
-    # Prove mode=ro + PRAGMA query_only by asserting a write fails
-    conn = sqlite3.connect(db_uri, uri=True)
-    conn.execute("PRAGMA query_only = ON")
-    try:
-        conn.execute("CREATE TEMP TABLE _assert_write_fail (id INTEGER)")
-        assert False, "Write should have failed on mode=ro with query_only"
-    except sqlite3.OperationalError:
-        pass  # expected
-    conn.close()
+def test_discover_live_sessions_readonly_query_only(tmp_path, monkeypatch):
+    """Use an ephemeral owned SQLite fixture, never a developer's OpenCode DB."""
+    import sqlite3
+    import time
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    home_db = tmp_path / ".local" / "share" / "opencode" / "opencode.db"
+    home_db.parent.mkdir(parents=True)
+    with sqlite3.connect(home_db) as con:
+        con.execute(
+            "CREATE TABLE session (id TEXT, title TEXT, slug TEXT, directory TEXT,"
+            " agent TEXT, model TEXT, time_updated INTEGER, time_archived INTEGER)"
+        )
+        con.execute(
+            "INSERT INTO session VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("session-fixture", "Read only", "fixture", "/tmp/no-agent",
+             "opencode", '{"id":"fixture-model","provider":"fixture"}',
+             int(time.time() * 1000), None),
+        )
+    uri = supervisor._opencode_db_uri()
+    assert uri == f"file:{home_db}?mode=ro"
+    result = supervisor.discover_live_sessions(query_only=True)
+    assert len(result) == 1
+    assert result[0]["session"] == "session-fixture"
+    assert result[0]["model"] == "fixture-model"
+    assert result[0]["status"] == "active"
+    with sqlite3.connect(uri, uri=True) as con:
+        con.execute("PRAGMA query_only = ON")
+        try:
+            con.execute("CREATE TEMP TABLE _assert_write_fail (id INTEGER)")
+            assert False, "Write should have failed on mode=ro + query_only"
+        except sqlite3.OperationalError:
+            pass
 
 
-def test_projection_with_trace_exporter_integration():
-    import sys, json
-    sys.path.insert(0, "scripts")
-    from free_subagent_supervisor import emit_projection
-
-    # Create a temporary trace exporter module for testing
-    import importlib.util
-    import pathlib
-
-    trace_exporter_path = pathlib.Path(__file__).parent / "fixtures" / "empty_trace_exporter.py"
-    if not trace_exporter_path.exists():
-        # Create a mock trace exporter
-        trace_exporter_path.write_text('''
-import json
-import pathlib
-import sqlite3
-from typing import Any
-
-def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
-    return []
-''')
-
-    # Test projection with trace exporter (will fail gracefully if no DB)
-    proj = emit_projection(
-        free_models=[{"id": "openrouter/claude-3.5-sonnet", "provider": "openrouter", "pricing": {"prompt": "0", "completion": "0"}}],
-        state_path=FIXTURE_STATE,
-        trace_exporter_path=trace_exporter_path
+def test_projection_with_trace_exporter_integration(tmp_path, monkeypatch):
+    """Absent source is not the same as a successful empty history."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    exporter = tmp_path / "synthetic_exporter.py"
+    exporter.write_text(
+        "def export_sessions(db_path):\n"
+        "    return []\n",
+        encoding="utf-8",
     )
+    kwargs = {
+        "free_models": [{
+            "id": "openrouter/claude-3.5-sonnet",
+            "provider": "openrouter",
+            "pricing": {"prompt": "0", "completion": "0"},
+        }],
+        "state_path": FIXTURE_STATE,
+        "trace_exporter_path": exporter,
+    }
+    missing = supervisor.emit_projection(**kwargs)
+    assert missing["trace_exporter_status"] == "source_unavailable"
+    assert missing["trace_records_count"] is None
+    assert missing["trace_records_sample"] == []
+    assert missing["trace_provider_summary"] == {}
+    assert "trace_exporter_error" not in missing
 
-    # Check that trace exporter integration fields are present
-    assert "trace_records_count" in proj
-    assert "trace_records_sample" in proj
-    assert "trace_provider_summary" in proj
-    assert "trace_exporter_error" not in proj or isinstance(proj.get("trace_exporter_error"), str)
+    db = tmp_path / ".local" / "share" / "opencode" / "opencode.db"
+    db.parent.mkdir(parents=True)
+    import sqlite3
+    with sqlite3.connect(db) as con:
+        con.execute("CREATE TABLE session (id TEXT)")
+    healthy_empty = supervisor.emit_projection(**kwargs)
+    assert healthy_empty["trace_exporter_status"] == "ok"
+    assert healthy_empty["trace_records_count"] == 0
+    assert healthy_empty["trace_records_sample"] == []
+    assert healthy_empty["trace_provider_summary"] == {}
+
+
+def test_trace_exporter_failure_never_claims_zero_activity(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    db = tmp_path / ".local" / "share" / "opencode" / "opencode.db"
+    db.parent.mkdir(parents=True)
+    import sqlite3
+    with sqlite3.connect(db) as con:
+        con.execute("CREATE TABLE session (id TEXT)")
+    exporter = tmp_path / "synthetic_failure.py"
+    exporter.write_text(
+        "def export_sessions(db_path):\n"
+        "    raise RuntimeError('private-source-error')\n",
+        encoding="utf-8",
+    )
+    result = supervisor.emit_projection(
+        free_models=[], state_path=tmp_path / "empty-state.jsonl",
+        trace_exporter_path=exporter,
+    )
+    assert result["trace_exporter_status"] == "error"
+    assert result["trace_records_count"] is None
+    assert result["trace_records_sample"] == []
+    assert result["trace_exporter_error"] == "RuntimeError"
+    assert "private-source-error" not in str(result)
 
 
 def test_trace_exporter_readonly_query_only():

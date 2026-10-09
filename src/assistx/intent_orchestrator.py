@@ -149,6 +149,52 @@ def process_intents_job() -> Dict[str, Any]:
         _reschedule()
 
 
+def _record_my_jev_policy_shadow(neo: Any, intent: Dict[str, Any]) -> bool:
+    """Observe a separately validated Jev receipt; never grant execution rights.
+
+    Deliberately not called by the production intent dispatch path. Research
+    callers must explicitly invoke it; the Jev client itself is default-off.
+    A validation failure or missing receipt means zero persisted evidence,
+    rather than saving a misleading unverified policy decision.
+    """
+    from . import my_jev_policy
+
+    if not my_jev_policy.shadow_enabled():
+        return False
+    intent_id = intent.get("id")
+    if not isinstance(intent_id, str) or not intent_id.strip():
+        return False
+    try:
+        evidence = my_jev_policy.request_policy_shadow(intent)
+        if not isinstance(evidence, dict):
+            return False
+        receipt = evidence.get("receipt_evidence")
+        if (
+            not isinstance(receipt, dict)
+            or evidence.get("shadow") is not True
+            or receipt.get("authoritative_behavior_changed") is not False
+        ):
+            return False
+        authority = receipt.get("authority")
+        if not isinstance(authority, dict) or any(
+            authority.get(key) is not False for key in (
+                "dispatch_allowed", "approval_granted", "claim_acquired",
+                "mutation_allowed", "routing_authority_changed",
+            )
+        ):
+            return False
+        # request_policy_shadow already validates receipt schema, signatures
+        # of evidence identity (by digest), configured provider/model/artifact
+        # identity and hashes before returning.
+        neo.record_intent_policy_shadow(intent_id, evidence)
+        return True
+    except Exception as exc:
+        # Optional observation must not influence live routing or success state.
+        # Do not log full receipts or network response payloads.
+        logger.warning("Optional Jev observer rejected evidence: %s", type(exc).__name__)
+        return False
+
+
 def _process_intent(neo: Neo4jClient, intent: Dict[str, Any]) -> None:
     intent_id = intent.get("id")
     text = intent.get("text", "").strip()

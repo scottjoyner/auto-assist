@@ -20,6 +20,10 @@ _DEFAULT_KEY_ID = "assistx-runtime-projection-v1"
 _INTERNAL_COMPAT_SECRET = "assistx-ed25519-projection-wrapper"
 
 
+class RuntimeProjectionSigningError(legacy.RuntimeProjectionBlocked):
+    """Signed projection unavailable; never degrade to an unsigned catalog."""
+
+
 def _b64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
@@ -28,12 +32,18 @@ def _private_key_bytes_from_env() -> bytes:
     path_value = os.getenv("ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_FILE", "").strip()
     if path_value:
         path = Path(path_value)
-        mode = stat.S_IMODE(path.stat().st_mode)
-        if mode & 0o077:
-            raise legacy.RuntimeProjectionBlocked(
-                "runtime projection private key permissions must be 0600 or stricter"
-            )
-        return path.read_bytes()
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+            if mode & 0o077:
+                raise RuntimeProjectionSigningError(
+                    "runtime projection private key permissions must be 0600 or stricter"
+                )
+            return path.read_bytes()
+        except OSError as exc:
+            # Never include configured private-key file location in client errors.
+            raise RuntimeProjectionSigningError(
+                "runtime projection signing key is unavailable"
+            ) from exc
     value = os.getenv("ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_PEM", "")
     return value.replace("\\n", "\n").encode("utf-8") if value else b""
 
@@ -41,7 +51,7 @@ def _private_key_bytes_from_env() -> bytes:
 def load_private_key() -> Ed25519PrivateKey:
     raw = _private_key_bytes_from_env()
     if not raw:
-        raise legacy.RuntimeProjectionBlocked(
+        raise RuntimeProjectionSigningError(
             "ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_FILE is required"
         )
     try:
@@ -51,11 +61,11 @@ def load_private_key() -> Ed25519PrivateKey:
             decoded = base64.urlsafe_b64decode(raw.decode("ascii") + "==")
             key = Ed25519PrivateKey.from_private_bytes(decoded)
         except Exception as exc:
-            raise legacy.RuntimeProjectionBlocked(
+            raise RuntimeProjectionSigningError(
                 "runtime projection private key is invalid"
             ) from exc
     if not isinstance(key, Ed25519PrivateKey):
-        raise legacy.RuntimeProjectionBlocked(
+        raise RuntimeProjectionSigningError(
             "runtime projection private key must be Ed25519"
         )
     return key
@@ -114,6 +124,21 @@ def build_runtime_projection(
     signer = private_key or load_private_key()
     document["signature"] = projection_signature(document, signer)
     return document
+
+
+def build_runtime_projection_v2(
+    neo_factory: Callable[[], Any],
+    *,
+    ttl_seconds: int = 60,
+    now_ms: int | None = None,
+    private_key: Ed25519PrivateKey | None = None,
+    key_id: str | None = None,
+) -> dict[str, Any]:
+    """Compatibility spelling used by mobile; never returns an unsigned v1 doc."""
+    return build_runtime_projection(
+        neo_factory, ttl_seconds=ttl_seconds, now_ms=now_ms,
+        private_key=private_key, key_id=key_id,
+    )
 
 
 def build_runtime_projection_router(
