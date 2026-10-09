@@ -25,7 +25,12 @@ vendor remaining budget, live revocation, WORM custody, or production
 eligibility.
 
 Patch SHA-256:
-`d21774ca671481a1b303684dd769ab596fa7bc82db31dac32f5cc380548a8df9`.
+`953b1fca2c52e6f607c045531547de8c269796b212395513c41058f506f3c5dc`.
+
+October 9 mock witness acceptance: 18 Node tests pass, with timed custody
+acknowledgement, post-witness lease revalidation and bounded cleanup release.
+See `docs/mercury_custody_prelaunch_timeout_20261009.md` in auto-assist.
+The prior October 8 observations of 12 tests remain historical.
 
 Not validated: dependency-enabled TypeScript typecheck of the full upstream
 project, actual BotManager execution, SDK streaming or real network calls.
