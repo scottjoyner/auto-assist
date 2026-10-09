@@ -469,3 +469,196 @@ def test_mock_release_malformed_acknowledgment_fails_closed(setting):
     assert not result.admitted and result.reason == "release_unverified"
     assert result.provider_calls == 1
     assert route.upstream_group in gate.quarantined_groups
+
+
+@pytest.mark.parametrize("field,value", [
+    ("input_reserved", True), ("input_reserved", 0),
+    ("input_reserved", -1), ("input_reserved", 1000001),
+    ("output_reserved", False), ("output_reserved", 0),
+    ("output_reserved", 1000001),
+    ("ttl_seconds", True), ("ttl_seconds", 4),
+    ("ttl_seconds", 121), ("ttl_seconds", 30.0),
+])
+def test_malformed_reservations_never_touch_ledger_or_provider(setting, field, value):
+    gate, ledger, _, _, request = setting
+    changed = m.DispatchRequest(**{**vars(request), field: value})
+    mock = m.RecordingMockProvider()
+    result = gate.dispatch(changed, mock)
+    assert result.reason == "invalid_reservation"
+    assert mock.calls == ledger.acquires == 0
+
+
+@pytest.mark.parametrize("field,value", [
+    ("client", 42), ("client", "x" * 129),
+    ("node", True), ("node", "x" * 129),
+    ("credential_ref", 55), ("credential_ref", "x" * 257),
+    ("request_key", 77), ("request_key", "short"),
+    ("request_key", "x" * 129),
+])
+def test_invalid_identity_types_and_request_keys_deny_before_lease(setting, field, value):
+    gate, ledger, _, _, request = setting
+    changed = m.DispatchRequest(**{**vars(request), field: value})
+    mock = m.RecordingMockProvider()
+    result = gate.dispatch(changed, mock)
+    assert result.reason == "invalid_principal_or_request_key"
+    assert mock.calls == ledger.acquires == 0
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_authority_clock_denies_before_lease(setting, value):
+    gate, ledger, _, _, request = setting
+    gate.now = value
+    mock = m.RecordingMockProvider()
+    result = gate.dispatch(request, mock)
+    assert result.reason == "invalid_clock"
+    assert mock.calls == ledger.acquires == 0
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"),
+                                     True, "1100", None])
+def test_nonfinite_or_non_numeric_lease_expiry_denies_before_provider(setting, value):
+    gate, ledger, _, _, request = setting
+    ledger.expires_at = value
+    mock = m.RecordingMockProvider()
+    result = gate.dispatch(request, mock)
+    assert result.reason == "lease_denied"
+    assert mock.calls == 0
+
+
+@pytest.mark.parametrize("value", [False, 0, 1, "yes", None])
+def test_lease_grant_requires_boolean_true(setting, value):
+    gate, ledger, _, _, request = setting
+    ledger.grant = value
+    mock = m.RecordingMockProvider()
+    result = gate.dispatch(request, mock)
+    assert result.reason == "lease_denied"
+    assert mock.calls == 0
+
+
+@pytest.mark.parametrize("value", [1, "true", None])
+def test_route_verified_must_be_literal_boolean_true(setting, value):
+    gate, ledger, _, route, request = setting
+    changed = m.RouteQualification(**{**vars(route), "verified": value})
+    gate.routes[(route.provider, route.model)] = changed
+    mock = m.RecordingMockProvider()
+    result = gate.dispatch(request, mock)
+    assert result.reason == "missing_exact_zero_cost_proof"
+    assert mock.calls == ledger.acquires == 0
+
+
+@pytest.mark.parametrize("value", [1, "true", None])
+def test_authentication_requires_literal_true_before_lease(setting, value):
+    gate, ledger, authority, _, request = setting
+    authority.authenticate = lambda *args: value
+    mock = m.RecordingMockProvider()
+    result = gate.dispatch(request, mock)
+    assert result.reason == "unauthenticated_client"
+    assert mock.calls == ledger.acquires == 0
+
+
+@pytest.mark.parametrize("value", [1, "true", None])
+def test_first_lease_witness_requires_literal_true(setting, value):
+    gate, ledger, authority, _, request = setting
+    authority.attest = lambda *args: value
+    mock = m.RecordingMockProvider()
+    result = gate.dispatch(request, mock)
+    assert result.reason == "unwitnessed_lease"
+    assert mock.calls == 0
+    assert len(ledger.released) == 1
+
+
+@pytest.mark.parametrize("value", [1, "true", None])
+def test_renewed_lease_requires_literal_true(setting, value):
+    gate, ledger, _, _, request = setting
+    original = ledger.renew
+    def fake(*args, **kwargs):
+        response = original(*args, **kwargs)
+        return {**response, "renewed": value}
+    ledger.renew = fake
+    mock = m.RecordingMockProvider()
+    result = gate.dispatch(request, mock)
+    assert result.reason == "renewal_denied"
+    assert mock.calls == 0
+    assert len(ledger.released) == 1
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"),
+                                     "1100", True, None])
+def test_renewal_requires_finite_numeric_expiry(setting, value):
+    gate, ledger, _, _, request = setting
+    ledger.renew = lambda *args, **kwargs: {"renewed": True, "expires_at": value}
+    mock = m.RecordingMockProvider()
+    result = gate.dispatch(request, mock)
+    assert result.reason == "renewal_denied"
+    assert mock.calls == 0
+    assert len(ledger.released) == 1
+
+
+def test_stream_heartbeat_rejects_nonfinite_or_nonboolean_renewal(setting):
+    gate, ledger, _, _, request = setting
+    n = 0
+    def partial(*args, **kwargs):
+        nonlocal n
+        n += 1
+        return ({"renewed": True, "expires_at": 1100}
+                if n == 1 else {"renewed": "true", "expires_at": float("nan")})
+    ledger.renew = partial
+    mock = m.RecordingMockProvider(steps=4)
+    result = gate.dispatch(request, mock)
+    assert result.reason == "mock_stream_cancelled"
+    assert result.provider_calls == 1
+    assert len(ledger.released) == 1
+
+
+def test_acquire_partition_after_possible_commit_quarantines_shared_group(setting):
+    gate, ledger, _, route, request = setting
+    def commit_then_partition(*args, **kwargs):
+        ledger.acquires += 1
+        raise ConnectionError("synthetic_connection_dropped_after_commit")
+    ledger.acquire = commit_then_partition
+    mock = m.RecordingMockProvider()
+    result = gate.dispatch(request, mock)
+    assert result.reason == "lease_authority_unavailable"
+    assert mock.calls == 0
+    assert route.upstream_group in gate.quarantined_groups
+    second = m.RecordingMockProvider()
+    assert gate.dispatch(request, second).reason == "unqualified_or_quarantined"
+    assert second.calls == 0
+
+
+def test_malformed_positive_grant_quarantines_possible_lease(setting):
+    gate, ledger, _, route, request = setting
+    def broken_grant(*args, **kwargs):
+        ledger.acquires += 1
+        return {"granted": True, "lease_id": None, "provider": route.upstream_group,
+                "expires_at": float("nan")}
+    ledger.acquire = broken_grant
+    result = gate.dispatch(request, m.RecordingMockProvider())
+    assert result.reason == "lease_denied"
+    assert route.upstream_group in gate.quarantined_groups
+    next_mock = m.RecordingMockProvider()
+    assert gate.dispatch(request, next_mock).reason == "unqualified_or_quarantined"
+    assert next_mock.calls == 0
+
+
+def test_expiry_huge_integer_is_rejected_without_exception(setting):
+    gate, ledger, _, route, request = setting
+    ledger.expires_at = 10 ** 1500
+    mock = m.RecordingMockProvider()
+    result = gate.dispatch(request, mock)
+    assert result.reason == "lease_denied"
+    assert mock.calls == 0
+    assert route.upstream_group in gate.quarantined_groups
+
+
+def test_normal_deny_does_not_quarantine_legitimate_quota_retry(setting):
+    gate, ledger, _, route, request = setting
+    ledger.grant = False
+    first = m.RecordingMockProvider()
+    assert gate.dispatch(request, first).reason == "lease_denied"
+    assert first.calls == 0
+    assert route.upstream_group not in gate.quarantined_groups
+    ledger.grant = True
+    next_mock = m.RecordingMockProvider()
+    assert gate.dispatch(request, next_mock).admitted
+    assert next_mock.calls == 1
