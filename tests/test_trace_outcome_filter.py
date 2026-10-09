@@ -222,10 +222,17 @@ def test_fastapi_route_filters_before_paging_and_requires_auth(monkeypatch):
     assert unauth.status_code in (401, 403)
     assert created == []
 
-    # Functional test bypasses auth only through FastAPI's explicit
-    # dependency override, not by changing app/auth production code.
-    app.dependency_overrides[swarm_routes._default_auth] = lambda: "fixture-user"
-    ok = client.get("/api/traces?outcome=failed&limit=1&offset=1")
+    # Functional query still exercises the independent Basic operator scope.
+    # Overriding the principal alone is no longer sufficient authorization.
+    from assistx.trace_preview_access import basic_preview_permitted
+    monkeypatch.setattr(swarm_routes, "_trace_metadata_authorizer",
+        lambda principal, credentials: basic_preview_permitted(
+            principal, credentials,
+            configured_user="fixture-user",
+            configured_password="fixture-pw",
+            allowed_users="fixture-user"))
+    ok = client.get("/api/traces?outcome=failed&limit=1&offset=1",
+                    auth=("fixture-user", "fixture-pw"))
     assert ok.status_code == 200, ok.text[:300]
     body = ok.json()
     assert body["total"] == 2
