@@ -71,7 +71,7 @@ def test_success_uses_only_allowlisted_static_cypher():
     ("approved_read", {"value": 1, "extra": 2}),
     ("approved_read", {"value": {"nested": "untrusted"}}),
     ("approved_read", {"value": float("nan")}),
-    ("approved_read", {"value": "x" * 200),
+    ("approved_read", {"value": "x" * 200}),
     ("approved_read", "value=1"),
 ])
 def test_bad_plan_or_parameters_never_consume_admission(plan_id, params):
