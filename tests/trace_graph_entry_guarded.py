@@ -73,7 +73,7 @@ class ProtectedGraphEntry:
         self._expected_epoch = expected_epoch
 
     def execute(self, plan_id: str, parameters: Mapping[str, object]) -> object:
-        if plan_id not in self._plans:
+        if not isinstance(plan_id, str) or plan_id not in self._plans:
             raise AdmissionDenied("UNREGISTERED_QUERY_PLAN")
         plan = self._plans[plan_id]
         if not isinstance(parameters, Mapping) or set(parameters) != set(plan.parameters):
