@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      AUTO_ROUTER_SHA: fc821ea59c8fb2ede65c7e2eccb579858dde14ce
+      AUTO_ROUTER_SHA: e8bd7cf5f49ebf6e95333744de34311cafd93789
       LMS_SHA: 6ec5476f72936ebe74a45104dadded53cb8b0885
       FLEET_PROFILES_SHA: bfe57f9b1529c511ead14cffebcd67d70b9b469c
     steps:
