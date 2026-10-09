@@ -5,6 +5,11 @@ on:
     paths:
       - "src/assistx/trace_durable_ledger_research.py"
       - "tests/test_trace_durable_ledger_research.py"
+      - "tests/test_trace_physical_probe_guardrails.py"
+      - "tests/probe_trace_physical_observer_526.py"
+      - "tests/probe_trace_physical_admission_526.py"
+      - "tests/probe_trace_terminate_tx_526.py"
+      - "docs/TRACE_PHYSICAL_WITNESS_20261009.md"
       - "docs/TRACE_DURABLE_LEDGER_RESEARCH_20261009.md"
       - ".github/workflows/trace-durable-ledger-research.yml"
   workflow_dispatch:
@@ -36,7 +41,9 @@ jobs:
           ASSISTX_RUNTIME_PROFILE: test
           ASSISTX_DEPENDENCY_MODE: compat
         run: |
-          python -m pytest -q tests/test_trace_durable_ledger_research.py
+          python -m pytest -q \
+            tests/test_trace_durable_ledger_research.py \
+            tests/test_trace_physical_probe_guardrails.py
 
       # Never wire this test contract to runtime routes or production admission.
       # A green test includes two intentional counterexamples: copied ledgers
