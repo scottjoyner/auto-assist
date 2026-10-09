@@ -9,6 +9,7 @@ on:
       - "src/assistx/trace_detail_pages.py"
       - "src/assistx/trace_preview_access.py"
       - "static/js/traces.js"
+      - "docs/TRACE_PAGED_CLIENT_HANDOFF_20261009.md"
       - "tests/test_trace_*.py"
       - "tests/test_trace_*.cjs"
   workflow_dispatch:
