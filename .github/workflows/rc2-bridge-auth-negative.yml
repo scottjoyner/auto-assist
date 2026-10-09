@@ -5,6 +5,11 @@ on:
     paths:
       - "scripts/run_rc2_bridge_auth_isolated.py"
       - "tests/test_rc2_bridge_auth_disposable_guard.py"
+      - "src/assistx/trusted_gateway_identity_contract.py"
+      - "src/assistx/gateway_replay_fence_research.py"
+      - "scripts/run_gateway_real_redis_replay_isolated.py"
+      - "tests/test_gateway_replay_fence_research.py"
+      - "tests/test_gateway_real_redis_replay_guard.py"
       - ".github/workflows/rc2-bridge-auth-negative.yml"
   workflow_dispatch:
 
@@ -25,6 +30,6 @@ jobs:
           python-version: "3.12"
       - name: Run no-Docker synthetic guards
         run: |
-          python -m pip install pytest
-          python -m py_compile scripts/run_rc2_bridge_auth_isolated.py tests/test_rc2_bridge_auth_disposable_guard.py
-          python -m pytest --noconftest -q tests/test_rc2_bridge_auth_disposable_guard.py
+          python -m pip install pytest "cryptography>=43,<46"
+          python -m py_compile scripts/run_rc2_bridge_auth_isolated.py tests/test_rc2_bridge_auth_disposable_guard.py src/assistx/gateway_replay_fence_research.py scripts/run_gateway_real_redis_replay_isolated.py
+          python -m pytest --noconftest -q tests/test_rc2_bridge_auth_disposable_guard.py tests/test_trusted_gateway_identity_contract.py tests/test_gateway_replay_fence_research.py tests/test_gateway_real_redis_replay_guard.py
