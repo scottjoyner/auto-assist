@@ -208,7 +208,7 @@ def test_projection_with_trace_exporter_integration(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     # Test-only fixture in a disposable directory, no source tree writes.
     trace_exporter_path = tmp_path / "empty_trace_exporter.py"
-    trace_exporter_path.write_text("def export_sessions(db_path):\\n    return []\\n")
+    trace_exporter_path.write_text("def export_sessions(db_path):\n    return []\n")
 
     proj = emit_projection(
         free_models=[{"id": "openrouter/claude-3.5-sonnet", "provider": "openrouter", "pricing": {"prompt": "0", "completion": "0"}}],
