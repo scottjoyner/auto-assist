@@ -119,6 +119,9 @@
     currentEvidence = null;
     state.selected = null;
     currentTrace = null;
+    timelineLimit = TIMELINE_BATCH;
+    timelineTypeQuery = "";
+    activeContextFilter = null;
     state.detailLoaded = false;
     state.detailRequest++;
     persistSelection(null);
@@ -193,6 +196,10 @@
     return data;
   }
   var currentTrace = null;
+  var TIMELINE_BATCH = 80;
+  var timelineLimit = TIMELINE_BATCH;
+  var timelineTypeQuery = "";
+  var activeContextFilter = null;
   var evidenceRequest = 0;
   var currentEvidence = null;
   var contextFields = {
@@ -240,6 +247,7 @@
   }
   function renderDetail(trace, filter) {
     currentTrace = trace;
+    activeContextFilter = filter || null;
     var events = Array.isArray(trace.events) ? trace.events : [];
     var first = events.length && events[0].ts_ms != null ? Number(events[0].ts_ms) : null;
     var cid = String(trace.correlation_id || state.selected || "");
@@ -249,8 +257,13 @@
       '<span>' + events.length + ' events</span><span>Started · ' + esc(when(first)) + '</span></div></div>';
     var visible = events.map(function (e, i) { return { event: e, index: i }; })
       .filter(function (item) {
-        return !filter || item.event[filter.field] === filter.value;
+        return (!filter || item.event[filter.field] === filter.value) &&
+          (!timelineTypeQuery || String(item.event.event_type || "").toLowerCase()
+            .indexOf(timelineTypeQuery) >= 0);
       });
+    // Bound the timeline DOM, never the source evidence nor claimed history.
+    var windowed = visible.slice(-timelineLimit);
+    var hasEarlier = windowed.length < visible.length;
     var context = contextPanel(trace, filter);
     if (!events.length) {
       $("trace-detail").innerHTML = head + context +
@@ -261,9 +274,18 @@
     // Payloads remain in memory until an explicit event disclosure opens.
     $("trace-detail").innerHTML = head + context +
       '<div class="trace-timeline-header">' +
-      '<h3>' + (filter ? "Matching events" : "All recorded events") + '</h3>' +
+      '<h3>' + (filter || timelineTypeQuery ? "Matching events" : "Recorded event timeline") + '</h3>' +
       '<span>' + visible.length + ' of ' + events.length + ' events</span></div>' +
-      (visible.length ? '<div class="trace-timeline">' + visible.map(function (item) {
+      '<div class="trace-local-filter"><label for="trace-type-query">Find event types · loaded trace only</label>' +
+      '<div class="trace-local-filter-row"><input id="trace-type-query" type="search" ' +
+      'maxlength="80" autocomplete="off" spellcheck="false" ' +
+      'value="' + esc(timelineTypeQuery) + '">' +
+      (timelineTypeQuery ? '<button type="button" class="trace-clear-type">Clear type search</button>' : '') +
+      '</div><p>Matches event-type names only, never payloads. Not an all-history query.</p></div>' +
+      '<p class="trace-window-status" role="status" aria-live="polite">Showing latest ' +
+      windowed.length + ' of ' + visible.length + ' matching loaded events.</p>' +
+      (hasEarlier ? '<button type="button" class="trace-show-earlier">Show up to 80 earlier events</button>' : '') +
+      (visible.length ? '<div class="trace-timeline">' + windowed.map(function (item) {
       var e = item.event;
       var i = item.index;
       var failed = String(e.event_type || "").endsWith(".failed");
@@ -275,7 +297,7 @@
         '<details data-event-index="' + i + '"><summary>Show event fields (may contain operational data)</summary><pre></pre></details>' +
         '</article>';
     }).join("") + "</div>" :
-      '<p class="trace-empty">No loaded events match this recorded value.</p>');
+      '<p class="trace-empty">No loaded events match the selected context and event-type search.</p>');
     if (currentEvidence) paintEvidence(currentEvidence);
     $("trace-detail").querySelectorAll("details[data-event-index]").forEach(function (node) {
       node.addEventListener("toggle", function () {
@@ -357,8 +379,27 @@
       });
       return;
     }
+    var earlier = event.target.closest("button.trace-show-earlier");
+    if (earlier) {
+      timelineLimit += TIMELINE_BATCH;
+      renderDetail(currentTrace, activeContextFilter);
+      var next = $("trace-detail").querySelector("button.trace-show-earlier") ||
+        $("trace-detail").querySelector("#trace-type-query");
+      if (next && typeof next.focus === "function") next.focus();
+      return;
+    }
+    var clearType = event.target.closest("button.trace-clear-type");
+    if (clearType) {
+      timelineTypeQuery = "";
+      timelineLimit = TIMELINE_BATCH;
+      renderDetail(currentTrace, activeContextFilter);
+      var query = $("trace-detail").querySelector("#trace-type-query");
+      if (query && typeof query.focus === "function") query.focus();
+      return;
+    }
     var reset = event.target.closest("button.trace-clear-context");
     if (reset) {
+      timelineLimit = TIMELINE_BATCH;
       renderDetail(currentTrace, null);
       var heading = $("trace-detail").querySelector(".trace-context h3");
       if (heading && typeof heading.focus === "function") heading.focus();
@@ -375,9 +416,24 @@
     if (!entries.some(function (entry) {
       return entry.value === value && entry.provenance === "trace_event_property";
     })) return;
+    timelineLimit = TIMELINE_BATCH;
     renderDetail(currentTrace, { field: field, value: value });
     var active = $("trace-detail").querySelector("button.trace-context-chip.selected");
     if (active && typeof active.focus === "function") active.focus();
+  });
+  $("trace-detail").addEventListener("input", function (event) {
+    if (!currentTrace || !event.target || event.target.id !== "trace-type-query") return;
+    // No raw payload indexing, no server query, no request authority.
+    timelineTypeQuery = String(event.target.value || "").slice(0, 80).toLowerCase();
+    timelineLimit = TIMELINE_BATCH;
+    var caret = typeof event.target.selectionStart === "number"
+      ? event.target.selectionStart : timelineTypeQuery.length;
+    renderDetail(currentTrace, activeContextFilter);
+    var query = $("trace-detail").querySelector("#trace-type-query");
+    if (query && typeof query.focus === "function") {
+      query.focus();
+      if (typeof query.setSelectionRange === "function") query.setSelectionRange(caret, caret);
+    }
   });
   function select(cid) {
     if (!cid) return;
@@ -385,6 +441,9 @@
     currentEvidence = null;
     state.selected = cid;
     currentTrace = null;
+    timelineLimit = TIMELINE_BATCH;
+    timelineTypeQuery = "";
+    activeContextFilter = null;
     state.detailLoaded = false;
     var sequence = ++state.detailRequest;
     persistSelection(cid);
