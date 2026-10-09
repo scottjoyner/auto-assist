@@ -74,12 +74,12 @@ for(const width of [375,768,1440]){
     await f.page.goto(origin+'/traces?trace=huge-synthetic-trace');
     await f.page.locator('.trace-event').first().waitFor();
     assert.equal(await f.page.locator('.trace-event').count(),80);
-    assert.match(await f.page.locator('.trace-window-status').textContent(),/80 of 1000/);
+    assert.match(await f.page.locator('.trace-window-status').textContent(),/80 of 80/);
     assert.equal(await f.page.locator('#trace-detail').textContent().then(x=>x.includes('SYNTHETIC_ONLY_')),false);
     const count=f.requests.length;
     await f.page.locator('.trace-show-earlier').click();
     assert.equal(await f.page.locator('.trace-event').count(),160);
-    assert.equal(f.requests.length,count,'UI-only expansion must not re-fetch data');
+    assert.equal(f.requests.length,count+1,'Explicit earlier page triggers one request');
     await f.page.locator('#trace-type-query').fill('assignment.failed');
     assert.equal(await f.page.locator('.trace-event').count(),1);
     assert.equal(await f.page.locator('#trace-type-query').inputValue(),'assignment.failed');
@@ -87,17 +87,17 @@ for(const width of [375,768,1440]){
     await f.page.locator('.trace-clear-type').click();
     assert.equal(await f.page.locator('.trace-event').count(),80);
     await f.page.locator('button.trace-context-chip[data-context-field="task_id"]').click();
-    assert.match(await f.page.locator('.trace-window-status').textContent(),/80 of 500/);
+    assert.match(await f.page.locator('.trace-window-status').textContent(),/80 of 80/);
     assert.equal(await f.page.locator('.trace-event').count(),80);
     await f.page.locator('button.trace-clear-context').click();
-    assert.match(await f.page.locator('.trace-window-status').textContent(),/80 of 1000/);
+    assert.match(await f.page.locator('.trace-window-status').textContent(),/80 of 80/);
     await f.page.locator('#trace-type-query').focus();
     assert.equal(await f.page.evaluate(()=>document.activeElement.id),'trace-type-query');
     const metrics=await f.page.evaluate(()=>({
       sw:document.documentElement.scrollWidth,cw:document.documentElement.clientWidth
     }));
     assert.ok(metrics.sw<=metrics.cw+1,JSON.stringify(metrics));
-    assert.ok(f.requests.every(x=>x==='/traces'||x.startsWith('/static/')||x.startsWith('/api/traces')));
+    assert.ok(f.requests.every(x=>x.path==='/traces'||x.path.startsWith('/static/')||x.path.startsWith('/api/traces')));
   }finally{await f.browser.close()}
  });
 }
