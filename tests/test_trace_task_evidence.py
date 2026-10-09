@@ -130,6 +130,13 @@ def test_route_auth_and_path_validation(monkeypatch):
         if credentials is None:raise HTTPException(status_code=401,detail="auth required")
         return credentials.username
     monkeypatch.setattr(swarm_routes,"_injected_auth_dependency",require_auth)
+    from assistx.trace_preview_access import basic_preview_permitted
+    monkeypatch.setattr(swarm_routes,"_trace_metadata_authorizer",
+        lambda principal, credentials: basic_preview_permitted(
+            principal, credentials,
+            configured_user="test",
+            configured_password="test",
+            allowed_users="test"))
     client=TestClient(app)
     assert client.get("/api/traces/one/evidence").status_code==401
     assert created==[]
