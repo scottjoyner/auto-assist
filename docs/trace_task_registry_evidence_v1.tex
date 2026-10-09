@@ -1,0 +1,27 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs,amsmath,hyperref}
+\title{Conservative Trace--Task--Registry Evidence Inspection for Fleet Operators}
+\author{AssistX fleet observability --- research draft}
+\date{October 8, 2026}
+\begin{document}
+\maketitle
+\begin{abstract}
+Trace investigation dashboards risk overstating evidence when producer-linked task identifiers, mutable task projections and node registry entries share the same strings. We introduce an opt-in read-only evidence lookup that requires explicit trace-event-to-task edges and exact task-ID agreement, while treating even a unique node registration match as unverified correspondence rather than execution attestation. Tests were synthetic, with 48 passing Python tests and 20 passing UI interaction tests across parent suites. Live graph performance, signed provenance and real-browser acceptance remain open.
+\end{abstract}
+\section{Method}
+Let $E(c)$ be the events of trace correlation $c$. A task $t$ is admitted only if
+\[
+\exists e\in E(c): (e)-[:\mathrm{FOR\_TASK}]\rightarrow(t)
+\land e.\mathrm{task\_id}=t.\mathrm{id}.
+\]
+Bound parameter $c$ restricts the graph query, which orders by task ID and limits results to thirteen for a maximum twelve-item UI plus truncation. A separate exact match compares the task's mutable projected \texttt{node\_id} to the \texttt{SwarmNode} registry. A zero count indicates absent registration, one indicates an unverified ID match and multiple indicate ambiguity. No outcome establishes an authenticated execution host or agent. Two read-only statements have four-second timeouts and return no trace payload, node IP or tool-output text.
+\section{Prediction and observations}
+The preregistered prediction was that operators could inspect this corroboration only on demand, avoiding added trace-load queries, while stale responses, malicious identifiers and older schemas fail closed. Synthetic tests exercised the explicit relationships, query contract and UI. Sixteen new Python and five new Node tests passed; the total passing suites are 48 Python and 20 Node respectively, including earlier tests.
+\section{Limitations}
+The Task and registry records are mutable projections and can be self-reported. Matching identifiers are not cryptographic source attestation. The work is not evidence of full historic tool-call custody, and no live Neo4j performance, deployment, screen-reader or mobile browser test was run. Release requires authenticated browser inspection, staged database load testing and independently accepted node provenance. The broader log-management obligation is distinct \cite{nist92}; the UI design draws on WCAG 2.2 but is not certified \cite{wcag}.
+\begin{thebibliography}{9}
+\bibitem{nist92} K. Kent and M. Souppaya, \emph{Guide to Computer Security Log Management}, NIST SP 800-92 (2006). \url{https://doi.org/10.6028/NIST.SP.800-92}.
+\bibitem{wcag} W3C, \emph{Web Content Accessibility Guidelines (WCAG) 2.2}. \url{https://www.w3.org/TR/WCAG22/}.
+\end{thebibliography}
+\end{document}

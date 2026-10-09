@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+import os
+from typing import Any, Dict, List, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
 
 from .contracts.event_envelope import EventEnvelope
 from .draft_model import DraftModelUnavailable, generate_draft
 from .neo4j_client import Neo4jClient
+from .trace_detail_pages import InvalidTraceCursor, get_trace_page, get_trace_payload_preview
 from .outbox_client import OutboxClient
 from .swarm_core import (
     EventConflictError,
@@ -20,6 +22,7 @@ from .swarm_core import (
     delete_model_endpoint,
     fail_task,
     get_trace,
+    get_trace_task_evidence,
     list_capabilities,
     list_traces,
     list_model_endpoints,
@@ -144,12 +147,28 @@ def _outbox() -> OutboxClient:
 # --- Auth ---
 # Injected from api.py so swarm routes use the same Basic Auth as legacy endpoints.
 _injected_auth_dependency = None
+# Independent Basic-auth gates: trusted proxy header alone never permits
+# either new timeline metadata reads or sensitive payload previews.
+_trace_metadata_authorizer = None
+_trace_preview_authorizer = None
 security = HTTPBasic(auto_error=False)
 
 
 def set_auth_dependency(auth_func: Any) -> None:
     global _injected_auth_dependency
     _injected_auth_dependency = auth_func
+
+
+def set_trace_metadata_authorizer(authorizer: Any) -> None:
+    """Ensure independently verified Basic auth before paged graph reads."""
+    global _trace_metadata_authorizer
+    _trace_metadata_authorizer = authorizer
+
+
+def set_trace_preview_authorizer(authorizer: Any) -> None:
+    """Provide an independent Basic-credential policy; default deny."""
+    global _trace_preview_authorizer
+    _trace_preview_authorizer = authorizer
 
 
 def _default_auth(
@@ -431,26 +450,68 @@ def api_voice_policy(
     }
 
 
+def _legacy_trace_read_guard(
+    response: Response, user: str,
+    credentials: HTTPBasicCredentials | None,
+    *, payload_bearing: bool = False,
+) -> None:
+    """Independent Basic operator proof before ANY legacy trace graph access.
+
+    Injected identity can originate in an unverified proxy header. It is not
+    sufficient authorization for trace evidence or historical event payloads.
+    Legacy full-detail access is disabled by default and additionally uses the
+    stricter explicit preview allowlist. Never use this as physical ingress
+    or per-query admission attestation.
+    """
+    response.headers["Cache-Control"] = "no-store, private"
+    if _injected_auth_dependency is None:
+        raise HTTPException(status_code=503, detail="Trace authentication unavailable",
+                            headers={"Cache-Control": "no-store, private"})
+    if payload_bearing and os.getenv("ASSISTX_LEGACY_TRACE_DETAIL_ENABLED", "0") != "1":
+        raise HTTPException(status_code=503, detail="Legacy trace detail disabled",
+                            headers={"Cache-Control": "no-store, private"})
+    policy = _trace_preview_authorizer if payload_bearing else _trace_metadata_authorizer
+    if policy is None:
+        raise HTTPException(status_code=503, detail="Trace authorization unavailable",
+                            headers={"Cache-Control": "no-store, private"})
+    try:
+        allowed = policy(user, credentials)
+    except Exception:
+        allowed = False
+    if allowed is not True:
+        raise HTTPException(status_code=403, detail="Trace read not authorized",
+                            headers={"Cache-Control": "no-store, private"})
+
+
 @router.get("/api/traces")
 def api_list_traces(
-    limit: int = 50,
-    offset: int = 0,
-    search: Optional[str] = None,
+    response: Response,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    search: Optional[str] = Query(default=None, max_length=128),
+    outcome: Optional[Literal["failed", "completed", "open"]] = None,
     user: str = Depends(_default_auth),
+    credentials: HTTPBasicCredentials | None = Depends(security),
 ):
-    """Historical trace index, newest first, for the trace history viewer."""
+    """Read-only global outcome filtering with independent Basic scope."""
+    _legacy_trace_read_guard(response, user, credentials)
     neo = _neo()
     try:
-        return list_traces(neo, limit=limit, offset=offset, search=search)
+        return list_traces(
+            neo, limit=limit, offset=offset, search=search, outcome=outcome
+        )
     finally:
         neo.close()
 
 
 @router.get("/api/traces/{correlation_id}")
 def api_get_trace(
-    correlation_id: str,
+    response: Response,
+    correlation_id: str = Path(min_length=1, max_length=128),
     user: str = Depends(_default_auth),
+    credentials: HTTPBasicCredentials | None = Depends(security),
 ):
+    _legacy_trace_read_guard(response, user, credentials, payload_bearing=True)
     neo = _neo()
     try:
         trace = get_trace(neo, correlation_id)
@@ -462,6 +523,108 @@ def api_get_trace(
         return trace
     finally:
         neo.close()
+
+
+@router.get("/api/traces/{correlation_id}/evidence")
+def api_trace_task_evidence(
+    response: Response,
+    correlation_id: str = Path(min_length=1, max_length=128),
+    user: str = Depends(_default_auth),
+    credentials: HTTPBasicCredentials | None = Depends(security),
+):
+    """Opt-in task/registry comparison: authenticated, not attested execution."""
+    _legacy_trace_read_guard(response, user, credentials)
+    neo = _neo()
+    try:
+        evidence = get_trace_task_evidence(neo, correlation_id)
+        if evidence is None:
+            raise HTTPException(status_code=404, detail="Trace not found")
+        return evidence
+    finally:
+        neo.close()
+
+
+class TracePayloadPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    event_id: str = Field(min_length=1, max_length=320)
+
+
+def _paged_trace_feature_gate() -> None:
+    """Deny until both source auth and physical admission are reviewed."""
+    if (_injected_auth_dependency is None
+            or os.getenv("ASSISTX_TRACE_DETAIL_PAGING_ENABLED", "0") != "1"):
+        raise HTTPException(status_code=503, detail="Trace paging unavailable")
+
+
+@router.get("/api/traces/{correlation_id}/timeline")
+def api_get_trace_timeline(
+    response: Response,
+    correlation_id: str = Path(min_length=1, max_length=128),
+    limit: int = Query(default=80, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None, max_length=720),
+    user: str = Depends(_default_auth),
+    credentials: HTTPBasicCredentials | None = Depends(security),
+):
+    """Experimental metadata: independent Basic credential proof required."""
+    _paged_trace_feature_gate()
+    response.headers["Cache-Control"] = "no-store, private"
+    if _trace_metadata_authorizer is None:
+        raise HTTPException(status_code=503, detail="Trace metadata authorization unavailable",
+                            headers={"Cache-Control": "no-store, private"})
+    try:
+        permitted = _trace_metadata_authorizer(user, credentials)
+    except Exception:
+        permitted = False
+    if permitted is not True:
+        raise HTTPException(status_code=403, detail="Trace metadata not authorized",
+                            headers={"Cache-Control": "no-store, private"})
+    try:
+        neo = _neo()
+        try:
+            return get_trace_page(neo, correlation_id, limit=limit, cursor=cursor)
+        finally:
+            neo.close()
+    except (InvalidTraceCursor, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid trace paging input") from exc
+
+
+@router.post("/api/traces/{correlation_id}/payload-preview")
+def api_get_trace_payload_preview(
+    body: TracePayloadPreviewRequest,
+    response: Response,
+    correlation_id: str = Path(min_length=1, max_length=128),
+    user: str = Depends(_default_auth),
+    credentials: HTTPBasicCredentials | None = Depends(security),
+):
+    """Explicit read additionally requires independently validated Basic scope."""
+    _paged_trace_feature_gate()
+    response.headers["Cache-Control"] = "no-store, private"
+    if _trace_preview_authorizer is None:
+        raise HTTPException(
+            status_code=503, detail="Trace preview authorization unavailable",
+            headers={"Cache-Control": "no-store, private"},
+        )
+    try:
+        permitted = _trace_preview_authorizer(user, credentials)
+    except Exception:
+        # Deny before graph access even if the independent scope hook breaks.
+        permitted = False
+    if permitted is not True:
+        raise HTTPException(
+            status_code=403, detail="Trace payload preview not authorized",
+            headers={"Cache-Control": "no-store, private"},
+        )
+    try:
+        neo = _neo()
+        try:
+            preview = get_trace_payload_preview(neo, correlation_id, body.event_id)
+        finally:
+            neo.close()
+        if preview is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        return preview
+    except InvalidTraceCursor as exc:
+        raise HTTPException(status_code=422, detail="Invalid trace paging input") from exc
 
 
 @router.post("/api/traces/{correlation_id}/events")

@@ -1201,46 +1201,84 @@ def list_traces(
     limit: int = 50,
     offset: int = 0,
     search: Optional[str] = None,
+    outcome: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """List historical traces, newest first, for the trace history viewer.
+    """Read-only, bounded history query with an optional *global* outcome filter.
 
-    Aggregates in the database rather than hydrating each trace: at ~85k trace
-    groups, calling get_trace() per row to build a list would be unusable.
+    Failed takes precedence over completed/accepted. The same group predicates
+    are applied to the total count and to the paginated result: filtering the
+    50 displayed rows is not equivalent to filtering the historical index.
+    No payloads, arguments, or outputs are fetched in this index endpoint.
     """
+    from neo4j import Query as ReadOnlyQuery
+
+    if outcome not in (None, "failed", "completed", "open"):
+        raise ValueError("Unsupported trace outcome")
+    if search is not None and len(search) > 128:
+        raise ValueError("Correlation ID search must be <=128 characters")
+
     limit = max(1, min(int(limit), 200))
     offset = max(0, int(offset))
-    match = "MATCH (g:TraceGroup)-[:HAS_EVENT]->(t:TraceEvent)"
     params: Dict[str, Any] = {"limit": limit, "offset": offset}
-    where = ""
+    # An index row requires at least one trace event. Count only groups that
+    # can actually appear in the page, including when no outcome is supplied.
+    clauses: List[str] = [
+        "EXISTS { MATCH (g)-[:HAS_EVENT]->(:TraceEvent) }",
+    ]
     if search:
-        match += " WHERE toLower(g.correlation_id) CONTAINS toLower($search)"
+        clauses.append("toLower(g.correlation_id) CONTAINS toLower($search)")
         params["search"] = search
-    with neo._session() as s:
-        total = s.run(
-            "MATCH (g:TraceGroup) " + ("WHERE toLower(g.correlation_id) CONTAINS toLower($search) " if search else "")
-            + "RETURN count(DISTINCT g) AS n",
-            {"search": search} if search else {},
+
+    # Constant Cypher fragments only; never interpolate user input into
+    # executable graph syntax. Filtered counts exclude empty trace groups.
+    failure = (
+        "EXISTS { MATCH (g)-[:HAS_EVENT]->(failed:TraceEvent) "
+        "WHERE failed.event_type ENDS WITH '.failed' }"
+    )
+    completed = (
+        "EXISTS { MATCH (g)-[:HAS_EVENT]->(done:TraceEvent) "
+        "WHERE done.event_type ENDS WITH '.completed' "
+        "OR done.event_type ENDS WITH '.accepted' }"
+    )
+    if outcome is not None:
+        if outcome == "failed":
+            clauses.append(failure)
+        elif outcome == "completed":
+            clauses.extend(("NOT " + failure, completed))
+        else:
+            clauses.extend(("NOT " + failure, "NOT " + completed))
+    where = " WHERE " + " AND ".join(clauses) if clauses else " "
+
+    count_cypher = (
+        "MATCH (g:TraceGroup)" + where + " RETURN count(g) AS n"
+    )
+    page_cypher = (
+        "MATCH (g:TraceGroup)" + where
+        + """
+        MATCH (g)-[:HAS_EVENT]->(t:TraceEvent)
+        WITH g, count(t) AS events, min(t.ts_ms) AS first_ts,
+             max(t.ts_ms) AS last_ts, collect(DISTINCT t.event_type) AS types
+        WITH g, events, first_ts, last_ts, types,
+             CASE
+               WHEN any(x IN types WHERE x ENDS WITH '.failed') THEN 'failed'
+               WHEN any(x IN types WHERE x ENDS WITH '.completed')
+                 OR any(x IN types WHERE x ENDS WITH '.accepted') THEN 'completed'
+               ELSE 'open'
+             END AS outcome
+        RETURN g.correlation_id AS correlation_id, events, first_ts,
+               last_ts, types, outcome
+        ORDER BY last_ts DESC
+        SKIP $offset LIMIT $limit
+        """
+    )
+    # Neo4j transaction timeout limits the impact of broad filters on a live
+    # cluster; slow queries fail visibly instead of silently yielding 0.
+    with neo._session() as session:
+        total = session.run(
+            ReadOnlyQuery(count_cypher, timeout=4.0), params
         ).single()["n"]
-        rows = s.run(
-            match
-            + """
-            WITH g, count(t) AS events, min(t.ts_ms) AS first_ts, max(t.ts_ms) AS last_ts,
-                 collect(DISTINCT t.event_type) AS types
-            // Outcome is the single most useful thing to scan in a list of ~85k
-            // traces. Currently ~95% of execution stages fail, so a plain
-            // event-count list would be unreadable.
-            WITH g, events, first_ts, last_ts, types,
-                 CASE
-                   WHEN any(x IN types WHERE x ENDS WITH ".failed") THEN "failed"
-                   WHEN any(x IN types WHERE x ENDS WITH ".completed")
-                     OR any(x IN types WHERE x ENDS WITH ".accepted") THEN "completed"
-                   ELSE "open"
-                 END AS outcome
-            RETURN g.correlation_id AS correlation_id, events, first_ts, last_ts, types, outcome
-            ORDER BY last_ts DESC
-            SKIP $offset LIMIT $limit
-            """,
-            params,
+        rows = session.run(
+            ReadOnlyQuery(page_cypher, timeout=4.0), params
         )
         traces = [
             {
@@ -1258,7 +1296,10 @@ def list_traces(
             }
             for row in rows
         ]
-    return {"traces": traces, "total": total, "limit": limit, "offset": offset}
+    return {
+        "traces": traces, "total": total, "limit": limit, "offset": offset,
+        "outcome": outcome or "all",
+    }
 
 
 def get_trace(neo: Neo4jClient, correlation_id: str) -> Optional[Dict[str, Any]]:
@@ -1285,8 +1326,155 @@ def get_trace(neo: Neo4jClient, correlation_id: str) -> Optional[Dict[str, Any]]
             "correlation_id": correlation_id,
             "current_state": current_state,
             "summary": summary,
+            "context": _build_trace_context(events),
             "events": events,
         }
+
+
+_TRACE_CONTEXT_FIELDS = ("source", "task_id", "dispatch_id", "route_id", "assignment_id")
+
+
+def _build_trace_context(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Evidence-limited IDs recorded as top-level TraceEvent properties.
+
+    Never derive identity from payload_json or trace summary, never resolve a
+    physical node or agent from a producer source string. Each distinct scalar
+    value remains separately attributable to the indices that recorded it.
+    """
+    max_values = 12
+    max_chars = 160
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    missing: List[str] = []
+    truncated: List[str] = []
+    for field in _TRACE_CONTEXT_FIELDS:
+        found: Dict[str, Dict[str, Any]] = {}
+        skipped = False
+        for idx, event in enumerate(events):
+            value = event.get(field)
+            if not isinstance(value, str):
+                continue
+            value = value.strip()
+            if (not value or len(value) > max_chars
+                    or any(ord(char) < 32 or ord(char) == 127 for char in value)):
+                continue
+            if value in found:
+                found[value]["events"] += 1
+                found[value]["last_event_index"] = idx
+            elif len(found) < max_values:
+                found[value] = {
+                    "value": value,
+                    "events": 1,
+                    "first_event_index": idx,
+                    "last_event_index": idx,
+                    "provenance": "trace_event_property",
+                }
+            else:
+                skipped = True
+        groups[field] = list(found.values())
+        if not found:
+            missing.append(field)
+        if skipped:
+            truncated.append(field)
+    return {
+        "schema": "trace-context-v1",
+        "fields": groups,
+        "missing": missing,
+        "truncated": truncated,
+        "source_semantics": "producer_label_not_verified_node_or_agent",
+        "node_or_agent_verified": False,
+        "payload_inspected": False,
+    }
+
+
+def get_trace_task_evidence(
+    neo: Neo4jClient, correlation_id: str
+) -> Optional[Dict[str, Any]]:
+    """On-demand, read-only matching trace-event -> task -> registry evidence.
+
+    A producer-linked Task and matching SwarmNode.node_id are not attested
+    execution. Task worker/node properties originate in assignment projections
+    and may be stale or false. Never expose node IPs or arbitrary node props.
+    """
+    from neo4j import Query as ReadOnlyQuery
+
+    if not isinstance(correlation_id, str) or not correlation_id or len(correlation_id) > 128:
+        raise ValueError("Invalid correlation ID")
+    def admissible(value: Any) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        if not value or len(value) > 128 or any(ord(c) < 32 or ord(c) == 127 for c in value):
+            return None
+        return value
+
+    with neo._session() as session:
+        group = session.run(
+            ReadOnlyQuery(
+                "MATCH (g:TraceGroup {correlation_id:$correlation_id}) "
+                "RETURN count(g) AS n", timeout=4.0
+            ), {"correlation_id": correlation_id}
+        ).single()
+        if not group or not group["n"]:
+            return None
+        rows = session.run(
+            ReadOnlyQuery(
+                """
+                MATCH (g:TraceGroup {correlation_id:$correlation_id})
+                      -[:HAS_EVENT]->(e:TraceEvent)-[:FOR_TASK]->(t:Task)
+                WHERE e.task_id IS NOT NULL AND e.task_id = t.id
+                WITH DISTINCT t
+                ORDER BY t.id
+                LIMIT 13
+                OPTIONAL MATCH (n:SwarmNode {node_id:t.node_id})
+                RETURN t.id AS task_id, t.status AS task_status,
+                       t.worker_id AS worker_id, t.node_id AS node_id,
+                       count(DISTINCT n) AS registry_matches
+                ORDER BY task_id
+                """, timeout=4.0
+            ), {"correlation_id": correlation_id}
+        )
+        evidence = []
+        truncated = False
+        for row in rows:
+            if len(evidence) >= 12:
+                truncated = True
+                break
+            task_id = admissible(row["task_id"])
+            if task_id is None:
+                continue
+            node_id = admissible(row["node_id"])
+            worker_id = admissible(row["worker_id"])
+            status = admissible(row["task_status"])
+            matches = row["registry_matches"]
+            if type(matches) is not int or matches < 0:
+                matches = 0
+            registry_state = (
+                "not_recorded" if node_id is None else
+                "not_registered" if matches == 0 else
+                "registry_id_match_unverified" if matches == 1 else
+                "ambiguous_registry_id"
+            )
+            evidence.append({
+                "task_id": task_id,
+                "task_status": status,
+                "worker_id": worker_id,
+                "node_id": node_id,
+                "registry_state": registry_state,
+                "registry_matches": min(matches, 2),
+                "task_provenance": "trace_event_relationship_and_property",
+                "projection_provenance": "assignment_projection_unverified",
+                "node_or_agent_verified": False,
+            })
+    return {
+        "schema": "trace-task-evidence-v1",
+        "correlation_id": correlation_id,
+        "tasks": evidence,
+        "truncated": truncated,
+        "trust": "unverified_correspondence_not_execution_attestation",
+        "source_authenticated": False,
+        "node_or_agent_verified": False,
+        "graph_write_permitted": False,
+    }
 
 
 def _derive_trace_state(events: List[Dict[str, Any]]) -> str:

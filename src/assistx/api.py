@@ -662,7 +662,8 @@ app.add_middleware(
 )
 
 # Include the Phase 2 swarm router with auth dependency
-from .swarm_routes import router as swarm_router, set_auth_dependency
+from .swarm_routes import router as swarm_router, set_auth_dependency, set_trace_metadata_authorizer, set_trace_preview_authorizer
+from .trace_preview_access import basic_preview_permitted
 app.include_router(swarm_router)
 
 # Mount static & templates like v1
@@ -799,6 +800,29 @@ def auth(
 
 # Inject the auth dependency into swarm routes
 set_auth_dependency(auth)
+# Even metadata reads on the experimental routes require independently
+# validated Basic credentials. Trusted-header-only identity never suffices.
+set_trace_metadata_authorizer(
+    lambda principal, credentials: basic_preview_permitted(
+        principal,
+        credentials,
+        configured_user=USER,
+        configured_password=PASS,
+        allowed_users=USER or "",
+    )
+)
+# Preview is strictly narrower than trusted-header/Basic trace metadata auth:
+# it requires independently verified Basic credentials AND an explicit
+# operator allowlist. Default empty means preview DENIED before _neo().
+set_trace_preview_authorizer(
+    lambda principal, credentials: basic_preview_permitted(
+        principal,
+        credentials,
+        configured_user=USER,
+        configured_password=PASS,
+        allowed_users=os.getenv("ASSISTX_TRACE_PREVIEW_BASIC_USERS", ""),
+    )
+)
 
 
 _neo_instance: Optional[Neo4jClient] = None
