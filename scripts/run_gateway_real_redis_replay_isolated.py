@@ -89,7 +89,7 @@ def assert_topology(cid: str, digest: str) -> None:
         raise RuntimeError("untrusted disposable Redis topology")
 
 
-def trial(cid: str) -> None:
+def trial(cid: str, expected_image_id: str) -> None:
     verifier = load("trusted_gateway_identity_contract")
     store_lib = load("gateway_replay_fence_research")
     redis = DockerRedis(cid)
@@ -146,7 +146,7 @@ def trial(cid: str) -> None:
 
     # Only the disposable container is restarted. Its keyspace is volatile.
     command("docker", "restart", "-t", "1", cid, timeout=18)
-    assert_topology(cid, command("docker", "inspect", "--format", "{{.Image}}", cid))
+    assert_topology(cid, expected_image_id)
     for _ in range(20):
         try:
             new_run = redis.info()["run_id"].strip()
@@ -211,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
         if not CID.fullmatch(owned_id):
             raise RuntimeError("unidentified disposable Redis")
         assert_topology(owned_id, args.redis_image_id)
-        trial(owned_id)
+        trial(owned_id, args.redis_image_id)
         return 0
     except (OSError, RuntimeError, ValueError, KeyError,
             subprocess.SubprocessError):
