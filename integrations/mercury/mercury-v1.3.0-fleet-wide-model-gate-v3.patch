@@ -1142,3 +1142,4 @@ index 7849242..d50a966 100644
 +import { generateText } from '../../core/fleet-model-gateway.js';
  import type { ProviderRegistry } from '../../providers/registry.js';
  import { resolveShell } from '../../utils/platform.js';
+ 
