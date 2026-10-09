@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -98,6 +99,71 @@ def _historical_env_count(repo: Path, commit_sha: str | None) -> tuple[int | Non
     return count, None
 
 
+def _scan_local_ref_history(repo: Path, cap: int | None) -> tuple[dict[str, int | bool | None], str]:
+    """Bounded local-ref *filename* sample, explicitly NOT complete custody.
+
+    Does not enumerate reflog-only objects, missing promisor objects, forks,
+    Actions artifacts or other users' clones. Never emits paths or commit IDs.
+    No lazy network fetch is permitted, and every subprocess has a timeout.
+    """
+    blank: dict[str, int | bool | None] = {
+        "local_ref_commits_sampled": 0,
+        "local_ref_commits_with_env_variants": None,
+        "local_ref_distinct_env_variant_paths": None,
+        "local_ref_sample_truncated": None,
+    }
+    if cap is None:
+        return blank, "local_ref_history_not_requested"
+    if type(cap) is not int or not 1 <= cap <= 128:
+        return blank, "invalid_local_ref_history_cap"
+    env = dict(os.environ)
+    env["GIT_NO_LAZY_FETCH"] = "1"
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    try:
+        revs = subprocess.run(
+            ["git", "-C", str(repo), "rev-list", "--all",
+             f"--max-count={cap+1}"],
+            capture_output=True, check=False, timeout=15, env=env,
+        )
+        if revs.returncode != 0 or len(revs.stdout) > (cap + 1) * 45:
+            return blank, "local_ref_history_unavailable"
+        raw = revs.stdout.splitlines()
+        if any(not re.fullmatch(rb"[0-9a-f]{40}", item) for item in raw):
+            return blank, "local_ref_history_invalid"
+        sampled = raw[:cap]
+        truncated = len(raw) > cap
+        suspect: set[bytes] = set()
+        affected = 0
+        for sha in sampled:
+            tree = subprocess.run(
+                ["git", "-C", str(repo), "ls-tree", "-r", "-z",
+                 "--name-only", sha.decode("ascii")],
+                capture_output=True, check=False, timeout=10, env=env,
+            )
+            if tree.returncode != 0 or len(tree.stdout) > MAX_GIT_INDEX:
+                return blank, "local_ref_history_unavailable"
+            risky: set[bytes] = set()
+            for entry in tree.stdout.split(b"\x00"):
+                if not entry:
+                    continue
+                name = entry.rsplit(b"/", 1)[-1]
+                if (name.startswith(b".env") and
+                    name not in (b".env.example", b".env.kipnerter-gateway.example")
+                    and entry != ARCHIVED.encode("utf8")):
+                    risky.add(entry)
+            affected += bool(risky)
+            suspect.update(risky)
+        return {
+            "local_ref_commits_sampled": len(sampled),
+            "local_ref_commits_with_env_variants": affected,
+            "local_ref_distinct_env_variant_paths": len(suspect),
+            "local_ref_sample_truncated": truncated,
+        }, ("local_ref_history_truncated" if truncated
+            else "local_ref_only_not_global_custody")
+    except (OSError, subprocess.TimeoutExpired):
+        return blank, "local_ref_history_unavailable"
+
+
 def _check_envelope(evidence: Any) -> tuple[int, list[str]]:
     if evidence is None:
         return 0, ["owner_checkpoint_not_submitted"]
@@ -142,9 +208,11 @@ def _check_envelope(evidence: Any) -> tuple[int, list[str]]:
 
 
 def inspect(repo: Path, evidence: Any = None,
-            historical_revision: str | None = None) -> dict[str, Any]:
+            historical_revision: str | None = None,
+            local_ref_cap: int | None = None) -> dict[str, Any]:
     tracked_count, index_error = _tracked_env_count(repo)
     historical_count, historical_error = _historical_env_count(repo, historical_revision)
+    local_history, local_history_reason = _scan_local_ref_history(repo, local_ref_cap)
     submitted, reasons = _check_envelope(evidence)
     if index_error:
         reasons.append(index_error)
@@ -160,6 +228,9 @@ def inspect(repo: Path, evidence: Any = None,
         # Even a clean selected historical snapshot cannot bound other refs,
         # public clones, GitHub forks, CI artifacts, or exposed secret values.
         reasons.append("selected_history_snapshot_clean_not_comprehensive")
+    reasons.append(local_history_reason)
+    if local_history["local_ref_commits_with_env_variants"]:
+        reasons.append("local_refs_contain_historical_env_variants")
     reasons.extend((
         "live_secret_matches_not_checked",
         "independent_rotation_and_history_custody_unverified",
@@ -179,6 +250,7 @@ def inspect(repo: Path, evidence: Any = None,
         "tracked_env_variant_count": tracked_count,
         "pinned_historical_revision_checked": historical_error is None,
         "historical_env_variant_count": historical_count,
+        **local_history,
         "reasons": sorted(set(reasons)),
     }
     result["observation_sha256"] = hashlib.sha256(
@@ -193,6 +265,7 @@ def main() -> int:
     parser.add_argument("--repo", type=Path, default=Path("."))
     parser.add_argument("--checkpoint-json", type=Path)
     parser.add_argument("--historical-commit", type=str)
+    parser.add_argument("--local-ref-cap", type=int)
     a = parser.parse_args()
     evidence: Any = None
     if a.checkpoint_json is not None:
@@ -202,7 +275,7 @@ def main() -> int:
             evidence = json.loads(a.checkpoint_json.read_text("utf-8"))
         except (OSError, ValueError, UnicodeError):
             evidence = {"invalid": True}  # do not print user-supplied data
-    print(json.dumps(inspect(a.repo, evidence, a.historical_commit), sort_keys=True))
+    print(json.dumps(inspect(a.repo, evidence, a.historical_commit, a.local_ref_cap), sort_keys=True))
     return 1  # HOLD is a deliberate nonzero exit, never greenwashed
 
 
