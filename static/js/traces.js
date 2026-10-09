@@ -207,7 +207,7 @@
       events.forEach(function (event) {
         var value = event[field];
         if (typeof value === "string" && value && value.length <= 160 &&
-            !/[\\x00-\\x1f\\x7f]/.test(value)) {
+            !/[\x00-\x1f\x7f]/.test(value)) {
           counts.set(value, (counts.get(value) || 0) + 1);
         }
       });
@@ -225,15 +225,19 @@
         !Array.isArray(page.events) || page.events.length > TIMELINE_BATCH ||
         page.returned !== page.events.length || typeof page.has_more !== "boolean" ||
         (page.has_more && (typeof page.next_cursor !== "string" ||
-          !page.next_cursor || seenCursors.has(page.next_cursor))) ||
+          !page.next_cursor || page.next_cursor === timelineCursor ||
+          seenCursors.has(page.next_cursor))) ||
         (!page.has_more && page.next_cursor != null)) return false;
+    var allowed = ["event_id", "ts_ms", "event_type", "source",
+      "task_id", "dispatch_id", "route_id", "assignment_id"];
     var seen = new Set(preceding.map(function (e) { return e.event_id; }));
     var last = preceding.length ? preceding[preceding.length - 1] : null;
     for (var i = 0; i < page.events.length; i++) {
       var event = page.events[i];
       if (!event || typeof event.event_id !== "string" || !event.event_id ||
           !Number.isSafeInteger(event.ts_ms) || event.ts_ms < 0 ||
-          seen.has(event.event_id) || Object.prototype.hasOwnProperty.call(event, "payload_json")) return false;
+          seen.has(event.event_id) ||
+          Object.keys(event).some(function (key) { return allowed.indexOf(key) < 0; })) return false;
       if (last && (event.ts_ms > last.ts_ms ||
           (event.ts_ms === last.ts_ms && event.event_id >= last.event_id))) return false;
       seen.add(event.event_id);
