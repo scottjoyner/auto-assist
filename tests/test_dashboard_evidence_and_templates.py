@@ -59,7 +59,6 @@ def client():
     ("/fleet-dashboard","section-inference-state"),
     ("/fleet-dashboard","component-health-item"),
     ("/operations","ops-shell"),
-    ("/control-room","runtime-body"),
 ])
 def test_operator_routes_render_their_own_content_not_fallback(client,path,expected):
     page=client.get(path)
@@ -68,3 +67,15 @@ def test_operator_routes_render_their_own_content_not_fallback(client,path,expec
     assert page.text.count("<!doctype html>")==1
     if path != "/control-room":
         assert 'id="runtime-body"' not in page.text
+
+
+def test_control_room_template_uses_restored_base_without_duplicate_document():
+    # In production this router is installed by assistx.api_router, not api.
+    from fastapi import FastAPI
+    from assistx.control_room import build_control_room_router
+    app = FastAPI()
+    app.include_router(build_control_room_router(lambda: None, lambda: "test", api.templates))
+    page = TestClient(app).get("/control-room")
+    assert page.status_code == 200
+    assert 'id="runtime-body"' in page.text
+    assert page.text.count("<!doctype html>") == 1
