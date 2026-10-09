@@ -62,7 +62,7 @@ def test_exact_receiver_envelope_roundtrip_but_not_release():
     {"token":"f"*31},
     {"query_ref":"../etc/passwd"},
     {"receiver_nonce":"wrong"},
-    {"graph_container_id":"c"*64},
+    {"graph_container_id":"not-a-graph-identifier"},
     {"server_transaction_id":"old-worker-id"},
     {"observed_running_before":False},
     {"terminate_command":"CLIENT_TIMEOUT"},
