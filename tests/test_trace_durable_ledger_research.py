@@ -193,3 +193,46 @@ def test_unsigned_worker_assertion_is_never_accepted_for_release():
             "query_ref":"query-one","evidence_id":"just-a-boolean",
             "verdict":CLOSED},b"")
         assert guard.inspect()==1
+
+
+@pytest.mark.parametrize("contenders,slots,expected", [
+    (1,3,1),(3,3,3),(5,3,3),(10,3,3),(10,1,1),
+])
+def test_preregistered_concurrent_1_3_5_10_occupancy(contenders,slots,expected):
+    with fixture(slots) as (guard,key,path,epoch,pub):
+        with ProcessPoolExecutor(max_workers=contenders) as pool:
+            answers=list(pool.map(worker_try,[
+                (path,epoch,pub,n) for n in range(contenders)]))
+        assert sum(token is not None for token in answers)==expected
+        assert guard.inspect()==expected
+
+
+def test_corrupted_or_locked_ledger_fails_closed_not_empty():
+    with fixture(1) as (guard,key,path,epoch,pub):
+        assert guard.acquire("query-one").token
+        # Corrupted bytes cannot be interpreted as an empty new epoch.
+        conn=__import__("sqlite3").connect(path)
+        conn.execute("BEGIN EXCLUSIVE")
+        try:
+            attempted=guard.acquire("query-two")
+            assert attempted.token is None
+        finally:
+            conn.rollback()
+            conn.close()
+        assert guard.inspect()==1
+
+
+def test_signed_receipt_is_not_physical_termination_proof():
+    """Negative control: a dishonest verifier can sign an incorrect statement."""
+    with fixture(1) as (guard,key,path,epoch,pub):
+        active_token=guard.acquire("query-one").token
+        # Simulated remote graph work still active. A signed text assertion cannot
+        # establish that Neo4j has actually stopped running the old statement.
+        physically_active={active_token}
+        forged_but_validly_signed,signature=closure(guard,key,active_token)
+        assert guard.acknowledge_remote_closure(forged_but_validly_signed,signature)
+        successor=guard.acquire("query-two").token
+        physically_active.add(successor)
+        assert len(physically_active)==2 and guard.inspect()==1
+        # Thus independent witness key custody and true remote observation are
+        # essential release gates, not provided by this research implementation.
