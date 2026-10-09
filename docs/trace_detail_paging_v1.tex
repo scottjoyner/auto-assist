@@ -1,0 +1,78 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs,hyperref}
+\title{Bounded Trace-Event Retrieval with Opt-In Payload Preview: A Synthetic Fleet UI Acceptance Study}
+\author{AssistX Fleet Research --- Working Draft}
+\date{October 9, 2026}
+\begin{document}
+\maketitle
+\begin{abstract}
+A progressive timeline frontend can reduce displayed event count while leaving
+database read volume, network payload and private field transmission unbounded.
+We prototype server-owned, disabled-by-default keyset event metadata pages
+bounded to 100 rows and a separate authenticated operator-initiated request for
+a 4096-character payload preview. Keyset navigation uses a versioned cursor
+over timestamp and event ID; it is not an authenticity token. Synthetic tests
+include 1001 events at equal timestamps, cursor corruption, source-group
+ownership, and a missing production authentication hook. The addition and
+its surrounding contracts passed 131 Python regression tests, while 25 Node
+workbench contracts passed. A disconnected Neo4j 5.26.26 instance successfully
+compiled and executed both fixed read queries on 1001 generated events. The
+legacy unbounded endpoint and existing frontend remain unchanged; neither
+production readiness nor source archival completeness is claimed.
+\end{abstract}
+\section{Motivation and prospectus}
+A former workbench render cap of 80 events limited DOM pressure but did not
+constrain the full-detail \texttt{get\_trace()} graph read or transport of
+\texttt{payload\_json}. The preregistered \texttt{TRACE\_DETAIL\_PAGING\_PROSPECTUS\_20261009.md}
+hypothesized keyset pagination, default metadata minimization, source-scoped
+opt-in preview, and explicit denial until production authentication and query
+admission are established. Neo4j Cypher supports fixed predicates and ordered
+projections \cite{cypher}.
+\section{Method}
+The keyset condition is strictly lexicographic on descending $(ts_{\mathrm{ms}},
+event\_id)$: the next page selects events with smaller timestamp or smaller
+event ID at equal timestamp. A fixed \texttt{LIMIT \$take} of page size plus
+one detects another page; each response includes at most 100 metadata events,
+an optional opaque cursor, and \texttt{total\_indexed\_events=null}. Scalar
+producer labels and context IDs remain explicitly unverified as physical node
+or agent provenance. Payload preview uses a distinct POST with event ID in
+the request body, protected by the same existing authentication dependency,
+a default-disabled feature flag, and a bounded Cypher substring. Both routes
+use a four-second read-only query timeout and \texttt{Cache-Control: no-store}.
+\section{Evidence}
+\begin{table}[h]\centering
+\caption{Synthetic implementation acceptance.}
+\begin{tabular}{ll}\toprule
+Test & Observation\\\midrule
+Python paging and related regression tests & 131 passed\\
+Existing JavaScript workbench contract tests & 25 passed\\
+1001 equal-timestamp synthetic events & Gap-free fake-session paging\\
+Isolated Neo4j 5.26.26, 1001 generated events & Fixed Cypher read queries executed\\
+Missing auth injection/flag disabled & HTTP 503, no graph read\\
+Live production latency and concurrency & Not measured\\
+Frontend switched to bounded server API & Not implemented\\
+\bottomrule\end{tabular}\end{table}
+The isolated command-line smoke took approximately 2.1--2.3 seconds per
+read including Docker and JVM startup; these timings do not establish server
+driver latency or production p95. The disconnected container and anonymous
+volumes were removed.
+\section{Threats to validity and release constraints}
+The old unbounded endpoint remains in place and the new routes are not
+called by the workbench, so this study does \emph{not} show that current
+production transport is capped. Stable-source pagination excludes concurrent
+backfills, duplicate event IDs and changes to timestamps. Four-second query
+timeouts do not physically fence stuck queries; additional cross-worker
+admission and cancellation work remains outstanding. Payload preview has
+not undergone independent privacy/redaction approval. The returned metadata
+is investigative index evidence, distinct from full-fidelity nontrimming
+agent tool-call custody \cite{nist92}. No new operational authority, NAS
+mutation, provider routing or model use is permitted by this draft.
+\begin{thebibliography}{9}
+\bibitem{cypher} Neo4j, \emph{Cypher Manual}, ordering and filtering.
+\url{https://neo4j.com/docs/cypher-manual/current/}.
+\bibitem{nist92} K. Kent and M. Souppaya, \emph{Guide to Computer Security
+Log Management}, NIST SP 800-92 (2006).
+\url{https://doi.org/10.6028/NIST.SP.800-92}.
+\end{thebibliography}
+\end{document}
