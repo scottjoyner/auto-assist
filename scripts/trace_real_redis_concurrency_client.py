@@ -31,7 +31,7 @@ SECRET = "synthetic-only-not-production-key-trace-contention-20261009"
 KEY = "traceidx:{assistx-trace-index-v2}:active:fleet"
 POLICY = Policy(
     principal_rate=30, fleet_rate=60, window_seconds=60,
-    principal_inflight=2, fleet_inflight=3, lease_seconds=20,
+    principal_inflight=2, fleet_inflight=3, lease_seconds=45,
 )
 client = redis.Redis(
     host=HOST, port=6379, socket_connect_timeout=2,
