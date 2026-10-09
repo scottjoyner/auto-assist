@@ -83,9 +83,22 @@ class SummaryTests(unittest.TestCase):
             (root/"state"/"offsets.json").write_text(json.dumps(self.state))
             (root/"sealed"/"synthetic.tar.zst.manifest.json").write_text(
                 json.dumps(self.manifests[0]))
+            (root/"sealed"/"synthetic.tar.zst").write_bytes(b"fixture")
+            (root/"sealed"/"synthetic.tar.zst.ready").write_text("synthetic")
             obj=inventory(root)
             self.assertEqual(obj["checkpoint_entries"],3)
             self.assertEqual(obj["manifest_count"],1)
+
+    def test_rejects_incomplete_local_seal_triplet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            (root/"sealed").mkdir()
+            (root/"state").mkdir()
+            (root/"state"/"offsets.json").write_text(json.dumps(self.state))
+            (root/"sealed"/"synthetic.tar.zst.manifest.json").write_text(
+                json.dumps(self.manifests[0]))
+            with self.assertRaisesRegex(ValueError,"incomplete local sealed"):
+                inventory(root)
 
     def test_rejects_metadata_symlink(self):
         with tempfile.TemporaryDirectory() as tmp:
