@@ -1,0 +1,44 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,booktabs,hyperref}
+\title{Quarantined Query Slots: A Pessimistic Research Countermeasure to Lease-Expiry Over-Admission}
+\author{AssistX fleet trace-index engineering research}
+\date{October 8, 2026}
+\begin{document}
+\maketitle
+\begin{abstract}
+A Redis in-flight capacity lease that expires independently of query execution cannot provide a hard bound on concurrent database operations. Prior synthetic experiments in the AssistX trace investigation stack demonstrated an old query surviving lease expiry while a replacement was admitted. We investigate a conservative alternative: atomic non-expiring Redis hash slots released only after an asserted query-completion condition. In 109 focused synthetic Python tests and a disconnected disposable Redis 7 Lua probe, slot occupancy remained bounded across simulated elapsed time and exact-token releases. Two negative findings limit applicability: a crashed worker holds capacity indefinitely, and Redis state loss can admit a replacement while an old query is still active. The caller-supplied completion assertion is not independently authenticated. This research code is not installed in the production trace API and does not establish durable or physical concurrency fencing.
+\end{abstract}
+\section{Failure model}
+For a capacity $C$, suppose query $q_1$ holds a Redis token $t_1$ with expiry $e_1$. If wall time exceeds $e_1$ without a verified Neo4j cancellation, automatic token eviction allows $q_2$ to acquire another slot, even while $q_1$ remains physically active. Then the Redis cardinality may be $C$ although the true number of active database requests exceeds $C$. A requested Neo4j transaction timeout cannot alone be treated as an end-to-end transport and cancellation acknowledgment. We distinguish logical Redis occupancy from physical execution.
+\section{Prediction and method}
+The pre-experiment prospectus proposed atomic Redis hash occupancy with no expiry or stale-token auto-reap. Let $H$ denote the token hash. Admission uses an atomic Redis Lua script: if $|H|\ge C$, deny; otherwise insert a random token and return admission. A separately verified query-completion event would authorize removal of exactly the original token. Since no such trusted independent completion event is available, the experiment's boolean assertion is not sufficient for production use.
+
+We preregistered that elapsed time would not decrease $|H|$; a lost worker would retain its slot indefinitely; malicious/incorrect tokens would not remove another query's occupancy; and a Redis state reset would still violate the physical bound.
+\section{Observed synthetic tests}
+\begin{table}[h]\centering
+\caption{Read-only operational authority; synthetic local evidence only.}
+\begin{tabular}{ll}\toprule
+Threat or criterion & Observation\\\midrule
+Simulated time advancement beyond prior 30s TTL & No successor admitted\\
+Concurrent cap=3 synthetic admission attempts & Exactly 3 tokens granted\\
+Mismatched and stale release token & No other slot removed\\
+Redis exception/malformed reply & Admission denied\\
+Worker crash with unverified cancellation & Capacity remains quarantined\\
+Redis state lost while query remains active & Over-admission reproduced\\
+Scoped Python test suite & 118 passing\\
+Disconnected Redis 7 Lua probe & Expected outcomes observed\\
+Live Neo4j cancellation receipt and failover & Not evaluated\\\bottomrule
+\end{tabular}
+\end{table}
+The real Redis probe ran solely in a new container with no network, published ports, bind mounts, production keys or durable data. It tested Redis \texttt{HLEN}, \texttt{HSET}, \texttt{HDEL}, no key TTL and a deliberate test-key deletion. The isolated fixture was stopped afterward.
+\section{Safety interpretation}
+Never-expiring capacity is a liveness sacrifice: a vanished query owner cannot automatically regain its slot. It improves one failure mode, expiry over-admission, only while Redis retains authoritative state. External Redis failover or split brain, accidental deletion, forged completion assertions, and unreconciled remote Neo4j execution remain open. A durable independently authenticated execution identity, loss-resistant fencing epoch and physical cancellation witness are needed before activation. Existing fleet log-custody obligations remain independent \cite{nist}.
+\section{Conclusions}
+This is an incremental research design, not a production rollout or an authorization to merge admission PRs. It avoids a known TTL-induced over-admission mechanism but does not prove a hard physical concurrency bound under Redis data loss or uncertain cancellation. All real fleet sources and services were left unchanged. This arXiv-style manuscript is an uncompiled, unsubmitted working draft.
+\begin{thebibliography}{9}
+\bibitem{nist} K. Kent and M. Souppaya, \emph{Guide to Computer Security Log Management}, NIST SP 800-92 (2006). \url{https://doi.org/10.6028/NIST.SP.800-92}.
+\bibitem{redis} Redis, \emph{EVAL}, Redis command documentation. \url{https://redis.io/docs/latest/commands/eval/}.
+\bibitem{neo} Neo4j, \emph{Transaction Configuration}, Neo4j Python driver documentation. \url{https://neo4j.com/docs/python-manual/current/transactions/}.
+\end{thebibliography}
+\end{document}
