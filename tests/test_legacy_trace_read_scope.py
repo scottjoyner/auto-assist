@@ -151,3 +151,35 @@ def test_legacy_payload_requires_both_flag_and_explicit_permission(monkeypatch):
     assert reply.status_code == 200
     assert reply.headers["cache-control"] == "no-store, private"
     assert len(graph) == 1
+
+
+def test_canonical_api_header_priority_cannot_bypass_sensitive_trace_basic(monkeypatch):
+    """Exercise real api.auth with invented trusted-header config, no live API."""
+    from assistx import api
+    monkeypatch.setattr(api, "TRUSTED_AUTH_HEADER", "X-Synthetic-Proxy-Identity")
+    monkeypatch.setattr(api, "USER", "synthetic-operator")
+    monkeypatch.setattr(api, "PASS", "fixture-pw")
+    monkeypatch.setattr(swarm_routes, "_injected_auth_dependency", api.auth)
+    monkeypatch.setattr(swarm_routes, "_trace_metadata_authorizer",
+        lambda principal, credentials: basic_preview_permitted(
+            principal, credentials, configured_user="synthetic-operator",
+            configured_password="fixture-pw", allowed_users="synthetic-operator"))
+    monkeypatch.setattr(swarm_routes, "_trace_preview_authorizer",
+        lambda principal, credentials: basic_preview_permitted(
+            principal, credentials, configured_user="synthetic-operator",
+            configured_password="fixture-pw", allowed_users=""))  # unavailable by default
+    def no_graph():
+        raise AssertionError("spoofed header caused graph access")
+    monkeypatch.setattr(swarm_routes, "_neo", no_graph)
+    app=FastAPI()
+    app.include_router(swarm_routes.router)
+    client=TestClient(app)
+    for path in READS:
+        reply=client.get(path,headers={"X-Synthetic-Proxy-Identity":"synthetic-operator"})
+        assert reply.status_code in (403,503), (path,reply.text)
+        assert reply.headers["cache-control"] == "no-store, private"
+        wrong=client.get(path,headers={"X-Synthetic-Proxy-Identity":"synthetic-operator"},
+                         auth=("synthetic-operator","incorrect"))
+        assert wrong.status_code in (403,503)
+    # Valid Basic and the same injected header can authorize only metadata.
+    # Full payload remains 503 until both its flag and preview scope are set.
