@@ -83,12 +83,12 @@ def _transactions(conn):
         )]
 
 
-def _running_worker(uri: str, ready):
+def _running_worker(uri: str, ready, token: str):
     # Explicit intentionally slow, READ-only query on a completely empty
     # disposable graph. No production graph index or data.
     q = (
         "UNWIND range(1, 45000) AS n UNWIND range(1, 45000) AS m "
-        "WITH n,m WHERE (n*m)%97=7 RETURN count(*) AS count /* " + MARKER + " */"
+        "WITH n,m WHERE (n*m)%97=7 RETURN count(*) AS count /* " + MARKER + "_" + token + " */"
     )
     try:
         with driver(uri) as d:
@@ -115,6 +115,13 @@ def _witness_process(uri, conn):
                 if cmd["kind"] == "shutdown":
                     return
                 if cmd["kind"] == "observe":
+                    # All values must be bound while the query is physically
+                    # ACTIVE. A later untrusted close request cannot choose
+                    # another ledger token, epoch, or query reference.
+                    expected = (cmd["token"], cmd["epoch"], cmd["query_ref"])
+                    if not isinstance(expected[0],str) or len(expected[0]) != 32:
+                        conn.send({"txid":None})
+                        continue
                     found = None
                     for _ in range(60):
                         rows = _transactions(db)
@@ -122,18 +129,21 @@ def _witness_process(uri, conn):
                             r["transactionId"] for r in rows
                             if r["database"] == "neo4j"
                             and str(r["currentQuery"] or "").startswith("UNWIND")
-                            and MARKER in (r["currentQuery"] or "")
+                            and (MARKER + "_" + expected[0]) in (r["currentQuery"] or "")
                         ), None)
                         if found:
                             break
                         time.sleep(0.1)
                     if found:
-                        watched[found] = MARKER
+                        watched[found] = expected
                     conn.send({"txid": found})
                 elif cmd["kind"] == "close":
                     txid = cmd["txid"]
                     if txid not in watched:
                         conn.send({"status": "unobserved"})
+                        continue
+                    if watched[txid] != (cmd["token"],cmd["epoch"],cmd["query_ref"]):
+                        conn.send({"status": "witness-binding-mismatch"})
                         continue
                     absent_streak = 0
                     for _ in range(45):
@@ -223,10 +233,11 @@ def run():
         decision = ledger.acquire("physical-running-query")
         assert decision.token and ledger.inspect() == 1
         incoming, outgoing = ctx.Pipe(duplex=False)
-        worker = ctx.Process(target=_running_worker, args=(uri, outgoing))
+        worker = ctx.Process(target=_running_worker, args=(uri, outgoing, decision.token))
         worker.start()
         assert incoming.poll(12) and incoming.recv() == "started"
-        parent.send({"kind":"observe"})
+        parent.send({"kind":"observe", "token":decision.token,
+                     "epoch":epoch,"query_ref":"physical-running-query"})
         assert parent.poll(12)
         txid = parent.recv()["txid"]
         assert txid and txid.startswith("neo4j-transaction-"), "NEVER_OBSERVED_REAL_QUERY"
