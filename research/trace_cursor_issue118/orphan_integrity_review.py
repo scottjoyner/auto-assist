@@ -25,11 +25,21 @@ def read_member(archive: pathlib.Path, basename: str, max_bytes=MAX_MEMBER_BYTES
         raise ValueError("unsafe archive member name")
     if basename == "manifest.json" and max_bytes>MAX_MANIFEST_BYTES:
         raise ValueError("unbounded manifest")
-    p=subprocess.run(["timeout","15","tar","-I","zstd","-xOf",str(archive),
-                      "./"+basename],capture_output=True,timeout=18,check=False)
-    if p.returncode!=0 or len(p.stdout)>max_bytes:
-        raise ValueError("member missing, invalid or over research limit")
-    return p.stdout
+    p=subprocess.Popen(["timeout","15","tar","-I","zstd","-xOf",str(archive),
+                        "./"+basename],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+    try:
+        data=p.stdout.read(max_bytes+1)
+        if len(data)>max_bytes:
+            raise ValueError("archive member exceeded bounded read limit")
+        if p.wait(timeout=18)!=0:
+            raise ValueError("member missing or invalid")
+        return data
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait(timeout=3)
+        if p.stdout is not None:
+            p.stdout.close()
 
 
 def verify_archive(archive: pathlib.Path, *, control_manifest: pathlib.Path|None=None,
