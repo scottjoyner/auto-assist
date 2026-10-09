@@ -143,10 +143,13 @@ def run_staging_fenced_read(
             pass  # Always fail closed; lease TTL remains the backstop.
         raise FencedReadUnavailable("lease watchdog could not start") from exc
     result: T | None = None
-    query_error: Exception | None = None
+    query_error: BaseException | None = None
     try:
         result = query(cancelled)
-    except Exception as exc:
+    except BaseException as exc:
+        # asyncio.CancelledError derives from BaseException in modern Python.
+        # Capture it long enough to stop renewal and release the owned lease;
+        # re-raise it after cleanup unless authority was also lost.
         query_error = exc
     finally:
         stopped.set()
