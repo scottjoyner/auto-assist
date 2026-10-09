@@ -1,7 +1,10 @@
 """Synthetic tests for the read-only orphan integrity verifier."""
 import hashlib
+import io
 import json
 import pathlib
+import subprocess
+import tarfile
 import tempfile
 import unittest
 from unittest import mock
@@ -63,6 +66,28 @@ class OrphanIntegrityReviewTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             review.verify_archive(wrong)
 
+    def make_real_tar(self, content):
+        root=self.archive.parent
+        tar=root/"synthetic.tar"
+        with tarfile.open(tar,"w") as archive:
+            item=tarfile.TarInfo("./bounded.jsonl")
+            item.size=len(content)
+            archive.addfile(item,io.BytesIO(content))
+        result=subprocess.run(["zstd","-q","-f",str(tar),"-o",str(tar)+".zst"],
+                              capture_output=True,timeout=15)
+        self.assertEqual(result.returncode,0)
+        return pathlib.Path(str(tar)+".zst")
+
+    def test_bounded_tar_member_read(self):
+        path=self.make_real_tar(b"bounded-fixture")
+        self.assertEqual(review.read_member(path,"bounded.jsonl",64),b"bounded-fixture")
+
+    def test_oversized_tar_member_rejected(self):
+        path=self.make_real_tar(b"X"*2048)
+        with self.assertRaises(ValueError):
+            review.read_member(path,"bounded.jsonl",64)
+
 
 if __name__=="__main__":
     unittest.main(verbosity=2)
+
