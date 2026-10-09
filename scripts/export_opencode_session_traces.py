@@ -12,6 +12,8 @@ import argparse
 import collections
 import hashlib
 import json
+import os
+import tempfile
 import pathlib
 import sqlite3
 import subprocess
@@ -141,8 +143,9 @@ ROUTE_ALIAS_TOKENS = frozenset({"free", "auto", "router", "any", "best", "defaul
 # Schema version - updated to v2 for enhanced trace receipt contract
 SCHEMA_VERSION = "opencode-session-trace/v2"
 
-# Track duplicate receipts for idempotency
-_duplicate_receipts: Set[str] = set()
+# De-duplication belongs to a single export call, not module lifetime.
+# SQLite session IDs are unique within a database; independent DB snapshots
+# must not affect one another just because their IDs or timestamps coincide.
 
 # Performance metrics tracking
 _export_stats = {
@@ -202,7 +205,7 @@ def _git(directory: str) -> dict[str, Any]:
         }
     except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError, Exception) as e:
         _export_stats["bounded_failures_handled"] += 1
-        return {"is_git": False, "error": str(e)[:100]}  # Truncate error to prevent secret leakage
+        return {"is_git": False, "error": type(e).__name__}
 def _extract_node_from_directory(directory: str) -> Optional[str]:
     """Extract node identifier from worktree directory path.
     
@@ -219,54 +222,30 @@ def _extract_node_from_directory(directory: str) -> Optional[str]:
         return f"node-{match.group(1)}"
     return None
 def _redact_sensitive_data(data: dict[str, Any]) -> dict[str, Any]:
-    """Redact sensitive information from trace data to prevent leakage.
-    
-    Safety requirement: Never leak prompts, API keys, PII
+    """Redact credential-shaped fragments recursively; preserve trace metadata.
+
+    This is defense in depth; raw prompt and tool payloads are never selected
+    by the exporter. Untrusted free-form errors are stored as counts only.
     """
-    if not isinstance(data, dict):
-        return data
-    
-    # Fields that should never contain sensitive data
-    safe_fields = {
-        "session_id", "parent_session_id", "title", "directory", "provider",
-        "model", "requested_model", "resolved_model", "variant", "cost",
-        "tokens", "messages", "parts", "tools", "git", "objective"
-    }
-    
-    # Fields that may contain sensitive content
-    sensitive_patterns = [
-        "prompt", "completion", "text", "content", "message", "body",
-        "secret", "key", "token", "password", "api_key", "credential"
-    ]
-    
-    redacted_data = {}
-    for key, value in data.items():
-        if key in safe_fields:
-            # Keep safe fields as-is, but redact their nested content if needed
-            if isinstance(value, dict):
-                redacted_data[key] = _redact_sensitive_data(value)
-            elif isinstance(value, list):
-                redacted_data[key] = [_redact_sensitive_data(item) if isinstance(item, dict) else item for item in value]
-            else:
-                redacted_data[key] = value
-        elif any(sensitive in key.lower() for sensitive in sensitive_patterns):
-            # Redact sensitive field names
-            redacted_data[key] = value
+    def clean(value: Any, key: str = "") -> Any:
+        if any(term in key.lower() for term in ("password", "secret", "authorization", "api_key", "credential", "access_token", "private_key")):
             _export_stats["secrets_redacted"] += 1
-        else:
-            # For other fields, redact any string content that might be sensitive
-            if isinstance(value, str) and len(value) > 10:
-                # Check for potential secrets (long strings that look like tokens/keys)
-                if re.search(r'\b([a-fA-F0-9]{32,})([a-fA-F0-9]{32,})?\b', value) or \
-                   re.search(r'\b(AKIA|sk_|ghp_|gho_|ghu_|ghs_|ghr_)\w+\b', value):
-                    redacted_data[key] = value
-                    _export_stats["secrets_redacted"] += 1
-                else:
-                    redacted_data[key] = value
-            else:
-                redacted_data[key] = value
-    
-    return redacted_data
+            return "[REDACTED]"
+        if isinstance(value, dict):
+            return {k: clean(v, str(k)) for k, v in value.items()}
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        if isinstance(value, str):
+            patterns = [r"\b(?:sk_|ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_-]{8,}\b",
+                        r"\bAKIA[A-Z0-9]{16}\b"]
+            cleaned = value
+            for pattern in patterns:
+                cleaned, count = re.subn(pattern, "[REDACTED]", cleaned)
+                _export_stats["secrets_redacted"] += count
+            return cleaned
+        return value
+    return clean(data)
+
 def _validate_jsonl_safety(data: dict[str, Any]) -> bool:
     """Validate that data conforms to JSONL safety standards.
     
@@ -278,16 +257,23 @@ def _validate_jsonl_safety(data: dict[str, Any]) -> bool:
     try:
         start_time = time.time()
         # Serialize and deserialize to validate JSON structure
-        json_str = json.dumps(data, sort_keys=True)
+        json_str = json.dumps(data, sort_keys=True, allow_nan=False)
         parsed = json.loads(json_str)
         
         # Validate that we can round-trip
-        if json.dumps(parsed, sort_keys=True) != json_str:
+        if json.dumps(parsed, sort_keys=True, allow_nan=False) != json_str:
             return False
         
-        # Check for reserved field names that might cause conflicts
+        # Deny reserved object keys recursively, including nested metadata.
         reserved_fields = {"__proto__", "constructor", "prototype"}
-        if any(field in reserved_fields for field in data.keys()):
+        def has_reserved(item: Any) -> bool:
+            if isinstance(item, dict):
+                return any(str(key) in reserved_fields or has_reserved(value)
+                           for key, value in item.items())
+            if isinstance(item, list):
+                return any(has_reserved(value) for value in item)
+            return False
+        if has_reserved(data):
             return False
         
         # Check for JSON injection patterns
@@ -312,7 +298,7 @@ def _validate_jsonl_safety(data: dict[str, Any]) -> bool:
         
         _export_stats["jsonl_validated"] += 1
         return True
-    except (json.JSONDecodeError, TypeError, ValueError, RecursionError, MemoryError):
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError, MemoryError, OverflowError):
         _export_stats["errors_encountered"] += 1
         return False
     except Exception:
@@ -323,7 +309,10 @@ def _calculate_token_breakdown(tokens_input: int, tokens_output: int,
                                tokens_cache_write: int) -> dict[str, int]:
     """Calculate comprehensive token breakdown for truthful token accounting."""
     return {
+        # A sum of reported categories is not necessarily provider-billable tokens:
+        # some runtimes already include reasoning and cache in input/output.
         "total_tokens": tokens_input + tokens_output + tokens_reasoning + tokens_cache_read + tokens_cache_write,
+        "provider_billable_total": None,
         "input_tokens": tokens_input,
         "output_tokens": tokens_output,
         "reasoning_tokens": tokens_reasoning,
@@ -333,30 +322,21 @@ def _calculate_token_breakdown(tokens_input: int, tokens_output: int,
 def _calculate_cost_breakdown(cost: float) -> dict[str, float]:
     """Calculate cost breakdown for truthful cost accounting."""
     return {
-        "total_cost": round(cost, TOKEN_PRECISION),
-        "input_cost": round(cost * 0.7, TOKEN_PRECISION) if cost else 0.0,
-        "output_cost": round(cost * 0.3, TOKEN_PRECISION) if cost else 0.0,
+        "total_cost": round(cost, TOKEN_PRECISION) if cost is not None else None,
+        "input_cost": None,  # Session DB does not contain source attribution.
+        "output_cost": None,
+        "attribution": "unknown",
     }
-def _calculate_efficiency_metrics(cost_breakdown: dict[str, float], 
-                                  token_breakdown: dict[str, int]) -> dict[str, float]:
-    """Calculate efficiency metrics for cost/token analysis."""
-    input_cost = cost_breakdown["input_cost"]
-    output_cost = cost_breakdown["output_cost"]
-    input_tokens = token_breakdown["input_tokens"]
-    output_tokens = token_breakdown["output_tokens"]
-    
-    return {
-        "cost_per_1k_input_tokens": (
-            (input_cost / max(input_tokens, 1) * 1000) if input_tokens > 0 else 0.0
-        ),
-        "cost_per_1k_output_tokens": (
-            (output_cost / max(output_tokens, 1) * 1000) if output_tokens > 0 else 0.0
-        ),
-    }
+def _calculate_efficiency_metrics(cost_breakdown: dict[str, Any],
+                                  token_breakdown: dict[str, int]) -> dict[str, None]:
+    """Never invent per-category billing metrics from a session total."""
+    return {"cost_per_1k_input_tokens": None,
+            "cost_per_1k_output_tokens": None}
+
 def _extract_error_summary(assistant_errors: list[str], finish_reasons: list[str]) -> dict[str, Any]:
     """Extract and aggregate error information for comprehensive error tracking."""
     error_summary = {
-        "assistant_errors": assistant_errors,
+        "assistant_errors": ["[REDACTED]" for _ in assistant_errors],
         "error_count": len(assistant_errors),
         "finish_reasons": finish_reasons,
         "has_errors": len(assistant_errors) > 0,
@@ -409,14 +389,6 @@ def _generate_node_session_correlation(node_id: Optional[str], directory: str,
             correlation["task_id"] = task_id
     
     return correlation
-def _detect_duplicate_receipt(session_id: str, timestamp: str) -> bool:
-    """Detect duplicate receipts to prevent duplicate processing."""
-    receipt_key = f"{session_id}_{timestamp}"
-    if receipt_key in _duplicate_receipts:
-        _export_stats["duplicates_skipped"] += 1
-        return True
-    _duplicate_receipts.add(receipt_key)
-    return False
 def _objective_digest(con: sqlite3.Connection, session_id: str) -> dict[str, Any]:
     row = con.execute(
         """
@@ -442,7 +414,9 @@ def _objective_digest(con: sqlite3.Connection, session_id: str) -> dict[str, Any
         "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "chars": len(text),
     }
-def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
+def export_sessions(db_path: pathlib.Path, *, session_id: str | None = None,
+                    title_prefix: str | None = None,
+                    max_sessions: int = 500) -> list[dict[str, Any]]:
     """Export OpenCode SQLite sessions with enhanced trace receipt contract compliance.
     
     This enhanced version includes:
@@ -455,31 +429,50 @@ def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
     - Bounded failure mechanisms
     """
     start_time = time.time()
-    # Use regular SQLite connection for compatibility with existing test infrastructure
-    con = sqlite3.connect(db_path)
+    for key in ("sessions_processed", "duplicates_skipped", "errors_encountered",
+                "secrets_redacted", "jsonl_validated", "bounded_failures_handled"):
+        _export_stats[key] = 0
+    _export_stats["failed_session_ids"] = []
+    _export_stats.pop("last_error_type", None)
+    if max_sessions < 1 or max_sessions > 5000:
+        raise ValueError("max_sessions must be between 1 and 5000")
+    # URI mode=ro and query_only ensure no state changes on a live OpenCode DB.
+    uri = db_path.resolve().as_uri() + "?mode=ro"
+    con = sqlite3.connect(uri, uri=True, timeout=5)
     con.row_factory = sqlite3.Row
-    
-    sessions = con.execute(
-        """
-        SELECT id, parent_id, directory, title, model, cost,
-               tokens_input, tokens_output, tokens_reasoning,
-               tokens_cache_read, tokens_cache_write,
-               time_created, time_updated
-        FROM session
-        ORDER BY time_created ASC
-        """
-    ).fetchall()
+    con.execute("PRAGMA query_only=ON")
+    where, params = [], []
+    if session_id:
+        where.append("id = ?")
+        params.append(session_id)
+    if title_prefix:
+        where.append("title LIKE ? ESCAPE '!'")
+        params.append(title_prefix.replace('!', '!!').replace('%', '!%').replace('_', '!_') + '%')
+    sql = """SELECT id, parent_id, directory, title, model, cost,
+             tokens_input, tokens_output, tokens_reasoning,
+             tokens_cache_read, tokens_cache_write, time_created, time_updated
+             FROM session"""
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY time_created ASC, id ASC LIMIT ?"
+    sessions = con.execute(sql, (*params, max_sessions + 1)).fetchall()
+    if len(sessions) > max_sessions:
+        con.close()
+        raise ValueError("session scope exceeds max_sessions; filter by --session-id or --title-prefix")
     
     records: list[dict[str, Any]] = []
-    
+    seen_session_ids: set[str] = set()
+
     for session in sessions:
         try:
             session_start_time = time.time()
             sid = session["id"]
-            timestamp = datetime.fromtimestamp(session["time_created"], timezone.utc).isoformat()
-            
-            # Detect duplicate receipts
-            if _detect_duplicate_receipt(sid, timestamp):
+            # Preserve millisecond timestamps as recorded by OpenCode.
+            # Human-readable formatting is unnecessary for receipt identity.
+            # Only de-duplicate within this one database export. Do not mutate
+            # process-global state before a record is successfully emitted.
+            if sid in seen_session_ids:
+                _export_stats["duplicates_skipped"] += 1
                 continue
             
             model = _json(session["model"])
@@ -488,26 +481,37 @@ def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
             # Extract and classify free model information
             pricing = model.get("pricing")
             pricing = pricing if isinstance(pricing, dict) else {}
-            
-            # Create model record for free model classification
+            requested_model = model.get("id") or model.get("modelID")
+            # Always construct the model record before classification, even
+            # when its ID includes :free. Such names are cost hints, not bills.
             model_record = {
-                "id": model.get("id") or model.get("modelID"),
+                "id": requested_model,
                 "provider": provider,
                 "pricing": pricing,
                 "variant": model.get("variant"),
                 "tags": model.get("tags", []),
                 "resolvedID": model.get("resolvedID") or model.get("resolved_id"),
             }
-            
-            # Use supervisor's free model classification
             free_model_type = _classify_free_model(model_record)
+            normalized_provider = str(provider or "").lower()
+            has_free_suffix = str(requested_model or "").endswith(":free")
+            price_is_zero = bool(pricing) and _price_is_zero(pricing.get("prompt")) and _price_is_zero(pricing.get("completion"))
+            if has_free_suffix:
+                if normalized_provider in ("kilo", "kilo_free"):
+                    free_model_type = "kilo-anonymous"  # Provider policy, not verified billing.
+                elif normalized_provider == "openrouter" and price_is_zero:
+                    free_model_type = "openrouter-account-free"
+                else:
+                    free_model_type = "free-suffix-unverified"
             
+            # This is classification metadata, NOT paid-route admission.
+            # A :free name or policy alone cannot independently prove billing.
             # Determine if this is a free provider
             is_free_provider = free_model_type in (
                 "opencode-native-free", "kilo-anonymous", "openrouter-account-free",
                 "zai-zero-cost", "cohere-zero-cost", "lmstudio-zero-cost",
                 "unknown-free"
-            )
+            ) and not (isinstance(session["cost"], (int, float)) and session["cost"] > 0)
             
             # Process messages for error tracking
             messages = con.execute(
@@ -562,7 +566,7 @@ def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
             if isinstance(title, str) and title:
                 # Use title as task_id if it's a reasonable identifier
                 task_id = title.strip()
-                worktree_owners = [sid]
+                worktree_owners = []  # Session ID is not proof of worktree ownership.
             
             # Generate node-session correlation
             node_session_correlation = _generate_node_session_correlation(
@@ -620,6 +624,9 @@ def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
                 "resolved_model": resolved_model,
                 "free_model_type": free_model_type,
                 "is_free_provider": is_free_provider,
+                "free_claim_basis": "provider-policy" if free_model_type == "kilo-anonymous"
+                    else "price-metadata" if price_is_zero else "model-suffix" if has_free_suffix else "provider-policy-or-unverified",
+                "provider_billing_verified": False,
                 "route_kind": route_kind,
                 "effective_model": effective_model,
                 "model_attribution": model_attribution,
@@ -639,8 +646,8 @@ def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
                 "time_created": session["time_created"],
                 "time_updated": session["time_updated"],
                 "assistant_error_count": len(assistant_errors),
-                "retry_count": 0,  # Default retry count
-                "max_retries": 3,  # Default max retries
+                "retry_count": None,  # No attempt ledger stored in the DB.
+                "max_retries": None,  # No retry policy stored in the DB.
                 "error_summary": error_summary,
                 "messages": dict(sorted(roles.items())),
                 "parts": dict(sorted(part_types.items())),
@@ -668,6 +675,7 @@ def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
             
             # Add the record to the results
             records.append(record)
+            seen_session_ids.add(sid)
             _export_stats["sessions_processed"] += 1
             
             # Performance check to prevent unbounded processing
@@ -676,14 +684,19 @@ def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
                 
         except Exception as e:
             _export_stats["errors_encountered"] += 1
-            # Continue processing other sessions even if one fails
+            _export_stats["last_error_type"] = type(e).__name__
+            # Opaque IDs are safe in receipts; never persist raw exception text.
+            if len(_export_stats["failed_session_ids"]) < 20:
+                _export_stats["failed_session_ids"].append(sid)
             continue
     
     # Performance metrics logging
     export_duration = time.time() - start_time
     _export_stats["export_duration_seconds"] = export_duration
     
+    con.close()
     return records
+
 def main() -> int:
     """Main entry point with enhanced error handling and reporting."""
     parser = argparse.ArgumentParser(
@@ -694,7 +707,11 @@ def main() -> int:
     parser.add_argument("--out", required=True, type=pathlib.Path,
                        help="Path to output JSONL file")
     parser.add_argument("--title-prefix", type=str,
-                       help="Filter sessions by title prefix")
+                       help="SQL-filter sessions by literal title prefix")
+    parser.add_argument("--session-id", type=str,
+                       help="Export exactly one session ID, with no full-database traversal")
+    parser.add_argument("--max-sessions", type=int, default=500,
+                       help="Fail closed when the selected session scope exceeds this count (1-5000)")
     
     args = parser.parse_args()
     
@@ -704,30 +721,44 @@ def main() -> int:
         return 1
     
     try:
-        records = export_sessions(args.db)
+        records = export_sessions(args.db, session_id=args.session_id,
+                                  title_prefix=args.title_prefix,
+                                  max_sessions=args.max_sessions)
     except Exception as e:
         print(f"Error during export: {e}")
         return 1
     
-    if args.title_prefix:
-        records = [r for r in records if str(r.get("title", "")).startswith(args.title_prefix)]
-    
+    # No partial or empty overwrite if an explicit session was missing or
+    # internal record processing failed. Preserve last successful evidence.
+    if _export_stats["errors_encountered"] or (args.session_id and not records):
+        print(json.dumps({"error": "export_incomplete", "records": len(records),
+                          "error_count": _export_stats["errors_encountered"],
+                          "failed_session_ids": _export_stats.get("failed_session_ids", [])},
+                         sort_keys=True))
+        return 1
+
     # Ensure output directory exists
     args.out.parent.mkdir(parents=True, exist_ok=True)
     
-    # Write records to JSONL file
+    # Exported records are already validated. Use a private, atomic file:
+    # no partially written ledger and no world-readable credentials/metadata.
+    temp_path = None
     try:
-        with args.out.open("w", encoding="utf-8") as handle:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                                         dir=args.out.parent, prefix=".opencode-trace-",
+                                         suffix=".tmp", delete=False) as handle:
+            temp_path = pathlib.Path(handle.name)
             for record in records:
-                # Validate each record before writing
-                if _validate_jsonl_safety(record):
-                    handle.write(json.dumps(record, sort_keys=True) + "\n")
-                else:
-                    _export_stats["errors_encountered"] += 1
+                handle.write(json.dumps(record, sort_keys=True, allow_nan=False) + "\n")
+        os.replace(temp_path, args.out)
+        temp_path = None
     except Exception as e:
-        print(f"Error writing output file: {e}")
+        print(f"Trace output failure: {type(e).__name__}")
         return 1
-    
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
     # Generate comprehensive summary
     missing_model = [r["session_id"] for r in records if not r.get("provider") or not r.get("model")]
     unresolved = [r["session_id"] for r in records if not r.get("model_identity_complete")]
@@ -738,7 +769,7 @@ def main() -> int:
     
     # Error statistics
     total_errors = sum(r.get("assistant_error_count", 0) for r in records)
-    total_retried = sum(r.get("retry_count", 0) for r in records)
+    total_retried = None  # Actual retry count unavailable in this DB schema.
     
     summary = {
         "records": len(records),
@@ -754,6 +785,9 @@ def main() -> int:
         "secrets_redacted": _export_stats["secrets_redacted"],
         "jsonl_validated": _export_stats["jsonl_validated"],
         "bounded_failures_handled": _export_stats["bounded_failures_handled"],
+        "errors_encountered": _export_stats["errors_encountered"],
+        "last_error_type": _export_stats.get("last_error_type"),
+        "failed_session_ids": _export_stats.get("failed_session_ids", []),
         "export_duration_seconds": _export_stats.get("export_duration_seconds", 0),
         "output": str(args.out),
     }
@@ -761,6 +795,7 @@ def main() -> int:
     print(json.dumps(summary, sort_keys=True))
     
     # Return error code if sessions were missing model identity
-    return 1 if missing_model else 0
+    # An explicitly requested missing session is a failure, not zero successes.
+    return 1 if missing_model or _export_stats["errors_encountered"] or (args.session_id and not records) else 0
 if __name__ == "__main__":
     raise SystemExit(main())
