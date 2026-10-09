@@ -11,6 +11,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from urllib.parse import quote
 import sqlite3
 import stat
 import time
@@ -54,7 +55,9 @@ def _canonical(value: dict) -> bytes:
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path), timeout=1, isolation_level=None)
+    # mode=rw is deliberate: a missing/deleted ledger must never be recreated.
+    conn = sqlite3.connect("file:" + quote(str(path), safe="/") + "?mode=rw",
+                           uri=True, timeout=1, isolation_level=None)
     conn.execute("PRAGMA busy_timeout=1000")
     conn.execute("PRAGMA synchronous=FULL")
     conn.execute("PRAGMA trusted_schema=OFF")
@@ -207,7 +210,7 @@ class DurableTraceReadLedger:
                 if self._identity_from_disk() != self._identity:
                     return False
                 return removed == 1
-        except (InvalidSignature, Exception) as exc:
+        except Exception as exc:
             LOGGER.warning("Research trace closure denied: %s", type(exc).__name__)
             return False
 
