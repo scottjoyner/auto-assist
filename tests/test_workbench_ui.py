@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -5,7 +6,10 @@ from fastapi.testclient import TestClient
 from assistx.api_router import app
 
 ROOT = Path(__file__).resolve().parents[1]
-AUTH = ("neo4j", "redacted-rotate-credentials")
+# tests/conftest.py seeds defaults for local runs; CI explicitly configures
+# different credentials. Exercise the credentials the app actually loaded,
+# never a hard-coded local test password.
+AUTH = (os.environ["BASIC_AUTH_USER"], os.environ["BASIC_AUTH_PASS"])
 
 
 def test_workbench_route_renders_chat_first_surface():
@@ -20,6 +24,12 @@ def test_workbench_route_renders_chat_first_surface():
     assert 'id="workbench-drawer"' in response.text
     assert "/static/js/workbench.js" in response.text
     assert "/static/css/workbench.css" in response.text
+
+
+def test_workbench_rejects_wrong_password_without_fallback():
+    client = TestClient(app)
+    response = client.get("/workbench", auth=(AUTH[0], AUTH[1] + "-wrong"))
+    assert response.status_code == 401
 
 
 def test_workbench_uses_existing_hermes_agent_boundary_only():
