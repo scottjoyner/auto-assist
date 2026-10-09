@@ -97,7 +97,12 @@ def bootstrap_disposable_receiver_custody(
     ):
         raise ValueError("RESEARCH_CUSTODY_BOOTSTRAP_REFUSED")
     p.parent.mkdir(mode=0o700, exist_ok=True)
-    if not stat.S_ISDIR(p.parent.lstat().st_mode):
+    dir_stat = p.parent.lstat()
+    if (
+        not stat.S_ISDIR(dir_stat.st_mode)
+        or dir_stat.st_uid != os.geteuid()
+        or stat.S_IMODE(dir_stat.st_mode) != 0o700
+    ):
         raise ValueError("INVALID_CUSTODY_DIRECTORY")
     fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_RDWR, 0o600)
     os.close(fd)
@@ -137,8 +142,20 @@ class ReceiverReceiptCustody:
         if not _uuid4(expected_epoch) or not _valid_checkpoint(trusted_checkpoint):
             raise ValueError("EXTERNAL_EPOCH_AND_CHECKPOINT_REQUIRED")
         self.path = Path(path)
-        if not self.path.is_absolute():
-            raise ValueError("ABSOLUTE_EXISTING_CUSTODY_FILE_REQUIRED")
+        if (
+            not self.path.is_absolute() or self.path.name != NAME
+            or self.path.parent.parent != ROOT
+            or not self.path.parent.name.startswith(PREFIX)
+            or self.path.parent.is_symlink()
+        ):
+            raise ValueError("ONLY_DISPOSABLE_RESEARCH_CUSTODY_PATH_ALLOWED")
+        directory = self.path.parent.lstat()
+        if (
+            not stat.S_ISDIR(directory.st_mode)
+            or directory.st_uid != os.geteuid()
+            or stat.S_IMODE(directory.st_mode) != 0o700
+        ):
+            raise ValueError("UNSAFE_CUSTODY_DIRECTORY")
         self.epoch = expected_epoch
         self.public_key = operator_pinned_public_key
         self.key_hash = _key_hash(operator_pinned_public_key)
@@ -152,7 +169,7 @@ class ReceiverReceiptCustody:
         info = self.path.lstat()
         if (
             not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-            or info.st_mode & 0o077
+            or info.st_uid != os.geteuid() or info.st_mode & 0o077
         ):
             raise ValueError("UNSAFE_CUSTODY_FILE")
         return (info.st_dev, info.st_ino)
