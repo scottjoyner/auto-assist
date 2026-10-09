@@ -344,6 +344,11 @@ def _create_task_payload(
     relative = str(file_path.relative_to(repo))
     language = _detect_language(file_path)
     instruction = PROMPTS[kind]
+    binding = _source_binding(repo_info, task_id=task_id, work_id=task_id)
+    if binding is None:
+        # A repository-specific review without a verifiable exact source can
+        # evaluate a stale mirror. It must not enter the READY queue.
+        raise ValueError("repository_source_binding_unavailable")
     prompt = (
         "You are performing read-only repository analysis. Do not claim that a "
         "change was applied. Produce findings, exact evidence, and a bounded next "
@@ -360,7 +365,7 @@ def _create_task_payload(
         "repository": repo_info["alias"],
         "repository_path": repo_info["path"],
         "source_commit": repo_info["commit"],
-        "source_binding": _source_binding(repo_info, task_id=task_id, work_id=task_id),
+        "source_binding": binding,
         "file": relative,
         "language": language,
         "prompt": prompt,
@@ -387,7 +392,12 @@ def _analysis_task(
         )
     ).hexdigest()[:24]
     task_id = f"repo-analysis-{identity}"
-    payload = _create_task_payload(kind, repo_info, file_path, code, task_id=task_id)
+    try:
+        payload = _create_task_payload(kind, repo_info, file_path, code, task_id=task_id)
+    except ValueError:
+        # Do not enqueue a task that cannot prove where it will read.
+        logger.warning("repo task generator: missing strict source binding for %s", task_id)
+        return None
     return {
         "id": task_id,
         "title": f"[{kind}] {repo_info['alias']}: {relative}",
