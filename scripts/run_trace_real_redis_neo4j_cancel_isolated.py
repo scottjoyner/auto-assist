@@ -147,24 +147,29 @@ def main(argv: list[str] | None = None) -> int:
         # Wait for the *disposable* scratch server's offline/online admin.
         stage = "neo_ready"
         ready = False
-        for _ in range(30):
-            try:
-                p = subprocess.run(
-                    ["docker", "exec", owned[NEO], "cypher-shell", "-d", "system",
-                     "SHOW DATABASES"],
-                    capture_output=True, timeout=3, check=False,
-                )
-                if p.returncode == 0:
-                    ready = True
-                    break
-            except subprocess.TimeoutExpired:
-                # Cold starts can be slow. No completed process or DB health
-                # check is inferred from a timeout, so keep waiting boundedly.
-                pass
+        for _ in range(130):
+            # Neo4j 5.26 can need substantial cold-start time under 0.75 CPU.
+            # Poll *only* this disposable container's logs, never live config.
+            probe = subprocess.run(
+                ["docker", "logs", "--tail", "30", owned[NEO]],
+                capture_output=True, timeout=5, check=False,
+            )
+            if probe.returncode == 0 and b"Started." in probe.stdout + probe.stderr:
+                ready = True
+                break
+            status = json.loads(cmd("docker", "inspect", owned[NEO]))[0]["State"]
+            if status.get("Running") is not True:
+                raise RuntimeError("disposable Neo4j exited during startup")
             time.sleep(.5)
         if not ready:
-            raise RuntimeError("disposable Neo4j scratch system not ready")
-        # This is confined to the new tmpfs-backed synthetic database only.
+            raise RuntimeError("disposable Neo4j startup deadline exceeded")
+        probe = subprocess.run(
+            ["docker", "exec", owned[NEO], "cypher-shell", "-d", "system",
+             "SHOW DATABASES"],
+            capture_output=True, timeout=12, check=False,
+        )
+        if probe.returncode:
+            raise RuntimeError("disposable Neo4j system is not queryable")
         stage = "neo_scratch_admin"
         for statement in (
             "CALL dbms.setConfigValue('server.databases.read_only', '')",
