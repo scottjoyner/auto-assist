@@ -131,7 +131,7 @@ class PostgresTraceAuthority:
 
     def _lock_and_validate(self, db):
         row = db.execute(
-            "SELECT epoch,schema,capacity FROM research_trace_meta WHERE singleton=true FOR UPDATE NOWAIT"
+            "SELECT epoch,schema,capacity FROM research_trace_meta WHERE singleton=true FOR UPDATE"
         ).fetchone()
         if not row or row[0] != self.epoch or row[1] != SCHEMA or not 1 <= row[2] <= 16:
             raise RuntimeError("AUTHORITY_EPOCH_OR_SCHEMA_UNPROVEN")
