@@ -235,3 +235,85 @@ def test_spawned_processes_never_double_consume_same_receipt(isolated):
     # The stale pinned genesis can no longer reopen after a successful write.
     with pytest.raises(ValueError,match="CHECKPOINT_MISMATCH"):
         _open(isolated)
+
+
+def test_copied_store_split_brain_is_explicit_negative_control(isolated):
+    """Identical independent local stores ACCEPT twice: distributed NO-GO."""
+    p,epoch,key,pub,cp=isolated
+    with tempfile.TemporaryDirectory(prefix="assistx-trace-custody-test-",dir="/tmp") as other:
+        copied=str(Path(other)/"receiver-custody-test.sqlite")
+        shutil.copy2(p,copied)
+        a=_open(isolated)
+        b=_open((copied,epoch,key,pub,cp))
+        e=_receipt(epoch)
+        sig=receiver_sign_only(e,key)
+        assert a.observe_once(e,sig,**_args(e)).accepted
+        assert b.observe_once(e,sig,**_args(e)).accepted
+        assert a.inspect().sequence==1
+        assert b.inspect().sequence==1
+        # Local unique constraints do not enforce a global uniqueness gate.
+
+
+def test_external_checkpoint_lost_after_commit_must_hold_closed(isolated):
+    """Committed but unacknowledged checkpoint strands safe progress."""
+    custody=_open(isolated)
+    p,epoch,key,pub,genesis=isolated
+    e=_receipt(epoch)
+    assert custody.observe_once(e,receiver_sign_only(e,key),**_args(e)).accepted
+    # Simulate loss of the update sent to independent checkpoint custody:
+    with pytest.raises(ValueError,match="CHECKPOINT_MISMATCH"):
+        _open((p,epoch,key,pub,genesis))
+
+
+def test_unsafe_file_permissions_block_new_authority(isolated):
+    p,epoch,key,pub,cp=isolated
+    Path(p).chmod(0o644)
+    with pytest.raises(ValueError,match="UNSAFE_CUSTODY_FILE"):
+        _open(isolated)
+
+
+def test_damaged_progress_denied_without_fallback(isolated):
+    p,epoch,key,pub,cp=isolated
+    custody=_open(isolated)
+    with sqlite3.connect(p) as connection:
+        connection.execute("UPDATE progress SET head_sha256=? WHERE id=1",("0"*64,))
+    e=_receipt(epoch)
+    assert custody.inspect() is None
+    assert custody.observe_once(e,receiver_sign_only(e,key),**_args(e)).reason=="checkpoint_mismatch"
+    with pytest.raises(ValueError,match="CHECKPOINT_MISMATCH"):
+        _open(isolated)
+
+
+def test_dropped_table_denies_read_and_consumption(isolated):
+    p,epoch,key,pub,cp=isolated
+    custody=_open(isolated)
+    with sqlite3.connect(p) as connection:
+        connection.execute("DROP TABLE received")
+    e=_receipt(epoch)
+    assert custody.inspect() is None
+    assert custody.observe_once(e,receiver_sign_only(e,key),**_args(e)).reason=="unavailable"
+
+
+def test_signature_is_not_physical_truth_even_with_pinned_key(isolated):
+    """A deliberately dishonest trusted signer can sign false observation data.
+
+    Validation cannot replace an external physical observer or real key custody.
+    """
+    p,epoch,key,pub,cp=isolated
+    custody=_open(isolated)
+    forged=_receipt(epoch)
+    signature=receiver_sign_only(forged,key)
+    # NO Neo4j container or server transaction has been contacted here.
+    result=custody.observe_once(forged,signature,**_args(forged))
+    assert result.accepted
+    assert result.reason=="recorded_no_release"
+    assert custody.inspect().sequence==1
+    assert not hasattr(custody,"release")
+
+
+def test_key_pinning_does_not_come_from_envelope(isolated):
+    p,epoch,key,pub,cp=isolated
+    assert "public_key" not in _receipt(epoch)
+    with pytest.raises(ValueError,match="PUBLIC_KEY_REQUIRED"):
+        ReceiverReceiptCustody(p,expected_epoch=epoch,
+            operator_pinned_public_key=b"",trusted_checkpoint=cp)
