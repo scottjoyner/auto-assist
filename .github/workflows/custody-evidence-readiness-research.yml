@@ -1,0 +1,47 @@
+name: custody-evidence-readiness-research
+
+on:
+  pull_request:
+    paths:
+      - "scripts/custody_evidence_readiness.py"
+      - "tests/test_custody_evidence_readiness.py"
+      - ".github/workflows/custody-evidence-readiness-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  metadata-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout no persistent credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile checker
+        run: python -m py_compile scripts/custody_evidence_readiness.py tests/test_custody_evidence_readiness.py
+      - name: Run no-network synthetic negatives
+        run: python -m unittest discover -s tests -p 'test_custody_evidence_readiness.py' -v
+      - name: Confirm current index cannot confer release authority
+        run: |
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from custody_evidence_readiness import inspect
+          result = inspect(Path("."))
+          assert result["status"] == "HOLD"
+          assert result["merge_authorized"] is False
+          assert result["production_authorized"] is False
+          assert result["git_file_contents_read"] is False
+          assert result["live_container_env_read"] is False
+          assert result["history_blobs_read"] is False
+          assert result["tracked_env_variant_count"] is not None
+          print("PASS: metadata-only gate remains HOLD; no values read")
+          PY
