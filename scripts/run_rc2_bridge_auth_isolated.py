@@ -56,6 +56,10 @@ observed = {
         "/fleet-dashboard", {**identity,"Authorization": "Basic "+valid}
     ),
     "traces_forged": status("/traces",identity),
+    "trace_index_forged": status("/api/traces",identity),
+    "trace_detail_forged": status(
+        "/api/traces/synthetic-no-real-graph",identity
+    ),
     "dashboard_api_forged": status("/api/fleet/dashboard",identity),
 }
 for k,v in observed.items():
@@ -63,7 +67,9 @@ for k,v in observed.items():
 if mode == "strict":
     expected = {
         "anonymous":401,"forged":401,"wrong_basic":401,
-        "valid_basic":200,"traces_forged":401,"dashboard_api_forged":401,
+        "valid_basic":200,"traces_forged":401,
+        "trace_index_forged":401,"trace_detail_forged":401,
+        "dashboard_api_forged":401,
     }
     assert observed == expected, "strict backend negative check failed"
     print("BRIDGE_STRICT_BASIC_DENIAL_PASS")
@@ -74,6 +80,10 @@ else:
     assert observed["forged"] == 200
     assert observed["wrong_basic"] == 200
     assert observed["traces_forged"] == 200
+    # The disposable API has no graph: a 500 after auth is expected and
+    # *never* evidence of successful data access. It is not an auth denial.
+    assert observed["trace_index_forged"] not in (0,401,403)
+    assert observed["trace_detail_forged"] not in (0,401,403)
     print("BRIDGE_LEGACY_HEADER_NEGATIVE_CONTROL_PASS")
 '''
 
