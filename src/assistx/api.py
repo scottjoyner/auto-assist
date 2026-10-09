@@ -2714,24 +2714,33 @@ def api_fleet_dashboard(user: str = Depends(auth)):
 
     task_distribution = dict(executor._node_inflight)
     total_inflight = sum(task_distribution.values())
+    from .dashboard_evidence import dashboard_evidence
+
+    summary = {
+        "total_nodes": len(nodes),
+        "healthy_nodes": sum(1 for n in nodes if n["service_ok"]),
+        "total_models_loaded": sum(len(n["loaded_models"]) for n in nodes),
+        "total_models_available": sum(len(n["available_models"]) for n in nodes),
+        "total_weight": sum(n["weight"] for n in nodes),
+        "total_inflight": total_inflight,
+    }
+    source_status = {
+        "router_configured": bool(base_url),
+        "router_ok": bool(network_map),
+        "projection_status": network_map.get("projection_status", "missing"),
+        "live_tailnet_status": live_tailnet.get("status", "unavailable"),
+        "live_tailnet_nodes": len(live_tailnet.get("nodes") or []),
+        "errors": router_errors,
+    }
+    evidence = dashboard_evidence(
+        nodes=nodes, summary=summary, source_status=source_status,
+        health_plan=health_plan,
+    )
     return {
+        **evidence,
         "timestamp": _now_ts(),
-        "source_status": {
-            "router_configured": bool(base_url),
-            "router_ok": bool(network_map),
-            "projection_status": network_map.get("projection_status", "missing"),
-            "live_tailnet_status": live_tailnet.get("status", "unavailable"),
-            "live_tailnet_nodes": len(live_tailnet.get("nodes") or []),
-            "errors": router_errors,
-        },
-        "summary": {
-            "total_nodes": len(nodes),
-            "healthy_nodes": sum(1 for n in nodes if n["service_ok"]),
-            "total_models_loaded": sum(len(n["loaded_models"]) for n in nodes),
-            "total_models_available": sum(len(n["available_models"]) for n in nodes),
-            "total_weight": sum(n["weight"] for n in nodes),
-            "total_inflight": total_inflight,
-        },
+        "source_status": source_status,
+        "summary": summary,
         "nodes": nodes,
         "models": models,
         "value_matrix": value_matrix,
