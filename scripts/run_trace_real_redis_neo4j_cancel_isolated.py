@@ -147,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
         # Wait for the *disposable* scratch server's offline/online admin.
         stage = "neo_ready"
         ready = False
-        for _ in range(45):
+        for _ in range(30):
             try:
                 p = subprocess.run(
                     ["docker", "exec", owned[NEO], "cypher-shell", "-d", "system",
