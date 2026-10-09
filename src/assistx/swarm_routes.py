@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Literal, Optional
 
 logger = logging.getLogger(__name__)
@@ -13,6 +14,7 @@ from .contracts.event_envelope import EventEnvelope
 from .draft_model import DraftModelUnavailable, generate_draft
 from .neo4j_client import Neo4jClient
 from .outbox_client import OutboxClient
+from .trace_read_budget import TraceReadBudgetUnavailable, check_trace_read_budget
 from .swarm_core import (
     EventConflictError,
     EventValidationError,
@@ -186,6 +188,34 @@ def _trace_read_auth(
             status_code=401,
             detail="Trace read authentication failed",
             headers={"WWW-Authenticate": "Basic"},
+        )
+    return principal
+
+
+def _trace_read_budget(principal: str = Depends(_trace_read_auth)) -> str:
+    """Opt-in, authenticated, fail-closed shared trace GET budget.
+
+    The default mode is 'off' and never contacts Redis. Unrecognized modes
+    are denied rather than silently granting an unmetered read.
+    """
+    mode = os.getenv("ASSISTX_TRACE_READ_BUDGET_MODE", "off").strip().lower()
+    if mode == "off":
+        return principal
+    if mode != "enforce":
+        raise HTTPException(status_code=503, detail="Trace budget mode is invalid")
+    try:
+        allowed, _, retry_after = check_trace_read_budget(principal)
+    except TraceReadBudgetUnavailable:
+        raise HTTPException(
+            status_code=503,
+            detail="Trace read budget is unavailable",
+            headers={"Retry-After": "5"},
+        ) from None
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Trace read budget exhausted",
+            headers={"Retry-After": str(retry_after)},
         )
     return principal
 
@@ -464,7 +494,7 @@ def api_list_traces(
     offset: int = Query(default=0, ge=0),
     search: Optional[str] = Query(default=None, max_length=128),
     outcome: Optional[Literal["failed", "completed", "open"]] = None,
-    user: str = Depends(_trace_read_auth),
+    user: str = Depends(_trace_read_budget),
 ):
     """Read-only global outcome filtering for the authenticated trace index."""
     neo = _neo()
@@ -479,7 +509,7 @@ def api_list_traces(
 @router.get("/api/traces/{correlation_id}")
 def api_get_trace(
     correlation_id: str = Path(min_length=1, max_length=128),
-    user: str = Depends(_trace_read_auth),
+    user: str = Depends(_trace_read_budget),
 ):
     neo = _neo()
     try:
@@ -497,7 +527,7 @@ def api_get_trace(
 @router.get("/api/traces/{correlation_id}/evidence")
 def api_trace_task_evidence(
     correlation_id: str = Path(min_length=1, max_length=128),
-    user: str = Depends(_trace_read_auth),
+    user: str = Depends(_trace_read_budget),
 ):
     """Opt-in, read-only task/registry comparison: never execution attestation."""
     neo = _neo()

@@ -114,3 +114,85 @@ def test_operator_permission_denial_preserves_status_and_skips_storage(monkeypat
         response = client.get(path, headers=_basic("fixture", "synthetic"))
         assert response.status_code == status
     assert created == []
+
+
+@pytest.mark.parametrize("path", _PATHS)
+def test_trace_budget_default_off_never_probes_redis(monkeypatch, path):
+    from assistx import trace_read_budget
+
+    monkeypatch.delenv("ASSISTX_TRACE_READ_BUDGET_MODE", raising=False)
+    monkeypatch.setattr(swarm_routes, "check_trace_read_budget", lambda principal: (_ for _ in ()).throw(
+        AssertionError("budget must be disabled unless explicitly enabled")
+    ))
+    client, created = _client(monkeypatch, lambda req, credentials: "fixture")
+    response = client.get(path, headers=_basic("fixture", "synthetic"))
+    assert response.status_code == 200
+    assert len(created) == 1 and created[0].closed
+
+
+@pytest.mark.parametrize("path", _PATHS)
+def test_trace_budget_enforce_denies_before_storage_with_retry_after(monkeypatch, path):
+    monkeypatch.setenv("ASSISTX_TRACE_READ_BUDGET_MODE", "enforce")
+    checked = []
+
+    def deny(principal):
+        checked.append(principal)
+        return (False, 0, 7)
+
+    monkeypatch.setattr(swarm_routes, "check_trace_read_budget", deny)
+    client, created = _client(monkeypatch, lambda req, credentials: "verified-operator")
+    response = client.get(path, headers=_basic("fixture", "synthetic"))
+    assert response.status_code == 429
+    assert response.headers.get("Retry-After") == "7"
+    assert checked == ["verified-operator"]
+    assert created == []
+
+
+@pytest.mark.parametrize("path", _PATHS)
+def test_trace_budget_redis_outage_fails_closed_before_storage(monkeypatch, path):
+    from assistx.trace_read_budget import TraceReadBudgetUnavailable
+
+    monkeypatch.setenv("ASSISTX_TRACE_READ_BUDGET_MODE", "enforce")
+
+    def unavailable(principal):
+        raise TraceReadBudgetUnavailable("synthetic error")
+
+    monkeypatch.setattr(swarm_routes, "check_trace_read_budget", unavailable)
+    client, created = _client(monkeypatch, lambda req, credentials: "verified-operator")
+    response = client.get(path, headers=_basic("fixture", "synthetic"))
+    assert response.status_code == 503
+    assert response.headers.get("Retry-After") == "5"
+    assert created == []
+
+
+def test_trace_budget_authentication_precedes_quota_and_never_reads_storage(monkeypatch):
+    monkeypatch.setenv("ASSISTX_TRACE_READ_BUDGET_MODE", "enforce")
+
+    def reject(request, credentials):
+        raise HTTPException(status_code=401, detail="Denied")
+
+    monkeypatch.setattr(swarm_routes, "check_trace_read_budget", lambda principal: (_ for _ in ()).throw(
+        AssertionError("quota must not run before authorization")
+    ))
+    client, created = _client(monkeypatch, reject)
+    for path in _PATHS:
+        response = client.get(path, headers={})
+        assert response.status_code == 401
+    assert created == []
+
+
+def test_trace_budget_typo_in_mode_never_silently_falls_back_to_unmetered(monkeypatch):
+    monkeypatch.setenv("ASSISTX_TRACE_READ_BUDGET_MODE", "enforced")
+    client, created = _client(monkeypatch, lambda req, credentials: "verified-operator")
+    response = client.get("/api/traces", headers=_basic("fixture", "synthetic"))
+    assert response.status_code == 503
+    assert created == []
+
+
+def test_trace_budget_allows_operator_with_positive_atomic_admission(monkeypatch):
+    monkeypatch.setenv("ASSISTX_TRACE_READ_BUDGET_MODE", "enforce")
+    monkeypatch.setattr(swarm_routes, "check_trace_read_budget", lambda principal: (True, 22, 0))
+    client, created = _client(monkeypatch, lambda req, credentials: "verified-operator")
+    response = client.get("/api/traces/fixture", headers=_basic("fixture", "synthetic"))
+    assert response.status_code == 200
+    assert len(created) == 1 and created[0].closed
