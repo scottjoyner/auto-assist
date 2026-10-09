@@ -71,3 +71,90 @@ DISPATCH_LIMITER = RateLimiter("dispatch", max_requests=60, window_seconds=60)
 EVENT_LIMITER = RateLimiter("paperclip_event", max_requests=120, window_seconds=60)
 ASK_LIMITER = RateLimiter("ask", max_requests=30, window_seconds=60)
 INTENT_LIMITER = RateLimiter("intent", max_requests=60, window_seconds=60)
+
+
+# Trace History global outcome searches have material Neo4j cost (~million
+# synthetic DB hits per query). They require atomic, fail-closed admission:
+# the existing generic fail-open per-client limiter is inappropriate here.
+TRACE_INDEX_LUA = """
+local client = KEYS[1]
+local fleet = KEYS[2]
+local per_max = tonumber(ARGV[1])
+local global_max = tonumber(ARGV[2])
+local window = tonumber(ARGV[3])
+local member = ARGV[4]
+local tm = redis.call('TIME')
+local now = tonumber(tm[1]) * 1000 + math.floor(tonumber(tm[2]) / 1000)
+local cutoff = now - window
+redis.call('ZREMRANGEBYSCORE', client, '-inf', cutoff)
+redis.call('ZREMRANGEBYSCORE', fleet, '-inf', cutoff)
+local local_count = redis.call('ZCARD', client)
+local global_count = redis.call('ZCARD', fleet)
+if local_count >= per_max or global_count >= global_max then
+  local key = local_count >= per_max and client or fleet
+  local first = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+  local retry = 1
+  if #first > 1 then
+    retry = math.max(1, math.ceil((window - (now - tonumber(first[2]))) / 1000))
+  end
+  return {0, 0, retry}
+end
+redis.call('ZADD', client, now, member)
+redis.call('ZADD', fleet, now, member)
+redis.call('PEXPIRE', client, window * 2)
+redis.call('PEXPIRE', fleet, window * 2)
+return {1, per_max - local_count - 1, 0}
+"""
+
+
+class TraceIndexLimiter:
+    """Bounded atomic, Redis-backed read admission; fail closed on outages.
+
+    Both per-socket-peer and fleet-wide counters update in one Redis script.
+    The Redis TIME command avoids producer/node clock skew. This is a
+    rate guard, not authentication or true concurrent-query fencing.
+    """
+
+    def __init__(self, per_peer=12, global_max=60, window_seconds=60):
+        if not (1 <= per_peer <= global_max <= 1000):
+            raise ValueError("Unsafe trace-index thresholds")
+        if not (1 <= window_seconds <= 3600):
+            raise ValueError("Unsafe trace-index window")
+        self.per_peer = per_peer
+        self.global_max = global_max
+        self.window_seconds = window_seconds
+
+    def check(self, peer):
+        import hashlib
+        if not isinstance(peer, str) or not peer or len(peer) > 256:
+            return False, 0, self.window_seconds
+        digest = hashlib.sha256(peer.encode("utf-8")).hexdigest()
+        # A common hash-tag keeps both Redis Cluster keys in the same slot.
+        client_key = "ratelimit:{assistx_trace_index}:peer:" + digest
+        global_key = "ratelimit:{assistx_trace_index}:global"
+        try:
+            raw = _get_redis().eval(
+                TRACE_INDEX_LUA,
+                2,
+                client_key,
+                global_key,
+                self.per_peer,
+                self.global_max,
+                self.window_seconds * 1000,
+                uuid.uuid4().hex,
+            )
+            if not isinstance(raw, (list, tuple)) or len(raw) != 3:
+                raise ValueError("Bad Redis admission response")
+            allowed, remaining, retry = (int(x) for x in raw)
+            if allowed not in (0, 1) or remaining < 0 or retry < 0:
+                raise ValueError("Invalid Redis admission response")
+            return bool(allowed), remaining, retry
+        except (redis_module.RedisError, OSError, TypeError, ValueError) as exc:
+            logger.warning(
+                "Trace-index Redis admission unavailable; denying expensive read: %s",
+                type(exc).__name__,
+            )
+            return False, 0, self.window_seconds
+
+
+TRACE_INDEX_LIMITER = TraceIndexLimiter()
