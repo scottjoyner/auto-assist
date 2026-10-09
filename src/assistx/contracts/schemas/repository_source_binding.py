@@ -209,6 +209,28 @@ class RepositorySourceBinding(BaseModel):
             raise ValueError("task_id/work_id must not contain control characters")
         return value
 
+    @classmethod
+    def from_contract_payload(
+        cls, payload: RepositorySourceBinding | dict[str, object] | None
+    ) -> RepositorySourceBinding | None:
+        """Parse optional contracts without converting malformed bindings to unbound.
+
+        This restores the call-site API after the stricter schema migration.
+        An omitted binding is supported for legacy tasks; an explicitly empty
+        or malformed binding is never silently accepted as an unbound task.
+        """
+        if payload is None:
+            return None
+        if isinstance(payload, cls):
+            return payload
+        if not isinstance(payload, dict) or not payload:
+            raise ValueError("invalid repository source binding")
+        return cls.model_validate(payload)
+
+    def to_contract_payload(self) -> dict[str, object]:
+        """Canonical JSON-ready binding; never drop authority or path fields."""
+        return self.provenance()
+
     def provenance(self) -> dict[str, object]:
         """Compact payload safe to embed in a task or result."""
 
