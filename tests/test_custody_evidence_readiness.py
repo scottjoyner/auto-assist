@@ -111,6 +111,58 @@ class CustodyContract(unittest.TestCase):
         o=mod.inspect(self.repo,e)
         self.assertIn("out_of_order_checkpoint_claim",o["reasons"])
 
+    def test_invalid_historical_revision_denied_without_execution(self):
+        for bad in ("HEAD", "main", "deadbeef", "--help", "../config",
+                    "a" * 40 + " --", "", None, 123):
+            with self.subTest(revision=str(bad)[:20]):
+                o=mod.inspect(self.repo, historical_revision=bad)
+                self.assertEqual(o["status"],"HOLD")
+                self.assertFalse(o["pinned_historical_revision_checked"])
+                self.assertIsNone(o["historical_env_variant_count"])
+
+    def test_history_snapshot_remains_relevant_after_index_cleanup(self):
+        self.track(".env.local")
+        subprocess.run([
+            "git", "-C", str(self.repo), "-c", "user.name=Research Fixture",
+            "-c", "user.email=research@invalid.example", "commit",
+            "-q", "-m", "synthetic history test",
+        ], check=True)
+        old = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        # Keep the historical tree intact but clean the *current index*.
+        subprocess.run(
+            ["git", "-C", str(self.repo), "rm", "-q", "--", ".env.local"], check=True,
+        )
+        o=mod.inspect(self.repo, historical_revision=old)
+        self.assertEqual(o["tracked_env_variant_count"], 0)
+        self.assertEqual(o["historical_env_variant_count"], 1)
+        self.assertTrue(o["pinned_historical_revision_checked"])
+        self.assertIn("historical_revision_contains_env_variants", o["reasons"])
+        self.assertFalse(o["merge_authorized"])
+
+    def test_historical_clean_commit_is_not_all_history_attestation(self):
+        self.track("src/placeholder.txt")
+        subprocess.run([
+            "git", "-C", str(self.repo), "-c", "user.name=Research Fixture",
+            "-c", "user.email=research@invalid.example", "commit",
+            "-q", "-m", "clean synthetic snapshot",
+        ], check=True)
+        old = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        o=mod.inspect(self.repo, historical_revision=old)
+        self.assertEqual(o["historical_env_variant_count"], 0)
+        self.assertIn("selected_history_snapshot_clean_not_comprehensive", o["reasons"])
+        self.assertFalse(o["production_authorized"])
+
+    def test_unavailable_historical_git_tree_holds(self):
+        o=mod.inspect(self.repo, historical_revision="f" * 40)
+        self.assertEqual(o["status"],"HOLD")
+        self.assertIn("historical_index_unavailable", o["reasons"])
+
     def test_git_unavailable_fails_closed(self):
         o=mod.inspect(self.repo/"not-a-repo")
         self.assertIn("index_unavailable",o["reasons"])
