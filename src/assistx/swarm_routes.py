@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from typing import Any, Dict, List, Literal, Optional
 
 logger = logging.getLogger(__name__)
@@ -449,6 +450,31 @@ def _admit_trace_index(request: Request) -> None:
         )
 
 
+@contextmanager
+def _hold_trace_index_capacity():
+    """Deny when fleet-wide read slots are busy; release by exact Redis token.
+
+    The in-flight lease is acquired *after* FastAPI dependency authentication,
+    *before* rate admission (so concurrency-denied reads do not burn quota),
+    and held until graph access and resource cleanup finish.
+    """
+    from .rate_limiter import TRACE_INDEX_LEASES
+
+    token, retry_after = TRACE_INDEX_LEASES.acquire()
+    if token is None:
+        raise HTTPException(
+            status_code=429,
+            detail="Trace index at concurrent read capacity or Redis unavailable",
+            headers={"Retry-After": str(max(1, int(retry_after)))},
+        )
+    try:
+        yield
+    finally:
+        # A failed/stale release cannot free another token. Redis TTL bounds
+        # occupancy after worker death; this is not a hard cancel fence.
+        TRACE_INDEX_LEASES.release(token)
+
+
 @router.get("/api/traces")
 def api_list_traces(
     request: Request,
@@ -458,15 +484,16 @@ def api_list_traces(
     outcome: Optional[Literal["failed", "completed", "open"]] = None,
     user: str = Depends(_default_auth),
 ):
-    """Authenticated, rate-admitted global outcome history index."""
-    _admit_trace_index(request)
-    neo = _neo()
-    try:
-        return list_traces(
-            neo, limit=limit, offset=offset, search=search, outcome=outcome
-        )
-    finally:
-        neo.close()
+    """Authenticated, in-flight fenced, rate-admitted read-only trace index."""
+    with _hold_trace_index_capacity():
+        _admit_trace_index(request)
+        neo = _neo()
+        try:
+            return list_traces(
+                neo, limit=limit, offset=offset, search=search, outcome=outcome
+            )
+        finally:
+            neo.close()
 
 
 @router.get("/api/traces/{correlation_id}")
