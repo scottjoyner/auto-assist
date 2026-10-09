@@ -248,3 +248,70 @@ def test_invalid_journal_location_rejected():
             bootstrap_disposable_custody("/nas/receiver-replay-test.sqlite",
                  receipt["epoch"],receipt["graph_container_id"],digest)
     finally:root.cleanup()
+
+
+@pytest.mark.parametrize("n",[1,3,5,10])
+def test_same_receipt_at_1_3_5_10_clients_records_at_most_once(n):
+    root,path,custody,receipt,private,pub,digest,expected=fixture()
+    try:
+        sig=receiver_sign_only(receipt,private)
+        # Every candidate submits the same signed identity, not a fresh token.
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            decisions=list(pool.map(
+                lambda _:custody.record(receipt,sig,**expected),range(n)))
+        assert sum(d.accepted for d in decisions)==1
+        assert sum(not d.accepted for d in decisions)==n-1
+        assert custody.inspect()==1
+    finally:root.cleanup()
+
+
+def test_locked_journal_denies_without_fallback_replay():
+    root,path,custody,receipt,private,pub,digest,expected=fixture()
+    try:
+        sig=receiver_sign_only(receipt,private)
+        with sqlite3.connect(path,timeout=1,isolation_level=None) as exclusive:
+            exclusive.execute("BEGIN EXCLUSIVE")
+            decision=custody.record(receipt,sig,**expected)
+            assert decision.accepted is False
+            assert decision.reason=="custody-unavailable"
+            exclusive.rollback()
+        assert custody.inspect()==0
+        assert custody.record(receipt,sig,**expected).accepted
+    finally:root.cleanup()
+
+
+def test_incorrect_trust_digest_and_epoch_cannot_reopen_journal():
+    root,path,custody,receipt,private,pub,digest,expected=fixture()
+    try:
+        with pytest.raises(ValueError):
+            ReceiverReplayCustody(path,expected_epoch=str(uuid.uuid4()),
+                expected_graph_id=receipt["graph_container_id"],
+                trusted_public_key=pub,approved_signer_sha256=digest)
+        with pytest.raises(ValueError):
+            ReceiverReplayCustody(path,expected_epoch=receipt["epoch"],
+                expected_graph_id=receipt["graph_container_id"],
+                trusted_public_key=pub,approved_signer_sha256="f"*64)
+        with pytest.raises(ValueError,match="REPLAY_EPOCH_GRAPH_OR_SIGNER_MISMATCH"):
+            ReceiverReplayCustody(path,expected_epoch=receipt["epoch"],
+                expected_graph_id="c"*64,
+                trusted_public_key=pub,approved_signer_sha256=digest)
+    finally:root.cleanup()
+
+
+def test_a_copied_local_journal_is_not_distributed_single_authority():
+    # Expected counterexample: after copying the *unconsumed* snapshot to a
+    # second independent local path, BOTH copies accept the same receipt.
+    # Production must refuse this situation with a real shared authority.
+    root,path,custody,receipt,private,pub,digest,expected=fixture()
+    with tempfile.TemporaryDirectory(prefix="assistx-receiver-replay-test-",dir="/tmp") as second:
+        try:
+            copy=str(Path(second)/"receiver-replay-test.sqlite")
+            shutil.copyfile(path,copy)
+            other=ReceiverReplayCustody(copy,expected_epoch=receipt["epoch"],
+                expected_graph_id=receipt["graph_container_id"],
+                trusted_public_key=pub,approved_signer_sha256=digest)
+            sig=receiver_sign_only(receipt,private)
+            assert custody.record(receipt,sig,**expected).accepted
+            assert other.record(receipt,sig,**expected).accepted
+            assert custody.inspect()==1 and other.inspect()==1
+        finally:root.cleanup()
