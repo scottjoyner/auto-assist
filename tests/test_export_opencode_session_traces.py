@@ -266,3 +266,31 @@ def test_supervisor_annotates_trace_sessions_with_route_kind():
     assert exact_without_provider_resolution["effective_model"] == "stepfun/step-3.7-flash:free"
     assert exact_without_provider_resolution["model_attribution"] == "exact-request"
     assert exact_without_provider_resolution["model_identity_complete"] is True
+
+
+def test_bare_router_alias_tokens_fail_closed():
+    for token in ("free", "auto", "router", "any", "best", "default"):
+        assert trace_exporter._route_kind(token) == "alias"
+        assert trace_exporter._route_kind(" " + token.upper() + " ") == "alias"
+        attributed = trace_exporter._model_attribution(token, None)
+        assert attributed["route_kind"] == "alias"
+        assert attributed["model_identity_complete"] is False
+        assert attributed["effective_model"] is None
+        assert attributed["model_attribution"] == "unresolved-router-alias"
+
+
+def test_router_alias_with_resolved_upstream_has_attribution():
+    attributed = trace_exporter._model_attribution("free", "cohere/north-mini-code:free")
+    assert attributed["route_kind"] == "alias"
+    assert attributed["model_identity_complete"] is True
+    assert attributed["effective_model"] == "cohere/north-mini-code:free"
+    assert attributed["model_attribution"] == "resolved-upstream"
+
+
+def test_exact_free_model_id_keeps_attribution():
+    request = "cohere/north-mini-code:free"
+    assert trace_exporter._route_kind(request) == "exact"
+    attributed = trace_exporter._model_attribution(request, None)
+    assert attributed["model_identity_complete"] is True
+    assert attributed["effective_model"] == request
+    assert attributed["model_attribution"] == "exact-request"

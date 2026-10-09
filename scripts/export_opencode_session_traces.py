@@ -74,10 +74,17 @@ ROUTE_ALIAS_TOKENS = frozenset({"free", "auto", "router", "any", "best", "defaul
 def _route_kind(model_id: str) -> str:
     """Classify a requested model as exact or router-selected alias."""
     mid = str(model_id or "").strip()
+    if not mid:
+        return "exact"
+    # Extract leaf: if there's a slash, take the part after the last slash; otherwise, the whole string.
     if "/" in mid:
-        leaf = mid.rsplit("/", 1)[-1].lower().split(":")[0]
-        if leaf in ROUTE_ALIAS_TOKENS:
-            return "alias"
+        leaf = mid.rsplit("/", 1)[-1]
+    else:
+        leaf = mid
+    # Remove variant suffix (everything after first ':') and lowercase
+    leaf = leaf.split(":")[0].lower()
+    if leaf in ROUTE_ALIAS_TOKENS:
+        return "alias"
     return "exact"
 
 
