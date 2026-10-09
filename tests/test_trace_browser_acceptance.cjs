@@ -43,6 +43,7 @@ async function setupBrowser(width=375,auth='ok',legacy=false) {
    if(p==='/api/traces') {
      seen.push('index:'+url.search);
      if(auth==='unauthorized') return route.fulfill({status:401,contentType:'application/json',body:'{"error":"auth"}'});
+     if(auth==='limited') return route.fulfill({status:429,headers:{'Retry-After':'7'},contentType:'application/json',body:'{"detail":"query budget reached"}'});
      const value=url.searchParams.get('outcome');
      let results=fixtures.filter(x=>value?x.outcome===value:true);
      const search=url.searchParams.get('search');
@@ -200,4 +201,14 @@ test('real browser: tablet 768px keyboard-only selection and payload disclosure'
     assert.equal(report.violations.length,0,
       'tablet automated axe violations: '+report.violations.map(v=>v.id).join(','));
   }finally{await x.close();}
+});
+
+test('real browser: Redis budget 429 clearly states Retry-After without false zero', async()=>{
+ const x=await setupBrowser(375,'limited');
+ try{
+  await x.page.goto(BASE+'/traces?outcome=failed');
+  await x.page.locator('#trace-status').getByText(/Retry in 7 seconds/).waitFor();
+  assert.equal(await x.page.locator('#trace-total-metric').textContent(),'—');
+  assert.equal(await x.page.locator('#trace-list #trace-retry').count(),1);
+ }finally{await x.close();}
 });
