@@ -89,10 +89,14 @@ def test_strict_header_denial_precedes_graph_backend(
         pytest.fail("unauthenticated request reached Neo4j")
 
     monkeypatch.setattr(api, "_neo", forbidden_neo)
-    with TestClient(api.app) as client:
+    # Avoid TestClient lifespan startup: no workers, providers, or side effects.
+    client = TestClient(api.app, raise_server_exceptions=True)
+    try:
         resp = client.get(
             "/api/fleet/dashboard",
             headers={"X-Synthetic-Proxy-Identity": "forged-identity"},
         )
+    finally:
+        client.close()
     assert resp.status_code == 401
     assert resp.headers["www-authenticate"] == "Basic"
