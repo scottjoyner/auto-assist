@@ -114,3 +114,23 @@ def test_server_term_witness_never_automatically_signs_slot_release():
     assert "automatic_admission_release" in source
     assert 'report["automatic_admission_release"]=False' in source
     assert "acknowledge_remote_closure(" not in source
+
+
+@pytest.mark.parametrize("remote,port",[
+    ("127.0.0.1",7687),("10.0.0.5",7687),
+    ("8.8.8.8",7687),("172.23.0.2",443),
+])
+def test_bolt_blackhole_refuses_non_disposable_upstream(remote,port):
+    from probe_trace_bolt_blackhole_526 import LoopbackBoltBlackhole
+    with pytest.raises(ValueError,match="NON_DISPOSABLE_UPSTREAM"):
+        LoopbackBoltBlackhole(remote,port)
+
+
+def test_bolt_blackhole_listens_only_on_local_loopback():
+    from probe_trace_bolt_blackhole_526 import LoopbackBoltBlackhole
+    with LoopbackBoltBlackhole("172.23.0.2",7687) as relay:
+        assert relay.listening.getsockname()[0]=="127.0.0.1"
+        assert relay.local_port>0
+        relay.freeze.set()
+        assert relay.freeze.is_set()
+        assert relay.forwarded==[0,0]
