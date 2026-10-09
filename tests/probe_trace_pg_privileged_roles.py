@@ -111,6 +111,10 @@ def _worker(ip,password,epoch,ref,start,physical,results):
             result=db.execute(
                 "SELECT * FROM assistx_trace_fence_research.admit(%s,%s,%s)",
                 (epoch,uuid.uuid4().hex,ref)).fetchone()
+            # Admission must commit BEFORE the worker starts its physical
+            # read. Holding the metadata row lock across a long graph query
+            # would serially block unrelated worker admission.
+            db.commit()
             results.put({"ref":ref,"accepted":result[0],"occupancy":result[1],
                          "reason":result[2]})
             if not result[0]:
