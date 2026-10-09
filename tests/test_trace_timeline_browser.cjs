@@ -17,6 +17,7 @@ const events=Array.from({length:1001},(_,i)=>({
 events.reverse(); // descending event IDs for the equal-timestamp fixture
 const origin='https://trace-ui-fixture.invalid';
 async function fixture(width) {
+ const timelineEvents=events.slice();
  const browser=await chromium.launch({headless:true,
   executablePath:process.env.ASSISTX_TRACE_TEST_CHROMIUM || chromium.executablePath(),
   args:['--no-sandbox','--disable-dev-shm-usage']});
@@ -43,8 +44,8 @@ async function fixture(width) {
      assert.equal(u.searchParams.get('limit'),'80');
      const offset=u.searchParams.get('cursor')?Number(u.searchParams.get('cursor').replace('cursor-','')):0;
      assert.ok(Number.isInteger(offset)&&offset>=0&&offset<=1001);
-     const page=events.slice(offset,offset+80).map(({payload_json,...e})=>e);
-     const has_more=offset+80<events.length;
+     const page=timelineEvents.slice(offset,offset+80).map(({payload_json,...e})=>e);
+     const has_more=offset+80<timelineEvents.length;
      return r.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
        schema:'trace-event-page-v1',correlation_id:'huge-synthetic-trace',
        metadata_only:true,source_snapshot_immutable:false,historical_retention_proven:false,
@@ -55,7 +56,7 @@ async function fixture(width) {
    if(key==='/api/traces/huge-synthetic-trace/payload-preview'){
      assert.equal(r.request().method(),'POST');
      const id=JSON.parse(r.request().postData()).event_id;
-     const e=events.find(e=>e.event_id===id);
+     const e=timelineEvents.find(e=>e.event_id===id);
      assert.ok(e);
      return r.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
        schema:'trace-payload-preview-v1',correlation_id:'huge-synthetic-trace',
@@ -65,7 +66,7 @@ async function fixture(width) {
    }
    return r.fulfill({status:404,body:'Synthetic fixture unsupported route'});
  });
- return {browser,page,requests};
+ return {browser,page,requests,prependEvents(rows){ timelineEvents.unshift(...rows); }};
 }
 for(const width of [375,768,1440]){
  test('synthetic Chromium '+width+'px: progressive long timeline and keyboard type search',async()=>{
@@ -118,5 +119,33 @@ test('axe WCAG 2.1 A/AA mobile audit: bounded timeline and read-only evidence',a
   const axe=require('@axe-core/playwright').default;
   const result=await new axe({page:f.page}).withTags(['wcag2a','wcag2aa','wcag21a','wcag21aa']).analyze();
   assert.deepEqual(result.violations.map(x=>x.id),[]);
+ }finally{await f.browser.close()}
+});
+
+test('authenticated same-origin live follow is opt-in and metadata-only',async()=>{
+ const f=await fixture(768);
+ try{
+  await f.page.goto(origin+'/traces?trace=huge-synthetic-trace');
+  await f.page.locator('.trace-event').first().waitFor();
+  const initialTimeline=f.requests.filter(x=>x.path.endsWith('/timeline')).length;
+  await f.page.waitForTimeout(120);
+  assert.equal(f.requests.filter(x=>x.path.endsWith('/timeline')).length,initialTimeline,
+    'no live polling before explicit operator opt-in');
+
+  f.prependEvents([{
+    event_id:'live-browser-new',event_type:'task.progress',source:'fixture-live',
+    task_id:'task-live',ts_ms:1791500003000,payload_json:'{"CANARY":"NO_PASSIVE_PREVIEW"}'
+  }]);
+  await f.page.locator('#trace-live').click();
+  await f.page.waitForFunction(()=>document.querySelector('#trace-detail').textContent.includes('task.progress'));
+  assert.equal(await f.page.locator('#trace-live').getAttribute('aria-pressed'),'true');
+  assert.match(await f.page.locator('#trace-detail').textContent(),/Live follow on/);
+  assert.equal(f.requests.filter(x=>x.path.endsWith('/payload-preview')).length,0);
+  assert.ok(!f.requests.some(x=>x.path==='/api/traces/huge-synthetic-trace'));
+  const afterLive=f.requests.length;
+  await f.page.locator('#trace-live').click();
+  assert.equal(await f.page.locator('#trace-live').getAttribute('aria-pressed'),'false');
+  await f.page.waitForTimeout(120);
+  assert.equal(f.requests.length,afterLive,'pausing cancels background live reads');
  }finally{await f.browser.close()}
 });
