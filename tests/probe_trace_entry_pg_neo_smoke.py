@@ -23,8 +23,12 @@ from trace_graph_entry_research_journal import SqliteResearchJournal
 
 
 def docker(*args, input=None, timeout=20, check=True):
-    return subprocess.run(["docker", *args], input=input, capture_output=True,
-                          text=True, check=check, timeout=timeout)
+    try:
+        return subprocess.run(["docker", *args], input=input, capture_output=True,
+                              text=True, check=check, timeout=timeout)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        # Exception command arguments may include ephemeral passwords.
+        raise RuntimeError("DISPOSABLE_DOCKER_COMMAND_FAILED") from None
 
 
 def run():
@@ -116,9 +120,9 @@ def run():
                            "|| '|' || reason FROM "
                            "assistx_trace_fence_research.admit('"
                            + epoch + "','" + token + "','" + operation_id + "');")
-                if out.startswith("f|"):
+                if out.startswith("false|"):
                     return None
-                if not out.startswith("t|"):
+                if not out.startswith("true|"):
                     raise RuntimeError("UNEXPECTED_PG_ADMISSION")
                 # Term is an explicit FIXTURE PLACEHOLDER, not issued by PG.
                 return Grant(operation_id, token, 1, epoch)
