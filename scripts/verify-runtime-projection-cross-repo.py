@@ -135,6 +135,36 @@ def main() -> int:
     )
     assert parsed.generation == 9
     assert parsed.providers[0].runtime_instance_id == "llama.cpp:x1-370:1234"
+    # Verify actual consumer schema retention, not merely signature acceptance.
+    assert parsed.providers[0].worker_mode == "auxiliary"
+    assert parsed.providers[0].routing_roles == {"summarization"}
+    assert parsed.providers[0].allow_code_execution is False
+    parsed_model = parsed.providers[0].models[0]
+    assert parsed_model.alias == "local/qwen-primary"
+    assert parsed_model.routing_roles == {"summarization"}
+    assert parsed_model.worker_mode == "auxiliary"
+    assert parsed_model.allow_code_execution is False
+    assert parsed_model.task_family_scores["summarization"]["utility_score"] == 0.8
+    assert _converted["providers"][0]["models"][0]["task_family_scores"][
+        "summarization"
+    ]["utility_score"] == 0.8
+
+    # A score, role, or permission mutation must fail at the real consumer.
+    for mutate in (
+        lambda p: p["providers"][0].update({"routing_roles": ["full_agent"]}),
+        lambda p: p["providers"][0].update({"allow_code_execution": True}),
+        lambda p: p["providers"][0]["models"][0]["task_family_scores"][
+            "summarization"
+        ].update({"utility_score": 1.0}),
+    ):
+        altered = json.loads(json.dumps(document))
+        mutate(altered)
+        try:
+            consumer.validate_projection_document(altered, now_ms=1_010_000)
+        except ValueError as exc:
+            assert "checksum mismatch" in str(exc)
+        else:
+            raise AssertionError("tampered signed routing metadata was accepted")
 
     tampered = json.loads(json.dumps(document))
     tampered["providers"][0]["parallel_slots"] = 2
@@ -173,6 +203,8 @@ def main() -> int:
             "auto_router_projection_accepted": True,
             "capacity_tamper_rejected": True,
             "expiry_tamper_rejected": True,
+            "routing_metadata_retained": True,
+            "routing_metadata_tamper_rejected": True,
         },
     }
     output = Path(args.matrix_out)
