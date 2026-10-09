@@ -19,3 +19,9 @@ Requesting a single execution's receipt should never pull the entire OpenCode se
 
 ## Remaining gates
 Independent node replay, current-head GitHub Actions CI, code-owner review and a staged authenticated trace UI compatibility/negative test pass before enabling any export automation. Do not merge this v1 patch with the unreviewed generated v2 experiment as a single PR; reconcile separately.
+
+## Cross-node offline validation — 2026-10-09 EDT
+- Copied the commit onto a separate xwing Git worktree, without changing live OpenCode or the Vitrial Space Bunny executor.
+- Initial xwing test run: **40 pass, 4 fail** — the unrelated legacy `free_subagent_supervisor` tests read xwing's live OpenCode catalog instead of their supplied fixture. This is an existing fixture-discovery limitation outside the narrow trace-exporter change.
+- Re-ran with `OPENCODE_BIN=/definitely/nonexistent-opencode` so the supervisor uses the bundled offline fixtures, and with a **process-local** `GIT_CONFIG_COUNT` override to disable test-repository commit signing (no global Git config change): **44/44 PASS** on xwing. The same suite was **44/44 PASS** on x1-370 without those workarounds.
+- Trace-specific tests do not need the model-catalog override. Fixing global fixture precedence remains separately scoped; this PR changes only trace export behavior and tests.
