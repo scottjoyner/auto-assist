@@ -49,7 +49,8 @@ def main():
         if x.action=="observe":
             result={"status":"observed","host":host,**owner.snapshot()}
         else:
-            result={"host":host,**asdict(owner.admit(x.query_ref))}
+            result={"host":host,"epoch":x.epoch,"graph_id":x.graph_id,
+                    **asdict(owner.admit(x.query_ref))}
         print(json.dumps(result,sort_keys=True))
     except Exception as e:
         # Avoid leaking file paths/secrets/data in error output.
