@@ -101,7 +101,9 @@ def _validate_canonical_path(value: str, *, field: str) -> str:
         home = ""
     # $HOME is never a legitimate repository or worktree root. Treating it as
     # one is the specific silent-fallback failure this contract exists to stop.
-    if home and os.path.normpath(text) == home:
+    # An operator's HOME may itself be a symlink to a mounted volume;
+    # compare resolved identities, not a syntactic spelling of the path.
+    if home and os.path.realpath(text) == home:
         raise ValueError(f"{field} must not be the home directory")
     return text
 
