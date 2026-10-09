@@ -87,6 +87,8 @@ def _validate_canonical_path(value: str, *, field: str) -> str:
         raise ValueError(f"{field} must not contain control characters")
     if text.startswith("~"):
         raise ValueError(f"{field} must be a resolved realpath, not a ~ path")
+    if text == "/":
+        raise ValueError(f"{field} must identify a repository or worktree, not filesystem root")
     if not text.startswith("/"):
         raise ValueError(f"{field} must be an absolute path, not {text!r}")
     if ".." in PurePosixPath(text).parts:
