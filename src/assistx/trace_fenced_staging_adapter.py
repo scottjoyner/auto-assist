@@ -12,6 +12,7 @@ returning results. Physical cancellation remains an acceptance gate.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from threading import Event, Thread
 from typing import Any, Callable, TypeVar
 
@@ -71,6 +72,13 @@ def run_staging_fenced_read(
         raise FencedReadUnavailable("cancellation-aware query contract missing")
     if not isinstance(parameters, StagingParameters):
         raise FencedReadUnavailable("invalid staging timing policy")
+    # Validate types and nonfinite values *before* acquiring any shared lease.
+    # Dataclass annotations do not enforce runtime types.
+    for value in (parameters.heartbeat_seconds, parameters.watchdog_join_seconds):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
+            raise FencedReadUnavailable("invalid staging timing value")
+    if parameters.heartbeat_seconds < 0 or not 0 < parameters.watchdog_join_seconds <= 10:
+        raise FencedReadUnavailable("invalid staging timing bounds")
     try:
         decision = acquire(redis_client, principal, receiver_key, policy)
     except AdmissionUnavailable as exc:
@@ -124,7 +132,16 @@ def run_staging_fenced_read(
             watchdog_finished.set()
 
     thread = Thread(target=heartbeat, name="synthetic-trace-fence-renewal", daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except Exception as exc:
+        # The slot was already acquired. Never orphan it merely because local
+        # watchdog resources are exhausted; no query has started yet.
+        try:
+            release(redis_client, lease)
+        except Exception:
+            pass  # Always fail closed; lease TTL remains the backstop.
+        raise FencedReadUnavailable("lease watchdog could not start") from exc
     result: T | None = None
     query_error: Exception | None = None
     try:
