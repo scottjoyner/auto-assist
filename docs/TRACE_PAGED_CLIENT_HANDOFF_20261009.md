@@ -27,6 +27,10 @@ This draft stacks on #177, which stacks on progressive timeline #175. Neither ch
 - The CI `unit` job for PR #179 and parent #177 reports the identical inherited summary **77 failed / 800 passed / 59 deselected**, spanning 15 non-trace test modules; both also fail recovery-canary. These failures remain release blockers rather than being waived by the targeted passing tests. Avoid hiding the suite behind a narrowed CI filter.
 - Latest native local checks (isolated x1-370 worktree): **135 Python**, **30 Node**, and **4 synthetic Chromium/axe** checks passing. No authenticated production browser, physical multiworker graph concurrency, remote query termination, Redis failover, or role policy attestation.
 
+## Independent synthetic CI signal (added October 9)
+
+The exact-head `.github/workflows/trace-paged-contract.yml` executes the focused Python trace suite, native Node UI tests, and Chromium 375/768/1440px + axe checks with pinned Playwright dependencies. It uses a synthetic isolated origin, no production credentials or service endpoints, and *never* sets activation flags. This check is **additive only**: full `.github/workflows/ci.yml` still runs and its inherited failures cannot be waived by a passing trace-focused signal.
+
 ## Required gates before release
 - Confirm exact-head GitHub CI and rerun the local suites if implementation code changes; complete a manual screen-reader/keyboard review. Native Node, focused Python and synthetic Chromium suites are now passing locally.
 - Browser-authenticate and verify request-level network traces: one metadata page at selection, exactly one additional page per explicit click, **zero** legacy full-detail calls, zero payload requests prior to deliberate disclosure, and a single preview request per intentional expansion.
