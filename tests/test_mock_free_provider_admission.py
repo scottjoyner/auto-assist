@@ -43,7 +43,7 @@ class SyntheticLedger:
 
     def trip(self, provider, status_code, *, retry_after, now):
         self.trip_codes.append((provider, status_code, retry_after))
-        return {"tripped": True}
+        return {"tripped": True, "provider": self.group}
 
 
 class SyntheticIdentity:
@@ -662,3 +662,36 @@ def test_normal_deny_does_not_quarantine_legitimate_quota_retry(setting):
     next_mock = m.RecordingMockProvider()
     assert gate.dispatch(request, next_mock).admitted
     assert next_mock.calls == 1
+
+
+
+@pytest.mark.parametrize("ack", [
+    {"tripped": False, "provider": "shared-upstream"},
+    {"tripped": "true", "provider": "shared-upstream"},
+    {"tripped": True, "provider": "wrong-physical-quota-group"},
+    {"tripped": True},
+    None,
+])
+def test_unverified_shared_trip_acknowledgment_quarantines_group(setting, ack):
+    gate, ledger, _, route, request = setting
+    def untrusted(*args, **kwargs):
+        return ack
+    ledger.trip = untrusted
+    result = gate.dispatch(request, m.RecordingMockProvider(status_code=429))
+    assert result.reason == "mock_upstream_denied"
+    assert route.upstream_group in gate.quarantined_groups
+    next_mock = m.RecordingMockProvider()
+    assert gate.dispatch(request, next_mock).reason == "unqualified_or_quarantined"
+    assert next_mock.calls == 0
+
+
+@pytest.mark.parametrize("code", [200, 408, 500, "429"])
+def test_unknown_or_unclassified_http_failure_quarantines_without_retry(setting, code):
+    gate, ledger, _, route, request = setting
+    result = gate.dispatch(request, m.RecordingMockProvider(status_code=code))
+    assert result.reason == "mock_upstream_denied"
+    assert ledger.trip_codes == []
+    assert route.upstream_group in gate.quarantined_groups
+    next_mock = m.RecordingMockProvider()
+    assert gate.dispatch(request, next_mock).reason == "unqualified_or_quarantined"
+    assert next_mock.calls == 0
