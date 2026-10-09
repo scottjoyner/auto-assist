@@ -165,6 +165,12 @@ def inventory(spool: Path) -> dict:
                 raise ValueError("too many sidecars")
             if not ent.is_file(follow_symlinks=False):
                 raise ValueError("nonregular manifest entry")
+            basename = ent.name.removesuffix(".manifest.json")
+            archive = root / basename
+            ready = root / (basename + ".ready")
+            if (archive.is_symlink() or ready.is_symlink()
+                    or not archive.is_file() or not ready.is_file()):
+                raise ValueError("incomplete local sealed archive triplet")
             size = ent.stat(follow_symlinks=False).st_size
             if size > MAX_SIDECAR_BYTES or consumed + size > MAX_TOTAL_BYTES:
                 raise ValueError("bounded manifest scan exceeded limit")
