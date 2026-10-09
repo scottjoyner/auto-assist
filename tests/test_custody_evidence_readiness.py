@@ -158,10 +158,26 @@ class CustodyContract(unittest.TestCase):
         self.assertIn("selected_history_snapshot_clean_not_comprehensive", o["reasons"])
         self.assertFalse(o["production_authorized"])
 
+    def test_tree_object_cannot_pose_as_historical_commit(self):
+        self.track("docs/synthetic.txt")
+        subprocess.run([
+            "git", "-C", str(self.repo), "-c", "user.name=Research Fixture",
+            "-c", "user.email=research@invalid.example", "commit",
+            "-q", "-m", "synthetic tree type test",
+        ], check=True)
+        tree_sha = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD^{tree}"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        o=mod.inspect(self.repo, historical_revision=tree_sha)
+        self.assertFalse(o["pinned_historical_revision_checked"])
+        self.assertIn("historical_revision_not_a_commit", o["reasons"])
+        self.assertFalse(o["production_authorized"])
+
     def test_unavailable_historical_git_tree_holds(self):
         o=mod.inspect(self.repo, historical_revision="f" * 40)
         self.assertEqual(o["status"],"HOLD")
-        self.assertIn("historical_index_unavailable", o["reasons"])
+        self.assertIn("historical_revision_not_a_commit", o["reasons"])
 
     def test_git_unavailable_fails_closed(self):
         o=mod.inspect(self.repo/"not-a-repo")
