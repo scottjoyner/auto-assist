@@ -199,6 +199,45 @@ class CandidateCollectorTests(unittest.TestCase):
         self.assertEqual(self.fx.manifests(),[])
         self.assertEqual(actual.read_bytes(),data)
 
+    def test_concurrent_append_during_pinned_read_holds(self):
+        from unittest.mock import patch
+        import cursor_window_guard as guard
+        p=self.fx.trace
+        initial=self.fx.fixture_line("RACE1")
+        p.write_bytes(initial)
+        original=guard.os.read
+        observed=[]
+        def append_once(fd,length):
+            if not observed:
+                observed.append(True)
+                with p.open("ab") as writer:
+                    writer.write(self.fx.fixture_line("RACE2"))
+            return original(fd,length)
+        with patch.object(guard.os,"read",append_once):
+            with self.assertRaises(guard.SourceWindowHold):
+                guard.capture_window(p,None)
+        self.assertEqual(len(observed),1)
+
+    def test_concurrent_same_size_rewrite_during_read_holds(self):
+        from unittest.mock import patch
+        import cursor_window_guard as guard
+        p=self.fx.trace
+        first=self.fx.fixture_line("RACE1")
+        second=self.fx.fixture_line("RACE2")
+        self.assertEqual(len(first),len(second))
+        p.write_bytes(first)
+        original=guard.os.read
+        observed=[]
+        def rewrite_once(fd,length):
+            if not observed:
+                observed.append(True)
+                p.write_bytes(second)
+            return original(fd,length)
+        with patch.object(guard.os,"read",rewrite_once):
+            with self.assertRaises(guard.SourceWindowHold):
+                guard.capture_window(p,None)
+        self.assertEqual(len(observed),1)
+
     def test_fsync_failure_after_ready_holds_on_restart(self):
         a=self.fx.fixture_line("FSYNC_FAULT")
         self.fx.trace.write_bytes(a)
