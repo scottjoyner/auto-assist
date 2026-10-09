@@ -431,3 +431,41 @@ def test_no_mock_stream_without_heartbeat_after_first_step():
     with pytest.raises(m.MockLeaseCancelled):
         mock.invoke()
     assert mock.calls == 1
+
+
+def test_post_execution_release_denial_downgrades_success_and_quarantines(setting):
+    gate, ledger, _, route, request = setting
+    def reject_release(*args, **kwargs):
+        return {"released": False, "reason": "synthetic_wrong_owner"}
+    ledger.release = reject_release
+    mock = m.RecordingMockProvider(steps=2)
+    result = gate.dispatch(request, mock)
+    assert not result.admitted and result.reason == "release_unverified"
+    assert result.provider_calls == mock.calls == 2
+    assert route.upstream_group in gate.quarantined_groups
+    after = m.RecordingMockProvider()
+    assert gate.dispatch(request, after).reason == "unqualified_or_quarantined"
+    assert after.calls == 0
+
+
+def test_post_execution_release_partition_downgrades_success_and_quarantines(setting):
+    gate, ledger, _, route, request = setting
+    def partition(*args, **kwargs):
+        raise ConnectionError("synthetic_release_authority_partition")
+    ledger.release = partition
+    mock = m.RecordingMockProvider()
+    result = gate.dispatch(request, mock)
+    assert not result.admitted and result.reason == "release_unavailable"
+    assert result.provider_calls == mock.calls == 1
+    assert route.upstream_group in gate.quarantined_groups
+    assert gate.dispatch(request, m.RecordingMockProvider()).reason == "unqualified_or_quarantined"
+
+
+def test_mock_release_malformed_acknowledgment_fails_closed(setting):
+    gate, ledger, _, route, request = setting
+    ledger.release = lambda *args, **kwargs: {"released": "yes"}
+    mock = m.RecordingMockProvider()
+    result = gate.dispatch(request, mock)
+    assert not result.admitted and result.reason == "release_unverified"
+    assert result.provider_calls == 1
+    assert route.upstream_group in gate.quarantined_groups
