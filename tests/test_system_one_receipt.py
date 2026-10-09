@@ -572,3 +572,48 @@ def test_receipt_identity_mismatch_is_contained_inside_observer_job(
     )
 
     assert neo.recorded == []
+
+
+def test_shadow_observer_persists_only_validated_non_authoritative_receipt(monkeypatch):
+    """No provider/network: a validated fixture receipt may be witnessed only."""
+    monkeypatch.setenv("MY_JEV_POLICY_SHADOW_ENABLED", "true")
+    monkeypatch.setenv("MY_JEV_POLICY_EXPECTED_PROVIDER_ID", "my-jev")
+    monkeypatch.setenv("MY_JEV_POLICY_EXPECTED_MODEL_ID", "checkpoint-fixture")
+    monkeypatch.setenv("MY_JEV_POLICY_EXPECTED_MODEL_ARTIFACT_SHA256", "4" * 64)
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"contract": "assistx-agent-policy-v1",
+                    "decision_receipt": receipt()}
+
+    class _Neo:
+        def __init__(self):
+            self.saved = []
+        def record_intent_policy_shadow(self, intent_id, evidence):
+            self.saved.append((intent_id, evidence))
+
+    monkeypatch.setattr(my_jev_policy.requests, "post", lambda *a, **k: _Response())
+    neo = _Neo()
+    assert io._record_my_jev_policy_shadow(
+        neo, {"id": "intent-good-receipt", "text": "hello"}
+    ) is True
+    assert len(neo.saved) == 1
+    assert neo.saved[0][0] == "intent-good-receipt"
+    proof = neo.saved[0][1]["receipt_evidence"]
+    assert proof["authoritative_behavior_changed"] is False
+    assert all(value is False for value in proof["authority"].values())
+
+
+def test_shadow_observer_never_queries_when_disabled(monkeypatch):
+    monkeypatch.delenv("MY_JEV_POLICY_SHADOW_ENABLED", raising=False)
+    monkeypatch.setattr(my_jev_policy.requests, "post",
+                        lambda *a, **k: pytest.fail("disabled shadow queried provider"))
+    class _Neo:
+        def record_intent_policy_shadow(self, *_):
+            pytest.fail("disabled shadow persisted evidence")
+    assert io._record_my_jev_policy_shadow(
+        _Neo(), {"id": "intent-disabled", "text": "hello"}
+    ) is False
