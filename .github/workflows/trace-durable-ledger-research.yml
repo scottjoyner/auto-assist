@@ -9,6 +9,12 @@ on:
       - "tests/test_trace_receiver_evidence_research.py"
       - "src/assistx/trace_receiver_replay_custody_research.py"
       - "tests/test_trace_receiver_replay_custody_research.py"
+      - "src/assistx/trace_two_host_authority_research.py"
+      - "tests/probe_trace_two_host_owner_cli.py"
+      - "tests/probe_trace_two_host_client.py"
+      - "tests/test_trace_two_host_authority_research.py"
+      - "tests/test_trace_two_host_client_research.py"
+      - "docs/TRACE_TWO_HOST_AUTHORITY_20261009.md"
       - "docs/TRACE_RECEIVER_REPLAY_CUSTODY_20261009.md"
       - "src/assistx/trace_receiver_evidence_research.py"
       - "tests/probe_trace_bolt_blackhole_526.py"
@@ -53,7 +59,9 @@ jobs:
             tests/test_trace_durable_ledger_research.py \
             tests/test_trace_physical_probe_guardrails.py \
             tests/test_trace_receiver_evidence_research.py \
-            tests/test_trace_receiver_replay_custody_research.py
+            tests/test_trace_receiver_replay_custody_research.py \
+            tests/test_trace_two_host_authority_research.py \
+            tests/test_trace_two_host_client_research.py
 
       # Never wire this test contract to runtime routes or production admission.
       # A green test includes two intentional counterexamples: copied ledgers
