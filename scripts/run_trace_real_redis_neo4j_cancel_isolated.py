@@ -102,12 +102,14 @@ def main(argv: list[str] | None = None) -> int:
 
     network_id = None
     owned: dict[str, str] = {}
+    stage = "network_create"
     try:
         network_id = cmd("docker", "network", "create", "--internal", NETWORK)
         if not CID.fullmatch(network_id):
             raise RuntimeError("invalid network ID")
         network_exact(network_id, set())
 
+        stage = "redis_start"
         owned[REDIS] = cmd(
             "docker", "run", "--rm", "-d", "--pull", "never", "--name", REDIS,
             "--network", NETWORK, "--read-only",
@@ -121,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         if not CID.fullmatch(owned[REDIS]):
             raise RuntimeError("unidentified disposable Redis")
 
+        stage = "neo_start"
         owned[NEO] = cmd(
             "docker", "run", "--rm", "-d", "--pull", "never", "--name", NEO,
             "--network", NETWORK, "--cpus", "0.75", "--memory", "2g",
@@ -136,11 +139,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         if not CID.fullmatch(owned[NEO]):
             raise RuntimeError("unidentified disposable Neo4j")
+        stage = "initial_topology"
         container_exact(owned[REDIS], REDIS, ids["redis"], NETWORK)
         container_exact(owned[NEO], NEO, ids["neo"], NETWORK)
         network_exact(network_id, {REDIS, NEO})
 
         # Wait for the *disposable* scratch server's offline/online admin.
+        stage = "neo_ready"
         ready = False
         for _ in range(75):
             p = subprocess.run(
@@ -155,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
         if not ready:
             raise RuntimeError("disposable Neo4j scratch system not ready")
         # This is confined to the new tmpfs-backed synthetic database only.
+        stage = "neo_scratch_admin"
         for statement in (
             "CALL dbms.setConfigValue('server.databases.read_only', '')",
             "START DATABASE neo4j WAIT",
@@ -167,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
             if p.returncode:
                 raise RuntimeError("synthetic Neo4j scratch database not online")
 
+        stage = "client_start"
         owned[CLIENT] = cmd(
             "docker", "run", "--rm", "-d", "--pull", "never", "--name", CLIENT,
             "--network", NETWORK, "--read-only",
@@ -183,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if not CID.fullmatch(owned[CLIENT]):
             raise RuntimeError("unidentified disposable client")
+        stage = "client_transaction_observation"
         network_exact(network_id, {REDIS, NEO, CLIENT})
         seen = False
         for _ in range(70):
@@ -199,8 +207,10 @@ def main(argv: list[str] | None = None) -> int:
         # Before restarting, reassert exact container+network custody.
         container_exact(owned[REDIS], REDIS, ids["redis"], NETWORK)
         network_exact(network_id, {REDIS, NEO, CLIENT})
+        stage = "redis_restart"
         cmd("docker", "restart", "-t", "1", owned[REDIS], timeout=18)
 
+        stage = "client_cancellation_witness"
         p = subprocess.run(
             ["docker", "wait", owned[CLIENT]],
             capture_output=True, text=True, timeout=18, check=False,
@@ -216,6 +226,8 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, RuntimeError, ValueError, KeyError,
             subprocess.SubprocessError) as exc:
         print("DISPOSABLE_COMBINED_CANARY_FAIL_OR_INCONCLUSIVE")
+        print("FAILED_STAGE", stage)
+        print("FAILED_CLASS", type(exc).__name__)
         return 1
     finally:
         for name in (CLIENT, NEO, REDIS):
