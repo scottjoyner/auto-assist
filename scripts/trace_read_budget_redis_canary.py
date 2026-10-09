@@ -44,14 +44,16 @@ def validate_preflight(approved: bool, expected_image_id: str | None,
         raise RuntimeError("cached Redis image ID does not match the approved image")
 
 
-def docker_command(name: str) -> list[str]:
+def docker_command(name: str, image_id: str) -> list[str]:
+    if not isinstance(image_id, str) or not IMAGE_PATTERN.fullmatch(image_id):
+        raise RuntimeError("Docker canary requires a pinned image SHA256")
     return [
         "docker", "run", "--rm", "--pull", "never", "--network", "none",
         "--ipc", "none", "--cpus", "0.25", "--memory", "96m",
         "--pids-limit", "64", "--read-only", "--tmpfs",
         "/tmp:rw,nosuid,noexec,size=16m", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges", "--user", "1000:1000",
-        "--name", name, "--entrypoint", "/bin/sh", "-i", IMAGE, "-s",
+        "--name", name, "--entrypoint", "/bin/sh", "-i", image_id, "-s",
     ]
 
 
@@ -103,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         lua = extract_script()
         name = "assistx-rc1-redis-canary-" + uuid.uuid4().hex[:12]
         try:
-            run = subprocess.run(docker_command(name), input=test_shell(lua),
+            run = subprocess.run(docker_command(name, cached), input=test_shell(lua),
                                  capture_output=True, text=True, timeout=70)
             print(run.stdout.strip())
             if run.stderr:
