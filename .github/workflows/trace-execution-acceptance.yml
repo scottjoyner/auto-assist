@@ -47,11 +47,13 @@ jobs:
             src/assistx/trace_external_witness.py \
             src/assistx/trace_producer_manifest.py \
             src/assistx/trace_asymmetric_custody.py \
+            src/assistx/trace_receiver_ledger.py \
             scripts/trace_claim_lease_staging_canary.py \
             scripts/trace_claim_live_platform_smoke.py \
             scripts/trace_smb_server_snapshot.py \
             scripts/trace_smb_client_snapshot.py \
             scripts/trace_smb_custody_report.py \
+            scripts/trace_receiver_ledger_crossnode_canary.py \
             scripts/trace_node_readonly_inventory.py \
             scripts/trace_node_offline_negative.py \
             scripts/trace_node_readonly_chain.py \
@@ -82,6 +84,7 @@ jobs:
             src/assistx/trace_external_witness.py \
             src/assistx/trace_producer_manifest.py \
             src/assistx/trace_asymmetric_custody.py \
+            src/assistx/trace_receiver_ledger.py \
             tests/test_trace_claim_lease.py \
             tests/test_trace_claim_live_executor.py \
             tests/test_trace_http_redirect.py \
@@ -91,12 +94,14 @@ jobs:
             tests/test_trace_external_witness.py \
             tests/test_trace_producer_manifest.py \
             tests/test_trace_asymmetric_custody.py \
+            tests/test_trace_receiver_ledger.py \
             tests/test_trace_execution_adapter.py \
             scripts/trace_claim_lease_staging_canary.py \
             scripts/trace_claim_live_platform_smoke.py \
             scripts/trace_smb_server_snapshot.py \
             scripts/trace_smb_client_snapshot.py \
             scripts/trace_smb_custody_report.py \
+            scripts/trace_receiver_ledger_crossnode_canary.py \
             scripts/trace_acceptance_report.py \
             tests/test_trace_acceptance_report.py
       - name: Fail-closed trace and recovery regression suite
@@ -121,6 +126,7 @@ jobs:
             tests/test_trace_external_witness.py \
             tests/test_trace_producer_manifest.py \
             tests/test_trace_asymmetric_custody.py \
+            tests/test_trace_receiver_ledger.py \
             tests/test_trace_claim_lease.py \
             tests/test_trace_shadow_grant.py \
             tests/test_trace_execution_shadow_backup.py \
