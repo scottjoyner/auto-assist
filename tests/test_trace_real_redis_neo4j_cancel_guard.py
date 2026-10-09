@@ -65,6 +65,12 @@ def test_real_run_guard_disallows_production_endpoints():
     assert "NEO4J_PASSWORD" not in source + client
     assert "BASIC_AUTH_PASS" not in source + client
     assert "Tailscale-User-Login" not in source + client
+    for role in ("neo", "redis", "client"):
+        assert 'ids["' + role + '"]' in source
+    # Local tag checks alone are insufficient: Docker must use the pinned
+    # immutable ID itself for each temporary server and client.
+    assert 'IMAGES["redis"], "redis-server"' not in source
+    assert '"--entrypoint", "python", IMAGES["client"]' not in source
 
 
 def test_rejects_external_network_metadata(monkeypatch):
