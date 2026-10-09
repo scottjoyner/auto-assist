@@ -345,3 +345,36 @@ def test_non_contiguous_sequence_detected_before_receipt_acceptance(isolated):
     assert ledger.inspect() is None
     with pytest.raises(ValueError,match="RECEIPT_SEQUENCE_INVALID"):
         _open((p,epoch,key,pub,result.checkpoint))
+
+
+def test_research_custody_refuses_arbitrary_existing_file_location(isolated,tmp_path):
+    p,epoch,key,pub,cp=isolated
+    arbitrary=tmp_path/"receiver-custody-test.sqlite"
+    shutil.copy2(p,arbitrary)
+    with pytest.raises(ValueError,match="ONLY_DISPOSABLE_RESEARCH_CUSTODY_PATH_ALLOWED"):
+        ReceiverReceiptCustody(str(arbitrary),expected_epoch=epoch,
+            operator_pinned_public_key=pub,trusted_checkpoint=cp)
+
+
+def test_research_custody_rejects_nonprivate_directory(isolated):
+    p,epoch,key,pub,cp=isolated
+    directory=Path(p).parent
+    directory.chmod(0o755)
+    try:
+        with pytest.raises(ValueError,match="UNSAFE_CUSTODY_DIRECTORY"):
+            _open(isolated)
+    finally:
+        directory.chmod(0o700)
+
+
+def test_bootstrap_rejects_unsafe_disposable_parent_mode(isolated):
+    p,epoch,key,pub,cp=isolated
+    with tempfile.TemporaryDirectory(prefix="assistx-trace-custody-test-",dir="/tmp") as root:
+        directory=Path(root)
+        directory.chmod(0o777)
+        try:
+            with pytest.raises(ValueError,match="INVALID_CUSTODY_DIRECTORY"):
+                bootstrap_disposable_receiver_custody(
+                    str(directory/"receiver-custody-test.sqlite"),epoch,pub)
+        finally:
+            directory.chmod(0o700)
