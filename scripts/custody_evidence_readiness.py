@@ -31,6 +31,7 @@ STAGES = (
 REF = re.compile(r"^CUSTODY-[A-Z0-9][A-Z0-9-]{5,62}$")
 ALLOWED_STATES = frozenset(("pending", "submitted"))
 MAX_GIT_INDEX = 2_000_000  # bounded filename metadata, never file content
+COMMIT_ID = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _tracked_env_count(repo: Path) -> tuple[int | None, str | None]:
@@ -45,6 +46,39 @@ def _tracked_env_count(repo: Path) -> tuple[int | None, str | None]:
     if p.returncode != 0 or len(p.stdout) > MAX_GIT_INDEX:
         return None, "index_unavailable"
     # Git can quote/path-encode only outside -z; use bytes for exact names.
+    count = 0
+    for item in p.stdout.split(b"\x00"):
+        if not item:
+            continue
+        rel = item.decode("utf-8", "surrogateescape")
+        basename = rel.rsplit("/", 1)[-1]
+        if (basename.startswith(".env")
+                and basename not in TEMPLATES
+                and rel != ARCHIVED):
+            count += 1
+    return count, None
+
+
+def _historical_env_count(repo: Path, commit_sha: str | None) -> tuple[int | None, str | None]:
+    """Inspect filename metadata at one pinned commit; NOT an all-history scan.
+
+    Ref names, revision expressions and arbitrary arguments are deliberately
+    rejected. The caller may pin only an exact full Git commit SHA.
+    """
+    if commit_sha is None:
+        return None, "historical_revision_not_checked"
+    if not isinstance(commit_sha, str) or not COMMIT_ID.fullmatch(commit_sha):
+        return None, "invalid_historical_commit_id"
+    try:
+        p = subprocess.run(
+            ["git", "-C", str(repo), "ls-tree", "-r", "-z",
+             "--name-only", commit_sha],
+            capture_output=True, check=False, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None, "historical_index_unavailable"
+    if p.returncode != 0 or len(p.stdout) > MAX_GIT_INDEX:
+        return None, "historical_index_unavailable"
     count = 0
     for item in p.stdout.split(b"\x00"):
         if not item:
@@ -101,8 +135,10 @@ def _check_envelope(evidence: Any) -> tuple[int, list[str]]:
     return submitted, sorted(set(reasons))
 
 
-def inspect(repo: Path, evidence: Any = None) -> dict[str, Any]:
+def inspect(repo: Path, evidence: Any = None,
+            historical_revision: str | None = None) -> dict[str, Any]:
     tracked_count, index_error = _tracked_env_count(repo)
+    historical_count, historical_error = _historical_env_count(repo, historical_revision)
     submitted, reasons = _check_envelope(evidence)
     if index_error:
         reasons.append(index_error)
@@ -110,6 +146,14 @@ def inspect(repo: Path, evidence: Any = None) -> dict[str, Any]:
         reasons.append("tracked_environment_variants_present")
     else:
         reasons.append("clean_index_does_not_clear_historical_exposure")
+    if historical_error:
+        reasons.append(historical_error)
+    elif historical_count:
+        reasons.append("historical_revision_contains_env_variants")
+    else:
+        # Even a clean selected historical snapshot cannot bound other refs,
+        # public clones, GitHub forks, CI artifacts, or exposed secret values.
+        reasons.append("selected_history_snapshot_clean_not_comprehensive")
     reasons.extend((
         "live_secret_matches_not_checked",
         "independent_rotation_and_history_custody_unverified",
@@ -127,6 +171,8 @@ def inspect(repo: Path, evidence: Any = None) -> dict[str, Any]:
         "owner_checkpoint_claims_submitted": submitted,
         "owner_checkpoint_count_required": len(STAGES),
         "tracked_env_variant_count": tracked_count,
+        "pinned_historical_revision_checked": historical_error is None,
+        "historical_env_variant_count": historical_count,
         "reasons": sorted(set(reasons)),
     }
     result["observation_sha256"] = hashlib.sha256(
@@ -140,6 +186,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path("."))
     parser.add_argument("--checkpoint-json", type=Path)
+    parser.add_argument("--historical-commit", type=str)
     a = parser.parse_args()
     evidence: Any = None
     if a.checkpoint_json is not None:
@@ -149,7 +196,7 @@ def main() -> int:
             evidence = json.loads(a.checkpoint_json.read_text("utf-8"))
         except (OSError, ValueError, UnicodeError):
             evidence = {"invalid": True}  # do not print user-supplied data
-    print(json.dumps(inspect(a.repo, evidence), sort_keys=True))
+    print(json.dumps(inspect(a.repo, evidence, a.historical_commit), sort_keys=True))
     return 1  # HOLD is a deliberate nonzero exit, never greenwashed
 
 
