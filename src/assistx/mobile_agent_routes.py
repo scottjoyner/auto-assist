@@ -403,7 +403,7 @@ def _unavailable_mobile_runtime_catalog() -> dict[str, Any]:
 
 def _current_runtime_projection() -> dict[str, Any]:
     from .api import _neo
-    from .runtime_projection_v2 import build_runtime_projection_v2
+    from .runtime_projection_v2 import build_runtime_projection
 
     try:
         ttl_seconds = int(
@@ -411,7 +411,7 @@ def _current_runtime_projection() -> dict[str, Any]:
         )
     except ValueError:
         ttl_seconds = 900
-    return build_runtime_projection_v2(
+    return build_runtime_projection(
         _neo,
         ttl_seconds=max(30, min(ttl_seconds, 3600)),
     )
@@ -651,12 +651,8 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
             # Return a sanitized zero-runtime catalog so clients can represent
             # the degraded state without ever treating stale runtimes as usable.
             from .runtime_projection import RuntimeProjectionBlocked
-            from .runtime_projection_v2 import RuntimeProjectionSigningError
 
-            if isinstance(
-                exc,
-                (RuntimeProjectionBlocked, RuntimeProjectionSigningError),
-            ):
+            if isinstance(exc, RuntimeProjectionBlocked):
                 return _unavailable_mobile_runtime_catalog()
             raise HTTPException(
                 status_code=503,
