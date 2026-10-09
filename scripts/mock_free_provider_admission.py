@@ -266,9 +266,21 @@ class MockFreeProviderAdmission:
             return MockResult(True, "mock_only_success", provider.calls - before,
                               route.upstream_group, route.proof_ref)
         except Exception:
-            return deny("authority_or_execution_error", route.upstream_group, route.proof_ref)
+            # If a mock step already happened, preserve that observed count.
+            return MockResult(False, "authority_or_execution_error", provider.calls - before,
+                              route.upstream_group, route.proof_ref)
         finally:
+            # Even mock success is not accepted when the final release cannot
+            # be independently acknowledged. Preserve quarantine on a failed
+            # closeout so subsequent aliases cannot spend the same quota.
             try:
-                self.ledger.release(lease_id, request.client, now=self.now)
+                released = self.ledger.release(lease_id, request.client, now=self.now)
+                if (not isinstance(released, dict) or
+                    released.get("released") is not True):
+                    self.quarantined_groups.add(route.upstream_group)
+                    return MockResult(False, "release_unverified", provider.calls - before,
+                                      route.upstream_group, route.proof_ref)
             except Exception:
-                pass
+                self.quarantined_groups.add(route.upstream_group)
+                return MockResult(False, "release_unavailable", provider.calls - before,
+                                  route.upstream_group, route.proof_ref)
