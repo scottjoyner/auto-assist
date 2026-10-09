@@ -185,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
 
         stage = "client_start"
         owned[CLIENT] = cmd(
-            "docker", "run", "--rm", "-d", "--pull", "never", "--name", CLIENT,
+            "docker", "run", "-d", "--pull", "never", "--name", CLIENT,
             "--network", NETWORK, "--read-only",
             "--tmpfs", "/tmp:rw,size=16m,mode=1777",
             "--user", "1000:1000", "--cap-drop", "ALL",
@@ -225,9 +225,16 @@ def main(argv: list[str] | None = None) -> int:
             ["docker", "wait", owned[CLIENT]],
             capture_output=True, text=True, timeout=18, check=False,
         )
-        if p.returncode or p.stdout.strip() != "0":
-            raise RuntimeError("cancellation client failed or timed out")
         log = cmd("docker", "logs", owned[CLIENT])
+        if p.returncode or p.stdout.strip() != "0":
+            for marker in (
+                "REAL_GRAPH_TRANSACTION_VISIBLE", "RESPONSE_DENIED True",
+                "PHYSICAL_QUERY_VISIBLE True", "DRIVER_TASK_CANCELLED True",
+                "SERVER_TRANSACTION_CLEARED True", "CANCEL_CALLBACK_CALLED True",
+            ):
+                print("CLIENT_WITNESS", marker.replace(" ", "_"),
+                      marker in log)
+            raise RuntimeError("cancellation client failed or timed out")
         if "REAL_REDIS_RESTART_NEO4J_CANCEL_SYNTHETIC_PASS" not in log:
             raise RuntimeError("no independent physical cancellation witness")
         print("REAL_REDIS_RESTART_NEO4J_CANCEL_SYNTHETIC_PASS")
@@ -245,6 +252,11 @@ def main(argv: list[str] | None = None) -> int:
             if ident and CID.fullmatch(ident):
                 subprocess.run(["docker", "stop", "-t", "2", ident],
                                capture_output=True, timeout=10, check=False)
+                if name == CLIENT:
+                    # The client is deliberately not --rm so exit evidence
+                    # remains available; delete *only* its immutable ID.
+                    subprocess.run(["docker", "rm", "-f", ident],
+                                   capture_output=True, timeout=10, check=False)
         if network_id and CID.fullmatch(network_id):
             subprocess.run(["docker", "network", "rm", network_id],
                            capture_output=True, timeout=10, check=False)
