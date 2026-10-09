@@ -118,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             "--user", "999:999", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--cpus", "0.25",
             "--memory", "128m", "--pids-limit", "32",
-            IMAGES["redis"], "redis-server", "--save", "", "--appendonly", "no",
+            ids["redis"], "redis-server", "--save", "", "--appendonly", "no",
         )
         if not CID.fullmatch(owned[REDIS]):
             raise RuntimeError("unidentified disposable Redis")
@@ -135,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
             "-e", "NEO4J_ACCEPT_LICENSE_AGREEMENT=yes",
             "-e", "NEO4J_server_memory_heap_initial__size=256m",
             "-e", "NEO4J_server_memory_heap_max__size=512m",
-            IMAGES["neo"],
+            ids["neo"],
         )
         if not CID.fullmatch(owned[NEO]):
             raise RuntimeError("unidentified disposable Neo4j")
@@ -196,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
             "-e", "PYTHONDONTWRITEBYTECODE=1",
             "-e", "ASSISTX_DISPOSABLE_REDIS_NEO_CANARY=synthetic-explicit-opt-in",
             "-e", f"ASSISTX_TEST_TARGET_URI=bolt://{NEO}:7687",
-            "--entrypoint", "python", IMAGES["client"], "/work/canary.py",
+            "--entrypoint", "python", ids["client"], "/work/canary.py",
         )
         if not CID.fullmatch(owned[CLIENT]):
             raise RuntimeError("unidentified disposable client")
