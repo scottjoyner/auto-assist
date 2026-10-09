@@ -30,7 +30,7 @@ python3 -m pytest -q \
   tests/test_trace_receiver_evidence_research.py \
   tests/test_trace_durable_ledger_research.py \
   tests/test_trace_physical_probe_guardrails.py
-# 90 passed
+# 91 passed
 ```
 
 - Local recording survives construction of a new custody instance and the same receipt is refused.
@@ -39,7 +39,7 @@ python3 -m pytest -q \
 - Token replay with a new nonce and newly signed message denied; server transaction reuse with another token denied conservatively.
 - Missing DB and swapped inode fail closed, without recreating a file. Corrupted epoch/schema refuses recording.
 - Integration negative verifies a completely separate local physical admission ledger still has **occupancy=1**, returns `full`, and remains untouched **after** the trusted receipt was recorded.
-- **Explicit passing split-brain counterexample:** two independent copies of an empty SQLite custody DB each record the same valid receipt; both return accepted. **Explicit passing rollback counterexample:** restoring a snapshot from before recording the nonce allows that nonce to be recorded again. These demonstrate that a local SQLite store cannot establish fleet-wide replay resistance.
+- **Explicit passing signed-false-evidence counterexample:** a dishonest holder of the pinned signing key can sign invented Neo4j termination assertions and the local custody store will record their bytes; this is NOT remote-termination truth and must never trigger slot release.\n- **Explicit passing split-brain counterexample:** two independent copies of an empty SQLite custody DB each record the same valid receipt; both return accepted. **Explicit passing rollback counterexample:** restoring a snapshot from before recording the nonce allows that nonce to be recorded again. These demonstrate that a local SQLite store cannot establish fleet-wide replay resistance.
 
 ## What remains hard NO-GO
 
