@@ -106,3 +106,22 @@ def test_no_release_api_exposed():
     assert not hasattr(witness.Witness,"release")
     assert not hasattr(witness.Witness,"terminate")
     assert not hasattr(witness.Witness,"rearm")
+
+
+def test_rewinding_witness_journal_reissues_sequence_one_negative_control():
+    """Expected failure: independent third-host SQLite is still rollbackable."""
+    tmp,path,epoch,graph=make()
+    try:
+        checkpoint=Path(tmp.name)/"empty.snapshot"
+        shutil.copyfile(path,checkpoint)
+        first=witness.Witness(path,epoch,graph).request("synthetic-before-rollback")
+        assert first["status"]=="admitted" and first["sequence"]==1
+        inode=Path(path).stat().st_ino
+        # Replacing CONTENT in place defeats simple inode checks.
+        shutil.copyfile(checkpoint,path)
+        assert Path(path).stat().st_ino==inode
+        second=witness.Witness(path,epoch,graph).request("synthetic-after-rollback")
+        assert second["status"]=="admitted" and second["sequence"]==1
+        assert first["token"]!=second["token"]
+        assert witness.Witness(path,epoch,graph).status()["active"]==1
+    finally:tmp.cleanup()
