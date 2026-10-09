@@ -188,6 +188,10 @@ def app_with_fixture(monkeypatch, enable):
             raise HTTPException(status_code=401,detail="Authentication required")
         return "fixture"
     monkeypatch.setattr(swarm_routes,"_injected_auth_dependency",injected)
+    monkeypatch.setattr(swarm_routes,"_trace_metadata_authorizer",
+        lambda principal, credentials: basic_preview_permitted(
+            principal, credentials, configured_user="fixture",
+            configured_password="pw", allowed_users="fixture"))
     monkeypatch.setattr(swarm_routes,"_trace_preview_authorizer",
         lambda principal, credentials: basic_preview_permitted(
             principal, credentials, configured_user="fixture",
@@ -288,5 +292,27 @@ def test_preview_forged_identity_header_without_basic_denied_before_graph(monkey
             or (_ for _ in ()).throw(HTTPException(status_code=401)))
     response = client.post("/api/traces/cid-one/payload-preview",
         headers={"X-Synthetic-Proxy-Identity":"fixture"}, json={"event_id":"evt-0001"})
+    assert response.status_code == 403
+    assert store == []
+
+
+def test_metadata_forged_header_and_broken_policy_denied_before_graph(monkeypatch):
+    client, store = app_with_fixture(monkeypatch, True)
+    monkeypatch.setattr(swarm_routes, "_injected_auth_dependency",
+        lambda request, credentials: request.headers.get("X-Synthetic-Proxy-Identity")
+            or (_ for _ in ()).throw(HTTPException(status_code=401)))
+    response=client.get("/api/traces/cid-one/timeline",
+        headers={"X-Synthetic-Proxy-Identity":"fixture"})
+    assert response.status_code == 403
+    assert response.headers.get("cache-control") == "no-store, private"
+    assert store == []
+    monkeypatch.setattr(swarm_routes, "_trace_metadata_authorizer", None)
+    response=client.get("/api/traces/cid-one/timeline",
+        auth=("fixture","pw"), headers={"X-Synthetic-Proxy-Identity":"fixture"})
+    assert response.status_code == 503
+    assert store == []
+    monkeypatch.setattr(swarm_routes, "_trace_metadata_authorizer", lambda *_: False)
+    response=client.get("/api/traces/cid-one/timeline",
+        auth=("fixture","pw"), headers={"X-Synthetic-Proxy-Identity":"fixture"})
     assert response.status_code == 403
     assert store == []
