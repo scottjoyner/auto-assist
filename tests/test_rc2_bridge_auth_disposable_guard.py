@@ -95,5 +95,7 @@ def test_peer_has_deny_401_and_valid_200_witnesses():
     assert '"wrong_basic":401' in code
     assert '"valid_basic":200' in code
     assert '"traces_forged":401' in code
+    assert '"trace_index_forged":401' in code
+    assert '"trace_detail_forged":401' in code
     assert '"dashboard_api_forged":401' in code
     assert 'observed["forged"] == 200' in code
