@@ -82,8 +82,12 @@ def test_existing_header_mode_unchanged_until_opt_in(
     assert api._auth_user_from_credentials(_request(), None) == "forged-identity"
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    ["/fleet-dashboard", "/traces", "/api/fleet/dashboard"],
+)
 def test_strict_header_denial_precedes_graph_backend(
-    synthetic_auth: None, monkeypatch: pytest.MonkeyPatch,
+    synthetic_auth: None, monkeypatch: pytest.MonkeyPatch, endpoint: str,
 ) -> None:
     def forbidden_neo():
         pytest.fail("unauthenticated request reached Neo4j")
@@ -93,7 +97,7 @@ def test_strict_header_denial_precedes_graph_backend(
     client = TestClient(api.app, raise_server_exceptions=True)
     try:
         resp = client.get(
-            "/api/fleet/dashboard",
+            endpoint,
             headers={"X-Synthetic-Proxy-Identity": "forged-identity"},
         )
     finally:
