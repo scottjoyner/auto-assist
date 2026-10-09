@@ -96,7 +96,7 @@ def test_binding_rejects_home_directory_and_filesystem_root():
     with pytest.raises(ValueError):
         _binding(worktree_realpath=os.path.expanduser("~"))
     with pytest.raises(ValueError):
-        _binding(repository_realpath="/")
+        _binding(repo_realpath="/")
 
 
 def test_binding_rejects_short_or_non_hex_head():
@@ -180,7 +180,7 @@ def test_dirty_worktree_rejected_when_clean_is_required():
 
 
 def test_dirty_worktree_allowed_when_expected():
-    binding = _binding(dirty_expectation=DirtyStateExpectation.ANY)
+    binding = _binding(expected_dirty=DirtyStateExpectation.ANY)
     assert verify_repository_source(binding, _observed(dirty=True)).state is (
         SourceBindingState.MATCH
     )
@@ -368,6 +368,8 @@ def test_build_binding_refuses_mirror_as_worktree(fleet_repo):
             repository="auto-assist",
             worktree_path=fleet_repo["mirror"],
             base_repository_path=fleet_repo["main"],
+            task_id="task-1",
+            work_id="attempt-1",
         )
 
 
