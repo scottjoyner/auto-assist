@@ -202,6 +202,7 @@
   // Never infer a trace-wide total or use a full-detail/context hydration request.
   function contextFromLoadedPages(events) {
     var fields = {};
+    var truncated = [];
     Object.keys(contextFields).forEach(function (field) {
       var counts = new Map();
       events.forEach(function (event) {
@@ -211,11 +212,12 @@
           counts.set(value, (counts.get(value) || 0) + 1);
         }
       });
+      if (counts.size > 30) truncated.push(field);
       fields[field] = Array.from(counts).slice(0, 30).map(function (pair) {
         return { value: pair[0], events: pair[1], provenance: "trace_event_property" };
       });
     });
-    return { schema: "trace-context-v1", fields: fields, truncated: [],
+    return { schema: "trace-context-v1", fields: fields, truncated: truncated,
       loaded_pages_only: true };
   }
   function validPage(page, cid, preceding, seenCursors) {
@@ -257,7 +259,7 @@
       var preceding = currentTrace && currentTrace._newestFirst ? currentTrace._newestFirst : [];
       if (!validPage(page, cid, preceding, timelineSeenCursors)) throw new Error("INVALID_PAGE");
       if (cursor) timelineSeenCursors.add(cursor);
-      var loaded = preceding.concat(page.events);
+      var loaded = preceding.concat(page.events).slice(-TIMELINE_RETAIN_MAX);
       timelineCursor = page.next_cursor;
       timelineHasMore = page.has_more;
       timelineLimit = loaded.length;
@@ -287,6 +289,7 @@
   }
   var currentTrace = null;
   var TIMELINE_BATCH = 80;
+  var TIMELINE_RETAIN_MAX = 800; // Sliding metadata window; refresh returns to newest.
   var timelineLimit = TIMELINE_BATCH;
   var timelineTypeQuery = "";
   var activeContextFilter = null;
@@ -349,7 +352,7 @@
     var cid = String(trace.correlation_id || state.selected || "");
     var head = '<div class="trace-detail-summary"><span class="trace-eyebrow">Correlation ID</span>' +
       '<span class="trace-id">' + esc(cid) + '</span>' +
-      '<div class="trace-detail-stats"><span>State · ' + esc(trace.current_state || "Unknown") + '</span>' +
+      '<div class="trace-detail-stats"><span>Index outcome · ' + esc(trace.current_state || "Unknown") + '</span>' +
       '<span>' + events.length + ' loaded events' + (timelineHasMore ? ' · earlier pages available' : '') +
       '</span><span>Earliest loaded · ' + esc(when(first)) + '</span></div></div>';
     var visible = events.map(function (e, i) { return { event: e, index: i }; })
@@ -381,7 +384,8 @@
       '</div><p>Matches event-type names only, never payloads. Not an all-history query.</p></div>' +
       '<p class="trace-window-status" role="status" aria-live="polite">Showing latest ' +
       windowed.length + ' of ' + visible.length + ' matching loaded events' +
-      (timelineHasMore ? '; additional older pages may exist.' : '.') + '</p>' +
+      (timelineHasMore ? '; additional older pages may exist.' : '.') +
+      ' Up to 800 retained client-side; refresh returns to newest.</p>' +
       (timelineLoading ? '<p role="status">Loading one bounded earlier page…</p>' : '') +
       (timelineError ? '<p class="trace-empty" role="alert">' + esc(timelineError) + '</p>' : '') +
       (hasEarlier && !timelineLoading ? '<button type="button" class="trace-show-earlier">' +
