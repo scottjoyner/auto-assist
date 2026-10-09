@@ -91,7 +91,36 @@ def run() -> dict:
         if query.returncode != 0 or "1" not in query.stdout:
             raise RuntimeError("GATEWAY_CYPHER_QUERY_FAILED: " +
                                query.stderr[-180:].replace("\n", " "))
+        # Separately demonstrate Neo4j's server-observed metadata, not a
+        # worker-supplied Cypher comment. Host harness is privileged and must
+        # never be confused with a sandboxed production worker.
+        from neo4j import GraphDatabase
+        from trace_graph_entry_research import BoundAttempt, Grant
+        from trace_graph_entry_metadata import gateway_metadata, observed_exact
+        attempt = BoundAttempt("fixture-op-" + ident, "fixture-attempt-" + ident,
+                               Grant("fixture-reservation-" + ident,
+                                     "never-send-this-token-to-neo4j",
+                                     1, "fixture-epoch-" + ident))
+        metadata = gateway_metadata(attempt, "fixture_read")
+        with GraphDatabase.driver(f"bolt://{neo_ip}:7687", auth=None,
+                                  connection_timeout=3) as client:
+            with client.session(database="neo4j") as executing:
+                with executing.begin_transaction(metadata=metadata, timeout=12) as tx:
+                    tx.run("RETURN 1 AS observed").consume()
+                    with client.session(database="system") as observer:
+                        rows = [dict(row) for row in observer.run(
+                            "SHOW TRANSACTIONS YIELD transactionId, database, metaData "
+                            "RETURN transactionId, database, metaData"
+                        )]
+                    exact = observed_exact(rows, metadata)
+                    if not exact:
+                        raise RuntimeError("SERVER_GATEWAY_METADATA_BINDING_MISSING")
+                    if observed_exact(rows, dict(
+                            metadata, assistx_attempt_id="forged-attempt")):
+                        raise RuntimeError("FORGED_GATEWAY_ATTEMPT_ACCEPTED")
         result.update({
+            "server_observed_gateway_metadata": True,
+            "host_harness_can_access_private_neo4j": True,
             "gateway_network_bolt_reachable": True,
             "worker_network_literal_ip_bolt_denied": True,
             "gateway_actual_neo4j_read": True,
