@@ -120,8 +120,10 @@ def reconcile(operation: Operation, receipts: Iterable[ReceiverReceipt]) -> Deci
 
     accepted = [r for r in unique if r.status == "applied"]
     aborted = [r for r in unique if r.status in ("aborted", "rejected-stale") and r.terminal]
-    if any(r.boundary_term > r.term for r in accepted):
-        return deny(Classification.STALE_APPLIED, "effect-accepted-after-fence-advanced")
+    if any(r.boundary_term != r.term for r in accepted):
+        # Fencing must match atomically at the receiver, both for stale
+        # permits and for a forged future term presented before promotion.
+        return deny(Classification.STALE_APPLIED, "effect-accepted-with-noncurrent-term")
     if len(accepted) > 1:
         return deny(Classification.CONFLICT, "multiple-distinct-application-receipts")
     if accepted and aborted:
