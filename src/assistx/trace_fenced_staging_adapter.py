@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import isfinite
+import re
 from threading import Event, Thread
 from typing import Any, Callable, TypeVar
 
@@ -25,6 +26,28 @@ from .trace_index_fenced_research import (
 )
 
 T = TypeVar("T")
+_REDIS_RUN_ID = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _pin_matches_redis(redis_client: Any, expected_run_id: str) -> bool:
+    """Read-only Redis boot-identity check; mismatches and outages always deny.
+
+    A pin is not proof that no prior physical queries survived a Redis restart.
+    Only an external independently verified quiescence receipt can establish
+    an authorized new pin. This module cannot mint such a receipt.
+    """
+    if not isinstance(expected_run_id, str) or not _REDIS_RUN_ID.fullmatch(expected_run_id):
+        return False
+    try:
+        state = redis_client.info(section="server")
+        return (
+            isinstance(state, dict)
+            and type(state.get("run_id")) is str
+            and state["run_id"] == expected_run_id
+        )
+    except Exception:
+        return False
+
 
 
 class FencedReadUnavailable(RuntimeError):
@@ -56,6 +79,7 @@ def run_staging_fenced_read(
     request_cancel: Callable[[], None],
     policy: Policy = Policy(),
     parameters: StagingParameters = StagingParameters(),
+    redis_run_id_pin: str | None = None,
 ) -> T:
     """Execute one *cooperative* read under exact-owned rate/concurrency lease.
 
@@ -68,6 +92,8 @@ def run_staging_fenced_read(
     release. If the lease cannot be confirmed at release time, never return
     even a successful query response. Redis errors never authorize output.
     """
+    if redis_run_id_pin is not None and not _pin_matches_redis(redis_client, redis_run_id_pin):
+        raise FencedReadUnavailable("Redis boot identity not externally pinned")
     if not callable(query) or not callable(request_cancel):
         raise FencedReadUnavailable("cancellation-aware query contract missing")
     if not isinstance(parameters, StagingParameters):
@@ -89,6 +115,14 @@ def run_staging_fenced_read(
     if lease is None:
         raise FencedReadUnavailable("admitted request missing owned lease")
     interval = parameters.heartbeat_seconds or min(3.0, lease.lease_seconds / 3)
+    # A Redis restart between boot check and Lua admission must not launch
+    # a query. Best-effort exact-nonce release on refusal, never acknowledge.
+    if redis_run_id_pin is not None and not _pin_matches_redis(redis_client, redis_run_id_pin):
+        try:
+            release(redis_client, lease)
+        except Exception:
+            pass
+        raise FencedReadUnavailable("Redis boot identity changed during admission")
     if not 0 < interval < lease.lease_seconds / 2:
         # Always release the already acquired slot on invalid caller timing.
         try:
@@ -120,6 +154,10 @@ def run_staging_fenced_read(
         try:
             while not stopped.wait(interval):
                 try:
+                    if redis_run_id_pin is not None and not _pin_matches_redis(redis_client, redis_run_id_pin):
+                        failures.append("Redis boot identity changed during renewal")
+                        trigger_cancel()
+                        return
                     if not renew(redis_client, lease):
                         failures.append("renewal rejected")
                         trigger_cancel()
@@ -157,6 +195,11 @@ def run_staging_fenced_read(
         if not watchdog_finished.is_set() or thread.is_alive():
             failures.append("renewal worker did not stop")
             trigger_cancel()
+        # A crash/restart before query completion must never yield data, even
+        # if the new Redis instance accepts an irrelevant release command.
+        if redis_run_id_pin is not None and not _pin_matches_redis(redis_client, redis_run_id_pin):
+            failures.append("Redis boot identity changed before output")
+            trigger_cancel()
         try:
             confirmed_release = release(redis_client, lease)
             if not confirmed_release:
@@ -164,6 +207,9 @@ def run_staging_fenced_read(
                 trigger_cancel()
         except Exception:
             failures.append("lease release unavailable")
+            trigger_cancel()
+        if redis_run_id_pin is not None and not _pin_matches_redis(redis_client, redis_run_id_pin):
+            failures.append("Redis boot identity changed during cleanup")
             trigger_cancel()
 
     if cancelled.is_set() or failures:
