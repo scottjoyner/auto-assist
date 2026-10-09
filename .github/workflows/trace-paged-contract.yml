@@ -1,0 +1,72 @@
+name: trace-paged-contract (synthetic only)
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/trace-paged-contract.yml"
+      - "src/assistx/api.py"
+      - "src/assistx/swarm_routes.py"
+      - "src/assistx/trace_detail_pages.py"
+      - "src/assistx/trace_preview_access.py"
+      - "static/js/traces.js"
+      - "docs/TRACE_PAGED_CLIENT_HANDOFF_20261009.md"
+      - "tests/test_trace_*.py"
+      - "tests/test_trace_*.cjs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trace-paged-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-owned-trace-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact PR head (not synthetic merge)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Python test dependencies
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Install pinned synthetic browser test dependencies
+        run: |
+          npm install --no-save --package-lock=false --ignore-scripts \
+            playwright@1.64.0 @axe-core/playwright@4.13.0
+          npx playwright install --with-deps chromium
+
+      - name: Focused metadata and privacy backend checks (no live graph)
+        run: |
+          python -m pytest -q \
+            tests/test_trace_detail_pages.py \
+            tests/test_trace_context.py \
+            tests/test_trace_outcome_filter.py \
+            tests/test_trace_task_evidence.py \
+            tests/test_trace_attestation.py
+
+      - name: Native trace UI regression contract
+        run: node --test tests/test_trace_investigation_ui.cjs
+
+      - name: Synthetic Chromium 375 768 1440 and mobile axe
+        run: node --test tests/test_trace_timeline_browser.cjs
+
+      # This does not replace .github/workflows/ci.yml, physical operator
+      # browser acceptance, #148 graph admission, #149 ingress provenance,
+      # privacy entitlement or release approval. Never set activation flags.

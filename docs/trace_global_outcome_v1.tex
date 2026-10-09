@@ -1,0 +1,43 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs,amsmath,hyperref}
+\title{Scope-Correct Global Filtering for a Fleet Trace Investigation Interface}
+\author{AssistX fleet observability research draft}
+\date{October 8, 2026}
+\begin{document}
+\maketitle
+\begin{abstract}
+Paginated observability dashboards may misstate incident prevalence when outcome filtering is performed only on an in-memory page of 50 traces. This study proposes and tests an authenticated, read-only global outcome-filtering extension for an indexed fleet trace graph. The implementation applies the same existence predicates to both a filtered count and a paginated query, gives failed events precedence over completed events, rejects unsupported filters, and bounds query execution time. Offline synthetic and contract tests passed (17 Python and 11 JavaScript). Live 85,000-group query performance and browser accessibility remain unverified.
+\end{abstract}
+\section{Problem and prediction}
+The previous workbench showed an all-history correlation-ID count alongside current-page status counts. An outcome selector limited to the loaded page could not find failures elsewhere in the database. Before implementation we preregistered a global failed/completed/open filter, identical membership rules in count and page queries, parameterized search, a four-second query budget, filtered permalinks, and explicit failure when connected to an older server.
+\section{Predicate method}
+For a trace group $g$ with event-type set $T(g)$, define $F(g)$ as existence of an event type ending in \texttt{.failed}, and $C(g)$ as existence of one ending in \texttt{.completed} or \texttt{.accepted}. On nonempty event groups we use:
+\[
+O(g) = \begin{cases}
+\mathrm{failed}, & F(g),\\
+\mathrm{completed}, & \neg F(g)\wedge C(g),\\
+\mathrm{open}, & \neg F(g)\wedge\neg C(g).
+\end{cases}
+\]
+The implementation uses fixed Cypher \texttt{EXISTS} subqueries for all-history filtering and binds correlation-ID search parameters. The Neo4j manual documents existential subqueries \cite{neo4jexists}. The endpoint projects no payload, arguments or outputs. The filtered global total and page results share the same predicates; the UI still labels the separate current-page failure count honestly.
+\section{Synthetic verification}
+\begin{table}[h]\centering
+\caption{Offline implementation checks; not live-fleet performance acceptance.}
+\begin{tabular}{ll}\toprule
+Measure & Result\\\midrule
+Python query and FastAPI route tests & 17 passed\\
+JavaScript workbench contract tests & 11 passed\\
+Invalid filters and oversized searches & Rejected\\
+Older backend lacking filter acknowledgment & Unavailable, not false zero\\
+Live graph query latency and concurrency & Not measured\\
+Authenticated browser and WCAG audit & Not measured\\
+\bottomrule\end{tabular}\end{table}
+\section{Limitations and next gates}
+A query timeout does not prove the global count is cheap enough for production traffic. Release requires an operator-approved staging query plan, index inspection, large fixture latency, rate-limit review, and real keyboard/mobile browser testing. WCAG 2.2 describes focus and navigation success criteria \cite{wcag22}. Trace-group outcome metadata must not be confused with full-fidelity tool-call retention, whose preservation obligations are distinct \cite{nist92}. This manuscript is an arXiv-style draft, not compiled, submitted or peer reviewed.
+\begin{thebibliography}{9}
+\bibitem{neo4jexists} Neo4j, \emph{EXISTS subqueries}, Cypher Manual. \url{https://neo4j.com/docs/cypher-manual/current/subqueries/existential/}.
+\bibitem{wcag22} W3C, \emph{Web Content Accessibility Guidelines 2.2}. \url{https://www.w3.org/TR/WCAG22/}.
+\bibitem{nist92} K. Kent and M. Souppaya, \emph{Guide to Computer Security Log Management}, NIST SP 800-92 (2006). \url{https://doi.org/10.6028/NIST.SP.800-92}.
+\end{thebibliography}
+\end{document}
