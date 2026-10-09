@@ -96,7 +96,7 @@ function deferred() {
 const ok = value => ({ ok: true, status: 200, json: async () => value });
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-function harness({ initialUrl = "https://assistx.invalid/traces", response } = {}) {
+function harness({ initialUrl = "https://assistx.invalid/traces", response, previewResponse } = {}) {
   const els = Object.fromEntries(IDS.map(id => [id, element(id)]));
   const calls = [];
   const actions = [];
@@ -116,6 +116,7 @@ function harness({ initialUrl = "https://assistx.invalid/traces", response } = {
     if (!url.startsWith("/api/traces")) throw Error("UI attempted non-trace endpoint");
     if (url.endsWith("/payload-preview")) {
       assert.equal(options.method,"POST");
+      if (previewResponse) return Promise.resolve(previewResponse(url,options));
       const cid = decodeURIComponent(url.split("/api/traces/")[1].split("/payload-preview")[0]);
       const eventId = JSON.parse(options.body).event_id;
       const e = (fixtures.get(cid)||[]).find(x => x.event_id === eventId);
@@ -793,4 +794,23 @@ test("equal-timestamp pagination loads one request per 80 events with no legacy 
   assert.equal(ui.calls.length,3);
   assert.ok(ui.calls.at(-1).includes("/timeline?limit=80&cursor="));
   assert.ok(!ui.calls.some(url=>url.endsWith("/api/traces/tie-1001")));
+});
+
+
+test("payload-preview 403 is explicit and keeps authorized metadata investigation", async () => {
+  const ui=harness({
+    response:url=>Promise.resolve(ok(url.includes("/api/traces?")
+      ? {traces:[trace("scope-denied")],total:1,outcome:"all"} : detail("scope-denied",true))),
+    previewResponse:()=>({ok:false,status:403})
+  });
+  await sleep(26);
+  assert.match(ui.els["trace-detail"].innerHTML,/router.started/);
+  const disclosure=ui.els["trace-detail"].details[0];
+  disclosure.toggle(true);
+  await sleep(20);
+  assert.match(disclosure.querySelector("pre").textContent,/Access denied by operator authorization policy/);
+  assert.doesNotMatch(disclosure.querySelector("pre").textContent,/SYNTHETIC_DO_NOT_RENDER/);
+  assert.match(ui.els["trace-detail"].innerHTML,/router.started/);
+  assert.match(ui.window.location.href,/scope-denied/);
+  assert.equal(ui.calls.filter(x=>x.endsWith("/payload-preview")).length,1);
 });
