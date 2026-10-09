@@ -78,7 +78,7 @@ def _check_envelope(evidence: Any) -> tuple[int, list[str]]:
             continue
         state = record.get("state")
         reference = record.get("reference")
-        if state not in ALLOWED_STATES:
+        if not isinstance(state, str) or state not in ALLOWED_STATES:
             reasons.append("invalid_checkpoint_state")
             continue
         if state == "pending":
