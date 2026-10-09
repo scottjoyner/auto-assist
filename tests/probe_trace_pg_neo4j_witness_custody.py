@@ -16,7 +16,7 @@ import re
 import time
 import uuid
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives import serialization
 from neo4j import GraphDatabase
 
@@ -236,6 +236,25 @@ def run():
         proof=up.recv()
         assert proof["result"]=="released",proof
         assert proof["receipt"]["transaction_id"]==txid
+        # Independently check the detached signer response: no private
+        # material leaves the verifier process, and neither the worker nor
+        # coordinator can forge another signed closure.
+        canonical=json.dumps(
+            proof["receipt"],sort_keys=True,separators=(",",":")
+        ).encode()
+        verifier=Ed25519PublicKey.from_public_bytes(bytes.fromhex(public))
+        verifier.verify(bytes.fromhex(proof["signature"]),canonical)
+        tampered=dict(proof["receipt"],token="f"*32)
+        from cryptography.exceptions import InvalidSignature
+        try:
+            verifier.verify(
+                bytes.fromhex(proof["signature"]),
+                json.dumps(tampered,sort_keys=True,separators=(",",":")).encode()
+            )
+        except InvalidSignature:
+            pass
+        else:
+            raise AssertionError("TAMPERED_CLOSURE_SIGNATURE_ACCEPTED")
         assert _capacity(pg_ip,worker_pw,epoch)==0
         up.send({"op":"release","token":token,"ref":"physical-graph-one"})
         assert up.poll(8) and up.recv()["result"]=="unobserved-or-mismatch"
@@ -253,6 +272,8 @@ def run():
             "active_transaction_release_denied":True,
             "independent_observer_released_after_physical_absence":True,
             "signed_witness_evidence_exists":True,
+            "detached_signature_verified_independently":True,
+            "tampered_signature_rejected":True,
             "witness_public_key_prefix":public[:16],
             "verifier_password_never_passed_to_worker":True,
             "production_authority":False,
