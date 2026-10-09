@@ -11,31 +11,34 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_gateway_shell_scripts_parse() -> None:
     scripts = [
         ROOT / "scripts" / "configure-kipnerter-tailnet-serve.sh",
-        ROOT / "scripts" / "deploy-kipnerter-tailnet-gateway.sh",
         ROOT / "scripts" / "verify-kipnerter-tailnet-gateway.sh",
     ]
     subprocess.run(["bash", "-n", *map(str, scripts)], check=True)
 
 
-def test_gateway_env_overlay_is_fail_closed() -> None:
-    text = (ROOT / ".env.kipnerter-gateway.example").read_text(encoding="utf-8")
-    assert "ASSISTX_API_BIND=127.0.0.1" in text
-    assert "TRUSTED_AUTH_HEADER=Tailscale-User-Login" in text
-    assert "KIPNERTER_AGENT_ALLOW_MODEL_OVERRIDE=0" in text
-    assert "KIPNERTER_TAILNET_ALLOWED_LOGINS=" in text
+def _deferred_release_decision() -> str:
+    path = ROOT / "docs/releases/KIPNERTER_TAILNET_GATEWAY_DEFERRED_20261009.md"
+    assert path.is_file(), "missing reviewed explicit gateway release disposition"
+    decision = path.read_text(encoding="utf-8")
+    assert "gateway_deferred=true" in decision
+    assert "production_deployment_authorized=false" in decision
+    assert "automatic_environment_mutation_authorized=false" in decision
+    assert "AssistX trusted-header issue #149" in decision
+    return decision
 
 
-def test_deploy_helper_requires_exact_source_and_caddy_fence() -> None:
-    text = (ROOT / "scripts" / "deploy-kipnerter-tailnet-gateway.sh").read_text(
-        encoding="utf-8"
-    )
-    assert "KIPNERTER_GATEWAY_SOURCE_SHA" in text
-    assert "does not match required backend SHA" in text
-    assert "working tree is dirty" in text
-    assert "KIPNERTER_LEGACY_CADDY_FENCE_CONFIRMED" in text
-    assert "legacy x1-370 Caddy Tailscale-header fence is not confirmed" in text
-    assert "scottjoyner/Sophia#13" in text
-    assert 'KIPNERTER_GATEWAY_SERVE_PORT:-8443' in text
+def test_retired_gateway_env_overlay_is_not_implicitly_restored() -> None:
+    _deferred_release_decision()
+    # A value-bearing legacy env template must not reappear via CI fixes.
+    assert not (ROOT / ".env.kipnerter-gateway.example").exists()
+
+
+def test_retired_gateway_deploy_helper_does_not_bypass_ingress_acceptance() -> None:
+    _deferred_release_decision()
+    # The historical helper recreated the API and rewrote .env before
+    # verifying proxy identity custody. Reintroducing it is a new review.
+    assert not (ROOT / "scripts/deploy-kipnerter-tailnet-gateway.sh").exists()
+
 
 
 def _mobile_paths_from(text: str) -> list[str]:
