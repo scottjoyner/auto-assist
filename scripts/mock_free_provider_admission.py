@@ -72,19 +72,35 @@ class MockHTTPError(Exception):
         self.retry_after = retry_after
 
 
+class MockLeaseCancelled(Exception):
+    """Synthetic cancellation, raised before the first unauthorized step."""
+
+
 class RecordingMockProvider:
-    """Synthetic-only provider. Does not accept URLs, tools, or credentials."""
+    """Synthetic-only provider. Steps are bounded; no URLs or external tools."""
     def __init__(self, *, status_code: int | None = None,
-                 reported_cost: str = "0", retry_after: int = 0):
+                 reported_cost: str = "0", retry_after: int = 0,
+                 steps: int = 1, step_seconds: int = 5):
+        if type(steps) is not int or not 1 <= steps <= 16:
+            raise ValueError("invalid_mock_steps")
+        if type(step_seconds) is not int or not 0 <= step_seconds <= 120:
+            raise ValueError("invalid_mock_step_interval")
         self.calls = 0
         self.status_code = status_code
         self.reported_cost = reported_cost
         self.retry_after = retry_after
+        self.steps = steps
+        self.step_seconds = step_seconds
 
-    def invoke(self) -> str:
-        self.calls += 1
-        if self.status_code is not None:
-            raise MockHTTPError(self.status_code, self.retry_after)
+    def invoke(self, *, heartbeat=None) -> str:
+        # First step is guarded by the immediately preceding lease witness.
+        # Every additional mock step must pass a fresh witnessed renewal.
+        for i in range(self.steps):
+            if i and (heartbeat is None or not heartbeat(i, i * self.step_seconds)):
+                raise MockLeaseCancelled("synthetic_lease_lost")
+            self.calls += 1
+            if self.status_code is not None:
+                raise MockHTTPError(self.status_code, self.retry_after)
         return self.reported_cost
 
 
@@ -95,7 +111,10 @@ class MockFreeProviderAdmission:
     release, and trip. authority is a synthetic witness with:
        authenticate(client, node, credential_ref, account_scope) -> bool
        attest(lease_id, client, node, request_key, upstream_group, epoch) -> bool
-    Host-local self-attestation is NOT a production substitute.
+       qualify(provider, requested, resolved, account, group, proof, prices, epoch) -> bool
+    Qualification must come from a separate trusted fixture/authority, not
+    from the route's self-declared group or cost fields. This is STILL
+    synthetic, not a production trust root.
     """
     def __init__(self, ledger: Any, authority: Any,
                  routes: Mapping[tuple[str, str], RouteQualification],
@@ -106,7 +125,9 @@ class MockFreeProviderAdmission:
         self.epoch = authority_epoch
         self.now = float(now)
         self.quarantined: set[tuple[str, str]] = set()
+        self.quarantined_groups: set[str] = set()
         self.cooldown_until: dict[tuple[str, str], float] = {}
+        self.group_cooldown_until: dict[str, float] = {}
 
     def dispatch(self, request: DispatchRequest, provider: RecordingMockProvider) -> MockResult:
         before = provider.calls if type(provider) is RecordingMockProvider else 0
@@ -120,8 +141,12 @@ class MockFreeProviderAdmission:
         route_key = (request.provider, request.model)
         if route is None or route_key in self.quarantined:
             return deny("unqualified_or_quarantined")
-        if self.cooldown_until.get(route_key, 0) > self.now:
-            return deny("circuit_cooldown")
+        if isinstance(route, RouteQualification):
+            if route.upstream_group in self.quarantined_groups:
+                return deny("unqualified_or_quarantined")
+            if (self.cooldown_until.get(route_key, 0) > self.now
+                or self.group_cooldown_until.get(route.upstream_group, 0) > self.now):
+                return deny("circuit_cooldown")
         if (not isinstance(route, RouteQualification)
             or route.provider != request.provider or route.model != request.model
             or not _exact_model(route.model) or not _exact_model(route.resolved_model)
@@ -131,6 +156,16 @@ class MockFreeProviderAdmission:
             return deny("missing_exact_zero_cost_proof")
         if not request.client or not request.node or not request.credential_ref:
             return deny("missing_principal")
+        try:
+            witnessed = self.authority.qualify(
+                route.provider, route.model, route.resolved_model,
+                route.account_scope, route.upstream_group, route.proof_ref,
+                route.prompt_price, route.completion_price, self.epoch
+            )
+            if witnessed is not True:
+                return deny("unwitnessed_quota_proof")
+        except Exception:
+            return deny("qualification_authority_unavailable")
         try:
             if not self.authority.authenticate(request.client, request.node,
                                                request.credential_ref, route.account_scope):
@@ -173,8 +208,32 @@ class MockFreeProviderAdmission:
                 route.upstream_group, self.epoch
             ):
                 return deny("lease_witness_lost", route.upstream_group, route.proof_ref)
+            def heartbeat(step: int, offset_seconds: int) -> bool:
+                step_now = self.now + offset_seconds
+                try:
+                    renewed = self.ledger.renew(
+                        lease_id, request.client,
+                        ttl_seconds=request.ttl_seconds, now=step_now
+                    )
+                    if (not isinstance(renewed, dict)
+                        or renewed.get("renewed") is not True
+                        or not isinstance(renewed.get("expires_at"), (int, float))
+                        or renewed["expires_at"] <= step_now):
+                        return False
+                    return self.authority.attest(
+                        lease_id, request.client, request.node,
+                        request.request_key, route.upstream_group,
+                        self.epoch
+                    ) is True
+                except Exception:
+                    return False
+
             try:
-                reported_cost = provider.invoke()
+                reported_cost = provider.invoke(heartbeat=heartbeat)
+            except MockLeaseCancelled:
+                self.quarantined_groups.add(route.upstream_group)
+                return MockResult(False, "mock_stream_cancelled", provider.calls - before,
+                                  route.upstream_group, route.proof_ref)
             except MockHTTPError as error:
                 if error.status_code in (401, 402, 403, 429, 503):
                     # Also hold locally if the shared trip endpoint is unavailable.
@@ -184,20 +243,24 @@ class MockFreeProviderAdmission:
                     ) else 0
                     delay = max(safe_retry, 86400 if error.status_code in (401, 402, 403) else 3600)
                     self.cooldown_until[route_key] = self.now + delay
+                    self.group_cooldown_until[route.upstream_group] = max(
+                        self.group_cooldown_until.get(route.upstream_group, 0),
+                        self.now + delay
+                    )
                     try:
                         self.ledger.trip(request.provider, error.status_code,
                                          retry_after=safe_retry, now=self.now)
                     except Exception:
                         # Explicit local backpressure; never blind-retry after partition.
-                        self.quarantined.add(route_key)
+                        self.quarantined_groups.add(route.upstream_group)
                 return MockResult(False, "mock_upstream_denied", provider.calls - before,
                                   route.upstream_group, route.proof_ref)
             except Exception:
-                self.quarantined.add(route_key)
+                self.quarantined_groups.add(route.upstream_group)
                 return MockResult(False, "mock_execution_error", provider.calls - before,
                                   route.upstream_group, route.proof_ref)
             if not _zero(reported_cost):
-                self.quarantined.add((request.provider, request.model))
+                self.quarantined_groups.add(route.upstream_group)
                 return MockResult(False, "nonzero_or_missing_usage_receipt",
                                   provider.calls - before, route.upstream_group, route.proof_ref)
             return MockResult(True, "mock_only_success", provider.calls - before,
