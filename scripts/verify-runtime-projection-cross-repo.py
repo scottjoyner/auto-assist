@@ -93,11 +93,42 @@ def main() -> int:
     producer.legacy.build_runtime_projection = (
         lambda *_args, **_kwargs: dict(legacy_document)
     )
-    document = producer.build_runtime_projection_v2(
+    # The legacy authoritative projection is an isolated deterministic
+    # fixture. Stub only read-only graph evidence indices; the signed v2
+    # producer and actual router verifier still execute end-to-end.
+    producer.node_routing_policy_index = lambda _factory: {
+        "x1-370": {
+            "routing_roles": ["summarization"],
+            "worker_mode": "auxiliary",
+            "allow_agent_runtime": False,
+            "allow_code_execution": False,
+        },
+    }
+    producer.benchmark_projection_index = lambda _factory: {
+        ("x1-370", "local/qwen-primary"): {
+            "task_family_scores": {
+                "summarization": {
+                    "quality_floor_passed": True,
+                    "utility_score": 0.8,
+                }
+            }
+        },
+        ("x1-370", "unadmitted-model"): {
+            "task_family_scores": {"coding": {"utility_score": 1.0}}
+        },
+    }
+    document = producer.build_runtime_projection(
         lambda: None,
         private_key=private_key,
         key_id="cross-repo-test",
     )
+    assert len(document["providers"]) == 1
+    provider = document["providers"][0]
+    assert provider["worker_mode"] == "auxiliary"
+    assert provider["allow_code_execution"] is False
+    assert len(provider["models"]) == 1
+    assert provider["models"][0]["alias"] == "local/qwen-primary"
+    assert "coding" not in provider["models"][0]["task_family_scores"]
     parsed, _converted = consumer.validate_projection_document(
         document,
         now_ms=1_010_000,
