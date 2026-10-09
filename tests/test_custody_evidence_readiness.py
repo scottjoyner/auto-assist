@@ -90,6 +90,15 @@ class CustodyContract(unittest.TestCase):
         self.assertIn("invalid_checkpoint_schema",o["reasons"])
         self.assertNotIn("DO-NOT-PRINT",json.dumps(o))
 
+    def test_malformed_state_types_deny_not_crash(self):
+        for bad in ([], {"state":"submitted"}, 1, True, None):
+            with self.subTest(kind=type(bad).__name__):
+                e=checkpoint()
+                e["checkpoints"]["exposure_containment"]["state"]=bad
+                o=mod.inspect(self.repo,e)
+                self.assertEqual(o["status"],"HOLD")
+                self.assertIn("invalid_checkpoint_state",o["reasons"])
+
     def test_reference_must_be_opaque(self):
         e=checkpoint({"exposure_containment":"submitted"})
         e["checkpoints"]["exposure_containment"]["reference"]="https://example.com/?credential=PRIVATE"
