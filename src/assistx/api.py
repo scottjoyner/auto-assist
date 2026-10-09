@@ -495,6 +495,12 @@ security = HTTPBasic(auto_error=False)
 USER = os.getenv("BASIC_AUTH_USER")
 PASS = os.getenv("BASIC_AUTH_PASS")
 TRUSTED_AUTH_HEADER = os.getenv("TRUSTED_AUTH_HEADER", "").strip()
+# Opt-in migration fence: reject unverified proxy headers until ingress custody is proven.
+# Default remains compatible with existing Tailnet clients; do not enable in prod
+# without verifying a working Basic-auth recovery path and a rollback procedure.
+ASSISTX_REQUIRE_BASIC_AUTH = os.getenv("ASSISTX_REQUIRE_BASIC_AUTH", "0").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 if not USER and not PASS and not TRUSTED_AUTH_HEADER:
     print("WARNING: No auth configured. Set BASIC_AUTH_USER/BASIC_AUTH_PASS or TRUSTED_AUTH_HEADER.")
     print("WARNING: All auth-required endpoints will return 401.")
@@ -772,7 +778,10 @@ def _auth_user_from_credentials(
     request: Request,
     credentials: HTTPBasicCredentials | None,
 ) -> Optional[str]:
-    if TRUSTED_AUTH_HEADER:
+    # The legacy trusted-header path is *not* independently attested. An
+    # operator-approved strict Basic migration can fence off header-only auth
+    # without changing configured proxy headers, identities, or proxy routes.
+    if TRUSTED_AUTH_HEADER and not ASSISTX_REQUIRE_BASIC_AUTH:
         trusted_user = request.headers.get(TRUSTED_AUTH_HEADER)
         if trusted_user:
             return trusted_user
