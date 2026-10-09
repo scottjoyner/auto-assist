@@ -23,15 +23,26 @@ On the **first prototype revision** (before the exact-token binding refinement):
 1. xwing independently checked out the research source; **13/13 local negative/contract checks passed on each physical node**.
 2. On xwing, bootstrap created a **synthetic signing key and journal** under `/tmp/assistx-twohost-witness-test-20261009-live`, and returned a public key to pin on x1. x1 created a separate disposable primary journal under `/tmp/assistx-twohost-authority-test-20261009-witness-live`.
 3. The x1 CLI queried xwing over the existing SSH connection, verified the signed witness grant and issued local primary sequence **1**. The response recorded `witness_signature_verified=true`, `primary_called=true`, and `physical_query_executed=false`. Neither node executed a Neo4j query.
-4. The first CLI version minted a **separate primary token**, which was a linkage gap. The subsequent source change and tests enforce exact shared signed token/nonce/sequence, but **that corrected revision has not yet been physically rerun against both nodes**. Do not conflate local test evidence with physical acceptance.
+4. The first CLI version minted a **separate primary token**, which was a linkage gap. A later physical run on the corrected revision **confirmed exact witness-issued token, nonce and sequence** in the x1 admission response, with `witness_signature_verified=true`, `primary_called=true`, `physical_query_executed=false`. See experiment B below; no source-level result is mislabeled as a Neo4j physical read.
 
-No production keys, credentials, graph, model/provider, NAS, or proxy content was touched. The lab generated only disposable temporary data. The new `/tmp` fixtures are subject to explicit cleanup verification; their presence must not be treated as a live fleet authority.
+## Corrected physical experiment B — exact signed token and independent rollback protection
+
+Both x1-370 and xwing fetched the corrected research branch into detached worktrees. A **new** synthetic epoch `c69b8d22-82d5-457f-b83d-9095fd63761f` was bootstrapped in two separate `/tmp` fixtures (xwing signed witness; x1 primary with an empty snapshot captured *before* admission). The public key was read from the bootstrap result over the established SSH channel and pinned by the x1 research invocation. The private signing key stayed in xwing's disposable 0600 fixture.
+
+- The two-step x1 client called the independent xwing witness, verified its Ed25519 signature, and **recorded the exact same reservation token `71614695cf0b45f5a21fbf7e20134a78`, nonce `79b8c8c1-0cf4-48c3-b013-d781a4cd4057`, and sequence 1** in the x1 primary. The CLI reported `admitted` and `physical_query_executed=false`.
+- A second online attempt with xwing already occupied returned **`full` with `primary_called=false`**. A controlled SSH delivery failure using `ProxyCommand=/bin/false` returned **`witness-unavailable` with `primary_called=false`**. Neither caused local fallback.
+- The x1 primary journal was restored from its original empty snapshot **into the same inode** (0 occupied, sequence 0). Xwing's intact journal independently still reported **1 occupied of 1, sequence 1**. A new *online* two-step attempt returned **`full`, `primary_called=false`**. This experimentally demonstrates that a live independent witness prevents **this specific** x1-only rollback rearm.
+- The unit suite separately demonstrates the bypass when an old *offline signed grant* is replayed against a rolled-back primary and when direct legacy `SingleAuthorityResearch.admit` is invoked without witness. Neither is fixed by this two-step client. Both must remain explicit release blockers.
+
+**Clean-up verified:** before deletion, x1 contained only the named synthetic primary SQLite fixtures and pregrant snapshot; xwing contained only the named synthetic witness databases plus generated 32-byte Ed25519 private/public fixtures. The two exact x1 disposable directories and two exact xwing witness directories were removed; the disposable private signing-key files were removed. No production paths were affected. This is filesystem unlink, not forensic proof of cryptographic secure erasure.
+
+No production keys, credentials, graph, model/provider, NAS, or proxy content was touched. Neither experiment executed a Neo4j query. The research directories are not live fleet authorities.
 
 ## Native test evidence
 
 `PYTHONPATH=src python3 -m pytest -q tests/test_trace_two_host_witness_research.py tests/test_trace_two_host_authority_research.py tests/test_trace_two_host_client_research.py tests/test_trace_receiver_replay_custody_research.py tests/test_trace_receiver_evidence_research.py tests/test_trace_durable_ledger_research.py tests/test_trace_physical_probe_guardrails.py`
 
-**135 passed on x1-370** after the exact-binding refinement and source-owned witness-bypass counterexample. The witness-only suite is **18 passed**. GitHub exact-head research and full repository CI are separate acceptance gates; they run offline tests, **not physical SSH/Neo4j experiments**.
+**135 passed on x1-370** after the exact-binding refinement and source-owned witness-bypass counterexample. The witness-only suite is **18 passed**; the physical xwing source was refreshed and the new bounded physical witness/rollback sequence was executed on both nodes. GitHub exact-head research and full repository CI are separate acceptance gates; they run offline tests, **not physical SSH/Neo4j experiments**.
 
 ## Expected counterexamples — why #148 stays OPEN
 
@@ -43,7 +54,7 @@ No production keys, credentials, graph, model/provider, NAS, or proxy content wa
 
 ## Next engineering and physical acceptance
 
-- Re-run corrected exact-token implementation physically on x1/xwing with distinct, freshly bootstrapped disposable fixtures; test xwing transport refusal, x1 rollback while witness remains full and direct-owner bypass as a negative. Record only bounded synthetic metadata. Clean all remaining temporary state and credentials.
+- The corrected two-host token/nonce run, online SSH denial and x1-only rollback denial are now physically witnessed, with disposable state cleaned. Repeat under actual multiworker physical Neo4j workload after closing the detached signed-grant replay and direct-owner bypass; do not equate this synthetic SSH test with a complete runtime admission check.
 - Remove direct-owner bypass in a separately authorized, server-mediated admission implementation. Make witness confirmation and consumption **online and one-time**, not a replayable detached signature. Neither untrusted workers nor a copied owner may promote itself.
 - Build a **separately protected monotonic epoch/sequence authority** (quorum/consensus or independently owned fencing service) that survives x1/xwing partitions and rollback, with operator-pinned Ed25519 trust, revocation and durable consumed-nonce records.
 - Integrate with **real physical Neo4j query transaction IDs**, independently attested termination, and authenticated multi-host 1/3/5/10 staged traffic; connect to the already-proven research blackhole tests only when the physical negative cases pass.
