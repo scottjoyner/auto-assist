@@ -65,6 +65,37 @@ def _install_fixtures(monkeypatch) -> None:
             }
         ],
     )
+    # Synthetic graph policy fixtures: legacy runtime evidence is separately
+    # stubbed; never query the real graph or silently omit the new projection.
+    monkeypatch.setattr(
+        runtime_projection_v2,
+        "node_routing_policy_index",
+        lambda _factory: {
+            "xwing": {
+                "routing_roles": ["summarization"],
+                "worker_mode": "auxiliary",
+                "allow_agent_runtime": False,
+                "allow_code_execution": False,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        runtime_projection_v2,
+        "benchmark_projection_index",
+        lambda _factory: {
+            ("xwing", "local/qwen"): {
+                "task_family_scores": {
+                    "summarization": {
+                        "quality_floor_passed": True,
+                        "utility_score": 0.7,
+                    }
+                }
+            },
+            ("xwing", "unadmitted-model"): {
+                "task_family_scores": {"coding": {"utility_score": 1.0}}
+            },
+        },
+    )
     monkeypatch.setattr(
         legacy,
         "_capacity_rows",
@@ -106,6 +137,57 @@ def test_projection_v2_is_signed_with_ed25519(monkeypatch):
         _decode(document["signature"]),
         runtime_projection_v2.signing_message(document),
     )
+
+
+def test_projection_benchmark_metadata_is_signed_without_new_admissions(monkeypatch):
+    _install_fixtures(monkeypatch)
+    private_key = Ed25519PrivateKey.generate()
+    document = runtime_projection_v2.build_runtime_projection(
+        lambda: None, private_key=private_key, now_ms=1_000_000,
+    )
+    assert len(document["providers"]) == 1
+    provider = document["providers"][0]
+    assert provider["worker_mode"] == "auxiliary"
+    assert provider["allow_code_execution"] is False
+    assert len(provider["models"]) == 1
+    model = provider["models"][0]
+    assert model["alias"] == "local/qwen"
+    assert model["task_family_scores"]["summarization"]["utility_score"] == 0.7
+    assert "coding" not in model["task_family_scores"]
+    assert document["checksum"] == legacy.projection_checksum(document)
+    private_key.public_key().verify(
+        _decode(document["signature"]),
+        runtime_projection_v2.signing_message(document),
+    )
+    model["task_family_scores"]["summarization"]["utility_score"] = 1.0
+    assert document["checksum"] != legacy.projection_checksum(document)
+
+
+def test_graph_policy_failure_denies_projection_instead_of_dropping_fence(monkeypatch):
+    _install_fixtures(monkeypatch)
+
+    def unavailable(_factory):
+        raise OSError("synthetic offline graph")
+
+    monkeypatch.setattr(runtime_projection_v2, "node_routing_policy_index", unavailable)
+    with pytest.raises(legacy.RuntimeProjectionBlocked, match="evidence unavailable"):
+        runtime_projection_v2.build_runtime_projection(
+            lambda: None, private_key=Ed25519PrivateKey.generate(),
+            now_ms=1_000_000,
+        )
+
+
+def test_missing_policy_defaults_to_observer_only(monkeypatch):
+    _install_fixtures(monkeypatch)
+    monkeypatch.setattr(runtime_projection_v2, "node_routing_policy_index", lambda _: {})
+    document = runtime_projection_v2.build_runtime_projection(
+        lambda: None, private_key=Ed25519PrivateKey.generate(), now_ms=1_000_000,
+    )
+    provider = document["providers"][0]
+    assert provider["worker_mode"] == "observer_only"
+    assert provider["routing_roles"] == []
+    assert provider["allow_agent_runtime"] is False
+    assert provider["allow_code_execution"] is False
 
 
 def test_signature_binds_generation_checksum_timestamps_and_key_id(monkeypatch):
