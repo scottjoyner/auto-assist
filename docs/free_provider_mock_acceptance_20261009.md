@@ -27,7 +27,7 @@ lease witness must be denied. Router aliases are not independent quota proof.
 - 401/402/403/429/503 responses cause shared-circuit reporting and local
   cooldown. Unavailable reporting causes quarantine. Missing or nonzero
   usage receipts quarantine as well. No paid fallback or blind retry.
-- 69/69 offline pytest cases pass on x1-370, asserting zero mock provider
+- 126/126 offline pytest cases pass on x1-370 and xwing, asserting zero mock provider
   invocations before admission on all negative controls. For simulated
   in-flight stream failure, exactly the pre-loss mock steps can execute;
   no later steps execute after lost authority or lease expiry.
@@ -77,4 +77,21 @@ release, xwing reacquired; zero leases and local audit OK. A remote
 copied-state experiment was blocked before execution, so split-brain
 safety is NOT claimed. The mock adapter now refuses success on missing
 or malformed final release receipts and quarantines the quota group,
-bringing isolated tests to 69/69.
+bringing isolated tests to 126/126.
+
+## Strict parsing and uncertain-admission hardening (2026-10-09)
+
+The mock-only adapter now rejects truthy but non-boolean verification,
+authentication, first-witness, grant and renewal values. It validates
+finite lease-expiry timestamps, prevents NaN/Inf or pathological huge integer
+expiries from being accepted as authority, and bounds numeric request
+reservations and identity/request-key lengths. Malformed positive grant
+responses or a dropped authority connection after a possible commit
+quarantine the synthetic shared upstream group; a normal slot/limit denial
+does not quarantine and can be retried after conditions change.
+
+Observed: 126/126 targeted isolated tests PASS independently on x1-370
+and physical xwing; py_compile PASS; no real provider generation or token
+usage. This is an offline simulation and no trusted remote issuer,
+application authentication, independent quota provenance or physical
+stream preemption has been established.
