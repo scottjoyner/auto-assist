@@ -16,8 +16,6 @@ import subprocess
 import time
 import uuid
 
-import psycopg
-from psycopg import sql
 
 CONTAINER = "assistx-trace-privilege-pg-20261009"
 NETWORK = "assistx-trace-privilege-net-20261009"
@@ -59,6 +57,7 @@ def _address():
 
 
 def _dsn(role,password,ip):
+    import psycopg
     # Avoid manually constructing URLs from secret bytes or logging secrets.
     return psycopg.conninfo.make_conninfo(
         host=ip,port=5432,dbname="postgres",user=role,
@@ -68,10 +67,12 @@ def _dsn(role,password,ip):
 
 
 def _open(dsn):
+    import psycopg
     return psycopg.connect(dsn,connect_timeout=3)
 
 
 def bootstrap_once(admin_dsn,worker_password,verifier_password,epoch):
+    from psycopg import sql
     if (not isinstance(epoch,str) or not EPOCH_FORMAT.fullmatch(epoch)
         or not worker_password or not verifier_password):
         raise ValueError("RESEARCH_GENESIS_REQUIRED")
@@ -127,6 +128,7 @@ def _worker(ip,password,epoch,ref,start,physical,results):
 
 
 def _worker_negative(ip,password,epoch):
+    import psycopg
     evidence={}
     dsn=_dsn(WORKER,password,ip)
     for name,statement in [
@@ -150,6 +152,7 @@ def _worker_negative(ip,password,epoch):
 
 
 def run():
+    import psycopg
     ip=_address()
     admin_pw=os.environ["ASSISTX_TRACE_PG_ADMIN_PASSWORD"]
     worker_pw=os.environ["ASSISTX_TRACE_PG_WORKER_PASSWORD"]
