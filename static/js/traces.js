@@ -60,7 +60,8 @@
       headers: preview ? { Accept: "application/json", "Content-Type": "application/json" } : { Accept: "application/json" },
       body: preview ? JSON.stringify({ event_id: options.eventId }) : undefined
     }).then(function (response) {
-      if (response.status === 401 || response.status === 403) throw new Error("AUTH");
+      if (response.status === 401) throw new Error("AUTH");
+      if (response.status === 403) throw new Error("FORBIDDEN");
       if (response.status === 503) throw new Error("PAGING_DISABLED");
       if (!response.ok) throw new Error("HTTP " + response.status);
       return response.json();
@@ -68,6 +69,7 @@
   }
   function errorLabel(err) {
     if (err && err.message === "AUTH") return "Authentication required or expired.";
+    if (err && err.message === "FORBIDDEN") return "Access denied by operator authorization policy.";
     if (err && err.message === "PAGING_DISABLED") {
       return "Bounded trace paging is disabled on this server; legacy unbounded detail is intentionally unavailable.";
     }
