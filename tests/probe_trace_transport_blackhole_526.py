@@ -69,13 +69,13 @@ class _Relay(socketserver.BaseRequestHandler):
                     return
 
 
-def _unbounded_worker(uri, out):
+def _unbounded_worker(uri, out, token):
     # The huge synthetic CPU query is capped by a 20-second server deadline.
     # It runs on the empty disposable graph. No writes or production data.
     query = (
         "UNWIND range(1, 100000) AS n UNWIND range(1, 100000) AS m "
         "WITH n,m WHERE (n*m)%97=7 RETURN count(*) AS count "
-        "/* ASSISTX_DISPOSABLE_PHYSICAL_WITNESS_20261009 */"
+        "/* ASSISTX_DISPOSABLE_PHYSICAL_WITNESS_20261009_" + token + " */"
     )
     try:
         with GraphDatabase.driver(uri, auth=None, connection_timeout=3) as d:
@@ -123,11 +123,12 @@ def run():
             r,w = ctx.Pipe(duplex=False)
             worker = ctx.Process(
                 target=_unbounded_worker,
-                args=(f"bolt://127.0.0.1:{proxy.server_address[1]}",w),
+                args=(f"bolt://127.0.0.1:{proxy.server_address[1]}",w,reservation.token),
             )
             worker.start()
             assert r.poll(12) and r.recv() == "started", "WORKER_QUERY_UNAVAILABLE"
-            parent.send({"kind":"observe"})
+            parent.send({"kind":"observe","token":reservation.token,
+                         "epoch":epoch,"query_ref":"blackhole-remote-query"})
             assert parent.poll(12), "WITNESS_NO_VISIBLE_QUERY"
             txid = parent.recv()["txid"]
             assert txid and re.fullmatch(r"neo4j-transaction-[0-9]+", txid), txid
