@@ -224,7 +224,7 @@ def test_fastapi_route_filters_before_paging_and_requires_auth(monkeypatch):
 
     # Functional test bypasses auth only through FastAPI's explicit
     # dependency override, not by changing app/auth production code.
-    app.dependency_overrides[swarm_routes._default_auth] = lambda: "fixture-user"
+    app.dependency_overrides[swarm_routes._trace_read_auth] = lambda: "fixture-user"
     ok = client.get("/api/traces?outcome=failed&limit=1&offset=1")
     assert ok.status_code == 200, ok.text[:300]
     body = ok.json()
