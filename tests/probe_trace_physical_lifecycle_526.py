@@ -241,6 +241,10 @@ def run():
         assert parent.poll(12)
         txid = parent.recv()["txid"]
         assert txid and txid.startswith("neo4j-transaction-"), "NEVER_OBSERVED_REAL_QUERY"
+        parent.send({"kind":"close", "txid":txid, "token":"f"*32,
+                     "query_ref":"physical-running-query", "epoch":epoch})
+        assert parent.poll(12)
+        assert parent.recv()["status"] == "witness-binding-mismatch"
         parent.send({"kind":"close", "txid":txid, "token":decision.token,
                      "query_ref":"physical-running-query", "epoch":epoch})
         # A still-running query can NEVER mint a closure receipt.
@@ -267,6 +271,7 @@ def run():
             "server_transaction_id": txid,
             "saw_active_running_query": True,
             "premature_witness_denied": True,
+            "wrong_token_receipt_binding_denied": True,
             "worker_sigkill_exit_code": worker.exitcode,
             "capacity_held_after_worker_death": True,
             "independent_observer_saw_two_absent_snapshots": True,
