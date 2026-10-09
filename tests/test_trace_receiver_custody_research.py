@@ -232,11 +232,6 @@ def test_spawned_processes_never_double_consume_same_receipt(isolated):
     assert outcomes.count("recorded_no_release")==1, outcomes
     assert all(x in ("recorded_no_release","checkpoint_mismatch",
                      "startup_fail_closed","already_consumed_or_collision") for x in outcomes)
-    assert _open((p,epoch,key,pub,PinnedCheckpoint(1,
-        ReceiverReceiptCustody(
-            p,expected_epoch=epoch,operator_pinned_public_key=pub,
-            trusted_checkpoint=cp
-        ).checkpoint.head_sha256
-    ))) if False else True  # no attempt to infer next checkpoint
+    # The stale pinned genesis can no longer reopen after a successful write.
     with pytest.raises(ValueError,match="CHECKPOINT_MISMATCH"):
         _open(isolated)
