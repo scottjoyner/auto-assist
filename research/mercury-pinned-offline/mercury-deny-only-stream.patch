@@ -110,10 +110,10 @@ index c531765..108fc68 100644
    // Network blips ARE transient — ECONNRESET (connection dropped mid-read)
 diff --git a/src/bots/research-provider-gate.ts b/src/bots/research-provider-gate.ts
 new file mode 100644
-index 0000000..722f28a
+index 0000000..2e7023c
 --- /dev/null
 +++ b/src/bots/research-provider-gate.ts
-@@ -0,0 +1,233 @@
+@@ -0,0 +1,267 @@
 +/**
 + * OFFLINE RESEARCH SHIM ONLY, pinned to Mercury upstream 1be98293.
 + * There is deliberately no provider import, network client or SDK fallback.
@@ -220,28 +220,62 @@ index 0000000..722f28a
 +    throw new ResearchGateDenied('permit_mismatch');
 +  }
 +
-+  // An unreachable coordinator must not hang admission indefinitely.
-+  let startupTimer: ReturnType<typeof setTimeout> | undefined;
-+  const timeout = new Promise<null>(resolve => {
-+    startupTimer = setTimeout(() => resolve(null), 250);
-+  });
-+  const first = await Promise.race([
-+    authority.renew(permit).catch(() => null), timeout,
-+  ]).finally(() => { if (startupTimer) clearTimeout(startupTimer); });
++  // The lease, witness, and post-witness lease checks must ALL complete
++  // within a bounded window. The earlier mock awaited witness forever and
++  // could launch a stream using a lease already revoked during that wait.
++  // A late promise completion never grants authority after a timeout/abort.
++  const bounded = async <T>(fn: () => Promise<T>, ignoreAbort = false): Promise<T | null> => {
++    if (!ignoreAbort && opts.parentSignal.aborted) return null;
++    let timer: ReturnType<typeof setTimeout> | undefined;
++    let onAbort: () => void = () => {};
++    const abort = new Promise<null>(resolve => {
++      onAbort = () => resolve(null);
++      if (!ignoreAbort) {
++        opts.parentSignal.addEventListener('abort', onAbort, { once: true });
++        if (opts.parentSignal.aborted) resolve(null);
++      }
++    });
++    const timeout = new Promise<null>(resolve => {
++      timer = setTimeout(() => resolve(null), 250);
++    });
++    try {
++      return await Promise.race([
++        Promise.resolve().then(fn).catch(() => null),
++        timeout, abort,
++      ]);
++    } finally {
++      if (timer) clearTimeout(timer);
++      opts.parentSignal.removeEventListener('abort', onAbort);
++    }
++  };
++  const first = await bounded(() => authority.renew(permit));
++  if (opts.parentSignal.aborted) throw new ResearchGateDenied('parent_aborted');
 +  if (!matches(first, opts.expected, permit.leaseId, now)) {
 +    throw new ResearchGateDenied('initial_renewal_denied');
 +  }
-+  const acknowledged = await authority.acknowledge({
++  const acknowledged = await bounded(() => authority.acknowledge({
 +    kind: 'research_fixture_start',
 +    taskId: permit.taskId, leaseId: permit.leaseId,
 +    nodeId: permit.nodeId, upstreamGroupId: permit.upstreamGroupId,
-+  }).catch(() => false);
-+  if (!acknowledged || opts.parentSignal.aborted) {
-+    await authority.release(first).catch(() => {});
-+    throw new ResearchGateDenied('fixture_custody_denied');
++  }));
++  if (!acknowledged || opts.parentSignal.aborted ||
++      !matches(first, opts.expected, permit.leaseId, now)) {
++    await bounded(() => authority.release(first), true);
++    throw new ResearchGateDenied(opts.parentSignal.aborted ?
++      'parent_aborted' : 'fixture_custody_denied');
++  }
++  // Witness acceptance is not a reservation extension. Revalidate with the
++  // coordinator after witnessing, to reject revocation/epoch or expiry
++  // occurring while the witness call was pending.
++  const afterWitness = await bounded(() => authority.renew(first));
++  if (opts.parentSignal.aborted ||
++      !matches(afterWitness, opts.expected, permit.leaseId, now)) {
++    await bounded(() => authority.release(first), true);
++    throw new ResearchGateDenied(opts.parentSignal.aborted ?
++      'parent_aborted' : 'prelaunch_renewal_denied');
 +  }
 +
-+  let current = first;
++  let current = afterWitness;
 +  let stopped = false;
 +  let reason = 'lease_lost';
 +  const controller = new AbortController();
@@ -349,10 +383,10 @@ index 0000000..722f28a
 +}
 diff --git a/test/research-provider-gate.test.ts b/test/research-provider-gate.test.ts
 new file mode 100644
-index 0000000..2ca723f
+index 0000000..d113ebf
 --- /dev/null
 +++ b/test/research-provider-gate.test.ts
-@@ -0,0 +1,265 @@
+@@ -0,0 +1,347 @@
 +import test from 'node:test';
 +import assert from 'node:assert/strict';
 +import { readFileSync } from 'node:fs';
@@ -617,4 +651,86 @@ index 0000000..2ca723f
 +  make.parent.abort();
 +  await denied(make, 'parent_aborted');
 +  assert.equal(make.state.renewals, 0);
++});
++
++
++test('hanging custody witness is bounded and cannot launch stream', async () => {
++  const make = opts();
++  make.authority.acknowledge = async () => new Promise<boolean>(() => {});
++  await assert.rejects(
++    Promise.race([
++      startOfflineResearchRound(make.args),
++      delay(700).then(() => { throw new Error('unbounded_witness_wait'); }),
++    ]),
++    (err: any) => err instanceof ResearchGateDenied &&
++      err.reason === 'fixture_custody_denied',
++  );
++  assert.equal(make.launched(), 0);
++  assert.equal(make.state.released, 1);
++});
++
++test('parent abort while witness is pending stops admission and attempts release', async () => {
++  const make = opts();
++  make.authority.acknowledge = async () => new Promise<boolean>(() => {});
++  const pending = startOfflineResearchRound(make.args);
++  setTimeout(() => make.parent.abort(), 15);
++  await assert.rejects(
++    Promise.race([pending, delay(150).then(() => { throw Error('abort_not_observed'); })]),
++    /parent_aborted/,
++  );
++  assert.equal(make.launched(), 0);
++  assert.equal(make.state.released, 1);
++});
++
++test('revocation caused during custody acknowledgement is rechecked before launch', async () => {
++  const make = opts();
++  make.authority.acknowledge = async () => {
++    make.state.denied = true;
++    return true;
++  };
++  await denied(make, 'prelaunch_renewal_denied');
++  assert.equal(make.state.renewals, 2);
++  assert.equal(make.state.released, 1);
++});
++
++test('post-witness expiry is not extended by a valid but stale receipt', async () => {
++  let fakeNow = Date.now();
++  const make = opts({ clock: () => fakeNow });
++  make.authority.acknowledge = async () => {
++    fakeNow = basic.expiresAt + 1;
++    return true;
++  };
++  await denied(make, 'fixture_custody_denied');
++  assert.equal(make.state.released, 1);
++});
++
++test('post-witness coordinator hang is bounded and denies before fixture', async () => {
++  const make = opts();
++  make.authority.acknowledge = async () => {
++    make.state.hang = true;
++    return true;
++  };
++  await assert.rejects(
++    Promise.race([
++      startOfflineResearchRound(make.args),
++      delay(700).then(() => { throw Error('unbounded_prelaunch_renewal'); }),
++    ]),
++    /prelaunch_renewal_denied/,
++  );
++  assert.equal(make.launched(), 0);
++  assert.equal(make.state.released, 1);
++});
++
++test('hanging release after witness denial cannot freeze admission cleanup', async () => {
++  const make = opts();
++  make.state.witnessDenied = true;
++  make.authority.release = async () => new Promise<void>(() => {});
++  await assert.rejects(
++    Promise.race([
++      startOfflineResearchRound(make.args),
++      delay(700).then(() => { throw Error('unbounded_release_wait'); }),
++    ]),
++    /fixture_custody_denied/,
++  );
++  assert.equal(make.launched(), 0);
 +});
