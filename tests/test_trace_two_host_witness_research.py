@@ -262,3 +262,22 @@ def test_witness_committed_but_primary_unavailable_strands_capacity():
         # A crashed primary cannot force the witness to forget this slot.
         assert w.reserve("synthetic-after-primary-crash")["status"]=="full"
     finally:shutil.rmtree(folder)
+
+
+def test_legacy_research_owner_can_still_bypass_witness_negative_control():
+    # This is a deliberate counterexample, NOT safe by design: importing the
+    # old directly callable single-authority research method does not require
+    # the new witness. A real admission API must remove this bypass and
+    # enforce signed online witness approval at its ONLY entry point.
+    from assistx.trace_two_host_authority_research import (
+        SingleAuthorityResearch, bootstrap_research
+    )
+    with tempfile.TemporaryDirectory(
+        prefix="assistx-twohost-authority-test-",dir="/tmp") as owner_dir:
+        path=str(Path(owner_dir)/"authority-test.sqlite")
+        epoch=str(uuid.uuid4())
+        bootstrap_research(path,epoch=epoch,graph_id=GRAPH,capacity=1)
+        primary=SingleAuthorityResearch(path,pinned_epoch=epoch,
+                                        pinned_graph_id=GRAPH,minimum_sequence=0)
+        assert primary.admit("synthetic-unwitnessed-bypass").status=="admitted"
+        assert primary.snapshot()["active"]==1
