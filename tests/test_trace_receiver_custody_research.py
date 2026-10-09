@@ -297,3 +297,33 @@ def test_same_server_transaction_different_token_denied_conservatively():
             assert result.reason=="duplicate_or_replayed_receipt"
         finally:
             shutil.rmtree(new_root)
+
+
+def test_dishonest_but_trusted_signer_can_record_false_termination_claim():
+    """Negative control: this ledger authenticates a record, not physical truth.
+
+    A signer in possession of the independently pinned key can fabricate the
+    six "not visible" flags without ever contacting Neo4j. This test must
+    keep passing so the custody result cannot be mistaken for graph proof.
+    """
+    with fixture() as (p,epoch,graph,pub,data,sig,expected):
+        trusted_signer=Ed25519PrivateKey.generate()
+        key=trusted_signer.public_key().public_bytes(
+            serialization.Encoding.Raw,serialization.PublicFormat.Raw)
+        root=Path(p).parent.parent/(
+            "assistx-receipt-test-"+uuid.uuid4().hex)
+        root.mkdir(mode=0o700)
+        path=str(root/"receiver-custody.sqlite")
+        try:
+            bootstrap_disposable_custody(path,epoch,graph,key)
+            # The fixture contains invented termination claims with no graph
+            # witness. Validly signing these bytes does not make them factual.
+            fabricated=receiver_sign_only(data,trusted_signer)
+            custody=Custody(path,epoch,graph,key)
+            decision=custody.record_observation_once(data,fabricated,**expected)
+            assert decision.recorded
+            assert custody.count()==1
+            # This must NEVER be translated into automatic admission release.
+            assert not hasattr(custody,"release")
+        finally:
+            shutil.rmtree(root)
