@@ -76,8 +76,9 @@ class LoopbackBoltBlackhole:
                         continue
                     _, writable, _ = select.select([], [dst], [], .10)
                     if writable:
-                        sent += dst.send(packet[sent:])
-                        self.forwarded[direction] += sent > 0
+                        chunk_sent = dst.send(packet[sent:])
+                        sent += chunk_sent
+                        self.forwarded[direction] += chunk_sent
         except (OSError, ValueError):
             pass
         finally:
@@ -87,7 +88,16 @@ class LoopbackBoltBlackhole:
         client = None
         remote = None
         try:
-            client, _ = self.listening.accept()
+            deadline=time.monotonic()+10.0
+            while not self.stop.is_set() and time.monotonic()<deadline:
+                try:
+                    client, _ = self.listening.accept()
+                    break
+                except socket.timeout:
+                    continue
+            if client is None:
+                self.stop.set()
+                return
             remote = socket.create_connection(self.upstream, timeout=3)
             self._sockets = [client, remote]
             self.accepted.set()
