@@ -1,0 +1,67 @@
+{
+  "graph": "fully disposable neo4j 5.26",
+  "hard_physical_fence_proven": false,
+  "network": "isolated internal Docker network, no published ports",
+  "notes": "Cooperative normal-network driver timeout only; stalled transport not simulated",
+  "probes": [
+    {
+      "duration_ms": 365.81,
+      "error": null,
+      "post_timeout_health": "ok",
+      "requested_timeout_seconds": 0.001,
+      "row_count": 1,
+      "rows": [
+        {
+          "total": 124998776
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "duration_ms": 100.32,
+      "error": null,
+      "post_timeout_health": "ok",
+      "requested_timeout_seconds": 0.03,
+      "row_count": 1,
+      "rows": [
+        {
+          "total": 124998776
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "duration_ms": 73.36,
+      "error": null,
+      "post_timeout_health": "ok",
+      "requested_timeout_seconds": 0.2,
+      "row_count": 1,
+      "rows": [
+        {
+          "total": 124998776
+        }
+      ],
+      "status": "ok"
+    }
+  ],
+  "production_access": false,
+  "request_timeout_seconds": [
+    0.001,
+    0.03,
+    0.2
+  ],
+  "schema": "trace-index-deadline-probe.v1",
+  "staging_transaction_check": {
+    "duration_ms": 216.09,
+    "error": null,
+    "row_count": 1,
+    "rows": [
+      {
+        "benchmark_active": 1
+      }
+    ],
+    "status": "ok"
+  },
+  "trace_data_used": false,
+  "version": "5.26.30"
+}

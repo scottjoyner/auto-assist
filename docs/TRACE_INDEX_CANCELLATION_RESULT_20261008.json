@@ -1,0 +1,67 @@
+{
+  "graph": "fully disposable neo4j 5.26",
+  "hard_physical_fence_proven": false,
+  "network": "isolated internal Docker network, no published ports",
+  "notes": "Cooperative normal-network driver timeout only; stalled transport not simulated",
+  "probes": [
+    {
+      "duration_ms": 158.52,
+      "error": {
+        "code": "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration",
+        "message": "{neo4j_code: Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration} {message: The transaction has been terminated. Retry your operation in a new transaction, and you should see a successful result. The transaction has not compl",
+        "type": "ClientError"
+      },
+      "post_timeout_health": "ok",
+      "requested_timeout_seconds": 0.001,
+      "row_count": 0,
+      "rows": [],
+      "status": "error"
+    },
+    {
+      "duration_ms": 568.14,
+      "error": null,
+      "post_timeout_health": "ok",
+      "requested_timeout_seconds": 0.03,
+      "row_count": 1,
+      "rows": [
+        {
+          "count": 1469406
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "duration_ms": 475.55,
+      "error": null,
+      "post_timeout_health": "ok",
+      "requested_timeout_seconds": 0.2,
+      "row_count": 1,
+      "rows": [
+        {
+          "count": 1469406
+        }
+      ],
+      "status": "ok"
+    }
+  ],
+  "production_access": false,
+  "request_timeout_seconds": [
+    0.001,
+    0.03,
+    0.2
+  ],
+  "schema": "trace-index-deadline-probe.v1",
+  "staging_transaction_check": {
+    "duration_ms": 100.91,
+    "error": null,
+    "row_count": 1,
+    "rows": [
+      {
+        "benchmark_active": 0
+      }
+    ],
+    "status": "ok"
+  },
+  "trace_data_used": false,
+  "version": "5.26.30"
+}
