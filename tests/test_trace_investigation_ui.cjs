@@ -751,9 +751,9 @@ test("paged workbench never passively fetches payloads or legacy full detail", a
 });
 
 test("disabled new endpoint fails closed without any legacy GET", async () => {
-  const ui=harness({response:url=>Promise.resolve(url.includes("/timeline?")
-    ? {ok:false,status:503}
-    :ok({traces:[trace("flag-off")],total:1,outcome:"all"}))});
+  const ui=harness({response:url=>Promise.resolve(url.includes("/api/traces?")
+    ? ok({traces:[trace("flag-off")],total:1,outcome:"all"})
+    : {ok:false,status:503})});
   await sleep(25);
   assert.match(ui.els["trace-detail"].innerHTML,/Timeline unavailable/);
   assert.match(ui.els["trace-detail"].innerHTML,/legacy unbounded detail is intentionally unavailable/);
