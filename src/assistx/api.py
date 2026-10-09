@@ -35,6 +35,7 @@ from .loadout_control import LoadoutControlPlane, Neo4jLoadoutStore
 from .capacity_forecast import build_capacity_forecast
 from .allocation_engine import build_allocation_plan
 from .diagnosis_engine import diagnose_incident
+from .dashboard_readonly import derive_dashboard_health
 from .diagnostic_probes import execute_diagnostic_probes
 from .execution_control import ExecutionControlPlane, start_execution_reconciler
 from .improvement_cycle import (
@@ -2714,8 +2715,10 @@ def api_fleet_dashboard(user: str = Depends(auth)):
 
     task_distribution = dict(executor._node_inflight)
     total_inflight = sum(task_distribution.values())
+    dashboard_health = derive_dashboard_health(nodes)
     return {
         "timestamp": _now_ts(),
+        **dashboard_health,
         "source_status": {
             "router_configured": bool(base_url),
             "router_ok": bool(network_map),
