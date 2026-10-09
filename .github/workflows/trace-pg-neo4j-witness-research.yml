@@ -1,0 +1,40 @@
+name: trace-pg-neo4j-witness-research (offline only)
+
+on:
+  pull_request:
+    paths:
+      - "tests/probe_trace_pg_neo4j_witness_custody.py"
+      - "tests/test_trace_pg_neo4j_witness_guards.py"
+      - "docs/TRACE_PG_NEO4J_CUSTODY_RESEARCH_20261009.md"
+      - ".github/workflows/trace-pg-neo4j-witness-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-witness-fail-closed-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Exact PR HEAD checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install normal project test requirements
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Synthetic witness / ambiguous-token / no opt-in denial
+        env:
+          PYTHONPATH: src:tests
+        run: |
+          python -m pytest -q \
+            tests/test_trace_pg_neo4j_witness_guards.py \
+            tests/test_trace_pg_privilege_guards.py \
+            tests/test_trace_physical_probe_guards.py
+      # No hosted physical Neo4j/Postgres or independent credentials.
+      # The physical dual-container experiment is opt-in on a disposable
+      # internal network only. CI passing is not production safety.
