@@ -104,28 +104,62 @@ export async function startOfflineResearchRound<T>(opts: StartOptions<T>): Promi
     throw new ResearchGateDenied('permit_mismatch');
   }
 
-  // An unreachable coordinator must not hang admission indefinitely.
-  let startupTimer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<null>(resolve => {
-    startupTimer = setTimeout(() => resolve(null), 250);
-  });
-  const first = await Promise.race([
-    authority.renew(permit).catch(() => null), timeout,
-  ]).finally(() => { if (startupTimer) clearTimeout(startupTimer); });
+  // The lease, witness, and post-witness lease checks must ALL complete
+  // within a bounded window. The earlier mock awaited witness forever and
+  // could launch a stream using a lease already revoked during that wait.
+  // A late promise completion never grants authority after a timeout/abort.
+  const bounded = async <T>(fn: () => Promise<T>, ignoreAbort = false): Promise<T | null> => {
+    if (!ignoreAbort && opts.parentSignal.aborted) return null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: () => void = () => {};
+    const abort = new Promise<null>(resolve => {
+      onAbort = () => resolve(null);
+      if (!ignoreAbort) {
+        opts.parentSignal.addEventListener('abort', onAbort, { once: true });
+        if (opts.parentSignal.aborted) resolve(null);
+      }
+    });
+    const timeout = new Promise<null>(resolve => {
+      timer = setTimeout(() => resolve(null), 250);
+    });
+    try {
+      return await Promise.race([
+        Promise.resolve().then(fn).catch(() => null),
+        timeout, abort,
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      opts.parentSignal.removeEventListener('abort', onAbort);
+    }
+  };
+  const first = await bounded(() => authority.renew(permit));
+  if (opts.parentSignal.aborted) throw new ResearchGateDenied('parent_aborted');
   if (!matches(first, opts.expected, permit.leaseId, now)) {
     throw new ResearchGateDenied('initial_renewal_denied');
   }
-  const acknowledged = await authority.acknowledge({
+  const acknowledged = await bounded(() => authority.acknowledge({
     kind: 'research_fixture_start',
     taskId: permit.taskId, leaseId: permit.leaseId,
     nodeId: permit.nodeId, upstreamGroupId: permit.upstreamGroupId,
-  }).catch(() => false);
-  if (!acknowledged || opts.parentSignal.aborted) {
-    await authority.release(first).catch(() => {});
-    throw new ResearchGateDenied('fixture_custody_denied');
+  }));
+  if (!acknowledged || opts.parentSignal.aborted ||
+      !matches(first, opts.expected, permit.leaseId, now)) {
+    await bounded(() => authority.release(first), true);
+    throw new ResearchGateDenied(opts.parentSignal.aborted ?
+      'parent_aborted' : 'fixture_custody_denied');
+  }
+  // Witness acceptance is not a reservation extension. Revalidate with the
+  // coordinator after witnessing, to reject revocation/epoch or expiry
+  // occurring while the witness call was pending.
+  const afterWitness = await bounded(() => authority.renew(first));
+  if (opts.parentSignal.aborted ||
+      !matches(afterWitness, opts.expected, permit.leaseId, now)) {
+    await bounded(() => authority.release(first), true);
+    throw new ResearchGateDenied(opts.parentSignal.aborted ?
+      'parent_aborted' : 'prelaunch_renewal_denied');
   }
 
-  let current = first;
+  let current = afterWitness;
   let stopped = false;
   let reason = 'lease_lost';
   const controller = new AbortController();

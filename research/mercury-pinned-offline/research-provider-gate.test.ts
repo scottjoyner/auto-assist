@@ -263,3 +263,85 @@ test('abort before admission stops all mock transport startup', async () => {
   await denied(make, 'parent_aborted');
   assert.equal(make.state.renewals, 0);
 });
+
+
+test('hanging custody witness is bounded and cannot launch stream', async () => {
+  const make = opts();
+  make.authority.acknowledge = async () => new Promise<boolean>(() => {});
+  await assert.rejects(
+    Promise.race([
+      startOfflineResearchRound(make.args),
+      delay(700).then(() => { throw new Error('unbounded_witness_wait'); }),
+    ]),
+    (err: any) => err instanceof ResearchGateDenied &&
+      err.reason === 'fixture_custody_denied',
+  );
+  assert.equal(make.launched(), 0);
+  assert.equal(make.state.released, 1);
+});
+
+test('parent abort while witness is pending stops admission and attempts release', async () => {
+  const make = opts();
+  make.authority.acknowledge = async () => new Promise<boolean>(() => {});
+  const pending = startOfflineResearchRound(make.args);
+  setTimeout(() => make.parent.abort(), 15);
+  await assert.rejects(
+    Promise.race([pending, delay(150).then(() => { throw Error('abort_not_observed'); })]),
+    /parent_aborted/,
+  );
+  assert.equal(make.launched(), 0);
+  assert.equal(make.state.released, 1);
+});
+
+test('revocation caused during custody acknowledgement is rechecked before launch', async () => {
+  const make = opts();
+  make.authority.acknowledge = async () => {
+    make.state.denied = true;
+    return true;
+  };
+  await denied(make, 'prelaunch_renewal_denied');
+  assert.equal(make.state.renewals, 2);
+  assert.equal(make.state.released, 1);
+});
+
+test('post-witness expiry is not extended by a valid but stale receipt', async () => {
+  let fakeNow = Date.now();
+  const make = opts({ clock: () => fakeNow });
+  make.authority.acknowledge = async () => {
+    fakeNow = basic.expiresAt + 1;
+    return true;
+  };
+  await denied(make, 'fixture_custody_denied');
+  assert.equal(make.state.released, 1);
+});
+
+test('post-witness coordinator hang is bounded and denies before fixture', async () => {
+  const make = opts();
+  make.authority.acknowledge = async () => {
+    make.state.hang = true;
+    return true;
+  };
+  await assert.rejects(
+    Promise.race([
+      startOfflineResearchRound(make.args),
+      delay(700).then(() => { throw Error('unbounded_prelaunch_renewal'); }),
+    ]),
+    /prelaunch_renewal_denied/,
+  );
+  assert.equal(make.launched(), 0);
+  assert.equal(make.state.released, 1);
+});
+
+test('hanging release after witness denial cannot freeze admission cleanup', async () => {
+  const make = opts();
+  make.state.witnessDenied = true;
+  make.authority.release = async () => new Promise<void>(() => {});
+  await assert.rejects(
+    Promise.race([
+      startOfflineResearchRound(make.args),
+      delay(700).then(() => { throw Error('unbounded_release_wait'); }),
+    ]),
+    /fixture_custody_denied/,
+  );
+  assert.equal(make.launched(), 0);
+});

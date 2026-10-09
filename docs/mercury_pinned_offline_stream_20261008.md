@@ -101,6 +101,11 @@ fixture, it is **not deployable as production inference**. Real SDK
 instrumentation is a separate future review and needs a new, explicit
 operator decision for live calls.
 
+**October 9 follow-up:** See [synthetic custody timeout and post-witness
+revalidation](mercury_custody_prelaunch_timeout_20261009.md) for a new,
+separate 18-test Node acceptance (plus 69 Python tests). The older 12-test
+observation above is retained as the October 8 baseline.
+
 **Next read-only falsification:** run a clean dependency-enabled build of the
 pinned fork in a network-isolated environment with a fake SDK transport and
 memory-only model, then exercise actual patched BotManager injection and

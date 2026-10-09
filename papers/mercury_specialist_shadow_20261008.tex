@@ -114,4 +114,17 @@ No real upstream token budget, independent WORM witness, physical node
 contention, or accepted model output was measured. Any claim of
 production-safe provider dispatch would exceed the evidence.
 
+\section{Follow-on: bounded custody preflight (9 October 2026)}
+A separate synthetic-only correction addresses the unbounded mock witness
+acknowledgement and the possibility of fixture launch after an earlier
+reservation had been revoked during a slow acknowledgement. A 250-ms
+standalone fixture timeout, parent cancellation, renewed authority check
+after the witness, and bounded best-effort cleanup are evaluated in six new
+native Node cases. The revised 18/18 Node cases and 69/69 Python mock tests
+pass (87 focused checks total, but not 87 end-to-end tests). An admitted
+mock stream is not proof of a valid provider entitlement or accepted model
+output. Authentic revocation, late coordinator responses, actual SDK callbacks,
+and independent custody remain entirely unproven. See the companion
+\texttt{docs/mercury\_custody\_prelaunch\_timeout\_20261009.md}.
+
 \end{document}
