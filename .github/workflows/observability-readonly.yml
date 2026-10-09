@@ -16,6 +16,8 @@ on:
       - 'scripts/run_trace_real_neo4j_cancel_isolated.py'
       - 'scripts/trace_real_redis_neo4j_cancel_client.py'
       - 'scripts/run_trace_real_redis_neo4j_cancel_isolated.py'
+      - 'scripts/trace_real_redis_multiworker_client.py'
+      - 'scripts/run_trace_real_redis_multiworker_isolated.py'
       - 'scripts/trace_read_budget_redis_canary.py'
       - 'scripts/trace_read_api_auth_canary.py'
       - 'scripts/run_trace_api_isolated_canary.py'
@@ -69,6 +71,7 @@ jobs:
             tests/test_trace_redis_boot_fence.py \
             tests/test_trace_redis_boot_disposable_guard.py \
             tests/test_trace_real_redis_neo4j_cancel_guard.py \
+            tests/test_trace_real_redis_multiworker_guard.py \
             tests/test_trace_index_fenced_canary_guard.py \
             tests/test_trace_index_fenced_research.py \
             tests/test_trace_admission_policy_guard.py \
