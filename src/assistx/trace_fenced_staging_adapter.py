@@ -208,6 +208,9 @@ def run_staging_fenced_read(
         except Exception:
             failures.append("lease release unavailable")
             trigger_cancel()
+        if redis_run_id_pin is not None and not _pin_matches_redis(redis_client, redis_run_id_pin):
+            failures.append("Redis boot identity changed during cleanup")
+            trigger_cancel()
 
     if cancelled.is_set() or failures:
         raise FencedReadUnavailable("read authority lost or cleanup unconfirmed")
