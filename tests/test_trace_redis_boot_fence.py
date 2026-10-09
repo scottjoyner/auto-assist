@@ -65,7 +65,7 @@ def run(db, *, query=None, cancelled=None, pin=RUN_A):
     )
 
 
-@pytest.mark.parametrize("pin", [RUN_B, "", "bad", None.__class__])
+@pytest.mark.parametrize("pin", [RUN_B, "", "bad", 123])
 def test_invalid_or_mismatched_pin_never_admits(pin):
     db = SyntheticRedis()
     with pytest.raises(FencedReadUnavailable):
@@ -116,18 +116,28 @@ def test_restart_during_read_is_not_a_success():
     assert "renew" in db.calls
 
 
-def test_redis_restart_even_during_release_denies_result():
+def test_redis_restart_during_release_denies_result():
     db = SyntheticRedis()
     db.after_release = True
-    # An after-release reboot is a race that this only-after-release check
-    # cannot observe. Here output must be suppressed once the instance is
-    # known to differ before release; the negative control is below.
+    with pytest.raises(FencedReadUnavailable):
+        run(db, query=lambda _: "synthetic-must-not-escape")
+    assert "release" in db.calls
+
+
+def test_redis_restart_before_release_denies_result():
+    db = SyntheticRedis()
     def query(_):
         db.run_id = RUN_B
         return "synthetic-secret-response"
     with pytest.raises(FencedReadUnavailable):
         run(db, query=query)
     assert "release" in db.calls
+
+
+def test_legacy_unpinned_research_contract_unchanged():
+    db = SyntheticRedis()
+    assert run(db, pin=None) == "synthetic-sensitive-result"
+    assert "info" not in db.calls
 
 
 def test_infrastructure_cannot_claim_run_id_pin_as_cancellation_proof():
