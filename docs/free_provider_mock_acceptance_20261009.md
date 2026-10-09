@@ -27,7 +27,7 @@ lease witness must be denied. Router aliases are not independent quota proof.
 - 401/402/403/429/503 responses cause shared-circuit reporting and local
   cooldown. Unavailable reporting causes quarantine. Missing or nonzero
   usage receipts quarantine as well. No paid fallback or blind retry.
-- 66/66 offline pytest cases pass on x1-370, asserting zero mock provider
+- 69/69 offline pytest cases pass on x1-370, asserting zero mock provider
   invocations before admission on all negative controls. For simulated
   in-flight stream failure, exactly the pre-loss mock steps can execute;
   no later steps execute after lost authority or lease expiry.
@@ -67,3 +67,14 @@ lease witness must be denied. Router aliases are not independent quota proof.
 Next accepted slice: an independently reviewed authenticated mock transport
 with cross-node lease-loss and cooldown tests; require actual zero-dollar
 receipts and upstream quota ownership before any real provider activation.
+
+## Two-node shared-lease custody (2026-10-09)
+
+See docs/free_provider_two_node_ssh_acceptance_20261009.md. Two physical
+origin nodes contended through existing SSH transport to one disposable
+x1-370 SQLite authority. One admitted, one denied, no overlap. After
+release, xwing reacquired; zero leases and local audit OK. A remote
+copied-state experiment was blocked before execution, so split-brain
+safety is NOT claimed. The mock adapter now refuses success on missing
+or malformed final release receipts and quarantines the quota group,
+bringing isolated tests to 69/69.
