@@ -4,7 +4,6 @@ All files are disposable /tmp fixtures. These checks NEVER release an
 admission slot or establish a fleetwide distributed fencing authority.
 """
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import replace
 import multiprocessing as mp
 from pathlib import Path
 import shutil
@@ -317,3 +316,32 @@ def test_key_pinning_does_not_come_from_envelope(isolated):
     with pytest.raises(ValueError,match="PUBLIC_KEY_REQUIRED"):
         ReceiverReceiptCustody(p,expected_epoch=epoch,
             operator_pinned_public_key=b"",trusted_checkpoint=cp)
+
+
+def test_receipt_row_tampering_is_detected_by_full_commitment_chain(isolated):
+    p,epoch,key,pub,cp=isolated
+    ledger=_open(isolated)
+    receipt=_receipt(epoch)
+    result=ledger.observe_once(receipt,receiver_sign_only(receipt,key),**_args(receipt))
+    assert result.accepted
+    with sqlite3.connect(p) as db:
+        db.execute("UPDATE received SET receipt_sha256=?",( "f"*64,))
+    assert ledger.inspect() is None
+    next_receipt=_receipt(epoch,tx="neo4j-transaction-18")
+    assert ledger.observe_once(next_receipt,receiver_sign_only(next_receipt,key),
+                               **_args(next_receipt)).reason=="unavailable"
+    with pytest.raises(ValueError,match="HASHCHAIN_DIVERGED"):
+        _open((p,epoch,key,pub,result.checkpoint))
+
+
+def test_non_contiguous_sequence_detected_before_receipt_acceptance(isolated):
+    p,epoch,key,pub,cp=isolated
+    ledger=_open(isolated)
+    receipt=_receipt(epoch)
+    result=ledger.observe_once(receipt,receiver_sign_only(receipt,key),**_args(receipt))
+    assert result.accepted
+    with sqlite3.connect(p) as db:
+        db.execute("UPDATE received SET sequence=3")
+    assert ledger.inspect() is None
+    with pytest.raises(ValueError,match="RECEIPT_SEQUENCE_INVALID"):
+        _open((p,epoch,key,pub,result.checkpoint))
