@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -107,3 +108,21 @@ def test_verifier_proves_scope_identity_and_hermes_marker() -> None:
     assert "whoami provider is not tailscale" in text
     assert "serve_scope=mobile-paths-only" in text
     assert "unrelated root mount" in text
+
+
+def test_gateway_deploy_preflight_never_mutates_without_physical_authority():
+    """No caller-provided source pin should cause unattended Serve changes."""
+    script = ROOT / "scripts" / "deploy-kipnerter-tailnet-gateway.sh"
+    text = script.read_text(encoding="utf-8")
+    assert "sudo tailscale serve" not in text
+    assert "tailscale serve reset" not in text
+    assert "docker compose up" not in text
+    assert 'fail "all declarative preflights satisfied but NO deployment authority' in text
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "/tmp")}
+    result = subprocess.run(
+        ["bash", str(script)], cwd=ROOT, env=env,
+        capture_output=True, text=True, check=False, timeout=5,
+    )
+    assert result.returncode == 78
+    assert "HOLD" in result.stderr
+    assert "KIPNERTER_GATEWAY_SOURCE_SHA" in result.stderr
