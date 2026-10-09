@@ -600,3 +600,82 @@ test("index authentication loss clears expanded sensitive detail and disables co
   assert.equal(ui.els["trace-copy"].disabled, true);
   assert.doesNotMatch(ui.window.location.href, /trace=private-id/);
 });
+
+
+test("long trace renders only latest 80 summaries and progressively reveals earlier records", async () => {
+  const events = Array.from({length:1000},(_,i)=>({
+    event_type:i===999?"task.failed":"task.started",
+    source:"synthetic",ts_ms:1_780_000_000_000+i,
+    payload_json:JSON.stringify({secret_test_canary:"NEVER_INLINE_"+i})
+  }));
+  const ui=harness({response:url=>Promise.resolve(ok(url.includes("?limit=")
+    ? {traces:[trace("long-one")],total:1,outcome:"all"}
+    : {correlation_id:"long-one",current_state:"failed",events}))});
+  await sleep(30);
+  let html=ui.els["trace-detail"].innerHTML;
+  assert.equal((html.match(/class="trace-event"/g)||[]).length,79); // last card has failed class
+  assert.equal((html.match(/class="trace-event failed"/g)||[]).length,1);
+  assert.match(html,/Showing latest 80 of 1000 matching loaded events/);
+  assert.match(html,/Show up to 80 earlier events/);
+  assert.doesNotMatch(html,/NEVER_INLINE_/);
+  const firstCalls=ui.calls.length;
+  ui.els["trace-detail"].fire("click",{target:{closest(selector){
+    return selector==="button.trace-show-earlier"?{}:null;
+  }}});
+  html=ui.els["trace-detail"].innerHTML;
+  assert.equal((html.match(/<article class="trace-event/g)||[]).length,160);
+  assert.match(html,/Showing latest 160 of 1000 matching loaded events/);
+  assert.equal(ui.calls.length,firstCalls,"local timeline expansion must never fetch more data");
+});
+
+test("event-type search does not index payloads, intersects context and resets on trace change",async()=>{
+  const detailOne={
+    correlation_id:"one",current_state:"failed",
+    events:[
+      {event_type:"task.started",task_id:"alpha",ts_ms:1,payload_json:'{"secret":"ERROR_MARKER"}'},
+      {event_type:"task.failed",task_id:"alpha",ts_ms:2,payload_json:'{"secret":"CANARY_SENSITIVE"}'},
+      {event_type:"route.failed",task_id:"beta",ts_ms:3,payload_json:'{"secret":"OTHER_CANARY"}'}
+    ],
+    context:{schema:"trace-context-v1",fields:{
+      task_id:[{value:"alpha",provenance:"trace_event_property",events:2}],
+      source:[],dispatch_id:[],route_id:[],assignment_id:[]
+    }}
+  };
+  const ui=harness({response:url=>Promise.resolve(ok(url.includes("?limit=")
+    ? {traces:[trace("one"),trace("two")],total:2,outcome:"all"}
+    : url.endsWith("/one")?detailOne:detail("two")))});
+  await sleep(35);
+  const before=ui.calls.length;
+  ui.els["trace-detail"].fire("input",{target:{id:"trace-type-query",value:"FAILED",selectionStart:6}});
+  let html=ui.els["trace-detail"].innerHTML;
+  assert.match(html,/2 of 3 events/);
+  assert.doesNotMatch(html,/task\.started/);
+  assert.doesNotMatch(html,/CANARY_SENSITIVE|OTHER_CANARY|ERROR_MARKER/);
+  assert.equal(ui.calls.length,before);
+  const chip={getAttribute:k=>k==="data-context-field"?"task_id":"alpha"};
+  ui.els["trace-detail"].fire("click",{target:{closest:s=>s==="button.trace-context-chip"?chip:null}});
+  html=ui.els["trace-detail"].innerHTML;
+  assert.match(html,/1 of 3 events/);
+  assert.match(html,/task\.failed/);
+  assert.doesNotMatch(html,/route\.failed/);
+  ui.els["trace-list"].fire("click",{target:{closest:()=>({dataset:{cid:"two"}})}});
+  await sleep(24);
+  html=ui.els["trace-detail"].innerHTML;
+  assert.match(html,/router.started/);
+  assert.match(html,/Showing latest 1 of 1/);
+  assert.doesNotMatch(html,/value="failed"/);
+});
+
+test("type search can show no matches and clear without a graph read", async()=>{
+  const ui=harness({response:url=>Promise.resolve(ok(url.includes("?limit=")
+    ? {traces:[trace("one")],total:1,outcome:"all"}
+    :detail("one")))});
+  await sleep(25);
+  const prior=ui.calls.length;
+  ui.els["trace-detail"].fire("input",{target:{id:"trace-type-query",value:"nomatches",selectionStart:9}});
+  assert.match(ui.els["trace-detail"].innerHTML,/No loaded events match/);
+  assert.match(ui.els["trace-detail"].innerHTML,/0 of 1 events/);
+  ui.els["trace-detail"].fire("click",{target:{closest:s=>s==="button.trace-clear-type"?{}:null}});
+  assert.match(ui.els["trace-detail"].innerHTML,/router.started/);
+  assert.equal(ui.calls.length,prior);
+});
