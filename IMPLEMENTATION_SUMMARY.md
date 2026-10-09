@@ -22,3 +22,9 @@ A read-only OpenCode exporter should be able to select a bounded set of sessions
 
 ## Limitations
 The exporter assumes the 1.18.35 session/message/part schema shown by x1-370, not universal OpenCode database schema compatibility. Source errors and missing provider evidence must not be treated as successful production traces. No multi-node trace consolidation, signed event custody, allocator authority, physical execution, authenticated renewal or production gateway admission has been demonstrated. Source commit `6e3261cd` contains substantial earlier generated changes; integrate only after exact-head CI, code review and scope reconciliation against current main. The original WIP checkout at `trace-contract` was intentionally left intact and this repair uses its own worktree.
+
+## Independent xwing offline replay — 2026-10-09 about 07:50 EDT
+- Copied **only** exporter, free-subagent supervisor, selected tests, fixture files and provider manifest into isolated `/home/scott/agent-sprints/20261009/trace-repair-856bf4cf/` on xwing (no Git or service deployment).
+- Initial xwing replay exposed host-dependent model catalogue discovery when tests explicitly requested fixture data, plus xwing's default signed-Git-commit policy. The supervisor now treats a supplied fixture path as authoritative; the live-catalog mock test invokes discovery without a fixture. The isolated test process disabled GPG signing using an environment-only `GIT_CONFIG_COUNT` override; no global Git configuration was changed.
+- Final xwing command: `python3 -m pytest -q tests/test_opencode_trace_safety.py tests/test_export_opencode_session_traces.py tests/test_free_subagent_supervisor.py --tb=short` — **52 passed in 2.80s**.
+- Final x1-370 results for the same suite: **52 passed**. These are offline acceptance tests, not exact-head hosted CI, live provider-billing proof, production dispatch authority, or an iOS device build.

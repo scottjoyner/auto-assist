@@ -878,7 +878,7 @@ def test_plain_catalog_only_accepts_exact_kilo_free_alias(monkeypatch):
         )
 
     monkeypatch.setattr(supervisor.subprocess, "run", fake_run)
-    models = supervisor.enumerate_free_models(pathlib.Path("/definitely/missing-fixture"))
+    models = supervisor.enumerate_free_models()  # Exercise live catalog stub, not explicit fixtures
     ids = [row["id"] for row in models]
     assert "kilo/kilo-auto/free" in ids
     assert "kilo/openai/gpt-paid" not in ids

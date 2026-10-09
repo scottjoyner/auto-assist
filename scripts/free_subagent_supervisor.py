@@ -418,7 +418,28 @@ def enumerate_free_models(fixture_path: pathlib.Path | None = None) -> list[dict
     - rate-limited
     """
     results: list[dict[str, Any]] = []
-    # Try authoritative command first; if unavailable/offline, fall back.
+    if fixture_path is not None:
+        # An explicit fixture is authoritative for offline tests and reviews.
+        # Never replace it with a live OpenCode model listing from this host.
+        if not fixture_path.is_file():
+            return []
+        seen: set[str] = set()
+        with fixture_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(obj, dict) or not obj.get("id") or not _is_clearly_free_model(obj):
+                    continue
+                mid = str(obj["id"])
+                if mid in seen:
+                    continue
+                seen.add(mid)
+                obj["free_model_type"] = classify_free_model(obj)
+                results.append(obj)
+        return results
+    # Without an explicit fixture, prefer a live model listing.
     try:
         proc = subprocess.run(
             [_opencode_binary(), "models"],
