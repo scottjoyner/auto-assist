@@ -118,7 +118,8 @@ class Witness:
                 if active:
                     c.rollback()
                     return {"status":"full","host":HOST,"active":active,
-                            "sequence":sequence}
+                            "sequence":sequence,"epoch":self.epoch,
+                            "graph_id":self.graph,"query_ref":ref}
                 tok=uuid.uuid4().hex
                 nonce=str(uuid.uuid4())
                 sequence+=1
@@ -127,7 +128,8 @@ class Witness:
                 c.execute("UPDATE owner SET sequence=? WHERE id=1",(sequence,))
                 c.commit()
                 return {"status":"admitted","host":HOST,"active":1,
-                        "sequence":sequence,"token":tok,"receiver_nonce":nonce}
+                        "sequence":sequence,"token":tok,"receiver_nonce":nonce,
+                        "epoch":self.epoch,"graph_id":self.graph,"query_ref":ref}
         except (OSError,ValueError,sqlite3.Error):
             return {"status":"authority-unavailable","host":HOST}
 
