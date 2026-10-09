@@ -44,6 +44,7 @@ jobs:
             src/assistx/trace_nas_intents.py \
             src/assistx/trace_segment_nas.py \
             src/assistx/trace_smb_custody_readiness.py \
+            src/assistx/trace_external_witness.py \
             scripts/trace_claim_lease_staging_canary.py \
             scripts/trace_claim_live_platform_smoke.py \
             scripts/trace_smb_server_snapshot.py \
@@ -76,12 +77,14 @@ jobs:
             src/assistx/trace_nas_intents.py \
             src/assistx/trace_segment_nas.py \
             src/assistx/trace_smb_custody_readiness.py \
+            src/assistx/trace_external_witness.py \
             tests/test_trace_claim_lease.py \
             tests/test_trace_claim_live_executor.py \
             tests/test_trace_http_redirect.py \
             tests/test_trace_segment_plan.py \
             tests/test_trace_segment_nas.py \
             tests/test_trace_smb_custody_readiness.py \
+            tests/test_trace_external_witness.py \
             tests/test_trace_execution_adapter.py \
             scripts/trace_claim_lease_staging_canary.py \
             scripts/trace_claim_live_platform_smoke.py \
@@ -109,6 +112,7 @@ jobs:
             tests/test_trace_segment_plan.py \
             tests/test_trace_segment_nas.py \
             tests/test_trace_smb_custody_readiness.py \
+            tests/test_trace_external_witness.py \
             tests/test_trace_claim_lease.py \
             tests/test_trace_shadow_grant.py \
             tests/test_trace_execution_shadow_backup.py \
