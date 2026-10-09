@@ -286,11 +286,21 @@ class MockFreeProviderAdmission:
                         self.now + delay
                     )
                     try:
-                        self.ledger.trip(request.provider, error.status_code,
-                                         retry_after=safe_retry, now=self.now)
+                        acknowledgment = self.ledger.trip(
+                            request.provider, error.status_code,
+                            retry_after=safe_retry, now=self.now
+                        )
+                        if (not isinstance(acknowledgment, dict)
+                            or acknowledgment.get("tripped") is not True
+                            or acknowledgment.get("provider") != route.upstream_group):
+                            self.quarantined_groups.add(route.upstream_group)
                     except Exception:
-                        # Explicit local backpressure; never blind-retry after partition.
+                        # No shared-circuit proof: quarantine all local aliases.
                         self.quarantined_groups.add(route.upstream_group)
+                else:
+                    # Unknown model-provider failure: no classified cooldown
+                    # contract, and certainly no speculative retry.
+                    self.quarantined_groups.add(route.upstream_group)
                 return MockResult(False, "mock_upstream_denied", provider.calls - before,
                                   route.upstream_group, route.proof_ref)
             except Exception:
