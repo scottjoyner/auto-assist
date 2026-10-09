@@ -43,7 +43,7 @@ Both are independent research contracts. Passing their separate tests does NOT d
 - Type and syntax: Python research modules compile; JavaScript files parse.
 - Isolated pinned Mercury source patch from #130: 12/12 native no-network TypeScript stream-fixture tests, pristine upstream patch-apply and Node syntax checks passed. No actual SDK or BotManager execution.
 - Separate auto-router #30: 7 focused tests passed and the SQLite correlation-ID lookup/exclusion/index fixture passed with explicit PYTHONPATH targeting the PR checkout. An earlier invocation accidentally loaded an older installed package and must NOT be counted as PR evidence.
-- Browser Playwright/Chromium: NOT reproduced in this combined checkout; Python Playwright dependency unavailable in the initial host environment. PR #131's prior reported browser acceptance remains independent evidence.
+- Browser Playwright/Chromium: **21/21 synthetic checks passed locally** after creating a disposable Playwright 1.58.0 environment using the cached Chromium headless shell. This verifies isolated fixture-only UI at 375px, 768px and 1440px, including focus, deep link, payload disclosure and HTTP 401/429/503 failure recovery; it is NOT authenticated production browser acceptance.
 - Real generation calls 0; production services changed 0; provider credentials touched 0.
 
 ## Release decision
@@ -59,3 +59,31 @@ Existing FREE-PROVIDER-LEASE-NEXT-CHECKPOINT is NOT REACHED. Neither operator ap
 
 No live configuration, daemon, NAS mount, phone app, provider settings, or production router changed.
 Remove the isolated RC branch/worktree to undo research integration. Source overlay archives are NOT daemon installers.
+
+
+## October 8 follow-on: exact GitHub CI failure analysis and remediation
+
+GitHub runs for RC head f971d9ea5b4679e779407070d8831f25872941bd
+reported: mercury-deny-mock-contract **success**, implementer-handoff
+**success**, RC offline workflow **failure**, and general ci **failure**.
+The offline workflow installed pytest only, then loaded tests/conftest.py
+which imports AssistX runtime and failed because python-dotenv was unavailable.
+The focused mock verifier now uses pytest --noconftest and does not require
+an installed AssistX runtime. The general ci collected a standalone browser
+script containing a top-level Playwright import and failed with
+ModuleNotFoundError; the import is now confined to main() so normal pytest
+collection is dependency-free. A separate explicit synthetic-browser CI job
+installs Playwright and Chromium and runs that fixture intentionally.
+**None of these modifications bypasses a failing safety assertion.**
+
+A further general-ci recovery-canary failure remains: current main's
+RepositorySourceBinding model lacks from_contract_payload(), even though
+improvement_cycle and existing source-binding tests call it. This is a
+pre-existing compatibility/contract defect, not a Mercury feature, and is
+NOT silently fixed in the release overlay. It must receive a separate
+strict-validation, non-authority regression PR and pass the recovery canary.
+General CI cannot be promoted while this failure persists.
+
+This follow-on reruns 80 Python cases plus 5 subtests, 24 Node tests and
+21 synthetic Chromium checks **locally**. Remote follow-on workflow results
+must be checked after publication; do not infer CI success in advance.

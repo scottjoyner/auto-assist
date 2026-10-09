@@ -9,7 +9,6 @@ import os
 import re
 from pathlib import Path
 from urllib.parse import urlsplit, unquote
-from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 HTML = (ROOT / "templates/traces.html").read_text()
@@ -59,6 +58,7 @@ def check(value, description):
     print("PASS " + description, flush=True)
 
 def main():
+    from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
         executable = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
         kwargs = {"headless": True, "args": ["--no-sandbox"]}
