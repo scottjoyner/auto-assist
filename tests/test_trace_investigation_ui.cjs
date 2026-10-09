@@ -469,7 +469,7 @@ test("malicious context values are escaped and never treated as navigation links
     })) });
   await sleep(25);
   const html = ui.els["trace-detail"].innerHTML;
-  assert.ok(html.includes("&lt;img"));
+  assert.ok(html.includes("&lt;img"),"escaped context HTML absent: "+html.slice(0,600));
   assert.ok(!html.includes('<img src=x onerror='));
   assert.ok(!html.includes("href=" + malicious));
   assert.match(html, /trace-context-chip/);
@@ -725,7 +725,7 @@ test("type search can show no matches and clear without a graph read", async()=>
   const prior=ui.calls.length;
   ui.els["trace-detail"].fire("input",{target:{id:"trace-type-query",value:"nomatches",selectionStart:9}});
   assert.match(ui.els["trace-detail"].innerHTML,/No loaded events match/);
-  assert.match(ui.els["trace-detail"].innerHTML,/0 of 1 events/);
+  assert.match(ui.els["trace-detail"].innerHTML,/0 of 1 loaded events/);
   ui.els["trace-detail"].fire("click",{target:{closest:s=>s==="button.trace-clear-type"?{}:null}});
   assert.match(ui.els["trace-detail"].innerHTML,/router.started/);
   assert.equal(ui.calls.length,prior);
