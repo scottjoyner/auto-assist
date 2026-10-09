@@ -1,0 +1,11 @@
+{
+  "strategy": "smallest,median,largest stratified metadata selection",
+  "segments_checked": 3,
+  "sample_bytes": 8781977,
+  "source_sha_matches": 3,
+  "remote_sha_matches": 3,
+  "remote_nas_write_ops": 0,
+  "archive_contents_returned": false,
+  "entire_173_archive_set_verified": false,
+  "migration_approved": false
+}
