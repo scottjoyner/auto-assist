@@ -147,12 +147,20 @@ def _outbox() -> OutboxClient:
 # --- Auth ---
 # Injected from api.py so swarm routes use the same Basic Auth as legacy endpoints.
 _injected_auth_dependency = None
+# Separate deny-only capability: injected auth alone is not payload access.
+_trace_preview_authorizer = None
 security = HTTPBasic(auto_error=False)
 
 
 def set_auth_dependency(auth_func: Any) -> None:
     global _injected_auth_dependency
     _injected_auth_dependency = auth_func
+
+
+def set_trace_preview_authorizer(authorizer: Any) -> None:
+    """Provide an independent Basic-credential policy; default deny."""
+    global _trace_preview_authorizer
+    _trace_preview_authorizer = authorizer
 
 
 def _default_auth(
@@ -525,10 +533,26 @@ def api_get_trace_payload_preview(
     response: Response,
     correlation_id: str = Path(min_length=1, max_length=128),
     user: str = Depends(_default_auth),
+    credentials: HTTPBasicCredentials | None = Depends(security),
 ):
-    """Explicitly initiated read, never a passive event batch payload."""
+    """Explicit read additionally requires independently validated Basic scope."""
     _paged_trace_feature_gate()
     response.headers["Cache-Control"] = "no-store, private"
+    if _trace_preview_authorizer is None:
+        raise HTTPException(
+            status_code=503, detail="Trace preview authorization unavailable",
+            headers={"Cache-Control": "no-store, private"},
+        )
+    try:
+        permitted = _trace_preview_authorizer(user, credentials)
+    except Exception:
+        # Deny before graph access even if the independent scope hook breaks.
+        permitted = False
+    if permitted is not True:
+        raise HTTPException(
+            status_code=403, detail="Trace payload preview not authorized",
+            headers={"Cache-Control": "no-store, private"},
+        )
     try:
         neo = _neo()
         try:
