@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
 
 from .contracts.event_envelope import EventEnvelope
 from .draft_model import DraftModelUnavailable, generate_draft
 from .neo4j_client import Neo4jClient
+from .trace_detail_pages import InvalidTraceCursor, get_trace_page, get_trace_payload_preview
 from .outbox_client import OutboxClient
 from .swarm_core import (
     EventConflictError,
@@ -482,6 +484,62 @@ def api_trace_task_evidence(
         return evidence
     finally:
         neo.close()
+
+
+class TracePayloadPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    event_id: str = Field(min_length=1, max_length=320)
+
+
+def _paged_trace_feature_gate() -> None:
+    """Deny until both source auth and physical admission are reviewed."""
+    if (_injected_auth_dependency is None
+            or os.getenv("ASSISTX_TRACE_DETAIL_PAGING_ENABLED", "0") != "1"):
+        raise HTTPException(status_code=503, detail="Trace paging unavailable")
+
+
+@router.get("/api/traces/{correlation_id}/timeline")
+def api_get_trace_timeline(
+    response: Response,
+    correlation_id: str = Path(min_length=1, max_length=128),
+    limit: int = Query(default=80, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None, max_length=720),
+    user: str = Depends(_default_auth),
+):
+    """Experimental bounded metadata only; disabled by default."""
+    _paged_trace_feature_gate()
+    response.headers["Cache-Control"] = "no-store, private"
+    try:
+        neo = _neo()
+        try:
+            return get_trace_page(neo, correlation_id, limit=limit, cursor=cursor)
+        finally:
+            neo.close()
+    except (InvalidTraceCursor, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid trace paging input") from exc
+
+
+@router.post("/api/traces/{correlation_id}/payload-preview")
+def api_get_trace_payload_preview(
+    body: TracePayloadPreviewRequest,
+    response: Response,
+    correlation_id: str = Path(min_length=1, max_length=128),
+    user: str = Depends(_default_auth),
+):
+    """Explicitly initiated read, never a passive event batch payload."""
+    _paged_trace_feature_gate()
+    response.headers["Cache-Control"] = "no-store, private"
+    try:
+        neo = _neo()
+        try:
+            preview = get_trace_payload_preview(neo, correlation_id, body.event_id)
+        finally:
+            neo.close()
+        if preview is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        return preview
+    except InvalidTraceCursor as exc:
+        raise HTTPException(status_code=422, detail="Invalid trace paging input") from exc
 
 
 @router.post("/api/traces/{correlation_id}/events")
