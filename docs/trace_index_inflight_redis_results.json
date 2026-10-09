@@ -1,0 +1,42 @@
+{
+  "bind_mounts": 0,
+  "bursts": [
+    {
+      "accepted": 1,
+      "denied": 0,
+      "synthetic_clients": 1
+    },
+    {
+      "accepted": 3,
+      "denied": 0,
+      "synthetic_clients": 3
+    },
+    {
+      "accepted": 3,
+      "denied": 2,
+      "synthetic_clients": 5
+    },
+    {
+      "accepted": 3,
+      "denied": 7,
+      "synthetic_clients": 10
+    }
+  ],
+  "capacity": 3,
+  "combined_rate_and_capacity": {
+    "accepted": 2,
+    "capacity_refusals": 7,
+    "denied": 8,
+    "quota_refusals": 1,
+    "synthetic_clients": 10
+  },
+  "expiry_recovered": true,
+  "network": "none",
+  "production_access": false,
+  "published_ports": 0,
+  "redis_image": "redis:7-alpine",
+  "schema": "assistx-trace-index-inflight-redis-v1",
+  "source": "synthetic-only",
+  "stale_release_fenced": true,
+  "ttl_seconds": 30
+}
