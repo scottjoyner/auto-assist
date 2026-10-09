@@ -78,7 +78,7 @@ for(const width of [375,768,1440]){
     assert.equal(await f.page.locator('#trace-detail').textContent().then(x=>x.includes('SYNTHETIC_ONLY_')),false);
     const count=f.requests.length;
     await f.page.locator('.trace-show-earlier').click();
-    assert.equal(await f.page.locator('.trace-event').count(),160);
+    await f.page.locator('.trace-event').nth(159).waitFor();
     assert.equal(f.requests.length,count+1,'Explicit earlier page triggers one request');
     await f.page.locator('#trace-type-query').fill('assignment.failed');
     assert.equal(await f.page.locator('.trace-event').count(),1);
@@ -86,17 +86,24 @@ for(const width of [375,768,1440]){
     assert.match(await f.page.locator('.trace-window-status').textContent(),/1 of 1/);
     await f.page.locator('.trace-clear-type').click();
     assert.equal(await f.page.locator('.trace-event').count(),80);
-    await f.page.locator('button.trace-context-chip[data-context-field="task_id"]').click();
+    await f.page.locator('button.trace-context-chip[data-context-field="task_id"]').first().click();
     assert.match(await f.page.locator('.trace-window-status').textContent(),/80 of 80/);
     assert.equal(await f.page.locator('.trace-event').count(),80);
     await f.page.locator('button.trace-clear-context').click();
-    assert.match(await f.page.locator('.trace-window-status').textContent(),/80 of 80/);
+    assert.match(await f.page.locator('.trace-window-status').textContent(),/80 of 160/);
     await f.page.locator('#trace-type-query').focus();
     assert.equal(await f.page.evaluate(()=>document.activeElement.id),'trace-type-query');
     const metrics=await f.page.evaluate(()=>({
       sw:document.documentElement.scrollWidth,cw:document.documentElement.clientWidth
     }));
     assert.ok(metrics.sw<=metrics.cw+1,JSON.stringify(metrics));
+    assert.equal(f.requests.filter(x=>x.path.endsWith('/payload-preview')).length,0);
+    const disclosure=f.page.locator('.trace-event details').first();
+    await disclosure.locator('summary').click();
+    await f.page.waitForFunction(()=>document.querySelector('.trace-event details pre').textContent.includes('SYNTHETIC_ONLY_'));
+    assert.equal(f.requests.filter(x=>x.path.endsWith('/payload-preview')).length,1);
+    await disclosure.locator('summary').click();
+    await f.page.waitForFunction(()=>document.querySelector('.trace-event details pre').textContent==='');
     assert.ok(f.requests.every(x=>x.path==='/traces'||x.path.startsWith('/static/')||x.path.startsWith('/api/traces')));
   }finally{await f.browser.close()}
  });
