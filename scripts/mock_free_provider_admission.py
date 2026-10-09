@@ -8,6 +8,7 @@ The only permitted executor is RecordingMockProvider. No HTTP calls.
 from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+import math
 from typing import Any, Mapping
 
 ALIASES = frozenset({"free", "auto", "router", "any", "best", "default"})
@@ -28,6 +29,16 @@ def _zero(value: Any) -> bool:
     except (InvalidOperation, ValueError, TypeError):
         return False
     return price.is_finite() and price == 0
+
+
+def _future_expiry(value: Any, now: float) -> bool:
+    """Reject NaN/Inf, bool, huge integers and string expiries."""
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value) and value > now
+    except (OverflowError, TypeError, ValueError):
+        return False
 
 
 @dataclass(frozen=True)
@@ -137,6 +148,16 @@ class MockFreeProviderAdmission:
 
         if type(provider) is not RecordingMockProvider:
             return deny("mock_only")
+        if not math.isfinite(self.now):
+            return deny("invalid_clock")
+        # Synthetic input bounds mirror the pilot's finite, typed reservations.
+        if (type(request.input_reserved) is not int
+            or not 1 <= request.input_reserved <= 1_000_000
+            or type(request.output_reserved) is not int
+            or not 1 <= request.output_reserved <= 1_000_000
+            or type(request.ttl_seconds) is not int
+            or not 5 <= request.ttl_seconds <= 120):
+            return deny("invalid_reservation")
         route = self.routes.get((request.provider, request.model))
         route_key = (request.provider, request.model)
         if route is None or route_key in self.quarantined:
@@ -150,12 +171,19 @@ class MockFreeProviderAdmission:
         if (not isinstance(route, RouteQualification)
             or route.provider != request.provider or route.model != request.model
             or not _exact_model(route.model) or not _exact_model(route.resolved_model)
-            or not route.verified or not route.proof_ref
+            or route.verified is not True or not route.proof_ref
             or not route.upstream_group or not route.account_scope
             or not _zero(route.prompt_price) or not _zero(route.completion_price)):
             return deny("missing_exact_zero_cost_proof")
         if not request.client or not request.node or not request.credential_ref:
             return deny("missing_principal")
+        if (type(request.client) is not str or not 1 <= len(request.client) <= 128
+            or type(request.node) is not str or not 1 <= len(request.node) <= 128
+            or type(request.credential_ref) is not str
+            or not 1 <= len(request.credential_ref) <= 256
+            or type(request.request_key) is not str
+            or not 8 <= len(request.request_key) <= 128):
+            return deny("invalid_principal_or_request_key")
         try:
             witnessed = self.authority.qualify(
                 route.provider, route.model, route.resolved_model,
@@ -167,8 +195,8 @@ class MockFreeProviderAdmission:
         except Exception:
             return deny("qualification_authority_unavailable")
         try:
-            if not self.authority.authenticate(request.client, request.node,
-                                               request.credential_ref, route.account_scope):
+            if self.authority.authenticate(request.client, request.node,
+                                           request.credential_ref, route.account_scope) is not True:
                 return deny("unauthenticated_client")
         except Exception:
             return deny("authority_unavailable")
@@ -180,13 +208,25 @@ class MockFreeProviderAdmission:
                 ttl_seconds=request.ttl_seconds, now=self.now
             )
         except Exception:
+            # An unreachable authority may have committed before losing the
+            # response. Never retry a possibly consumed shared quota slot.
+            self.quarantined_groups.add(route.upstream_group)
             return deny("lease_authority_unavailable")
-        if (not isinstance(grant, dict) or not grant.get("granted")
-            or grant.get("provider") != route.upstream_group
+        if not isinstance(grant, dict) or grant.get("granted") is not True:
+            # A syntactically invalid grant result is not positive authority.
+            # Truthy non-boolean results may conceal a committed lease.
+            if not isinstance(grant, dict) or (
+                isinstance(grant, dict) and bool(grant.get("granted"))
+            ):
+                self.quarantined_groups.add(route.upstream_group)
+            return deny("lease_denied", route.upstream_group, route.proof_ref)
+        if (grant.get("provider") != route.upstream_group
             or not isinstance(grant.get("lease_id"), str)
             or not grant.get("lease_id")
-            or not isinstance(grant.get("expires_at"), (int, float))
-            or grant["expires_at"] <= self.now):
+            or not _future_expiry(grant.get("expires_at"), self.now)):
+            # A granted but malformed lease could still occupy capacity on
+            # its source authority; local retries must stop.
+            self.quarantined_groups.add(route.upstream_group)
             return deny("lease_denied", route.upstream_group, route.proof_ref)
         lease_id = grant["lease_id"]
         try:
@@ -194,14 +234,13 @@ class MockFreeProviderAdmission:
                 lease_id, request.client, request.node, request.request_key,
                 route.upstream_group, self.epoch
             )
-            if not valid:
+            if valid is not True:
                 return deny("unwitnessed_lease", route.upstream_group, route.proof_ref)
             renewal = self.ledger.renew(
                 lease_id, request.client, ttl_seconds=request.ttl_seconds, now=self.now
             )
-            if (not isinstance(renewal, dict) or not renewal.get("renewed")
-                or not isinstance(renewal.get("expires_at"), (int, float))
-                or renewal["expires_at"] <= self.now):
+            if (not isinstance(renewal, dict) or renewal.get("renewed") is not True
+                or not _future_expiry(renewal.get("expires_at"), self.now)):
                 return deny("renewal_denied", route.upstream_group, route.proof_ref)
             if not self.authority.attest(
                 lease_id, request.client, request.node, request.request_key,
@@ -217,8 +256,7 @@ class MockFreeProviderAdmission:
                     )
                     if (not isinstance(renewed, dict)
                         or renewed.get("renewed") is not True
-                        or not isinstance(renewed.get("expires_at"), (int, float))
-                        or renewed["expires_at"] <= step_now):
+                        or not _future_expiry(renewed.get("expires_at"), step_now)):
                         return False
                     return self.authority.attest(
                         lease_id, request.client, request.node,
