@@ -116,6 +116,13 @@ def build_runtime_projection(
     return document
 
 
+# Narrow compatibility exports for the authenticated mobile runtime catalog.
+# Keep the *same* canonical Ed25519 signing implementation and fail-closed
+# blocked-state type. Do not introduce a second unsigned projection pathway.
+RuntimeProjectionSigningError = legacy.RuntimeProjectionBlocked
+build_runtime_projection_v2 = build_runtime_projection
+
+
 def build_runtime_projection_router(
     neo_factory: Callable[[], Any],
     auth_dependency: Any | None = None,

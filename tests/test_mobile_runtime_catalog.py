@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.testclient import TestClient
 
@@ -503,3 +505,16 @@ def test_mobile_runtime_catalog_route_sanitizes_backend_failure(monkeypatch):
     assert response.status_code == 503
     assert response.json() == {"detail": {"error": "runtime_catalog_unavailable"}}
     assert "neo4j" not in response.text.lower()
+
+
+def test_mobile_projection_compat_never_bypasses_canonical_ed25519_signing(monkeypatch):
+    from assistx import runtime_projection_v2 as signing
+    from assistx.runtime_projection import RuntimeProjectionBlocked
+
+    assert signing.build_runtime_projection_v2 is signing.build_runtime_projection
+    assert signing.RuntimeProjectionSigningError is RuntimeProjectionBlocked
+    # No alternate unsigned compatibility path: absent key => deny.
+    monkeypatch.delenv("ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_FILE", raising=False)
+    monkeypatch.delenv("ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_PEM", raising=False)
+    with pytest.raises(RuntimeProjectionBlocked, match="required"):
+        signing.load_private_key()
