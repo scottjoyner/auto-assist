@@ -36,8 +36,10 @@ def test_canary_requires_exact_cached_image_identity(expected, actual):
 
 def test_no_ports_mounts_network_or_image_pulls_in_docker_command():
     module = _module()
-    cmd = module.docker_command("fixture-canary")
+    image_id = "sha256:" + "a" * 64
+    cmd = module.docker_command("fixture-canary", image_id)
     assert cmd[:2] == ["docker", "run"]
+    assert cmd[-2] == image_id, "launch must pin the exact inspected SHA, not mutable tag"
     assert cmd[cmd.index("--network") + 1] == "none"
     assert cmd[cmd.index("--pull") + 1] == "never"
     assert cmd[cmd.index("--memory") + 1] == "96m"
@@ -58,3 +60,9 @@ def test_script_is_the_exact_source_owned_lua_and_is_synthetic():
     assert "synthetic:parallel" in shell
     assert "REDIS_LUA_CANARY_PASS" in shell
     assert "curl " not in shell and "http://" not in shell
+
+
+def test_docker_canary_rejects_mutable_tag_at_execution():
+    module = _module()
+    with pytest.raises(RuntimeError, match="pinned image"):
+        module.docker_command("fixture", "redis:7-alpine")
