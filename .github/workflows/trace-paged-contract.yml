@@ -1,9 +1,16 @@
 name: trace-paged-contract (synthetic only)
 
 on:
-  push:
-    branches:
-      - feature/assistx-trace-paged-client-20261009
+  pull_request:
+    paths:
+      - ".github/workflows/trace-paged-contract.yml"
+      - "src/assistx/api.py"
+      - "src/assistx/swarm_routes.py"
+      - "src/assistx/trace_detail_pages.py"
+      - "src/assistx/trace_preview_access.py"
+      - "static/js/traces.js"
+      - "tests/test_trace_*.py"
+      - "tests/test_trace_*.cjs"
   workflow_dispatch:
 
 permissions:
@@ -18,8 +25,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout exact branch head
+      - name: Checkout exact PR head (not synthetic merge)
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
