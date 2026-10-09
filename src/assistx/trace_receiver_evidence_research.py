@@ -42,7 +42,7 @@ def validate_observation(data: Any)->bool:
         return False
     if data["schema"]!=SCHEMA or not _uuid4(data["epoch"]):
         return False
-    if not HEX32.fullmatch(data["token"]) if type(data["token"]) is str else True:
+    if type(data["token"]) is not str or not HEX32.fullmatch(data["token"]):
         return False
     if type(data["query_ref"]) is not str or not QREF.fullmatch(data["query_ref"]):
         return False
