@@ -61,3 +61,41 @@ def test_ssh_timeout_denies_not_admits(monkeypatch):
         raise client.subprocess.TimeoutExpired("ssh",13)
     monkeypatch.setattr(client.subprocess,"run",timeout)
     assert client.submit("synthetic-a",EPOCH)["status"]=="authority-unavailable"
+
+
+def test_shell_significant_inputs_rejected_before_ssh(monkeypatch):
+    monkeypatch.setenv("ASSISTX_THREEHOST_RESEARCH_ONLY","yes-disposable")
+    monkeypatch.setattr(client.socket,"gethostname",lambda:"xwing")
+    monkeypatch.setattr(client.subprocess,"run",lambda *a,**k:
+        (_ for _ in ()).throw(AssertionError("unsafe SSH execution")))
+    for name in ("synthetic-a;id","synthetic-a $(id)","synthetic-a\nfoo"):
+        assert client.submit(name,EPOCH)["status"]=="invalid-research-request"
+    assert client.submit("synthetic-good","bad;id")["status"]=="invalid-research-request"
+
+
+def test_same_host_unbound_admit_response_is_rejected(monkeypatch):
+    import json
+    monkeypatch.setenv("ASSISTX_THREEHOST_RESEARCH_ONLY","yes-disposable")
+    monkeypatch.setattr(client.socket,"gethostname",lambda:"x1-370")
+    for field,value in (("query_ref","synthetic-other"),
+                        ("epoch","f4bd38be-3434-4b43-94f1-45cf1dbb7bb6"),
+                        ("graph_id","b"*64)):
+        fake={"status":"admitted","host":"raspberrypi","sequence":1,"active":1,
+              "epoch":EPOCH,"graph_id":"a"*64,"query_ref":"synthetic-good",
+              "token":"a"*32,"receiver_nonce":"a73cb6d6-04ba-4fb3-b92c-0a28f0dbbb9c"}
+        fake[field]=value
+        monkeypatch.setattr(client.subprocess,"run",
+            lambda *a,**k:Result(0,json.dumps(fake)))
+        assert client.submit("synthetic-good",EPOCH)["status"]=="untrusted-authority-response"
+
+
+def test_valid_bound_synthetic_admission_roundtrip(monkeypatch):
+    import json
+    monkeypatch.setenv("ASSISTX_THREEHOST_RESEARCH_ONLY","yes-disposable")
+    monkeypatch.setattr(client.socket,"gethostname",lambda:"xwing")
+    fake={"status":"admitted","host":"raspberrypi","sequence":1,"active":1,
+          "epoch":EPOCH,"graph_id":"a"*64,"query_ref":"synthetic-xwing",
+          "token":"a"*32,"receiver_nonce":"a73cb6d6-04ba-4fb3-b92c-0a28f0dbbb9c"}
+    monkeypatch.setattr(client.subprocess,"run",
+        lambda *a,**k:Result(0,json.dumps(fake)))
+    assert client.submit("synthetic-xwing",EPOCH)["status"]=="admitted"
