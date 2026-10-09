@@ -279,7 +279,7 @@ def test_damaged_progress_denied_without_fallback(isolated):
     e=_receipt(epoch)
     assert custody.inspect() is None
     assert custody.observe_once(e,receiver_sign_only(e,key),**_args(e)).reason=="unavailable"
-    with pytest.raises(ValueError,match="CHECKPOINT_MISMATCH"):
+    with pytest.raises(ValueError,match="HASHCHAIN_DIVERGED"):
         _open(isolated)
 
 
