@@ -98,15 +98,15 @@ def verify_repository_source(
 ) -> SourceBindingVerification:
     """Compare an observed workspace against the expected binding.
 
-    Pure comparison -- no filesystem or git access happens here, so the rule is
-    deterministic and testable. Unbound tasks (no binding) are unaffected and
-    report ``UNBOUND`` with ``accepted=True``; every other state is a rejection.
+    Pure comparison -- no filesystem or git access happens here. Explicit
+    unbound tasks are handled by callers, not accepted by a bound-source
+    verifier. Missing binding is not an admission grant.
     """
 
     if binding is None:
         return SourceBindingVerification(
-            state=SourceBindingState.UNBOUND,
-            accepted=True,
+            state=SourceBindingState.SOURCE_UNAVAILABLE,
+            accepted=False,
             reasons=["no_repository_source_binding"],
             observed=observed,
         )
@@ -125,7 +125,7 @@ def verify_repository_source(
 
     # Repository identity first: a mirror/clone of the "same repository" is a
     # different repository as far as source identity is concerned.
-    if not _same_path(observed.repository_realpath, binding.repository_realpath):
+    if not _same_path(observed.repository_realpath, binding.repo_realpath):
         return _reject(
             SourceBindingState.REPOSITORY_MISMATCH,
             binding,
@@ -141,9 +141,9 @@ def verify_repository_source(
             "worktree_realpath_mismatch",
         )
 
-    if binding.branch is not None and observed.branch != binding.branch:
+    if binding.branch != "DETACHED" and observed.branch != binding.branch:
         return _reject(
-            SourceBindingState.BRANCH_MISMATCH,
+            SourceBindingState.HEAD_MISMATCH,
             binding,
             observed,
             "branch_mismatch",
@@ -155,14 +155,17 @@ def verify_repository_source(
         )
 
     if (
-        binding.dirty_expectation is DirtyStateExpectation.CLEAN_REQUIRED
+        binding.expected_dirty in (DirtyStateExpectation.CLEAN, DirtyStateExpectation.CLEAN_REQUIRED)
         and observed.dirty is not False
-    ):
+    ) or (
+        binding.expected_dirty is DirtyStateExpectation.DIRTY
+        and observed.dirty is not True
+    ) or observed.dirty is None:
         return _reject(
             SourceBindingState.DIRTY_STATE_MISMATCH,
             binding,
             observed,
-            "expected_clean_worktree",
+            "dirty_state_not_as_expected",
         )
 
     return SourceBindingVerification(
@@ -249,8 +252,8 @@ def build_source_binding(
     repository: str,
     worktree_path: Any,
     base_repository_path: Any,
-    task_id: str | None = None,
-    work_id: str | None = None,
+    task_id: str,
+    work_id: str,
     dirty_expectation: DirtyStateExpectation = DirtyStateExpectation.CLEAN_REQUIRED,
 ) -> RepositorySourceBinding:
     """Mint a binding from an *observed* source, guarded by a configured base.
@@ -281,13 +284,15 @@ def build_source_binding(
         raise ValueError(
             "requested worktree is not a registered worktree of the repository"
         )
+    # Preserve required provenance; never synthesize an identity or
+    # silently downgrade a malformed bound task to unbound.
     return RepositorySourceBinding(
         repository=repository,
-        repository_realpath=str(base.worktree_realpath),
+        repo_realpath=str(base.worktree_realpath),
         worktree_realpath=str(observed.worktree_realpath),
-        branch=observed.branch,
+        branch=observed.branch or "DETACHED",
         head_sha=str(observed.head_sha),
-        dirty_expectation=dirty_expectation,
+        expected_dirty=dirty_expectation,
         task_id=task_id,
         work_id=work_id,
     )

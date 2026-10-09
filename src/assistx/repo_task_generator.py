@@ -305,7 +305,7 @@ def _selector(alias: str, relative_path: str, commit: str) -> str:
     return TASK_KINDS[digest[0] % len(TASK_KINDS)]
 
 
-def _source_binding(repo_info: dict[str, Any]) -> dict[str, Any] | None:
+def _source_binding(repo_info: dict[str, Any], *, task_id: str, work_id: str) -> dict[str, Any] | None:
     """Mint the provenance binding for a repository analysis task.
 
     The alias comes from the configured repository map, so the binding describes a
@@ -319,6 +319,8 @@ def _source_binding(repo_info: dict[str, Any]) -> dict[str, Any] | None:
             repository=str(repo_info["alias"]),
             worktree_path=repo_info["path"],
             base_repository_path=repo_info["path"],
+            task_id=task_id,
+            work_id=work_id,
         )
     except (ValueError, OSError) as exc:
         logger.error(
@@ -335,11 +337,18 @@ def _create_task_payload(
     repo_info: dict[str, Any],
     file_path: Path,
     code: str,
+    *,
+    task_id: str,
 ) -> dict[str, Any]:
     repo = Path(str(repo_info["path"]))
     relative = str(file_path.relative_to(repo))
     language = _detect_language(file_path)
     instruction = PROMPTS[kind]
+    binding = _source_binding(repo_info, task_id=task_id, work_id=task_id)
+    if binding is None:
+        # A repository-specific review without a verifiable exact source can
+        # evaluate a stale mirror. It must not enter the READY queue.
+        raise ValueError("repository_source_binding_unavailable")
     prompt = (
         "You are performing read-only repository analysis. Do not claim that a "
         "change was applied. Produce findings, exact evidence, and a bounded next "
@@ -356,7 +365,7 @@ def _create_task_payload(
         "repository": repo_info["alias"],
         "repository_path": repo_info["path"],
         "source_commit": repo_info["commit"],
-        "source_binding": _source_binding(repo_info),
+        "source_binding": binding,
         "file": relative,
         "language": language,
         "prompt": prompt,
@@ -382,9 +391,15 @@ def _analysis_task(
             "utf-8"
         )
     ).hexdigest()[:24]
-    payload = _create_task_payload(kind, repo_info, file_path, code)
+    task_id = f"repo-analysis-{identity}"
+    try:
+        payload = _create_task_payload(kind, repo_info, file_path, code, task_id=task_id)
+    except ValueError:
+        # Do not enqueue a task that cannot prove where it will read.
+        logger.warning("repo task generator: missing strict source binding for %s", task_id)
+        return None
     return {
-        "id": f"repo-analysis-{identity}",
+        "id": task_id,
         "title": f"[{kind}] {repo_info['alias']}: {relative}",
         "kind": f"repo_{kind}",
         "status": "READY" if REPO_TASK_AUTO_READY else "PROPOSED",

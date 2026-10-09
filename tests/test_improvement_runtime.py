@@ -3,6 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from assistx.contracts.repository_source_verifier import build_source_binding
 from assistx.improvement_cycle import build_execution_contract
 from assistx.improvement_runtime import (
     cleanup_worktree,
@@ -80,20 +81,8 @@ def build_evidence(repo, tmp_path):
     return value, env, prepared, evidence
 
 
-def test_workspace_records_whether_the_binding_matches_the_executed_head(tmp_path):
-    """The provenance the work packet carries has to be falsifiable.
-
-    `prepare_repository` resolves HEAD itself and creates the worktree there. The
-    contract's source binding names the commit the task was derived from. Nothing
-    compared the two, so a task bound to commit X could execute against commit Y
-    while the packet asserted X -- and the packet now carries that binding, so
-    unreviewed provenance that is wrong is worse than none at all.
-
-    Reported, not enforced: a binding is documented as evidence that "grants
-    nothing on its own", so blocking on a mismatch would invent a gate the design
-    deliberately does not have. The point is that the record says which commit ran
-    and whether it is the one that was bound.
-    """
+def test_workspace_requires_exact_binding_and_rejects_stale_head(tmp_path):
+    """A supplied strict binding is an integrity gate, never just a report."""
     repo = initialized_repo(tmp_path)
     env = runtime_env(repo, tmp_path)
     head = subprocess.run(
@@ -101,30 +90,42 @@ def test_workspace_records_whether_the_binding_matches_the_executed_head(tmp_pat
         capture_output=True, text=True, check=True,
     ).stdout.strip()
 
-    # No binding at all: absence is legitimate for non-repository tasks and must
-    # not read as a mismatch.
+    # Legacy, truly unbound contracts are unaffected.
     plain = prepare_repository(contract(), task_id="t-plain", env=env)
     assert plain["ok"] is True
-    assert plain["source_binding_head_sha"] is None
-    assert plain["source_binding_matches"] is None
+    assert plain["source_binding_verification"] is None
+    cleanup_worktree(plain)
 
-    # Bound to the commit that will actually run: matches.
-    matching = dict(contract())
-    matching["source_binding"] = {"head_sha": head}
+    binding = build_source_binding(
+        repository="repo",
+        worktree_path=repo,
+        base_repository_path=repo,
+        task_id="t-same",
+        work_id="attempt-same",
+    )
+    matching = dict(contract(), source_binding=binding.to_contract_payload())
     same = prepare_repository(matching, task_id="t-same", env=env)
     assert same["ok"] is True
     assert same["head"] == head
-    assert same["source_binding_matches"] is True
+    assert same["source_binding_verification"]["state"] == "MATCH"
+    assert same["source_binding_verification"]["accepted"] is True
+    cleanup_worktree(same)
 
-    # Bound to some other commit: reported as a mismatch, still executed.
-    other = "b" * 40
-    bound_elsewhere = dict(contract())
-    bound_elsewhere["source_binding"] = {"head_sha": other}
-    different = prepare_repository(bound_elsewhere, task_id="t-diff", env=env)
-    assert different["ok"] is True, "a mismatch is reported, not enforced"
-    assert different["source_binding_head_sha"] == other
-    assert different["source_binding_matches"] is False
-    assert different["head"] == head
+    # A stale HEAD, even with all other provenance correct, fails closed
+    # before creating another isolated worktree or executing any code.
+    stale = binding.to_contract_payload()
+    stale["head_sha"] = "b" * 40
+    bound_elsewhere = dict(contract(), source_binding=stale)
+    rejected = prepare_repository(bound_elsewhere, task_id="t-diff", env=env)
+    assert rejected["ok"] is False
+    assert rejected["reason"] == "repository_source_binding_rejected:HEAD_MISMATCH"
+    assert rejected["source_binding_verification"]["accepted"] is False
+
+    # A partial user-supplied identity is never silently treated as unbound.
+    malformed = dict(contract(), source_binding={"head_sha": head})
+    import pytest
+    with pytest.raises(ValueError):
+        prepare_repository(malformed, task_id="t-partial", env=env)
 
 
 def test_executor_uses_isolated_worktree_and_exports_signed_patch(tmp_path):
