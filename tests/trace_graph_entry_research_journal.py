@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Iterator
 
@@ -48,7 +49,7 @@ class SqliteResearchJournal:
     def __init__(self, path: str | Path):
         self.path = str(path)
         # Do not delete or truncate existing research evidence on reopen.
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             db.execute("""CREATE TABLE IF NOT EXISTS graph_entry_events (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT,
                 attempt_id TEXT NOT NULL,
@@ -78,7 +79,7 @@ class SqliteResearchJournal:
             "term": attempt.grant.term,
             "plan_id": plan_id,
         })
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
                 "SELECT event_type,payload FROM graph_entry_events "
@@ -113,7 +114,7 @@ class SqliteResearchJournal:
     def verify_chain(self) -> tuple[int, str]:
         """Validate internal hashes. An external checkpoint must anchor the tip."""
         prior, count = ZERO, 0
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
             rows: Iterator[tuple[int, str, str, str]] = iter(db.execute(
                 "SELECT seq,payload,previous_hash,event_hash "
                 "FROM graph_entry_events ORDER BY seq"
