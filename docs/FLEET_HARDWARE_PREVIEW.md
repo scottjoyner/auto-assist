@@ -65,3 +65,7 @@ Full AssistX startup/integration acceptance requires the existing application's 
 ## Possible follow-up
 
 A user interface could show this endpoint in the Fleet Status and trace detail screens. It should link a decision to the preview digest/snapshot and display missing evidence, without silently passing the advisory to routing or execution. Avoid storing full raw private inventories in AssistX public source or public logs.
+
+## Independent CI contract check
+
+The additive `.github/workflows/fleet-hardware-preview.yml` job installs the existing repository requirements, uses synthetic-only tests, and deliberately does not configure `ASSISTX_FLEET_HARDWARE_ROOT`. This yields a focused regression check without relying on the unrelated full-suite recovery/legacy UI gates that currently fail on `main`. A successful focused job **does not** certify full application integration or justify release/merge by itself.
