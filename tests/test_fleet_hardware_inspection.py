@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from assistx.fleet_hardware_inspection import (
     InspectionInput,
+    InspectionSchemaUnavailable,
     build_inspection_router,
     list_inspections,
     persist_inspection,
@@ -45,6 +46,7 @@ class MemoryNeo:
         self.receipts: dict[str, dict[str, Any]] = {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.closed = 0
+        self.constraint_present = True
 
     def _session(self):
         return MemorySession(self)
@@ -69,6 +71,8 @@ class MemorySession:
         assert "current_state" not in query
         assert ":Task" not in query
         assert "CREATE (g:" not in query
+        if "SHOW CONSTRAINTS" in query:
+            return MemoryResult({"matched": 1 if self.db.constraint_present else 0})
         if "ON CREATE SET" in query:
             cid = params["correlation_id"]
             if cid not in self.db.groups or (
@@ -309,3 +313,39 @@ def test_explicit_operator_post_succeeds_only_with_evidence_matching_private_sou
     assert listed.status_code == 200
     assert len(listed.json()["receipts"]) == 1
     assert neo.groups[CID]["current_state"] == "completed"
+
+
+def test_missing_neo4j_uniqueness_constraint_denies_every_write():
+    neo = MemoryNeo()
+    neo.constraint_present = False
+    receipt = prepare_inspection_receipt(CID, preview())
+    with pytest.raises(InspectionSchemaUnavailable):
+        persist_inspection(neo, receipt, authenticated_actor="operator")
+    assert not neo.receipts
+    assert all("ON CREATE SET" not in query for query, _ in neo.calls)
+    assert neo.groups[CID]["current_state"] == "completed"
+
+
+def test_missing_constraint_returns_503_on_authenticated_explicit_post(monkeypatch):
+    from unittest.mock import Mock
+
+    neo = MemoryNeo()
+    neo.constraint_present = False
+    monkeypatch.setattr("assistx.fleet_hardware_inspection.hardware_preview", Mock(return_value=preview()))
+    app = FastAPI()
+    app.include_router(
+        build_inspection_router(
+            auth_dependency=lambda: "operator",
+            neo_factory=lambda: neo,
+            root_provider=lambda: "/authorized-fixture",
+            write_enabled=lambda: True,
+        )
+    )
+    result = TestClient(app).post(
+        f"/api/fleet/trace-inspections/{CID}",
+        json={"ram_gib": 20.0, "gpu_vram_gib": 16.0, "confirm_post_hoc_observation": True},
+        headers={"X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1"},
+    )
+    assert result.status_code == 503
+    assert "schema prerequisite" in result.json()["detail"]
+    assert len(neo.receipts) == 0
