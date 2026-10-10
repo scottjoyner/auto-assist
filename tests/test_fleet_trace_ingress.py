@@ -38,9 +38,11 @@ def setup(monkeypatch, tmp_path):
     policy = {
         f"login:{LOGIN}": {"nodes": ["x1-370"], "producers": ["assistx"],
                             "write": True, "read": True, "write_tenant": "tenant-a",
-                            "read_tenants": ["tenant-a", "tenant-b"]},
+                            "read_tenants": ["tenant-a", "tenant-b"],
+                            "read_actors": [f"login:{LOGIN}", "tag:ingress"]},
         "login:observer@example.com": {"nodes": ["xwing"], "producers": ["opencode"],
-                                        "read": True, "read_tenants": ["tenant-b"]},
+                                        "read": True, "read_tenants": ["tenant-b"],
+                                        "read_actors": ["tag:ingress"]},
         "tag:ingress": {"nodes": ["xwing"], "producers": ["opencode"],
                         "write": True, "read": False, "write_tenant": "tenant-b"},
     }
@@ -287,11 +289,12 @@ def test_two_users_same_model_node_identical_trace_and_event_are_isolated(setup,
     policy = json.loads(os.environ["FLEET_TRACE_AUTH_POLICY_JSON"])
     policy["login:bob@example.com"] = {
         "nodes": ["x1-370"], "producers": ["assistx"], "write": True, "read": True,
-        "write_tenant": "tenant-b", "read_tenants": ["tenant-b"]
+        "write_tenant": "tenant-b", "read_tenants": ["tenant-b"],
+        "read_actors": ["login:bob@example.com"]
     }
     policy["login:alice@example.com"] = {
         "nodes": ["x1-370"], "producers": ["assistx"], "read": True,
-        "read_tenants": ["tenant-a"]
+        "read_tenants": ["tenant-a"], "read_actors": [f"login:{LOGIN}"]
     }
     monkeypatch.setenv("FLEET_TRACE_AUTH_POLICY_JSON", json.dumps(policy))
     event = envelope("same-event-id")
@@ -377,9 +380,36 @@ def test_second_writer_same_tenant_cannot_take_over_another_event_id(setup, monk
     policy = json.loads(os.environ["FLEET_TRACE_AUTH_POLICY_JSON"])
     policy["login:second@example.com"] = {
         "nodes": ["x1-370"], "producers": ["assistx"], "write": True, "read": True,
-        "write_tenant": "tenant-a", "read_tenants": ["tenant-a"]
+        "write_tenant": "tenant-a", "read_tenants": ["tenant-a"],
+        "read_actors": ["login:second@example.com"]
     }
     monkeypatch.setenv("FLEET_TRACE_AUTH_POLICY_JSON", json.dumps(policy))
     assert client.post("/v1/events", headers=headers(), json=envelope()).status_code == 201
     assert client.post("/v1/events", headers=headers("second@example.com"),
                        json=envelope()).status_code == 409
+
+
+def test_two_people_in_same_organization_tenant_have_separate_subject_readback(setup, monkeypatch):
+    client, _ = setup
+    policy = json.loads(os.environ["FLEET_TRACE_AUTH_POLICY_JSON"])
+    policy["login:bob@example.com"] = {
+        "nodes": ["x1-370"], "producers": ["assistx"], "write": True, "read": True,
+        "write_tenant": "tenant-a", "read_tenants": ["tenant-a"],
+        "read_actors": ["login:bob@example.com"]
+    }
+    monkeypatch.setenv("FLEET_TRACE_AUTH_POLICY_JSON", json.dumps(policy))
+    assert client.post("/v1/events", headers=headers(), json=envelope("alice-request")).status_code == 201
+    assert client.post("/v1/events", headers=headers("bob@example.com"),
+                       json=envelope("bob-request")).status_code == 201
+    alice = client.get(f"/v1/traces/{TRACE}/events", headers=headers())
+    bob = client.get(f"/v1/traces/{TRACE}/events", headers=headers("bob@example.com"))
+    assert {x["envelope"]["event_id"] for x in alice.json()["events"]} == {"alice-request"}
+    assert {x["envelope"]["event_id"] for x in bob.json()["events"]} == {"bob-request"}
+
+
+def test_missing_writer_subject_read_policy_fails_closed(setup, monkeypatch):
+    client, _ = setup
+    policy = json.loads(os.environ["FLEET_TRACE_AUTH_POLICY_JSON"])
+    del policy[f"login:{LOGIN}"]["read_actors"]
+    monkeypatch.setenv("FLEET_TRACE_AUTH_POLICY_JSON", json.dumps(policy))
+    assert client.get(f"/v1/traces/{TRACE}/events", headers=headers()).status_code == 403
