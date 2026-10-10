@@ -365,8 +365,13 @@ def run():
                 raise RuntimeError("WORKER_ISOLATION_BROKEN")
             # First worker request is an arbitrary Cypher string. Reject it
             # without obtaining a reservation or touching Neo4j.
-            initial_logs = docker("logs", worker, check=False).stdout
-            assert "UNREGISTERED_QUERY_PLAN" in initial_logs, initial_logs
+            initial_logs = ""
+            for _ in range(25):
+                initial_logs = docker("logs", worker, check=False).stdout
+                if "UNREGISTERED_QUERY_PLAN" in initial_logs:
+                    break
+                time.sleep(0.12)
+            assert "UNREGISTERED_QUERY_PLAN" in initial_logs, "WORKER_DENIAL_NOT_OBSERVED"
             assert gparent.poll(17), "GATEWAY_DID_NOT_EXECUTE_GRAPH"
             attempt = gparent.recv()
             assert attempt["kind"] == "graph_starting", attempt
