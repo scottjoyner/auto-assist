@@ -12,6 +12,8 @@ import concurrent.futures
 import hashlib
 import ipaddress
 import json
+import os
+import tempfile
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
@@ -159,15 +161,33 @@ def inspect_target(target: dict[str, Any], fetch: Fetcher = fetch_readonly,
 def collect(snapshot: dict[str, Any], ports: list[int], *,
             port_map: dict[str, list[int]] | None = None, max_nodes: int = 32,
             workers: int = 4, timeout: float = 1.2,
+            source_bytes: bytes | None = None,
             fetch: Fetcher = fetch_readonly) -> dict[str, Any]:
     targets, coverage = plan_targets(snapshot, ports, port_map, max_nodes)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(workers, 8))) as pool:
         results = list(pool.map(lambda t: inspect_target(t, fetch, timeout), targets))
     return {"schema_version": 1, "captured_at": datetime.now(UTC).isoformat(),
             "authority": "observational_only_not_runtime_admission",
-            "source_inventory_sha256": hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest(),
+            "source_inventory_sha256": hashlib.sha256(source_bytes if source_bytes is not None
+                                              else json.dumps(snapshot, sort_keys=True).encode()).hexdigest(),
             "requested_ports": ports, "coverage": {**coverage, "targets": len(targets)},
             "observations": results}
+
+
+def write_atomic_private(path: Path, content: str) -> None:
+    """Replace custody files atomically and avoid creating world-readable data."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f'.{path.name}.', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as file:
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, path)
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
 
 
 def main() -> int:
@@ -190,15 +210,15 @@ def main() -> int:
             parser.error("invalid operator port map")
         port_map = {str(node).lower(): allowed_ports(values) for node, values in raw.items()
                     if isinstance(values, list)}
-    snapshot = json.loads(args.input.read_text(encoding="utf-8"))
+    raw_snapshot = args.input.read_bytes()
+    snapshot = json.loads(raw_snapshot)
     result = collect(snapshot, ports, port_map=port_map, max_nodes=args.max_nodes,
-                     workers=args.workers, timeout=args.timeout)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+                     workers=args.workers, timeout=args.timeout, source_bytes=raw_snapshot)
     data = json.dumps(result, indent=2, sort_keys=True) + "\n"
-    args.output.write_text(data, encoding="utf-8")
+    write_atomic_private(args.output, data)
     digest = hashlib.sha256(data.encode("utf-8")).hexdigest()
-    args.output.with_suffix(args.output.suffix + ".sha256").write_text(
-        f"{digest}  {args.output.name}\n", encoding="utf-8")
+    write_atomic_private(args.output.with_suffix(args.output.suffix + ".sha256"),
+                         f"{digest}  {args.output.name}\n")
     print(json.dumps({"output": str(args.output), "sha256": digest,
                       "targets": result["coverage"]["targets"],
                       "verified_resident_endpoints": sum(
