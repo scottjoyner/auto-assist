@@ -48,3 +48,29 @@ class QuorumPlanGrantAdapter:
         # No lease expiry or automatic graph-success release is supported.
         return Grant(reservation_id=token, token=token,
                      term=self._term, epoch=self._genesis)
+
+    def admit_stable(self, operation_id: str, request_digest: str,
+                     plan_id: str) -> Grant:
+        # This path is separate from legacy UUID per-attempt admission.
+        # Stable operation ID is principal+request scoped; do NOT prefix it
+        # with plan ID, since reusing a request ID for a different plan must
+        # be rejected as a request-digest conflict.
+        import re
+        if (not isinstance(operation_id, str) or
+                not re.fullmatch(r"auth:[0-9a-f]{64}", operation_id)
+                or not isinstance(request_digest, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", request_digest)
+                or not isinstance(plan_id, str)):
+            raise FenceRefused("INVALID_STABLE_OPERATION")
+        view = self._quorum.snapshot()
+        state = view.document
+        if (view.cluster_id != self._quorum.pinned_cluster_id
+                or state["genesis"] != self._genesis
+                or state["owner"] != self._owner
+                or state["term"] != self._term):
+            raise FenceRefused("GATEWAY_EPOCH_TERM_OR_OWNER_STALE")
+        token = self._quorum.admit(
+            self._owner, self._term, operation_id,
+            request_digest=request_digest)
+        return Grant(reservation_id=token, token=token,
+                     term=self._term, epoch=self._genesis)
