@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -111,7 +112,7 @@ def _valid_scope(entry: dict[str, Any]) -> bool:
                  or (isinstance(readable, list) and 0 < len(readable) <= 16
                      and len(set(readable)) == len(readable)
                      and all(valid_tenant(x) for x in readable)
-                     and isinstance(actors, list) and 0 < len(actors) <= 64
+                     and isinstance(actors, list) and 0 < len(actors) <= 16
                      and len(set(actors)) == len(actors)
                      and all(valid_actor(x) for x in actors))))
 
@@ -168,14 +169,31 @@ def _connect() -> sqlite3.Connection:
     if not {"tenant_scope", "producer"} <= columns:
         db.close()
         _deny(503, "trace_tenant_schema_migration_required")
+    # v2 denotes tenant-scoped, HMAC-protected owner digests. Old v1 records
+    # cannot be silently reinterpreted. Fresh empty schemas may be initialized.
+    version = db.execute("PRAGMA user_version").fetchone()[0]
+    if version != 2:
+        if version != 0 or db.execute("SELECT count(*) FROM trace_events").fetchone()[0]:
+            db.close()
+            _deny(503, "trace_owner_digest_migration_required")
+        db.execute("PRAGMA user_version=2")
     db.execute("""CREATE INDEX IF NOT EXISTS idx_tenant_trace_events
                   ON trace_events(tenant_scope, trace_id, received_at, event_id)""")
     os.chmod(path, 0o600)
     return db
 
 
-def _digest_principal(value: str) -> str:
-    return hashlib.sha256(value.encode()).hexdigest()[:24]
+def _digest_principal(value: str, tenant: str) -> str:
+    # Unkeyed hashes of login/email are enumerable and linkable across
+    # organizations. Require a separately managed 256-bit secret for this
+    # pilot; never derive it from the trace ID, auth token or request body.
+    raw = os.environ.get("FLEET_TRACE_OWNER_KEY_HEX", "")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", raw):
+        _deny(503, "trace_owner_hmac_key_unavailable")
+    return hmac.new(
+        bytes.fromhex(raw), (tenant + "\0" + value).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 async def _read_bounded_body(request: Request) -> bytes:
@@ -214,8 +232,8 @@ async def ingest(request: Request) -> JSONResponse:
         _deny(403, "producer_scope_denied")
     canonical = json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     digest = hashlib.sha256(canonical.encode()).hexdigest()
-    actor_digest = _digest_principal(actor)
     tenant_scope = scope["write_tenant"]  # server policy identity, not a client field
+    actor_digest = _digest_principal(actor, tenant_scope)
     received_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     try:
         with closing(_connect()) as db, db:
@@ -267,7 +285,11 @@ async def get_events(trace_id: str, request: Request, limit: int = 30) -> JSONRe
         # An organization's tenant can contain multiple people. The writer
         # principal is the strongest trustworthy subject currently available
         # from Serve. Readers receive only explicitly granted actors.
-        actor_digests = [_digest_principal(actor) for actor in scope["read_actors"]]
+        actor_digests = [
+            _digest_principal(actor, tenant)
+            for tenant in scope["read_tenants"]
+            for actor in scope["read_actors"]
+        ]
         actor_placeholders = ",".join("?" for _ in actor_digests)
         with closing(_connect()) as db:
             rows = db.execute(
