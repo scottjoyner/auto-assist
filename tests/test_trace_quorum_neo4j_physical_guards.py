@@ -68,3 +68,11 @@ def test_production_and_server_enforcement_explicitly_disclaimed():
     assert '"etcd_scoped_kv_rbac_enforced": False' in PHYSICAL
     assert '"graph_cluster_generation_witnessed": False' in PHYSICAL
     assert '"production_authority": False' in PHYSICAL
+
+
+def test_authenticated_raw_kv_policy_bypass_explicitly_reproduced():
+    assert 'raw-kv-policy-bypass-negative' in PHYSICAL
+    assert '"mod_revision": str(raw_before.mod_revision)' in PHYSICAL
+    assert '"forged-raw-kv-writer"' in PHYSICAL
+    assert '"authenticated_raw_kv_policy_bypass_reproduced": True' in PHYSICAL
+    assert '"etcd_scoped_kv_rbac_enforced": False' in PHYSICAL
