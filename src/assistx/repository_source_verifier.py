@@ -319,7 +319,10 @@ def verify_source_binding(
             ],
         )
 
-    if binding.expected_dirty is DirtyStateExpectation.CLEAN and observed.dirty:
+    if binding.expected_dirty in (
+        DirtyStateExpectation.CLEAN,
+        DirtyStateExpectation.CLEAN_REQUIRED,
+    ) and observed.dirty is not False:
         return _verdict(
             binding,
             observed,
