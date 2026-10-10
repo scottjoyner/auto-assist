@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -28,6 +28,10 @@ from .schemas.repository_source_binding import (
     DirtyStateExpectation,
     RepositorySourceBinding,
     SourceBindingState,
+    ObservedSourceState,
+)
+from ..repository_source_verifier import (
+    configured_repository_roots, verify_source_binding,
 )
 
 __all__ = [
@@ -70,7 +74,7 @@ class SourceBindingVerification(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    state: SourceBindingState
+    state: SourceBindingState | Literal["UNBOUND"]
     accepted: bool
     reasons: list[str] = Field(default_factory=list)
     repository: str | None = None
@@ -81,7 +85,7 @@ class SourceBindingVerification(BaseModel):
         """Serialize for task/result provenance (expected binding included)."""
 
         payload: dict[str, Any] = {
-            "state": self.state.value,
+            "state": self.state.value if isinstance(self.state, SourceBindingState) else self.state,
             "accepted": self.accepted,
             "reasons": list(self.reasons),
             "repository": self.repository,
@@ -96,79 +100,31 @@ def verify_repository_source(
     binding: RepositorySourceBinding | None,
     observed: ObservedSource,
 ) -> SourceBindingVerification:
-    """Compare an observed workspace against the expected binding.
+    """Legacy facade over the canonical, deny-only source-binding verifier.
 
-    Pure comparison -- no filesystem or git access happens here, so the rule is
-    deterministic and testable. Unbound tasks (no binding) are unaffected and
-    report ``UNBOUND`` with ``accepted=True``; every other state is a rejection.
+    Absence is recorded as UNBOUND for old analysis tasks, never as an
+    execution permission. A *supplied* binding is always checked against the
+    strict configured-root schema, without falling back to sibling checkouts.
     """
-
     if binding is None:
         return SourceBindingVerification(
-            state=SourceBindingState.UNBOUND,
-            accepted=True,
-            reasons=["no_repository_source_binding"],
-            observed=observed,
+            state="UNBOUND", accepted=True,
+            reasons=["no_repository_source_binding"], observed=observed,
         )
-
-    if not observed.available:
-        return SourceBindingVerification(
-            state=SourceBindingState.SOURCE_UNAVAILABLE,
-            accepted=False,
-            reasons=[
-                f"source_unavailable:{observed.unavailable_reason or 'unknown'}"
-            ],
-            repository=binding.repository,
-            expected=binding,
-            observed=observed,
-        )
-
-    # Repository identity first: a mirror/clone of the "same repository" is a
-    # different repository as far as source identity is concerned.
-    if not _same_path(observed.repository_realpath, binding.repository_realpath):
-        return _reject(
-            SourceBindingState.REPOSITORY_MISMATCH,
-            binding,
-            observed,
-            "repository_realpath_mismatch",
-        )
-
-    if not _same_path(observed.worktree_realpath, binding.worktree_realpath):
-        return _reject(
-            SourceBindingState.WORKTREE_MISMATCH,
-            binding,
-            observed,
-            "worktree_realpath_mismatch",
-        )
-
-    if binding.branch is not None and observed.branch != binding.branch:
-        return _reject(
-            SourceBindingState.BRANCH_MISMATCH,
-            binding,
-            observed,
-            "branch_mismatch",
-        )
-
-    if not _same_head(observed.head_sha, binding.head_sha):
-        return _reject(
-            SourceBindingState.HEAD_MISMATCH, binding, observed, "head_sha_mismatch"
-        )
-
-    if (
-        binding.dirty_expectation is DirtyStateExpectation.CLEAN_REQUIRED
-        and observed.dirty is not False
-    ):
-        return _reject(
-            SourceBindingState.DIRTY_STATE_MISMATCH,
-            binding,
-            observed,
-            "expected_clean_worktree",
-        )
-
+    canonical = ObservedSourceState(
+        available=observed.available,
+        unavailable_reason=observed.unavailable_reason,
+        repo_realpath=observed.repository_realpath,
+        worktree_realpath=observed.worktree_realpath,
+        branch=observed.branch or "DETACHED",
+        head_sha=observed.head_sha,
+        dirty=observed.dirty,
+    )
+    verdict = verify_source_binding(binding, canonical)
     return SourceBindingVerification(
-        state=SourceBindingState.MATCH,
-        accepted=True,
-        reasons=[],
+        state=verdict.state,
+        accepted=verdict.accepted,
+        reasons=list(verdict.reasons),
         repository=binding.repository,
         expected=binding,
         observed=observed,
@@ -249,45 +205,38 @@ def build_source_binding(
     repository: str,
     worktree_path: Any,
     base_repository_path: Any,
-    task_id: str | None = None,
-    work_id: str | None = None,
-    dirty_expectation: DirtyStateExpectation = DirtyStateExpectation.CLEAN_REQUIRED,
+    task_id: str,
+    work_id: str,
+    expected_dirty: DirtyStateExpectation = DirtyStateExpectation.CLEAN,
+    env: dict[str, str] | None = None,
 ) -> RepositorySourceBinding:
-    """Mint a binding from an *observed* source, guarded by a configured base.
+    """Mint only from an explicitly configured repository root.
 
-    ``base_repository_path`` must be the configured canonical root for
-    ``repository``. The candidate ``worktree_path`` is only bindable when git
-    reports it as that base root or as a registered worktree of it. A
-    caller-supplied host path therefore cannot become authoritative on its own:
-    an arbitrary sibling directory, clone or mirror is rejected.
+    Caller-provided base_repository_path is NOT sufficient authority: it
+    must match the configured alias map, and the requested tree must be a
+    registered worktree belonging to that mapped root.
     """
-
+    roots = configured_repository_roots(env)
+    configured = roots.get(repository)
+    if configured is None:
+        raise ValueError("repository alias lacks configured root authority")
+    base = observe_source_workspace(base_repository_path)
+    if not base.available or str(configured) != base.worktree_realpath:
+        raise ValueError("caller base does not match configured repository root")
     observed = observe_source_workspace(worktree_path)
     if not observed.available:
-        raise ValueError(
-            f"cannot bind unavailable source: {observed.unavailable_reason}"
-        )
-    base = observe_source_workspace(base_repository_path)
-    if not base.available:
-        raise ValueError(
-            f"configured repository root is unusable: {base.unavailable_reason}"
-        )
+        raise ValueError("cannot bind unavailable source")
     if not _same_path(base.repository_realpath, observed.repository_realpath):
-        raise ValueError(
-            "requested worktree does not belong to the configured repository root"
-        )
-    registered = _registered_worktrees(base.worktree_realpath)
-    if observed.worktree_realpath not in registered:
-        raise ValueError(
-            "requested worktree is not a registered worktree of the repository"
-        )
+        raise ValueError("requested worktree belongs to another repository")
+    if observed.worktree_realpath not in _registered_worktrees(base.worktree_realpath):
+        raise ValueError("requested worktree is not registered")
     return RepositorySourceBinding(
         repository=repository,
-        repository_realpath=str(base.worktree_realpath),
+        repo_realpath=str(base.repository_realpath),
         worktree_realpath=str(observed.worktree_realpath),
-        branch=observed.branch,
+        branch=observed.branch or "DETACHED",
         head_sha=str(observed.head_sha),
-        dirty_expectation=dirty_expectation,
+        expected_dirty=expected_dirty,
         task_id=task_id,
         work_id=work_id,
     )
