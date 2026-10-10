@@ -183,6 +183,26 @@
     <div id="service-health-table" class="table-wrap mt-3">Loading…</div>
   </section>
 
+  <section class="card" id="section-hardware-evidence" aria-labelledby="hardware-evidence-title">
+    <div class="section-header">
+      <div>
+        <h3 id="hardware-evidence-title">Verified Hardware Evidence — Operator Preview</h3>
+        <p class="kicker">Separate private inventory; read-only capacity and storage-locality evidence, not workload admission.</p>
+      </div>
+    </div>
+    <form id="fleet-hardware-evidence-form" class="mt-3">
+      <div class="actions">
+        <label>Required RAM (GiB) <input id="evidence-ram" name="ram_gib" type="number" min="0" max="4096" step="1" value="20"></label>
+        <label>Reported GPU VRAM per function (GiB) <input id="evidence-gpu" name="gpu_vram_gib" type="number" min="0" max="4096" step="1" value="16"></label>
+        <label>Data-host node <input id="evidence-data-host" name="data_host" type="text" maxlength="80" placeholder="optional verified node"></label>
+        <button class="btn secondary" type="submit" id="evidence-refresh">Inspect evidence</button>
+      </div>
+    </form>
+    <div id="fleet-hardware-evidence-status" class="muted mt-3" role="status" aria-live="polite">Not loaded. Requires an authorized private inventory checkout.</div>
+    <div id="fleet-hardware-evidence-details" class="mt-3" aria-live="polite"></div>
+    <p class="muted mt-3">No dispatch, reservations, filesystem changes, or automatic refresh. Reported hardware memory is not available model capacity.</p>
+  </section>
+
   <section class="card half" id="section-hardware">
     <div class="section-header">
       <div>
@@ -197,7 +217,9 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', path='js/ui_utils.js') }}"></script>
+<link rel="stylesheet" href="{{ url_for('static', path='css/fleet_hardware_evidence.css') }}">
 <script src="{{ url_for('static', path='js/fleet_dashboard.js') }}"></script>
+<script src="{{ url_for('static', path='js/fleet_hardware_preview.js') }}"></script>
 <script>
 (async () => {
   const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])));

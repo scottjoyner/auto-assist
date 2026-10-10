@@ -160,6 +160,7 @@
       .join("");
 
     detailEl.innerHTML = head + '<div class="timeline">' + body + "</div>";
+    if (window.FleetTraceEvidence) window.FleetTraceEvidence.render(trace, detailEl);
   }
 
   function select(cid) {
