@@ -70,16 +70,16 @@ def rig(store=None, capacity=2):
     authority.bootstrap(EPOCH, "ingress-gateway", public(operator),
                         public(witness), capacity)
     entry_graph, journal = Graph(), Journal()
+    adapter = QuorumPlanGrantAdapter(
+        EtcdQuorumFence(store, authority.key, authority.pinned_cluster_id),
+        "ingress-gateway", 1, EPOCH)
     entry = ProtectedGraphEntry(
         {"approved_read": QueryPlan("RETURN $value AS value", ("value",))},
-        QuorumPlanGrantAdapter(
-            EtcdQuorumFence(store, authority.key, authority.pinned_cluster_id),
-            "ingress-gateway", 1, EPOCH),
-        journal, entry_graph, EPOCH
+        adapter, journal, entry_graph, EPOCH
     )
     app = FastAPI()
     app.include_router(
-        build_research_idempotent_graph_router(entry, verified_basic))
+        build_research_idempotent_graph_router(entry, verified_basic, adapter))
     return TestClient(app), authority, store, witness, entry_graph, journal
 
 
@@ -201,7 +201,8 @@ def test_http_ingress_stable_id_passes_through_actual_unix_policy_writer(tmp_pat
         journal, graph, GENESIS,
     )
     app = FastAPI()
-    app.include_router(build_research_idempotent_graph_router(entry, verified_basic))
+    app.include_router(build_research_idempotent_graph_router(
+        entry, verified_basic, UnixPolicyGrantAdapter(unix_client, GENESIS)))
     client = TestClient(app)
     try:
         assert request(client).status_code == 200
@@ -242,3 +243,62 @@ def test_http_authenticated_stable_id_remains_pending_after_writer_disappears(tm
         assert request(client).status_code == 503
         assert len(authority.snapshot().document["pending"]) == 1
         assert len(graph.calls) == 1
+
+
+def status(client, key="stable-request-0001", identity="alice", password="test-password-only"):
+    return client.get(
+        f"/_research/graph/requests/{key}", auth=(identity, password),
+        headers={"X-Verified-Subject": "alice",
+                 "Tailscale-User-Login": "alice"})
+
+
+def test_read_only_status_is_verified_principal_scoped_and_no_reexecution():
+    client, quorum, store, signer, graph, journal = rig()
+    assert status(client).json() == {"state": "ABSENT_NOT_AN_EXECUTION_PERMIT"}
+    assert request(client).status_code == 200
+    assert status(client).json() == {"state": "PENDING_EXECUTION_UNCERTAIN"}
+    assert status(client, identity="bob").json() == {
+        "state": "ABSENT_NOT_AN_EXECUTION_PERMIT"}
+    assert status(client, identity="mallory").status_code == 401
+    assert len(graph.calls) == 1
+    token = next(iter(quorum.snapshot().document["pending"]))
+    quorum.bind(token, "ingress-gateway", 1, "neo4j-disposable",
+                "gen-1", "neo4j-transaction-91")
+    receipt = witness_receipt(quorum.snapshot(), token)
+    quorum.close_with_witness(token, receipt, signer.sign(canon(receipt)))
+    assert status(client).json() == {"state": "CLOSED_NO_REEXECUTION"}
+    assert len(graph.calls) == 1
+    assert "token" not in str(status(client).json())
+
+
+def test_reconciliation_under_quorum_loss_is_503_not_absent():
+    client, quorum, store, signer, graph, journal = rig()
+    store.fail = True
+    assert status(client).status_code == 503
+    assert status(client).json() == {"detail": "reconciliation_unavailable"}
+
+
+def test_actual_unix_service_returns_scoped_http_status_without_token(tmp_path):
+    from test_trace_etcd_policy_writer_research import socket_rig, stop, GENESIS
+    from trace_etcd_policy_writer_research import UnixPolicyGrantAdapter
+
+    server, thread, unix_client, authority, witness, operator = socket_rig(tmp_path)
+    adapter = UnixPolicyGrantAdapter(unix_client, GENESIS)
+    graph = Graph()
+    app = FastAPI()
+    app.include_router(build_research_idempotent_graph_router(
+        ProtectedGraphEntry(
+            {"approved_read": QueryPlan("RETURN $value AS value", ("value",))},
+            adapter, Journal(), graph, GENESIS),
+        verified_basic, adapter))
+    client = TestClient(app)
+    try:
+        assert status(client).json() == {"state": "ABSENT_NOT_AN_EXECUTION_PERMIT"}
+        assert request(client).status_code == 200
+        assert status(client).json() == {"state": "PENDING_EXECUTION_UNCERTAIN"}
+        assert status(client, identity="bob").json() == {
+            "state": "ABSENT_NOT_AN_EXECUTION_PERMIT"}
+        assert len(graph.calls) == 1
+    finally:
+        stop(server, thread)
+    assert status(client).status_code == 503
