@@ -29,3 +29,9 @@ Do not treat a W3C trace ID as authentication, a gateway HTTP response as runtim
 `PYTHONPATH=src python3 -m pytest -q tests/test_mobile_trace_projection.py tests/test_mobile_trace_context.py tests/test_mobile_agent_routes.py tests/test_mobile_runtime_catalog.py` passed **31 tests** on a clean isolated x1-370 worktree. New projection tests cover canonical graph kwargs, request-ID rejection, invalid W3C values, whitelisted stage semantics, invalid status types and shared trace ID across separate child spans.
 
 The remaining steps are disposable graph experiment, opt-in bounded persistence, authenticated read-only retrieval and physical iPhone correlation proof against a signed build. Maintain fail-closed Agent Auto admission independently.
+
+## Disposable graph integration experiment — observed 2026-10-10
+
+We executed the *real* `swarm_core.record_trace_event` function against `assistx.contracts.tests.fake_neo4j.FakeNeo4j(apoc=False)` using canonical W3C mobile projection kwargs. Assertions prove: a projected HTTP-accepted receipt creates a `(:TraceEvent)`, links to `(:TraceGroup {correlation_id:trace_id})`, stores only the whitelisted payload, and makes **no** `FOR_TASK`, `FOR_ROUTE` or `FOR_ASSIGNMENT` authority links. A three-stage observation sequence writes three events under the same trace group, without merging child span identity or gaining runtime authority.
+
+The combined contract suite `PYTHONPATH=src python3 -m pytest -q tests/test_mobile_trace_projection.py src/assistx/contracts/tests/test_trace_linkage.py tests/test_mobile_trace_context.py tests/test_mobile_agent_routes.py tests/test_mobile_runtime_catalog.py` passed **39 tests**. This is a fake graph, not physical Neo4j. A production graph migration, admission integration and durable write/retention acceptance are still blocked and not claimed.
