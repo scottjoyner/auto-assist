@@ -63,4 +63,10 @@ Local synthetic contract test: 4/4 passing; the bounded input scanner: 2/2 passi
 
 Two reachable fleet nodes were also checked read-only from x1-370: xwing (about 91,731,416 KiB free on /home filesystem) and Beelink (about 216,491,180 KiB free on /home filesystem). The specific fleet-traces path from the local historical sample was unavailable on both. One named Deathstar SSH probe timed out. These are host/home observations, **not NAS filesystem free-space measurements**, and they cannot establish broader fleet trace completeness, hardware identity authority, or total storage runway.
 
+## Read-only searchable proof of concept
+
+The script trace_catalog_query.py implements a **bounded, ephemeral, in-memory** search surface on fully validated v1 envelopes. It can filter by node, session, trace, producer, status and operation; rejects extra query predicates and raw payloads; deduplicates exact event replays; rejects conflicting IDs; and returns stable timestamp/event-ID keyset pages of at most 100 records. The scan refuses datasets above 5,000 envelopes rather than silently truncating the report. Its response states explicitly that source authentication and complete-fleet coverage are not proven. No files/indexes/caches or production data are written.
+
+Targeted synthetic test evidence: 5/5 search cases PASS, 4/4 lineage validators PASS, 2/2 historical inventory scanners PASS. This provides a **UI/API query contract** to benchmark later, not evidence that the fleet is currently searchable or that any persistent database is preferable. Meaningful performance/retention conclusions require real producer envelopes, hardware coverage and on-disk workloads first.
+
 Release criteria: no unstated coverage; no coordinate/prompt leakage; every displayed trace linked to a real source receipt; explicit storage budgets and failure tests; read-only/no-overlap experiment; stakeholder selection after measurement.
