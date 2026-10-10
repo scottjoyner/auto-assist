@@ -33,7 +33,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from trace_etcd_quorum_fence_research import (
-    EtcdTLS, EtcdQuorumFence, FenceRefused, canon, takeover_request
+    EtcdTLS, EtcdQuorumFence, FenceRefused, b64, canon, takeover_request
 )
 
 IMAGE = "quay.io/coreos/etcd:v3.6.14"
@@ -433,7 +433,7 @@ def run():
             "real_raft_majority_survives_one_stop": True,
             "actual_leader_reelection_observed": True,
             "unauthenticated_tls_client_denied": True,
-            "direct_minoriy_etcd_txn_failed_closed": True,
+            "direct_minority_etcd_txn_failed_closed": True,
             "empty_namespace_signed_takeover_term_2": True,
             "stale_old_owner_rejected": True,
             "minority_read_denied": True,
