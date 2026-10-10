@@ -8,7 +8,11 @@ under this gateway. No passwords or bearer tokens are written to evidence.
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
+import os
 import secrets
+import tempfile
+from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
@@ -19,9 +23,31 @@ from trace_etcd_quorum_fence_research import (
 from trace_etcd_bearer_rbac_research import EtcdBearerTLS
 
 
+def _serve_real_rbac_policy(socket_path, endpoint, tls_paths, bearer,
+                            keyspace, cluster_id, ready, allowed_uid):
+    """The raw exact-key etcd writer token exists only in this service child."""
+    from trace_etcd_policy_writer_research import (
+        PolicyEngine, UnixPolicyWriterServer
+    )
+    authenticated_writer = EtcdBearerTLS(
+        endpoint, *tls_paths, token=bearer)
+    policy = PolicyEngine(
+        EtcdQuorumFence(authenticated_writer, keyspace, cluster_id),
+        "gateway-ipc", 1, "rbac-service-genesis",
+        frozenset({"approved_read"})
+    )
+    server = UnixPolicyWriterServer(socket_path, policy, allowed_uid)
+    ready.send("ready")
+    try:
+        server.serve_forever()
+    finally:
+        server.shutdown()
+
+
 def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
     transport = clients["r1"]
     isolated_key = base + "/rbac-readonly-gateway-authority"
+    service_key = base + "/rbac-ipc-policy-writer"
     operator = Ed25519PrivateKey.generate()
     witness = Ed25519PrivateKey.generate()
     public = lambda k: k.public_key().public_bytes(
@@ -32,12 +58,19 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
         "rbac-fixture-genesis", "authorized-service", public(operator),
         public(witness), capacity=1
     )
+    EtcdQuorumFence(
+        transport, service_key, cluster_id
+    ).bootstrap(
+        "rbac-service-genesis", "gateway-ipc", public(operator),
+        public(witness), capacity=1
+    )
 
     # Prepare genuine etcd v3 users and exact-key roles BEFORE enabling auth.
     # Unique disposable cluster, no existing production root/users/roles.
     root_password = secrets.token_urlsafe(36)
     reader_password = secrets.token_urlsafe(36)
     writer_password = secrets.token_urlsafe(36)
+    service_password = secrets.token_urlsafe(36)
     for path, payload in [
         ("/v3/auth/user/add",
          {"name": "root", "password": root_password}),
@@ -45,6 +78,7 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
         ("/v3/auth/user/grant", {"user": "root", "role": "root"}),
         ("/v3/auth/role/add", {"name": "gateway-read"}),
         ("/v3/auth/role/add", {"name": "policy-write"}),
+        ("/v3/auth/role/add", {"name": "ipc-service-write"}),
         ("/v3/auth/role/grant", {
             "name": "gateway-read",
             "perm": {"permType": "READ", "key": b64(isolated_key)}
@@ -53,17 +87,27 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
             "name": "policy-write",
             "perm": {"permType": "READWRITE", "key": b64(isolated_key)}
         }),
+        ("/v3/auth/role/grant", {
+            "name": "ipc-service-write",
+            "perm": {"permType": "READWRITE", "key": b64(service_key)}
+        }),
         ("/v3/auth/user/add", {
             "name": "gateway-reader", "password": reader_password
         }),
         ("/v3/auth/user/add", {
             "name": "authority-policy", "password": writer_password
         }),
+        ("/v3/auth/user/add", {
+            "name": "ipc-service-policy", "password": service_password
+        }),
         ("/v3/auth/user/grant", {
             "user": "gateway-reader", "role": "gateway-read"
         }),
         ("/v3/auth/user/grant", {
             "user": "authority-policy", "role": "policy-write"
+        }),
+        ("/v3/auth/user/grant", {
+            "user": "ipc-service-policy", "role": "ipc-service-write"
         }),
     ]:
         transport._post(path, payload)
@@ -103,7 +147,8 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
             except Exception:
                 pass
             message = str(info.get("message", raw[:150] or "unknown"))
-            for secret in (root_password, reader_password, writer_password):
+            for secret in (root_password, reader_password,
+                           writer_password, service_password):
                 message = message.replace(secret, "REDACTED")
             raise RuntimeError(
                 f"DISPOSABLE_RBAC_LOGIN_FAILED status={exc.code} message={message[:160]}"
@@ -115,6 +160,7 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
 
     reader = login("gateway-reader", reader_password)
     writer = login("authority-policy", writer_password)
+    service_writer = login("ipc-service-policy", service_password)
     root = login("root", root_password)
     assert "REDACTED" in repr(reader) and reader_password not in repr(reader)
 
@@ -175,6 +221,67 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
     else:
         raise AssertionError("POLICY_WRITER_ESCAPED_EXACT_KEY_SCOPE")
 
+    # An actual child process now owns an independent exact-key bearer
+    # writer credential. The IPC caller has ONLY a UNIX socket path, no raw
+    # etcd credentials or direct KV API. The parent harness is still
+    # privileged and both actors share the same UID: research limitation.
+    from trace_etcd_policy_writer_research import (
+        PolicyRefused, UnixPolicyClient, UnixPolicyGrantAdapter
+    )
+    ctx = mp.get_context("spawn")
+    with tempfile.TemporaryDirectory(prefix="assistx-rbac-ipc-") as home:
+        os.chmod(home, 0o700)
+        sock_path = str(Path(home) / "authority.sock")
+        parent, child = ctx.Pipe()
+        service_process = ctx.Process(
+            target=_serve_real_rbac_policy,
+            args=(sock_path, address, paths, service_writer._token,
+                  service_key, cluster_id, child, os.getuid())
+        )
+        service_process.start()
+        try:
+            assert parent.poll(12), "PHYSICAL_POLICY_WRITER_NOT_READY"
+            assert parent.recv() == "ready"
+            unix_client = UnixPolicyClient(sock_path)
+            gateway = UnixPolicyGrantAdapter(unix_client, "rbac-service-genesis")
+            assert unix_client.__dict__ == {"path": sock_path}
+            with_asserted_denials = [
+                {"kind": "raw-txn", "key": service_key, "value": "FORGED"},
+                {"kind": "admit", "operation_id": "f" * 32,
+                 "plan_id": "MATCH DELETE"},
+                {"kind": "admit", "operation_id": "f" * 32,
+                 "plan_id": "approved_read", "term": 999},
+            ]
+            for req in with_asserted_denials:
+                try:
+                    unix_client.request(req)
+                except PolicyRefused:
+                    pass
+                else:
+                    raise AssertionError("POLICY_WRITER_IPC_BYPASS")
+            grant = gateway.admit("f" * 32, "approved_read")
+            assert len(grant.reservation_id) == 32
+            assert unix_client.request({"kind": "status"})["pending"] == 1
+            # Administrative inspection is test-harness only, not gateway.
+            actual = EtcdQuorumFence(root, service_key, cluster_id).snapshot()
+            assert grant.reservation_id in actual.document["pending"]
+            try:
+                reader.range(service_key)
+            except FenceRefused:
+                pass
+            else:
+                raise AssertionError("GATEWAY_READER_ESCAPED_TO_WRITER_KEY")
+        finally:
+            service_process.terminate()
+            service_process.join(5)
+            if service_process.is_alive():
+                service_process.kill()
+                service_process.join(3)
+            assert not service_process.is_alive()
+        # Death of the *writer service* does not auto-free Raft capacity.
+        assert grant.reservation_id in EtcdQuorumFence(
+            root, service_key, cluster_id).snapshot().document["pending"]
+
     # Administrative root may see the protected key, but must not be given
     # to a worker/gateway or used as an ordinary policy-writer identity.
     assert EtcdQuorumFence(root, isolated_key, cluster_id).snapshot().document[
@@ -189,6 +296,11 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
         "writer_out_of_range_access_denied": True,
         "writer_raw_kv_policy_bypass_still_possible": True,
         "credentials_ephemeral_not_retained": True,
-        "enforcing_policy_service_not_implemented": True,
+        "real_rbac_writer_process_unix_ipc_admission": True,
+        "gateway_client_has_no_raw_kv_or_writer_token": True,
+        "writer_process_death_preserves_raft_reservation": True,
+        "writer_and_gateway_distinct_os_uid": False,
+        "enforcing_policy_service_not_implemented": False,
+        "production_policy_service_deployed": False,
         "production_authority": False,
     }
