@@ -28,9 +28,9 @@ class FleetLinkCanaryRequest(BaseModel):
     max_tokens: int = Field(default=64, ge=1, le=64)
 
 
-def _canary_url() -> str:
-    if os.getenv("ASSISTX_FLEET_LINK_CANARY", "").strip() != "1":
-        raise ValueError("operator canary disabled")
+def _pinned_sidecar_url(enabled_flag: str) -> str:
+    if os.getenv(enabled_flag, "").strip() != "1":
+        raise ValueError("operator feature disabled")
     raw = os.getenv("ASSISTX_FLEET_LINK_URL", "").strip()
     parsed = urlsplit(raw)
     if (
@@ -49,6 +49,10 @@ def _canary_url() -> str:
     if not os.getenv("ASSISTX_FLEET_LINK_RUNTIME_ID", "").strip():
         raise ValueError("operator must pin an approved runtime ID")
     return f"http://127.0.0.1:{parsed.port}"
+
+
+def _canary_url() -> str:
+    return _pinned_sidecar_url("ASSISTX_FLEET_LINK_CANARY")
 
 
 def _trace(traceparent: str | None) -> tuple[str | None, str | None]:

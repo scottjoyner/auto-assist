@@ -118,6 +118,12 @@ def build_runtime_projection(
     return document
 
 
+# The authenticated Kipnerter mobile catalog has historically imported the
+# version-suffixed name. Keep the same *single* canonical Ed25519 issuer and
+# admission checks rather than silently falling back to unsigned legacy data.
+build_runtime_projection_v2 = build_runtime_projection
+
+
 def build_runtime_projection_router(
     neo_factory: Callable[[], Any],
     auth_dependency: Any | None = None,
