@@ -19,6 +19,8 @@ _ALGORITHM = "Ed25519"
 _DEFAULT_KEY_ID = "assistx-runtime-projection-v1"
 _INTERNAL_COMPAT_SECRET = "assistx-ed25519-projection-wrapper"
 
+RuntimeProjectionSigningError = legacy.RuntimeProjectionBlocked
+
 
 def _b64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
