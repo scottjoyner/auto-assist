@@ -180,3 +180,21 @@ if __name__ == "__main__":
     test_build_status_live_only()
     test_classify_runs_active_process_alive()
     print("all free_pool_status tests passed")
+
+def test_build_status_explicit_projection_overrides_state_root():
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td)
+        (root / "free-pool-projection.json").write_text(json.dumps({
+            "schema": "free-pool-projection/v1",
+            "zai_policy": "unknown",
+            "kilo": {"models": []},
+        }))
+        override = root / "explicit-projection.json"
+        override.write_text(json.dumps({
+            "schema": "free-pool-projection/v1",
+            "zai_policy": "reserve_only",
+            "kilo": {"models": []},
+        }))
+        result = build_status(state_root=root, projection_path=override)
+        assert result["zai_reserve_policy"] == "reserve_only"
+        assert result["read_only"] is True

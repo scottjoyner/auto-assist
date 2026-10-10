@@ -148,7 +148,13 @@ def build_status(
 ) -> dict[str, Any]:
     if process_alive is None:
         process_alive = _pid_matches_record
-    projection = load_projection(projection_path)
+    # An isolated state root must not silently read the live pool projection.
+    effective_projection_path = (
+        projection_path
+        if projection_path is not None
+        else state_root / "free-pool-projection.json"
+    )
+    projection = load_projection(effective_projection_path)
     state_records = load_state_records(state_root)
     qualification_records = load_qualification_records(state_root)
 
