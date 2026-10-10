@@ -207,6 +207,9 @@ def test_authenticated_route_is_opt_in_and_read_only(export: Path, monkeypatch) 
     assert data["nodes"][0]["node_id"] == "gpu-node"
     assert data["dispatch_allowed"] is False
     assert len(data["evidence_digest_sha256"]) == 64
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["vary"] == "Authorization"
 
 
 def test_unconfigured_or_corrupt_source_fails_closed(export: Path) -> None:
