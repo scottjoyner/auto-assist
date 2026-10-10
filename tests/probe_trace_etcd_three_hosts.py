@@ -186,6 +186,15 @@ def run():
                    "assistx.trace.research=quorum", volume], host)
             node_certs = str(certs / node if host == "x1-370"
                              else staging / "certs")
+            # The etcd container deliberately drops ALL Linux capabilities:
+            # UID 0 therefore cannot bypass a host mode=0700 directory.
+            # Give only container UID 0 precise read/traverse ACLs on its
+            # ephemeral, mounted certificate directory. Keep key mode 0600
+            # and do not make any certs world-readable.
+            shell(["setfacl", "-m", "u:0:rx", node_certs], host)
+            for filename in ("ca.pem", "node.pem", "node-key.pem"):
+                shell(["setfacl", "-m", "u:0:r",
+                       node_certs + "/" + filename], host)
             args = [
                 "docker", "run", "-d", "--name", name, "--pull", "never",
                 "--network", "host", "--read-only", "--cap-drop", "ALL",
