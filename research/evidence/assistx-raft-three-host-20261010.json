@@ -1,0 +1,67 @@
+{
+  "schema": "assistx-three-host-etcd-raft-quorum-v1",
+  "observed_on": "2026-10-10",
+  "evidence_reviewed_utc": "2026-10-10T15:13:25Z",
+  "research_branch": "research/assistx-raft-quorum-three-host-20261010",
+  "physical_source_commit": "8a2229a64f7e886b1afdaed77ae7371b6c3d6119",
+  "test_entry": "tests/probe_trace_etcd_three_hosts.py",
+  "execution_host": "x1-370",
+  "voters": [
+    "x1-370",
+    "xwing",
+    "destroyer"
+  ],
+  "container_image": "quay.io/coreos/etcd:v3.6.14",
+  "image_digest_all_three": "sha256:dfd3941bf6ced5fdb700f9b2d98b22b7bca7ceee13aec16224f93ff30d9a59c4",
+  "physical_result": "PASS",
+  "observed_runtime_seconds": 21.34,
+  "conditions": {
+    "mTLS_peer_and_client": true,
+    "unauthenticated_client_denied": true,
+    "three_distinct_hosts": true,
+    "one_original_reservation_kept": true,
+    "real_leader_stopped_and_reelection": true,
+    "majority_two_voters_read_state": true,
+    "signed_empty_namespace_takeover_term_two": true,
+    "old_owner_denied": true,
+    "minority_linearizable_range_denied": true,
+    "minority_direct_raw_cas_write_denied": true,
+    "no_minority_key_after_quorum_recovery": true,
+    "original_pending_intent_survived": true,
+    "all_temporary_test_containers_and_staging_removed": true
+  },
+  "boundaries": {
+    "production_authority": false,
+    "physical_Neo4j_transaction": false,
+    "graph_stale_effect_rejection": false,
+    "external_signed_graph_closure": false,
+    "independent_power_sites_verified": false,
+    "etcd_rbac_enforced": false,
+    "automatic_takeover_enabled": false
+  },
+  "previous_failed_attempts": [
+    "Initial opt-in cluster could not start: capability-dropped image unable to read 0700/0600 research certificate mounts",
+    "Scoped ACL adjustment not supported on x1-370 test filesystem",
+    "Final correction: UID/GID 1000 non-root container, owner-only private cert/data mounts; subsequent real Raft tests passed"
+  ],
+  "event_order": [
+    "host_preflight:x1-370",
+    "host_preflight:xwing",
+    "host_preflight:destroyer",
+    "vote_container_started:x1-370",
+    "vote_container_started:xwing",
+    "vote_container_started:destroyer",
+    "three_voter_genesis_committed",
+    "same_raft_cluster_verified_across_three",
+    "no_client_certificate_denied",
+    "cap_one_global_across_endpoint",
+    "real_raft_leader_re_election_observed",
+    "two_voter_majority_kept_state_and_blocked_takeover",
+    "operator_signed_empty_takeover_term_2_old_denied",
+    "rejoined_voter_preserved_term_2",
+    "quorum_loss_read_denied",
+    "quorum_loss_write_denied",
+    "recovered_quorum_preserved_term_and_no_minority_write",
+    "original_graph_reservation_survived_all_partitions"
+  ]
+}
