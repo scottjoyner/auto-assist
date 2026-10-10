@@ -3,10 +3,12 @@
 The control-room shell must remain available on its own, while all child
 templates must actually render their content, head styles and scripts.
 """
+
 from __future__ import annotations
 
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
@@ -17,19 +19,24 @@ ROOT = Path(__file__).resolve().parents[1]
 def render(page: str) -> str:
     env = Environment(loader=FileSystemLoader(ROOT / "templates"), autoescape=True)
     return env.get_template(page).render(
-        url_for=lambda name, path: f"/static/{path}"
+        url_for=lambda name, path: f"/static/{path}",
+        request=SimpleNamespace(query_params={}),
     )
 
 
 @pytest.mark.parametrize(
     ("page", "required_markers", "unique_script"),
     [
-        ("base.html", ("id=\"summary-strip\"", "id=\"runtime-body\""), "/static/js/control_room.js"),
-        ("control_room.html", ("id=\"summary-strip\"", "id=\"runtime-body\"", "id=\"fleet-nodes-body\""), "/static/js/control_room.js"),
-        ("fleet_dashboard.html", ("id=\"section-nodes\"", "id=\"section-inference-state\"", "id=\"section-routing\""), None),
-        ("operations.html", ("id=\"new-task\"", "id=\"view-attention\"", "id=\"view-fleet\""), None),
-        ("workbench.html", ("id=\"ctx-fleet\"", "/static/js/workbench.js"), "/static/js/workbench.js"),
-        ("devices.html", ("id=\"device-list\"",), None),
+        ("base.html", ('id="summary-strip"', 'id="runtime-body"'), "/static/js/control_room.js"),
+        (
+            "control_room.html",
+            ('id="summary-strip"', 'id="runtime-body"', 'id="fleet-nodes-body"'),
+            "/static/js/control_room.js",
+        ),
+        ("fleet_dashboard.html", ('id="section-nodes"', 'id="section-inference-state"', 'id="section-routing"'), None),
+        ("operations.html", ('id="new-task"', 'id="view-attention"', 'id="view-fleet"'), None),
+        ("workbench.html", ('id="ctx-fleet"', "/static/js/workbench.js"), "/static/js/workbench.js"),
+        ("devices.html", ('id="device-list"',), None),
     ],
 )
 def test_child_render_contains_page_specific_content_and_single_document(
@@ -78,3 +85,25 @@ def test_template_inheritance_is_explicit_and_without_preceding_html() -> None:
     assert content.lstrip().startswith('{% extends "base.html" %}')
     for name in ("base.html", "control_room.html", "fleet_dashboard.html", "operations.html"):
         Environment(loader=FileSystemLoader(ROOT / "templates")).get_template(name)
+
+
+@pytest.mark.parametrize(
+    "page",
+    sorted(
+        path.name for path in (ROOT / "templates").glob("*.html") if '{% extends "base.html" %}' in path.read_text()
+    ),
+)
+def test_every_inherited_page_renders_its_own_body_without_default_control_room_script(
+    page: str,
+) -> None:
+    html = render(page)
+    assert html.lower().count("<!doctype html>") == 1, page
+    assert html.lower().count("<html") == 1, page
+    assert html.lower().count("</html>") == 1, page
+    assert 'class="control-shell"' in html
+    if page != "control_room.html":
+        assert 'src="/static/js/control_room.js"' not in html, page
+        assert 'id="runtime-body"' not in html, page
+    # A child may inherit the same shell, but must not collapse to its complete
+    # default Control Room content, as happened before the Jinja block repair.
+    assert html != render("base.html"), page
