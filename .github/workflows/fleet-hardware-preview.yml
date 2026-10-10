@@ -15,6 +15,7 @@ on:
       - "static/js/fleet_trace_evidence.js"
       - "static/js/traces.js"
       - "tests/ui/fleet_hardware_evidence.test.cjs"
+      - "tests/test_fleet_hardware_route_smoke.py"
       - "docs/FLEET_HARDWARE_PREVIEW.md"
       - ".github/workflows/fleet-hardware-preview.yml"
   push:
@@ -31,6 +32,7 @@ on:
       - "static/js/fleet_trace_evidence.js"
       - "static/js/traces.js"
       - "tests/ui/fleet_hardware_evidence.test.cjs"
+      - "tests/test_fleet_hardware_route_smoke.py"
       - ".github/workflows/fleet-hardware-preview.yml"
 
 permissions:
@@ -68,3 +70,5 @@ jobs:
           node --check static/js/fleet_trace_evidence.js
           node --check static/js/traces.js
           node --test tests/ui/fleet_hardware_evidence.test.cjs
+      - name: Validate full AssistX route and authentication on complete CI environment
+        run: python -m pytest -q tests/test_fleet_hardware_route_smoke.py
