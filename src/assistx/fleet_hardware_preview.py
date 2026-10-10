@@ -16,7 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 _SNAPSHOT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z$")
 _NODE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
@@ -251,6 +251,7 @@ def build_fleet_hardware_preview_router(
 
     @router.get("/hardware-preview")
     def preview(
+        response: Response,
         ram_gib: float = Query(0, ge=0, le=4096),
         gpu_vram_gib: float = Query(0, ge=0, le=4096),
         data_host: str | None = Query(None, max_length=80),
@@ -260,13 +261,17 @@ def build_fleet_hardware_preview_router(
         if not location or not Path(location).is_absolute():
             raise HTTPException(status_code=503, detail="hardware evidence not configured")
         try:
-            return hardware_preview(
+            preview_data = hardware_preview(
                 Path(location),
                 min_ram_gib=ram_gib,
                 min_gpu_vram_gib=gpu_vram_gib,
                 data_host=data_host,
                 limit=limit,
             )
+            response.headers["Cache-Control"] = "private, no-store"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Vary"] = "Authorization"
+            return preview_data
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except (FleetHardwareEvidenceError, OSError, TypeError) as exc:
