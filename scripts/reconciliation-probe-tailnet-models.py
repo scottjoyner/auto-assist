@@ -23,9 +23,20 @@ from typing import Any, Callable
 TAILNET = ipaddress.ip_network("100.64.0.0/10")
 MAX_BYTES = 65536
 Fetcher = Callable[[str, float], tuple[int, bytes]]
+
+
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Never follow a Tailnet peer's redirect outside the vetted target set."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def fetch_readonly(url: str, timeout: float) -> tuple[int, bytes]:
     request = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    # A connected Tailnet peer can redirect to 127.0.0.1, cloud metadata, or a
+    # public URL. A vetted starting IP does not authorize a second destination.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RefuseRedirects())
     try:
         with opener.open(request, timeout=timeout) as response:
             body = response.read(MAX_BYTES + 1)
