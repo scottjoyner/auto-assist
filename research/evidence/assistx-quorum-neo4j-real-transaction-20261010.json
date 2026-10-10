@@ -36,12 +36,12 @@
   "limitations": {
     "production_admission_wired": false,
     "Neo4j_server_issued_fencing_permit": false,
-    "scoped_etcd_rbac_enabled": false,
+    "scoped_etcd_rbac_enabled": "IN_DISPOSABLE_PHYSICAL_TEST_ONLY",
     "server_generation_validation_across_restart": false,
     "independent_external_witness_custody": false,
     "three_independent_failure_domains": false,
     "production_failover_enabled": false,
-    "separate_etcdauthoritywriter_credential": false
+    "separate_etcdauthoritywriter_credential": "PROVEN_IN_FIXTURE; NOT_PRODUCTION_POLICY_SERVER"
   },
   "explicit_dispositions": {
     "graph_entry_single_fixture": "RESEARCH_PASS",
@@ -49,8 +49,41 @@
     "authenticated_raw_etcd_write_policy": "FAIL_OPEN_REPRODUCED",
     "production_admission": "NO_GO",
     "automatic_failover": "NO_GO",
-    "issue_148": "OPEN"
+    "issue_148": "OPEN",
+    "scoped_etcd_rbac": "RESEARCH_PASS",
+    "writer_policy_enforcement_service": "NO_GO"
   },
   "credentials": "Ephemeral fixture certs and signer keys; not committed or retained",
-  "source": "Commands executed on x1-370 using Fleet Commander; research-only Docker containers on x1-370/xwing/destroyer"
+  "source": "Commands executed on x1-370 using Fleet Commander; research-only Docker containers on x1-370/xwing/destroyer",
+  "latest_integrated_runtime_seconds": 51.58,
+  "latest_integrated_result": "PASS",
+  "latest_physical_source_commit": "503412dba7de7b2c820356853743733074f47495",
+  "rbac_integration": {
+    "real_three_host_etcd_rbac": true,
+    "json_gateway_bearer_without_tls_cn": true,
+    "mTLS_only_no_bearer_denied": true,
+    "read_only_authority_key_access": true,
+    "read_only_raw_cas_denied": true,
+    "read_only_out_of_scope_key_denied": true,
+    "separately_authenticated_writer_allowed_exact_key": true,
+    "writer_out_of_scope_key_denied": true,
+    "authorized_writer_raw_kv_can_still_bypass_signature": true,
+    "independent_policy_enforcement_service_implemented": false,
+    "permission_boundary": "RESEARCH_PASS",
+    "production_authority": false
+  },
+  "previous_attempts": [
+    {
+      "result": "FAIL",
+      "reason": "JSON-gateway authenticate returned HTTP 400 with TLS client CN; no credential secrets disclosed"
+    },
+    {
+      "result": "FAIL",
+      "reason": "First redacted status diagnostic isolated bearer-login failure"
+    },
+    {
+      "result": "PASS",
+      "reason": "Generated separate CN-free ephemeral mTLS JSON client certificate with critical SAN and used bearer credential; real three-host RBAC permissions enforced"
+    }
+  ]
 }
