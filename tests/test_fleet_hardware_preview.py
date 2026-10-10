@@ -266,3 +266,42 @@ def test_standalone_operator_page_is_authenticated_and_has_rendered_ui() -> None
     assert "<html" in response.text.lower()
     assert set(page.openapi()["paths"]["/fleet/hardware-evidence"]) == {"get"}
     assert TestClient(page).post("/fleet/hardware-evidence").status_code == 405
+
+
+def test_private_file_reader_rejects_intermediate_symlink(export: Path) -> None:
+    top = export / "inventory"
+    actual = export / "inventory-real"
+    top.rename(actual)
+    top.symlink_to(actual, target_is_directory=True)
+    with pytest.raises(FleetHardwareEvidenceError):
+        hardware_preview(export, now=NOW)
+
+
+def test_world_writable_checkout_refused(export: Path) -> None:
+    export.chmod(0o777)
+    try:
+        with pytest.raises(FleetHardwareEvidenceError, match="world-writable"):
+            hardware_preview(export, now=NOW)
+    finally:
+        export.chmod(0o700)
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf"), True])
+def test_request_rejects_nonfinite_capacity(export: Path, bad_value: float) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        hardware_preview(export, now=NOW, min_ram_gib=bad_value)
+
+
+def test_nonfinite_reported_capacity_is_never_plausible(export: Path) -> None:
+    target = export / "inventory/fleet-resources.json"
+    record = json.loads(target.read_text())
+    record["nodes"]["gpu-node"]["os_visible_ram_gib"] = float("nan")
+    record["nodes"]["gpu-node"]["gpu_functions"][0]["driver_vram_gib"] = float("inf")
+    record["nodes"]["gpu-node"]["risk_flags"].append({"code": "private-token:/dev/sda/etc/shadow"})
+    target.write_text(json.dumps(record))
+    result = hardware_preview(export, now=NOW, min_ram_gib=16, min_gpu_vram_gib=16)
+    gpu_node = next(n for n in result["nodes"] if n["node_id"] == "gpu-node")
+    assert gpu_node["static_evidence_state"] == "INCOMPLETE"
+    assert "NO_INDIVIDUAL_GPU_MEETS_REPORTED_VRAM_REQUEST" in gpu_node["blockers"]
+    assert "RAM_CAPACITY_UNVERIFIED_OR_BELOW_REQUEST" in gpu_node["blockers"]
+    assert "private-token" not in str(result)
