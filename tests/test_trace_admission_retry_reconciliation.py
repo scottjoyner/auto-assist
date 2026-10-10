@@ -242,3 +242,28 @@ def test_corrupted_request_digest_is_never_accepted():
         authority.admit("gateway-1", 1, "stable-op",
                         request_digest="not-a-sha256")
     assert authority.snapshot().document["pending"] == {}
+
+
+def test_tombstone_capacity_reserved_for_pending_physical_closure():
+    authority, store, signer = make_lossy()
+    old = authority.snapshot()
+    updated = copy.deepcopy(old.document)
+    updated["completed"] = {
+        f"closed:{i}": {"owner": "gateway-1", "term": 1,
+                          "request_digest": None,
+                          "receipt_sha256": "f" * 64}
+        for i in range(MAX_COMPLETED_OPERATIONS - 1)
+    }
+    authority._write(old, updated)
+    first = authority.admit("gateway-1", 1, "approved:pending-last-slot")
+    with pytest.raises(FenceRefused, match="REPLAY_LEDGER_CLOSE_CAPACITY_RESERVED"):
+        authority.admit("gateway-1", 1, "approved:cannot-strand-a-closure")
+    authority.bind(first, "gateway-1", 1, "server-1", "gen-1",
+                   "neo4j-transaction-99")
+    receipt = witness_receipt(authority.snapshot(), first)
+    authority.close_with_witness(first, receipt, signer.sign(canon(receipt)))
+    assert not authority.snapshot().document["pending"]
+    assert len(authority.snapshot().document["completed"]) == (
+        MAX_COMPLETED_OPERATIONS)
+    with pytest.raises(FenceRefused, match="COMPLETED_OPERATION_LEDGER_FULL"):
+        authority.admit("gateway-1", 1, "new-after-full")
