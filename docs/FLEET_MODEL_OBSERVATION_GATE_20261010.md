@@ -40,6 +40,16 @@ python3 scripts/reconciliation-probe-tailnet-models.py \
 sha256sum -c "$run_dir/model-witness.json.sha256"
 ```
 
+A separate, **not installed** candidate refresher is
+`scripts/reconciliation-refresh-tailnet-models.sh`. Invoke it with
+`--output /private/mode-0700/witness.json`, optionally `--input` to run an
+offline fixture without probing live peers. It rejects nonprivate output
+directories, refuses symlink outputs, uses a single `flock` lock, retains the
+previous witness if another run is active, and verifies the atomic checksum.
+Before actual deployment the operator must approve a narrowly scoped user
+timer (approximately once per minute to satisfy the 120-second TTL), the
+volume mount and its permission model. No timer or bind mount is installed.
+
 The private evidence JSON retains per-endpoint GET path/status/byte counts
 and SHA-256 lineage to the **exact candidate inventory bytes**. Both the witness
 and receipt are atomically replaced and created with `0600` permissions. Do not
