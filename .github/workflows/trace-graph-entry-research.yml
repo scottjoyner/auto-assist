@@ -6,6 +6,8 @@ on:
       - 'tests/trace_graph_entry*.py'
       - 'tests/trace_fencing_term*.py'
       - 'tests/trace_etcd_*.py'
+      - 'tests/trace_graph_stable_identity_research.py'
+      - 'tests/test_trace_admission_retry_reconciliation.py'
       - 'tests/test_trace_graph_entry*.py'
       - 'tests/test_trace_fencing_term*.py'
       - 'tests/test_trace_etcd_*.py'
@@ -34,7 +36,7 @@ jobs:
         run: python -m pip install 'pytest>=8,<10' 'cryptography>=41,<49'
       - name: Compile research-only modules
         run: |
-          python -m compileall -q tests/trace_graph_entry_research.py tests/trace_graph_entry_guarded.py tests/trace_graph_entry_research_journal.py tests/trace_graph_entry_metadata.py tests/trace_fencing_term_authority_research.py tests/trace_etcd_quorum_fence_research.py tests/trace_etcd_graph_admission_research.py tests/trace_etcd_bearer_rbac_research.py tests/trace_etcd_policy_writer_research.py
+          python -m compileall -q tests/trace_graph_entry_research.py tests/trace_graph_entry_guarded.py tests/trace_graph_entry_research_journal.py tests/trace_graph_entry_metadata.py tests/trace_fencing_term_authority_research.py tests/trace_etcd_quorum_fence_research.py tests/trace_etcd_graph_admission_research.py tests/trace_etcd_bearer_rbac_research.py tests/trace_etcd_policy_writer_research.py tests/trace_graph_stable_identity_research.py
       - name: Run offline denial and journal tests
         run: |
           python -m pytest --noconftest -q \
@@ -49,10 +51,11 @@ jobs:
             tests/test_trace_etcd_graph_admission_research.py \
             tests/test_trace_quorum_neo4j_physical_guards.py \
             tests/test_trace_etcd_bearer_rbac_research.py \
-            tests/test_trace_etcd_policy_writer_research.py
+            tests/test_trace_etcd_policy_writer_research.py \
+            tests/test_trace_admission_retry_reconciliation.py
       - name: Verify physical probes remain manual-only
         run: |
-          python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py tests/probe_trace_fencing_two_primaries.py tests/probe_trace_etcd_three_hosts.py tests/probe_trace_quorum_neo4j_physical.py tests/probe_trace_etcd_rbac_physical.py
+          python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py tests/probe_trace_fencing_two_primaries.py tests/probe_trace_etcd_three_hosts.py tests/probe_trace_quorum_neo4j_physical.py tests/probe_trace_etcd_rbac_physical.py tests/probe_trace_etcd_ack_loss.py
           python - <<'PY'
           from pathlib import Path
           a = Path('tests/probe_trace_entry_network_isolation.py').read_text()
@@ -78,5 +81,9 @@ jobs:
           g = Path('tests/probe_trace_etcd_rbac_physical.py').read_text()
           assert '"real_three_host_etcd_rbac": True' in g
           assert 'ASSISTX_RAFT_RBAC_RESEARCH' in e
-          print('Physical probes and RBAC exercise remain opt-in; hosted CI never runs them.')
+          h = Path('tests/probe_trace_etcd_ack_loss.py').read_text()
+          assert 'real_http_network_partition_injected": False' in h
+          assert 'production_authority": False' in h
+          assert 'ASSISTX_RAFT_ACK_LOSS_RESEARCH' in e
+          print('Physical probes, RBAC and ack-loss exercise remain opt-in; CI never runs them.')
           PY
