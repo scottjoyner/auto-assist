@@ -221,6 +221,7 @@ def test_operator_intent_and_authentication_required():
             neo_factory=lambda: neo,
             root_provider=lambda: "/unused",
             write_enabled=lambda: True,
+            writer_identities=lambda: "operator,operator-1",
         )
     )
     c = TestClient(app)
@@ -269,6 +270,9 @@ def test_bounded_get_returns_empty_without_adding_trace():
     assert result.status_code == 200
     assert result.json()["receipts"] == []
     assert result.json()["dispatch_allowed"] is False
+    assert result.headers["cache-control"] == "private, no-store"
+    assert result.headers["vary"] == "Authorization"
+    assert result.headers["x-content-type-options"] == "nosniff"
     assert all("MERGE" not in stmt for stmt, _ in neo.calls)
 
 
@@ -294,6 +298,7 @@ def test_explicit_operator_post_succeeds_only_with_evidence_matching_private_sou
             neo_factory=lambda: neo,
             root_provider=lambda: "/synthetic-private-source",
             write_enabled=lambda: True,
+            writer_identities=lambda: "operator,operator-1",
         )
     )
     client = TestClient(app)
@@ -307,6 +312,8 @@ def test_explicit_operator_post_succeeds_only_with_evidence_matching_private_sou
     assert result["admission_allowed"] is False
     assert result["dispatch_allowed"] is False
     assert result["snapshot"] == SNAP
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["vary"] == "Authorization"
     assert len(neo.receipts) == 1
     repeat = client.post(endpoint, json=body, headers=header)
     assert repeat.status_code == 200
@@ -344,6 +351,7 @@ def test_missing_constraint_returns_503_on_authenticated_explicit_post(monkeypat
             neo_factory=lambda: neo,
             root_provider=lambda: "/authorized-fixture",
             write_enabled=lambda: True,
+            writer_identities=lambda: "operator,operator-1",
         )
     )
     result = TestClient(app).post(
@@ -365,3 +373,53 @@ def test_missing_lock_uniqueness_constraint_denies_every_write():
     assert not neo.receipts
     assert all("ON CREATE SET" not in query for query, _ in neo.calls)
     assert neo.groups[CID]["current_state"] == "completed"
+
+
+def test_writer_allowlist_required_before_source_and_graph_reads(monkeypatch):
+    from unittest.mock import Mock
+
+    neo_factory = Mock(side_effect=AssertionError("database accessed before writer authorization"))
+    inventory_probe = Mock(side_effect=AssertionError("private evidence accessed before writer authorization"))
+    monkeypatch.setattr("assistx.fleet_hardware_inspection.hardware_preview", inventory_probe)
+
+    request = {"ram_gib": 20.0, "gpu_vram_gib": 16.0, "confirm_post_hoc_observation": True}
+    header = {"X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1"}
+    for configured, identity, expected in [
+        ("", "operator", 503),
+        ("*", "operator", 503),
+        ("operator,", "operator", 503),
+        ("operator,operator", "operator", 503),
+        ("operator, admin", "operator", 503),
+        ("operator", "ordinary-user", 403),
+        ("operator,admin", "ordinary-user", 403),
+    ]:
+        app = FastAPI()
+        app.include_router(
+            build_inspection_router(
+                auth_dependency=lambda value=identity: value,
+                neo_factory=neo_factory,
+                root_provider=lambda: "/private-fixture",
+                write_enabled=lambda: True,
+                writer_identities=lambda value=configured: value,
+            )
+        )
+        result = TestClient(app).post(f"/api/fleet/trace-inspections/{CID}", json=request, headers=header)
+        assert result.status_code == expected, (configured, identity, result.text)
+        assert neo_factory.call_count == 0
+        assert inventory_probe.call_count == 0
+
+
+def test_writer_allowlist_does_not_restrict_authenticated_read():
+    neo = MemoryNeo()
+    app = FastAPI()
+    app.include_router(
+        build_inspection_router(
+            auth_dependency=lambda: "ordinary-user",
+            neo_factory=lambda: neo,
+            writer_identities=lambda: "",
+            write_enabled=lambda: False,
+        )
+    )
+    response = TestClient(app).get(f"/api/fleet/trace-inspections/{CID}")
+    assert response.status_code == 200
+    assert response.json()["receipts"] == []

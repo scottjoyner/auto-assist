@@ -8,6 +8,7 @@ or accesses private device contents beyond the bounded read-only preview.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -16,7 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .fleet_hardware_preview import FleetHardwareEvidenceError, hardware_preview
@@ -234,18 +235,23 @@ def build_inspection_router(
     neo_factory: Callable[[], Any],
     root_provider: Callable[[], str] | None = None,
     write_enabled: Callable[[], bool] | None = None,
+    writer_identities: Callable[[], str] | None = None,
 ) -> APIRouter:
     path_provider = root_provider or (lambda: os.getenv("ASSISTX_FLEET_HARDWARE_ROOT", "").strip())
     allow_write = write_enabled or (lambda: os.getenv("ASSISTX_FLEET_HARDWARE_INSPECTION_WRITES") == "1")
+    allowed_writers = writer_identities or (lambda: os.getenv("ASSISTX_FLEET_HARDWARE_INSPECTION_WRITERS", ""))
     router = APIRouter(prefix="/api/fleet/trace-inspections", tags=["fleet-hardware-inspection"])
 
     @router.get("/{correlation_id}")
-    def read_receipts(correlation_id: str, _: str = Depends(auth_dependency)) -> dict[str, Any]:
+    def read_receipts(correlation_id: str, response: Response, _: str = Depends(auth_dependency)) -> dict[str, Any]:
         if not _CORRELATION.fullmatch(correlation_id):
             raise HTTPException(status_code=422, detail="invalid correlation ID")
         db = neo_factory()
         try:
             items = list_inspections(db, correlation_id)
+            response.headers["Cache-Control"] = "private, no-store"
+            response.headers["Vary"] = "Authorization"
+            response.headers["X-Content-Type-Options"] = "nosniff"
             return {
                 "correlation_id": correlation_id,
                 "kind": "POST_HOC_OPERATOR_INSPECTIONS",
@@ -259,12 +265,27 @@ def build_inspection_router(
     @router.post("/{correlation_id}")
     def record_receipt(
         correlation_id: str,
+        response: Response,
         body: InspectionInput = Body(...),
         x_assistx_operator_intent: str | None = Header(None),
         actor: str = Depends(auth_dependency),
     ) -> dict[str, Any]:
         if not allow_write():
             raise HTTPException(status_code=503, detail="hardware inspection recording disabled")
+        # The ordinary Basic-auth principal is not automatically a receipt writer.
+        # Fail closed on missing, malformed, wildcard or oversized grants.
+        raw_writers = allowed_writers()
+        if not isinstance(raw_writers, str) or not raw_writers or len(raw_writers) > 512:
+            raise HTTPException(status_code=503, detail="receipt writer authorization not configured")
+        writer_ids = raw_writers.split(",")
+        if (
+            len(writer_ids) > 8
+            or any(w != w.strip() or not re.fullmatch(r"[A-Za-z0-9_.@+-]{1,80}", w) for w in writer_ids)
+            or len(set(writer_ids)) != len(writer_ids)
+        ):
+            raise HTTPException(status_code=503, detail="receipt writer authorization invalid")
+        if not isinstance(actor, str) or not any(hmac.compare_digest(actor, writer_id) for writer_id in writer_ids):
+            raise HTTPException(status_code=403, detail="operator not authorized to record inspections")
         if x_assistx_operator_intent != _INSPECTION_INTENT or body.confirm_post_hoc_observation is not True:
             raise HTTPException(status_code=403, detail="explicit operator intent required")
         if not _CORRELATION.fullmatch(correlation_id):
@@ -294,6 +315,9 @@ def build_inspection_router(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         if result is None:
             raise HTTPException(status_code=409, detail="trace unavailable or inspection limit reached")
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Vary"] = "Authorization"
+        response.headers["X-Content-Type-Options"] = "nosniff"
         return {
             "kind": receipt["kind"],
             "snapshot": receipt["snapshot"],
