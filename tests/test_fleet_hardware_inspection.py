@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,8 @@ from assistx.fleet_hardware_inspection import (
 SNAP = "2026-10-10T16-00-00Z"
 DIGEST = "a" * 64
 CID = "sample-correlation-123"
+SYNTHETIC_WRITER_TOKEN = "fixture-only-not-a-real-secret-" + "Z" * 40
+SYNTHETIC_WRITER_DIGEST = hashlib.sha256(SYNTHETIC_WRITER_TOKEN.encode()).hexdigest()
 
 
 def preview(*, fresh: bool = True) -> dict[str, Any]:
@@ -205,7 +208,10 @@ def test_disabled_by_default_no_db_calls():
     result = c.post(
         f"/api/fleet/trace-inspections/{CID}",
         json={"ram_gib": 20.0, "confirm_post_hoc_observation": True},
-        headers={"X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1"},
+        headers={
+            "X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1",
+            "X-AssistX-Inspection-Token": SYNTHETIC_WRITER_TOKEN,
+        },
     )
     assert result.status_code == 503
     assert neo.calls == []
@@ -222,6 +228,7 @@ def test_operator_intent_and_authentication_required():
             root_provider=lambda: "/unused",
             write_enabled=lambda: True,
             writer_identities=lambda: "operator,operator-1",
+            writer_token_digest=lambda: SYNTHETIC_WRITER_DIGEST,
         )
     )
     c = TestClient(app)
@@ -299,12 +306,16 @@ def test_explicit_operator_post_succeeds_only_with_evidence_matching_private_sou
             root_provider=lambda: "/synthetic-private-source",
             write_enabled=lambda: True,
             writer_identities=lambda: "operator,operator-1",
+            writer_token_digest=lambda: SYNTHETIC_WRITER_DIGEST,
         )
     )
     client = TestClient(app)
     endpoint = f"/api/fleet/trace-inspections/{CID}"
     body = {"ram_gib": 20.0, "gpu_vram_gib": 16.0, "confirm_post_hoc_observation": True}
-    header = {"X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1"}
+    header = {
+        "X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1",
+        "X-AssistX-Inspection-Token": SYNTHETIC_WRITER_TOKEN,
+    }
     response = client.post(endpoint, json=body, headers=header)
     assert response.status_code == 200
     result = response.json()
@@ -352,12 +363,16 @@ def test_missing_constraint_returns_503_on_authenticated_explicit_post(monkeypat
             root_provider=lambda: "/authorized-fixture",
             write_enabled=lambda: True,
             writer_identities=lambda: "operator,operator-1",
+            writer_token_digest=lambda: SYNTHETIC_WRITER_DIGEST,
         )
     )
     result = TestClient(app).post(
         f"/api/fleet/trace-inspections/{CID}",
         json={"ram_gib": 20.0, "gpu_vram_gib": 16.0, "confirm_post_hoc_observation": True},
-        headers={"X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1"},
+        headers={
+            "X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1",
+            "X-AssistX-Inspection-Token": SYNTHETIC_WRITER_TOKEN,
+        },
     )
     assert result.status_code == 503
     assert "schema prerequisite" in result.json()["detail"]
@@ -383,7 +398,10 @@ def test_writer_allowlist_required_before_source_and_graph_reads(monkeypatch):
     monkeypatch.setattr("assistx.fleet_hardware_inspection.hardware_preview", inventory_probe)
 
     request = {"ram_gib": 20.0, "gpu_vram_gib": 16.0, "confirm_post_hoc_observation": True}
-    header = {"X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1"}
+    header = {
+        "X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1",
+        "X-AssistX-Inspection-Token": SYNTHETIC_WRITER_TOKEN,
+    }
     for configured, identity, expected in [
         ("", "operator", 503),
         ("*", "operator", 503),
@@ -423,3 +441,72 @@ def test_writer_allowlist_does_not_restrict_authenticated_read():
     response = TestClient(app).get(f"/api/fleet/trace-inspections/{CID}")
     assert response.status_code == 200
     assert response.json()["receipts"] == []
+
+
+@pytest.mark.parametrize(
+    ("configured_digest", "supplied_token", "expected_status"),
+    [
+        ("", SYNTHETIC_WRITER_TOKEN, 503),
+        ("not-a-sha256-digest", SYNTHETIC_WRITER_TOKEN, 503),
+        ("A" * 64, SYNTHETIC_WRITER_TOKEN, 503),
+        (SYNTHETIC_WRITER_DIGEST, None, 403),
+        (SYNTHETIC_WRITER_DIGEST, "short", 403),
+        (SYNTHETIC_WRITER_DIGEST, "wrong-secret-" + "x" * 40, 403),
+    ],
+)
+def test_independent_writer_credential_required_before_reads(
+    monkeypatch, configured_digest: str, supplied_token: str | None, expected_status: int
+):
+    from unittest.mock import Mock
+
+    reader = Mock(side_effect=AssertionError("source accessed before receipt token authorization"))
+    db = Mock(side_effect=AssertionError("graph accessed before receipt token authorization"))
+    monkeypatch.setattr("assistx.fleet_hardware_inspection.hardware_preview", reader)
+    app = FastAPI()
+    app.include_router(
+        build_inspection_router(
+            auth_dependency=lambda: "operator",
+            neo_factory=db,
+            root_provider=lambda: "/synthetic-private-source",
+            write_enabled=lambda: True,
+            writer_identities=lambda: "operator",
+            writer_token_digest=lambda: configured_digest,
+        )
+    )
+    headers = {"X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1"}
+    if supplied_token is not None:
+        headers["X-AssistX-Inspection-Token"] = supplied_token
+    response = TestClient(app).post(
+        f"/api/fleet/trace-inspections/{CID}",
+        json={"ram_gib": 20.0, "gpu_vram_gib": 16.0, "confirm_post_hoc_observation": True},
+        headers=headers,
+    )
+    assert response.status_code == expected_status
+    assert SYNTHETIC_WRITER_TOKEN not in response.text
+    assert not reader.called and not db.called
+
+
+def test_trusted_header_principal_cannot_bypass_independent_receipt_token(monkeypatch):
+    from unittest.mock import Mock
+
+    reader = Mock(side_effect=AssertionError("trusted identity must not bypass independent receipt token"))
+    monkeypatch.setattr("assistx.fleet_hardware_inspection.hardware_preview", reader)
+    # Simulates an upstream identity header being accepted by general auth.
+    app = FastAPI()
+    app.include_router(
+        build_inspection_router(
+            auth_dependency=lambda: "allowed-writer",
+            neo_factory=lambda: (_ for _ in ()).throw(AssertionError("unexpected graph access")),
+            root_provider=lambda: "/synthetic-source",
+            write_enabled=lambda: True,
+            writer_identities=lambda: "allowed-writer",
+            writer_token_digest=lambda: SYNTHETIC_WRITER_DIGEST,
+        )
+    )
+    result = TestClient(app).post(
+        f"/api/fleet/trace-inspections/{CID}",
+        json={"ram_gib": 20.0, "confirm_post_hoc_observation": True},
+        headers={"X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1"},
+    )
+    assert result.status_code == 403
+    assert not reader.called
