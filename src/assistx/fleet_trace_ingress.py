@@ -97,6 +97,10 @@ def _valid_scope(entry: dict[str, Any]) -> bool:
     producers = entry.get("producers")
     tenant = entry.get("write_tenant")
     readable = entry.get("read_tenants")
+    actors = entry.get("read_actors")
+    valid_actor = lambda x: isinstance(x, str) and (
+        (x.startswith("login:") and 6 < len(x) <= 260)
+        or (x.startswith("tag:") and 4 < len(x) <= 128))
     valid_tenant = lambda x: isinstance(x, str) and TENANT.fullmatch(x) is not None
     return (isinstance(nodes, list) and 0 < len(nodes) <= 64
             and all(isinstance(x, str) and 0 < len(x) <= 128 for x in nodes)
@@ -106,7 +110,10 @@ def _valid_scope(entry: dict[str, Any]) -> bool:
             and (entry.get("read") is not True
                  or (isinstance(readable, list) and 0 < len(readable) <= 16
                      and len(set(readable)) == len(readable)
-                     and all(valid_tenant(x) for x in readable))))
+                     and all(valid_tenant(x) for x in readable)
+                     and isinstance(actors, list) and 0 < len(actors) <= 64
+                     and len(set(actors)) == len(actors)
+                     and all(valid_actor(x) for x in actors))))
 
 
 
@@ -257,15 +264,21 @@ async def get_events(trace_id: str, request: Request, limit: int = 30) -> JSONRe
         node_placeholders = ",".join("?" for _ in scope["nodes"])
         producer_placeholders = ",".join("?" for _ in scope["producers"])
         tenant_placeholders = ",".join("?" for _ in scope["read_tenants"])
+        # An organization's tenant can contain multiple people. The writer
+        # principal is the strongest trustworthy subject currently available
+        # from Serve. Readers receive only explicitly granted actors.
+        actor_digests = [_digest_principal(actor) for actor in scope["read_actors"]]
+        actor_placeholders = ",".join("?" for _ in actor_digests)
         with closing(_connect()) as db:
             rows = db.execute(
                 f"""SELECT envelope, received_at, sha256 FROM trace_events
                    WHERE trace_id=? AND tenant_scope IN ({tenant_placeholders})
                      AND node_id IN ({node_placeholders})
                      AND producer IN ({producer_placeholders})
+                     AND principal_digest IN ({actor_placeholders})
                    ORDER BY received_at DESC,event_id DESC LIMIT ?""",
                 (trace_id, *scope["read_tenants"], *scope["nodes"],
-                 *scope["producers"], limit)
+                 *scope["producers"], *actor_digests, limit)
             ).fetchall()
     except sqlite3.Error:
         _deny(503, "local_trace_storage_unavailable")
