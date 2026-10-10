@@ -453,6 +453,25 @@ def run():
             assert wparent.poll(12)
             assert wparent.recv()["result"] == "still-active"
 
+            # On a paused, disposable PG primary no successor admission is
+            # authorized. This is NOT a quorum/takeover experiment.
+            docker("pause", pg, timeout=12)
+            try:
+                try:
+                    unavailable = _pg_admit(
+                        pg_worker_dsn, epoch, secrets.token_hex(16),
+                        "pg-outage-successor"
+                    )
+                except psycopg.Error:
+                    pass  # Fail closed: no PostgreSQL authority response.
+                else:
+                    raise AssertionError(
+                        "PG_OUTAGE_GRANTED_OR_RETURNED: " + str(unavailable)
+                    )
+            finally:
+                docker("unpause", pg, timeout=12)
+            assert _pg_capacity(pg_worker_dsn, epoch) == 1
+
             # Reproduce uncertain physical state: upstream Bolt socket survives.
             proxy.blackout.set()
             time.sleep(.2)
@@ -548,6 +567,7 @@ def run():
                 "detached_signature_verified": True,
                 "fsynced_witness_receipt_precedes_sql_release": True,
                 "audit_write_failure_retains_pg_capacity": True,
+                "pg_primary_pause_denied_successor": True,
                 "successor_admitted_after_proof": True,
                 "gateway_audit_events_after_crash": 2,
                 "production_authority": False,
