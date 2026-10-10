@@ -271,6 +271,14 @@ def run():
                 clients[node], base + "/active", cluster_id)
             assert other.snapshot().document["owner"] == "gateway-old"
         result["events"].append("same_raft_cluster_verified_across_three")
+        # Optional REAL Neo4j admission on the same three-voter consensus
+        # group. Requires a second manual opt-in; baseline remains unchanged.
+        if os.getenv("ASSISTX_QUORUM_NEO4J_RESEARCH") == "1":
+            from probe_trace_quorum_neo4j_physical import run_real_quorum_graph
+            result["graph_integration"] = run_real_quorum_graph(
+                clients, cluster_id, base, run_id, ip_map, client_port,
+                certs, shell, container_names, started, result)
+
         # Explicit client-authentication negative: CA trust without a client
         # certificate MUST be insufficient to issue a Raft KV read.
         unauthenticated = ssl.create_default_context(
