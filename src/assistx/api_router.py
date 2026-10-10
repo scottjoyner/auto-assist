@@ -11,6 +11,7 @@ from .control_room import LEGACY_UI_PATHS, build_control_room_router
 from .control_room_runtime import install_control_room_runtime
 from .executor_claims import install_live_executor_claims
 from .executor_security import install_executor_security
+from .fleet_hardware_inspection import build_inspection_router
 from .fleet_hardware_preview import (
     build_fleet_hardware_preview_page_router,
     build_fleet_hardware_preview_router,
@@ -93,6 +94,7 @@ app.include_router(build_control_room_router(_neo, auth, templates))
 app.include_router(build_router_integration_router(_neo))
 app.include_router(build_runtime_projection_router(_neo, auth_dependency=auth))
 app.include_router(build_fleet_hardware_preview_router(auth_dependency=auth))
+app.include_router(build_inspection_router(auth_dependency=auth, neo_factory=_neo))
 app.include_router(build_fleet_hardware_preview_page_router(auth_dependency=auth, templates=templates))
 app.include_router(build_overlay_router())
 app.include_router(build_passive_agent_router(_neo, auth_dependency=auth))
