@@ -149,6 +149,33 @@ def process_intents_job() -> Dict[str, Any]:
         _reschedule()
 
 
+def _record_my_jev_policy_shadow(neo: Any, intent: Dict[str, Any]) -> None:
+    """Observation-only receipt recording; failures never modify live intent.
+
+    This helper intentionally does not dispatch, claim, approve, mutate
+    routing, or interpret policy responses as authoritative decisions.
+    Missing, malformed or identity-mismatched receipts leave no graph record.
+    """
+    from .my_jev_policy import request_policy_shadow, shadow_enabled
+
+    if not shadow_enabled():
+        return
+    try:
+        evidence = request_policy_shadow(intent)
+        if not isinstance(evidence, dict) or not evidence.get("shadow"):
+            return
+        if not intent.get("id"):
+            return
+        neo.record_intent_policy_shadow(intent["id"], evidence)
+    except Exception as exc:
+        # Shadow witnesses cannot hold the authoritative intent lifecycle
+        # hostage, and must not persist partially validated evidence.
+        logger.warning(
+            "my-jev shadow observer withheld invalid evidence for %s: %s",
+            str(intent.get("id") or "<missing>")[:80], type(exc).__name__,
+        )
+
+
 def _process_intent(neo: Neo4jClient, intent: Dict[str, Any]) -> None:
     intent_id = intent.get("id")
     text = intent.get("text", "").strip()
