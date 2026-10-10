@@ -290,7 +290,9 @@ def run():
     ctx = mp.get_context("spawn")
     with tempfile.TemporaryDirectory(prefix="assistx-three-party-") as home:
         os.chmod(home, 0o755)
-        socket_path = str(Path(home) / "gateway.sock")
+        ipc_home = Path(home) / "worker-ipc"
+        ipc_home.mkdir(mode=0o755)
+        socket_path = str(ipc_home / "gateway.sock")
         journal_path = str(Path(home) / "gateway-ledger.sqlite")
         custody_path = str(Path(home) / "witness-closure.jsonl")
         try:
@@ -393,13 +395,21 @@ def run():
                 " print(c.recv(4096).decode(),flush=True);c.close()\n"
             )
             docker("run", "-d", "--name", worker, "--pull", "never",
-                   "--network", "none",
-                   "--mount", "type=bind,source=" + home +
+                   "--network", "none", "--read-only",
+                   "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                   "--user", "65534:65534", "--memory", "128m",
+                   "--pids-limit", "32",
+                   "--mount", "type=bind,source=" + str(ipc_home) +
                    ",target=/ipc,readonly",
                    "python:3.12-slim", "python", "-c", worker_code)
             containers.append(worker)
             inspected = json.loads(docker("inspect", worker).stdout)[0]
+            mounts = inspected.get("Mounts", [])
             if (inspected["HostConfig"]["NetworkMode"] != "none"
+                    or not inspected["HostConfig"]["ReadonlyRootfs"]
+                    or len(mounts) != 1
+                    or mounts[0]["Source"] != str(ipc_home)
+                    or mounts[0]["RW"] is not False
                     or inspected["HostConfig"].get("PortBindings")
                     or any("POSTGRES" in entry or "NEO4J" in entry
                            for entry in inspected["Config"].get("Env", []))):
@@ -550,6 +560,8 @@ def run():
                 "schema": "assistx-three-party-physical-v1",
                 "worker_network": "none", "worker_direct_bolt_denied": True,
                 "worker_only_unix_plan_request": True,
+                "worker_mount_only_ipc_socket": True,
+                "worker_rootfs_readonly_no_capabilities": True,
                 "arbitrary_worker_cypher_denied": True,
                 "worker_pg_release_denied": True,
                 "forged_pg_binding_denied": True,
