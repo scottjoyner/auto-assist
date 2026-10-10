@@ -36,9 +36,13 @@ def envelope(event_id="one", node="x1-370", producer="assistx", trace_id=TRACE):
 @pytest.fixture
 def setup(monkeypatch, tmp_path):
     policy = {
-        f"login:{LOGIN}": {"nodes": ["x1-370"], "producers": ["assistx"], "write": True, "read": True},
-        "login:observer@example.com": {"nodes": ["xwing"], "producers": ["opencode"], "read": True},
-        "tag:ingress": {"nodes": ["xwing"], "producers": ["opencode"], "write": True, "read": False},
+        f"login:{LOGIN}": {"nodes": ["x1-370"], "producers": ["assistx"],
+                            "write": True, "read": True, "write_tenant": "tenant-a",
+                            "read_tenants": ["tenant-a", "tenant-b"]},
+        "login:observer@example.com": {"nodes": ["xwing"], "producers": ["opencode"],
+                                        "read": True, "read_tenants": ["tenant-b"]},
+        "tag:ingress": {"nodes": ["xwing"], "producers": ["opencode"],
+                        "write": True, "read": False, "write_tenant": "tenant-b"},
     }
     monkeypatch.setenv("FLEET_TRACE_TRUSTED_SERVE", "1")
     monkeypatch.setenv("FLEET_TRACE_DB_PATH", str(tmp_path / "trace.db"))
@@ -258,6 +262,7 @@ def test_multi_node_same_trace_parent_links_without_leaking_to_narrow_reader(mon
     # A registered operator with both node scopes sees two distinct systems.
     policy = json.loads(os.environ["FLEET_TRACE_AUTH_POLICY_JSON"])
     policy[f"login:{LOGIN}"]["nodes"] = ["x1-370", "xwing"]
+    policy[f"login:{LOGIN}"]["producers"] = ["assistx", "opencode"]
     monkeypatch.setenv("FLEET_TRACE_AUTH_POLICY_JSON", json.dumps(policy))
     response = client.get(f"/v1/traces/{TRACE}/events", headers=headers())
     assert response.status_code == 200
@@ -275,3 +280,106 @@ def test_multi_node_same_trace_parent_links_without_leaking_to_narrow_reader(mon
 def test_local_health_does_not_claim_admitted_tracing(setup):
     client, _ = setup
     assert client.get("/healthz").json() == {"ready_for_auth_check": True}
+
+
+def test_two_users_same_model_node_identical_trace_and_event_are_isolated(setup, monkeypatch):
+    client, db_path = setup
+    policy = json.loads(os.environ["FLEET_TRACE_AUTH_POLICY_JSON"])
+    policy["login:bob@example.com"] = {
+        "nodes": ["x1-370"], "producers": ["assistx"], "write": True, "read": True,
+        "write_tenant": "tenant-b", "read_tenants": ["tenant-b"]
+    }
+    policy["login:alice@example.com"] = {
+        "nodes": ["x1-370"], "producers": ["assistx"], "read": True,
+        "read_tenants": ["tenant-a"]
+    }
+    monkeypatch.setenv("FLEET_TRACE_AUTH_POLICY_JSON", json.dumps(policy))
+    event = envelope("same-event-id")
+    assert client.post("/v1/events", headers=headers(), json=event).status_code == 201
+    assert client.post("/v1/events", headers=headers("bob@example.com"), json=event).status_code == 201
+    alice = client.get(f"/v1/traces/{TRACE}/events", headers=headers("alice@example.com"))
+    bob = client.get(f"/v1/traces/{TRACE}/events", headers=headers("bob@example.com"))
+    assert len(alice.json()["events"]) == len(bob.json()["events"]) == 1
+    with sqlite3.connect(db_path) as db:
+        assert db.execute("SELECT tenant_scope, count(*) FROM trace_events GROUP BY tenant_scope").fetchall() == [
+            ("tenant-a", 1), ("tenant-b", 1)
+        ]
+
+
+def test_node_scope_without_tenant_scope_does_not_grant_trace_access(setup, monkeypatch):
+    client, _ = setup
+    policy = json.loads(os.environ["FLEET_TRACE_AUTH_POLICY_JSON"])
+    policy["login:observer@example.com"]["nodes"] = ["x1-370"]
+    policy["login:observer@example.com"]["producers"] = ["assistx"]
+    monkeypatch.setenv("FLEET_TRACE_AUTH_POLICY_JSON", json.dumps(policy))
+    assert client.post("/v1/events", headers=headers(), json=envelope()).status_code == 201
+    res = client.get(f"/v1/traces/{TRACE}/events", headers=headers("observer@example.com"))
+    assert res.status_code == 200 and res.json()["events"] == []
+
+
+def test_tenant_scope_without_producer_scope_does_not_grant_trace_access(setup, monkeypatch):
+    client, _ = setup
+    policy = json.loads(os.environ["FLEET_TRACE_AUTH_POLICY_JSON"])
+    policy["tag:ingress"]["nodes"] = ["x1-370"]
+    policy["login:observer@example.com"]["nodes"] = ["x1-370"]
+    monkeypatch.setenv("FLEET_TRACE_AUTH_POLICY_JSON", json.dumps(policy))
+    tagged = headers(login="")
+    tagged["Tailscale-App-Capabilities"] = json.dumps({
+        gateway.WRITER_CAPABILITY: [{"principal": "tag:ingress"}]
+    })
+    assert client.post("/v1/events", headers=tagged, json=envelope(
+        "from-opencode", producer="opencode")).status_code == 201
+    assert len(client.get(f"/v1/traces/{TRACE}/events",
+               headers=headers("observer@example.com")).json()["events"]) == 1
+    assert client.get(f"/v1/traces/{TRACE}/events", headers=headers()).json()["events"] == []
+
+
+def test_missing_tenant_policy_default_denies_without_creating_storage(setup, monkeypatch):
+    client, db_path = setup
+    policy = json.loads(os.environ["FLEET_TRACE_AUTH_POLICY_JSON"])
+    del policy[f"login:{LOGIN}"]["write_tenant"]
+    monkeypatch.setenv("FLEET_TRACE_AUTH_POLICY_JSON", json.dumps(policy))
+    assert client.post("/v1/events", headers=headers(), json=envelope()).status_code == 403
+    assert not db_path.exists()
+    policy[f"login:{LOGIN}"]["write_tenant"] = "tenant-a"
+    del policy[f"login:{LOGIN}"]["read_tenants"]
+    monkeypatch.setenv("FLEET_TRACE_AUTH_POLICY_JSON", json.dumps(policy))
+    assert client.get(f"/v1/traces/{TRACE}/events", headers=headers()).status_code == 403
+
+
+def test_client_supplied_tenant_claims_are_not_authority(setup):
+    client, _ = setup
+    supplied = headers()
+    supplied["X-Tenant-ID"] = "tenant-b"
+    supplied["X-User-ID"] = "bob@example.com"
+    assert client.post("/v1/events", headers=supplied, json=dict(
+        envelope(), tenant_scope="tenant-b")).status_code == 422
+    assert client.post("/v1/events", headers=supplied, json=envelope()).status_code == 201
+    assert len(client.get(f"/v1/traces/{TRACE}/events", headers=supplied).json()["events"]) == 1
+
+
+def test_old_database_schema_must_not_be_auto_migrated_or_reassigned(setup):
+    client, db_path = setup
+    with sqlite3.connect(db_path) as db:
+        db.execute("""CREATE TABLE trace_events (
+            event_id TEXT PRIMARY KEY, trace_id TEXT NOT NULL, span_id TEXT NOT NULL,
+            node_id TEXT NOT NULL, principal_digest TEXT NOT NULL, received_at TEXT NOT NULL,
+            sha256 TEXT NOT NULL, envelope TEXT NOT NULL)""")
+    assert client.post("/v1/events", headers=headers(), json=envelope()).status_code == 503
+    assert client.get(f"/v1/traces/{TRACE}/events", headers=headers()).status_code == 503
+    with sqlite3.connect(db_path) as db:
+        assert "tenant_scope" not in {x[1] for x in db.execute("PRAGMA table_info(trace_events)")}
+        assert db.execute("SELECT count(*) FROM trace_events").fetchone()[0] == 0
+
+
+def test_second_writer_same_tenant_cannot_take_over_another_event_id(setup, monkeypatch):
+    client, _ = setup
+    policy = json.loads(os.environ["FLEET_TRACE_AUTH_POLICY_JSON"])
+    policy["login:second@example.com"] = {
+        "nodes": ["x1-370"], "producers": ["assistx"], "write": True, "read": True,
+        "write_tenant": "tenant-a", "read_tenants": ["tenant-a"]
+    }
+    monkeypatch.setenv("FLEET_TRACE_AUTH_POLICY_JSON", json.dumps(policy))
+    assert client.post("/v1/events", headers=headers(), json=envelope()).status_code == 201
+    assert client.post("/v1/events", headers=headers("second@example.com"),
+                       json=envelope()).status_code == 409
