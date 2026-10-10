@@ -21,6 +21,7 @@ from .recovery_mode import build_recovery_mode_router, install_recovery_shadow_m
 from .router_integration import build_router_integration_router
 from .runtime_projection_v2 import build_runtime_projection_router
 from .fleet_link_canary import build_fleet_link_canary_router
+from .fleet_link_embedding_preview import build_fleet_link_embedding_preview_router
 from .mobile_agent_routes import _current_runtime_projection
 from .routers.devices import build_devices_router
 from .routers.dispatch import build_dispatch_router
@@ -90,6 +91,7 @@ app.include_router(build_control_room_router(_neo, auth, templates))
 app.include_router(build_router_integration_router(_neo))
 app.include_router(build_runtime_projection_router(_neo, auth_dependency=auth))
 app.include_router(build_fleet_link_canary_router(auth, _current_runtime_projection))
+app.include_router(build_fleet_link_embedding_preview_router(auth, _current_runtime_projection))
 app.include_router(build_overlay_router())
 app.include_router(build_passive_agent_router(_neo, auth_dependency=auth))
 app.include_router(build_passive_claim_router(_neo, auth_dependency=auth))
