@@ -1,0 +1,52 @@
+{
+  "boundary": "observation_only_no_admission_no_model_load",
+  "gateway": "https://x1-370.tailcb8954.ts.net:8443",
+  "gateway_witness": {
+    "agent_auto_admitted": false,
+    "agent_runtime_count": 0,
+    "catalog_http": 200,
+    "fleet_runtime_count": 0,
+    "health_http": 200,
+    "state": "projection_not_admitted"
+  },
+  "observed_at_utc": "2026-10-10T15:39:16.096254+00:00",
+  "provider_witnesses": [
+    {
+      "confirmed_loaded": 0,
+      "models_listed": 24,
+      "protocol": "lmstudio_native",
+      "provider": "http://x1-370:1234",
+      "state": "inventory_only"
+    },
+    {
+      "confirmed_loaded": 1,
+      "models_listed": 1,
+      "protocol": "compatible_with_llamacpp_proof",
+      "provider": "http://destroyer:1235",
+      "state": "resident"
+    },
+    {
+      "confirmed_loaded": 1,
+      "models_listed": 1,
+      "protocol": "compatible_with_llamacpp_proof",
+      "provider": "http://destroyer:1236",
+      "state": "resident"
+    },
+    {
+      "confirmed_loaded": 1,
+      "models_listed": 1,
+      "protocol": "compatible_with_llamacpp_proof",
+      "provider": "http://scott-optiplex-9030-aio:1235",
+      "state": "resident"
+    },
+    {
+      "confirmed_loaded": 1,
+      "models_listed": 1,
+      "protocol": "compatible_with_llamacpp_proof",
+      "provider": "http://scott-optiplex-9030-aio:1236",
+      "state": "resident"
+    }
+  ],
+  "record_sha256": "456356a4ed0ac4e3e37d79512eb9ab74124aec14b297228cd71bdc876eff33ca",
+  "schema_version": 1
+}
