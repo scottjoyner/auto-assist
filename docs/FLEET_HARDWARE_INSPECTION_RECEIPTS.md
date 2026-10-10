@@ -20,15 +20,19 @@ The actual Cypher includes a 20-receipt-per-trace limit, immutable ON CREATE pro
 
 ## Database prerequisite — schema gate before enabling writes
 
-The `receipt_id` is SHA-256 of a canonical non-secret witness envelope (correlation ID, snapshot ID, evidence-source digest, requested resources, post-hoc kind). The writer uses `MERGE` with `ON CREATE SET`; to guarantee uniqueness during concurrent requests, a Neo4j administrator **must** apply and verify this constraint on an authorized staging database before enabling the feature:
+The `receipt_id` is SHA-256 of a canonical non-secret witness envelope (correlation ID, snapshot ID, evidence-source digest, requested resources, post-hoc kind). The writer uses `MERGE` with `ON CREATE SET`; to guarantee uniqueness during concurrent requests, a Neo4j administrator **must** apply and verify both constraints on an authorized staging database before enabling the feature:
 
 ```cypher
 CREATE CONSTRAINT fleet_hardware_inspection_receipt_id_unique IF NOT EXISTS
 FOR (r:FleetHardwareInspection)
 REQUIRE r.receipt_id IS UNIQUE;
+
+CREATE CONSTRAINT fleet_hardware_inspection_lock_id_unique IF NOT EXISTS
+FOR (m:FleetHardwareInspectionLock)
+REQUIRE m.correlation_id IS UNIQUE;
 ```
 
-No schema migration is executed by the API, CI or this PR. The writer now inspects Neo4j schema metadata on every POST and **returns HTTP 503 without writing** unless this exact constraint is present. Until an operator verifies the constraint on isolated staging, **do not enable receipt writes**. Further production acceptance must include two concurrent writers racing to record the same receipt, a deliberately dropped acknowledgment and a repeat attempt, followed by a check that exactly one node/relation exists.
+No schema migration is executed by the API or CI. The writer validates BOTH named constraints on every POST and returns HTTP 503 without writing unless each is present. A dedicated lock node receives a monotonically increasing fence_counter and acquires a transaction write lock before counting existing receipts. This serializes concurrent distinct receipt attempts and protects the quota of 20 without changing execution-state properties. Until an operator verifies both constraints on isolated staging, **do not enable receipt writes**. Further production acceptance must include two concurrent writers racing to record the same receipt, a deliberately dropped acknowledgment and a repeat attempt, followed by a check that exactly one node/relation exists.
 
 ## API contract
 
@@ -66,4 +70,29 @@ Repeated requests for the same correlation/snapshot/digest/requirements map to o
 - Inspect audit account identity, HTTP security headers and reverse-proxy rate limits before allowing any production writer.
 - Never interpret these inspection receipts as dispatch-time or execution-time evidence.
 
-**Status:** local fake-Neo4j and FastAPI tests implement these invariants; no real Neo4j write acceptance, schema installation, flag activation, merge or deployment has occurred.
+**Status:** local fake-Neo4j and FastAPI tests pass. A physically isolated disposable Neo4j 5.23 experiment passed on October 10 with synthetic data; the disposable container was removed. No production Neo4j writes, production schema installation, flag activation, merge or deployment occurred.
+
+## Disposable physical concurrency acceptance — 2026-10-10
+
+The repeatable test lives at tests/physical/fleet_receipt_disposable_neo4j.py. It refuses to run without an explicit disposable-lab flag, a nondefault dynamic localhost Bolt port, an empty graph, and no pre-existing constraints. It does not contain credentials or private fleet data.
+
+A resource-limited disposable Docker Neo4j 5.23.0 container (0.75 CPU core, 1.5 GiB maximum RAM/swap) was used on x1-370, with no NAS mounts. The separate existing Neo4j container remained healthy. Only the disposable graph received schema changes; the test container was subsequently stopped and removed.
+
+| Test | Result |
+|---|---|
+| Both uniqueness constraints installed on new empty graph | PASS |
+| Initial receipt links only to an existing completed trace | PASS |
+| 40 distinct competing receipts across six workers | Exactly 20 receipts; zero errors |
+| 12 duplicate retries at full quota | Same receipt ID; still exactly 20 |
+| TraceGroup execution state | Still completed |
+| New TraceEvent nodes | Zero |
+| Dedicated receipt lock nodes | One |
+| Unknown trace correlation | No group/receipt created |
+| Missing lock constraint after dropping it | Fail-closed; no write |
+| Cleanup and isolation | Disposable removed; existing Neo4j retained |
+
+Run only with explicit approval for a new disposable Neo4j container on a non-default random localhost port, after checking host load. The test requires ASSISTX_RECEIPT_DISPOSABLE_LAB=I_ACCEPT_DISPOSABLE_ONLY and NEO4J_RECEIPT_LAB_URI=bolt://127.0.0.1:PORT. It validates that the database is empty before applying its disposable-only constraints. Never use a production Bolt port or established graph.
+
+This is bounded physical acceptance of the data-write contract, not proof that production authentication, endpoint reverse proxies, source custody, live workload admission, or runtime compatibility are approved.
+
+Physical harness safety update: before connecting, the script independently inspects an exact-name running disposable Docker container and requires a neo4j:5.x image, a dynamic 127.0.0.1 Bolt mapping that matches the supplied URI, CPU and RAM cgroup caps, and no host bind mounts. It refuses any other target before issuing DDL or graph writes.
