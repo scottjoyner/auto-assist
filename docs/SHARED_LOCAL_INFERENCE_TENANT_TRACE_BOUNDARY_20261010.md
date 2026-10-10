@@ -12,7 +12,7 @@ Read-only network observation: LM Studio listens at 0.0.0.0:1234 on x1-370. Actu
 
 - The authenticated server-side policy binds each writer to a single write_tenant, and each reader to explicit read_tenants, nodes, and producers. No tenant identity from user-controlled headers or event JSON.
 - Storage records policy-derived tenant_scope and producer with each event. Primary key (tenant_scope, event_id) avoids cross-tenant collisions when two clients reuse event IDs.
-- Every trace query intersects tenant + node + producer + trace ID. A shared node does not confer cross-user access.
+- Every trace query intersects tenant + authenticated writer/owner principal + node + producer + trace ID. Organization-wide tenant rights alone do not expose one person's events to another. A shared node does not confer cross-user access.
 - Old unscoped SQLite tables are rejected as requiring a separately approved migration. The code does not silently backfill untrusted historical ownership or modify a pre-existing schema.
 - A valid W3C traceparent or HTTP 200 is still correlation only, not proof of admission, source execution, or ownership. The receiver still reports source_attested=false.
 - Static tagged-producer identity cannot distinguish two end users behind one shared service. This feature must remain NO-GO for public shared inference until a gateway issues and verifies per-request delegated owner identities.
@@ -29,7 +29,7 @@ Read-only network observation: LM Studio listens at 0.0.0.0:1234 on x1-370. Actu
 
 ## Test and rollout boundaries
 
-32 focused tests passed on disposable SQLite: two tenants with identical W3C trace/event IDs on the same node, node-only denial, producer-only denial, untrusted owner header denial, missing policy denial, legacy schema refusal and same-tenant event takeover refusal. Additional source-contract tests and live multi-user model traffic remain release gates.
+34 focused ingress tests passed on disposable SQLite: two tenants with identical W3C trace/event IDs on the same node, node-only denial, producer-only denial, untrusted owner header denial, missing policy denial, legacy schema refusal and same-tenant event takeover refusal. Additional source-contract tests and live multi-user model traffic remain release gates.
 
 This patch is not deployed. It does not configure Tailscale Serve, alter inference endpoints, enable OpenTelemetry, write production traces, rotate secrets, migrate data or authorize Agent Auto. A separate owner decision is needed before any live installation.
 
