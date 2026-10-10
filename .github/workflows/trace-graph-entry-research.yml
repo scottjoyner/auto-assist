@@ -8,6 +8,7 @@ on:
       - 'tests/test_trace_graph_entry*.py'
       - 'tests/test_trace_fencing_term*.py'
       - 'tests/probe_trace_entry*.py'
+      - 'tests/probe_trace_fencing*.py'
       - '.github/workflows/trace-graph-entry-research.yml'
   workflow_dispatch:
 
@@ -36,10 +37,11 @@ jobs:
             tests/test_trace_graph_entry_guarded.py \
             tests/test_trace_graph_entry_metadata.py \
             tests/test_trace_graph_entry_three_party_guards.py \
-            tests/test_trace_fencing_term_authority_research.py
+            tests/test_trace_fencing_term_authority_research.py \
+            tests/test_trace_fencing_physical_guards.py
       - name: Verify physical probes remain manual-only
         run: |
-          python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py
+          python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py tests/probe_trace_fencing_two_primaries.py
           python - <<'PY'
           from pathlib import Path
           a = Path('tests/probe_trace_entry_network_isolation.py').read_text()
@@ -52,5 +54,8 @@ jobs:
           assert '"--network", "none"' in c
           assert '"signed_append_only_custody": False' in c
           assert '"production_authority": False' in b
-          print('All three physical probes remain explicit opt-in; CI never runs them.')
+          d = Path('tests/probe_trace_fencing_two_primaries.py').read_text()
+          assert 'EXPLICIT_TWO_PRIMARY_OPT_IN_REQUIRED' in d
+          assert '"quorum_failover_proven": False' in d
+          print('All four physical probes remain explicit opt-in; CI never runs them.')
           PY
