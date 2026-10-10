@@ -23,5 +23,29 @@
     "not_neo4j_test": true,
     "production_authority": false,
     "automatic_failover": false
+  },
+  "full_stack_combined_rerun": {
+    "source_commit": "ef15617c05af1216fe2650b62cdd30a84395aecd",
+    "runtime_seconds": 46.9,
+    "exit_code": 0,
+    "voters": [
+      "x1-370",
+      "xwing",
+      "destroyer"
+    ],
+    "checks": {
+      "real_Raft_response_loss_reconciled": true,
+      "same_id_changed_payload_denied": true,
+      "actual_Neo4j_Bolt_witness_passed": true,
+      "physical_transaction_survived_quorum_loss": true,
+      "independent_witness_signed_closure": true,
+      "RBAC_readonly_mutation_denied": true,
+      "writer_process_IPC_real_Raft_admission": true,
+      "writer_process_death_reservation_held": true,
+      "leader_reelection_and_minority_raw_txn_denied": true
+    },
+    "production_authority": false,
+    "distinct_OS_UIDs": false,
+    "server_enforced_Neo4j_fence": false
   }
 }
