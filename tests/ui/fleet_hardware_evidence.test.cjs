@@ -119,3 +119,56 @@ test("trace UI transparently states missing historical evidence", () => {
   window.FleetTraceEvidence.render({events: [{payload_json: JSON.stringify(payload)}]}, stored);
   assert.ok(allNodes(stored).some(n => n.textContent === good.evidence_digest_sha256));
 });
+
+test("post-hoc receipts display as later inspections, never execution proof", () => {
+  const {window} = fixture("static/js/fleet_trace_evidence.js");
+  const pane = new Element("div");
+  const ok = window.FleetTraceEvidence.renderInspections({
+    admission_allowed: false, dispatch_allowed: false,
+    receipts: [{
+      kind: "POST_HOC_OPERATOR_INSPECTION",
+      historical_decision_proof: false,
+      admission_allowed: false, dispatch_allowed: false,
+      snapshot: good.snapshot,
+      evidence_digest_sha256: good.evidence_digest_sha256,
+      recorded_at_ms: 1791648000000
+    }]
+  }, pane);
+  assert.equal(ok, true);
+  assert.ok(allNodes(pane).some(el => el.textContent.includes("recorded later")));
+  assert.ok(allNodes(pane).some(el => el.textContent === good.evidence_digest_sha256));
+});
+test("invalid or authoritative inspection receipts are never rendered", () => {
+  const {window} = fixture("static/js/fleet_trace_evidence.js");
+  const pane = new Element("div");
+  window.FleetTraceEvidence.renderInspections({
+    admission_allowed: false, dispatch_allowed: false,
+    receipts: [{
+      kind: "POST_HOC_OPERATOR_INSPECTION", historical_decision_proof: true,
+      admission_allowed: false, dispatch_allowed: false,
+      snapshot: good.snapshot, evidence_digest_sha256: good.evidence_digest_sha256
+    }]
+  }, pane);
+  assert.ok(!allNodes(pane).some(el => el.textContent === good.evidence_digest_sha256));
+  const error = new Element("div");
+  assert.equal(window.FleetTraceEvidence.renderInspections({
+    admission_allowed: true, dispatch_allowed: false,
+    receipts: []
+  }, error), false);
+});
+test("receipt viewer only performs same-origin no-cache GET and handles unavailable source", async () => {
+  const {window, context} = fixture("static/js/fleet_trace_evidence.js");
+  const calls = [];
+  context.fetch = async (url, opts) => {
+    calls.push({url, opts});
+    return {ok: false, status: 503};
+  };
+  const root = new Element("div");
+  await window.FleetTraceEvidence.loadInspections("trace-123", root, () => true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "/api/fleet/trace-inspections/trace-123");
+  assert.equal(calls[0].opts.method, "GET");
+  assert.equal(calls[0].opts.credentials, "same-origin");
+  assert.equal(calls[0].opts.cache, "no-store");
+  assert.ok(allNodes(root).some(el => el.textContent.includes("unavailable")));
+});

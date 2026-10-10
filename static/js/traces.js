@@ -160,7 +160,12 @@
       .join("");
 
     detailEl.innerHTML = head + '<div class="timeline">' + body + "</div>";
-    if (window.FleetTraceEvidence) window.FleetTraceEvidence.render(trace, detailEl);
+    if (window.FleetTraceEvidence) {
+      window.FleetTraceEvidence.render(trace, detailEl);
+      window.FleetTraceEvidence.loadInspections(
+        trace.correlation_id, detailEl, function () { return state.selected === trace.correlation_id; }
+      );
+    }
   }
 
   function select(cid) {
@@ -170,9 +175,9 @@
     });
     detailEl.innerHTML = "<div class='empty'>Loading " + esc(shortCid(cid)) + "…</div>";
     request("/api/traces/" + encodeURIComponent(cid))
-      .then(renderDetail)
+      .then(function (trace) { if (state.selected === cid) renderDetail(trace); })
       .catch(function (err) {
-        detailEl.innerHTML = "<div class='empty'>Could not load trace: " + esc(err.message) + "</div>";
+        if (state.selected === cid) detailEl.innerHTML = "<div class='empty'>Could not load trace: " + esc(err.message) + "</div>";
       });
   }
 
