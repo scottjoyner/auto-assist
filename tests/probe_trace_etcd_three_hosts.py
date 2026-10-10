@@ -81,9 +81,10 @@ def provision_certificates(folder: Path, ip_map: dict) -> None:
     (folder / "ca.key").write_bytes(pem_key(ca_key))
     os.chmod(folder / "ca.key", 0o600)
 
-    def leaf(name, ip=None):
+    def leaf(name, ip=None, no_cn=False):
         private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+        subject = (x509.Name([]) if no_cn else
+                   x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)]))
         builder = (x509.CertificateBuilder().subject_name(subject)
                    .issuer_name(ca_name).public_key(private.public_key())
                    .serial_number(x509.random_serial_number())
@@ -99,6 +100,14 @@ def provision_certificates(folder: Path, ip_map: dict) -> None:
             builder = builder.add_extension(
                 x509.SubjectAlternativeName([
                     x509.IPAddress(ipaddress.ip_address(ip))]), critical=False)
+        elif no_cn:
+            # gRPC HTTP gateway cannot use TLS Common Name auth. Its
+            # ephemeral JSON/bearer client cert has no subject CN and
+            # a critical SAN instead; ordinary voting peers are unchanged.
+            builder = builder.add_extension(
+                x509.SubjectAlternativeName([
+                    x509.DNSName("assistx-disposable-json-client")]),
+                critical=True)
         certificate = builder.sign(ca_key, hashes.SHA256())
         out = folder / name
         out.mkdir(mode=0o700)
@@ -111,6 +120,7 @@ def provision_certificates(folder: Path, ip_map: dict) -> None:
         leaf(node, ip_map[node])
     # This is a separate mTLS client identity from the three voting nodes.
     leaf("client")
+    leaf("json-client", no_cn=True)
 
 
 def run():
