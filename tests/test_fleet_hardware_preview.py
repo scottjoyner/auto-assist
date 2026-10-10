@@ -239,3 +239,46 @@ def test_request_is_strictly_bounded(export: Path) -> None:
     assert client.get("/api/fleet/hardware-preview?gpu_vram_gib=5000").status_code == 422
     assert client.get("/api/fleet/hardware-preview?limit=1000").status_code == 422
     assert client.get("/api/fleet/hardware-preview?data_host=not-present").status_code == 422
+
+
+def test_rejects_symlinked_parent_directory(export: Path) -> None:
+    original = export / "inventory"
+    relocated = export / "inventory-real"
+    original.rename(relocated)
+    original.symlink_to(relocated, target_is_directory=True)
+    with pytest.raises(FleetHardwareEvidenceError, match="symlink"):
+        hardware_preview(export, now=NOW)
+
+
+def test_rejects_world_writable_export_root(export: Path) -> None:
+    export.chmod(0o777)
+    try:
+        with pytest.raises(FleetHardwareEvidenceError, match="world-writable"):
+            hardware_preview(export, now=NOW)
+    finally:
+        export.chmod(0o700)
+
+
+def test_rejects_nonfinite_request_and_reports_unknown_nonfinite_capacity(export: Path) -> None:
+    for number in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="finite"):
+            hardware_preview(export, now=NOW, min_gpu_vram_gib=number)
+    resources = export / "inventory/fleet-resources.json"
+    payload = json.loads(resources.read_text())
+    payload["nodes"]["gpu-node"]["os_visible_ram_gib"] = float("nan")
+    payload["nodes"]["gpu-node"]["gpu_functions"][0]["driver_vram_gib"] = float("inf")
+    resources.write_text(json.dumps(payload))
+    response = hardware_preview(export, now=NOW, min_ram_gib=16, min_gpu_vram_gib=16)
+    selected = next(n for n in response["nodes"] if n["node_id"] == "gpu-node")
+    assert "RAM_CAPACITY_UNVERIFIED_OR_BELOW_REQUEST" in selected["blockers"]
+    assert "NO_INDIVIDUAL_GPU_MEETS_REPORTED_VRAM_REQUEST" in selected["blockers"]
+    assert selected["reported_gpu_pci_functions_matching_request"] == []
+
+
+def test_private_risk_values_are_not_echoed(export: Path) -> None:
+    resources = export / "inventory/fleet-resources.json"
+    payload = json.loads(resources.read_text())
+    payload["nodes"]["gpu-node"]["risk_flags"].append({"code": "/home/secret/location"})
+    resources.write_text(json.dumps(payload))
+    response = hardware_preview(export, now=NOW)
+    assert "/home/secret/location" not in json.dumps(response)

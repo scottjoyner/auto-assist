@@ -1,0 +1,47 @@
+.hardware-evidence-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+  padding: 14px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.hardware-evidence-form label {
+  display: flex;
+  flex: 1 1 220px;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--muted);
+  font: 0.72rem/1.5 var(--mono);
+}
+.hardware-evidence-form input {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+  padding: 10px;
+  background: #0b1519;
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 4px;
+  font: 0.8rem var(--mono);
+}
+.hardware-evidence-form button { flex: 0 0 auto; }
+.hardware-evidence-status {
+  margin: 10px 12px;
+  font: 0.72rem/1.55 var(--mono);
+  color: var(--muted);
+}
+.hardware-evidence-results { overflow-x: auto; }
+.hardware-evidence-results table { min-width: 780px; }
+.hardware-evidence-results td, .hardware-evidence-results th {
+  overflow-wrap: anywhere;
+  max-width: 210px;
+}
+.hardware-evidence-guidance {
+  margin: 16px 12px;
+  padding: 12px;
+  color: var(--muted);
+  border-left: 2px solid var(--amber);
+  font: 0.75rem/1.6 var(--mono);
+}
+.hardware-evidence-guidance strong { color: var(--text); }
