@@ -39,6 +39,14 @@ No temporary cluster/service/container/research credentials are retained for dep
 
 **P1 — liveness and scale.** Current completed-operation ledger has a deliberately tiny 128-tombstone limit and fails closed once full; production requires a sharded durable replay history and explicit retention/garbage-collection proof.
 
+### Read-only live ingress exposure inspection (x1-370)
+
+A read-only inspection of the actual `assistx-api` Docker published port and Tailscale Serve routing showed `127.0.0.1:8000→8000/tcp` for the API, while Tailscale Serve terminates at host port `8443` and proxies `/api/v1/auth/whoami`, `/api/v1/runtime/catalog`, `/api/v1/model/chat/completions` and `/api/v1/agent/chat/completions` to the localhost API. **This is not a general-public `0.0.0.0:8000` host publication**; API container-internal `uvicorn --host 0.0.0.0` alone is not evidence of host exposure.
+
+A **read-only** GET against `http://127.0.0.1:8000/api/v1/auth/whoami` without an identity header returned HTTP **401**. With a deliberately invented, non-allowlisted `Tailscale-User-Login: assistx-boundary-check@example.invalid` header, it returned HTTP **403**. Thus the synthetic spoof was denied, which is positive evidence of the current allowlist, but **does not prove** that a local or Docker-bridge actor cannot spoof a *real allowlisted login*. Such impersonation was deliberately **not tested** against a live account. The required next gate is proof of host/bridge isolation, proxy header stripping, and identity provenance at the API boundary. No service configuration or firewall was changed.
+
+The raw model-router service on `0.0.0.0:8088` is a separate host listener and must be assessed independently; its existence is not proof of direct access to the mobile SSO route. The source code and topology have no production graph-admission integration yet.
+
 ## Acceptance status
 
 - Authenticated FastAPI research endpoint under test: **PASS**.
