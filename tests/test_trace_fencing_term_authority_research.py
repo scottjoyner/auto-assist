@@ -3,7 +3,7 @@
 A local checkpoint detects only *uncoordinated* DB rollback. Two cloned
 authorities + checkpoints can split brain: the negative is EXPECTED.
 """
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import json
 from pathlib import Path
 import shutil
@@ -217,3 +217,23 @@ def test_no_takeover_without_valid_operator_signature(tmp_path):
     assert auth.takeover("successor", 1, body, sig) == 2
     with pytest.raises(FenceDenied, match="STALE_FENCING_TERM"):
         auth.takeover("successor", 1, body, sig)
+
+
+def process_admit(params):
+    db, anchor, operation = params
+    try:
+        auth = ResearchFencingAuthority(db, anchor)
+        return auth.admit("old-gateway", 1, operation)
+    except FenceDenied:
+        return None
+
+
+def test_real_multi_process_contention_holds_cap(tmp_path):
+    auth, signer, db, anchor, operator = rig(tmp_path, capacity=2)
+    args = [(str(db), str(anchor), f"separate-process-{i}") for i in range(7)]
+    with ProcessPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(process_admit, args))
+    assert len([result for result in results if result]) == 2
+    assert auth.snapshot()["pending"] == 2
+    with pytest.raises(FenceDenied, match="UNCERTAIN_INFLIGHT"):
+        auth.takeover("next", 1, *approval(auth, operator, "next"))
