@@ -94,6 +94,13 @@ class PolicyEngine:
                 self._owner, self._term, operation, request_digest=digest)
             return {"reservation_id": token, "term": self._term,
                     "epoch": self._genesis}
+        if kind == "reconcile" and set(req) == {"kind", "operation_id"}:
+            operation = req["operation_id"]
+            if (not isinstance(operation, str)
+                    or not _STABLE_ID.fullmatch(operation)):
+                raise PolicyRefused("INVALID_VERIFIED_REQUEST_IDENTITY")
+            # This is read-only and NEVER returns a token or permits replay.
+            return self._authority.reconcile_operation(operation)
         if kind == "close" and set(req) == {
                 "kind", "token", "receipt", "signature"}:
             token = req["token"]
@@ -268,3 +275,19 @@ class UnixPolicyGrantAdapter:
             raise PolicyRefused("INVALID_SERVER_GRANT_RESERVATION_HELD")
         return Grant(result["reservation_id"], result["reservation_id"],
                      result["term"], result["epoch"])
+
+    def reconcile_operation(self, operation_id: str) -> dict:
+        if (not isinstance(operation_id, str)
+                or not _STABLE_ID.fullmatch(operation_id)):
+            raise PolicyRefused("INVALID_STABLE_IDENTITY")
+        response = self._client.request({
+            "kind": "reconcile", "operation_id": operation_id})
+        if not isinstance(response, dict) or response.get("state") not in {
+            "PENDING_EXECUTION_UNCERTAIN",
+            "CLOSED_NO_REEXECUTION",
+            "ABSENT_NOT_AN_EXECUTION_PERMIT",
+        }:
+            raise PolicyRefused("INVALID_RECONCILIATION_RESPONSE")
+        if "reservation_id" in response or "token" in response:
+            raise PolicyRefused("RECONCILIATION_LEAKED_GRANT")
+        return {"state": response["state"]}
