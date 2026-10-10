@@ -30,11 +30,27 @@ The new `tests/test_trace_etcd_policy_writer_research.py` has **13 passing tests
 
 **Parent #260 local suite: 107/107 focused tests passed. New isolated policy-writer tests: 13/13 PASS.** Run the combined 120-test suite and hosted exact-head CI before claiming the new PR fully green.
 
+## Physical integration on three independent fleet hosts — PASS
+
+The first version of this slice was validated with a fake KV behind an actual Unix socket. The follow-up implementation in `tests/probe_trace_etcd_rbac_physical.py` now **physically exercises that same policy engine and socket protocol against real etcd v3.6.14 RBAC on x1-370, xwing and destroyer**. The optional three-host orchestrator enables auth and exact-key reader/writer roles only in a disposable cluster.
+
+**Final integrated opt-in run: PASS, 47.99 seconds, exit 0**, including the existing real Neo4j Bolt transaction, detached witness, leader reelection, majority/minority, read-only RBAC and direct raw KV negative controls.
+
+- A second private authority key and a separate `ipc-service-policy` user with exact-key READWRITE permission are created **before** enabling etcd auth. The ordinary reader user cannot access this second key.
+- A separate Python child process receives the scoped write bearer credential (and temporary CN-free mTLS files), constructs `PolicyEngine(EtcdQuorumFence(EtcdBearerTLS(...)))`, and listens on an actual private `0600` Unix socket. A gateway-style client has **only that socket path and pinned genesis**, not the writer bearer token or raw KV API.
+- The gateway's attempted `raw-txn`, arbitrary graph plan and client-supplied term are denied; an approved plan/operation receives a real Raft CAS reservation. Administrative test-harness inspection confirms that exact reservation actually exists in the three-host cluster.
+- After the test kills the separate writer process, the committed Raft reservation **remains occupied**—there is no process-death/lease timeout release.
+- Both processes still use the **same OS UID** and the privileged test harness temporarily provisions/holds credentials. These observations prove process/IPC separation and server-enforced exact-key writer scope but **not independent OS principal isolation or production secret custody**. The child was intentionally terminated and all research keys/containers/certificates were destroyed during fixture teardown.
+
+The machine-readable record is `research/evidence/assistx-policy-writer-rbac-three-host-20261010.json`. Physical authority closure using the new Unix service is not yet exercised with an independent durable witness on a separate node; its signed `close` operation is exercised by the 13 offline socket tests.
+
+The new static physical harness guard raises the combined offline focused suite from 120 to **121 tests** pending exact-head verification.
+
 ## Threat model boundaries
 
-1. **Not deployed to live three-host etcd:** the 13 tests use the offline `FakeEtcd` store and real Linux Unix sockets. They validate service protocol/credential containment shape, not quorum linearizability. The physically tested RBAC from #260 is separate.
+1. **Physically integrated only with the disposable three-host test cluster:** the service now commits a real Raft admission using a scoped writer credential from a separate child process. The 13 core socket tests still use offline `FakeEtcd`. No production deployment, live API route, or active-failover authority exists.
 2. **Not a separate Unix security principal yet:** a same-UID process can impersonate a legitimate client if it reaches the private socket path. Production needs distinct OS users/groups or a container isolation boundary, rotated IPC credentials, and stronger process-level secret custody.
-3. **Bearer credentials not yet exclusively issued to this service on the live cluster.** Provision scoped etcd writer keys in a protected store, ensure actual gateways have only reader (or no etcd) permission, verify direct raw KV attempts from gateway OS UID/namespace are denied, and test policy-writer compromise.
+3. **Credential confinement is demonstrated only within a privileged research harness.** The disposable cluster issues a separate exact-key writer bearer used by the child service, while the gateway client has no raw KV methods; however the parent research harness provisions that credential and both OS processes share UID. Provision distinct real OS principals and private key storage, test compromised gateways, and protect the writer even from same-UID inspection.
 4. **Witness not independently durable:** current closure signature verification is correct for the provided input, but no external append-only signed receipts, generation-aware cluster attestation, or post-restart recovery have been integrated here.
 5. **Neo4j still doesn't check the term itself.** A privileged process with direct Bolt connectivity could bypass this service, and existing queries can outlive owner/consensus loss.
 6. **No real API workload, operator approval or rollback.** Full 1/3/5/10 authenticated clients, p95/p99, proxy/NAT fairness, tracing lineage, and production approvals remain out of scope.
