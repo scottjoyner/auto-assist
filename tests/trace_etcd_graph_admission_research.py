@@ -74,3 +74,11 @@ class QuorumPlanGrantAdapter:
             request_digest=request_digest)
         return Grant(reservation_id=token, token=token,
                      term=self._term, epoch=self._genesis)
+
+    def reconcile_operation(self, operation_id: str) -> dict:
+        import re
+        if (not isinstance(operation_id, str)
+                or not re.fullmatch(r"auth:[0-9a-f]{64}", operation_id)):
+            raise FenceRefused("INVALID_STABLE_OPERATION")
+        state = self._quorum.reconcile_operation(operation_id)
+        return {"state": state["state"]}
