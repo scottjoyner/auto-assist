@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -22,6 +23,7 @@ from fastapi.responses import JSONResponse
 
 from .fleet_trace_contract import validate_envelope
 
+TENANT = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 TRACEPARENT = re.compile(r"^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$")
 MAX_BODY = 8192
 MAX_CAPABILITY_HEADER = 4096
@@ -91,12 +93,29 @@ def _ident(request: Request, policy: dict[str, Any], write: bool) -> tuple[str, 
 
 
 def _valid_scope(entry: dict[str, Any]) -> bool:
+    """All scopes come from trusted server-side policy, never request JSON."""
     nodes = entry.get("nodes")
     producers = entry.get("producers")
+    tenant = entry.get("write_tenant")
+    readable = entry.get("read_tenants")
+    actors = entry.get("read_actors")
+    valid_actor = lambda x: isinstance(x, str) and (
+        (x.startswith("login:") and 6 < len(x) <= 260)
+        or (x.startswith("tag:") and 4 < len(x) <= 128))
+    valid_tenant = lambda x: isinstance(x, str) and TENANT.fullmatch(x) is not None
     return (isinstance(nodes, list) and 0 < len(nodes) <= 64
             and all(isinstance(x, str) and 0 < len(x) <= 128 for x in nodes)
             and isinstance(producers, list) and 0 < len(producers) <= 12
-            and all(isinstance(x, str) and 0 < len(x) <= 30 for x in producers))
+            and all(isinstance(x, str) and 0 < len(x) <= 30 for x in producers)
+            and (entry.get("write") is not True or valid_tenant(tenant))
+            and (entry.get("read") is not True
+                 or (isinstance(readable, list) and 0 < len(readable) <= 16
+                     and len(set(readable)) == len(readable)
+                     and all(valid_tenant(x) for x in readable)
+                     and isinstance(actors, list) and 0 < len(actors) <= 16
+                     and len(set(actors)) == len(actors)
+                     and all(valid_actor(x) for x in actors))))
+
 
 
 def _traceparent(request: Request) -> str:
@@ -131,23 +150,50 @@ def _connect() -> sqlite3.Connection:
     db.execute("PRAGMA journal_mode=DELETE")
     db.execute("PRAGMA synchronous=FULL")
     db.execute("""CREATE TABLE IF NOT EXISTS trace_events (
-        event_id TEXT PRIMARY KEY,
+        tenant_scope TEXT NOT NULL,
+        event_id TEXT NOT NULL,
         trace_id TEXT NOT NULL,
         span_id TEXT NOT NULL,
         node_id TEXT NOT NULL,
+        producer TEXT NOT NULL,
         principal_digest TEXT NOT NULL,
         received_at TEXT NOT NULL,
         sha256 TEXT NOT NULL,
-        envelope TEXT NOT NULL
+        envelope TEXT NOT NULL,
+        PRIMARY KEY (tenant_scope, event_id)
     )""")
-    db.execute("""CREATE INDEX IF NOT EXISTS idx_trace_events
-                  ON trace_events(trace_id, received_at, event_id)""")
+    # Never silently upgrade a pre-tenant database. Its earlier rows lack
+    # trusted owner provenance, so assigning them a tenant would fabricate
+    # authorization. Migration needs explicit custody/owner signoff.
+    columns = {row[1] for row in db.execute("PRAGMA table_info(trace_events)")}
+    if not {"tenant_scope", "producer"} <= columns:
+        db.close()
+        _deny(503, "trace_tenant_schema_migration_required")
+    # v2 denotes tenant-scoped, HMAC-protected owner digests. Old v1 records
+    # cannot be silently reinterpreted. Fresh empty schemas may be initialized.
+    version = db.execute("PRAGMA user_version").fetchone()[0]
+    if version != 2:
+        if version != 0 or db.execute("SELECT count(*) FROM trace_events").fetchone()[0]:
+            db.close()
+            _deny(503, "trace_owner_digest_migration_required")
+        db.execute("PRAGMA user_version=2")
+    db.execute("""CREATE INDEX IF NOT EXISTS idx_tenant_trace_events
+                  ON trace_events(tenant_scope, trace_id, received_at, event_id)""")
     os.chmod(path, 0o600)
     return db
 
 
-def _digest_principal(value: str) -> str:
-    return hashlib.sha256(value.encode()).hexdigest()[:24]
+def _digest_principal(value: str, tenant: str) -> str:
+    # Unkeyed hashes of login/email are enumerable and linkable across
+    # organizations. Require a separately managed 256-bit secret for this
+    # pilot; never derive it from the trace ID, auth token or request body.
+    raw = os.environ.get("FLEET_TRACE_OWNER_KEY_HEX", "")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", raw):
+        _deny(503, "trace_owner_hmac_key_unavailable")
+    return hmac.new(
+        bytes.fromhex(raw), (tenant + "\0" + value).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 async def _read_bounded_body(request: Request) -> bytes:
@@ -186,14 +232,16 @@ async def ingest(request: Request) -> JSONResponse:
         _deny(403, "producer_scope_denied")
     canonical = json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     digest = hashlib.sha256(canonical.encode()).hexdigest()
-    actor_digest = _digest_principal(actor)
+    tenant_scope = scope["write_tenant"]  # server policy identity, not a client field
+    actor_digest = _digest_principal(actor, tenant_scope)
     received_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     try:
         with closing(_connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             existing = db.execute(
-                "SELECT sha256, principal_digest FROM trace_events WHERE event_id=?",
-                (row["event_id"],)
+                """SELECT sha256, principal_digest FROM trace_events
+                   WHERE tenant_scope=? AND event_id=?""",
+                (tenant_scope, row["event_id"])
             ).fetchone()
             if existing:
                 if existing != (digest, actor_digest):
@@ -204,9 +252,10 @@ async def ingest(request: Request) -> JSONResponse:
                 if count >= MAX_DB_ROWS:
                     _deny(507, "trace_ingress_capacity_limit")
                 db.execute(
-                    "INSERT INTO trace_events VALUES(?,?,?,?,?,?,?,?)",
-                    (row["event_id"], trace_id, row["span_id"], row["node_id"],
-                     actor_digest, received_at, digest, canonical)
+                    "INSERT INTO trace_events VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (tenant_scope, row["event_id"], trace_id, row["span_id"],
+                     row["node_id"], row["producer"], actor_digest,
+                     received_at, digest, canonical)
                 )
                 accepted = True
     except sqlite3.Error:
@@ -231,12 +280,27 @@ async def get_events(trace_id: str, request: Request, limit: int = 30) -> JSONRe
         _deny(422, "invalid_trace_query")
     try:
         node_placeholders = ",".join("?" for _ in scope["nodes"])
+        producer_placeholders = ",".join("?" for _ in scope["producers"])
+        tenant_placeholders = ",".join("?" for _ in scope["read_tenants"])
+        # An organization's tenant can contain multiple people. The writer
+        # principal is the strongest trustworthy subject currently available
+        # from Serve. Readers receive only explicitly granted actors.
+        actor_digests = [
+            _digest_principal(actor, tenant)
+            for tenant in scope["read_tenants"]
+            for actor in scope["read_actors"]
+        ]
+        actor_placeholders = ",".join("?" for _ in actor_digests)
         with closing(_connect()) as db:
             rows = db.execute(
                 f"""SELECT envelope, received_at, sha256 FROM trace_events
-                   WHERE trace_id=? AND node_id IN ({node_placeholders})
+                   WHERE trace_id=? AND tenant_scope IN ({tenant_placeholders})
+                     AND node_id IN ({node_placeholders})
+                     AND producer IN ({producer_placeholders})
+                     AND principal_digest IN ({actor_placeholders})
                    ORDER BY received_at DESC,event_id DESC LIMIT ?""",
-                (trace_id, *scope["nodes"], limit)
+                (trace_id, *scope["read_tenants"], *scope["nodes"],
+                 *scope["producers"], *actor_digests, limit)
             ).fetchall()
     except sqlite3.Error:
         _deny(503, "local_trace_storage_unavailable")
