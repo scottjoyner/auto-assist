@@ -1,0 +1,27 @@
+# Reference template only; no service installed by this PR.
+[Unit]
+Description=Private metadata-only fleet trace ingress
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fleet-trace
+Group=fleet-trace
+WorkingDirectory=/opt/auto-assist
+Environment=PYTHONPATH=/opt/auto-assist/src
+EnvironmentFile=/etc/fleet-trace/ingress.env
+ExecStart=/opt/auto-assist/.venv/bin/python -m uvicorn assistx.fleet_trace_ingress:app --host 127.0.0.1 --port 8794 --workers 1 --no-access-log
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/fleet-trace
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
