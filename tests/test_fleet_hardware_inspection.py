@@ -47,6 +47,8 @@ class MemoryNeo:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.closed = 0
         self.constraint_present = True
+        self.lock_constraint_present = True
+        self.lock_counts: dict[str, int] = {}
 
     def _session(self):
         return MemorySession(self)
@@ -72,8 +74,11 @@ class MemorySession:
         assert ":Task" not in query
         assert "CREATE (g:" not in query
         if "SHOW CONSTRAINTS" in query:
-            return MemoryResult({"matched": 1 if self.db.constraint_present else 0})
+            return MemoryResult({"matched": int(self.db.constraint_present) + int(self.db.lock_constraint_present)})
         if "ON CREATE SET" in query:
+            assert "FleetHardwareInspectionLock" in query
+            assert "fence_counter" in query
+            assert "WITH collect(candidate) AS groups" in query
             cid = params["correlation_id"]
             if cid not in self.db.groups or (
                 params["receipt_id"] not in self.db.receipts
@@ -349,3 +354,14 @@ def test_missing_constraint_returns_503_on_authenticated_explicit_post(monkeypat
     assert result.status_code == 503
     assert "schema prerequisite" in result.json()["detail"]
     assert len(neo.receipts) == 0
+
+
+def test_missing_lock_uniqueness_constraint_denies_every_write():
+    neo = MemoryNeo()
+    neo.lock_constraint_present = False
+    receipt = prepare_inspection_receipt(CID, preview())
+    with pytest.raises(InspectionSchemaUnavailable):
+        persist_inspection(neo, receipt, authenticated_actor="operator")
+    assert not neo.receipts
+    assert all("ON CREATE SET" not in query for query, _ in neo.calls)
+    assert neo.groups[CID]["current_state"] == "completed"

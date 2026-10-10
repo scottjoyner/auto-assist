@@ -105,6 +105,10 @@ def persist_inspection(neo: Any, receipt: dict[str, Any], *, authenticated_actor
 
     The Cypher does not mention :Task, :TraceEvent, current_state, state, or
     agent reservations. A 21st distinct inspection is refused for each trace.
+
+    A dedicated constraint-backed lock node serializes inspection counting for
+    one correlation ID. TraceGroup.current_state and other execution
+    properties remain untouched.
     """
     actor = authenticated_actor[:80]
     if not actor or not re.fullmatch(r"[\w.@+-]{1,80}", actor, flags=re.ASCII):
@@ -122,7 +126,14 @@ def persist_inspection(neo: Any, receipt: dict[str, Any], *, authenticated_actor
         "evidence_truncated": receipt["evidence_truncated"],
     }
     query = """
-        MATCH (g:TraceGroup {correlation_id:$correlation_id})
+        MATCH (candidate:TraceGroup {correlation_id:$correlation_id})
+        WITH collect(candidate) AS groups
+        WHERE size(groups) = 1
+        WITH groups[0] AS g
+        MERGE (mutex:FleetHardwareInspectionLock {correlation_id:$correlation_id})
+        ON CREATE SET mutex.initialized_at=datetime()
+        SET mutex.fence_counter = coalesce(mutex.fence_counter, 0) + 1
+        WITH g, mutex
         OPTIONAL MATCH (g)-[:HAS_HARDWARE_INSPECTION]->(older:FleetHardwareInspection)
         WITH g, collect(older.receipt_id) AS existing_ids
         WHERE size(existing_ids) < $max_receipts OR $receipt_id IN existing_ids
@@ -150,15 +161,25 @@ def persist_inspection(neo: Any, receipt: dict[str, Any], *, authenticated_actor
         schema = session.run(
             """
             SHOW CONSTRAINTS YIELD name, type, labelsOrTypes, properties
-            WHERE name = $constraint_name AND type = 'UNIQUENESS'
+            WHERE type IN ['UNIQUENESS', 'NODE_PROPERTY_UNIQUENESS']
+              AND (
+                 (name = $receipt_constraint
                   AND labelsOrTypes = ['FleetHardwareInspection']
-                  AND properties = ['receipt_id']
+                  AND properties = ['receipt_id'])
+                 OR
+                 (name = $mutex_constraint
+                  AND labelsOrTypes = ['FleetHardwareInspectionLock']
+                  AND properties = ['correlation_id'])
+              )
             RETURN count(*) AS matched
             """,
-            {"constraint_name": "fleet_hardware_inspection_receipt_id_unique"},
+            {
+                "receipt_constraint": "fleet_hardware_inspection_receipt_id_unique",
+                "mutex_constraint": "fleet_hardware_inspection_lock_id_unique",
+            },
         ).single()
-        if schema is None or schema.get("matched") != 1:
-            raise InspectionSchemaUnavailable("hardware receipt uniqueness constraint absent")
+        if schema is None or schema.get("matched") != 2:
+            raise InspectionSchemaUnavailable("hardware receipt and lock uniqueness constraints required")
         row = session.run(query, parameters).single()
         if row is None:
             return None
