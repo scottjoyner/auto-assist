@@ -435,6 +435,16 @@ def run():
         # Original pending attempt was never released by lease/leader change.
         assert gateway.snapshot().document["pending"].get(attempt)
         result["events"].append("original_graph_reservation_survived_all_partitions")
+        # RBAC is separately opted-in: after all physical consensus tests,
+        # enable exact-key auth on this ephemeral cluster and verify the
+        # JSON-gateway bearer boundary before the scoped teardown.
+        if os.getenv("ASSISTX_RAFT_RBAC_RESEARCH") == "1":
+            from probe_trace_etcd_rbac_physical import run_scoped_rbac
+            result["rbac_integration"] = run_scoped_rbac(
+                clients, cluster_id, base, certs, ip_map["r1"], client_port)
+            result["events"].append(
+                "real_three_host_rbac_reader_denied_raw_authority_txn")
+
         result.update({
             "three_voters_on_distinct_hosts": True,
             "mtls_client_and_peer_auth": True,
