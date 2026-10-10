@@ -241,6 +241,37 @@ def test_trace_auth_capability_names_are_fully_qualified():
     assert gateway.READER_CAPABILITY.startswith("nez.ninja/cap/")
 
 
+def test_multi_node_same_trace_parent_links_without_leaking_to_narrow_reader(monkeypatch, setup):
+    from assistx.fleet_trace_contract import inspect_lineage
+    client, db = setup
+    root = envelope("root")
+    root["span_id"] = SPAN
+    assert client.post("/v1/events", headers=headers(), json=root).status_code == 201
+    tagged = headers(login="")
+    tagged["Tailscale-App-Capabilities"] = json.dumps({
+        gateway.WRITER_CAPABILITY: [{"principal": "tag:ingress"}]
+    })
+    child = envelope("child", node="xwing", producer="opencode")
+    child["span_id"] = "fedcba9876543210"
+    child["parent_span_id"] = SPAN
+    assert client.post("/v1/events", headers=tagged, json=child).status_code == 201
+    # A registered operator with both node scopes sees two distinct systems.
+    policy = json.loads(os.environ["FLEET_TRACE_AUTH_POLICY_JSON"])
+    policy[f"login:{LOGIN}"]["nodes"] = ["x1-370", "xwing"]
+    monkeypatch.setenv("FLEET_TRACE_AUTH_POLICY_JSON", json.dumps(policy))
+    response = client.get(f"/v1/traces/{TRACE}/events", headers=headers())
+    assert response.status_code == 200
+    rows = [x["envelope"] for x in response.json()["events"]]
+    assert inspect_lineage(rows)["missing_parent_spans"] == 0
+    assert inspect_lineage(rows)["distinct_nodes"] == 2
+    assert inspect_lineage(rows)["source_authentication_verified"] is False
+    # Scoped readers cannot see x1-370; incomplete parents must not be hidden.
+    limited = client.get(f"/v1/traces/{TRACE}/events",
+                         headers=headers(login="observer@example.com"))
+    assert [x["envelope"]["event_id"] for x in limited.json()["events"]] == ["child"]
+    assert inspect_lineage([x["envelope"] for x in limited.json()["events"]])["missing_parent_spans"] == 1
+
+
 def test_local_health_does_not_claim_admitted_tracing(setup):
     client, _ = setup
     assert client.get("/healthz").json() == {"ready_for_auth_check": True}
