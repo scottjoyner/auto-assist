@@ -80,6 +80,38 @@ def test_invalid_authority_and_missing_file_do_not_add_models(tmp_path):
     assert project_observations(raw)["state"] == "invalid"
     assert load_observations(None)["state"] == "not_configured"
     assert load_observations(str(tmp_path / "missing.json"))["state"] == "unavailable"
+
+
+def test_unreachable_endpoint_cannot_claim_a_resident_model():
+    raw = witness()
+    raw["observations"][0]["state"] = "unreachable"
+    result = project_observations(raw)
+    assert result["state"] == "invalid" and result["models"] == []
+
+
+def test_resident_endpoint_requires_actual_model_witness():
+    raw = witness()
+    raw["observations"][0]["models"][0]["state"] = "advertised_unverified"
+    assert project_observations(raw)["state"] == "invalid"
+
+
+def test_private_observations_never_accept_admission_claims():
+    raw = witness()
+    raw["observations"][0]["admitted"] = True
+    result = project_observations(raw)
+    assert result["state"] == "invalid" and result["models"] == []
+
+
+def test_invalid_lineage_digest_fails_closed_without_echo():
+    raw = witness()
+    raw["source_inventory_sha256"] = "100.64.43.123/private/path"
+    result = project_observations(raw)
+    assert result["state"] == "invalid"
+    assert result["models"] == []
+    assert result["source_inventory_sha256"] is None
+    assert "100.64." not in json.dumps(result)
+
+
 def test_mobile_endpoint_enforces_auth_and_redacts_while_fresh(monkeypatch, tmp_path):
     file = tmp_path / "snapshot.json"
     file.write_text(json.dumps(witness()), encoding="utf-8")

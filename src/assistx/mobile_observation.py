@@ -47,7 +47,11 @@ def project_observations(raw: dict[str, Any], *, now: datetime | None = None,
     nodes: set[str] = set()
     resident_endpoints = 0
     for entry in entries:
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) or (
+            "admitted" in entry and entry["admitted"] is not False
+        ):
+            # A raw observation is never an admission assertion. Reject
+            # contradictory evidence rather than silently laundering it.
             return _empty("invalid")
         node = entry.get("node")
         if isinstance(node, str) and node:
@@ -56,6 +60,13 @@ def project_observations(raw: dict[str, Any], *, now: datetime | None = None,
             resident_endpoints += 1
         raw_models = entry.get("models") or []
         if not isinstance(raw_models, list) or len(raw_models) > 1000:
+            return _empty("invalid")
+        # The collector labels an endpoint resident only when at least one
+        # model has an independent residency witness. Do not promote an
+        # unreachable/stale endpoint using a contradictory nested model flag.
+        resident_claims = [m for m in raw_models if isinstance(m, dict)
+                           and m.get("state") == "resident_verified"]
+        if bool(resident_claims) != (entry.get("state") == "resident_verified"):
             return _empty("invalid")
         for model in raw_models:
             if not isinstance(model, dict) or model.get("state") not in _ALLOWED:
@@ -86,7 +97,7 @@ def project_observations(raw: dict[str, Any], *, now: datetime | None = None,
                   resident_endpoints=resident_endpoints,
                   models=ordered[:_MAX_MODELS],
                   truncated=len(ordered) > _MAX_MODELS,
-                  source_inventory_sha256=raw.get("source_inventory_sha256"))
+                  source_inventory_sha256=source_checksum)
     return result
 
 
