@@ -7,11 +7,13 @@ import json
 from pathlib import Path
 
 import pytest
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.templating import Jinja2Templates
 from fastapi.testclient import TestClient
 
 from assistx.fleet_hardware_preview import (
     FleetHardwareEvidenceError,
+    build_fleet_hardware_preview_page_router,
     build_fleet_hardware_preview_router,
     hardware_preview,
 )
@@ -239,3 +241,28 @@ def test_request_is_strictly_bounded(export: Path) -> None:
     assert client.get("/api/fleet/hardware-preview?gpu_vram_gib=5000").status_code == 422
     assert client.get("/api/fleet/hardware-preview?limit=1000").status_code == 422
     assert client.get("/api/fleet/hardware-preview?data_host=not-present").status_code == 422
+
+
+def test_standalone_operator_page_is_authenticated_and_has_rendered_ui() -> None:
+    templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / "templates"))
+
+    def deny() -> None:
+        raise HTTPException(401, "unauthorized")
+
+    locked = FastAPI()
+    locked.include_router(build_fleet_hardware_preview_page_router(auth_dependency=deny, templates=templates))
+    assert TestClient(locked).get("/fleet/hardware-evidence").status_code == 401
+
+    page = FastAPI()
+    page.include_router(
+        build_fleet_hardware_preview_page_router(auth_dependency=lambda: "operator", templates=templates)
+    )
+    response = TestClient(page).get("/fleet/hardware-evidence")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["vary"] == "Authorization"
+    assert 'id="fleet-hardware-evidence-form"' in response.text
+    assert "/static/js/fleet_hardware_preview.js" in response.text
+    assert "<html" in response.text.lower()
+    assert set(page.openapi()["paths"]["/fleet/hardware-evidence"]) == {"get"}
+    assert TestClient(page).post("/fleet/hardware-evidence").status_code == 405

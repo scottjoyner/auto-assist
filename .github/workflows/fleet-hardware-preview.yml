@@ -6,6 +6,15 @@ on:
       - "src/assistx/fleet_hardware_preview.py"
       - "src/assistx/api_router.py"
       - "tests/test_fleet_hardware_preview.py"
+      - "templates/base.html"
+      - "templates/fleet_dashboard.html"
+      - "templates/fleet_hardware_evidence.html"
+      - "templates/traces.html"
+      - "static/css/fleet_hardware_evidence.css"
+      - "static/js/fleet_hardware_preview.js"
+      - "static/js/fleet_trace_evidence.js"
+      - "static/js/traces.js"
+      - "tests/ui/fleet_hardware_evidence.test.cjs"
       - "docs/FLEET_HARDWARE_PREVIEW.md"
       - ".github/workflows/fleet-hardware-preview.yml"
   push:
@@ -13,6 +22,15 @@ on:
       - "src/assistx/fleet_hardware_preview.py"
       - "src/assistx/api_router.py"
       - "tests/test_fleet_hardware_preview.py"
+      - "templates/base.html"
+      - "templates/fleet_dashboard.html"
+      - "templates/fleet_hardware_evidence.html"
+      - "templates/traces.html"
+      - "static/css/fleet_hardware_evidence.css"
+      - "static/js/fleet_hardware_preview.js"
+      - "static/js/fleet_trace_evidence.js"
+      - "static/js/traces.js"
+      - "tests/ui/fleet_hardware_evidence.test.cjs"
       - ".github/workflows/fleet-hardware-preview.yml"
 
 permissions:
@@ -44,3 +62,9 @@ jobs:
       - name: Run isolated synthetic preview contract
         run: |
           python -m pytest -q tests/test_fleet_hardware_preview.py
+      - name: Browser-side contract (no npm dependencies)
+        run: |
+          node --check static/js/fleet_hardware_preview.js
+          node --check static/js/fleet_trace_evidence.js
+          node --check static/js/traces.js
+          node --test tests/ui/fleet_hardware_evidence.test.cjs
