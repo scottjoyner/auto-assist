@@ -73,6 +73,28 @@ class ProtectedGraphEntry:
         self._expected_epoch = expected_epoch
 
     def execute(self, plan_id: str, parameters: Mapping[str, object]) -> object:
+        # Legacy per-attempt API retained for stacked research only. NEVER
+        # treat its new uuid as a retry-stable authenticated request identity.
+        return self._execute(plan_id, parameters, stable=None)
+
+    def execute_authenticated(
+        self, plan_id: str, parameters: Mapping[str, object],
+        verified_subject: str, client_request_id: str,
+    ) -> object:
+        # verified_subject MUST be supplied by a trusted authenticated
+        # ingress dependency, not by caller JSON or a spoofable header.
+        from trace_graph_stable_identity_research import (
+            InvalidStableRequest, derive_stable_operation
+        )
+        try:
+            stable = derive_stable_operation(
+                verified_subject, client_request_id, plan_id, parameters)
+        except InvalidStableRequest as exc:
+            raise AdmissionDenied("INVALID_STABLE_REQUEST") from exc
+        return self._execute(plan_id, parameters, stable=stable)
+
+    def _execute(self, plan_id: str, parameters: Mapping[str, object],
+                 stable: object | None) -> object:
         if not isinstance(plan_id, str) or plan_id not in self._plans:
             raise AdmissionDenied("UNREGISTERED_QUERY_PLAN")
         plan = self._plans[plan_id]
@@ -91,9 +113,18 @@ class ProtectedGraphEntry:
             frozen_parameters = MappingProxyType(json.loads(encoded))
         except (ValueError, TypeError, OverflowError) as exc:
             raise AdmissionDenied("INVALID_QUERY_PARAMETERS") from exc
-        operation_id = uuid4().hex
+        operation_id = uuid4().hex if stable is None else stable.operation
         try:
-            grant = self._authority.admit(operation_id, plan_id)
+            if stable is None:
+                grant = self._authority.admit(operation_id, plan_id)
+            else:
+                # A real policy server must implement admission keyed by the
+                # authenticated principal/request identity + immutable digest.
+                stable_admit = getattr(self._authority, "admit_stable", None)
+                if not callable(stable_admit):
+                    raise RuntimeError("STABLE_AUTHORITY_NOT_CONFIGURED")
+                grant = stable_admit(
+                    operation_id, stable.request_digest, plan_id)
         except Exception as exc:
             raise AdmissionDenied("AUTHORITY_UNAVAILABLE") from exc
         if grant is None:
