@@ -16,6 +16,8 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
 import httpx
 
+from .mobile_trace_context import validated_traceparent
+
 
 _TAILSCALE_LOGIN_HEADER = "Tailscale-User-Login"
 _mobile_security = HTTPBasic(auto_error=False)
@@ -669,6 +671,7 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
         user: str = Depends(mobile_auth),
     ):
         _tailnet_identity(request)
+        traceparent = validated_traceparent(request.headers.get("traceparent"))
 
         try:
             projection = _current_runtime_projection()
@@ -711,6 +714,11 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
             "Content-Type": "application/json",
             "Accept": "text/event-stream" if body.stream else "application/json",
         }
+        if traceparent:
+            # Correlation metadata, not authorization. Keep provider credentials
+            # and the caller's trace context in separate header namespaces.
+            response_headers["traceparent"] = traceparent
+            headers["traceparent"] = traceparent
         client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=5.0))
         endpoint = f"{router_url}/v1/chat/completions"
 
@@ -790,6 +798,7 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
         # enforce the optional Kipnerter login allowlist here as well. Basic
         # auth remains available as an explicit legacy operator fallback.
         _tailnet_identity(request)
+        traceparent = validated_traceparent(request.headers.get("traceparent"))
 
         prompt = _prompt_from_messages(body.messages)
         model_override = _requested_hermes_model(body.model)
@@ -820,6 +829,10 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
             "X-Hermes-Session-Id": session_id,
             "Cache-Control": "no-store",
         }
+        if traceparent:
+            # Hermes runs in a separate worker; this proves only the gateway
+            # boundary. Downstream Hermes spans require separate instrumentation.
+            headers["traceparent"] = traceparent
         if x_hermes_session_key:
             headers["X-Kipnerter-Conversation-Key"] = x_hermes_session_key.strip()[:256]
 
