@@ -236,10 +236,14 @@ def build_inspection_router(
     root_provider: Callable[[], str] | None = None,
     write_enabled: Callable[[], bool] | None = None,
     writer_identities: Callable[[], str] | None = None,
+    writer_token_digest: Callable[[], str] | None = None,
 ) -> APIRouter:
     path_provider = root_provider or (lambda: os.getenv("ASSISTX_FLEET_HARDWARE_ROOT", "").strip())
     allow_write = write_enabled or (lambda: os.getenv("ASSISTX_FLEET_HARDWARE_INSPECTION_WRITES") == "1")
     allowed_writers = writer_identities or (lambda: os.getenv("ASSISTX_FLEET_HARDWARE_INSPECTION_WRITERS", ""))
+    expected_token_sha256 = writer_token_digest or (
+        lambda: os.getenv("ASSISTX_FLEET_HARDWARE_INSPECTION_TOKEN_SHA256", "")
+    )
     router = APIRouter(prefix="/api/fleet/trace-inspections", tags=["fleet-hardware-inspection"])
 
     @router.get("/{correlation_id}")
@@ -268,6 +272,7 @@ def build_inspection_router(
         response: Response,
         body: InspectionInput = Body(...),
         x_assistx_operator_intent: str | None = Header(None),
+        x_assistx_inspection_token: str | None = Header(None),
         actor: str = Depends(auth_dependency),
     ) -> dict[str, Any]:
         if not allow_write():
@@ -288,6 +293,21 @@ def build_inspection_router(
             raise HTTPException(status_code=403, detail="operator not authorized to record inspections")
         if x_assistx_operator_intent != _INSPECTION_INTENT or body.confirm_post_hoc_observation is not True:
             raise HTTPException(status_code=403, detail="explicit operator intent required")
+        # A trusted upstream identity header is not by itself write authority.
+        # Require a separate high-entropy shared secret; store only its digest.
+        token_sha256 = expected_token_sha256()
+        if not isinstance(token_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", token_sha256):
+            raise HTTPException(status_code=503, detail="inspection write credential not configured")
+        if (
+            not isinstance(x_assistx_inspection_token, str)
+            or not 32 <= len(x_assistx_inspection_token) <= 512
+            or not x_assistx_inspection_token.isascii()
+            or not hmac.compare_digest(
+                hashlib.sha256(x_assistx_inspection_token.encode("ascii")).hexdigest(),
+                token_sha256,
+            )
+        ):
+            raise HTTPException(status_code=403, detail="inspection writer credential rejected")
         if not _CORRELATION.fullmatch(correlation_id):
             raise HTTPException(status_code=422, detail="invalid correlation ID")
         location = path_provider()
