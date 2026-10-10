@@ -12,6 +12,8 @@ on:
       - 'tests/probe_trace_entry*.py'
       - 'tests/probe_trace_fencing*.py'
       - 'tests/probe_trace_etcd_*.py'
+      - 'tests/probe_trace_quorum_neo4j*.py'
+      - 'tests/test_trace_quorum_neo4j*.py'
       - '.github/workflows/trace-graph-entry-research.yml'
   workflow_dispatch:
 
@@ -32,7 +34,7 @@ jobs:
         run: python -m pip install 'pytest>=8,<10' 'cryptography>=41,<49'
       - name: Compile research-only modules
         run: |
-          python -m compileall -q tests/trace_graph_entry_research.py tests/trace_graph_entry_guarded.py tests/trace_graph_entry_research_journal.py tests/trace_graph_entry_metadata.py tests/trace_fencing_term_authority_research.py tests/trace_etcd_quorum_fence_research.py tests/trace_etcd_graph_admission_research.py
+          python -m compileall -q tests/trace_graph_entry_research.py tests/trace_graph_entry_guarded.py tests/trace_graph_entry_research_journal.py tests/trace_graph_entry_metadata.py tests/trace_fencing_term_authority_research.py tests/trace_etcd_quorum_fence_research.py tests/trace_etcd_graph_admission_research.py tests/trace_etcd_bearer_rbac_research.py
       - name: Run offline denial and journal tests
         run: |
           python -m pytest --noconftest -q \
@@ -44,10 +46,12 @@ jobs:
             tests/test_trace_fencing_physical_guards.py \
             tests/test_trace_etcd_quorum_fence_research.py \
             tests/test_trace_etcd_three_hosts_guards.py \
-            tests/test_trace_etcd_graph_admission_research.py
+            tests/test_trace_etcd_graph_admission_research.py \
+            tests/test_trace_quorum_neo4j_physical_guards.py \
+            tests/test_trace_etcd_bearer_rbac_research.py
       - name: Verify physical probes remain manual-only
         run: |
-          python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py tests/probe_trace_fencing_two_primaries.py tests/probe_trace_etcd_three_hosts.py
+          python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py tests/probe_trace_fencing_two_primaries.py tests/probe_trace_etcd_three_hosts.py tests/probe_trace_quorum_neo4j_physical.py tests/probe_trace_etcd_rbac_physical.py
           python - <<'PY'
           from pathlib import Path
           a = Path('tests/probe_trace_entry_network_isolation.py').read_text()
@@ -67,5 +71,11 @@ jobs:
           assert 'EXPLICIT_THREE_HOST_RAFT_OPT_IN_REQUIRED' in e
           assert '"operator_auto_failover": False' in e
           assert '"graph_witness_integrated": False' in e
-          print('All five physical probes remain explicit opt-in; CI never runs them.')
+          f = Path('tests/probe_trace_quorum_neo4j_physical.py').read_text()
+          assert 'EXPLICIT_REAL_QUORUM_GRAPH_OPT_IN_REQUIRED' in f
+          assert '"production_authority": False' in f
+          g = Path('tests/probe_trace_etcd_rbac_physical.py').read_text()
+          assert '"real_three_host_etcd_rbac": True' in g
+          assert 'ASSISTX_RAFT_RBAC_RESEARCH' in e
+          print('Physical probes and RBAC exercise remain opt-in; hosted CI never runs them.')
           PY

@@ -81,9 +81,10 @@ def provision_certificates(folder: Path, ip_map: dict) -> None:
     (folder / "ca.key").write_bytes(pem_key(ca_key))
     os.chmod(folder / "ca.key", 0o600)
 
-    def leaf(name, ip=None):
+    def leaf(name, ip=None, no_cn=False):
         private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+        subject = (x509.Name([]) if no_cn else
+                   x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)]))
         builder = (x509.CertificateBuilder().subject_name(subject)
                    .issuer_name(ca_name).public_key(private.public_key())
                    .serial_number(x509.random_serial_number())
@@ -99,6 +100,14 @@ def provision_certificates(folder: Path, ip_map: dict) -> None:
             builder = builder.add_extension(
                 x509.SubjectAlternativeName([
                     x509.IPAddress(ipaddress.ip_address(ip))]), critical=False)
+        elif no_cn:
+            # gRPC HTTP gateway cannot use TLS Common Name auth. Its
+            # ephemeral JSON/bearer client cert has no subject CN and
+            # a critical SAN instead; ordinary voting peers are unchanged.
+            builder = builder.add_extension(
+                x509.SubjectAlternativeName([
+                    x509.DNSName("assistx-disposable-json-client")]),
+                critical=True)
         certificate = builder.sign(ca_key, hashes.SHA256())
         out = folder / name
         out.mkdir(mode=0o700)
@@ -111,6 +120,7 @@ def provision_certificates(folder: Path, ip_map: dict) -> None:
         leaf(node, ip_map[node])
     # This is a separate mTLS client identity from the three voting nodes.
     leaf("client")
+    leaf("json-client", no_cn=True)
 
 
 def run():
@@ -271,6 +281,14 @@ def run():
                 clients[node], base + "/active", cluster_id)
             assert other.snapshot().document["owner"] == "gateway-old"
         result["events"].append("same_raft_cluster_verified_across_three")
+        # Optional REAL Neo4j admission on the same three-voter consensus
+        # group. Requires a second manual opt-in; baseline remains unchanged.
+        if os.getenv("ASSISTX_QUORUM_NEO4J_RESEARCH") == "1":
+            from probe_trace_quorum_neo4j_physical import run_real_quorum_graph
+            result["graph_integration"] = run_real_quorum_graph(
+                clients, cluster_id, base, run_id, ip_map, client_port,
+                certs, shell, container_names, started, result)
+
         # Explicit client-authentication negative: CA trust without a client
         # certificate MUST be insufficient to issue a Raft KV read.
         unauthenticated = ssl.create_default_context(
@@ -427,6 +445,16 @@ def run():
         # Original pending attempt was never released by lease/leader change.
         assert gateway.snapshot().document["pending"].get(attempt)
         result["events"].append("original_graph_reservation_survived_all_partitions")
+        # RBAC is separately opted-in: after all physical consensus tests,
+        # enable exact-key auth on this ephemeral cluster and verify the
+        # JSON-gateway bearer boundary before the scoped teardown.
+        if os.getenv("ASSISTX_RAFT_RBAC_RESEARCH") == "1":
+            from probe_trace_etcd_rbac_physical import run_scoped_rbac
+            result["rbac_integration"] = run_scoped_rbac(
+                clients, cluster_id, base, certs, ip_map["r1"], client_port)
+            result["events"].append(
+                "real_three_host_rbac_reader_denied_raw_authority_txn")
+
         result.update({
             "three_voters_on_distinct_hosts": True,
             "mtls_client_and_peer_auth": True,
