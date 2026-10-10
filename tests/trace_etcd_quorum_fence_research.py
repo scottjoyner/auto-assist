@@ -161,18 +161,33 @@ class EtcdQuorumFence:
         if response.get("succeeded") is not True:
             raise FenceRefused("CONCURRENT_AUTHORITY_UPDATE_REJECTED")
 
-    def admit(self, owner: str, term: int, operation: str) -> str:
+    def admit(self, owner: str, term: int, operation: str,
+              *, request_digest: str | None = None) -> str:
         if not isinstance(operation, str) or not operation or len(operation) > 128:
             raise FenceRefused("INVALID_OPERATION")
+        if (request_digest is not None and
+                (not isinstance(request_digest, str)
+                 or len(request_digest) != 64 or
+                 any(ch not in "0123456789abcdef" for ch in request_digest))):
+            raise FenceRefused("INVALID_REQUEST_DIGEST")
         prior = self.snapshot()
         state = prior.document
         if type(term) is not int or state["owner"] != owner or state["term"] != term:
             raise FenceRefused("STALE_TERM_OR_OWNER")
         # Resolve duplicate *before* capacity: an operation that previously
         # committed is NEVER re-executed due to lost CAS acknowledgement.
-        if any(x.get("operation") == operation for x in state["pending"].values()):
+        existing = [x for x in state["pending"].values()
+                    if x.get("operation") == operation]
+        if existing:
+            if len(existing) != 1:
+                raise FenceRefused("DUPLICATED_OPERATION_CORRUPTION")
+            if existing[0].get("request_digest") != request_digest:
+                raise FenceRefused("IDEMPOTENCY_KEY_PAYLOAD_CONFLICT")
             raise FenceRefused("EXISTING_OPERATION_REQUIRES_RECONCILIATION")
-        if operation in state.get("completed", {}):
+        completed = state.get("completed", {}).get(operation)
+        if completed is not None:
+            if completed.get("request_digest") != request_digest:
+                raise FenceRefused("IDEMPOTENCY_KEY_PAYLOAD_CONFLICT")
             raise FenceRefused("CLOSED_OPERATION_REPLAY_DENIED")
         if len(state.get("completed", {})) >= MAX_COMPLETED_OPERATIONS:
             # Do not silently discard tombstones or admit through an old
@@ -183,6 +198,7 @@ class EtcdQuorumFence:
         token = secrets.token_hex(16)
         updated = json.loads(canon(state))
         updated["pending"][token] = {"operation": operation, "state": "RESERVED",
+                                     "request_digest": request_digest,
                                      "owner": owner, "term": term,
                                      "server": None, "generation": None,
                                      "txid": None}
@@ -269,6 +285,7 @@ class EtcdQuorumFence:
         import hashlib
         updated.setdefault("completed", {})[operation] = {
             "term": pending["term"], "owner": pending["owner"],
+            "request_digest": pending.get("request_digest"),
             "receipt_sha256": hashlib.sha256(
                 canon(receipt) + signature).hexdigest(),
         }
