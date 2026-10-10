@@ -70,7 +70,7 @@ def test_real_socket_admission_does_not_expose_raw_etcd_token(tmp_path):
         assert not hasattr(client, "txn") and not hasattr(client, "range")
         assert not hasattr(adapter, "release")
         assert client.__dict__ == {"path": str(tmp_path / "authority.sock")}
-        with pytest.raises(PolicyRefused, match="PHYSICAL_CAPACITY_OCCUPIED"):
+        with pytest.raises(PolicyRefused, match="POLICY_QUORUM_UNAVAILABLE_OR_UNCERTAIN"):
             adapter.admit("b" * 32, "approved_read")
     finally:
         stop(server, thread)
