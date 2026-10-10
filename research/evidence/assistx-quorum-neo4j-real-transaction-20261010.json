@@ -1,0 +1,56 @@
+{
+  "schema": "assistx-quorum-real-neo4j-witness-research-v1",
+  "date": "2026-10-10",
+  "repository": "scottjoyner/auto-assist",
+  "base_pr": 256,
+  "branch": "research/assistx-quorum-neo4j-real-transaction-20261010",
+  "runtime_seconds": 46.9,
+  "orchestrator": "x1-370",
+  "voters": [
+    "x1-370",
+    "xwing",
+    "destroyer"
+  ],
+  "etcd_version": "v3.6.14",
+  "neo4j_image": "neo4j:5.26-enterprise",
+  "physical_probe_file": "tests/probe_trace_etcd_three_hosts.py",
+  "physical_adapter_file": "tests/probe_trace_quorum_neo4j_physical.py",
+  "observations": {
+    "quorum_grant_before_actual_bolt": true,
+    "independent_witness_observed_server_transaction": true,
+    "real_transaction_survived_two_voter_outage": true,
+    "second_request_denied_on_quorum_loss": true,
+    "zero_extra_neo4j_transactions": true,
+    "pending_reservation_survived_quorum_restore": true,
+    "operator_signed_takeover_blocked_while_pending": true,
+    "witness_early_closure_denied": true,
+    "exact_detached_witness_receipt_accepted_after_two_absent_observations": true,
+    "receipt_replay_denied": true,
+    "signed_clean_takeover_term_2": true,
+    "old_gateway_after_takeover_denied": true,
+    "real_raft_leader_reelection": true,
+    "minority_raw_etcd_txn_denied": true,
+    "authenticated_raw_kv_can_forge_owner_term_if_rbac_disabled": true,
+    "scoped_disposable_fixture_cleanup": true
+  },
+  "limitations": {
+    "production_admission_wired": false,
+    "Neo4j_server_issued_fencing_permit": false,
+    "scoped_etcd_rbac_enabled": false,
+    "server_generation_validation_across_restart": false,
+    "independent_external_witness_custody": false,
+    "three_independent_failure_domains": false,
+    "production_failover_enabled": false,
+    "separate_etcdauthoritywriter_credential": false
+  },
+  "explicit_dispositions": {
+    "graph_entry_single_fixture": "RESEARCH_PASS",
+    "distributed_quorum_positive": "RESEARCH_PASS",
+    "authenticated_raw_etcd_write_policy": "FAIL_OPEN_REPRODUCED",
+    "production_admission": "NO_GO",
+    "automatic_failover": "NO_GO",
+    "issue_148": "OPEN"
+  },
+  "credentials": "Ephemeral fixture certs and signer keys; not committed or retained",
+  "source": "Commands executed on x1-370 using Fleet Commander; research-only Docker containers on x1-370/xwing/destroyer"
+}
