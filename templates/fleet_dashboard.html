@@ -183,6 +183,31 @@
     <div id="service-health-table" class="table-wrap mt-3">Loading…</div>
   </section>
 
+  <section class="card" id="section-hardware-evidence">
+    <div class="section-header">
+      <div>
+        <h3>Verified Hardware Evidence</h3>
+        <p class="kicker">Private, versioned facts and PCI function capacity. Operator-only preview; never starts tasks or changes routing.</p>
+      </div>
+      <span class="badge warn">read-only / no dispatch</span>
+    </div>
+    <form id="hardware-evidence-form" class="actions mt-3">
+      <label for="hardware-evidence-ram">Minimum RAM (GiB)
+        <input id="hardware-evidence-ram" type="number" min="0" max="4096" step="1" value="16" required>
+      </label>
+      <label for="hardware-evidence-gpu">Minimum one-GPU VRAM (GiB)
+        <input id="hardware-evidence-gpu" type="number" min="0" max="4096" step="1" value="8" required>
+      </label>
+      <label for="hardware-evidence-data-host">Data host (optional)
+        <input id="hardware-evidence-data-host" type="text" maxlength="80" autocomplete="off"
+               placeholder="registered host ID">
+      </label>
+      <button id="hardware-evidence-inspect" class="btn secondary" type="submit">Inspect evidence</button>
+    </form>
+    <p id="hardware-evidence-status" class="muted mt-3" role="status" aria-live="polite">Not queried. This panel never automatically loads private inventory.</p>
+    <div id="hardware-evidence-results" class="table-wrap mt-3" aria-label="Read-only hardware evidence results"></div>
+  </section>
+
   <section class="card half" id="section-hardware">
     <div class="section-header">
       <div>
@@ -198,6 +223,7 @@
 {% block scripts %}
 <script src="{{ url_for('static', path='js/ui_utils.js') }}"></script>
 <script src="{{ url_for('static', path='js/fleet_dashboard.js') }}"></script>
+<script src="{{ url_for('static', path='js/fleet_hardware_preview.js') }}"></script>
 <script>
 (async () => {
   const esc = window.UIUtils?.escapeHtml || ((s) => (s ?? "").toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])));
