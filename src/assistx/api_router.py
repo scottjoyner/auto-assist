@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from . import api as api_module
 from . import control_room as control_room_module
@@ -10,6 +11,7 @@ from .control_room import LEGACY_UI_PATHS, build_control_room_router
 from .control_room_runtime import install_control_room_runtime
 from .executor_claims import install_live_executor_claims
 from .executor_security import install_executor_security
+from .fleet_hardware_preview import build_fleet_hardware_preview_router
 from .overlay_routes import build_overlay_router
 from .passive_agents import build_passive_agent_router
 from .passive_claims import build_passive_claim_router
@@ -19,7 +21,6 @@ from .passive_status import build_passive_status_router
 from .recovery_island_routes import build_recovery_island_router
 from .recovery_mode import build_recovery_mode_router, install_recovery_shadow_mode
 from .router_integration import build_router_integration_router
-from .runtime_projection_v2 import build_runtime_projection_router
 from .routers.devices import build_devices_router
 from .routers.dispatch import build_dispatch_router
 from .routers.feeds import build_feeds_router
@@ -28,6 +29,7 @@ from .routers.memory import build_memory_router
 from .routers.review import build_review_router
 from .routers.tickets import build_tickets_router
 from .routers.transcriptions import build_transcriptions_router
+from .runtime_projection_v2 import build_runtime_projection_router
 from .strict_offline_projection import install_strict_offline_projection
 
 _LEGACY_RECOVERY_EXECUTE_PATH = (
@@ -87,6 +89,7 @@ app.include_router(
 app.include_router(build_control_room_router(_neo, auth, templates))
 app.include_router(build_router_integration_router(_neo))
 app.include_router(build_runtime_projection_router(_neo, auth_dependency=auth))
+app.include_router(build_fleet_hardware_preview_router(auth_dependency=auth))
 app.include_router(build_overlay_router())
 app.include_router(build_passive_agent_router(_neo, auth_dependency=auth))
 app.include_router(build_passive_claim_router(_neo, auth_dependency=auth))
