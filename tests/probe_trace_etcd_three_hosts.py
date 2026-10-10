@@ -134,7 +134,6 @@ def run():
         "events": [],
     }
     container_names = {}
-    volumes = {}
     stage_hosts = set()
     started = set()
     try:
@@ -172,35 +171,27 @@ def run():
                                    timeout=18)
                 shell(["chmod", "700", remote], host)
                 shell(["chmod", "600", remote + "/node-key.pem"], host)
-            volume = prefix + "-" + node
-            name = prefix + "-" + node
-            volumes[host] = volume
-            container_names[host] = name
+            container_names[host] = prefix + "-" + node
         cluster = ",".join(
             f"{node}=https://{ip_map[node]}:{peer_port}"
             for node, _ in HOSTS)
         for node, host in HOSTS:
             name = container_names[host]
-            volume = volumes[host]
-            shell(["docker", "volume", "create", "--label",
-                   "assistx.trace.research=quorum", volume], host)
             node_certs = str(certs / node if host == "x1-370"
                              else staging / "certs")
-            # The etcd container deliberately drops ALL Linux capabilities:
-            # UID 0 therefore cannot bypass a host mode=0700 directory.
-            # Give only container UID 0 precise read/traverse ACLs on its
-            # ephemeral, mounted certificate directory. Keep key mode 0600
-            # and do not make any certs world-readable.
-            shell(["setfacl", "-m", "u:0:rx", node_certs], host)
-            for filename in ("ca.pem", "node.pem", "node-key.pem"):
-                shell(["setfacl", "-m", "u:0:r",
-                       node_certs + "/" + filename], host)
+            data_dir = str(staging / node / "data")
+            shell(["mkdir", "-p", data_dir], host)
+            shell(["chmod", "700", data_dir], host)
+            # All three real hosts' scott accounts have UID/GID 1000.
+            # Run etcd with that identity, not root: it can read only its
+            # own mode 0700/0600 temporary files without Linux capabilities.
             args = [
                 "docker", "run", "-d", "--name", name, "--pull", "never",
-                "--network", "host", "--read-only", "--cap-drop", "ALL",
+                "--network", "host", "--user", "1000:1000",
+                "--read-only", "--cap-drop", "ALL",
                 "--security-opt", "no-new-privileges",
                 "--memory", "384m", "--cpus", "0.8", "--pids-limit", "128",
-                "--mount", f"type=volume,src={volume},dst=/etcd-data",
+                "--mount", f"type=bind,src={data_dir},dst=/etcd-data",
                 "--mount", f"type=bind,src={node_certs},dst=/certs,readonly",
                 "--label", "assistx.trace.research=quorum",
                 IMAGE, "/usr/local/bin/etcd",
@@ -401,18 +392,11 @@ def run():
                           timeout=22, check=False)
                 except Exception:
                     result["events"].append("cleanup_container_FAILED:" + host)
-            volume = volumes.get(host)
-            if volume:
-                try:
-                    shell(["docker", "volume", "rm", volume], host,
-                          timeout=22, check=False)
-                except Exception:
-                    result["events"].append("cleanup_volume_FAILED:" + host)
         for host in stage_hosts:
             try:
                 shell(["python3", "-c",
                        "import shutil,sys;shutil.rmtree(sys.argv[1])",
-                       str(staging / "certs")], host, timeout=12)
+                       str(staging)], host, timeout=12)
             except Exception:
                 result["events"].append("cleanup_cert_FAILED:" + host)
         # Do not leave CA private key/credentials in a repository worktree.
