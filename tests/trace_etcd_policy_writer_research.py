@@ -138,14 +138,21 @@ class _Request(socketserver.StreamRequestHandler):
             req = json.loads(message)
             result = self.server.engine.dispatch(req)
             output = {"ok": result}
-        except (PolicyRefused, FenceRefused,
-                ValueError, TypeError, UnicodeDecodeError) as exc:
-            # Never disclose exception repr: transport errors may contain
-            # credentials, server endpoint data or sensitive grant state.
-            output = {"denied": (
-                str(exc) if isinstance(exc, PolicyRefused)
-                else "POLICY_QUORUM_UNAVAILABLE_OR_UNCERTAIN"
-            )}
+        except FenceRefused as exc:
+            # Only echo safe operation-scoped duplicate/conflict statuses.
+            # Never echo endpoint, raw database, auth, or transport errors.
+            safe = frozenset({
+                "EXISTING_OPERATION_REQUIRES_RECONCILIATION",
+                "IDEMPOTENCY_KEY_PAYLOAD_CONFLICT",
+                "CLOSED_OPERATION_REPLAY_DENIED",
+            })
+            code = str(exc)
+            output = {"denied": (code if code in safe else
+                                 "POLICY_QUORUM_UNAVAILABLE_OR_UNCERTAIN")}
+        except PolicyRefused as exc:
+            output = {"denied": str(exc)}
+        except (ValueError, TypeError, UnicodeDecodeError):
+            output = {"denied": "POLICY_INVALID_REQUEST"}
         except Exception:
             output = {"denied": "POLICY_INTERNAL_FAILURE"}
         try:
