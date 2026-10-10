@@ -112,3 +112,13 @@ includes all modified frontend paths in triggers.
 Neither route mutates worker state. This slice does NOT repair the existing
 base.html inheritance issue, supply full app runtime dependencies in local
 worktrees, merge PR #269, or deploy the service.
+
+
+### Hardening reconciled from parallel operator UI research PR #272
+
+The base PR now includes descriptor-pinned, no-follow input traversal and checks
+for world-writable directories/files, non-finite memory values, and risk labels
+that might otherwise expose internal filesystem paths. The fixes are validated
+by negative synthetic tests without modifying the separate PR #272 branch.
+The other draft remains unmerged until its maintainer reconciles any remaining
+unique acceptance tests against this base.
