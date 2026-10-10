@@ -41,9 +41,22 @@ The final hardened run returned exit 0 in **46.90 seconds**.
 
 The same fixture uses mutual TLS but has **not enabled etcd keyspace RBAC**. To prove the consequence instead of inferring it, a separate research-only authority key was initialized with a known owner/term, and a client possessing the current etcd mTLS credential issued a **direct raw `/v3/kv/txn` compare-and-swap** with new owner `forged-raw-kv-writer`, term **99**. The write committed **without any operator Ed25519 approval**, and a subsequent authority read returned the forged state. This is **expected fail-open behavior** of the current research security boundary and a hard production blocker. The main live graph namespace was not modified by this attack experiment.
 
-This result is distinct from the prior *minority-of-one* raw Txn negative: a lone etcd voter cannot commit without quorum, but an authenticated **majority-connected client with raw write authority** can bypass application policy. Mutual TLS verifies caller identity but does not itself limit which keys that caller can mutate.
+This earlier unscoped-client negative is distinct from the prior *minority-of-one* raw Txn negative: a lone etcd voter cannot commit without quorum, but an authenticated **majority-connected client with raw write authority** can bypass application policy. Mutual TLS verifies caller identity but does not itself limit which keys that caller can mutate.
 
 The [etcd 3.6 RBAC guide](https://etcd.io/docs/v3.6/op-guide/authentication/rbac/) documents roles/user permissions; its [JSON gateway guidance](https://etcd.io/docs/v3.6/dev-guide/api_grpc_gateway/) warns that gRPC-gateway does not support TLS CN authentication, so **Bearer authorization tokens / proper client auth or a native gRPC adapter** are needed if our Python HTTP JSON clients move to server-side etcd RBAC. Do not assume mTLS certificate Common Name silently creates a scoped etcd role through the gateway.
+
+## Supplementary three-host scoped RBAC experiment — PASS
+
+After the graph/witness and actual leader/minority tests, a separate optional `ASSISTX_RAFT_RBAC_RESEARCH=1` step enabled **real etcd v3 authentication and exact-key RBAC** on the same disposable three-voter cluster. This additional opt-in test completed successfully in the final integrated run (**51.58 seconds total, exit 0**).
+
+- A `gateway-reader` password-authenticated JSON gateway user with a role granting **READ** of exactly one research authority key could retrieve that key, but could **not** run a mutating CAS transaction against it or read another authority key.
+- A distinct `authority-policy` user with **READWRITE** permission on that exact key could commit a sanctioned `EtcdQuorumFence.admit` CAS but could **not** read another authority key.
+- A mutual-TLS certificate without an RBAC bearer authorization was insufficient. The JSON gRPC gateway did not accept our initial TLS-CN login attempt. A separate, ephemeral **CN-free TLS client certificate with critical SAN**, combined with an etcd authentication bearer token, succeeded. No passwords, bearer tokens, private keys, or passwords appeared in the committed evidence.
+- **Residual failure boundary:** a holder of the dedicated policy-writer credential could still perform a direct raw KV CAS on its permitted key, bypassing the operator-signature policy. This is expected: etcd RBAC restricts which credential may write which key; it does **not** enforce application business rules within that key. The policy-writer credential must be held exclusively by a small, independently authenticated admission/release service. No such production service exists yet.
+
+New files: `tests/trace_etcd_bearer_rbac_research.py`, `tests/probe_trace_etcd_rbac_physical.py`, `tests/test_trace_etcd_bearer_rbac_research.py`, plus an opt-in hook in the three-host probe. **107/107 focused offline tests passed on x1-370**, including the bearer-client denial tests.
+
+This completes the bounded *server-enforced credential-scoping feasibility* gate on disposable Raft infrastructure. It does **not** complete server-enforced graph fencing, independent signed custody or safe production failover.
 
 ## Validation
 
@@ -53,7 +66,7 @@ The [etcd 3.6 RBAC guide](https://etcd.io/docs/v3.6/op-guide/authentication/rbac
 
 ## Remaining production gate
 
-1. **Scoped policy writer and authenticated authority service:** enable and test etcd RBAC on disposable quorum; gateway worker identities may read status but cannot raw-write the owner/term/occupancy key. Implement a narrow separately authenticated authority service to perform allowed `admit`, `bind`, and verified `close` as atomic Raft CAS writes. Preserve operator signature and witness custody validation at the writer boundary. `EtcdTLS` uses the JSON gRPC gateway: mTLS CN alone does not provide RBAC identity through that proxy.
+1. **Independent authenticated authority service:** scoped etcd bearer-token RBAC is now physically tested on disposable three-voter quorum; gateway-reader identities cannot raw-write the authority key, and writer roles are restricted to exact keys. Implement a narrow separately authenticated authority service to perform allowed `admit`, `bind`, and verified `close` as atomic Raft CAS writes. Preserve operator signature and witness custody validation at the writer boundary. `EtcdTLS` uses the JSON gRPC gateway: mTLS CN alone does not provide RBAC identity through that proxy.
 2. **Neo4j nonbypassable admission:** isolate all workers, host-network agents and alternate Bolt endpoints; exclusive gateway graph credential with minimally required Neo4j role. Even so, an existing Neo4j transaction can outlive leadership: reconcile it before turnover or use stronger transaction-server fencing.
 3. **Independent custody:** move verifier key to a separate principal/host; immutable external append-only signed receipts with persisted replay ledger, group/membership/instance-generation constraints and DB-side release verification. Current detached signer process runs on x1-370 with local observation memory and no independent durable log.
 4. **Real failure-domain and rollback acceptance:** three physically separate voters are on a shared tailnet and not validated as independent sites. Need node/switch/power partitions, restart/generation changes, copied-state adversarial cases, stale-effect rejection, orchestrator failure, key-loss recovery and operational rollback.
