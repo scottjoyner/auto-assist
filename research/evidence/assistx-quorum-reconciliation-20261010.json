@@ -1,0 +1,27 @@
+{
+  "schema": "assistx-reconciliation-research-v1",
+  "date": "2026-10-10",
+  "hosts": [
+    "x1-370",
+    "xwing",
+    "destroyer"
+  ],
+  "runtime_seconds": 23.38,
+  "executed_on_disposable_etcd": true,
+  "source_commit": "5391aa3a85ff026b5617e1d8a263ebcf43580e25",
+  "observed": {
+    "operation_persisted_despite_missing_client_ack": true,
+    "second_voter_confirmed_pending": true,
+    "same_request_not_readmitted": true,
+    "changed_payload_same_request_refused": true,
+    "other_request_denied_at_capacity": true,
+    "majority_and_minority_tests_passed": true
+  },
+  "limitations": {
+    "not_actual_packet_loss": true,
+    "not_in_api": true,
+    "not_neo4j_test": true,
+    "production_authority": false,
+    "automatic_failover": false
+  }
+}
