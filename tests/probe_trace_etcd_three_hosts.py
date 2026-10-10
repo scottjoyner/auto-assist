@@ -243,6 +243,22 @@ def run():
                 break
             except FenceRefused as exc:
                 if time.monotonic() >= deadline:
+                    diagnostics = {}
+                    for _, host in HOSTS:
+                        name = container_names[host]
+                        try:
+                            state = shell(
+                                ["docker", "inspect", "-f",
+                                 "{{.State.Status}} {{.State.ExitCode}}",
+                                 name], host, check=False).stdout.strip()
+                            logs = shell(
+                                ["docker", "logs", "--tail", "35", name],
+                                host, check=False).stderr[-5000:]
+                            diagnostics[host] = {"state": state, "logs": logs}
+                        except Exception:
+                            diagnostics[host] = {"read_error": True}
+                    print(json.dumps({"startup_diagnostics": diagnostics},
+                                     sort_keys=True), flush=True)
                     raise RuntimeError("THREE_VOTER_QUORUM_STARTUP_FAILED") from None
                 time.sleep(2)
         result["events"].append("three_voter_genesis_committed")
