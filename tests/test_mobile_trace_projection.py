@@ -17,7 +17,9 @@ def test_tracegroup_projection_has_existing_record_trace_event_kwargs():
     assert item is not None
     params = item.to_trace_record_kwargs()
     assert set(params) == {"correlation_id", "event_type", "source", "payload"}
-    assert params["correlation_id"] == "1234567890abcdef1234567890abcdef"
+    assert params["correlation_id"] == "mobile-model:" + VALID_REQUEST_ID
+    assert params["payload"]["trace_id"] == "1234567890abcdef1234567890abcdef"
+    assert params["correlation_id"] != params["payload"]["trace_id"]
     assert params["event_type"] == "mobile.model.router_http_accepted"
     assert params["payload"]["parent_span_id"] == "0123456789abcdef"
     assert params["payload"]["mobile_request_id"] == VALID_REQUEST_ID
@@ -111,7 +113,7 @@ def test_existing_tracegroup_writer_accepts_projected_receipt_on_disposable_fake
     event_id = record_trace_event(fake, **projection.to_trace_record_kwargs())
     assert event_id.startswith("trace:")
     assert fake.has_node("TraceEvent", "event_id", event_id)
-    assert fake.has_node("TraceGroup", "correlation_id", projection.trace_id)
+    assert fake.has_node("TraceGroup", "correlation_id", "mobile-model:" + VALID_REQUEST_ID)
     assert not fake.has_relationship("FOR_TASK")
     assert not fake.has_relationship("FOR_ROUTE")
     event_query = next(
@@ -143,7 +145,23 @@ def test_existing_tracegroup_groups_multiple_model_stages_without_creating_autho
         record_trace_event(fake, **projection.to_trace_record_kwargs())
     groups = [row for row in fake.runs if "MERGE (g:TraceGroup" in row["cypher"]]
     assert len(groups) == 3
-    assert all(row["params"]["correlation_id"] == VALID_TRACE[3:35] for row in groups)
+    assert all(row["params"]["correlation_id"] == "mobile-model:" + VALID_REQUEST_ID for row in groups)
     assert not fake.has_relationship("FOR_TASK")
     assert not fake.has_relationship("FOR_ASSIGNMENT")
     assert not fake.has_relationship("FOR_ROUTE")
+
+
+def test_client_selected_trace_id_cannot_reuse_graph_task_correlation_id():
+    """An attacker can choose traceparent but cannot bind a task TraceGroup."""
+    client_chosen = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0123456789abcdef-01"
+    obs = project_mobile_model_trace(
+        traceparent=client_chosen,
+        mobile_request_id=VALID_REQUEST_ID,
+        stage="gateway_accepted",
+    )
+    assert obs is not None
+    row = obs.to_trace_record_kwargs()
+    assert row["payload"]["trace_id"] == "a" * 32
+    assert row["correlation_id"] != "a" * 32
+    assert row["correlation_id"] == "mobile-model:" + VALID_REQUEST_ID
+    assert row["event_type"] == "mobile.model.gateway_accepted"
