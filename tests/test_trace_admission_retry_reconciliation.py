@@ -156,3 +156,89 @@ def test_reconciliation_never_returns_reusable_grant_secret():
     assert token not in str(recon)
     assert "token" not in recon
     assert "reservation_id" not in recon
+
+
+from trace_graph_stable_identity_research import (
+    derive_stable_operation, InvalidStableRequest
+)
+
+
+def test_stable_verified_principal_plus_request_id_across_retries():
+    a = derive_stable_operation(
+        "verified-user-1", "same-client-request-0001",
+        "approved_read", {"a": 1, "b": "hello"})
+    b = derive_stable_operation(
+        "verified-user-1", "same-client-request-0001",
+        "approved_read", {"b": "hello", "a": 1})
+    c = derive_stable_operation(
+        "verified-user-2", "same-client-request-0001",
+        "approved_read", {"a": 1, "b": "hello"})
+    assert a == b
+    assert a.operation != c.operation
+    assert len(a.operation) < 128
+    assert len(a.request_digest) == 64
+
+
+def test_reusing_same_identity_with_changed_query_is_a_conflict():
+    authority, _, _ = make_lossy()
+    a = derive_stable_operation(
+        "verified-user-1", "request-00000001", "approved_read", {"n": 1})
+    different = derive_stable_operation(
+        "verified-user-1", "request-00000001", "approved_read", {"n": 2})
+    other_plan = derive_stable_operation(
+        "verified-user-1", "request-00000001", "dangerous_read", {"n": 1})
+    assert a.operation == different.operation == other_plan.operation
+    assert a.request_digest != different.request_digest
+    assert a.request_digest != other_plan.request_digest
+    token = authority.admit("gateway-1", 1, a.operation,
+                            request_digest=a.request_digest)
+    with pytest.raises(FenceRefused, match="IDEMPOTENCY_KEY_PAYLOAD_CONFLICT"):
+        authority.admit("gateway-1", 1, different.operation,
+                        request_digest=different.request_digest)
+    with pytest.raises(FenceRefused, match="IDEMPOTENCY_KEY_PAYLOAD_CONFLICT"):
+        authority.admit("gateway-1", 1, other_plan.operation,
+                        request_digest=other_plan.request_digest)
+    assert token in authority.snapshot().document["pending"]
+
+
+def test_payload_conflict_stays_denied_after_signed_closure_and_term_change():
+    authority, store, signer = make_lossy()
+    a = derive_stable_operation(
+        "verified-user-1", "request-00000002", "approved_read", {"n": 1})
+    other = derive_stable_operation(
+        "verified-user-1", "request-00000002", "approved_read", {"n": 999})
+    token = authority.admit("gateway-1", 1, a.operation,
+                            request_digest=a.request_digest)
+    authority.bind(token, "gateway-1", 1, "server-1", "first-boot",
+                   "neo4j-transaction-555")
+    receipt = witness_receipt(authority.snapshot(), token)
+    authority.close_with_witness(token, receipt, signer.sign(canon(receipt)))
+    with pytest.raises(FenceRefused, match="IDEMPOTENCY_KEY_PAYLOAD_CONFLICT"):
+        authority.admit("gateway-1", 1, other.operation,
+                        request_digest=other.request_digest)
+    with pytest.raises(FenceRefused, match="CLOSED_OPERATION_REPLAY_DENIED"):
+        authority.admit("gateway-1", 1, a.operation,
+                        request_digest=a.request_digest)
+
+
+@pytest.mark.parametrize("subject,request_id,plan,params", [
+    ("", "request-00000001", "approved_read", {}),
+    ("spoofed subject ", "request-00000001", "approved_read", {}),
+    ("verified-user", "short", "approved_read", {}),
+    ("verified-user", "request-00000001", "Raw Cypher", {}),
+    ("verified-user", "request-00000001", "approved_read", {"x": float("nan")}),
+    ("verified-user", "request-00000001", "approved_read", {"x": [1, 2]}),
+    ("verified-user", "request-00000001", "approved_read", {"x": object()}),
+])
+def test_untrusted_or_uncanonical_identity_rejected(subject, request_id,
+                                                     plan, params):
+    with pytest.raises(InvalidStableRequest):
+        derive_stable_operation(subject, request_id, plan, params)
+
+
+def test_corrupted_request_digest_is_never_accepted():
+    authority, store, signer = make_lossy()
+    with pytest.raises(FenceRefused, match="INVALID_REQUEST_DIGEST"):
+        authority.admit("gateway-1", 1, "stable-op",
+                        request_digest="not-a-sha256")
+    assert authority.snapshot().document["pending"] == {}
