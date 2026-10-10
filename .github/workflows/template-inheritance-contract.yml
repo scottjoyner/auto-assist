@@ -3,14 +3,12 @@ name: Operator Jinja template inheritance contract
 on:
   pull_request:
     paths:
-      - "templates/base.html"
-      - "templates/control_room.html"
+      - "templates/*.html"
       - "tests/test_template_inheritance_contract.py"
       - ".github/workflows/template-inheritance-contract.yml"
   push:
     paths:
-      - "templates/base.html"
-      - "templates/control_room.html"
+      - "templates/*.html"
       - "tests/test_template_inheritance_contract.py"
       - ".github/workflows/template-inheritance-contract.yml"
 
