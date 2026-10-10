@@ -46,6 +46,7 @@ def setup(monkeypatch, tmp_path):
         "tag:ingress": {"nodes": ["xwing"], "producers": ["opencode"],
                         "write": True, "read": False, "write_tenant": "tenant-b"},
     }
+    monkeypatch.setenv("FLEET_TRACE_OWNER_KEY_HEX", "ab" * 32)
     monkeypatch.setenv("FLEET_TRACE_TRUSTED_SERVE", "1")
     monkeypatch.setenv("FLEET_TRACE_DB_PATH", str(tmp_path / "trace.db"))
     monkeypatch.setenv("FLEET_TRACE_AUTH_POLICY_JSON", json.dumps(policy))
@@ -413,3 +414,50 @@ def test_missing_writer_subject_read_policy_fails_closed(setup, monkeypatch):
     del policy[f"login:{LOGIN}"]["read_actors"]
     monkeypatch.setenv("FLEET_TRACE_AUTH_POLICY_JSON", json.dumps(policy))
     assert client.get(f"/v1/traces/{TRACE}/events", headers=headers()).status_code == 403
+
+
+
+def test_unkeyed_sha_is_not_a_reversible_stored_owner_identity(setup):
+    import hashlib
+    client, db_path = setup
+    assert client.post("/v1/events", headers=headers(), json=envelope()).status_code == 201
+    with sqlite3.connect(db_path) as db:
+        owner = db.execute("SELECT principal_digest FROM trace_events").fetchone()[0]
+        assert len(owner) == 64
+        assert owner != hashlib.sha256(f"login:{LOGIN}".encode()).hexdigest()
+        assert owner != hashlib.sha256(f"login:{LOGIN}".encode()).hexdigest()[:24]
+
+
+def test_owner_digest_is_separated_by_tenant_even_for_identical_login(setup):
+    from assistx.fleet_trace_ingress import _digest_principal
+    assert _digest_principal(f"login:{LOGIN}", "tenant-a") != _digest_principal(
+        f"login:{LOGIN}", "tenant-b")
+
+
+def test_missing_or_invalid_hmac_key_is_fail_closed_before_write(setup, monkeypatch):
+    client, db_path = setup
+    monkeypatch.delenv("FLEET_TRACE_OWNER_KEY_HEX")
+    assert client.post("/v1/events", headers=headers(), json=envelope()).status_code == 503
+    assert not db_path.exists()
+    monkeypatch.setenv("FLEET_TRACE_OWNER_KEY_HEX", "guessable")
+    assert client.post("/v1/events", headers=headers(), json=envelope()).status_code == 503
+    assert not db_path.exists()
+
+
+def test_tenant_scoped_legacy_sha_rows_cannot_be_reinterpreted_as_hmac(setup):
+    client, db_path = setup
+    with sqlite3.connect(db_path) as db:
+        db.execute("""CREATE TABLE trace_events (
+            tenant_scope TEXT NOT NULL, event_id TEXT NOT NULL,
+            trace_id TEXT NOT NULL, span_id TEXT NOT NULL, node_id TEXT NOT NULL,
+            producer TEXT NOT NULL, principal_digest TEXT NOT NULL,
+            received_at TEXT NOT NULL, sha256 TEXT NOT NULL,
+            envelope TEXT NOT NULL, PRIMARY KEY(tenant_scope,event_id))""")
+        db.execute("INSERT INTO trace_events VALUES (?,?,?,?,?,?,?,?,?,?)", (
+            "tenant-a", "old-event", TRACE, SPAN, "x1-370", "assistx",
+            "old-sha-owner", "2026-10-10T10:00:00Z", "a" * 64,
+            json.dumps(envelope("old-event"))))
+    assert client.post("/v1/events", headers=headers(), json=envelope()).status_code == 503
+    with sqlite3.connect(db_path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM trace_events").fetchone()[0] == 1
