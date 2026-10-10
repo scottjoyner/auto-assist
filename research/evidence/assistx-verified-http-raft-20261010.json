@@ -40,5 +40,24 @@
     "production_admission": false,
     "automatic_failover": false
   },
-  "result": "RESEARCH_PASS; PRODUCTION_NO_GO"
+  "result": "RESEARCH_PASS; PRODUCTION_NO_GO",
+  "live_ingress_readonly_assessment": {
+    "host": "x1-370",
+    "assessed": "2026-10-10",
+    "api_host_binding": "127.0.0.1:8000->8000/tcp",
+    "tailnet_serve_port": "8443",
+    "tailnet_serve_mobile_paths": [
+      "/api/v1/auth/whoami",
+      "/api/v1/runtime/catalog",
+      "/api/v1/model/chat/completions",
+      "/api/v1/agent/chat/completions"
+    ],
+    "direct_loopback_whoami_without_header_http": 401,
+    "direct_loopback_whoami_with_synthetic_untrusted_identity_http": 403,
+    "spoofing_of_real_allowlisted_identity_tested": false,
+    "local_host_or_docker_bridge_bypass_excluded": false,
+    "untrusted_external_reachability_proven": false,
+    "production_proxy_proven_safe": false,
+    "no_live_configuration_changed": true
+  }
 }
