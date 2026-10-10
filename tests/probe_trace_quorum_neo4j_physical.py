@@ -341,6 +341,39 @@ def run_real_quorum_graph(clients, cluster_id, base, run_id, ip_map,
                     raise AssertionError("STALE_GATEWAY_REAL_BOLT_SUCCEEDED")
                 assert graph.calls == 1
 
+            # SECURITY NEGATIVE: mTLS authenticates the client, but because
+            # etcd keyspace RBAC is NOT enabled here, the same raw KV client
+            # can bypass the operator-signature policy entirely. Demonstrate
+            # this only on a SEPARATE disposable consensus key.
+            from trace_etcd_quorum_fence_research import b64
+            import json
+            raw_key = base + "/raw-kv-policy-bypass-negative"
+            raw_control = EtcdQuorumFence(clients["r1"], raw_key, cluster_id)
+            raw_control.bootstrap(
+                "unprivileged-bypass-negative-" + run_id,
+                "approved-owner", operator_public, witness_public, 1)
+            raw_before = raw_control.snapshot()
+            forged = json.loads(canon(raw_before.document))
+            forged["term"] = 99
+            forged["owner"] = "forged-raw-kv-writer"
+            raw_response = clients["r1"].txn({
+                "compare": [{
+                    "key": b64(raw_key), "target": "MOD",
+                    "result": "EQUAL",
+                    "mod_revision": str(raw_before.mod_revision)
+                }],
+                "success": [{"request_put": {
+                    "key": b64(raw_key), "value": b64(canon(forged))
+                }}], "failure": [],
+            })
+            assert raw_response["succeeded"] is True, (
+                "EXPECTED_RAW_KV_POLICY_BYPASS_NOT_REPRODUCED")
+            raw_after = raw_control.snapshot()
+            assert raw_after.document["term"] == 99
+            assert raw_after.document["owner"] == "forged-raw-kv-writer"
+            result["events"].append(
+                "raw_authenticated_kv_writer_bypassed_signed_takeover_policy")
+
             result["events"].append(
                 "real_neo4j_quorum_admission_before_bolt_committed")
             result["events"].append(
@@ -366,6 +399,7 @@ def run_real_quorum_graph(clients, cluster_id, base, run_id, ip_map,
                 "server_enforced_neo4j_fencing": False,
                 "witness_external_durable_custody": False,
                 "etcd_scoped_kv_rbac_enforced": False,
+                "authenticated_raw_kv_policy_bypass_reproduced": True,
                 "graph_cluster_generation_witnessed": False,
                 "production_authority": False,
             }
