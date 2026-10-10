@@ -95,3 +95,39 @@ def test_deterministic_order_and_source_custody():
     assert [x["node"] for x in result["observations"]] == ["x1", "xwing"]
     assert len(result["source_inventory_sha256"]) == 64
     assert all(x["admitted"] is False for x in result["observations"])
+
+def test_readonly_http_client_does_not_follow_redirects():
+    """A Tailnet peer cannot expand a read-only probe to a second URL."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    received = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            received.append(self.path)
+            if self.path.startswith("/redirect/"):
+                code = int(self.path.rsplit("/", 1)[-1])
+                self.send_response(code)
+                self.send_header("Location", "/private-internal-service")
+                self.end_headers()
+            else:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"should never be fetched")
+
+        def log_message(self, format, *args):
+            pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            for code in (301, 302, 303, 307, 308):
+                status, body = module.fetch_readonly(
+                    f"http://127.0.0.1:{server.server_port}/redirect/{code}", 2.0)
+                assert (status, body) == (code, b"")
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+    assert received == [f"/redirect/{code}" for code in (301, 302, 303, 307, 308)]
