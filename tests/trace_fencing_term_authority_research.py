@@ -128,9 +128,9 @@ class ResearchFencingAuthority:
         if (db_path.exists() or checkpoint_path.exists() or
                 db_path.resolve() == checkpoint_path.resolve()):
             raise FenceDenied("BOOTSTRAP_REQUIRES_FRESH_STORAGE")
-        if not owner or not isinstance(capacity, int) or type(capacity) is not int \
+        if (not owner or type(capacity) is not int
                 or not 1 <= capacity <= 16 or len(witness_public) != 32
-                or len(operator_public) != 32:
+                or len(operator_public) != 32):
             raise FenceDenied("INVALID_BOOTSTRAP")
         try:
             with closing(_connect(db_path)) as db:
