@@ -23,6 +23,8 @@ from trace_graph_entry_research import Grant
 _OPERATION = re.compile(r"^[0-9a-f]{32}$")
 _PLAN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _TOKEN = re.compile(r"^[0-9a-f]{32}$")
+_STABLE_ID = re.compile(r"^auth:[0-9a-f]{64}$")
+_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 MAX_REQUEST = 4096
 
 
@@ -69,6 +71,27 @@ class PolicyEngine:
             # are enforced BEFORE any direct raw KV action by this service.
             token = self._authority.admit(
                 self._owner, self._term, plan + ":" + operation_id)
+            return {"reservation_id": token, "term": self._term,
+                    "epoch": self._genesis}
+        if kind == "admit_stable" and set(req) == {
+                "kind", "operation_id", "request_digest", "plan_id"}:
+            plan, operation, digest = (
+                req["plan_id"], req["operation_id"], req["request_digest"])
+            if (not isinstance(plan, str) or plan not in self._plans
+                    or not isinstance(operation, str)
+                    or not _STABLE_ID.fullmatch(operation)
+                    or not isinstance(digest, str) or
+                    not _DIGEST.fullmatch(digest)):
+                raise PolicyRefused("INVALID_VERIFIED_REQUEST_IDENTITY")
+            view = self._authority.snapshot()
+            state = view.document
+            if (view.cluster_id != self._authority.pinned_cluster_id
+                    or state["genesis"] != self._genesis
+                    or state["owner"] != self._owner
+                    or state["term"] != self._term):
+                raise PolicyRefused("STALE_GATEWAY_OWNER_OR_GENESIS")
+            token = self._authority.admit(
+                self._owner, self._term, operation, request_digest=digest)
             return {"reservation_id": token, "term": self._term,
                     "epoch": self._genesis}
         if kind == "close" and set(req) == {
@@ -213,6 +236,28 @@ class UnixPolicyGrantAdapter:
                 or not isinstance(result["reservation_id"], str)
                 or not _TOKEN.fullmatch(result["reservation_id"])):
             # Maybe the server occupied the slot; never assume otherwise.
+            raise PolicyRefused("INVALID_SERVER_GRANT_RESERVATION_HELD")
+        return Grant(result["reservation_id"], result["reservation_id"],
+                     result["term"], result["epoch"])
+
+    def admit_stable(self, operation_id: str, request_digest: str,
+                     plan_id: str) -> Grant:
+        import re
+        if (not isinstance(operation_id, str)
+                or not _STABLE_ID.fullmatch(operation_id)
+                or not isinstance(request_digest, str)
+                or not _DIGEST.fullmatch(request_digest)):
+            raise PolicyRefused("INVALID_STABLE_IDENTITY")
+        result = self._client.request({
+            "kind": "admit_stable", "operation_id": operation_id,
+            "request_digest": request_digest, "plan_id": plan_id,
+        })
+        if (not isinstance(result, dict)
+                or set(result) != {"reservation_id", "term", "epoch"}
+                or result["epoch"] != self._epoch
+                or type(result["term"]) is not int or result["term"] < 1
+                or not isinstance(result["reservation_id"], str)
+                or not _TOKEN.fullmatch(result["reservation_id"])):
             raise PolicyRefused("INVALID_SERVER_GRANT_RESERVATION_HELD")
         return Grant(result["reservation_id"], result["reservation_id"],
                      result["term"], result["epoch"])
