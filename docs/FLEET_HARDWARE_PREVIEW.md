@@ -122,3 +122,5 @@ that might otherwise expose internal filesystem paths. The fixes are validated
 by negative synthetic tests without modifying the separate PR #272 branch.
 The other draft remains unmerged until its maintainer reconciles any remaining
 unique acceptance tests against this base.
+
+The focused CI now additionally imports the **full AssistX app** with repository dependencies, proves both hardware endpoints require the existing auth dependency, and renders the standalone page with synthetic operator permissions. This uses no private hardware data or external Neo4j connection. On bare worktrees missing langgraph the smoke tests skip, while CI with installed dependencies must execute them.
