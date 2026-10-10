@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from trace_graph_entry_guarded import ProtectedGraphEntry
 from trace_graph_entry_research import AdmissionDenied
 from trace_etcd_quorum_fence_research import FenceRefused
+from trace_etcd_policy_writer_research import PolicyRefused
 
 
 class GraphPlanRequest(BaseModel):
@@ -55,7 +56,7 @@ def build_research_idempotent_graph_router(
             }
         except AdmissionDenied as exc:
             cause = exc.__cause__
-            if isinstance(cause, FenceRefused) and str(cause) in (
+            if isinstance(cause, (FenceRefused, PolicyRefused)) and str(cause) in (
                 "IDEMPOTENCY_KEY_PAYLOAD_CONFLICT",
                 "EXISTING_OPERATION_REQUIRES_RECONCILIATION",
                 "CLOSED_OPERATION_REPLAY_DENIED",
