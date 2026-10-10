@@ -29,6 +29,25 @@ class StableOperation:
     request_digest: str
 
 
+def derive_operation_key(verified_subject: str,
+                         client_request_id: str) -> str:
+    """Create a scoped opaque key for read-only reconciliation or admission.
+
+    This function does NOT verify authentication: caller must use a trusted
+    post-auth identity, never untrusted body or X-Forwarded-User.
+    """
+    if (not isinstance(verified_subject, str)
+            or not _SUBJECT.fullmatch(verified_subject)
+            or not isinstance(client_request_id, str)
+            or not _REQUEST.fullmatch(client_request_id)):
+        raise InvalidStableRequest("UNVERIFIED_OR_INVALID_REQUEST_IDENTITY")
+    identity = json.dumps(
+        {"subject": verified_subject, "request_id": client_request_id},
+        sort_keys=True, separators=(",", ":")
+    ).encode()
+    return "auth:" + sha256(identity).hexdigest()
+
+
 def derive_stable_operation(verified_subject: str, client_request_id: str,
                             plan_id: str, parameters: Mapping[str, object]
                             ) -> StableOperation:
@@ -60,13 +79,10 @@ def derive_stable_operation(verified_subject: str, client_request_id: str,
         ).encode()
         if len(fingerprint) > 4096:
             raise InvalidStableRequest("OVERSIZED_REQUEST_FINGERPRINT")
-        identity = json.dumps(
-            {"subject": verified_subject, "request_id": client_request_id},
-            sort_keys=True, separators=(",", ":")
-        ).encode()
+
     except (TypeError, ValueError, OverflowError) as exc:
         raise InvalidStableRequest("INVALID_CANONICAL_REQUEST_PARAMETERS") from exc
     return StableOperation(
-        operation="auth:" + sha256(identity).hexdigest(),
+        operation=derive_operation_key(verified_subject, client_request_id),
         request_digest=sha256(fingerprint).hexdigest()
     )
