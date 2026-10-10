@@ -18,6 +18,9 @@ from trace_graph_entry_guarded import ProtectedGraphEntry
 from trace_graph_entry_research import AdmissionDenied
 from trace_etcd_quorum_fence_research import FenceRefused
 from trace_etcd_policy_writer_research import PolicyRefused
+from trace_graph_stable_identity_research import (
+    derive_operation_key, InvalidStableRequest
+)
 
 
 class GraphPlanRequest(BaseModel):
@@ -27,7 +30,8 @@ class GraphPlanRequest(BaseModel):
 
 
 def build_research_idempotent_graph_router(
-    entry: ProtectedGraphEntry, verified_principal_dependency: Callable
+    entry: ProtectedGraphEntry, verified_principal_dependency: Callable,
+    read_only_reconciler: Any | None = None,
 ) -> APIRouter:
     """Dependency MUST return authenticated principal from trusted ingress.
 
@@ -75,5 +79,36 @@ def build_research_idempotent_graph_router(
             # on a 5xx response, because Raft may already have committed.
             raise HTTPException(status_code=503,
                                 detail="execution_state_uncertain") from None
+
+    if read_only_reconciler is not None:
+        @router.get("/requests/{client_request_id}")
+        def request_status(
+            client_request_id: str,
+            verified_subject: str = Depends(verified_principal_dependency),
+        ):
+            if not isinstance(verified_subject, str) or not verified_subject:
+                raise HTTPException(status_code=401, detail="identity_not_verified")
+            try:
+                operation = derive_operation_key(
+                    verified_subject, client_request_id)
+            except InvalidStableRequest:
+                raise HTTPException(status_code=422, detail="invalid_request_id") from None
+            try:
+                status = read_only_reconciler.reconcile_operation(operation)
+                state = status["state"]
+                if state not in (
+                    "PENDING_EXECUTION_UNCERTAIN",
+                    "CLOSED_NO_REEXECUTION",
+                    "ABSENT_NOT_AN_EXECUTION_PERMIT",
+                ):
+                    raise ValueError("not a recognized status")
+                # Only return a deliberately tiny safe shape. Never expose
+                # a graph txid, bearer token, reservation, or secret.
+                return {"state": state}
+            except Exception:
+                # An unavailable quorum can NEVER be interpreted as ABSENT.
+                raise HTTPException(
+                    status_code=503, detail="reconciliation_unavailable"
+                ) from None
 
     return router
