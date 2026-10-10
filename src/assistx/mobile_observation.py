@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,9 @@ def project_observations(raw: dict[str, Any], *, now: datetime | None = None,
         return _empty("invalid")
     if age > max_age_seconds or age < -30:
         return _empty("stale")
+    source_checksum = raw.get("source_inventory_sha256")
+    if not isinstance(source_checksum, str) or not re.fullmatch(r"[0-9a-f]{64}", source_checksum):
+        return _empty("invalid")
     entries = raw.get("observations")
     if not isinstance(entries, list) or len(entries) > 512:
         return _empty("invalid")
@@ -62,7 +66,9 @@ def project_observations(raw: dict[str, Any], *, now: datetime | None = None,
             # Native model identifiers can contain filesystem paths; never show
             # directories, physical endpoints, or artifact fingerprints on mobile.
             name = identifier.replace("\\", "/").split("/")[-1].strip()[:100]
-            if not name or ".." in name:
+            if (not name or ".." in name or "@" in name or "://" in identifier
+                    or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ +:\-]{0,99}", name)
+                    or re.match(r"^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?$", name)):
                 continue
             key = name.casefold()
             existing = models.get(key)

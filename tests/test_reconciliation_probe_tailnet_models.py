@@ -1,5 +1,7 @@
 """Offline proof contracts for bounded, read-only Tailnet model observation."""
 import importlib.util
+import hashlib
+import os
 import json
 from pathlib import Path
 
@@ -86,6 +88,21 @@ def test_forged_candidates_cannot_add_public_targets():
     assert len(targets) == 2
     with pytest.raises(ValueError):
         module.plan_targets({"authority": "production_admitted", "nodes": []}, [1234])
+
+
+def test_atomic_private_receipt_and_exact_input_bytes(tmp_path):
+    path = tmp_path / 'witness.json'
+    data = '{"authority":"candidate_reachability_only","nodes":[] }\n'.encode()
+    result = module.collect(json.loads(data), [1234], source_bytes=data)
+    assert result['source_inventory_sha256'] == hashlib.sha256(data).hexdigest()
+    module.write_atomic_private(path, json.dumps(result) + '\n')
+    module.write_atomic_private(path.with_suffix('.json.sha256'), 'receipt\n')
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.with_suffix('.json.sha256').stat().st_mode & 0o777 == 0o600
+    assert not list(tmp_path.glob('.witness.json.*'))
+    module.write_atomic_private(path, '{}\n')
+    assert path.read_text() == '{}\n'
+    assert not list(tmp_path.glob('.witness.json.*'))
 
 
 def test_deterministic_order_and_source_custody():

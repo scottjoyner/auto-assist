@@ -25,6 +25,7 @@ completion works, correct permissions exist, or the signed projection admits it.
 The mobile read model has no node, Tailscale IP, port, URL, model file path,
 artifact fingerprint, executor token, admission handle or selectable route.
 All observed models are explicitly `admitted: false`, `selectable: false`.
+
 ## Private one-shot operator run
 
 ```bash
@@ -40,8 +41,9 @@ sha256sum -c "$run_dir/model-witness.json.sha256"
 ```
 
 The private evidence JSON retains per-endpoint GET path/status/byte counts
-and SHA-256 lineage to the exact candidate inventory. Do not commit raw
-observation files or private Tailscale coordinates to a public repository.
+and SHA-256 lineage to the **exact candidate inventory bytes**. Both the witness
+and receipt are atomically replaced and created with `0600` permissions. Do not
+commit raw observations or private Tailscale coordinates to a public repository.
 
 ## Staleness and deployment boundary
 
@@ -56,6 +58,7 @@ Tailnet Serve must route the authenticated `/api/v1/runtime/observations`
 path to AssistX before mobile can consume it. Authenticate via the existing
 Tailnet header path; do not make the observation endpoint public or use
 a blanket rewrite rule that bypasses upstream identity.
+
 ## Live evidence — read-only witness run
 
 Ran on x1-370 on 2026-10-10. Tailscale inventory yielded 12 eligible
@@ -70,7 +73,14 @@ Custody (private x1-370 session): witness SHA-256
 `9971964821620cceeace3fa4956d430eb3c2749adb10be4c5f8e2ea0da7a5e52`.
 The exact receipt is local in the restricted scratch directory; the SHA
 covers the previous observation script version before additional model-kind
-hardening, so rerun after merge for release-grade acceptance.
+hardening. A subsequent hardened operator run on 2026-10-10 observed 13
+eligible nodes, 39 endpoints (11 resident-evidenced, 26 unreachable, two
+installed-but-not-loaded), with the exact source-inventory checksum verified
+and `0600` witness/receipt permissions. Hardened private witness checksum:
+`29db19ff7452bab86c4881d1445578f08ac330bcf02501343934c95f15242986`.
+Its custody is `/tmp/assistx-discovery-atomic-20261010-YqOJ1Jpr/` on x1-370.
+Temporary scratch is not a durable retention promise. A new witness after
+review/merge is still required for release-grade acceptance.
 
 ## Remaining acceptance gates
 

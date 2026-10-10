@@ -48,6 +48,25 @@ def test_redacts_all_physical_routes_and_never_marks_selectable():
         assert sensitive not in response
 
 
+def test_observations_never_echo_untrusted_private_routes_or_invalid_receipts():
+    raw = witness()
+    raw["source_inventory_sha256"] = "100.64.43.123 private-tailnet-host"
+    assert project_observations(raw)["state"] == "invalid"
+
+    raw = witness()
+    raw["observations"][0]["models"] += [
+        {"id": "http://internal:8088/v1/models", "state": "resident_verified"},
+        {"id": "100.64.43.123:1234", "state": "advertised_unverified"},
+        {"id": "login@xwing", "state": "resident_verified"},
+        {"id": "bad\nnewline", "state": "resident_verified"},
+    ]
+    result = project_observations(raw)
+    assert result["state"] == "fresh"
+    assert [m["display_name"] for m in result["models"]] == ["k2.gguf", "not-loaded"]
+    assert "100.64." not in json.dumps(result)
+    assert "login@" not in json.dumps(result)
+
+
 def test_stale_and_future_observations_return_no_models():
     now = datetime.now(UTC)
     assert project_observations(witness(now - timedelta(minutes=5)), now=now)["state"] == "stale"
