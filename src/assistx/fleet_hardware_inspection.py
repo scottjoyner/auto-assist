@@ -26,6 +26,10 @@ _INSPECTION_INTENT = "fleet-hardware-inspection-v1"
 _MAX_PER_TRACE = 20
 
 
+class InspectionSchemaUnavailable(RuntimeError):
+    """Required Neo4j uniqueness constraint not installed or unreadable."""
+
+
 class InspectionInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -141,6 +145,20 @@ def persist_inspection(neo: Any, receipt: dict[str, Any], *, authenticated_actor
         RETURN r.receipt_id AS receipt_id, r.recorded_at_ms AS recorded_at_ms
     """
     with neo._session() as session:
+        # A MERGE without this unique constraint is NOT concurrency-safe.
+        # This is a read-only schema introspection. No DDL here.
+        schema = session.run(
+            """
+            SHOW CONSTRAINTS YIELD name, type, labelsOrTypes, properties
+            WHERE name = $constraint_name AND type = 'UNIQUENESS'
+                  AND labelsOrTypes = ['FleetHardwareInspection']
+                  AND properties = ['receipt_id']
+            RETURN count(*) AS matched
+            """,
+            {"constraint_name": "fleet_hardware_inspection_receipt_id_unique"},
+        ).single()
+        if schema is None or schema.get("matched") != 1:
+            raise InspectionSchemaUnavailable("hardware receipt uniqueness constraint absent")
         row = session.run(query, parameters).single()
         if row is None:
             return None
@@ -247,6 +265,8 @@ def build_inspection_router(
                 result = persist_inspection(db, receipt, authenticated_actor=actor)
             finally:
                 db.close()
+        except InspectionSchemaUnavailable as exc:
+            raise HTTPException(status_code=503, detail="hardware receipt schema prerequisite missing") from exc
         except (FleetHardwareEvidenceError, OSError, TypeError) as exc:
             raise HTTPException(status_code=503, detail="inspection evidence unavailable") from exc
         except ValueError as exc:

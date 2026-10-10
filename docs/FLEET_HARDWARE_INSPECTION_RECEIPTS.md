@@ -28,7 +28,7 @@ FOR (r:FleetHardwareInspection)
 REQUIRE r.receipt_id IS UNIQUE;
 ```
 
-No schema migration is executed by the API, CI or this PR. Until the constraint is verified, **do not enable receipt writes**. Further production acceptance must include two concurrent writers racing to record the same receipt, a deliberately dropped acknowledgment and a repeat attempt, followed by a check that exactly one node/relation exists.
+No schema migration is executed by the API, CI or this PR. The writer now inspects Neo4j schema metadata on every POST and **returns HTTP 503 without writing** unless this exact constraint is present. Until an operator verifies the constraint on isolated staging, **do not enable receipt writes**. Further production acceptance must include two concurrent writers racing to record the same receipt, a deliberately dropped acknowledgment and a repeat attempt, followed by a check that exactly one node/relation exists.
 
 ## API contract
 
