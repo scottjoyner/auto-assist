@@ -38,3 +38,9 @@ Run the witness with provider arguments for x1-370:1234, destroyer:1235/1236, an
 **No production admission updates, generation bumps, signing changes, model loads, or device deployments were performed by this witness.** A healthy gateway and a loaded model do not imply agent-routing authority.
 
 Related reviews: scottjoyner/kipnerter-ios#362 and #375; scottjoyner/auto-assist#254 (handler fix already present in live container); superseded duplicate #257 closed. The main AssistX PR CI remains red from broad unrelated failures and Kipnerter's CI scope classifier is red, despite narrow tests passing. Full release acceptance is not complete.
+
+## Follow-up live witness after bounded direct-model loads
+
+At 2026-10-10T15:45:53Z, the same read-only witness confirmed two resident x1-370-advertised LM Studio chat models, plus the original four llama.cpp models; the signed AssistX catalog still reported zero admitted runtimes. The new immutable evidence is docs/evidence/2026-10-10-mobile-recovery-witness-post-load.json (SHA-256 c74af43583145e6f231652730314a4f2f0e01ae417ec60e615d23b3e72e61b7d).
+
+The two direct LM Studio model loads were TTL-bounded, not permanent preload policy. A benign nonstreaming MiniCPM5-2B request returned the requested READY (HTTP 200, 0.36s); streaming finished [DONE] after 26 SSE data frames (HTTP 200, 0.62s) with Ready!. The other loaded model emitted stray tool markup during a smoke test; its transport passed but its output-quality acceptance failed. No complete physical-iPhone turn, prompt-ledger persistence, or Agent Auto admission was proven.
