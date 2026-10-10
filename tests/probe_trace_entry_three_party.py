@@ -7,6 +7,7 @@ production trust boundary, monotonic fencing, or quorum-failover acceptance.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import multiprocessing as mp
 import os
@@ -131,19 +132,41 @@ def _gateway(socket_path, pg_dsn, neo_uri, epoch, event_pipe, journal_path):
         sock.close()
 
 
-def _witness(pg_dsn, neo_uri, epoch, conn):
+def _append_custody(path, receipt, signature):
+    """Append and fsync BEFORE verifier SQL release; research-only local file."""
+    data = (json.dumps({"receipt": receipt, "signature": signature},
+                       sort_keys=True, separators=(",", ":")) + "\n").encode()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    try:
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError("CUSTODY_WRITE_FAILED")
+            view = view[written:]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _witness(pg_dsn, neo_uri, epoch, conn, custody_path):
     """Only this process receives verifier credential and ephemeral signer."""
     signer = Ed25519PrivateKey.generate()
     pub = signer.public_key().public_bytes(
         serialization.Encoding.Raw, serialization.PublicFormat.Raw
     ).hex()
     bindings = {}
+    force_custody_failure = False
     with GraphDatabase.driver(neo_uri, auth=None, connection_timeout=3) as driver:
         conn.send({"kind": "witness_ready", "public": pub})
         while True:
             cmd = conn.recv()
             if cmd["op"] == "stop":
                 return
+            if cmd["op"] == "fault_custody":
+                force_custody_failure = cmd["enabled"] is True
+                conn.send({"result": "fault-mode-updated"})
+                continue
             if cmd["op"] == "observe":
                 metadata, token, ref = cmd["metadata"], cmd["token"], cmd["ref"]
                 # Verifier independently checks *actual PostgreSQL row*.
@@ -191,23 +214,23 @@ def _witness(pg_dsn, neo_uri, epoch, conn):
             if absent < 2:
                 conn.send({"result": "still-active"})
                 continue
+            # The privilege-bearing witness is the ONLY party that can
+            # release. Do not let audit IO failure free physical capacity.
             with psycopg.connect(pg_dsn, connect_timeout=3) as db:
-                # Check exact row again before invoking verifier-only release.
                 current = db.execute(
                     "SELECT assistx_trace_fence_research.verify_binding(%s,%s,%s)",
                     (epoch, token, ref)
                 ).fetchone()[0]
-                released = (db.execute(
-                    "SELECT assistx_trace_fence_research.release_exact(%s,%s,%s)",
-                    (epoch, token, ref)
-                ).fetchone()[0] if current else False)
-                db.commit()
-            if not released:
+            if not current:
                 conn.send({"result": "no-exact-reservation"})
                 continue
             receipt = {
-                "schema": "assistx-three-party-closure-research-v1",
+                "schema": "assistx-three-party-closure-research-v2",
                 "epoch": epoch, "ref": ref, "txid": txid,
+                "operation_id": binding[2]["assistx_operation_id"],
+                "attempt_id": binding[2]["assistx_attempt_id"],
+                "token_digest": hashlib.sha256(
+                    (epoch + ":" + token).encode()).hexdigest(),
                 "observation": "two-successive-absent-snapshots",
                 "role": "separate-postgres-verifier-process",
             }
@@ -215,6 +238,23 @@ def _witness(pg_dsn, neo_uri, epoch, conn):
                 receipt, sort_keys=True, separators=(",", ":")
             ).encode()
             signature = signer.sign(canonical).hex()
+            try:
+                _append_custody(
+                    "/dev/full" if force_custody_failure else custody_path,
+                    receipt, signature
+                )
+            except OSError:
+                conn.send({"result": "custody-unavailable"})
+                continue
+            with psycopg.connect(pg_dsn, connect_timeout=3) as db:
+                released = db.execute(
+                    "SELECT assistx_trace_fence_research.release_exact(%s,%s,%s)",
+                    (epoch, token, ref)
+                ).fetchone()[0]
+                db.commit()
+            if not released:
+                conn.send({"result": "no-exact-reservation"})
+                continue
             del bindings[ref]
             conn.send({"result": "released", "receipt": receipt,
                        "signature": signature})
@@ -252,6 +292,7 @@ def run():
         os.chmod(home, 0o755)
         socket_path = str(Path(home) / "gateway.sock")
         journal_path = str(Path(home) / "gateway-ledger.sqlite")
+        custody_path = str(Path(home) / "witness-closure.jsonl")
         try:
             docker("network", "create", "--internal", "--driver", "bridge",
                    "--label", "assistx.trace.research=three-party", network)
@@ -324,7 +365,7 @@ def run():
             gparent, gchild = ctx.Pipe()
             wparent, wchild = ctx.Pipe()
             witness = ctx.Process(
-                target=_witness, args=(pg_verifier_dsn, real_uri, epoch, wchild)
+                target=_witness, args=(pg_verifier_dsn, real_uri, epoch, wchild, custody_path)
             )
             gateway = ctx.Process(
                 target=_gateway,
@@ -434,6 +475,18 @@ def run():
             # Closing the stalled proxy is NOT the same as a client timeout.
             proxy.quit.set()
             proxy.blackout.clear()
+            # /dev/full reliably simulates a failed append/fsync without
+            # touching any research or production data files.
+            wparent.send({"op": "fault_custody", "enabled": True})
+            assert wparent.poll(4)
+            assert wparent.recv()["result"] == "fault-mode-updated"
+            wparent.send({"op": "release", "token": token, "ref": ref})
+            assert wparent.poll(17), "CUSTODY_FAILURE_TEST_STALLED"
+            assert wparent.recv()["result"] == "custody-unavailable"
+            assert _pg_capacity(pg_worker_dsn, epoch) == 1
+            wparent.send({"op": "fault_custody", "enabled": False})
+            assert wparent.poll(4)
+            assert wparent.recv()["result"] == "fault-mode-updated"
             wparent.send({"op": "release", "token": token, "ref": ref})
             assert wparent.poll(17), "NO_CLOSURE_RECEIPT"
             proof = wparent.recv()
@@ -443,6 +496,14 @@ def run():
             ).encode()
             verifier = Ed25519PublicKey.from_public_bytes(bytes.fromhex(public))
             verifier.verify(bytes.fromhex(proof["signature"]), signed_bytes)
+            custody = [json.loads(line) for line in
+                       Path(custody_path).read_text().splitlines()]
+            assert len(custody) == 1
+            assert custody[0] == {
+                "receipt": proof["receipt"], "signature": proof["signature"]
+            }
+            assert len(proof["receipt"]["token_digest"]) == 64
+            assert token not in Path(custody_path).read_text()
             from cryptography.exceptions import InvalidSignature
             bad_receipt = dict(proof["receipt"], ref="tampered")
             try:
@@ -485,6 +546,8 @@ def run():
                 "successor_denied_until_closure": True,
                 "independent_verifier_release": True,
                 "detached_signature_verified": True,
+                "fsynced_witness_receipt_precedes_sql_release": True,
+                "audit_write_failure_retains_pg_capacity": True,
                 "successor_admitted_after_proof": True,
                 "gateway_audit_events_after_crash": 2,
                 "production_authority": False,
