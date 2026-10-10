@@ -187,3 +187,27 @@ def test_allocation_policy_blocks_auxiliary_coding_but_allows_summary() -> None:
 
     assert summary[0].get("is_blocked") is not True
     assert coding[0]["is_blocked"] is True
+
+
+def test_projection_annotation_does_not_create_or_authorize_unmeasured_models(monkeypatch):
+    from copy import deepcopy
+    document = {"providers": [
+        {"node_id": "observed", "models": [{"alias": "already-admitted"}]},
+        {"node_id": "missing", "models": [{"alias": "unmeasured"}]},
+    ]}
+    before = deepcopy(document)
+    monkeypatch.setattr(runtime_projection_v2, "node_routing_policy_index",
+        lambda _: {"observed": {
+            "routing_roles": ["summarization"], "worker_mode": "auxiliary",
+            "allow_agent_runtime": False, "allow_code_execution": False}})
+    monkeypatch.setattr(runtime_projection_v2, "benchmark_projection_index",
+        lambda _: {("unknown", "forbidden-model"): {
+            "task_family_scores": {"coding": {"quality_floor_passed": True}}}})
+    runtime_projection_v2._apply_benchmark_routing(document, lambda: None)
+    assert len(document["providers"]) == len(before["providers"])
+    assert [[m["alias"] for m in p["models"]] for p in document["providers"]] == [
+        ["already-admitted"], ["unmeasured"]]
+    assert document["providers"][1]["worker_mode"] == "observer_only"
+    assert document["providers"][1]["allow_code_execution"] is False
+    assert document["providers"][1]["models"][0]["task_family_scores"] == {}
+    assert document["providers"][0]["models"][0]["task_family_scores"] == {}
