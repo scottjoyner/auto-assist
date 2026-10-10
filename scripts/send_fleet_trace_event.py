@@ -19,11 +19,13 @@ def main():
     p.add_argument("--traceparent", default=None)
     args = p.parse_args()
     from assistx.fleet_trace_ingress import TRACEPARENT
+    parent_span_id = None
     if args.traceparent:
         match = TRACEPARENT.fullmatch(args.traceparent)
-        if not match:
+        if not match or match[1] == "0" * 32 or match[2] == "0" * 16:
             p.error("invalid traceparent")
         trace_id = match[1]
+        parent_span_id = match[2]
     else:
         trace_id = uuid.uuid4().hex
     span = secrets.token_hex(8)
@@ -40,6 +42,8 @@ def main():
         "occurred_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
         "sequence": 0,
     }
+    if parent_span_id is not None:
+        row["parent_span_id"] = parent_span_id
     req = urllib.request.Request(
         args.endpoint.rstrip("/") + "/v1/events",
         data=json.dumps(row).encode(),

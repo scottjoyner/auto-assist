@@ -44,3 +44,7 @@ SQLite uses synchronous FULL, denies after 50,000 rows rather than silently evic
 - This is not native OpenTelemetry OTLP/HTTP /v1/traces yet. Add an OTLP Collector AFTER the identity gate and attribute allowlist; do not stand up an unauthenticated collector on a public port.
 - ChatGPT-style external integration needs an independently authenticated public broker with scoped MCP methods, not raw Funnel-to-fleet. The existing Fleet Commander plugin's private connectivity is not assumed to grant other services authority.
 - No new service was started, no current Funnel was changed and no production trace was ingested by this PR.
+
+## Cross-system lineage acceptance
+
+The sample producer now carries the incoming W3C parent span ID into the new event parent_span_id, while assigning a fresh child span ID. A synthetic two-producer/two-node authenticated gateway test shows a shared trace with zero missing parents to a reader authorized for BOTH nodes; a reader scoped only to xwing receives its own child event but is correctly unable to prove the parent. **34 focused tests passed**, including this negative visibility case. This is a synthetic contract witness, not evidence that two physical nodes have submitted production traces.
