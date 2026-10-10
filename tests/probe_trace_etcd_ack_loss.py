@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives import serialization
 from trace_etcd_quorum_fence_research import (
     EtcdQuorumFence, FenceRefused
 )
+from trace_graph_stable_identity_research import derive_stable_operation
 
 
 class DropSuccessfulAck:
@@ -42,9 +43,17 @@ def run_ack_loss(clients, cluster_id, key):
                 public(witness), capacity=1)
     abandoned_ack = EtcdQuorumFence(
         DropSuccessfulAck(clients["r1"]), key, cluster_id)
-    stable = "reviewed_plan:authenticated-stable-request-0001"
+    stable = derive_stable_operation(
+        "verified-test-subject", "authenticated-stable-request-0001",
+        "approved_read", {"value": 42})
+    changed = derive_stable_operation(
+        "verified-test-subject", "authenticated-stable-request-0001",
+        "approved_read", {"value": 99})
+    assert stable.operation == changed.operation
+    assert stable.request_digest != changed.request_digest
     try:
-        abandoned_ack.admit(owner, 1, stable)
+        abandoned_ack.admit(owner, 1, stable.operation,
+                            request_digest=stable.request_digest)
     except FenceRefused as exc:
         if str(exc) != "QUORUM_UNAVAILABLE_OR_OUTCOME_UNCERTAIN":
             raise
@@ -52,16 +61,24 @@ def run_ack_loss(clients, cluster_id, key):
         raise AssertionError("ACK_LOSS_INJECTION_NOT_FIRED")
 
     independent = EtcdQuorumFence(clients["r2"], key, cluster_id)
-    state = independent.reconcile_operation(stable)
+    state = independent.reconcile_operation(stable.operation)
     assert state["state"] == "PENDING_EXECUTION_UNCERTAIN", state
     assert state["attempt_state"] == "RESERVED"
     assert len(independent.snapshot().document["pending"]) == 1
     try:
-        independent.admit(owner, 1, stable)
+        independent.admit(owner, 1, stable.operation,
+                          request_digest=stable.request_digest)
     except FenceRefused as exc:
         assert str(exc) == "EXISTING_OPERATION_REQUIRES_RECONCILIATION"
     else:
         raise AssertionError("DUPLICATE_INFLIGHT_OPERATION_ADMITTED")
+    try:
+        independent.admit(owner, 1, changed.operation,
+                          request_digest=changed.request_digest)
+    except FenceRefused as exc:
+        assert str(exc) == "IDEMPOTENCY_KEY_PAYLOAD_CONFLICT"
+    else:
+        raise AssertionError("CHANGED_PAYLOAD_SAME_REQUEST_ADMITTED")
     try:
         independent.admit(owner, 1, "reviewed_plan:other-operation")
     except FenceRefused as exc:
@@ -73,6 +90,7 @@ def run_ack_loss(clients, cluster_id, key):
         "independent_voter_reconciled_exact_request": True,
         "pending_reservation_held_after_uncertain_ack": True,
         "same_operation_replay_refused": True,
+        "same_identity_changed_payload_conflict_denied": True,
         "different_operation_blocked_at_capacity": True,
         "client_request_identity_cross_retry_wired": False,
         "real_http_network_partition_injected": False,
