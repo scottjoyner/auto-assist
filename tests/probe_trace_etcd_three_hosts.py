@@ -281,6 +281,14 @@ def run():
                 clients[node], base + "/active", cluster_id)
             assert other.snapshot().document["owner"] == "gateway-old"
         result["events"].append("same_raft_cluster_verified_across_three")
+        # ACK loss after a real committed Raft CAS is a separate opt-in.
+        # It never infers that an unknown graph operation is safe to retry.
+        if os.getenv("ASSISTX_RAFT_ACK_LOSS_RESEARCH") == "1":
+            from probe_trace_etcd_ack_loss import run_ack_loss
+            result["ack_loss_integration"] = run_ack_loss(
+                clients, cluster_id, base + "/ack-lost-reservation")
+            result["events"].append(
+                "real_quorum_ack_lost_exact_request_reconciled_no_reexec")
         # Optional REAL Neo4j admission on the same three-voter consensus
         # group. Requires a second manual opt-in; baseline remains unchanged.
         if os.getenv("ASSISTX_QUORUM_NEO4J_RESEARCH") == "1":
