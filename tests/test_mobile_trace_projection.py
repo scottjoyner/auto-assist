@@ -94,3 +94,56 @@ def test_same_trace_groups_multiple_distinct_stages_without_merging_attempt_span
     assert first is not None and second is not None
     assert first.to_trace_record_kwargs()["correlation_id"] == second.to_trace_record_kwargs()["correlation_id"]
     assert first.parent_span_id != second.parent_span_id
+
+
+def test_existing_tracegroup_writer_accepts_projected_receipt_on_disposable_fake():
+    """No real Neo4j connection: exercise actual graph writer against fake Cypher store."""
+    import json
+    from assistx.contracts.tests.fake_neo4j import FakeNeo4j
+    from assistx.swarm_core import record_trace_event
+
+    fake = FakeNeo4j(apoc=False)
+    projection = project_mobile_model_trace(
+        traceparent=VALID_TRACE, mobile_request_id=VALID_REQUEST_ID,
+        stage="router_http_accepted", gateway_http_status=200,
+    )
+    assert projection is not None
+    event_id = record_trace_event(fake, **projection.to_trace_record_kwargs())
+    assert event_id.startswith("trace:")
+    assert fake.has_node("TraceEvent", "event_id", event_id)
+    assert fake.has_node("TraceGroup", "correlation_id", projection.trace_id)
+    assert not fake.has_relationship("FOR_TASK")
+    assert not fake.has_relationship("FOR_ROUTE")
+    event_query = next(
+        row for row in fake.runs
+        if "TraceEvent" in row["cypher"] and "payload_json" in row["params"]
+    )
+    persisted_payload = json.loads(event_query["params"]["payload_json"])
+    assert persisted_payload["mobile_request_id"] == VALID_REQUEST_ID
+    assert persisted_payload["gateway_http_status"] == 200
+    assert persisted_payload["attestation_level"] == "observational-only"
+    assert all(
+        forbidden not in str(event_query["params"]).lower()
+        for forbidden in ("authorization", "tailscale", "prompt", "password")
+    )
+
+
+def test_existing_tracegroup_groups_multiple_model_stages_without_creating_authority_links():
+    from assistx.contracts.tests.fake_neo4j import FakeNeo4j
+    from assistx.swarm_core import record_trace_event
+
+    fake = FakeNeo4j(apoc=False)
+    for stage in ("gateway_accepted", "router_http_accepted", "sse_stream_opened"):
+        projection = project_mobile_model_trace(
+            traceparent=VALID_TRACE,
+            mobile_request_id=VALID_REQUEST_ID,
+            stage=stage,
+        )
+        assert projection is not None
+        record_trace_event(fake, **projection.to_trace_record_kwargs())
+    groups = [row for row in fake.runs if "MERGE (g:TraceGroup" in row["cypher"]]
+    assert len(groups) == 3
+    assert all(row["params"]["correlation_id"] == VALID_TRACE[3:35] for row in groups)
+    assert not fake.has_relationship("FOR_TASK")
+    assert not fake.has_relationship("FOR_ASSIGNMENT")
+    assert not fake.has_relationship("FOR_ROUTE")
