@@ -1,0 +1,63 @@
+{
+  "schema": "assistx-verified-http-to-quorum-research-v1",
+  "date": "2026-10-10",
+  "branch": "research/assistx-verified-http-idempotency-20261010",
+  "physical_source_commit": "f9fd5f88f55a1882f79f1c128524df72f6d7ca13",
+  "hosts": [
+    "x1-370",
+    "xwing",
+    "destroyer"
+  ],
+  "execution_host": "x1-370",
+  "run_seconds": 52.12,
+  "exit_code": 0,
+  "observed": {
+    "http_basic_test_principal_verified": true,
+    "spoofed_identity_headers_ignored": true,
+    "stable_subject_request_id_digest": true,
+    "real_unix_socket_writer": true,
+    "scoped_rbac_on_real_etcd": true,
+    "actual_raft_reservation_committed": true,
+    "same_authenticated_id_retry_refused": true,
+    "changed_payload_same_id_refused": true,
+    "read_only_reconciliation_pending": true,
+    "writer_death_retains_reservation": true,
+    "real_neo4j_transaction_separate_subprobe": true,
+    "actual_quorum_loss_blocks_new_bolt": true,
+    "detached_witness_exact_release": true,
+    "raft_leader_reelection": true,
+    "minority_raw_cas_denied": true
+  },
+  "limits": {
+    "production_http_route_wired": false,
+    "live_mobile_iam_used": false,
+    "actual_graph_execution_from_http_subprobe": false,
+    "production_trusted_proxy_proven": false,
+    "distinct_os_uids": false,
+    "server_enforced_neo4j_graph_fence": false,
+    "external_durable_witness": false,
+    "independent_site_failures": false,
+    "production_admission": false,
+    "automatic_failover": false
+  },
+  "result": "RESEARCH_PASS; PRODUCTION_NO_GO",
+  "live_ingress_readonly_assessment": {
+    "host": "x1-370",
+    "assessed": "2026-10-10",
+    "api_host_binding": "127.0.0.1:8000->8000/tcp",
+    "tailnet_serve_port": "8443",
+    "tailnet_serve_mobile_paths": [
+      "/api/v1/auth/whoami",
+      "/api/v1/runtime/catalog",
+      "/api/v1/model/chat/completions",
+      "/api/v1/agent/chat/completions"
+    ],
+    "direct_loopback_whoami_without_header_http": 401,
+    "direct_loopback_whoami_with_synthetic_untrusted_identity_http": 403,
+    "spoofing_of_real_allowlisted_identity_tested": false,
+    "local_host_or_docker_bridge_bypass_excluded": false,
+    "untrusted_external_reachability_proven": false,
+    "production_proxy_proven_safe": false,
+    "no_live_configuration_changed": true
+  }
+}

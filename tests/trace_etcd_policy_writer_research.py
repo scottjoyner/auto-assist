@@ -23,6 +23,8 @@ from trace_graph_entry_research import Grant
 _OPERATION = re.compile(r"^[0-9a-f]{32}$")
 _PLAN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _TOKEN = re.compile(r"^[0-9a-f]{32}$")
+_STABLE_ID = re.compile(r"^auth:[0-9a-f]{64}$")
+_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 MAX_REQUEST = 4096
 
 
@@ -71,6 +73,34 @@ class PolicyEngine:
                 self._owner, self._term, plan + ":" + operation_id)
             return {"reservation_id": token, "term": self._term,
                     "epoch": self._genesis}
+        if kind == "admit_stable" and set(req) == {
+                "kind", "operation_id", "request_digest", "plan_id"}:
+            plan, operation, digest = (
+                req["plan_id"], req["operation_id"], req["request_digest"])
+            if (not isinstance(plan, str) or plan not in self._plans
+                    or not isinstance(operation, str)
+                    or not _STABLE_ID.fullmatch(operation)
+                    or not isinstance(digest, str) or
+                    not _DIGEST.fullmatch(digest)):
+                raise PolicyRefused("INVALID_VERIFIED_REQUEST_IDENTITY")
+            view = self._authority.snapshot()
+            state = view.document
+            if (view.cluster_id != self._authority.pinned_cluster_id
+                    or state["genesis"] != self._genesis
+                    or state["owner"] != self._owner
+                    or state["term"] != self._term):
+                raise PolicyRefused("STALE_GATEWAY_OWNER_OR_GENESIS")
+            token = self._authority.admit(
+                self._owner, self._term, operation, request_digest=digest)
+            return {"reservation_id": token, "term": self._term,
+                    "epoch": self._genesis}
+        if kind == "reconcile" and set(req) == {"kind", "operation_id"}:
+            operation = req["operation_id"]
+            if (not isinstance(operation, str)
+                    or not _STABLE_ID.fullmatch(operation)):
+                raise PolicyRefused("INVALID_VERIFIED_REQUEST_IDENTITY")
+            # This is read-only and NEVER returns a token or permits replay.
+            return self._authority.reconcile_operation(operation)
         if kind == "close" and set(req) == {
                 "kind", "token", "receipt", "signature"}:
             token = req["token"]
@@ -115,14 +145,21 @@ class _Request(socketserver.StreamRequestHandler):
             req = json.loads(message)
             result = self.server.engine.dispatch(req)
             output = {"ok": result}
-        except (PolicyRefused, FenceRefused,
-                ValueError, TypeError, UnicodeDecodeError) as exc:
-            # Never disclose exception repr: transport errors may contain
-            # credentials, server endpoint data or sensitive grant state.
-            output = {"denied": (
-                str(exc) if isinstance(exc, PolicyRefused)
-                else "POLICY_QUORUM_UNAVAILABLE_OR_UNCERTAIN"
-            )}
+        except FenceRefused as exc:
+            # Only echo safe operation-scoped duplicate/conflict statuses.
+            # Never echo endpoint, raw database, auth, or transport errors.
+            safe = frozenset({
+                "EXISTING_OPERATION_REQUIRES_RECONCILIATION",
+                "IDEMPOTENCY_KEY_PAYLOAD_CONFLICT",
+                "CLOSED_OPERATION_REPLAY_DENIED",
+            })
+            code = str(exc)
+            output = {"denied": (code if code in safe else
+                                 "POLICY_QUORUM_UNAVAILABLE_OR_UNCERTAIN")}
+        except PolicyRefused as exc:
+            output = {"denied": str(exc)}
+        except (ValueError, TypeError, UnicodeDecodeError):
+            output = {"denied": "POLICY_INVALID_REQUEST"}
         except Exception:
             output = {"denied": "POLICY_INTERNAL_FAILURE"}
         try:
@@ -216,3 +253,41 @@ class UnixPolicyGrantAdapter:
             raise PolicyRefused("INVALID_SERVER_GRANT_RESERVATION_HELD")
         return Grant(result["reservation_id"], result["reservation_id"],
                      result["term"], result["epoch"])
+
+    def admit_stable(self, operation_id: str, request_digest: str,
+                     plan_id: str) -> Grant:
+        import re
+        if (not isinstance(operation_id, str)
+                or not _STABLE_ID.fullmatch(operation_id)
+                or not isinstance(request_digest, str)
+                or not _DIGEST.fullmatch(request_digest)):
+            raise PolicyRefused("INVALID_STABLE_IDENTITY")
+        result = self._client.request({
+            "kind": "admit_stable", "operation_id": operation_id,
+            "request_digest": request_digest, "plan_id": plan_id,
+        })
+        if (not isinstance(result, dict)
+                or set(result) != {"reservation_id", "term", "epoch"}
+                or result["epoch"] != self._epoch
+                or type(result["term"]) is not int or result["term"] < 1
+                or not isinstance(result["reservation_id"], str)
+                or not _TOKEN.fullmatch(result["reservation_id"])):
+            raise PolicyRefused("INVALID_SERVER_GRANT_RESERVATION_HELD")
+        return Grant(result["reservation_id"], result["reservation_id"],
+                     result["term"], result["epoch"])
+
+    def reconcile_operation(self, operation_id: str) -> dict:
+        if (not isinstance(operation_id, str)
+                or not _STABLE_ID.fullmatch(operation_id)):
+            raise PolicyRefused("INVALID_STABLE_IDENTITY")
+        response = self._client.request({
+            "kind": "reconcile", "operation_id": operation_id})
+        if not isinstance(response, dict) or response.get("state") not in {
+            "PENDING_EXECUTION_UNCERTAIN",
+            "CLOSED_NO_REEXECUTION",
+            "ABSENT_NOT_AN_EXECUTION_PERMIT",
+        }:
+            raise PolicyRefused("INVALID_RECONCILIATION_RESPONSE")
+        if "reservation_id" in response or "token" in response:
+            raise PolicyRefused("RECONCILIATION_LEAKED_GRANT")
+        return {"state": response["state"]}

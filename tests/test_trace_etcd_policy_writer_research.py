@@ -217,8 +217,8 @@ def test_real_rbac_physical_writer_runs_in_child_and_does_not_auto_release():
     assert "ctx.Process(" in source
     assert "target=_serve_real_rbac_policy" in source
     assert "UnixPolicyGrantAdapter(unix_client, " in source
-    assert "grant.reservation_id in actual.document" in source
+    assert "reservation_id in actual.document" in source
     assert "service_process.terminate()" in source
-    assert "grant.reservation_id in EtcdQuorumFence(" in source
+    assert "reservation_id in EtcdQuorumFence(" in source
     assert '"writer_and_gateway_distinct_os_uid": False' in source
     assert '"production_policy_service_deployed": False' in source
