@@ -55,4 +55,12 @@ Candidate architectures to benchmark as alternatives: embedded SQLite metadata i
 4. Build disposable competing metadata-only indexes against a synthetic+redacted witness corpus, benchmark query p95 and on-disk bytes. Never point destructive migrators or heavy indexers at live NAS/Beelink.
 5. Put a fleet search UI behind owner authentication, filter presets, pagination and payload preview opt-in; bind each visual result to a custody receipt.
 
+## Follow-up: producer identity and cross-node pilot (2026-10-10)
+
+The storage-neutral scripts/trace_metadata_contract.py validates versioned, explicitly allowlisted event metadata: stable event, session, trace, span, producer and node identifiers, event timestamp, operation, sequence, status, optional parent references, and bounded digests. Unknown fields are rejected, including raw prompts, coordinates and unapproved payload objects. The validator detects replay versus conflicting duplicate event IDs and counts missing parent spans within the **same trace**, even across nodes. It is not a source-authentication or custodial integrity implementation; each producer must be independently authenticated before index admission, and the verifier reports this honestly as unverified.
+
+Local synthetic contract test: 4/4 passing; the bounded input scanner: 2/2 passing. These tests do not establish real multi-node trace production. Existing AssistX read-only CASS session search remains an optional, non-authoritative observational search path; the new contract does not choose CASS or its persistent index as canonical custody.
+
+Two reachable fleet nodes were also checked read-only from x1-370: xwing (about 91,731,416 KiB free on /home filesystem) and Beelink (about 216,491,180 KiB free on /home filesystem). The specific fleet-traces path from the local historical sample was unavailable on both. One named Deathstar SSH probe timed out. These are host/home observations, **not NAS filesystem free-space measurements**, and they cannot establish broader fleet trace completeness, hardware identity authority, or total storage runway.
+
 Release criteria: no unstated coverage; no coordinate/prompt leakage; every displayed trace linked to a real source receipt; explicit storage budgets and failure tests; read-only/no-overlap experiment; stakeholder selection after measurement.
