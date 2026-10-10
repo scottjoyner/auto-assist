@@ -363,6 +363,10 @@ def run():
                     or any("POSTGRES" in entry or "NEO4J" in entry
                            for entry in inspected["Config"].get("Env", []))):
                 raise RuntimeError("WORKER_ISOLATION_BROKEN")
+            # First worker request is an arbitrary Cypher string. Reject it
+            # without obtaining a reservation or touching Neo4j.
+            initial_logs = docker("logs", worker, check=False).stdout
+            assert "UNREGISTERED_QUERY_PLAN" in initial_logs, initial_logs
             assert gparent.poll(17), "GATEWAY_DID_NOT_EXECUTE_GRAPH"
             attempt = gparent.recv()
             assert attempt["kind"] == "graph_starting", attempt
@@ -373,6 +377,23 @@ def run():
             assert metadata["assistx_operation_id"] == ref
             assert _pg_capacity(pg_worker_dsn, epoch) == 1
             assert SqliteResearchJournal(journal_path).verify_chain()[0] == 2
+            # Worker-role SQL cannot invoke verifier-only release at all.
+            with psycopg.connect(pg_worker_dsn, connect_timeout=3) as db:
+                try:
+                    db.execute(
+                        "SELECT assistx_trace_fence_research.release_exact(%s,%s,%s)",
+                        (epoch, token, ref)
+                    ).fetchone()
+                except (psycopg.errors.InsufficientPrivilege,
+                        psycopg.errors.UndefinedFunction):
+                    pass
+                else:
+                    raise AssertionError("WORKER_SQL_RELEASE_BYPASS")
+            # Even correct Neo4j metadata is insufficient if the proposed
+            # PostgreSQL reservation binding does not exist.
+            wparent.send({"op": "observe", **dict(attempt, ref="forged-ref")})
+            assert wparent.poll(6)
+            assert wparent.recv()["result"] == "pg-binding-denied"
             wparent.send({"op": "observe", **attempt})
             assert wparent.poll(16), "OBSERVER_NO_BINDING"
             observation = wparent.recv()
@@ -417,6 +438,18 @@ def run():
             ).encode()
             verifier = Ed25519PublicKey.from_public_bytes(bytes.fromhex(public))
             verifier.verify(bytes.fromhex(proof["signature"]), signed_bytes)
+            from cryptography.exceptions import InvalidSignature
+            bad_receipt = dict(proof["receipt"], ref="tampered")
+            try:
+                verifier.verify(
+                    bytes.fromhex(proof["signature"]),
+                    json.dumps(bad_receipt, sort_keys=True,
+                               separators=(",", ":")).encode()
+                )
+            except InvalidSignature:
+                pass
+            else:
+                raise AssertionError("TAMPERED_RECEIPT_SIGNATURE_ACCEPTED")
             assert _pg_capacity(pg_worker_dsn, epoch) == 0
             successor = _pg_admit(pg_worker_dsn, epoch, secrets.token_hex(16),
                                   "successor-after-proof")
@@ -432,6 +465,10 @@ def run():
                 "schema": "assistx-three-party-physical-v1",
                 "worker_network": "none", "worker_direct_bolt_denied": True,
                 "worker_only_unix_plan_request": True,
+                "arbitrary_worker_cypher_denied": True,
+                "worker_pg_release_denied": True,
+                "forged_pg_binding_denied": True,
+                "tampered_signature_denied": True,
                 "pg_restricted_grant_committed": True,
                 "neo4j_server_metadata_bound": True,
                 "verifier_pg_exact_binding_checked": True,
