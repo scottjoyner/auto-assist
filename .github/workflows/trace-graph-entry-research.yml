@@ -5,7 +5,7 @@ on:
     paths:
       - 'tests/trace_graph_entry*.py'
       - 'tests/trace_fencing_term*.py'
-      - 'tests/trace_etcd_quorum*.py'
+      - 'tests/trace_etcd_*.py'
       - 'tests/test_trace_graph_entry*.py'
       - 'tests/test_trace_fencing_term*.py'
       - 'tests/test_trace_etcd_*.py'
@@ -32,7 +32,7 @@ jobs:
         run: python -m pip install 'pytest>=8,<10' 'cryptography>=41,<49'
       - name: Compile research-only modules
         run: |
-          python -m compileall -q tests/trace_graph_entry_research.py tests/trace_graph_entry_guarded.py tests/trace_graph_entry_research_journal.py tests/trace_graph_entry_metadata.py tests/trace_fencing_term_authority_research.py tests/trace_etcd_quorum_fence_research.py
+          python -m compileall -q tests/trace_graph_entry_research.py tests/trace_graph_entry_guarded.py tests/trace_graph_entry_research_journal.py tests/trace_graph_entry_metadata.py tests/trace_fencing_term_authority_research.py tests/trace_etcd_quorum_fence_research.py tests/trace_etcd_graph_admission_research.py
       - name: Run offline denial and journal tests
         run: |
           python -m pytest --noconftest -q \
@@ -43,7 +43,8 @@ jobs:
             tests/test_trace_fencing_term_authority_research.py \
             tests/test_trace_fencing_physical_guards.py \
             tests/test_trace_etcd_quorum_fence_research.py \
-            tests/test_trace_etcd_three_hosts_guards.py
+            tests/test_trace_etcd_three_hosts_guards.py \
+            tests/test_trace_etcd_graph_admission_research.py
       - name: Verify physical probes remain manual-only
         run: |
           python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py tests/probe_trace_fencing_two_primaries.py tests/probe_trace_etcd_three_hosts.py
