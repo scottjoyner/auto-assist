@@ -64,7 +64,11 @@ class MobileTraceProjection:
         if self.gateway_http_status is not None:
             data["gateway_http_status"] = self.gateway_http_status
         return {
-            "correlation_id": self.trace_id,
+            # Critical isolation boundary: a client-generated W3C trace ID may
+            # equal an existing task/agent TraceGroup key. Use the server-issued
+            # request namespace to prevent Graph state collisions; keep the
+            # W3C trace ID inside observational payload for authorized lookup.
+            "correlation_id": "mobile-model:" + self.mobile_request_id,
             "event_type": self.event_type,
             "source": "assistx.mobile.model.gateway",
             "payload": data,
