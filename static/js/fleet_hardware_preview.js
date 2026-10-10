@@ -48,7 +48,7 @@
     digest.style.overflowWrap = "anywhere";
     result.appendChild(digest);
 
-    const table = element("table", undefined, "dashboard-table");
+    const table = element("table", undefined, "data-table dashboard-table");
     const header = document.createElement("thead");
     const headerRow = document.createElement("tr");
     [

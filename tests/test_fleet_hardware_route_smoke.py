@@ -25,9 +25,14 @@ def test_full_app_registers_authenticated_readonly_fleet_hardware_route():
 def test_full_dashboard_contains_opt_in_hardware_section():
     from assistx.api_router import app, auth
 
+    client = TestClient(app)
+    denied = client.get("/fleet/hardware-evidence")
+    assert denied.status_code in (401, 403)
+
     app.dependency_overrides[auth] = lambda: "synthetic-operator"
     try:
-        response = TestClient(app).get("/fleet-dashboard")
+        response = client.get("/fleet/hardware-evidence")
+        dashboard = client.get("/control-room")
     finally:
         app.dependency_overrides.pop(auth, None)
     assert response.status_code == 200
@@ -35,3 +40,5 @@ def test_full_dashboard_contains_opt_in_hardware_section():
     assert 'id="hardware-evidence-form"' in response.text
     assert "fleet_hardware_preview.js" in response.text
     assert "read-only / no dispatch" in response.text
+    assert dashboard.status_code == 200
+    assert '/fleet/hardware-evidence' in dashboard.text

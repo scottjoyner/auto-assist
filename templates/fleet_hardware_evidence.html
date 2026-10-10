@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AssistX // Verified Hardware Evidence</title>
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+  <link rel="stylesheet" href="/static/css/control_room.css">
+  <link rel="stylesheet" href="/static/css/fleet_hardware_evidence.css">
+</head>
+<body>
+  <div class="control-shell">
+    <header class="topbar">
+      <div class="identity">
+        <span class="prompt-mark">&gt;_</span>
+        <div>
+          <h1>VERIFIED FLEET HARDWARE</h1>
+          <p>Versioned physical facts // source evidence // operator-only advisory</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <a class="btn btn-outline" href="/control-room">BACK TO CONTROL ROOM</a>
+      </div>
+    </header>
+
+    <nav class="command-nav" aria-label="Operator navigation">
+      <a href="/control-room">CONTROL ROOM</a>
+      <a href="/workbench">WORKBENCH</a>
+      <a class="active" href="/fleet/hardware-evidence">HARDWARE EVIDENCE</a>
+    </nav>
+
+    <main>
+      <section class="panel" id="section-hardware-evidence">
+        <div class="panel-head">
+          <div><span class="panel-index">01</span><h2>CAPACITY &amp; LOCALITY EVIDENCE</h2></div>
+          <p>Private snapshot, explicit query, zero permissions to launch, reserve, or mutate workloads.</p>
+        </div>
+
+        <form id="hardware-evidence-form" class="hardware-evidence-form">
+          <label for="hardware-evidence-ram">Minimum OS-visible RAM (GiB)
+            <input id="hardware-evidence-ram" type="number" min="0" max="4096" step="1"
+                   value="16" required>
+          </label>
+          <label for="hardware-evidence-gpu">Minimum one-GPU reported VRAM (GiB)
+            <input id="hardware-evidence-gpu" type="number" min="0" max="4096" step="1"
+                   value="8" required>
+          </label>
+          <label for="hardware-evidence-data-host">Known data host (optional)
+            <input id="hardware-evidence-data-host" type="text" maxlength="80" autocomplete="off"
+                   placeholder="registered node ID">
+          </label>
+          <button id="hardware-evidence-inspect" class="btn" type="submit">INSPECT EVIDENCE</button>
+        </form>
+
+        <p id="hardware-evidence-status" class="hardware-evidence-status" role="status" aria-live="polite">
+          Not queried. No private source data loads until you inspect.
+        </p>
+        <div id="hardware-evidence-results" class="table-frame hardware-evidence-results"
+             aria-label="Read-only hardware evidence results"></div>
+
+        <div class="hardware-evidence-guidance">
+          <strong>Advisory-only boundary:</strong> This page compares reported physical RAM,
+          individual GPU PCI functions and observed host-level mount adjacency. It cannot verify
+          live free memory, model runtime support, true file locality, reservation ownership or
+          Neo4j transaction closure. Every candidate remains denied for execution.
+        </div>
+      </section>
+    </main>
+    <footer>
+      <span>Evidence: private versioned hardware repository</span>
+      <span>Access: authenticated operator</span>
+      <span>Routing and dispatch: unchanged</span>
+    </footer>
+  </div>
+  <script src="/static/js/fleet_hardware_preview.js"></script>
+</body>
+</html>

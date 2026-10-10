@@ -18,7 +18,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 
 _SNAPSHOT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z$")
 _NODE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
@@ -326,5 +328,23 @@ def build_fleet_hardware_preview_router(
         except (FleetHardwareEvidenceError, OSError, TypeError) as exc:
             # Do not leak operator private filesystem paths or raw inventory.
             raise HTTPException(status_code=503, detail="hardware evidence unavailable") from exc
+
+    return router
+
+
+
+def build_fleet_hardware_evidence_page_router(
+    *, auth_dependency: Callable[..., Any], templates: Jinja2Templates
+) -> APIRouter:
+    """Distinct authenticated page: no shared base inheritance or startup fetch."""
+    router = APIRouter(tags=["fleet-hardware-evidence-page"])
+
+    @router.get("/fleet/hardware-evidence", response_class=HTMLResponse)
+    def hardware_evidence_page(
+        request: Request, _: str = Depends(auth_dependency)
+    ) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request, name="fleet_hardware_evidence.html"
+        )
 
     return router
