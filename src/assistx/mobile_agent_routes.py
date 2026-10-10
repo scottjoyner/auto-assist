@@ -634,6 +634,20 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
             "session_expires_at": None,
         }
 
+    @router.get("/api/v1/runtime/observations", tags=["kipnerter-mobile"])
+    def mobile_runtime_observations(
+        request: Request,
+        user: str = Depends(mobile_auth),
+    ) -> dict[str, Any]:
+        """Expose fresh, sanitized observations separately from admitted models.
+
+        No physical addresses or credentials leave the server, and these
+        records must never be accepted as execution authority.
+        """
+        _tailnet_identity(request)
+        from .mobile_observation import load_observations
+        return load_observations(os.getenv("ASSISTX_TAILNET_MODEL_OBSERVATION_FILE"))
+
     @router.get("/api/v1/runtime/catalog", tags=["kipnerter-mobile"])
     def mobile_runtime_catalog(
         request: Request,
