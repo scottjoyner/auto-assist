@@ -10,6 +10,10 @@ Requires prior explicit image pull, SSH keys and Docker on all three hosts.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
+import ssl
+import base64
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import ipaddress
@@ -267,6 +271,22 @@ def run():
                 clients[node], base + "/active", cluster_id)
             assert other.snapshot().document["owner"] == "gateway-old"
         result["events"].append("same_raft_cluster_verified_across_three")
+        # Explicit client-authentication negative: CA trust without a client
+        # certificate MUST be insufficient to issue a Raft KV read.
+        unauthenticated = ssl.create_default_context(
+            cafile=str(certs / "client" / "ca.pem"))
+        unauthenticated_req = Request(
+            f"https://{ip_map['r1']}:{client_port}/v3/kv/range",
+            data=canon({"key": b64(base + "/active")}),
+            method="POST", headers={"Content-Type": "application/json"})
+        try:
+            with urlopen(unauthenticated_req, context=unauthenticated,
+                         timeout=3) as response:
+                response.read()
+        except (HTTPError, URLError, OSError, TimeoutError):
+            result["events"].append("no_client_certificate_denied")
+        else:
+            raise AssertionError("MTLS_UNAUTHENTICATED_CLIENT_ACCEPTED")
 
         attempt = EtcdQuorumFence(
             clients["r2"], base + "/active", cluster_id
@@ -281,12 +301,37 @@ def run():
             raise AssertionError("QUORUM_OVERADMITTED")
         result["events"].append("cap_one_global_across_endpoint")
 
-        # Stop r3 voter: two remaining voters MUST retain quorum.
+        # Identify the CURRENT Raft leader from member_id/leader, then
+        # actually stop the leader (not an arbitrary follower). Two voters
+        # must elect a new leader while retaining the original intent.
+        statuses = {
+            node: client._post("/v3/maintenance/status", {})
+            for node, client in clients.items()
+        }
+        leader_id = str(statuses["r1"]["leader"])
+        leader_node = next(
+            node for node, status in statuses.items()
+            if str(status["header"]["member_id"]) == leader_id
+        )
+        leader_host = dict(HOSTS)[leader_node]
+        before_raft_term = int(statuses["r1"]["raftTerm"])
         shell(["docker", "stop", "--time", "2",
-               container_names["destroyer"]], "destroyer", timeout=16)
-        started.remove("destroyer")
-        still = EtcdQuorumFence(clients["r1"], base + "/active", cluster_id)
-        assert still.snapshot().document["pending"].get(attempt)
+               container_names[leader_host]], leader_host, timeout=16)
+        started.remove(leader_host)
+        survivor = next(node for node in clients if node != leader_node)
+        still = EtcdQuorumFence(clients[survivor], base + "/active", cluster_id)
+        deadline = time.monotonic() + 35
+        while True:
+            try:
+                assert still.snapshot().document["pending"].get(attempt)
+                break
+            except (FenceRefused, AssertionError):
+                if time.monotonic() > deadline:
+                    raise RuntimeError("MAJORITY_FAILED_TO_ELECT")
+                time.sleep(2)
+        status_after = clients[survivor]._post("/v3/maintenance/status", {})
+        assert int(status_after["raftTerm"]) > before_raft_term
+        result["events"].append("real_raft_leader_re_election_observed")
         try:
             still.takeover("gateway-successor", {}, b"")
         except FenceRefused as exc:
@@ -298,7 +343,7 @@ def run():
         # No old physical attempts in a DIFFERENT throwaway namespace. This
         # tests a signed control-plane transition without inventing closure.
         clean = EtcdQuorumFence(
-            clients["r2"], base + "/empty-control", cluster_id)
+            clients[survivor], base + "/empty-control", cluster_id)
         clean.bootstrap("empty-genesis-" + run_id, "gateway-old",
                         pubkey(operator), pubkey(witness), 1)
         current = clean.snapshot()
@@ -313,14 +358,14 @@ def run():
             raise AssertionError("OLD_OWNER_ACCEPTED")
         result["events"].append("operator_signed_empty_takeover_term_2_old_denied")
 
-        shell(["docker", "start", container_names["destroyer"]],
-              "destroyer", timeout=20)
-        started.add("destroyer")
+        shell(["docker", "start", container_names[leader_host]],
+              leader_host, timeout=20)
+        started.add(leader_host)
         deadline = time.monotonic() + 40
         while True:
             try:
                 assert EtcdQuorumFence(
-                    clients["r3"], base + "/empty-control",
+                    clients[leader_node], base + "/empty-control",
                     cluster_id).snapshot().document["term"] == 2
                 break
             except (FenceRefused, AssertionError):
@@ -338,16 +383,28 @@ def run():
             started.remove(host)
         isolated = EtcdQuorumFence(
             clients["r1"], base + "/empty-control", cluster_id)
-        for operation in ("read", "write"):
-            try:
-                if operation == "read":
-                    isolated.snapshot()
-                else:
-                    isolated.admit("gateway-successor", 2, "minority-admit")
-            except FenceRefused:
-                result["events"].append("quorum_loss_" + operation + "_denied")
-            else:
-                raise AssertionError("MINORITY_" + operation.upper() + "_SUCCEEDED")
+        try:
+            isolated.snapshot()
+        except FenceRefused:
+            result["events"].append("quorum_loss_read_denied")
+        else:
+            raise AssertionError("MINORITY_LINEARIZABLE_READ_SUCCEEDED")
+        # Try a DIRECT raw etcd Txn write, not only an application's
+        # read-before-write path. This must also fail with one voter.
+        canary_key = base + "/minority-write-must-not-commit"
+        try:
+            clients["r1"].txn({
+                "compare": [{"key": b64(canary_key),
+                             "target": "VERSION", "result": "EQUAL",
+                             "version": "0"}],
+                "success": [{"request_put": {
+                    "key": b64(canary_key), "value": b64("UNSAFE")}}],
+                "failure": []
+            })
+        except FenceRefused:
+            result["events"].append("quorum_loss_write_denied")
+        else:
+            raise AssertionError("MINORITY_RAFT_TXN_WRITE_SUCCEEDED")
         # Restore both voters; no writes should have slipped in during loss.
         for host in ("xwing", "destroyer"):
             shell(["docker", "start", container_names[host]], host,
@@ -365,6 +422,7 @@ def run():
             if time.monotonic() > deadline:
                 raise RuntimeError("QUORUM_REJOIN_FAILED")
             time.sleep(2)
+        assert not clients["r1"].range(canary_key).get("kvs")
         result["events"].append("recovered_quorum_preserved_term_and_no_minority_write")
         # Original pending attempt was never released by lease/leader change.
         assert gateway.snapshot().document["pending"].get(attempt)
@@ -373,6 +431,9 @@ def run():
             "three_voters_on_distinct_hosts": True,
             "mtls_client_and_peer_auth": True,
             "real_raft_majority_survives_one_stop": True,
+            "actual_leader_reelection_observed": True,
+            "unauthenticated_tls_client_denied": True,
+            "direct_minoriy_etcd_txn_failed_closed": True,
             "empty_namespace_signed_takeover_term_2": True,
             "stale_old_owner_rejected": True,
             "minority_read_denied": True,
