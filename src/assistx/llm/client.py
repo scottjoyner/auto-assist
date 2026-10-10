@@ -1,6 +1,7 @@
 import os, json, time, threading, requests
 from typing import Optional, Dict, Any, List, Generator
 from dotenv import load_dotenv
+from . import output_integrity
 load_dotenv()
 
 # Import Neo4jClient at module top-level (NOT lazily inside functions).  Lazy
@@ -965,11 +966,17 @@ def chat(messages: List[Dict[str, str]], model: Optional[str] = None, json_mode:
                     pass
                 except Exception:
                     pass
-                _cb_on_success(candidate)
-                _track_node_latency(base_url, elapsed)
-                _track_node_result(base_url, True)
-                _mark_pair_ok(candidate, base_url)
-                _record_perf(candidate, base_url, tps, elapsed, True)
+                # A syntactically valid HTTP 200 is not healthy inference if
+                # its content is empty, non-text, undecodable, or mangled.
+                # Do not penalize, retry, or alter the caller-visible return;
+                # only withhold healthy-provider credit.
+                integrity = output_integrity.classify_text(out)
+                if output_integrity.is_usable(integrity):
+                    _cb_on_success(candidate)
+                    _track_node_latency(base_url, elapsed)
+                    _track_node_result(base_url, True)
+                    _mark_pair_ok(candidate, base_url)
+                    _record_perf(candidate, base_url, tps, elapsed, True)
                 return out
             except Exception as e:
                 elapsed = time.time() - t0
@@ -1118,6 +1125,8 @@ def _stream_openai(
     try:
         with requests.post(url, json=payload, headers=headers, stream=True, timeout=(5, 600)) as r:
             r.raise_for_status()
+            # requests treats charset-less text/event-stream as Latin-1.
+            output_integrity.pin_stream_encoding(r)
             yield {"event": "model", "data": {"model": model}}
             for raw in r.iter_lines(decode_unicode=True):
                 if not raw:
@@ -1160,6 +1169,8 @@ def _stream_openai_fleet(
     try:
         with requests.post(url, json=payload, headers=headers, stream=True, timeout=(5, 600)) as r:
             r.raise_for_status()
+            # requests treats charset-less text/event-stream as Latin-1.
+            output_integrity.pin_stream_encoding(r)
             yield {"event": "model", "data": {"model": model}}
             for raw in r.iter_lines(decode_unicode=True):
                 if not raw:
