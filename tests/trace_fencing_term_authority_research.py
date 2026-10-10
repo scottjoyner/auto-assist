@@ -53,17 +53,22 @@ def _rows(db: sqlite3.Connection) -> list[dict]:
 
 def _state(db: sqlite3.Connection) -> dict:
     row = db.execute(
-        "SELECT instance,revision,term,owner,capacity,witness_public FROM authority"
+        "SELECT instance,revision,term,owner,capacity,witness_public,operator_public FROM authority"
     ).fetchone()
     if row is None:
         raise FenceDenied("AUTHORITY_MISSING")
     return dict(zip(("instance", "revision", "term", "owner", "capacity",
-                     "witness_public"), row))
+                     "witness_public", "operator_public"), row))
 
 
 def _checkpoint(db: sqlite3.Connection) -> dict:
     state = _state(db)
-    digest = hashlib.sha256(_canon({"state": state, "attempts": _rows(db)})).hexdigest()
+    receipts = [row[0] for row in db.execute(
+        "SELECT hash FROM used_receipts ORDER BY hash"
+    )]
+    digest = hashlib.sha256(_canon({
+        "state": state, "attempts": _rows(db), "receipts": receipts
+    })).hexdigest()
     return {"instance": state["instance"], "revision": state["revision"],
             "term": state["term"], "digest": digest}
 
@@ -117,13 +122,15 @@ class ResearchFencingAuthority:
 
     @classmethod
     def bootstrap(cls, db_path: str | Path, checkpoint_path: str | Path,
-                  owner: str, capacity: int, witness_public: bytes):
+                  owner: str, capacity: int, witness_public: bytes,
+                  operator_public: bytes):
         db_path, checkpoint_path = Path(db_path), Path(checkpoint_path)
         if (db_path.exists() or checkpoint_path.exists() or
                 db_path.resolve() == checkpoint_path.resolve()):
             raise FenceDenied("BOOTSTRAP_REQUIRES_FRESH_STORAGE")
         if not owner or not isinstance(capacity, int) or type(capacity) is not int \
-                or not 1 <= capacity <= 16 or len(witness_public) != 32:
+                or not 1 <= capacity <= 16 or len(witness_public) != 32
+                or len(operator_public) != 32:
             raise FenceDenied("INVALID_BOOTSTRAP")
         try:
             with closing(_connect(db_path)) as db:
@@ -132,7 +139,7 @@ class ResearchFencingAuthority:
                     "CREATE TABLE authority (instance TEXT NOT NULL PRIMARY KEY,"
                     "revision INTEGER NOT NULL, term INTEGER NOT NULL,"
                     "owner TEXT NOT NULL, capacity INTEGER NOT NULL,"
-                    "witness_public TEXT NOT NULL)"
+                    "witness_public TEXT NOT NULL,operator_public TEXT NOT NULL)"
                 )
                 db.execute(
                     "CREATE TABLE attempts (id TEXT PRIMARY KEY,"
@@ -143,9 +150,9 @@ class ResearchFencingAuthority:
                 db.execute(
                     "CREATE TABLE used_receipts (hash TEXT PRIMARY KEY)"
                 )
-                db.execute("INSERT INTO authority VALUES(?,?,?,?,?,?)",
+                db.execute("INSERT INTO authority VALUES(?,?,?,?,?,?,?)",
                            (secrets.token_hex(16), 1, 1, owner, capacity,
-                            witness_public.hex()))
+                            witness_public.hex(), operator_public.hex()))
                 anchor = _checkpoint(db)
                 _store_checkpoint(checkpoint_path, anchor)
                 db.execute("COMMIT")
@@ -274,7 +281,13 @@ class ResearchFencingAuthority:
             )
         self._transaction(action)
 
-    def takeover(self, new_owner: str, expected_term: int) -> int:
+    def takeover(self, new_owner: str, expected_term: int,
+                 approval: dict, signature: bytes) -> int:
+        """Operator signature authorizes next owner; never auto-fail over.
+
+        This is a *single local operator key*, not quorum consent or
+        cryptographically enforced Neo4j stale-effect rejection.
+        """
         if not new_owner or not isinstance(new_owner, str):
             raise FenceDenied("INVALID_OWNER")
         def action(db, state):
@@ -282,6 +295,20 @@ class ResearchFencingAuthority:
                 raise FenceDenied("STALE_FENCING_TERM")
             if new_owner == state["owner"]:
                 raise FenceDenied("SAME_OWNER")
+            request = {
+                "schema": "assistx-fencing-takeover-research-v1",
+                "instance": state["instance"],
+                "expected_term": expected_term, "next_owner": new_owner,
+            }
+            if not isinstance(approval, dict) or approval != request                     or not isinstance(signature, bytes):
+                raise FenceDenied("INVALID_OPERATOR_APPROVAL")
+            from cryptography.exceptions import InvalidSignature
+            try:
+                Ed25519PublicKey.from_public_bytes(
+                    bytes.fromhex(state["operator_public"])
+                ).verify(signature, _canon(approval))
+            except (ValueError, InvalidSignature) as exc:
+                raise FenceDenied("INVALID_OPERATOR_SIGNATURE") from exc
             pending = db.execute(
                 "SELECT count(*) FROM attempts WHERE state!='CLOSED'"
             ).fetchone()[0]
@@ -304,4 +331,12 @@ def make_receipt(snapshot: dict, owner: str, term: int, attempt_id: str,
         "owner": owner, "term": term, "attempt_id": attempt_id,
         "server": server, "generation": generation, "txid": txid,
         "observation": "two-absent-snapshots",
+    }
+
+def make_takeover_request(snapshot: dict, new_owner: str) -> dict:
+    """Construct unsigned request; outside operator must authorize."""
+    return {
+        "schema": "assistx-fencing-takeover-research-v1",
+        "instance": snapshot["instance"],
+        "expected_term": snapshot["term"], "next_owner": new_owner,
     }
