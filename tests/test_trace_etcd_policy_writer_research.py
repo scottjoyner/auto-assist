@@ -207,3 +207,18 @@ def test_policy_writer_can_run_as_separate_os_process(tmp_path):
             proc.join(2)
         assert not proc.is_alive()
         path.unlink(missing_ok=True)
+
+
+def test_real_rbac_physical_writer_runs_in_child_and_does_not_auto_release():
+    source = Path(__file__).with_name(
+        "probe_trace_etcd_rbac_physical.py").read_text()
+    assert "def _serve_real_rbac_policy(" in source
+    assert "EtcdBearerTLS(" in source
+    assert "ctx.Process(" in source
+    assert "target=_serve_real_rbac_policy" in source
+    assert "UnixPolicyGrantAdapter(unix_client, " in source
+    assert "grant.reservation_id in actual.document" in source
+    assert "service_process.terminate()" in source
+    assert "grant.reservation_id in EtcdQuorumFence(" in source
+    assert '"writer_and_gateway_distinct_os_uid": False' in source
+    assert '"production_policy_service_deployed": False' in source
