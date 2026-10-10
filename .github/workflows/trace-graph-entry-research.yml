@@ -32,10 +32,11 @@ jobs:
           python -m pytest --noconftest -q \
             tests/test_trace_graph_entry_research.py \
             tests/test_trace_graph_entry_guarded.py \
-            tests/test_trace_graph_entry_metadata.py
+            tests/test_trace_graph_entry_metadata.py \
+            tests/test_trace_graph_entry_three_party_guards.py
       - name: Verify physical probes remain manual-only
         run: |
-          python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py
+          python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py
           python - <<'PY'
           from pathlib import Path
           a = Path('tests/probe_trace_entry_network_isolation.py').read_text()
@@ -43,6 +44,10 @@ jobs:
           assert 'EXPLICIT_NETWORK_RESEARCH_OPT_IN_REQUIRED' in a
           assert 'EXPLICIT_PG_NEO_RESEARCH_OPT_IN_REQUIRED' in b
           assert '"production_authority": False' in a
+          c = Path('tests/probe_trace_entry_three_party.py').read_text()
+          assert 'EXPLICIT_THREE_PARTY_OPT_IN_REQUIRED' in c
+          assert '"--network", "none"' in c
+          assert '"signed_append_only_custody": False' in c
           assert '"production_authority": False' in b
-          print('Both physical probes remain explicit opt-in; CI never runs them.')
+          print('All three physical probes remain explicit opt-in; CI never runs them.')
           PY
