@@ -187,3 +187,58 @@ def test_parallel_http_requests_same_identity_never_double_execute():
     assert codes.count(409) == 11, codes
     assert len(graph.calls) == 1
     assert len(quorum.snapshot().document["pending"]) == 1
+
+
+def test_http_ingress_stable_id_passes_through_actual_unix_policy_writer(tmp_path):
+    from test_trace_etcd_policy_writer_research import socket_rig, stop, GENESIS
+    from trace_etcd_policy_writer_research import UnixPolicyGrantAdapter
+
+    server, thread, unix_client, authority, witness, operator = socket_rig(tmp_path)
+    graph, journal = Graph(), Journal()
+    entry = ProtectedGraphEntry(
+        {"approved_read": QueryPlan("RETURN $value AS value", ("value",))},
+        UnixPolicyGrantAdapter(unix_client, GENESIS),
+        journal, graph, GENESIS,
+    )
+    app = FastAPI()
+    app.include_router(build_research_idempotent_graph_router(entry, verified_basic))
+    client = TestClient(app)
+    try:
+        assert request(client).status_code == 200
+        assert request(client).status_code == 409
+        assert request(client, value=500).status_code == 409
+        assert len(graph.calls) == 1
+        op = derive_stable_operation("alice", "stable-request-0001",
+                                     "approved_read", {"value": 42})
+        pending = list(authority.snapshot().document["pending"].values())
+        assert len(pending) == 1
+        assert pending[0]["operation"] == op.operation
+        assert pending[0]["request_digest"] == op.request_digest
+        # Client has only socket path, no policy writer token or KV methods.
+        assert not hasattr(unix_client, "txn")
+        assert unix_client.__dict__ == {"path": str(tmp_path / "authority.sock")}
+    finally:
+        stop(server, thread)
+
+
+def test_http_authenticated_stable_id_remains_pending_after_writer_disappears(tmp_path):
+    from test_trace_etcd_policy_writer_research import socket_rig, stop, GENESIS
+    from trace_etcd_policy_writer_research import UnixPolicyGrantAdapter
+
+    server, thread, unix_client, authority, witness, operator = socket_rig(tmp_path)
+    graph = Graph()
+    entry = ProtectedGraphEntry(
+        {"approved_read": QueryPlan("RETURN $value AS value", ("value",))},
+        UnixPolicyGrantAdapter(unix_client, GENESIS),
+        Journal(), graph, GENESIS)
+    app = FastAPI()
+    app.include_router(build_research_idempotent_graph_router(entry, verified_basic))
+    with TestClient(app) as client:
+        assert request(client).status_code == 200
+        assert len(authority.snapshot().document["pending"]) == 1
+        stop(server, thread)
+        # No successful response from the now missing writer: HTTP 503
+        # must not be converted to an execution retry or freed capacity.
+        assert request(client).status_code == 503
+        assert len(authority.snapshot().document["pending"]) == 1
+        assert len(graph.calls) == 1
