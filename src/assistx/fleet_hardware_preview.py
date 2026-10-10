@@ -16,7 +16,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import HTMLResponse
 
 _SNAPSHOT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z$")
 _NODE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
@@ -277,5 +278,22 @@ def build_fleet_hardware_preview_router(
         except (FleetHardwareEvidenceError, OSError, TypeError) as exc:
             # Do not leak operator private filesystem paths or raw inventory.
             raise HTTPException(status_code=503, detail="hardware evidence unavailable") from exc
+
+    return router
+
+
+def build_fleet_hardware_preview_page_router(*, auth_dependency: Callable[..., Any], templates: Any) -> APIRouter:
+    """Standalone authenticated page; avoids the known legacy base-template defect."""
+    router = APIRouter(tags=["fleet-hardware-preview-ui"], dependencies=[Depends(auth_dependency)])
+
+    @router.get("/fleet/hardware-evidence", response_class=HTMLResponse)
+    def hardware_evidence_page(request: Request) -> HTMLResponse:
+        result = templates.TemplateResponse(
+            request=request, name="fleet_hardware_evidence.html", context={"request": request}
+        )
+        result.headers["Cache-Control"] = "private, no-store"
+        result.headers["Vary"] = "Authorization"
+        result.headers["X-Content-Type-Options"] = "nosniff"
+        return result
 
     return router

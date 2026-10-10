@@ -71,3 +71,44 @@ A user interface could show this endpoint in the Fleet Status and trace detail s
 The additive `.github/workflows/fleet-hardware-preview.yml` job installs the existing repository requirements, uses synthetic-only tests, and deliberately does not configure `ASSISTX_FLEET_HARDWARE_ROOT`. This yields a focused regression check without relying on the unrelated full-suite recovery/legacy UI gates that currently fail on `main`. A successful focused job **does not** certify full application integration or justify release/merge by itself.
 
 Successful preview responses add Cache-Control: private, no-store; Vary: Authorization; and X-Content-Type-Options: nosniff to prevent shared caching of authenticated internal hardware metadata.
+
+
+## Operator UI and trace-history next slice (2026-10-10)
+
+**Standalone page:** authenticated GET /fleet/hardware-evidence, linked from the
+existing control room navigation. Its Jinja template is standalone and fully
+renders in a FastAPI TestClient smoke test, independent of the pre-existing
+legacy base.html inheritance defect. Success responses are private/no-store
+and Vary: Authorization.
+
+A matching hardware preview section is also included in the existing
+fleet_dashboard.html for after the unrelated base-template problem is
+repaired. The standalone page is the reliable acceptance surface today.
+Evidence is fetched only after an explicit operator form submission; never
+as part of the dashboard's periodic refresh loop. The page shows a bounded
+per-node read-only assessment, with snapshot and digest, PCI GPU-function
+identities, blockers, verification state and DENIED admission. Raw hardware
+secrets/serials and arbitrary source JSON never enter HTML markup; the JS
+renderer uses textContent for all data.
+
+**Trace history:** the existing /traces page now displays hardware provenance
+only if its own persisted trace events explicitly recorded
+fleet_hardware_evidence {snapshot, evidence_digest_sha256}, or the equivalent
+fleet_hardware_snapshot and fleet_hardware_evidence_digest_sha256 fields.
+Metadata is parsed with a byte/record bound and digest/timestamp validation.
+If the trace contains no such reference, the operator is clearly told that no
+historical hardware evidence was recorded. The UI must never silently attach
+current inventory to an old trace. There are no new trace writes or automatic
+log enrichments in this PR; emitting future trace-linked hardware evidence is
+separately scoped work.
+
+**Validation:** synthetic Python contract tests verify authentication and a
+rendered standalone page. Five dependency-free Node tests verify safe DOM
+rendering (untrusted text cannot become HTML), GET only after interaction,
+unconfigured 503, denial of authority, and historical trace provenance
+validation. The isolated CI job runs both Python and Node tests, and
+includes all modified frontend paths in triggers.
+
+Neither route mutates worker state. This slice does NOT repair the existing
+base.html inheritance issue, supply full app runtime dependencies in local
+worktrees, merge PR #269, or deploy the service.
