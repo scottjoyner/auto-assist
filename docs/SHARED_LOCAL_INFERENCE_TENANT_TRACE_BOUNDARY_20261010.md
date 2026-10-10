@@ -42,3 +42,9 @@ iPhone/agent -> authenticated inference broker (trusted tenant/subject)
 -> durable bounded ingest and authorised history UI
 
 W3C trace IDs, local host names and provider inventory are not identity proof.
+
+## Identity-at-rest hardening (follow-up)
+
+Stored writer identity now uses HMAC-SHA-256 keyed by an independently protected `FLEET_TRACE_OWNER_KEY_HEX` (exactly 32 secret bytes encoded as 64 hex characters), domain-separated with the server-policy tenant. Previously used plain SHA-256 digests of guessable login identifiers and their truncation must **not** be accepted as privacy-preserving identifiers. The key must be provisioned through owner-only protected service environment/secrets, not committed to GitHub, traced, logged or passed by a client. The pilot **fails closed** without it. New storage is marked SQLite user_version=2; any populated earlier tenant-schema database lacking this version is rejected rather than silently reinterpreted. Real key rotation needs deliberate reindex/migration or retention expiry plus operator authority; changing the key in place will orphan readback. Authenticated read permissions now further intersect explicit `read_actors`, so users within one tenant cannot see each other's personal trace metadata by default. This is a policy-controlled test prototype, **not** proof of strong account-provider authentication or safe shared-service delegation.
+
+Current disposable receiver/schema/Serve acceptance: 47 targeted tests passing. Deployment remains NO-GO.
