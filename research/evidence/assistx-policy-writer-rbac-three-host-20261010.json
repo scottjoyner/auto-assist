@@ -1,0 +1,41 @@
+{
+  "schema": "assistx-policy-writer-three-voter-rbac-ipc-v1",
+  "date": "2026-10-10",
+  "repo": "scottjoyner/auto-assist",
+  "branch": "research/assistx-policy-writer-ipc-20261010",
+  "parent_pr": 260,
+  "physical_source_commit": "c713c5b2154d84d1fc824ee4e3daf6e1245eb20a",
+  "physical_execution": "x1-370 orchestrator, voters on x1-370 xwing destroyer",
+  "runtime_seconds": 47.99,
+  "physical_result": "PASS",
+  "test_stack": {
+    "etcd": "3.6.14",
+    "neo4j": "5.26-enterprise",
+    "auth": "mTLS plus etcd v3 JSON bearer token with CN-free ephemeral cert"
+  },
+  "predicates": {
+    "consensus_quorum_still_pass": true,
+    "actual_Neo4j_Bolt_witness_still_pass": true,
+    "real_RBAC_gateway_reader_cannot_raw_write": true,
+    "real_RBAC_scoped_policy_writer_only_own_key": true,
+    "new_scoped_writer_child_process": true,
+    "private_unix_ipc_gateway_interface": true,
+    "raw_etcd_bearer_not_in_gateway_client": true,
+    "injected_raw_txn_and_term_denied": true,
+    "new_approved_operation_admitted_via_service": true,
+    "actual_raft_reservation_confirmed": true,
+    "writer_process_killed_and_reservation_retained": true,
+    "real_distinct_OS_UIDs": false,
+    "independent_immutable_closure_receipt": false,
+    "Neo4j_server_side_fencing": false,
+    "production_deployed": false
+  },
+  "risk": {
+    "coordinator_holds_ephemeral_root_bootstrap_secrets": "YES, TEST-HARNESS ONLY",
+    "same_uid_client_impersonation": "REMAINS POSSIBLE",
+    "writer_credential_compromise": "DIRECT RAW KV BYPASS STILL POSSIBLE WITH AUTHORIZED WRITER",
+    "cross_site_quorum": "NOT PROVEN",
+    "production_failover": "NO_GO"
+  },
+  "cleanup": "Temporary containers, networks, certs and local staging are destroyed at fixture teardown; credentials not recorded"
+}
