@@ -21,6 +21,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.exceptions import InvalidSignature
 
 VERSION = "assistx-etcd-fence-research-v1"
+# Fixed, deliberately tiny research limit: never garbage-collect execution
+# identities automatically because that would permit an old replay.
+MAX_COMPLETED_OPERATIONS = 128
 
 
 def canon(obj) -> bytes:
@@ -110,7 +113,9 @@ class EtcdQuorumFence:
             if (document["schema"] != VERSION or
                     not isinstance(document["term"], int) or
                     document["term"] < 1 or rev < 1 or
-                    not isinstance(document["pending"], dict)):
+                    not isinstance(document["pending"], dict) or
+                    not isinstance(document.get("completed", {}), dict) or
+                    len(document.get("completed", {})) > MAX_COMPLETED_OPERATIONS):
                 raise ValueError("not valid")
         except (ValueError, KeyError, TypeError) as exc:
             raise FenceRefused("CORRUPTED_AUTHORITY") from exc
@@ -125,6 +130,7 @@ class EtcdQuorumFence:
         document = {
             "schema": VERSION, "genesis": genesis, "owner": owner,
             "term": 1, "capacity": capacity, "pending": {},
+            "completed": {},
             "operator_public": operator_public.hex(),
             "witness_public": witness_public.hex(),
         }
@@ -162,10 +168,18 @@ class EtcdQuorumFence:
         state = prior.document
         if type(term) is not int or state["owner"] != owner or state["term"] != term:
             raise FenceRefused("STALE_TERM_OR_OWNER")
+        # Resolve duplicate *before* capacity: an operation that previously
+        # committed is NEVER re-executed due to lost CAS acknowledgement.
+        if any(x.get("operation") == operation for x in state["pending"].values()):
+            raise FenceRefused("EXISTING_OPERATION_REQUIRES_RECONCILIATION")
+        if operation in state.get("completed", {}):
+            raise FenceRefused("CLOSED_OPERATION_REPLAY_DENIED")
+        if len(state.get("completed", {})) >= MAX_COMPLETED_OPERATIONS:
+            # Do not silently discard tombstones or admit through an old
+            # identity. Operators need a separately validated archive/epoch.
+            raise FenceRefused("COMPLETED_OPERATION_LEDGER_FULL")
         if len(state["pending"]) >= state["capacity"]:
             raise FenceRefused("PHYSICAL_CAPACITY_OCCUPIED")
-        if any(x.get("operation") == operation for x in state["pending"].values()):
-            raise FenceRefused("DUPLICATE_OPERATION")
         token = secrets.token_hex(16)
         updated = json.loads(canon(state))
         updated["pending"][token] = {"operation": operation, "state": "RESERVED",
@@ -174,6 +188,34 @@ class EtcdQuorumFence:
                                      "txid": None}
         self._write(prior, updated)
         return token
+
+    def reconcile_operation(self, operation: str) -> dict:
+        """Read-only, quorum-linearizable; NEVER returns a re-execution grant.
+
+        "ABSENT" proves only that this *exact caller-supplied stable ID* was
+        not present at this read, NOT that a timed-out execution is safe to
+        retry with a different ID or that Neo4j has finished. It must not
+        be used as an automatic execution or release authorization.
+        """
+        if not isinstance(operation, str) or not operation or len(operation) > 128:
+            raise FenceRefused("INVALID_OPERATION")
+        view = self.snapshot()  # fail closed if quorum cannot answer
+        matches = [item for item in view.document["pending"].values()
+                   if item.get("operation") == operation]
+        if len(matches) > 1:
+            raise FenceRefused("DUPLICATED_OPERATION_CORRUPTION")
+        if matches:
+            item = matches[0]
+            return {"state": "PENDING_EXECUTION_UNCERTAIN",
+                    "attempt_state": item["state"], "term": item["term"],
+                    "owner": item["owner"], "cluster_id": view.cluster_id}
+        tombstone = view.document.get("completed", {}).get(operation)
+        if tombstone is not None:
+            return {"state": "CLOSED_NO_REEXECUTION",
+                    "term": tombstone["term"], "owner": tombstone["owner"],
+                    "cluster_id": view.cluster_id}
+        return {"state": "ABSENT_NOT_AN_EXECUTION_PERMIT",
+                "cluster_id": view.cluster_id}
 
     def bind(self, token: str, owner: str, term: int, server: str,
              generation: str, txid: str) -> None:
@@ -216,6 +258,20 @@ class EtcdQuorumFence:
         except (ValueError, InvalidSignature) as exc:
             raise FenceRefused("INVALID_WITNESS_SIGNATURE") from exc
         updated = json.loads(canon(doc))
+        operation = pending["operation"]
+        if operation in updated.get("completed", {}):
+            raise FenceRefused("CLOSED_OPERATION_REPLAY_DENIED")
+        if len(updated.get("completed", {})) >= MAX_COMPLETED_OPERATIONS:
+            # Never block independently signed closure just because a
+            # tombstone index is full. This would permanently hold capacity.
+            # Admission checks prevent reaching this state normally.
+            raise FenceRefused("COMPLETED_OPERATION_LEDGER_FULL")
+        import hashlib
+        updated.setdefault("completed", {})[operation] = {
+            "term": pending["term"], "owner": pending["owner"],
+            "receipt_sha256": hashlib.sha256(
+                canon(receipt) + signature).hexdigest(),
+        }
         del updated["pending"][token]
         # Atomic revision protects against concurrent/replayed closure.
         self._write(before, updated)
