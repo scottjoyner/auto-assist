@@ -83,9 +83,29 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
     address = f"https://{ip}:{client_port}"
 
     def login(name, password):
-        response = transport._post(
-            "/v3/auth/authenticate", {"name": name, "password": password}
+        # Diagnostic surface redacts credentials and authorization tokens.
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError, URLError
+        request = Request(
+            transport.endpoint + "/v3/auth/authenticate",
+            data=canon({"name": name, "password": password}),
+            headers={"Content-Type": "application/json"}, method="POST"
         )
+        try:
+            with urlopen(request, timeout=3, context=transport.context) as reply:
+                response = json.loads(reply.read(2048))
+        except HTTPError as exc:
+            info = {}
+            try:
+                info = json.loads(exc.read(1024))
+            except Exception:
+                pass
+            message = str(info.get("message", "unknown"))
+            for secret in (root_password, reader_password, writer_password):
+                message = message.replace(secret, "REDACTED")
+            raise RuntimeError(
+                f"DISPOSABLE_RBAC_LOGIN_FAILED status={exc.code} message={message[:160]}"
+            ) from None
         token = response.get("token")
         if not token:
             raise AssertionError("ETCD_AUTHENTICATE_MISSING_BEARER")
