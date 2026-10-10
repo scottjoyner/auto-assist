@@ -20,6 +20,14 @@ The three-voter Raft and independent Neo4j witness acceptance (#256, #260, #264)
 
 **PASS, 23.38 seconds**, no production service or persistent data touched. The extra experiment is explicitly enabled via `ASSISTX_THREE_HOST_RAFT_RESEARCH=1 ASSISTX_RAFT_ACK_LOSS_RESEARCH=1`. It **does not** simulate a literal network partition at the ACK packet layer and does **not** run Neo4j in this particular probe; physical Raft→Neo4j acceptance is separately documented in parent PR #260. The existing original unresolved slot remains reserved throughout the consensus partition tests; nothing is released automatically.
 
+### Full-stack physical regression
+
+After the standalone retry acceptance, I executed **all four physical research slices together** on the disposable three-voter x1-370/xwing/destroyer Raft cluster:
+
+`ASSISTX_THREE_HOST_RAFT_RESEARCH=1 ASSISTX_RAFT_ACK_LOSS_RESEARCH=1 ASSISTX_QUORUM_NEO4J_RESEARCH=1 ASSISTX_RAFT_RBAC_RESEARCH=1`
+
+**PASS, exit code 0, 46.90 seconds**, running the exact code at `ef15617c`. The combined run included: actual Raft ack ambiguity and changed-payload denial; real Neo4j Bolt admission and a physical transaction that survived quorum loss; detached closure signer and exact receipt replay rejection; leader reelection and direct minority raw Txn denial; exact-key etcd RBAC reader/write isolation; and the independently spawned Unix policy-writer child committing an actual Raft admission and retaining capacity after death. This establishes *compositional compatibility within the disposable research fixture*, not a production fault-domain, OS-identity, or Neo4j server-fencing proof. The updated machine-readable evidence records this second complete run.
+
 ## Why this is still not sufficient for production
 
 | Priority | Unclosed adversarial case | Concrete next acceptance |
