@@ -1,0 +1,51 @@
+{
+  "schema": "assistx-reconciliation-research-v1",
+  "date": "2026-10-10",
+  "hosts": [
+    "x1-370",
+    "xwing",
+    "destroyer"
+  ],
+  "runtime_seconds": 23.38,
+  "executed_on_disposable_etcd": true,
+  "source_commit": "5391aa3a85ff026b5617e1d8a263ebcf43580e25",
+  "observed": {
+    "operation_persisted_despite_missing_client_ack": true,
+    "second_voter_confirmed_pending": true,
+    "same_request_not_readmitted": true,
+    "changed_payload_same_request_refused": true,
+    "other_request_denied_at_capacity": true,
+    "majority_and_minority_tests_passed": true
+  },
+  "limitations": {
+    "not_actual_packet_loss": true,
+    "not_in_api": true,
+    "not_neo4j_test": true,
+    "production_authority": false,
+    "automatic_failover": false
+  },
+  "full_stack_combined_rerun": {
+    "source_commit": "ef15617c05af1216fe2650b62cdd30a84395aecd",
+    "runtime_seconds": 46.9,
+    "exit_code": 0,
+    "voters": [
+      "x1-370",
+      "xwing",
+      "destroyer"
+    ],
+    "checks": {
+      "real_Raft_response_loss_reconciled": true,
+      "same_id_changed_payload_denied": true,
+      "actual_Neo4j_Bolt_witness_passed": true,
+      "physical_transaction_survived_quorum_loss": true,
+      "independent_witness_signed_closure": true,
+      "RBAC_readonly_mutation_denied": true,
+      "writer_process_IPC_real_Raft_admission": true,
+      "writer_process_death_reservation_held": true,
+      "leader_reelection_and_minority_raw_txn_denied": true
+    },
+    "production_authority": false,
+    "distinct_OS_UIDs": false,
+    "server_enforced_Neo4j_fence": false
+  }
+}
