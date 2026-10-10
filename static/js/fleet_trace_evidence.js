@@ -80,5 +80,76 @@
     root.appendChild(list);
     parent.appendChild(root);
   }
-  global.FleetTraceEvidence = {evidenceFromEvent, extract, render};
+
+  // Separate operator inspections are POST-HOC observations, never original
+  // execution evidence. Historical event provenance is rendered above.
+  function renderInspections(data, container) {
+    while (container.firstChild) container.removeChild(container.firstChild);
+    const title = document.createElement("h3");
+    title.textContent = "Post-hoc operator hardware inspections";
+    container.appendChild(title);
+    if (!data || data.dispatch_allowed !== false || data.admission_allowed !== false ||
+        !Array.isArray(data.receipts)) {
+      const invalid = document.createElement("p");
+      invalid.textContent = "Inspection records unavailable or inconsistent.";
+      container.appendChild(invalid);
+      return false;
+    }
+    const entries = data.receipts.slice(0, 20);
+    if (!entries.length) {
+      const empty = document.createElement("p");
+      empty.textContent = "No later hardware inspections attached to this trace.";
+      container.appendChild(empty);
+      return true;
+    }
+    const explanation = document.createElement("p");
+    explanation.textContent = "These inspections were recorded later by an operator. They do NOT prove hardware state at original execution time.";
+    container.appendChild(explanation);
+    const list = document.createElement("ul");
+    for (const row of entries) {
+      if (!row || row.kind !== "POST_HOC_OPERATOR_INSPECTION" ||
+          row.historical_decision_proof !== false ||
+          row.admission_allowed !== false || row.dispatch_allowed !== false ||
+          !SNAPSHOT.test(row.snapshot || "") ||
+          !DIGEST.test(row.evidence_digest_sha256 || "")) {
+        continue;
+      }
+      const item = document.createElement("li");
+      const stamp = document.createElement("code");
+      stamp.textContent = row.snapshot;
+      const digest = document.createElement("code");
+      digest.textContent = row.evidence_digest_sha256;
+      const when = document.createElement("span");
+      when.textContent = " · inspected at " + (typeof row.recorded_at_ms === "number" ?
+        new Date(row.recorded_at_ms).toLocaleString() : "time unavailable") + " · ";
+      item.appendChild(stamp);
+      item.appendChild(when);
+      item.appendChild(digest);
+      list.appendChild(item);
+    }
+    container.appendChild(list);
+    return true;
+  }
+  async function loadInspections(correlationId, parent, isCurrent) {
+    if (!parent || !global.document || typeof correlationId !== "string" ||
+        !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(correlationId)) return;
+    const section = document.createElement("section");
+    section.className = "trace-hardware-evidence";
+    section.textContent = "Loading read-only inspection receipts…";
+    parent.appendChild(section);
+    try {
+      const response = await fetch(
+        "/api/fleet/trace-inspections/" + encodeURIComponent(correlationId),
+        {method: "GET", cache: "no-store", credentials: "same-origin"}
+      );
+      if (isCurrent && !isCurrent()) return;
+      if (!response.ok) throw new Error("unavailable");
+      renderInspections(await response.json(), section);
+    } catch (ignored) {
+      if (isCurrent && !isCurrent()) return;
+      section.textContent = "Post-hoc hardware inspections unavailable; existing trace history is unchanged.";
+    }
+  }
+
+  global.FleetTraceEvidence = {evidenceFromEvent, extract, render, renderInspections, loadInspections};
 })(typeof window === "undefined" ? globalThis : window);

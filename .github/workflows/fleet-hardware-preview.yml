@@ -4,8 +4,12 @@ on:
   pull_request:
     paths:
       - "src/assistx/fleet_hardware_preview.py"
+      - "src/assistx/fleet_hardware_inspection.py"
       - "src/assistx/api_router.py"
       - "tests/test_fleet_hardware_preview.py"
+      - "tests/test_fleet_hardware_inspection.py"
+      - "tests/test_fleet_receipt_lab_guard.py"
+      - "tests/physical/fleet_receipt_disposable_neo4j.py"
       - "templates/base.html"
       - "templates/fleet_dashboard.html"
       - "templates/fleet_hardware_evidence.html"
@@ -17,12 +21,17 @@ on:
       - "tests/ui/fleet_hardware_evidence.test.cjs"
       - "tests/test_fleet_hardware_route_smoke.py"
       - "docs/FLEET_HARDWARE_PREVIEW.md"
+      - "docs/FLEET_HARDWARE_INSPECTION_RECEIPTS.md"
       - ".github/workflows/fleet-hardware-preview.yml"
   push:
     paths:
       - "src/assistx/fleet_hardware_preview.py"
+      - "src/assistx/fleet_hardware_inspection.py"
       - "src/assistx/api_router.py"
       - "tests/test_fleet_hardware_preview.py"
+      - "tests/test_fleet_hardware_inspection.py"
+      - "tests/test_fleet_receipt_lab_guard.py"
+      - "tests/physical/fleet_receipt_disposable_neo4j.py"
       - "templates/base.html"
       - "templates/fleet_dashboard.html"
       - "templates/fleet_hardware_evidence.html"
@@ -57,13 +66,13 @@ jobs:
         run: |
           python -m pip install -r requirements.txt -r requirements-dev.txt
       - name: Compile new adapter
-        run: python -m py_compile src/assistx/fleet_hardware_preview.py
+        run: python -m py_compile src/assistx/fleet_hardware_preview.py src/assistx/fleet_hardware_inspection.py
       - name: Lint changed files
         run: |
-          ruff check src/assistx/fleet_hardware_preview.py src/assistx/api_router.py tests/test_fleet_hardware_preview.py
+          ruff check src/assistx/fleet_hardware_preview.py src/assistx/fleet_hardware_inspection.py src/assistx/api_router.py tests/test_fleet_hardware_preview.py tests/test_fleet_hardware_inspection.py tests/test_fleet_receipt_lab_guard.py tests/test_fleet_hardware_route_smoke.py
       - name: Run isolated synthetic preview contract
         run: |
-          python -m pytest -q tests/test_fleet_hardware_preview.py
+          python -m pytest -q tests/test_fleet_hardware_preview.py tests/test_fleet_hardware_inspection.py tests/test_fleet_receipt_lab_guard.py
       - name: Browser-side contract (no npm dependencies)
         run: |
           node --check static/js/fleet_hardware_preview.js

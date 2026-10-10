@@ -1,0 +1,512 @@
+"""Bounded post-hoc inspection receipts; synthetic Neo4j only and no real writes."""
+
+from __future__ import annotations
+
+import datetime as dt
+import hashlib
+from pathlib import Path
+from typing import Any
+
+import pytest
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
+
+from assistx.fleet_hardware_inspection import (
+    InspectionInput,
+    InspectionSchemaUnavailable,
+    build_inspection_router,
+    list_inspections,
+    persist_inspection,
+    prepare_inspection_receipt,
+)
+
+SNAP = "2026-10-10T16-00-00Z"
+DIGEST = "a" * 64
+CID = "sample-correlation-123"
+SYNTHETIC_WRITER_TOKEN = "fixture-only-not-a-real-secret-" + "Z" * 40
+SYNTHETIC_WRITER_DIGEST = hashlib.sha256(SYNTHETIC_WRITER_TOKEN.encode()).hexdigest()
+
+
+def preview(*, fresh: bool = True) -> dict[str, Any]:
+    return {
+        "snapshot": SNAP,
+        "snapshot_freshness": "FRESH" if fresh else "STALE",
+        "evidence_digest_sha256": DIGEST,
+        "admission_allowed": False,
+        "dispatch_allowed": False,
+        "requirements": {"ram_gib": 20.0, "gpu_vram_gib": 16.0, "data_host": None},
+        "checked_nodes": 3,
+        "truncated": False,
+        "nodes": [{"node_id": "gpu-node", "dispatch": "DENIED_NO_AUTHORITY"}],
+    }
+
+
+class MemoryNeo:
+    """Fake graph accepts ONLY supported receipt queries, never task-state writes."""
+
+    def __init__(self):
+        self.groups = {CID: {"current_state": "completed"}}
+        self.receipts: dict[str, dict[str, Any]] = {}
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.closed = 0
+        self.constraint_present = True
+        self.lock_constraint_present = True
+        self.lock_counts: dict[str, int] = {}
+
+    def _session(self):
+        return MemorySession(self)
+
+    def close(self):
+        self.closed += 1
+
+
+class MemorySession:
+    def __init__(self, db: MemoryNeo):
+        self.db = db
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def run(self, query: str, params: dict[str, Any]):
+        self.db.calls.append((query, params))
+        assert "TraceEvent" not in query
+        assert "current_state" not in query
+        assert ":Task" not in query
+        assert "CREATE (g:" not in query
+        if "SHOW CONSTRAINTS" in query:
+            return MemoryResult({"matched": int(self.db.constraint_present) + int(self.db.lock_constraint_present)})
+        if "ON CREATE SET" in query:
+            assert "FleetHardwareInspectionLock" in query
+            assert "fence_counter" in query
+            assert "WITH collect(candidate) AS groups" in query
+            cid = params["correlation_id"]
+            if cid not in self.db.groups or (
+                params["receipt_id"] not in self.db.receipts
+                and sum(r["correlation_id"] == cid for r in self.db.receipts.values()) >= 20
+            ):
+                return MemoryResult(None)
+            item = self.db.receipts.setdefault(
+                params["receipt_id"],
+                {
+                    **params,
+                    "recorded_at_ms": 123456,
+                },
+            )
+            return MemoryResult({"receipt_id": item["receipt_id"], "recorded_at_ms": item["recorded_at_ms"]})
+        if "ORDER BY" in query:
+            return MemoryResult(
+                [
+                    {
+                        **item,
+                        "kind": item["mode"],
+                        "requirements_json": item["requirements_json"],
+                    }
+                    for item in self.db.receipts.values()
+                    if item["correlation_id"] == params["correlation_id"]
+                ][:20]
+            )
+        raise AssertionError("unexpected query")
+
+
+class MemoryResult:
+    def __init__(self, item):
+        self.item = item
+
+    def single(self):
+        return self.item if isinstance(self.item, dict) else None
+
+    def __iter__(self):
+        return iter(self.item if isinstance(self.item, list) else [])
+
+
+def test_receipt_deterministic_and_non_authoritative():
+    a = prepare_inspection_receipt(CID, preview())
+    b = prepare_inspection_receipt(CID, preview())
+    assert a == b
+    assert a["receipt_id"].startswith("fleet-hardware-inspection:")
+    assert a["historical_decision_proof"] is False
+    assert a["dispatch_allowed"] is False
+    assert "/nas" not in str(a)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"dispatch_allowed": True},
+        {"admission_allowed": True},
+        {"snapshot_freshness": "STALE"},
+        {"evidence_digest_sha256": "corrupt"},
+        {"requirements": {"ram_gib": float("nan"), "gpu_vram_gib": 16, "data_host": None}},
+        {"nodes": [{"dispatch": "ALLOWED"}]},
+    ],
+)
+def test_bad_evidence_fails_closed(value):
+    data = preview()
+    data.update(value)
+    with pytest.raises(ValueError):
+        prepare_inspection_receipt(CID, data)
+
+
+def test_existing_trace_link_idempotency_and_no_state_change():
+    neo = MemoryNeo()
+    receipt = prepare_inspection_receipt(CID, preview())
+    first = persist_inspection(neo, receipt, authenticated_actor="operator-1")
+    second = persist_inspection(neo, receipt, authenticated_actor="operator-1")
+    assert first == second
+    assert len(neo.receipts) == 1
+    assert neo.groups[CID]["current_state"] == "completed"
+    records = list_inspections(neo, CID)
+    assert len(records) == 1
+    assert records[0]["historical_decision_proof"] is False
+    assert records[0]["dispatch_allowed"] is False
+    assert records[0]["actor"] == "operator-1"
+
+
+def test_cannot_create_new_trace_group():
+    neo = MemoryNeo()
+    receipt = prepare_inspection_receipt("nonexistent", preview())
+    assert persist_inspection(neo, receipt, authenticated_actor="operator") is None
+    assert list_inspections(neo, "nonexistent") == []
+    assert len(neo.groups) == 1
+    assert len(neo.receipts) == 0
+
+
+def test_max_inspections_bounded():
+    neo = MemoryNeo()
+    for index in range(20):
+        d = preview()
+        d["requirements"] = {"ram_gib": float(index), "gpu_vram_gib": 0.0, "data_host": None}
+        r = prepare_inspection_receipt(CID, d)
+        assert persist_inspection(neo, r, authenticated_actor="operator")
+    d = preview()
+    d["requirements"] = {"ram_gib": 21.0, "gpu_vram_gib": 0.0, "data_host": None}
+    assert persist_inspection(neo, prepare_inspection_receipt(CID, d), authenticated_actor="operator") is None
+    assert len(neo.receipts) == 20
+    # Lost acknowledgments are safely retried, even when a trace is at quota.
+    original = preview()
+    original["requirements"] = {"ram_gib": 0.0, "gpu_vram_gib": 0.0, "data_host": None}
+    replay = prepare_inspection_receipt(CID, original)
+    assert persist_inspection(neo, replay, authenticated_actor="operator")
+    assert len(neo.receipts) == 20
+
+
+def test_disabled_by_default_no_db_calls():
+    neo = MemoryNeo()
+    app = FastAPI()
+    app.include_router(
+        build_inspection_router(
+            auth_dependency=lambda: "operator",
+            neo_factory=lambda: neo,
+            root_provider=lambda: "/unused",
+            write_enabled=lambda: False,
+        )
+    )
+    c = TestClient(app)
+    result = c.post(
+        f"/api/fleet/trace-inspections/{CID}",
+        json={"ram_gib": 20.0, "confirm_post_hoc_observation": True},
+        headers={
+            "X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1",
+            "X-AssistX-Inspection-Token": SYNTHETIC_WRITER_TOKEN,
+        },
+    )
+    assert result.status_code == 503
+    assert neo.calls == []
+    assert len(neo.receipts) == 0
+
+
+def test_operator_intent_and_authentication_required():
+    neo = MemoryNeo()
+    app = FastAPI()
+    app.include_router(
+        build_inspection_router(
+            auth_dependency=lambda: "operator",
+            neo_factory=lambda: neo,
+            root_provider=lambda: "/unused",
+            write_enabled=lambda: True,
+            writer_identities=lambda: "operator,operator-1",
+            writer_token_digest=lambda: SYNTHETIC_WRITER_DIGEST,
+        )
+    )
+    c = TestClient(app)
+    path = f"/api/fleet/trace-inspections/{CID}"
+    body = {"ram_gib": 20.0, "gpu_vram_gib": 16.0, "confirm_post_hoc_observation": True}
+    assert c.post(path, json=body).status_code == 403
+    assert (
+        c.post(
+            path,
+            json={**body, "confirm_post_hoc_observation": False},
+            headers={"X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1"},
+        ).status_code
+        == 403
+    )
+    assert (
+        c.post(
+            path,
+            json={**body, "unknown": "unsafe"},
+            headers={"X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1"},
+        ).status_code
+        == 422
+    )
+    assert not neo.calls
+
+    def reject():
+        raise HTTPException(401, "unauthorized")
+
+    locked = FastAPI()
+    locked.include_router(
+        build_inspection_router(auth_dependency=reject, neo_factory=lambda: neo, write_enabled=lambda: True)
+    )
+    assert TestClient(locked).get(path).status_code == 401
+    assert TestClient(locked).post(path, json=body).status_code == 401
+
+
+def test_bounded_get_returns_empty_without_adding_trace():
+    neo = MemoryNeo()
+    app = FastAPI()
+    app.include_router(
+        build_inspection_router(
+            auth_dependency=lambda: "operator", neo_factory=lambda: neo, write_enabled=lambda: False
+        )
+    )
+    c = TestClient(app)
+    result = c.get(f"/api/fleet/trace-inspections/{CID}")
+    assert result.status_code == 200
+    assert result.json()["receipts"] == []
+    assert result.json()["dispatch_allowed"] is False
+    assert result.headers["cache-control"] == "private, no-store"
+    assert result.headers["vary"] == "Authorization"
+    assert result.headers["x-content-type-options"] == "nosniff"
+    assert all("MERGE" not in stmt for stmt, _ in neo.calls)
+
+
+def test_strict_request_rejects_nonfinite():
+    with pytest.raises(Exception):
+        InspectionInput(ram_gib=float("nan"), confirm_post_hoc_observation=True)
+    with pytest.raises(Exception):
+        InspectionInput(ram_gib=float("inf"), confirm_post_hoc_observation=True)
+    with pytest.raises(Exception):
+        InspectionInput(ram_gib="20", confirm_post_hoc_observation=True)
+
+
+def test_explicit_operator_post_succeeds_only_with_evidence_matching_private_source(monkeypatch):
+    from unittest.mock import Mock
+
+    neo = MemoryNeo()
+    read = Mock(return_value=preview())
+    monkeypatch.setattr("assistx.fleet_hardware_inspection.hardware_preview", read)
+    app = FastAPI()
+    app.include_router(
+        build_inspection_router(
+            auth_dependency=lambda: "operator-1",
+            neo_factory=lambda: neo,
+            root_provider=lambda: "/synthetic-private-source",
+            write_enabled=lambda: True,
+            writer_identities=lambda: "operator,operator-1",
+            writer_token_digest=lambda: SYNTHETIC_WRITER_DIGEST,
+        )
+    )
+    client = TestClient(app)
+    endpoint = f"/api/fleet/trace-inspections/{CID}"
+    body = {"ram_gib": 20.0, "gpu_vram_gib": 16.0, "confirm_post_hoc_observation": True}
+    header = {
+        "X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1",
+        "X-AssistX-Inspection-Token": SYNTHETIC_WRITER_TOKEN,
+    }
+    response = client.post(endpoint, json=body, headers=header)
+    assert response.status_code == 200
+    result = response.json()
+    assert result["historical_decision_proof"] is False
+    assert result["admission_allowed"] is False
+    assert result["dispatch_allowed"] is False
+    assert result["snapshot"] == SNAP
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["vary"] == "Authorization"
+    assert len(neo.receipts) == 1
+    repeat = client.post(endpoint, json=body, headers=header)
+    assert repeat.status_code == 200
+    assert repeat.json()["receipt_id"] == result["receipt_id"]
+    assert len(neo.receipts) == 1
+    read.assert_called()
+    assert read.call_args.kwargs["min_ram_gib"] == 20.0
+    listed = client.get(endpoint)
+    assert listed.status_code == 200
+    assert len(listed.json()["receipts"]) == 1
+    assert neo.groups[CID]["current_state"] == "completed"
+
+
+def test_missing_neo4j_uniqueness_constraint_denies_every_write():
+    neo = MemoryNeo()
+    neo.constraint_present = False
+    receipt = prepare_inspection_receipt(CID, preview())
+    with pytest.raises(InspectionSchemaUnavailable):
+        persist_inspection(neo, receipt, authenticated_actor="operator")
+    assert not neo.receipts
+    assert all("ON CREATE SET" not in query for query, _ in neo.calls)
+    assert neo.groups[CID]["current_state"] == "completed"
+
+
+def test_missing_constraint_returns_503_on_authenticated_explicit_post(monkeypatch):
+    from unittest.mock import Mock
+
+    neo = MemoryNeo()
+    neo.constraint_present = False
+    monkeypatch.setattr("assistx.fleet_hardware_inspection.hardware_preview", Mock(return_value=preview()))
+    app = FastAPI()
+    app.include_router(
+        build_inspection_router(
+            auth_dependency=lambda: "operator",
+            neo_factory=lambda: neo,
+            root_provider=lambda: "/authorized-fixture",
+            write_enabled=lambda: True,
+            writer_identities=lambda: "operator,operator-1",
+            writer_token_digest=lambda: SYNTHETIC_WRITER_DIGEST,
+        )
+    )
+    result = TestClient(app).post(
+        f"/api/fleet/trace-inspections/{CID}",
+        json={"ram_gib": 20.0, "gpu_vram_gib": 16.0, "confirm_post_hoc_observation": True},
+        headers={
+            "X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1",
+            "X-AssistX-Inspection-Token": SYNTHETIC_WRITER_TOKEN,
+        },
+    )
+    assert result.status_code == 503
+    assert "schema prerequisite" in result.json()["detail"]
+    assert len(neo.receipts) == 0
+
+
+def test_missing_lock_uniqueness_constraint_denies_every_write():
+    neo = MemoryNeo()
+    neo.lock_constraint_present = False
+    receipt = prepare_inspection_receipt(CID, preview())
+    with pytest.raises(InspectionSchemaUnavailable):
+        persist_inspection(neo, receipt, authenticated_actor="operator")
+    assert not neo.receipts
+    assert all("ON CREATE SET" not in query for query, _ in neo.calls)
+    assert neo.groups[CID]["current_state"] == "completed"
+
+
+def test_writer_allowlist_required_before_source_and_graph_reads(monkeypatch):
+    from unittest.mock import Mock
+
+    neo_factory = Mock(side_effect=AssertionError("database accessed before writer authorization"))
+    inventory_probe = Mock(side_effect=AssertionError("private evidence accessed before writer authorization"))
+    monkeypatch.setattr("assistx.fleet_hardware_inspection.hardware_preview", inventory_probe)
+
+    request = {"ram_gib": 20.0, "gpu_vram_gib": 16.0, "confirm_post_hoc_observation": True}
+    header = {
+        "X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1",
+        "X-AssistX-Inspection-Token": SYNTHETIC_WRITER_TOKEN,
+    }
+    for configured, identity, expected in [
+        ("", "operator", 503),
+        ("*", "operator", 503),
+        ("operator,", "operator", 503),
+        ("operator,operator", "operator", 503),
+        ("operator, admin", "operator", 503),
+        ("operator", "ordinary-user", 403),
+        ("operator,admin", "ordinary-user", 403),
+    ]:
+        app = FastAPI()
+        app.include_router(
+            build_inspection_router(
+                auth_dependency=lambda value=identity: value,
+                neo_factory=neo_factory,
+                root_provider=lambda: "/private-fixture",
+                write_enabled=lambda: True,
+                writer_identities=lambda value=configured: value,
+            )
+        )
+        result = TestClient(app).post(f"/api/fleet/trace-inspections/{CID}", json=request, headers=header)
+        assert result.status_code == expected, (configured, identity, result.text)
+        assert neo_factory.call_count == 0
+        assert inventory_probe.call_count == 0
+
+
+def test_writer_allowlist_does_not_restrict_authenticated_read():
+    neo = MemoryNeo()
+    app = FastAPI()
+    app.include_router(
+        build_inspection_router(
+            auth_dependency=lambda: "ordinary-user",
+            neo_factory=lambda: neo,
+            writer_identities=lambda: "",
+            write_enabled=lambda: False,
+        )
+    )
+    response = TestClient(app).get(f"/api/fleet/trace-inspections/{CID}")
+    assert response.status_code == 200
+    assert response.json()["receipts"] == []
+
+
+@pytest.mark.parametrize(
+    ("configured_digest", "supplied_token", "expected_status"),
+    [
+        ("", SYNTHETIC_WRITER_TOKEN, 503),
+        ("not-a-sha256-digest", SYNTHETIC_WRITER_TOKEN, 503),
+        ("A" * 64, SYNTHETIC_WRITER_TOKEN, 503),
+        (SYNTHETIC_WRITER_DIGEST, None, 403),
+        (SYNTHETIC_WRITER_DIGEST, "short", 403),
+        (SYNTHETIC_WRITER_DIGEST, "wrong-secret-" + "x" * 40, 403),
+    ],
+)
+def test_independent_writer_credential_required_before_reads(
+    monkeypatch, configured_digest: str, supplied_token: str | None, expected_status: int
+):
+    from unittest.mock import Mock
+
+    reader = Mock(side_effect=AssertionError("source accessed before receipt token authorization"))
+    db = Mock(side_effect=AssertionError("graph accessed before receipt token authorization"))
+    monkeypatch.setattr("assistx.fleet_hardware_inspection.hardware_preview", reader)
+    app = FastAPI()
+    app.include_router(
+        build_inspection_router(
+            auth_dependency=lambda: "operator",
+            neo_factory=db,
+            root_provider=lambda: "/synthetic-private-source",
+            write_enabled=lambda: True,
+            writer_identities=lambda: "operator",
+            writer_token_digest=lambda: configured_digest,
+        )
+    )
+    headers = {"X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1"}
+    if supplied_token is not None:
+        headers["X-AssistX-Inspection-Token"] = supplied_token
+    response = TestClient(app).post(
+        f"/api/fleet/trace-inspections/{CID}",
+        json={"ram_gib": 20.0, "gpu_vram_gib": 16.0, "confirm_post_hoc_observation": True},
+        headers=headers,
+    )
+    assert response.status_code == expected_status
+    assert SYNTHETIC_WRITER_TOKEN not in response.text
+    assert not reader.called and not db.called
+
+
+def test_trusted_header_principal_cannot_bypass_independent_receipt_token(monkeypatch):
+    from unittest.mock import Mock
+
+    reader = Mock(side_effect=AssertionError("trusted identity must not bypass independent receipt token"))
+    monkeypatch.setattr("assistx.fleet_hardware_inspection.hardware_preview", reader)
+    # Simulates an upstream identity header being accepted by general auth.
+    app = FastAPI()
+    app.include_router(
+        build_inspection_router(
+            auth_dependency=lambda: "allowed-writer",
+            neo_factory=lambda: (_ for _ in ()).throw(AssertionError("unexpected graph access")),
+            root_provider=lambda: "/synthetic-source",
+            write_enabled=lambda: True,
+            writer_identities=lambda: "allowed-writer",
+            writer_token_digest=lambda: SYNTHETIC_WRITER_DIGEST,
+        )
+    )
+    result = TestClient(app).post(
+        f"/api/fleet/trace-inspections/{CID}",
+        json={"ram_gib": 20.0, "confirm_post_hoc_observation": True},
+        headers={"X-AssistX-Operator-Intent": "fleet-hardware-inspection-v1"},
+    )
+    assert result.status_code == 403
+    assert not reader.called
