@@ -189,10 +189,15 @@ class EtcdQuorumFence:
             if completed.get("request_digest") != request_digest:
                 raise FenceRefused("IDEMPOTENCY_KEY_PAYLOAD_CONFLICT")
             raise FenceRefused("CLOSED_OPERATION_REPLAY_DENIED")
-        if len(state.get("completed", {})) >= MAX_COMPLETED_OPERATIONS:
-            # Do not silently discard tombstones or admit through an old
-            # identity. Operators need a separately validated archive/epoch.
+        completed_count = len(state.get("completed", {}))
+        if completed_count >= MAX_COMPLETED_OPERATIONS:
+            # Never silently prune completed IDs.
             raise FenceRefused("COMPLETED_OPERATION_LEDGER_FULL")
+        if completed_count + len(state["pending"]) >= MAX_COMPLETED_OPERATIONS:
+            # Reserve tombstone capacity BEFORE admission. Otherwise two
+            # concurrent in-flight grants can exhaust the completed ledger
+            # and prevent a perfectly signed physical-closure release.
+            raise FenceRefused("REPLAY_LEDGER_CLOSE_CAPACITY_RESERVED")
         if len(state["pending"]) >= state["capacity"]:
             raise FenceRefused("PHYSICAL_CAPACITY_OCCUPIED")
         token = secrets.token_hex(16)
