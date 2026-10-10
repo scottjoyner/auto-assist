@@ -259,12 +259,21 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
                     pass
                 else:
                     raise AssertionError("POLICY_WRITER_IPC_BYPASS")
-            grant = gateway.admit("f" * 32, "approved_read")
-            assert len(grant.reservation_id) == 32
+            if os.getenv("ASSISTX_HTTP_IDEMPOTENCY_RESEARCH") == "1":
+                from probe_trace_http_raft_ingress import run_http_against_scoped_raft
+                reservation_id = run_http_against_scoped_raft(
+                    unix_client,
+                    EtcdQuorumFence(root, service_key, cluster_id),
+                    service_key)
+                assert len(reservation_id) == 32
+            else:
+                grant = gateway.admit("f" * 32, "approved_read")
+                reservation_id = grant.reservation_id
+                assert len(reservation_id) == 32
             assert unix_client.request({"kind": "status"})["pending"] == 1
             # Administrative inspection is test-harness only, not gateway.
             actual = EtcdQuorumFence(root, service_key, cluster_id).snapshot()
-            assert grant.reservation_id in actual.document["pending"]
+            assert reservation_id in actual.document["pending"]
             try:
                 reader.range(service_key)
             except FenceRefused:
@@ -279,7 +288,7 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
                 service_process.join(3)
             assert not service_process.is_alive()
         # Death of the *writer service* does not auto-free Raft capacity.
-        assert grant.reservation_id in EtcdQuorumFence(
+        assert reservation_id in EtcdQuorumFence(
             root, service_key, cluster_id).snapshot().document["pending"]
 
     # Administrative root may see the protected key, but must not be given
@@ -299,6 +308,8 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
         "real_rbac_writer_process_unix_ipc_admission": True,
         "gateway_client_has_no_raw_kv_or_writer_token": True,
         "writer_process_death_preserves_raft_reservation": True,
+        "verified_http_request_id_over_unix_real_raft": (
+            os.getenv("ASSISTX_HTTP_IDEMPOTENCY_RESEARCH") == "1"),
         "writer_and_gateway_distinct_os_uid": False,
         "enforcing_policy_service_not_implemented": False,
         "production_policy_service_deployed": False,
