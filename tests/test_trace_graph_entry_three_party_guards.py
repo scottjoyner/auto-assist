@@ -26,7 +26,7 @@ def test_worker_network_credentials_and_mount_boundaries():
     assert '"--security-opt", "no-new-privileges"' in SOURCE
     assert '"--user", "65534:65534"' in SOURCE
     assert '"type=bind,source=" + str(ipc_home)' in SOURCE
-    assert '"target=/ipc,readonly"' in SOURCE
+    assert 'target=/ipc,readonly"' in SOURCE
     assert 'worker_mount_only_ipc_socket' in SOURCE
     assert 'len(mounts) != 1' in SOURCE
 
