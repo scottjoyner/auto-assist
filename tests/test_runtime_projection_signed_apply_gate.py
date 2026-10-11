@@ -4,7 +4,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
-import json
 import os
 import sys
 import tempfile
@@ -75,7 +74,7 @@ def package(m: dict, source_key: Ed25519PrivateKey,
         "audience": G.AUDIENCE, "role": "source-observer",
         "manifest_sha256": hashlib.sha256(G.canonical(m)).hexdigest(),
         "generation": m["generation"], "approval_id": m["approval_id"],
-        "issued_at_ms": NOW - 30_000, "expires_at_ms": NOW + 120_000,
+        "issued_at_ms": NOW - 10_000, "expires_at_ms": NOW + 120_000,
         "observations": [{
             "runtime_instance_id": runtime["runtime_instance_id"],
             "node_id": runtime["node_id"], "process_id": runtime["process_id"],
@@ -103,7 +102,7 @@ def package(m: dict, source_key: Ed25519PrivateKey,
         "generation": m["generation"], "approval_id": m["approval_id"],
         "approved_by": m["approved_by"],
         "source_receipt_sha256": hashlib.sha256(G.canonical(source)).hexdigest(),
-        "approved_at_ms": NOW - 10_000, "expires_at_ms": NOW + 60_000,
+        "approved_at_ms": NOW - 5_000, "expires_at_ms": NOW + 60_000,
     }
     return {"schema": "runtime-projection-two-signer-v1",
             "source": source, "operator": sign(operator_key, operator_payload)}
@@ -262,7 +261,8 @@ class TestSignedApply(unittest.TestCase):
             self.signed()
 
     def test_reviewer_approval_predates_source_invalid(self):
-        self.evidence["operator"]["payload"]["approved_at_ms"] = NOW - 99_000
+        self.evidence["operator"]["payload"]["approved_at_ms"] = NOW - 60_000
+        self.evidence["operator"]["payload"]["expires_at_ms"] = NOW + 20_000
         self.resign_operator()
         with self.assertRaisesRegex(ValueError, "predates"):
             self.signed()
