@@ -47,3 +47,43 @@ def test_repo_generator_does_not_start_when_disabled(monkeypatch):
     generator.start_repo_task_generator()
 
     assert generator._started is False
+
+def test_auto_ready_requires_configured_repository_source(tmp_path, monkeypatch):
+    """No configured alias -> PROPOSED, never autonomous READY."""
+    import json
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    source = repo / "service.py"
+    source.write_text("def safe() -> bool:\n    return True\n" * 4)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=Fixture",
+                    "-c", "user.email=fixture@example.invalid",
+                    "-c", "commit.gpgsign=false", "commit", "-q",
+                    "-m", "fixture"], check=True)
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                          text=True, capture_output=True, check=True).stdout.strip()
+    info = {"alias": "repo", "path": str(repo), "commit": head}
+    monkeypatch.setattr(generator, "REPO_TASK_AUTO_READY", True)
+    monkeypatch.delenv("ASSISTX_REPOSITORY_ROOTS_JSON", raising=False)
+    proposal = generator._analysis_task(info, source, "code_analysis")
+    assert proposal["status"] == "PROPOSED"
+    assert proposal["requires_approval"] is True
+    assert proposal["payload"]["source_binding"] is None
+
+    monkeypatch.setenv("ASSISTX_REPOSITORY_ROOTS_JSON",
+                       json.dumps({"repo": str(repo.resolve())}))
+    ready = generator._analysis_task(info, source, "code_analysis")
+    assert ready["status"] == "READY"
+    assert ready["requires_approval"] is False
+    assert ready["payload"]["source_binding"]["repo_realpath"] == str(repo.resolve())
+    assert ready["payload"]["source_binding"]["task_id"] == ready["id"]
+    assert ready["payload"]["source_binding"]["work_id"] == ready["id"]
+
+    monkeypatch.setenv("ASSISTX_REPOSITORY_ROOTS_JSON",
+                       json.dumps({"repo": str(tmp_path / "wrong")}))
+    held = generator._analysis_task(info, source, "code_analysis")
+    assert held["status"] == "PROPOSED"
+    assert held["payload"]["source_binding"] is None
