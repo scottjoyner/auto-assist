@@ -17,7 +17,14 @@ import urllib.error
 import urllib.request
 
 PLAN = "get_task_read"
-CYPHER = "MATCH (t:Task {id: $id}) RETURN properties(t) AS task"
+CLAIM_PLAN = "get_task_claim_guard"
+CYPHER = "MATCH (t:Task {id: $id}) RETURN t { .id, .status } AS task"
+CLAIM_CYPHER = (
+    "MATCH (t:Task {id: $id}) "
+    "RETURN t { .id, .status, .payload_json, .queue_class, "
+    ".required_capabilities } AS task"
+)
+STATIC_PLANS = {PLAN: CYPHER, CLAIM_PLAN: CLAIM_CYPHER}
 TASK_ID = re.compile(r"^fixture-task-[A-Za-z0-9_-]{4,48}$")
 MAX_REQUEST_BYTES = 2048
 GRAPH_ENDPOINT = "http://neo4j:7474/db/neo4j/tx/commit"
@@ -31,7 +38,8 @@ class RequestDenied(Exception):
 def validate(payload: object) -> str:
     if not isinstance(payload, dict) or set(payload) != {"plan_id", "parameters"}:
         raise RequestDenied("BAD_REQUEST_SHAPE")
-    if payload["plan_id"] != PLAN:
+    if not isinstance(payload["plan_id"], str) or (
+            payload["plan_id"] not in STATIC_PLANS):
         raise RequestDenied("UNKNOWN_STATIC_PLAN")
     params = payload["parameters"]
     if not isinstance(params, dict) or set(params) != {"id"}:
@@ -42,7 +50,9 @@ def validate(payload: object) -> str:
     return task_id
 
 
-def decode_task_response(document: object) -> dict | None:
+def decode_task_response(
+    document: object, plan_id: str = PLAN,
+) -> dict | None:
     # Fail closed: no streaming, no arbitrary metadata, no unexpected columns.
     if not isinstance(document, dict) or document.get("errors"):
         raise RequestDenied("GRAPH_QUERY_UNAVAILABLE")
@@ -63,17 +73,44 @@ def decode_task_response(document: object) -> dict | None:
     task = row[0]
     if not isinstance(task, dict):
         raise RequestDenied("GRAPH_RESPONSE_INVALID")
-    # Narrow projection; not a replacement for full get_task payload yet.
-    if set(task) - {"id", "status"} or (
-        type(task.get("id")) is not str or
-        type(task.get("status")) is not str):
+    if plan_id == PLAN:
+        allowed = {"id", "status"}
+    elif plan_id == CLAIM_PLAN:
+        allowed = {
+            "id", "status", "payload_json", "queue_class",
+            "required_capabilities",
+        }
+    else:
+        raise RequestDenied("GRAPH_RESPONSE_UNKNOWN_PLAN")
+    if (set(task) - allowed or
+            type(task.get("id")) is not str or
+            type(task.get("status")) is not str):
         raise RequestDenied("GRAPH_RESPONSE_UNAPPROVED_FIELDS")
+    if plan_id == CLAIM_PLAN:
+        if (task.get("payload_json") is not None and
+                type(task["payload_json"]) is not str):
+            raise RequestDenied("GRAPH_RESPONSE_UNAPPROVED_FIELDS")
+        if (task.get("queue_class") is not None and
+                type(task["queue_class"]) is not str):
+            raise RequestDenied("GRAPH_RESPONSE_UNAPPROVED_FIELDS")
+        capabilities = task.get("required_capabilities")
+        if capabilities is not None and (
+                type(capabilities) is not list or
+                len(capabilities) > 32 or
+                any(type(value) is not str or len(value) > 128
+                    for value in capabilities)):
+            raise RequestDenied("GRAPH_RESPONSE_UNAPPROVED_FIELDS")
     return task
 
 
-def fetch_task(task_id: str, reader_user: str, reader_password: str) -> dict | None:
+def fetch_task(
+    task_id: str, reader_user: str, reader_password: str,
+    plan_id: str = PLAN,
+) -> dict | None:
+    if plan_id not in STATIC_PLANS:
+        raise RequestDenied("UNKNOWN_STATIC_PLAN")
     body = json.dumps(
-        {"statements": [{"statement": CYPHER,
+        {"statements": [{"statement": STATIC_PLANS[plan_id],
                          "parameters": {"id": task_id},
                          "resultDataContents": ["row"]}]},
         separators=(",", ":"),
@@ -88,7 +125,8 @@ def fetch_task(task_id: str, reader_user: str, reader_password: str) -> dict | N
     )
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
-            return decode_task_response(json.loads(response.read(32768)))
+            return decode_task_response(
+                json.loads(response.read(32768)), plan_id)
     except RequestDenied:
         raise
     except (urllib.error.URLError, TimeoutError, OSError,
@@ -143,6 +181,7 @@ class Handler(BaseHTTPRequestHandler):
             task = fetch_task(
                 task_id, self.server.reader_user,
                 self.server.reader_password,
+                payload["plan_id"],
             )
         except (RequestDenied, ValueError, UnicodeError) as exc:
             if isinstance(exc, RequestDenied) and str(exc).startswith("GRAPH_"):
