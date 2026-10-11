@@ -134,3 +134,42 @@ paths from receiving the gateway's private service credential.
 distributed owner failover fencing, provider process execution attestation,
 encrypted tenant/subject/producer/node trace custody and physical
 two-user/iPhone acceptance.
+
+
+## Request-bound protocol update (2026-10-11)
+
+The AssistX gateway now issues **only v2** Ed25519 delegations containing
+the exact `request_path=/v1/chat/completions` and a domain-separated
+`request_sha256` over the canonical serialized JSON request. The
+router's actual opt-in middleware requires v2 and validates the digest of
+the **original request** before its executor-service metadata injection.
+This makes the signed actor's claimed attempt accountable to exactly
+one authorized prompt, endpoint and output-token budget. Caller-supplied
+`user`, metadata or a mutation after signature cannot silently change
+what was authorized.
+
+Additionally, the gateway roster now refuses mapping two *different*
+pinned IdP `sub` values to one `(tenant, subject)` identity. Explicit
+account-linking and subject migration are a separate operator/IdP
+responsibility. Router JSON responses are consumed with a strict
+**256 KiB streaming bound**, rather than unbounded buffering followed
+by a size check. Redirects, malformed response lengths and duplicated
+JSON fields fail closed. Ambient proxy environment variables are ignored.
+
+A cross-repository v2 test found and fixed a byte-domain separator
+incompatibility. Both repositories now have an independent golden digest
+vector, and Auto-router's cross-repo test tampers with a prompt **after**
+valid gateway signing. Its ASGI verifier rejects the altered prompt
+before creating a root reservation or invoking the stub handler.
+
+**Evidence:** AssistX exact code SHA
+`0e99c6e301f6839bcf5cb2548e3874b2558cc46d`
+(Ruff PASS; **21 focused tests PASS**; hosted isolated identity workflow
+[PASS](https://github.com/scottjoyner/auto-assist/actions/runs/38181519239)).
+Auto-router shared-primary code SHA
+`d7080d9906e17a55e270da28131a27e85d6b7be8`
+(554 passed, 11 skipped, 1 separately investigated live inventory-drift
+check deselected). These are **test fixture identities**, not real IdP
+logins; completion is still a stub; global database failover, encrypted
+trace custody, per-user delivery and physical device acceptance remain
+OPEN. The full AssistX CI suite is **not green**.
