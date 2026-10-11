@@ -291,3 +291,49 @@ def test_authenticated_nonoperator_never_reaches_fleet_sidecar(monkeypatch, allo
         "model_handle": "model:v1:" + "1" * 32, "prompt": "hi",
     }).status_code == 403
     assert events == []
+
+
+def test_production_wired_projection_dependency_uses_signed_v2(monkeypatch):
+    """Exercise the route's real projection factory, not a supplied document."""
+    import base64
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives import serialization
+    from assistx import api, mobile_agent_routes, runtime_projection_v2
+
+    signer = Ed25519PrivateKey.generate()
+    private_bytes = signer.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    monkeypatch.setenv(
+        "ASSISTX_RUNTIME_PROJECTION_SIGNING_KEY_PEM",
+        base64.urlsafe_b64encode(private_bytes).decode("ascii").rstrip("="),
+    )
+    monkeypatch.setenv("ASSISTX_RUNTIME_PROJECTION_TTL_SECONDS", "60")
+    sentinel = object()
+    monkeypatch.setattr(api, "_neo", lambda: sentinel)
+
+    def controlled_graph_projection(neo_factory, *, secret, ttl_seconds, now_ms):
+        assert neo_factory() is sentinel
+        assert ttl_seconds == 60
+        return {
+            "schema_version": "1", "source": "controlled-graph",
+            "generation": 7, "revision": "test-revision",
+            "generated_at_ms": 1000, "expires_at_ms": 61000,
+            "providers": [],
+        }
+
+    monkeypatch.setattr(
+        runtime_projection_v2.legacy,
+        "build_runtime_projection",
+        controlled_graph_projection,
+    )
+    document = mobile_agent_routes._current_runtime_projection()
+    assert document["schema_version"] == "2"
+    assert document["signature_algorithm"] == "Ed25519"
+    assert document["signature"]
+    signer.public_key().verify(
+        base64.urlsafe_b64decode(document["signature"] + "=="),
+        runtime_projection_v2.signing_message(document),
+    )
