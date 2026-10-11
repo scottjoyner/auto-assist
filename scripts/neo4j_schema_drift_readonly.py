@@ -42,7 +42,10 @@ class IncompleteSchemaDeclaration(ValueError):
 
 
 def declared_schema(source: str) -> tuple[set[tuple[str, str]], set[tuple[str, str]], int]:
-    tree = ast.parse(source)
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError) as exc:
+        raise IncompleteSchemaDeclaration("schema source cannot be parsed") from exc
     classes = [
         n for n in tree.body
         if isinstance(n, ast.ClassDef) and n.name == "Neo4jClient"
