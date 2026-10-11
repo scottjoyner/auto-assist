@@ -32,6 +32,14 @@ There are **two release tracks**:
  
 **Important:** physical tests listed in different rows may have been performed in separate *subprobes*. In particular the synthetic HTTP path does not itself run a real Neo4j Bolt read through the new isolated broker. Do not claim an integrated, production-equivalent transaction chain.
 
+## October 11 B02 caller-census reconciliation
+
+[Dedicated reproducible caller-census report](./TRACE_NEO4J_CONSUMER_CENSUS_20261011.md) now identifies **72 Neo4jClient methods, 149 potential method call sites, 194 direct session sites outside the client, and 57 files with graph call indications**. These numbers are *conservative static source evidence*, not unique active queries or an executed authorization audit. B02 is now **mapped/partially analyzed, still P0 NOT ACCEPTED**.
+
+The nine source-level `get_task` call sites demonstrate why the two narrow broker plans are insufficient for general migration: review approval needs `title` fallback and task/dispatch writes; replan reads then directly writes `SET`; completion invokes improvement evaluation/benchmark logic; heartbeat and review rejection/clarification require separate behavior/authorization gates. A graph read alone cannot remove the live worker network bypass.
+
+Latest reviewed source and consumer-guard head `c73532b9f9c5a292d53674467f486e5c48561e2d`: **233/233 focused local tests pass**. This is research-only CI, not staging or release approval.
+
 ## Open blockers — release-stopping
 
 | ID | Priority | Unresolved gate | Exact acceptance required to change status | Responsible discipline |
