@@ -11,8 +11,6 @@ from pathlib import Path
 import re
 import time
 
-from neo4j import GraphDatabase
-
 FIELDS = frozenset({
     "assistx_schema", "assistx_operation_id", "assistx_attempt_id",
     "assistx_reservation_id", "assistx_epoch", "assistx_term",
@@ -31,6 +29,7 @@ def held_task(task_id: str, reader_user: str, reader_password: str,
                              str(metadata.get("assistx_reservation_id"))) or
             RELEASE.exists() or TARGET.exists()):
         raise ValueError("B06_EXPLICIT_TRANSACTION_REFUSED")
+    from neo4j import GraphDatabase  # manual disposable physical mode only
     with GraphDatabase.driver(
             "bolt://neo4j:7687", auth=(reader_user, reader_password),
             connection_timeout=4) as driver:
