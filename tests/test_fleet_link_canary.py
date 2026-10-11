@@ -58,7 +58,7 @@ def sidecar_ready(ready=True, *, response_model=ROUTE):
 
 
 def gateway(monkeypatch, *, projection_doc=None, ready=True, auth=True,
-            changed_result=None, state=None, do_network=True):
+            changed_result=None, state=None, do_network=True, finish_reason="stop"):
     monkeypatch.setenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET", "disposable-test-secret")
     monkeypatch.setenv("ASSISTX_FLEET_LINK_CANARY", "1")
     monkeypatch.setenv("ASSISTX_FLEET_LINK_URL", URL)
@@ -82,7 +82,7 @@ def gateway(monkeypatch, *, projection_doc=None, ready=True, auth=True,
                 "model": changed_result if changed_result is not None else request_body["model"],
                 "choices": [{
                     "message": {"role": "assistant", "content": "accepted synthetic canary"},
-                    "finish_reason": "stop",
+                    "finish_reason": finish_reason,
                 }],
             }, headers={"X-Fleet-Trace-Id": "1" * 32})
         return httpx.Response(404)
@@ -267,3 +267,15 @@ def test_projection_builder_v2_compatibility_is_same_signed_builder():
         build_runtime_projection_v2,
     )
     assert build_runtime_projection_v2 is build_runtime_projection
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "content_filter", None])
+def test_incomplete_upstream_completion_is_not_reported_as_success(monkeypatch, finish_reason):
+    client, events = gateway(monkeypatch, finish_reason=finish_reason)
+    handle = _mobile_model_handle(projection()["providers"][0]["models"][0])
+    response = client.post("/api/fleet-link/canary", json={
+        "model_handle": handle, "prompt": "bounded synthetic test", "max_tokens": 32,
+    })
+    assert response.status_code == 503
+    assert response.json() == {"detail": {"error": "fleet_link_canary_unavailable"}}
+    assert [event["path"] for event in events][-1] == "/v1/chat/completions"
