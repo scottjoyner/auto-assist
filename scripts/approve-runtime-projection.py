@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 import pathlib
+import stat
 import sys
 import time
 from dataclasses import dataclass
@@ -15,7 +16,8 @@ from urllib.parse import urlparse
 
 import yaml
 from neo4j import GraphDatabase
-
+from runtime_projection_signed_apply_gate import require_uniqueness_constraints
+from runtime_projection_signed_apply_gate import validate as verify_signed_apply
 
 _TAILSCALE = ipaddress.ip_network("100.64.0.0/10")
 _UNKNOWN = {"", "unknown", "unresolved", "none", "null", "replace-me"}
@@ -235,7 +237,15 @@ def validate_manifest(payload: dict[str, Any]) -> ValidatedManifest:
     )
 
 
-def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dict[str, Any]:
+def _apply_transaction(
+    tx: Any, manifest: ValidatedManifest, attestation: dict[str, Any],
+    source_public_key: bytes, operator_public_key: bytes,
+) -> dict[str, Any]:
+    # Recheck signatures/freshness on every transaction retry, before writes.
+    now_ms = int(time.time() * 1000)
+    proof = verify_signed_apply(
+        manifest.payload, attestation, source_public_key, operator_public_key, now_ms,
+    )
     payload = manifest.payload
     generation = int(payload["generation"])
     expected = int(payload["expected_current_generation"])
@@ -253,6 +263,13 @@ def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dic
         raise RuntimeError(
             f"generation compare-and-swap failed: expected {expected}, current {current}"
         )
+    previous = tx.run(
+        "MATCH (a:RuntimeProjectionApprovalReceipt {approval_id:$approval_id}) "
+        "RETURN count(a) AS uses",
+        approval_id=proof.approval_id,
+    ).single()
+    if previous and int(previous["uses"]) > 0:
+        raise RuntimeError("approval ID already used for a canonical projection")
 
     tx.run(
         """
@@ -267,12 +284,19 @@ def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dic
         """
     ).consume()
 
+    # Source observation times come from the verified signed receipt, NOT
+    # the time the operator approved/published the canonical generation.
+    signed_rows = {
+        row["runtime_instance_id"]: row
+        for row in attestation["source"]["payload"]["observations"]
+    }
     runtime_count = 0
     model_count = 0
     path_count = 0
     for runtime in payload["runtimes"]:
         runtime_count += 1
         runtime_id = str(runtime["runtime_instance_id"])
+        source_row = signed_rows[runtime_id]
         tx.run(
             """
             MERGE (r:RuntimeInstance {runtime_instance_id:$runtime_instance_id})
@@ -287,7 +311,7 @@ def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dic
                 r.projection_generation=$generation,
                 r.approved_by=$approved_by,
                 r.approval_id=$approval_id,
-                r.observed_at_ts=$now_ms,
+                r.observed_at_ts=$observed_at_ts,
                 r.expires_at_ts=$expires_at_ts,
                 r.updated_at=datetime(), r.updated_at_ts=timestamp()
             """,
@@ -301,6 +325,7 @@ def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dic
             approved_by=payload["approved_by"],
             approval_id=payload["approval_id"],
             now_ms=now_ms,
+            observed_at_ts=source_row["physical_observed_at_ms"],
             expires_at_ts=expires_at_ts,
         ).consume()
 
@@ -319,7 +344,7 @@ def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dic
                 c.projection_generation=$generation,
                 c.approved_by=$approved_by,
                 c.approval_id=$approval_id,
-                c.observed_at_ts=$now_ms,
+                c.observed_at_ts=$observed_at_ts,
                 c.expires_at_ts=$expires_at_ts,
                 c.updated_at=datetime(), c.updated_at_ts=timestamp()
             WITH c
@@ -336,9 +361,11 @@ def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dic
             approved_by=payload["approved_by"],
             approval_id=payload["approval_id"],
             now_ms=now_ms,
+            observed_at_ts=source_row["capacity_observed_at_ms"],
             expires_at_ts=expires_at_ts,
         ).consume()
 
+        signed_paths = {row["transport"]: row for row in source_row["paths"]}
         for path in runtime["access_paths"]:
             path_count += 1
             normalized_url = str(path["base_url"]).rstrip("/")
@@ -358,7 +385,7 @@ def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dic
                     a.projection_generation=$generation,
                     a.approved_by=$approved_by,
                     a.approval_id=$approval_id,
-                    a.observed_at_ts=$now_ms,
+                    a.observed_at_ts=$observed_at_ts,
                     a.expires_at_ts=$expires_at_ts,
                     a.updated_at=datetime(), a.updated_at_ts=timestamp()
                 WITH a
@@ -375,6 +402,7 @@ def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dic
                 approved_by=payload["approved_by"],
                 approval_id=payload["approval_id"],
                 now_ms=now_ms,
+                observed_at_ts=signed_paths[path["transport"]]["canary_observed_at_ms"],
                 expires_at_ts=expires_at_ts,
             ).consume()
 
@@ -405,7 +433,7 @@ def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dic
                     m.projection_generation=$generation,
                     m.approved_by=$approved_by,
                     m.approval_id=$approval_id,
-                    m.observed_at_ts=$now_ms,
+                    m.observed_at_ts=$observed_at_ts,
                     m.expires_at_ts=$expires_at_ts,
                     m.updated_at=datetime(), m.updated_at_ts=timestamp()
                 WITH artifact, m
@@ -426,9 +454,33 @@ def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dic
                 approved_by=payload["approved_by"],
                 approval_id=payload["approval_id"],
                 now_ms=now_ms,
+                observed_at_ts=source_row["model_observed_at_ms"],
                 expires_at_ts=expires_at_ts,
             ).consume()
 
+    # Replay marker is committed atomically with projection; no silent reuse.
+    tx.run(
+        """
+        CREATE (a:RuntimeProjectionApprovalReceipt {
+            approval_id:$approval_id,
+            generation:$generation,
+            manifest_checksum:$manifest_checksum,
+            source_receipt_sha256:$source_receipt_sha256,
+            approved_by:$approved_by,
+            source_observed_at_ts:$source_observed_at_ts,
+            reviewer_approved_at_ts:$reviewer_approved_at_ts,
+            created_at_ts:$now_ms
+        })
+        """,
+        approval_id=proof.approval_id,
+        generation=generation,
+        manifest_checksum=manifest.checksum,
+        source_receipt_sha256=proof.source_sha256,
+        approved_by=payload["approved_by"],
+        source_observed_at_ts=proof.source_observed_at_ms,
+        reviewer_approved_at_ts=proof.approved_at_ms,
+        now_ms=now_ms,
+    ).consume()
     tx.run(
         """
         MATCH (s:FleetProjectionState {name:'canonical'})
@@ -438,6 +490,7 @@ def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dic
             s.approved_by=$approved_by,
             s.approval_id=$approval_id,
             s.manifest_checksum=$manifest_checksum,
+            s.source_receipt_sha256=$source_receipt_sha256,
             s.expires_at_ts=$expires_at_ts,
             s.updated_at=datetime(), s.updated_at_ts=timestamp()
         """,
@@ -446,6 +499,7 @@ def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dic
         approved_by=payload["approved_by"],
         approval_id=payload["approval_id"],
         manifest_checksum=manifest.checksum,
+        source_receipt_sha256=proof.source_sha256,
         expires_at_ts=expires_at_ts,
     ).consume()
     return {
@@ -456,7 +510,39 @@ def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dic
         "model_count": model_count,
         "access_path_count": path_count,
         "expires_at_ts": expires_at_ts,
+        "source_receipt_sha256": proof.source_sha256,
+        "approved_at_ts": proof.approved_at_ms,
     }
+
+
+def _read_trusted_key(name: str) -> bytes:
+    configured = os.getenv(name, "")
+    if not configured:
+        raise ValueError("separately configured trusted public-key file required")
+    path = pathlib.Path(configured)
+    if not path.is_absolute() or path.is_symlink():
+        raise ValueError("trusted key path must be absolute and not a symlink")
+    metadata = path.stat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o022:
+        raise ValueError("trusted key file cannot be group/world writable")
+    raw = path.read_bytes()
+    if len(raw) != 65 or raw[-1:] != b"\n":
+        raise ValueError("trusted key file must be 64 hex characters + newline")
+    try:
+        return bytes.fromhex(raw[:-1].decode("ascii"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError("trusted public-key encoding invalid") from exc
+
+
+def _read_signed_receipts(path: pathlib.Path) -> dict[str, Any]:
+    if not path.is_absolute() or path.is_symlink() or not path.is_file():
+        raise ValueError("attestation path must be a regular absolute file")
+    if not 0 < path.stat().st_size <= 64_000:
+        raise ValueError("attestations exceed input budget")
+    obj = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(obj, dict):
+        raise ValueError("attestations root must be a mapping")
+    return obj
 
 
 def main() -> int:
@@ -468,6 +554,8 @@ def main() -> int:
     )
     parser.add_argument("manifest", type=pathlib.Path)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--signed-attestations", type=pathlib.Path,
+                        help="two independent signed receipts; required for --apply")
     parser.add_argument("--evidence-output", type=pathlib.Path)
     args = parser.parse_args()
 
@@ -490,6 +578,20 @@ def main() -> int:
         "runtime_count": len(manifest.payload["runtimes"]),
     }
     if args.apply:
+        try:
+            if args.signed_attestations is None:
+                raise ValueError("apply requires independent signed attestations")
+            evidence = _read_signed_receipts(args.signed_attestations)
+            source_key = _read_trusted_key("ASSISTX_RUNTIME_SOURCE_PUBKEY_FILE")
+            operator_key = _read_trusted_key("ASSISTX_RUNTIME_OPERATOR_PUBKEY_FILE")
+            verify_signed_apply(
+                manifest.payload, evidence, source_key, operator_key,
+                int(time.time() * 1000),
+            )
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            print("RUNTIME_PROJECTION_APPROVAL: BLOCKED signed evidence: "
+                  + type(exc).__name__, file=sys.stderr)
+            return 2
         uri = os.getenv("NEO4J_URI", "").strip()
         user = os.getenv("NEO4J_USER", "neo4j").strip()
         password = os.getenv("NEO4J_PASSWORD", "").strip()
@@ -503,10 +605,19 @@ def main() -> int:
         driver = GraphDatabase.driver(uri, auth=(user, password))
         try:
             with driver.session(database=database) as session:
+                # Trusted read-only database schema check, before ANY write.
+                # Fail closed if no unique canonical name or approval receipt ID.
+                constraints = session.run(
+                    "SHOW CONSTRAINTS YIELD type, labelsOrTypes, properties "
+                    "RETURN type, labelsOrTypes, properties"
+                ).data()
+                require_uniqueness_constraints(constraints)
                 applied = session.execute_write(
                     _apply_transaction,
                     manifest,
-                    int(time.time() * 1000),
+                    evidence,
+                    source_key,
+                    operator_key,
                 )
         except Exception as exc:
             print(
