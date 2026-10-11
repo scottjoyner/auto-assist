@@ -49,6 +49,7 @@ print(json.dumps({
  "changed_plan_same_identity_denied":True,
  "cap_three_preserves_pending":True,
  "no_witness_or_automatic_capacity_release":True,
- "single_host_Raft_not_independent_failure_domains":True,
+ "single_host_Raft_not_independent_failure_domains":not CONFIG.get("remote_three_host",False),
+ "three_real_raft_hosts_mtls_RBAC":bool(CONFIG.get("remote_three_host",False)),
  "production_deployed":False,
 },sort_keys=True))
