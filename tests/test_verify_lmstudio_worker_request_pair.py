@@ -53,6 +53,7 @@ def fixture():
         "audience": M.AUDIENCE, "role": "worker",
         "request_id": RID, "owner_digest": "b" * 64,
         "request_sha256": "c" * 64, "nonce_sha256": "d" * 64,
+        "model_instance_id": "liquid/lfm2.5-1.2b-instance-test",
         "worker_identity": identity,
         "started_ms": NOW - 30_000, "completed_ms": NOW - 12_000,
         "completion_state": "COMPLETED", "finish_reason": "stop",
@@ -62,6 +63,7 @@ def fixture():
         "audience": M.AUDIENCE, "role": "gateway",
         "request_id": RID, "owner_digest": "b" * 64,
         "request_sha256": "c" * 64, "nonce_sha256": "d" * 64,
+        "model_instance_id": "liquid/lfm2.5-1.2b-instance-test",
         "worker_identity": copy.deepcopy(identity),
         "started_ms": NOW - 35_000, "completed_ms": NOW - 11_000,
         "completion_state": "COMPLETED", "http_status": 200,
@@ -160,6 +162,16 @@ class TestWorkerRequestPair(unittest.TestCase):
             "11111111-2222-4333-8444-555555555555"
         )
         with self.assertRaisesRegex(ValueError, "worker_identity"):
+            self.check()
+
+    def test_different_loaded_model_instance_denied(self):
+        self.gateway["model_instance_id"] = "liquid/another-model-instance"
+        with self.assertRaisesRegex(ValueError, "model_instance_id"):
+            self.check()
+
+    def test_malformed_model_instance_denied(self):
+        self.worker["model_instance_id"] = "invalid whitespace instance"
+        with self.assertRaisesRegex(ValueError, "instance ID"):
             self.check()
 
     def test_model_digest_mismatch_denied(self):
