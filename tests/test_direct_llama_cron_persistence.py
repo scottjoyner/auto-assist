@@ -128,6 +128,18 @@ class TestCronPersistence(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.inspect(listener_port=port)
 
+    def test_localhost_literal_in_healthcheck_does_not_prove_bind(self):
+        self.embedding.write_text(
+            "#!/bin/sh\n"
+            "curl -fsS http://127.0.0.1:1235/health >/dev/null\n"
+            "exec /opt/bin/llama-server --host 0.0.0.0 --port 1235\n"
+        )
+        r = self.inspect()
+        self.assertEqual(r["status"], "BLOCKED_CRON_PERSISTENCE_CANDIDATE")
+        self.assertTrue(r["candidate_launchers"][0]["mentions_loopback_literal"])
+        self.assertFalse(r["candidate_launchers"][0]["declared_host_loopback_proven"])
+        self.assertFalse(r["can_change_listener"])
+
     def test_oversized_crontab_rejected(self):
         with self.assertRaises(ValueError):
             self.inspect(crontab="x" * (M.MAX_CRONTAB_BYTES + 1))
