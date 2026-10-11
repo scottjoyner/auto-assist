@@ -65,7 +65,7 @@ def audit(base: str, head: str) -> dict:
         raise ValueError("too many commits for bounded custody review")
 
     final_diff = _git_metadata(
-        "diff", "--no-renames", "--name-status", "-z", base, head, "--",
+        "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-status", "-z", base, head, "--",
     )
     report = classify(final_diff if final_diff else b"\0")
     net_sensitive = report["sensitive_change_count"]
@@ -77,7 +77,7 @@ def audit(base: str, head: str) -> dict:
             raise ValueError("invalid commit ancestry")
         commit, first_parent = parts[:2]
         delta = _git_metadata(
-            "diff", "--no-renames", "--name-status", "-z",
+            "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-status", "-z",
             first_parent, commit, "--",
         )
         record = classify(delta if delta else b"\0")
