@@ -287,7 +287,7 @@ def run() -> dict:
                 raise RuntimeError("WORKER_TO_BROKER_TASK_READ_ACCEPTANCE_FAILED")
             if joined:
                 verifier = (
-                    "import json,sys;"
+                    "import json,sys;sys.path.insert(0,'/tmp');"
                     "from trace_disposable_raft_http import ResearchHTTP;"
                     "from trace_etcd_quorum_fence_research import EtcdQuorumFence;"
                     "p=json.load(open('/tmp/broker-config.json'));"
