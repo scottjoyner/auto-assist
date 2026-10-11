@@ -50,6 +50,28 @@
     </div>
   </section>
 
+  <section class="card half" id="component-health" aria-label="Evidence-qualified fleet component health">
+    <div class="section-header">
+      <div><h3>Component Health</h3><p class="kicker">Only fresh node reports earn a health score. Missing evidence is unknown, not healthy.</p></div>
+    </div>
+    <div id="component-health-item" class="stack-sm mt-3" role="status">
+      <span id="component-name">Fresh fleet node connectivity</span>
+      <span id="component-status">unknown</span>
+      <span id="component-score">unmeasured</span>
+    </div>
+  </section>
+
+  <section class="card half" id="trend-analysis" aria-label="Current snapshot, not an inferred trend">
+    <div class="section-header">
+      <div><h3>Trend Analysis</h3><p class="kicker">Historical direction unavailable without independently retained measurements.</p></div>
+    </div>
+    <div id="trend-item" class="stack-sm mt-3" role="status">
+      <span id="trend-metric">Fresh reported nodes online</span>
+      <span id="trend-value">unmeasured</span>
+      <span id="trend-change">insufficient history</span>
+    </div>
+  </section>
+
   <section class="card half" id="section-nodes">
     <div class="section-header">
       <div>
@@ -212,6 +234,7 @@
     return `${v.toFixed(1)} ${units[i]}`;
   };
 
+  let lastDashboardSnapshot = null;
   let autoRefresh = true;
   let refreshTimer = null;
   let benchmarkControllerEnabled = false;
@@ -228,8 +251,10 @@
     try {
       const r = await fetch('/api/fleet/dashboard');
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return await r.json();
+      lastDashboardSnapshot = await r.json();
+      return lastDashboardSnapshot;
     } catch (e) {
+      lastDashboardSnapshot = null;
       console.error('Dashboard load failed:', e);
       return null;
     }
@@ -268,6 +293,34 @@
     document.getElementById('running-tasks').textContent = running;
     document.getElementById('total-ram').textContent = (data.nodes?.reduce((a, n) => a + (n.hardware?.ram_gib || 0), 0).toFixed(1) + ' GiB') || '—';
     document.getElementById('total-vram').textContent = (data.nodes?.reduce((a, n) => a + (n.hardware?.vram_gib || 0), 0).toFixed(1) + ' GiB') || '—';
+  }
+
+  function renderReadonlyIndicators(data) {
+    const components = data?.component_health || [];
+    const health = document.getElementById('component-health-item');
+    health.innerHTML = components.map(c => `<div class="summary-line">
+      <strong class="component-name">${esc(c.name)}</strong>
+      <span class="badge component-status">${esc(c.status)}</span>
+      <span class="component-score">${c.score_known ? esc(c.score + '/100') : 'unmeasured'}</span>
+      <span class="muted">${esc((c.issues || []).join('; ') || 'No issues observed in the verified cohort')}</span>
+      </div>`).join('') || '<div class="muted">Component reporting unavailable</div>';
+
+    const trends = data?.trend_data || [];
+    const wrap = document.getElementById('trend-item');
+    wrap.innerHTML = trends.map(t => `<div class="summary-line">
+      <strong class="trend-metric">${esc(t.metric)}</strong>
+      <span class="trend-value">${t.current == null ? 'unmeasured' : esc(t.current)}</span>
+      <span class="trend-change">${esc(t.trend)} (no historical inference)</span>
+      </div>`).join('') || '<div class="muted">No retained trend history</div>';
+    document.querySelectorAll('.health-score').forEach(el => {
+      el.textContent = data.health_score_status === 'measured' ?
+        data.health_score + '/100' : 'unknown';
+    });
+    document.querySelectorAll('.critical-alerts').forEach(el => {
+      const count = data.critical_alerts?.length || 0;
+      el.textContent = count ? count + ' observed critical alerts' : '';
+      el.style.display = count ? '' : 'none';
+    });
   }
 
   function renderNodes(data) {
@@ -703,6 +756,7 @@
     renderServiceHealth(controlRoom);
     if (data) {
       renderSummary(data);
+      renderReadonlyIndicators(data);
       renderNodes(data);
       renderModelMatrix(data);
       renderRouting(data);
@@ -724,6 +778,22 @@
   window.addEventListener('fleet-refresh', () => refresh());
 
   document.getElementById('btn-refresh').addEventListener('click', refresh);
+  // Export only the last authorized snapshot held in this browser session.
+  // No server-side write, command dispatch, or unverified historical claims.
+  document.getElementById('export-data')?.addEventListener('click', () => {
+    if (!lastDashboardSnapshot) return alert('No current dashboard snapshot available');
+    const blob = new Blob([JSON.stringify(lastDashboardSnapshot, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'assistx-fleet-snapshot.json';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  document.getElementById('quick-actions')?.addEventListener('click', () => {
+    // Navigation only: actual mutating actions retain separate operator gates.
+    window.location.assign('/operations');
+  });
   document.getElementById('btn-benchmark-control').addEventListener('click', async function() {
     await fetch('/api/fleet/benchmark-controller/control', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
