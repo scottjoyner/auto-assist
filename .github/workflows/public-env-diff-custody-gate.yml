@@ -31,3 +31,12 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           python scripts/audit_sensitive_pr_patch_names.py --base "$BASE_SHA" --head "$HEAD_SHA"
+      - name: Flag sensitive environment-path changes on main pushes
+        if: github.event_name == 'push'
+        env:
+          BASE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          # Detection is after a push, not credential custody clearance.
+          # Zero/unavailable ancestors fail closed; investigate privately.
+          python scripts/audit_sensitive_pr_patch_names.py --base "$BASE_SHA" --head "$HEAD_SHA"
