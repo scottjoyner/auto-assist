@@ -10,6 +10,8 @@ import json
 import os
 from pathlib import Path
 import secrets
+import socket
+import struct
 import subprocess
 import tempfile
 import threading
@@ -58,6 +60,48 @@ def query(graph: str, admin: str, statement: str,
         timeout=timeout, check=False,
     )
     return proc
+
+
+def observe_disposable_peer_uid(private_dir: Path) -> int:
+    """Measure *kernel host-side* SO_PEERCRED for ephemeral container root.
+
+    Docker user namespaces can map container root to the host overflow UID
+    (observed 65534), NOT host 0. This identifies only a shared numeric UID,
+    NOT a cryptographic service identity. Use solely for this opt-in fixture.
+    """
+    listen_path = private_dir / "uid-discovery.sock"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(str(listen_path))
+        os.chmod(listen_path, 0o600)
+        server.settimeout(10)
+        server.listen(1)
+        child = subprocess.Popen(
+            ["docker", "run", "--rm", "--pull", "never",
+             "--network", "none",
+             "--mount", "type=bind,src=" + str(private_dir) +
+                        ",dst=/run/assistx-policy,readonly",
+             PYTHON_IMAGE, "python", "-c",
+             "import socket; s=socket.socket(socket.AF_UNIX);"
+             "s.settimeout(3);"
+             "s.connect('/run/assistx-policy/uid-discovery.sock');"
+             "s.close()"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            connection, _ = server.accept()
+            with connection:
+                peer = connection.getsockopt(
+                    socket.SOL_SOCKET, socket.SO_PEERCRED,
+                    struct.calcsize("3i"))
+                _, peer_uid, _ = struct.unpack("3i", peer)
+            if child.wait(timeout=10) != 0 or peer_uid < 0:
+                raise RuntimeError("DISPOSABLE_UID_IDENTITY_PROBE_FAILED")
+            return peer_uid
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+            listen_path.unlink(missing_ok=True)
 
 
 def run(raft_authority=None) -> dict:
@@ -115,7 +159,8 @@ def run(raft_authority=None) -> dict:
                                  "task-broker-raft-genesis",
                                  frozenset({"get_task_read",
                                             "get_task_claim_guard"})),
-                    allowed_uid=0,
+                    allowed_uid=observe_disposable_peer_uid(
+                        policy_socket_dir),
                 )
                 policy_thread = threading.Thread(
                     target=policy_service.serve_forever, daemon=True)
