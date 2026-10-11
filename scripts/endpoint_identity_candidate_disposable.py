@@ -25,7 +25,7 @@ from neo4j import GraphDatabase
 # query bodies or transient database context into operator logs.
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src/assistx/endpoint_identity_candidate.py"
 spec = importlib.util.spec_from_file_location("endpoint_identity_candidate", SOURCE)
 assert spec and spec.loader
