@@ -49,7 +49,7 @@ Tests use **synthetic identifiers only**. The script validates Docker network an
 
 ### October 11, 2026 witness
 
-The exact packaged harness was physically executed on x1 with Neo4j 5.26 Enterprise. Offline candidate contract tests: **41 passed / 47 subtests**. Disposable physical checks: **9 of 9 PASS**, including:
+The exact packaged harness was physically executed on x1 with Neo4j 5.26 Enterprise. Offline candidate contract tests: **41 passed / 47 subtests**. Disposable physical checks: **11 of 11 PASS**, including:
 
 | Synthetic scenario | Evidence |
 |---|---|
@@ -61,6 +61,8 @@ The exact packaged harness was physically executed on x1 with Neo4j 5.26 Enterpr
 | Foreign SwarmNode owner | HOLD; no cross-owner link |
 | Same-owner concurrent model writers | Exactly one canonical node and one EXPOSES |
 | **Different-owner concurrent model writers** | Synchronized pre-lock reads; one success, one HOLD after write lock |
+| Concurrent **service and model** writers, matching model service type | Both succeed against the same canonical node and owner |
+| Concurrent **generic service vs model** registrations | Exactly one succeeds, the incompatible type is held without retyping |
 | Isolation and cleanup | Internal-only bridge, no published ports or host mounts, test graph/container/network removed |
 
 These are synthetic witnesses, not production data acceptance or proof that the entire distributed fleet uses the proposed transaction path.
