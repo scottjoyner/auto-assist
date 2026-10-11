@@ -7,6 +7,7 @@ The tests intentionally write synthetic nodes to that isolated database.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
 import sys
@@ -190,6 +191,40 @@ class TestRealNeo4jCanonicalApply(unittest.TestCase):
             self.apply(next_manifest, next_receipt)
         self.assertEqual(self.canonical()["generation"], 1)
         self.assertEqual(self.counts()["receipts"], 1)
+
+    def test_same_source_bound_process_can_receive_separate_new_review(self):
+        manifest, proof = self.bundle()
+        self.apply(manifest, proof)
+        newer, newproof = self.bundle(
+            generation=2, approval_id="different_operator_approval"
+        )
+        result = self.apply(newer, newproof)
+        self.assertEqual(result["generation"], 2)
+        self.assertEqual(self.canonical()["generation"], 2)
+        self.assertEqual(self.counts()["receipts"], 2)
+        self.assertEqual(self.counts()["runtime"], 1)
+
+    def test_recycled_pid_cannot_reuse_old_runtime_identity(self):
+        manifest, proof = self.bundle()
+        self.apply(manifest, proof)
+        previous = self.counts()
+        newer, newproof = self.bundle(
+            generation=2, approval_id="new_review_after_restart"
+        )
+        observation = newproof["source"]["payload"]["observations"][0]
+        observation["process_start_ticks"] += 1
+        newproof["source"] = F.sign(
+            self.source_key, newproof["source"]["payload"]
+        )
+        operator = newproof["operator"]["payload"]
+        operator["source_receipt_sha256"] = hashlib.sha256(
+            G.canonical(newproof["source"])
+        ).hexdigest()
+        newproof["operator"] = F.sign(self.operator_key, operator)
+        with self.assertRaisesRegex(RuntimeError, "process identity changed"):
+            self.apply(newer, newproof)
+        self.assertEqual(self.counts(), previous)
+        self.assertEqual(self.canonical()["generation"], 1)
 
     def test_late_failure_rolls_back_retirement_and_approval_receipt(self):
         manifest, receipt = self.bundle()
