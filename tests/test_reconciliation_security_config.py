@@ -46,7 +46,7 @@ def test_executor_remains_profile_gated_and_strict() -> None:
 
 
 def test_reconciliation_template_has_no_shared_projection_hmac() -> None:
-    template = (ROOT / ".env.reconciliation.example").read_text(encoding="utf-8")
+    template = (ROOT / "deploy" / "reconciliation.keys.example").read_text(encoding="utf-8")
 
     assert "ASSISTX_RUNTIME_PROJECTION_PRIVATE_KEY_FILE" in template
     assert "ASSISTX_RUNTIME_PROJECTION_PUBLIC_KEY_FILE" in template
