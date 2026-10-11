@@ -16,8 +16,12 @@ on:
       - 'tests/probe_trace_entry*.py'
       - 'tests/probe_trace_fencing*.py'
       - 'tests/probe_trace_etcd_*.py'
-      - 'tests/probe_trace_bolt_topology_readonly.py'
+      - 'tests/probe_trace_bolt_topology_readonly.py tests/probe_trace_isolated_task_broker.py tests/trace_disposable_task_broker.py tests/trace_disposable_task_worker.py'
       - 'tests/test_trace_bolt_topology_readonly.py'
+      - 'tests/trace_disposable_task_broker.py'
+      - 'tests/trace_disposable_task_worker.py'
+      - 'tests/probe_trace_isolated_task_broker.py'
+      - 'tests/test_trace_isolated_task_broker.py'
       - 'tests/probe_trace_quorum_neo4j*.py'
       - 'tests/test_trace_quorum_neo4j*.py'
       - '.github/workflows/trace-graph-entry-research.yml'
@@ -58,7 +62,8 @@ jobs:
             tests/test_trace_etcd_policy_writer_research.py \
             tests/test_trace_admission_retry_reconciliation.py \
             tests/test_trace_graph_http_ingress_research.py \
-            tests/test_trace_bolt_topology_readonly.py
+            tests/test_trace_bolt_topology_readonly.py \
+            tests/test_trace_isolated_task_broker.py
       - name: Verify physical probes remain manual-only
         run: |
           python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py tests/probe_trace_fencing_two_primaries.py tests/probe_trace_etcd_three_hosts.py tests/probe_trace_quorum_neo4j_physical.py tests/probe_trace_etcd_rbac_physical.py tests/probe_trace_etcd_ack_loss.py tests/probe_trace_bolt_topology_readonly.py
@@ -94,5 +99,8 @@ jobs:
           topology = Path('tests/probe_trace_bolt_topology_readonly.py').read_text()
           assert 'EXPLICIT_BOUNDARY_READONLY_OPT_IN_REQUIRED' in topology
           assert 'ASSISTX_BOUNDARY_TCP_PROBE' in topology
-          print('Physical probes, RBAC, ack-loss and topology probes remain opt-in; CI never runs them.')
+          broker = Path('tests/probe_trace_isolated_task_broker.py').read_text()
+          assert 'EXPLICIT_DISPOSABLE_GRAPH_BROKER_OPT_IN_REQUIRED' in broker
+          assert 'production_authority' in broker
+          print('Physical probes, RBAC, topology and isolated broker remain opt-in; CI never runs them.')
           PY
