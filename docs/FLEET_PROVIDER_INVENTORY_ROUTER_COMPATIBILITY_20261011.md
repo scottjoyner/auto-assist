@@ -118,3 +118,43 @@ alter or skip the existing unit/recovery jobs; those must eventually be
 fixed and pass before release or branch protection changes. No pip
 installation, fleet credentials or external API calls are needed for the
 isolated job.
+
+## Adjacent authenticated admin consumer: Fleet loadout report
+
+A bounded source audit also found that AssistX's
+`src/assistx/api.py::_fetch_auto_router_fleet_report` called the existing
+`/admin/ops/summary` endpoint via generic `_fetch_json` **without** the router
+admin token. That endpoint is already protected in the live deployment;
+unauthed callers receive 401. This is a separate source of empty operator
+Fleet loadout reports and a release incompatibility with any hardened router.
+
+The candidate now delegates only that fixed read-only GET to the isolated
+`src/assistx/router_admin_client.py` helper. The helper requires
+`AUTO_ROUTER_ADMIN_TOKEN` and a valid HTTP(S) origin, sends the credential only
+on that fixed endpoint, and **rejects all HTTP redirects without forwarding
+the token**. Missing tokens generate a bounded, explicit disabled result;
+HTTP denials or invalid JSON remain failures, with no unauthenticated retry.
+Other generic `_fetch_json` consumers retain their original unprivileged
+requests and cannot inherit the privileged header.
+
+The existing `tests/test_migration_api.py` Fleet proxy fixture is updated to
+assert the exact admin token header and `allow_redirects=False` on the GET.
+The full API integration fixture requires the broader AssistX runtime and is
+not claimed green locally while the repository-wide tests remain red.
+
+The additional pure unittest suite `tests/test_router_admin_proxy_contract.py`
+uses only synthetic mocked responses. The combined client suites **16 tests
+PASS on Lenovo**, with no installed package additions, no live router call,
+no credential transfer, and no inference. The SHA-pinned receipt is
+`docs/evidence/assistx-router-admin-client-lenovo-20261011.json`.
+The existing isolated CI job now executes both pure suites, without weakening
+or skipping full unit/recovery gates.
+
+### Operator browser caveat
+
+Auto-Router `ui_pages.py` has direct HTML links to `/admin/*` endpoints.
+After PR #41, a plain browser click cannot supply `X-Admin-Token` and may
+correctly receive **401**. Do **not** add admin tokens to query strings or
+browser URLs to work around this: use an authenticated API client or a
+separately reviewed session-aware operator interface. This UX acceptance
+remains **OPEN** and is not silently certified by the AssistX parser tests.

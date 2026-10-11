@@ -202,6 +202,8 @@ jobs:
           sandbox="${RUNNER_TEMP}/provider-catalog-contract"
           mkdir -p "${sandbox}/assistx" "${sandbox}/tests"
           cp src/assistx/router_provider_inventory.py "${sandbox}/assistx/"
+          cp src/assistx/router_admin_client.py "${sandbox}/assistx/"
           cp tests/test_router_provider_inventory_portable.py "${sandbox}/tests/"
+          cp tests/test_router_admin_proxy_contract.py "${sandbox}/tests/"
           cd "${sandbox}"
-          python -m unittest discover -s tests -p test_router_provider_inventory_portable.py -v
+          python -m unittest discover -s tests -p 'test_router_*.py' -v
