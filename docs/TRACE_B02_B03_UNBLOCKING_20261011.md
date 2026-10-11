@@ -43,6 +43,20 @@ When Raft is enabled, the broker does **not** mark a successful HTTP read as phy
 
 `tests/probe_trace_etcd_three_hosts.py` enables this joined fixture only with all independent research opt-ins; the standard production code path remains untouched. `tests/test_trace_task_broker_raft_join_research.py` exercises real Unix IPC success/duplicate/error envelopes, same-ID changed-plan digests, unavailable writer, malformed grant rejection and source ordering.
 
+### Final physically joined acceptance — PASS
+
+On x1-370 the manual command, with **all three independent opt-ins** `ASSISTX_DISPOSABLE_GRAPH_BROKER=1 ASSISTX_THREE_HOST_RAFT_RESEARCH=1 ASSISTX_BROKER_RAFT_RESEARCH=1`, successfully exercised a temporary three-voter etcd v3.6.14 Raft group on x1-370/xwing/destroyer, a separate policy-writer service, an isolated dual-network broker and an actual disposable Neo4j 5.26 Enterprise Task read.
+
+**PASS, 78.16 seconds, exit 0**, at physical source SHA `cc385e16803094f75ae11083454ce284814bfa8b`. Exact observations:
+
+- Real quorum-committed CAS admission happens at the broker's server-side policy boundary **before** the broker issues the Neo4j HTTP transaction. The worker has no Bolt/graph HTTP path, even by literal IP.
+- The Neo4j Task reader role can read approved minimal and claim-policy fields but is denied `CREATE` by the database.
+- The same worker request ID is denied on replay; a changed plan with reused ID is denied. No second graph read is authorized from either duplicate.
+- **Additional physical failure drill:** after the server-side policy writer was stopped, the still-running isolated broker returned a fail-closed 503 on a new task read. The actual three-host Raft reservations stayed occupied. Neither HTTP success nor policy-writer death releases capacity automatically.
+- The same run retained Raft leader reelection, two-voter majority, exact stale owner/term denial, minority write denial, and restoration of the quorum. No production graph or services were modified. Scoped Docker fixtures were removed.
+
+**Important boundaries:** the joined experiment does not include an external Neo4j transaction closure witness for the broker's Task reads; holding the slots is conservative, not a complete liveness solution. The temporary policy writer runs on the research host, and Docker user namespaces mapped its container root credential to host UID 65534. A numeric mapped UID is **not an independent service identity**; B05 and B06 remain separate NO-GO gates. The current running worker/API still directly reach live Neo4j (B01 FAIL). [Machine-readable physical summary](../research/evidence/assistx-b02-b03-joined-raft-broker-20261011.json).
+
 ### Explicit non-goals that remain blockers
 
 - The graph broker prototype uses a fixture bearer + fixed subject, **not** verified production Tailnet identity or client streaming retries (B04).
