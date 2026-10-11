@@ -396,6 +396,39 @@ def run() -> dict:
                         policy_ip, "8810", timeout=8, check=False)
                     if denied.returncode != 0:
                         raise RuntimeError("WORKER_DIRECT_POLICY_BYPASS")
+                    for port in ("7687", "7474"):
+                        denied = docker(
+                            "exec", writer, "python", "-c",
+                            verify_isolation, neo_ip, port,
+                            timeout=8, check=False)
+                        if denied.returncode != 0:
+                            raise RuntimeError(
+                                "WRITER_DIRECT_NEO4J_BYPASS")
+                    # The broker may contact this fixed RPC origin, but
+                    # an unauthenticated request cannot reserve capacity.
+                    verify_no_auth = (
+                        "import json,sys,urllib.request,urllib.error;"
+                        "u=sys.argv[1];"
+                        "req=urllib.request.Request("
+                        "u+'/v1/admit',method='POST',"
+                        "data=b'{}',"
+                        "headers={'Content-Type':'application/json'});"
+                        "code=0;"
+                        "\\ntry:\\n urllib.request.urlopen(req,timeout=4);"
+                        " code=200"
+                        "\\nexcept urllib.error.HTTPError as e:\\n code=e.code"
+                        "\\nassert code==401,code"
+                    )
+                    # No secrets in argv: only a fixed disposable URL.
+                    verify_no_auth = verify_no_auth.replace(
+                        "\\\\n", "\n")
+                    unauth = docker(
+                        "exec", broker, "python", "-c", verify_no_auth,
+                        "http://" + writer + ":8810",
+                        timeout=9, check=False)
+                    if unauth.returncode != 0:
+                        raise RuntimeError(
+                            "UNAUTHENTICATED_POLICY_WRITER_ACCEPTED")
                 # Fault-inject only our newly created voter containers.
                 # With one of three left, a fresh linearizable read/CAS
                 # cannot be authorized; broker must deny before graph.
@@ -437,6 +470,8 @@ def run() -> dict:
                 "separate_policy_writer_container": split,
                 "broker_no_raw_etcd_network_path": split,
                 "worker_no_direct_policy_writer_path": split,
+                "writer_no_direct_neo4j_path": split,
+                "policy_writer_no_auth_denied": split,
                 "independent_host_or_mtls_policy_auth": False,
                 "disposable_real_raft_CAS_before_Neo4j": joined,
                 "disposable_real_raft_voters_same_host": joined,
