@@ -30,8 +30,20 @@ class Policy:
         if (not isinstance(self.token, str) or len(self.token) < 24 or
                 type(self.term) is not int or self.term != 1):
             raise ValueError("INVALID_DISPOSABLE_POLICY_CONFIG")
+        if "raft_tls_endpoint" in conf:
+            # Real three-host Raft over mTLS AND exact-key RBAC token.
+            # Certificate/key files remain in this isolated writer only.
+            from trace_etcd_bearer_rbac_research import EtcdBearerTLS
+            kv = EtcdBearerTLS(
+                conf["raft_tls_endpoint"],
+                "/tmp/etcd-client/ca.pem",
+                "/tmp/etcd-client/node.pem",
+                "/tmp/etcd-client/node-key.pem",
+                token=conf["raft_bearer"])
+        else:
+            kv = ResearchHTTP(conf["raft_endpoint"])
         self.quorum = EtcdQuorumFence(
-            ResearchHTTP(conf["raft_endpoint"]), conf["raft_key"],
+            kv, conf["raft_key"],
             pinned_cluster_id=conf["raft_cluster"])
 
     def admit(self, request):
@@ -106,9 +118,11 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     conf = json.loads(Path("/tmp/writer-config.json").read_text())
-    expected = {"writer_token", "raft_owner", "raft_term", "raft_genesis",
-                "raft_endpoint", "raft_key", "raft_cluster"}
-    if set(conf) != expected:
+    common = {"writer_token", "raft_owner", "raft_term", "raft_genesis",
+              "raft_key", "raft_cluster"}
+    local = common | {"raft_endpoint"}
+    remote = common | {"raft_tls_endpoint", "raft_bearer"}
+    if set(conf) not in (local, remote):
         raise SystemExit("INVALID_DISPOSABLE_WRITER_CONFIG")
     server = ThreadingHTTPServer(("0.0.0.0", 8810), Handler)
     server.policy = Policy(conf)
