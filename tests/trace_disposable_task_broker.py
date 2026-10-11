@@ -87,6 +87,10 @@ def decode_task_response(
             type(task.get("status")) is not str):
         raise RequestDenied("GRAPH_RESPONSE_UNAPPROVED_FIELDS")
     if plan_id == CLAIM_PLAN:
+        # Never interpret a truncated policy response as ordinary work:
+        # all policy keys must be present, even when source values are null.
+        if set(task) != allowed:
+            raise RequestDenied("GRAPH_RESPONSE_POLICY_FIELDS_MISSING")
         if (task.get("payload_json") is not None and
                 type(task["payload_json"]) is not str):
             raise RequestDenied("GRAPH_RESPONSE_UNAPPROVED_FIELDS")
