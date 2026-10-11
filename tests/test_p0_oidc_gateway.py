@@ -385,3 +385,17 @@ def test_router_response_headers_and_duplicate_fields_fail_closed(
 
     with pytest.raises(HumanGatewayDenied, match=expected):
         asyncio.run(experiment())
+
+
+def test_gateway_v2_digest_matches_fixed_cross_repository_wire_contract():
+    # Fixed contract vector also asserted in Auto-router. Independent hosted
+    # identity tests must catch a typo in encoding/domain separation without
+    # requiring PostgreSQL or importing the other repository.
+    payload = {
+        "model": "auto/code",
+        "messages": [{"role": "user", "content": "synthetic-only canary"}],
+        "max_tokens": 8,
+    }
+    assert _gateway_module._delegated_body_digest(
+        "/v1/chat/completions", payload
+    ) == "6efd8e288e4698a4515ea0f1a882d0a6572831061eb09048dde70fd8f8c9c141"
