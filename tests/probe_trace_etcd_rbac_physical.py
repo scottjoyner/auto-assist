@@ -183,6 +183,15 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
     root = login("root", root_password)
     joined_writer = (login("joined-broker-policy", joined_password)
                      if three_host_join else None)
+    if joined_writer is not None:
+        # The NEW physical broker writer must not inherit the general
+        # experimental writer's permission over sibling graph keys.
+        try:
+            joined_writer.range(service_key)
+        except FenceRefused:
+            pass
+        else:
+            raise AssertionError("JOINED_WRITER_ESCAPED_EXACT_KEY_RBAC")
     assert "REDACTED" in repr(reader) and reader_password not in repr(reader)
 
     read_auth = EtcdQuorumFence(reader, isolated_key, cluster_id)
