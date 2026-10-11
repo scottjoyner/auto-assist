@@ -25,6 +25,7 @@ on:
       - 'tests/trace_task_read_broker_client_research.py'
       - 'tests/test_trace_task_read_broker_client.py'
       - 'tests/test_trace_task_policy_projection_negative.py'
+      - 'tests/test_trace_task_policy_projection_parity.py'
       - 'tests/probe_trace_quorum_neo4j*.py'
       - 'tests/test_trace_quorum_neo4j*.py'
       - '.github/workflows/trace-graph-entry-research.yml'
@@ -68,7 +69,8 @@ jobs:
             tests/test_trace_bolt_topology_readonly.py \
             tests/test_trace_isolated_task_broker.py \
             tests/test_trace_task_read_broker_client.py \
-            tests/test_trace_task_policy_projection_negative.py
+            tests/test_trace_task_policy_projection_negative.py \
+            tests/test_trace_task_policy_projection_parity.py
       - name: Verify physical probes remain manual-only
         run: |
           python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py tests/probe_trace_fencing_two_primaries.py tests/probe_trace_etcd_three_hosts.py tests/probe_trace_quorum_neo4j_physical.py tests/probe_trace_etcd_rbac_physical.py tests/probe_trace_etcd_ack_loss.py tests/probe_trace_bolt_topology_readonly.py
