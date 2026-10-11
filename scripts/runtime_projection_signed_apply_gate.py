@@ -78,7 +78,7 @@ def verify_signature(wrapper: dict, key_bytes: bytes, name: str) -> dict:
 
 
 def require_uniqueness_constraints(records: object) -> None:
-    """Reject apply unless both graph-wide replay and canonical CAS identity exist.
+    """Reject apply without globally unique canonical, runtime and approval IDs.
 
     Results must come from Neo4j's trusted SHOW CONSTRAINTS result, NEVER from
     the untrusted signed bundle or local config. This function writes nothing.
@@ -88,6 +88,7 @@ def require_uniqueness_constraints(records: object) -> None:
     required = {
         ("RuntimeProjectionApprovalReceipt", "approval_id"),
         ("FleetProjectionState", "name"),
+        ("RuntimeInstance", "runtime_instance_id"),
     }
     found: set[tuple[str, str]] = set()
     for row in records:
@@ -103,7 +104,7 @@ def require_uniqueness_constraints(records: object) -> None:
             if key in required:
                 found.add(key)
     if found != required:
-        raise ValueError("canonical and approval-replay uniqueness constraints required")
+        raise ValueError("canonical, runtime and approval-replay uniqueness constraints required")
 
 
 def validate(
