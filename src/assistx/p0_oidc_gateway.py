@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
 import os
 import re
@@ -84,6 +85,17 @@ def _part(raw: str) -> bytes:
 
 def _b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _delegated_body_digest(path: str, payload: dict[str, Any]) -> str:
+    """Stable v2 digest: exact endpoint + fully parsed JSON, not wire spacing."""
+    canon = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")
+    material = b"p0-delegated-body-v2\\x00".replace(b"\\x00", b"\x00")
+    return hashlib.sha256(
+        material + path.encode("ascii") + b"\x00" + canon
+    ).hexdigest()
 
 
 def _signed_jwt(header: dict[str, Any], claims: dict[str, Any], key) -> str:
@@ -207,14 +219,20 @@ class VerifiedHumanGateway:
             raise HumanGatewayDenied("IdP subject, audience or session invalid")
         return self.humans[sub]
 
-    def issue(self, jwt: str, model: str, *, now: int | None = None):
+    def issue(
+        self, jwt: str, model: str, payload: dict[str, Any], *,
+        now: int | None = None,
+    ):
         tenant, subject, allowed = self.authenticated_human(jwt, now=now)
         if not isinstance(model, str) or model not in allowed:
             raise HumanGatewayDenied("model not authorized for verified subject")
+        if not isinstance(payload, dict) or payload.get("model") != model:
+            raise HumanGatewayDenied("request model must match delegation")
+        path = "/v1/chat/completions"
         current = int(time.time()) if now is None else now
         root, attempt = str(uuid.uuid4()), str(uuid.uuid4())
         claims = {
-            "schema": "p0-user-shadow-v1",
+            "schema": "p0-user-shadow-v2",
             "iss": "trusted-user-gateway-p0",
             "aud": "auto-router-p0-shadow-user",
             "tenant": tenant,
@@ -222,6 +240,8 @@ class VerifiedHumanGateway:
             "root_request_id": root,
             "attempt_id": attempt,
             "model_handle": model,
+            "request_path": path,
+            "request_sha256": _delegated_body_digest(path, payload),
             "iat": current,
             "nbf": current,
             "exp": current + 60,
@@ -251,7 +271,7 @@ class VerifiedHumanGateway:
                        and len(m["content"]) <= 4096 for m in messages)
         ):
             raise HumanGatewayDenied("invalid bounded gateway prompt")
-        delegation, claims = self.issue(jwt, payload["model"])
+        delegation, claims = self.issue(jwt, payload["model"], payload)
         headers = {
             "Authorization": "Bearer " + self.router_service_bearer,
             "X-Auto-Router-User-Delegation": delegation,
