@@ -295,3 +295,81 @@ def test_enabled_gateway_installer_requires_private_files_and_mounts_only_new_la
             json={"model": "auto/code", "messages": [], "max_tokens": 8},
         )
     assert response.status_code == 401
+
+
+
+def test_ambiguous_distinct_idp_accounts_cannot_claim_same_human_owner():
+    idp, signer, gateway, jwks, roster = _setup()
+    duplicate = dict(roster["users"][1])
+    duplicate["tenant"] = "shared"
+    duplicate["subject"] = "alice"
+    bad_roster = {**roster, "users": [roster["users"][0], duplicate]}
+    with pytest.raises(HumanGatewayDenied, match="ambiguous human identity"):
+        VerifiedHumanGateway(
+            jwks=jwks, roster=bad_roster, gateway_key=signer,
+            gateway_kid="fixture-router-signing-key",
+            router_service_bearer="fixture-private-router-service-key",
+            router_url="https://router.example.test/v1/chat/completions",
+            audience="assistx-human-gateway",
+        )
+
+
+def test_router_stream_response_enforces_bytes_before_buffering_remaining_chunks():
+    idp, _, gateway, _, _ = _setup()
+    consumed = []
+
+    class Segmented(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for size, value in (
+                (5, b'{"a":'),
+                (265000, b"x" * 265000),
+                (1, b"}"),
+            ):
+                consumed.append(size)
+                yield value
+
+    async def experiment():
+        return await gateway.forward(
+            _oidc(idp, "idp-alice"),
+            {"model": "auto/code", "messages": [
+                {"role": "user", "content": "synthetic"}
+            ], "max_tokens": 8},
+            transport=httpx.MockTransport(
+                lambda req: httpx.Response(
+                    200, stream=Segmented(), headers={"content-type": "application/json"}
+                )
+            ),
+        )
+
+    with pytest.raises(HumanGatewayDenied, match="oversized router response"):
+        asyncio.run(experiment())
+    # Crucially it never drains the final chunk after detecting the limit.
+    assert consumed == [5, 265000]
+
+
+@pytest.mark.parametrize("code,content,headers,expected", [
+    (200, b'{"id":"large"}', {"content-length": "262145"}, "oversized"),
+    (200, b'{"id":"large"}', {"content-length": "not-a-number"}, "invalid"),
+    (302, b'{"id":"wrong"}', {"location": "https://attacker.test"}, "redirect"),
+    (200, b'{"id":1,"id":2}', {}, "duplicate signed identity claim"),
+])
+def test_router_response_headers_and_duplicate_fields_fail_closed(
+    code, content, headers, expected,
+):
+    idp, _, gateway, _, _ = _setup()
+
+    async def experiment():
+        return await gateway.forward(
+            _oidc(idp, "idp-alice"),
+            {"model": "auto/code", "messages": [
+                {"role": "user", "content": "synthetic"}
+            ], "max_tokens": 8},
+            transport=httpx.MockTransport(
+                lambda req: httpx.Response(
+                    code, content=content, headers=headers,
+                )
+            ),
+        )
+
+    with pytest.raises(HumanGatewayDenied, match=expected):
+        asyncio.run(experiment())
