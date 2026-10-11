@@ -257,7 +257,9 @@ def test_collect_fleet_nodes_live_none_uses_router_and_marks_unknown(_fleet_env,
 
     by_ip = {node["ip"]: node for node in nodes}
     air = by_ip["100.64.0.5"]
-    assert air["loaded_models"] == ["Qwen3-4B-Q8_0"]
+    assert air["loaded_models"] == []
+    assert air["inferred_models"] == ["Qwen3-4B-Q8_0"]
+    assert air["model_evidence"] == "UNVERIFIED_ROUTER_REPORT"
     assert air["model_source"] == "router"
     assert air["instrument"] == "iGPU:M2 GPU"
     joyner = by_ip["100.83.215.83"]
@@ -277,6 +279,7 @@ def test_collect_fleet_nodes_live_empty_overrides_router_fallback(_fleet_env, mo
     air = by_ip["100.64.0.5"]
     assert air["loaded_models"] == []
     assert air["model_source"] == "live-empty"
+    assert air["model_evidence"] == "NO_VERIFIED_LOAD"
     assert air["model_clue"] == "live graph reports no loaded models"
     assert "no live graph data" not in (air["model_clue"] or "")
 
@@ -296,6 +299,7 @@ def test_collect_fleet_nodes_matches_registry_by_ip_not_label(_fleet_env, monkey
     assert len(nodes) == 2
     assert air["canonical_name"] == "scotts-macbook-air"
     assert air["loaded_models"] == ["ornith-4b"]
+    assert air["model_evidence"] == "VERIFIED_LOADED"
     assert air["model_source"] == "live"
 
 
@@ -311,7 +315,9 @@ def test_collect_fleet_nodes_manifest_primary_is_inferred(_fleet_env, monkeypatc
     nodes = control_room.collect_fleet_nodes(lambda: None)
 
     air = next(node for node in nodes if node["ip"] == "100.64.0.5")
-    assert air["loaded_models"] == ["ornith-14b"]
+    assert air["loaded_models"] == []
+    assert air["inferred_models"] == ["ornith-14b"]
+    assert air["model_evidence"] == "INFERRED_MANIFEST"
     assert air["model_source"] == "manifest-primary"
     assert air["opacity"] == "inferred"
 
@@ -326,6 +332,7 @@ def test_collect_fleet_nodes_uses_exact_provider_endpoint_override(_fleet_env, m
     monkeypatch.setattr(control_room, "_http_json", _fake_http_json)
     monkeypatch.setattr(control_room, "_live_loaded_models", lambda _f: None)
     monkeypatch.setattr(control_room, "_historical_loaded_models", lambda _f: {})
+    monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://router.test:9090")
     monkeypatch.setenv("AUTO_ROUTER_ADMIN_PROVIDERS_URL", "http://router.test:9090/admin/providers")
     monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "synthetic-test-token")
     _open_registry(monkeypatch, {"nodes": []})
