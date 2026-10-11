@@ -44,6 +44,9 @@ GATEWAY_FIELDS = {
 @dataclass(frozen=True)
 class Pair:
     request_id: str
+    model_instance_id: str
+    response_id: str
+    output_sha256: str
     owner_digest: str
     receipt_sha256: str
     worker_boot_id: str
@@ -198,6 +201,9 @@ def correlate(
     ident = worker["worker_identity"]
     return Pair(
         request_id=worker["request_id"],
+        model_instance_id=worker["model_instance_id"],
+        response_id=response_id,
+        output_sha256=worker["output_sha256"],
         owner_digest=worker["owner_digest"],
         receipt_sha256=exact_receipt_hash,
         worker_boot_id=ident["boot_id"],
