@@ -348,8 +348,8 @@ def run(raft_authority=None) -> dict:
                 policy_thread.join(timeout=3)
                 policy_service = None
                 stop_test = (
-                    "import sys;sys.path.insert(0,'/tmp');"
-                    "from trace_disposable_task_worker import request;"
+                    "import sys,runpy;sys.path.insert(0,'/tmp');"
+                    "request=runpy.run_path('/tmp/task-worker.py')['request'];"
                     "p={'plan_id':'get_task_read','parameters':{'id':'" +
                     task_id +
                     "'}};"
