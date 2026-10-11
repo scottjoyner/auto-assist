@@ -222,7 +222,6 @@ def verify_integration_endpoints():
         ('http://localhost:8000/health', 'auto-assist API'),
         ('http://localhost:8088/health', 'auto-router API'),
         ('http://localhost:8088/v1/models', 'auto-router models'),
-        ('http://localhost:8088/admin/context', 'auto-router context'),
     ]
     
     for url, name in endpoints:
@@ -234,6 +233,16 @@ def verify_integration_endpoints():
                 print(f"⚠️  {name:30s} - Status {response.status_code}: {url}")
         except Exception as e:
             print(f"❌ {name:30s} - Error: {e}")
+
+    # This endpoint is privileged on the hardened router. Do not anonymously
+    # probe it or mistake missing operator credentials for router downtime.
+    from router_admin_probe import probe_router_context
+
+    context = probe_router_context(requests)
+    if context['status'] == 'ok':
+        print('✅ auto-router context            - authenticated read-only check')
+    else:
+        print(f"⚠️  auto-router context            - {context['status']}")
 
 
 if __name__ == '__main__':
