@@ -55,14 +55,9 @@ def check_system_health():
     except Exception as e:
         health['integration']['models_endpoint'] = {'status': 'error', 'error': str(e)}
     
-    try:
-        resp = requests.get('http://localhost:8088/admin/context', timeout=5)
-        health['integration']['context_endpoint'] = {
-            'status': 'ok' if resp.status_code == 200 else 'error',
-            'has_context': bool(resp.json()) if resp.headers.get('content-type') == 'application/json' else False
-        }
-    except Exception as e:
-        health['integration']['context_endpoint'] = {'status': 'error', 'error': str(e)}
+    from router_admin_probe import probe_router_context
+
+    health['integration']['context_endpoint'] = probe_router_context(requests)
     
     return health
 
