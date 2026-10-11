@@ -56,5 +56,15 @@
     "production_network_isolation_installed": false,
     "production_auto_failover": false
   },
-  "disposition": "RESEARCH_PHYSICAL_PASS_LIVE_PROMOTION_NO_GO"
+  "disposition": "RESEARCH_PHYSICAL_PASS_LIVE_PROMOTION_NO_GO",
+  "origin_hardening": {
+    "fixture_exact_scheme_host_port_validated": true,
+    "lookalike_domain_suffix_denied": true,
+    "userinfo_query_path_fragment_denied": true,
+    "alternative_port_denied": true,
+    "malformed_fixture_origin_denied": true,
+    "production_mtls_identity_implemented": false
+  },
+  "final_physical_run_seconds": 54.04,
+  "final_physical_run_result": "PASS"
 }
