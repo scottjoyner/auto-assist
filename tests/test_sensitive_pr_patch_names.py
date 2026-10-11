@@ -69,7 +69,7 @@ def history_repo(tmp_path, monkeypatch):
     _git(tmp_path, "init", "-q")
     _git(tmp_path, "config", "user.name", "Synthetic Test")
     _git(tmp_path, "config", "user.email", "synthetic@invalid.example")
-    (tmp_path / "README.md").write_text("public synthetic fixture\\n")
+    (tmp_path / "README.md").write_text("public synthetic fixture\n")
     _git(tmp_path, "add", "README.md")
     _git(tmp_path, "commit", "-qm", "baseline")
     base = _git(tmp_path, "rev-parse", "HEAD")
@@ -79,7 +79,7 @@ def history_repo(tmp_path, monkeypatch):
 
 def test_final_diff_clean_but_intermediate_env_add_delete_still_holds(history_repo):
     repo, base = history_repo
-    (repo / ".env.synthetic").write_text("SYNTHETIC_PLACEHOLDER_ONLY\\n")
+    (repo / ".env.synthetic").write_text("SYNTHETIC_PLACEHOLDER_ONLY\n")
     _git(repo, "add", "-f", ".env.synthetic")
     _git(repo, "commit", "-qm", "synthetic add")
     _git(repo, "rm", "-q", ".env.synthetic")
@@ -100,13 +100,13 @@ def test_merged_side_branch_add_delete_cannot_hide_sensitive_history(history_rep
     repo, base = history_repo
     main = _git(repo, "symbolic-ref", "--short", "HEAD")
     _git(repo, "checkout", "-qb", "synthetic-side")
-    (repo / ".env.side").write_text("SYNTHETIC_PLACEHOLDER_ONLY\\n")
+    (repo / ".env.side").write_text("SYNTHETIC_PLACEHOLDER_ONLY\n")
     _git(repo, "add", "-f", ".env.side")
     _git(repo, "commit", "-qm", "add on side")
     _git(repo, "rm", "-q", ".env.side")
     _git(repo, "commit", "-qm", "remove on side")
     _git(repo, "checkout", "-q", main)
-    (repo / "README.md").write_text("harmless updated fixture\\n")
+    (repo / "README.md").write_text("harmless updated fixture\n")
     _git(repo, "commit", "-qam", "independent main change")
     _git(repo, "merge", "--no-ff", "-qm", "merge synthetic side", "synthetic-side")
     head = _git(repo, "rev-parse", "HEAD")
@@ -119,7 +119,7 @@ def test_merged_side_branch_add_delete_cannot_hide_sensitive_history(history_rep
 
 def test_unrelated_commit_passes_only_filename_gate_not_custody(history_repo):
     repo, base = history_repo
-    (repo / "README.md").write_text("harmless change only\\n")
+    (repo / "README.md").write_text("harmless change only\n")
     _git(repo, "commit", "-qam", "documentation update")
     head = _git(repo, "rev-parse", "HEAD")
 
@@ -138,9 +138,9 @@ def test_excessive_commit_history_holds_without_reading_files(monkeypatch):
     def fake_git(*args):
         calls.append(args)
         if args[0] == "merge-base":
-            return (base + "\\n").encode()
+            return (base + "\n").encode()
         if args[0] == "rev-list":
-            return (("c" * 40 + " " + base + "\\n") * (guard.MAX_ANCESTRY_COMMITS + 1)).encode()
+            return (("c" * 40 + " " + base + "\n") * (guard.MAX_ANCESTRY_COMMITS + 1)).encode()
         raise AssertionError("must stop before examining unbounded history")
 
     monkeypatch.setattr(guard, "_git_metadata", fake_git)
