@@ -143,6 +143,20 @@ class TestRealNeo4jCanonicalApply(unittest.TestCase):
         self.assertEqual(self.counts()["runtime"], 1)
         observation = receipt["source"]["payload"]["observations"][0]
         with self.driver.session(database="neo4j") as s:
+            source_identity = s.run(
+                "MATCH (r:RuntimeInstance {runtime_instance_id:'runtime_a'}) "
+                "RETURN r.linux_boot_id AS boot_id, "
+                "r.process_start_ticks AS process_start_ticks, "
+                "r.process_model_sha256 AS process_model_sha256"
+            ).single()
+        self.assertEqual(source_identity["boot_id"], observation["linux_boot_id"])
+        self.assertEqual(
+            source_identity["process_start_ticks"], observation["process_start_ticks"]
+        )
+        self.assertEqual(
+            source_identity["process_model_sha256"], observation["process_model_sha256"]
+        )
+        with self.driver.session(database="neo4j") as s:
             row = s.run(
                 "MATCH (r:RuntimeInstance)-[:SERVES]->(m:LoadedModelInstance) "
                 "MATCH (r)-[:HAS_CAPACITY_OBSERVATION]->(c:CapacityObservation) "
