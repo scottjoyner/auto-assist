@@ -271,6 +271,43 @@ def _apply_transaction(
     if previous and int(previous["uses"]) > 0:
         raise RuntimeError("approval ID already used for a canonical projection")
 
+    # A runtime_instance_id is a durable physical-process identity, not a
+    # reusable PID alias. A restart or model swap MUST receive a new reviewed
+    # runtime identity and separate source+operator approval.
+    signed_rows = {
+        row["runtime_instance_id"]: row
+        for row in attestation["source"]["payload"]["observations"]
+    }
+    for runtime in payload["runtimes"]:
+        runtime_id = str(runtime["runtime_instance_id"])
+        signed = signed_rows[runtime_id]
+        existing = tx.run(
+            "MATCH (r:RuntimeInstance {runtime_instance_id:$runtime_id}) "
+            "RETURN r.process_id AS process_id, "
+            "r.linux_boot_id AS linux_boot_id, "
+            "r.process_start_ticks AS process_start_ticks, "
+            "r.process_model_sha256 AS process_model_sha256",
+            runtime_id=runtime_id,
+        ).single()
+        if existing is None:
+            continue
+        old = (
+            str(existing["process_id"]) if existing["process_id"] is not None else None,
+            existing["linux_boot_id"],
+            existing["process_start_ticks"],
+            existing["process_model_sha256"],
+        )
+        new = (
+            str(runtime["process_id"]),
+            signed["linux_boot_id"],
+            signed["process_start_ticks"],
+            signed["process_model_sha256"],
+        )
+        if old != new:
+            raise RuntimeError(
+                "existing runtime process identity changed or lacks source provenance"
+            )
+
     tx.run(
         """
         MATCH (r:RuntimeInstance) SET r.admitted=false
@@ -286,10 +323,6 @@ def _apply_transaction(
 
     # Source observation times come from the verified signed receipt, NOT
     # the time the operator approved/published the canonical generation.
-    signed_rows = {
-        row["runtime_instance_id"]: row
-        for row in attestation["source"]["payload"]["observations"]
-    }
     runtime_count = 0
     model_count = 0
     path_count = 0
