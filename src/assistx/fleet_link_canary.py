@@ -255,6 +255,8 @@ def build_fleet_link_canary_router(
                     or not isinstance(completion["choices"][0], dict)
                 ):
                     raise ValueError("canary completion invalid")
+                if completion["choices"][0].get("finish_reason") != "stop":
+                    raise ValueError("canary completion did not stop normally")
                 message = completion["choices"][0].get("message")
                 if (
                     not isinstance(message, dict)
