@@ -17,8 +17,9 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 import ssl
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from cryptography.exceptions import InvalidSignature
+# Signature verifier dependencies are imported only by closure/takeover.
+# Admission-only disposable broker can run the same real CAS code in a
+# zero-third-party Python image, without inventing another CAS implementation.
 
 VERSION = "assistx-etcd-fence-research-v1"
 # Fixed, deliberately tiny research limit: never garbage-collect execution
@@ -272,6 +273,8 @@ class EtcdQuorumFence:
         }
         if receipt != expected or not isinstance(signature, bytes):
             raise FenceRefused("MISMATCHED_WITNESS_RECEIPT")
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        from cryptography.exceptions import InvalidSignature
         try:
             Ed25519PublicKey.from_public_bytes(
                 bytes.fromhex(doc["witness_public"])
@@ -313,6 +316,8 @@ class EtcdQuorumFence:
             raise FenceRefused("INVALID_OPERATOR_APPROVAL")
         if not new_owner or new_owner == doc["owner"]:
             raise FenceRefused("INVALID_SUCCESSOR")
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        from cryptography.exceptions import InvalidSignature
         try:
             Ed25519PublicKey.from_public_bytes(
                 bytes.fromhex(doc["operator_public"])

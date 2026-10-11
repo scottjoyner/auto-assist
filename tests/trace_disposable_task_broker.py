@@ -29,6 +29,46 @@ TASK_ID = re.compile(r"^fixture-task-[A-Za-z0-9_-]{4,48}$")
 MAX_REQUEST_BYTES = 2048
 GRAPH_ENDPOINT = "http://neo4j:7474/db/neo4j/tx/commit"
 CONFIG_PATH = os.getenv("ASSISTX_RESEARCH_BROKER_CONFIG", "/tmp/broker-config.json")
+RAFT_KEYS = {
+    "raft_endpoint", "raft_key", "raft_cluster", "raft_genesis",
+    "raft_owner", "raft_term",
+}
+
+
+class JoinedRaftAdmission:
+    """Disposable broker owns the Raft CAS, never trusts worker permits."""
+    def __init__(self, config: dict):
+        from trace_etcd_quorum_fence_research import EtcdQuorumFence
+        from trace_disposable_raft_http import ResearchHTTP
+        endpoint = config["raft_endpoint"]
+        self.quorum = EtcdQuorumFence(
+            ResearchHTTP(endpoint), config["raft_key"],
+            pinned_cluster_id=config["raft_cluster"])
+        self.genesis = config["raft_genesis"]
+        self.owner = config["raft_owner"]
+        self.term = config["raft_term"]
+        if type(self.term) is not int or self.term != 1:
+            raise ValueError("RESEARCH_RAFT_TERM_INVALID")
+
+    def admit(self, key: str | None, plan: str, task_id: str):
+        from trace_graph_stable_identity_research import (
+            derive_stable_operation, InvalidStableRequest)
+        from trace_etcd_quorum_fence_research import FenceRefused
+        try:
+            stable = derive_stable_operation(
+                "fixture-authenticated-broker-principal", key, plan,
+                {"id": task_id})
+        except InvalidStableRequest:
+            raise RequestDenied("INVALID_IDEMPOTENCY_KEY") from None
+        view = self.quorum.snapshot()
+        if (view.document["genesis"] != self.genesis
+                or view.document["owner"] != self.owner
+                or view.document["term"] != self.term):
+            raise FenceRefused("STALE_RAFT_EPOCH_OR_OWNER")
+        return self.quorum.admit(
+            self.owner, self.term, stable.operation,
+            request_digest=stable.request_digest)
+
 
 
 class RequestDenied(Exception):
@@ -185,6 +225,27 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(self.rfile.read(length))
             task_id = validate(payload)
+            if self.server.raft_admission is not None:
+                # Crucial ordering: exact Raft CAS committed BEFORE graph
+                # HTTP. No worker-provided grant/token/owner is accepted.
+                try:
+                    self.server.raft_admission.admit(
+                        self.headers.get("Idempotency-Key"),
+                        payload["plan_id"], task_id)
+                except RequestDenied:
+                    self.reply(422, {"error": "INVALID_IDEMPOTENCY_KEY"})
+                    return
+                except Exception as exc:
+                    safe = {
+                        "EXISTING_OPERATION_REQUIRES_RECONCILIATION",
+                        "IDEMPOTENCY_KEY_PAYLOAD_CONFLICT",
+                        "CLOSED_OPERATION_REPLAY_DENIED",
+                    }
+                    if str(exc) in safe:
+                        self.reply(409, {"error": "ALREADY_SUBMITTED_OR_CONFLICT"})
+                    else:
+                        self.reply(503, {"error": "ADMISSION_UNCERTAIN"})
+                    return
             task = fetch_task(
                 task_id, self.server.reader_user,
                 self.server.reader_password,
@@ -201,12 +262,15 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     config = json.loads(Path(CONFIG_PATH).read_text())
-    if set(config) != {"bearer", "reader_user", "reader_password"}:
+    primary = {"bearer", "reader_user", "reader_password"}
+    if set(config) not in (primary, primary | RAFT_KEYS):
         raise RuntimeError("BAD_DISPOSABLE_CREDENTIAL_CONFIG")
-    if not all(isinstance(v, str) and len(v) >= 10
-               for v in config.values()):
+    if not all(isinstance(config[k], str) and len(config[k]) >= 10
+               for k in primary):
         raise RuntimeError("BAD_DISPOSABLE_CREDENTIAL_CONFIG")
     server = ThreadingHTTPServer(("0.0.0.0", 8808), Handler)
+    server.raft_admission = (
+        JoinedRaftAdmission(config) if RAFT_KEYS <= set(config) else None)
     server.bearer = config["bearer"]
     server.reader_user = config["reader_user"]
     server.reader_password = config["reader_password"]
