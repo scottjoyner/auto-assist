@@ -72,6 +72,25 @@ def test_connection_only_evidence_is_not_a_successful_graph_query():
     assert result["credentials_or_cypher_tested"] is False
 
 
+def test_configured_neo4j_client_secret_names_only_not_secret_values():
+    topology = {
+        "neo4j": node(["graph", "shared"]),
+        "assistx-worker": node(["shared"]),
+        "assistx-api": node(["api"]),
+    }
+    topology["assistx-worker"]["Neo4jCredentialConfig"] = {
+        "NEO4J_URI": True, "NEO4J_USER": True,
+        "NEO4J_PASSWORD": True, "NEO4J_DATABASE": True,
+    }
+    result = analyze_docker_inspect(topology)
+    assert result["graph_client_env_keys_present"]["assistx-worker"] == {
+        "NEO4J_URI": True, "NEO4J_USER": True,
+        "NEO4J_PASSWORD": True, "NEO4J_DATABASE": True,
+    }
+    assert "RESEARCH_SECRET_MUST_NOT_LEAK" not in json.dumps(result)
+    assert result["credentials_or_cypher_tested"] is False
+
+
 def test_missing_inventory_fails_closed_and_no_promotion_claim():
     result = analyze_docker_inspect({"neo4j": node(["graph"])})
     assert result["verdict"] == "INCOMPLETE_FAIL_CLOSED"
