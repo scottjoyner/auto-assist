@@ -49,23 +49,32 @@ def query(graph: str, admin: str, statement: str,
     return proc
 
 
-def run() -> dict:
+def run(external_writer: dict | None = None) -> dict:
+    remote = external_writer is not None
+    if remote and (
+            os.getenv("ASSISTX_THREE_HOST_RAFT_RESEARCH") != "1" or
+            os.getenv("ASSISTX_THREE_HOST_SPLIT_WRITER_RESEARCH") != "1"):
+        raise RuntimeError("THREE_HOST_WRITER_REQUIRES_DOUBLE_OPT_IN")
     if os.getenv("ASSISTX_DISPOSABLE_GRAPH_BROKER") != "1":
         raise RuntimeError("EXPLICIT_DISPOSABLE_GRAPH_BROKER_OPT_IN_REQUIRED")
-    joined = os.getenv("ASSISTX_DISPOSABLE_RAFT_IN_BROKER") == "1"
-    split = os.getenv("ASSISTX_DISPOSABLE_WRITER_SPLIT") == "1"
+    joined = remote or os.getenv("ASSISTX_DISPOSABLE_RAFT_IN_BROKER") == "1"
+    split = remote or os.getenv("ASSISTX_DISPOSABLE_WRITER_SPLIT") == "1"
     if split and not joined:
         raise RuntimeError("POLICY_WRITER_SPLIT_REQUIRES_JOINED_RAFT")
     tag = secrets.token_hex(4)
     worker_net = "assistx-broker-worker-" + tag
     raft_net = "assistx-broker-raft-" + tag
     writer_net = "assistx-broker-ipc-" + tag
+    writer_egress_net = "assistx-broker-outbound-" + tag
     writer = "assistx-broker-policy-" + tag
     writer_token = secrets.token_urlsafe(35)
     raft_aliases = ["assistx-quorum-r" + str(i) + "-" + tag for i in (1,2,3)]
-    raft_key = "/assistx/research/fencing/taskbroker-" + tag
-    raft_genesis = "disposable-task-broker-" + tag
-    raft_owner = "disposable-broker"
+    raft_key = (external_writer["raft_key"] if remote
+                else "/assistx/research/fencing/taskbroker-" + tag)
+    raft_genesis = (external_writer["raft_genesis"] if remote
+                    else "disposable-task-broker-" + tag)
+    raft_owner = (external_writer["raft_owner"] if remote
+                  else "disposable-broker")
     graph_net = "assistx-broker-graph-" + tag
     graph = "assistx-broker-neo-" + tag
     broker = "assistx-broker-gateway-" + tag
@@ -86,14 +95,20 @@ def run() -> dict:
         tmp = Path(temp)
         try:
             networks = [graph_net, worker_net]
-            if joined:
+            if joined and not remote:
                 networks.append(raft_net)
             if split:
                 networks.append(writer_net)
+            if remote:
+                networks.append(writer_egress_net)
             for network in networks:
-                docker("network", "create", "--internal", "--driver", "bridge",
-                       "--label", "assistx.trace.research=task-broker",
-                       network)
+                cmd = ["network", "create"]
+                if network != writer_egress_net:
+                    cmd.append("--internal")
+                cmd += ["--driver", "bridge",
+                        "--label", "assistx.trace.research=task-broker",
+                        network]
+                docker(*cmd)
                 made_networks.append(network)
 
             docker("run", "-d", "--pull", "never", "--name", graph,
@@ -168,7 +183,7 @@ def run() -> dict:
             if write_attempt.returncode == 0:
                 raise RuntimeError("READ_ONLY_ROLE_WAS_ALLOWED_TO_WRITE")
 
-            if joined:
+            if joined and not remote:
                 initial = ",".join(
                     "r" + str(i) + "=http://" + raft_aliases[i-1] + ":2380"
                     for i in (1,2,3))
@@ -224,13 +239,26 @@ def run() -> dict:
                        PYTHON_IMAGE,
                        "python", "-u", "/tmp/policy-writer.py", timeout=18)
                 made_containers.append(writer)
-                docker("network", "connect", raft_net, writer)
+                if remote:
+                    docker("network", "connect", writer_egress_net, writer)
+                else:
+                    docker("network", "connect", raft_net, writer)
                 writer_config = {
                     "writer_token": writer_token,
-                    "raft_endpoint": endpoint, "raft_key": raft_key,
-                    "raft_cluster": cluster, "raft_genesis": raft_genesis,
+                    "raft_key": raft_key,
+                    "raft_cluster": (external_writer["raft_cluster"]
+                                    if remote else cluster),
+                    "raft_genesis": raft_genesis,
                     "raft_owner": raft_owner, "raft_term": 1,
                 }
+                if remote:
+                    writer_config.update({
+                        "raft_tls_endpoint": external_writer[
+                            "raft_tls_endpoint"],
+                        "raft_bearer": external_writer["raft_bearer"],
+                    })
+                else:
+                    writer_config["raft_endpoint"] = endpoint
                 (tmp / "writer-config.json").write_text(
                     json.dumps(writer_config), encoding="utf8")
                 for src, dst in (
@@ -240,12 +268,20 @@ def run() -> dict:
                      "trace_etcd_quorum_fence_research.py"),
                     ("trace_disposable_raft_http.py",
                      "trace_disposable_raft_http.py"),
-                ):
+                ) + ((("trace_etcd_bearer_rbac_research.py",
+                        "trace_etcd_bearer_rbac_research.py"),)
+                     if remote else ()):
                     docker("cp", str(SOURCE / src), writer + ":/tmp/" + dst)
+                if remote:
+                    docker(
+                        "cp", external_writer["tls_client_dir"],
+                        writer + ":/tmp/etcd-client")
                 docker("cp", str(tmp / "writer-config.json"),
                        writer + ":/tmp/writer-config.json")
                 docker("start", writer)
-                assert_disposable(writer, {writer_net, raft_net})
+                assert_disposable(
+                    writer, {writer_net, writer_egress_net}
+                    if remote else {writer_net, raft_net})
 
             # Graph broker has no raw Raft access in split mode.
             docker("create", "--pull", "never", "--name", broker,
@@ -312,10 +348,13 @@ def run() -> dict:
                     "payload_recovery_task_id": payload_recovery_id,
                     "bearer": bearer,
                     "broker_host": broker, "neo4j_ip": neo_ip,
-                    **({"quorum_ip": json.loads(
+                    **({"quorum_ip": external_writer["raft_ip"],
+                        "quorum_port": external_writer["raft_port"]}
+                       if remote else {"quorum_ip": json.loads(
                         docker("inspect", "assistx-broker-quorum-r1-" + tag
                                ).stdout)[0]["NetworkSettings"][
-                        "Networks"][raft_net]["IPAddress"]} if joined else {}),
+                        "Networks"][raft_net]["IPAddress"],
+                        "quorum_port": 2379} if joined else {}),
                     **({"writer_ip": json.loads(
                         docker("inspect", writer).stdout)[0]
                         ["NetworkSettings"]["Networks"][writer_net]
@@ -362,6 +401,22 @@ def run() -> dict:
                     verifier = verifier.replace(
                         "'/tmp/broker-config.json'",
                         "'/tmp/writer-config.json'")
+                if remote:
+                    verifier = (
+                        "import json,sys;sys.path.insert(0,'/tmp');"
+                        "from trace_etcd_bearer_rbac_research import EtcdBearerTLS;"
+                        "from trace_etcd_quorum_fence_research import EtcdQuorumFence;"
+                        "p=json.load(open('/tmp/writer-config.json'));"
+                        "v=EtcdQuorumFence(EtcdBearerTLS("
+                        "p['raft_tls_endpoint'],"
+                        "'/tmp/etcd-client/ca.pem',"
+                        "'/tmp/etcd-client/node.pem',"
+                        "'/tmp/etcd-client/node-key.pem',"
+                        "token=p['raft_bearer']),p['raft_key'],"
+                        "pinned_cluster_id=p['raft_cluster']).snapshot();"
+                        "print(json.dumps({'pending':len(v.document['pending']),"
+                        "'completed':len(v.document.get('completed',{}))}))"
+                    )
                 state = docker(
                     "exec", writer if split else broker,
                     "python", "-c", verifier)
@@ -378,13 +433,17 @@ def run() -> dict:
                         "status=s.connect_ex((ip,port));s.close();"
                         "sys.exit(0 if status != 0 else 4)"
                     )
-                    raft_ip = json.loads(
-                        docker("inspect", "assistx-broker-quorum-r1-" +
-                               tag).stdout)[0]["NetworkSettings"][
-                        "Networks"][raft_net]["IPAddress"]
+                    raft_ip = (
+                        external_writer["raft_ip"] if remote else
+                        json.loads(
+                            docker("inspect", "assistx-broker-quorum-r1-" +
+                                   tag).stdout)[0]["NetworkSettings"][
+                            "Networks"][raft_net]["IPAddress"])
                     denied = docker(
                         "exec", broker, "python", "-c", verify_isolation,
-                        raft_ip, "2379", timeout=8, check=False)
+                        raft_ip,
+                        str(external_writer["raft_port"] if remote else 2379),
+                        timeout=8, check=False)
                     if denied.returncode != 0:
                         raise RuntimeError("BROKER_DIRECT_ETCD_BYPASS")
                     policy_ip = json.loads(
@@ -414,26 +473,30 @@ def run() -> dict:
                     if unauth.returncode != 0:
                         raise RuntimeError(
                             "UNAUTHENTICATED_POLICY_WRITER_ACCEPTED")
-                # Fault-inject only our newly created voter containers.
+                # Fault-inject only OUR locally created voter containers.
+                # For remote 3-host voters, the parent harness separately
+                # executes quorum loss; this callback must not stop them.
+                if not remote:
+                    for voter_i in (2, 3):
+                        docker(
+                            "stop", "-t", "2",
+                            "assistx-broker-quorum-r" +
+                            str(voter_i) + "-" + tag, timeout=12)
                 # With one of three left, a fresh linearizable read/CAS
                 # cannot be authorized; broker must deny before graph.
-                for voter_i in (2, 3):
+                if not remote:
                     docker(
-                        "stop", "-t", "2",
-                        "assistx-broker-quorum-r" + str(voter_i) + "-" + tag,
-                        timeout=12)
-                docker(
-                    "cp", str(SOURCE / "trace_disposable_joined_quorum_loss.py"),
-                    worker + ":/tmp/minority.py")
-                minority = docker(
-                    "exec", worker, "python", "/tmp/minority.py",
-                    timeout=16, check=False)
-                if minority.returncode != 0:
-                    raise RuntimeError("MINORITY_BROKER_DID_NOT_FAIL_CLOSED")
-                minority_result = json.loads(minority.stdout)
-                if not minority_result.get(
-                        "disposable_two_voter_outage_denies_fresh_broker_read"):
-                    raise RuntimeError("MINORITY_DENIAL_NOT_PROVEN")
+                        "cp", str(SOURCE / "trace_disposable_joined_quorum_loss.py"),
+                        worker + ":/tmp/minority.py")
+                    minority = docker(
+                        "exec", worker, "python", "/tmp/minority.py",
+                        timeout=16, check=False)
+                    if minority.returncode != 0:
+                        raise RuntimeError("MINORITY_BROKER_DID_NOT_FAIL_CLOSED")
+                    minority_result = json.loads(minority.stdout)
+                    if not minority_result.get(
+                            "disposable_two_voter_outage_denies_fresh_broker_read"):
+                        raise RuntimeError("MINORITY_DENIAL_NOT_PROVEN")
             return {
                 **result,
                 "schema": "assistx-disposable-task-broker-20261011-v1",
@@ -457,10 +520,13 @@ def run() -> dict:
                 "worker_no_direct_policy_writer_path": split,
                 "writer_no_direct_neo4j_path": split,
                 "policy_writer_no_auth_denied": split,
-                "independent_host_or_mtls_policy_auth": False,
+                "independent_host_or_mtls_policy_auth": remote,
                 "disposable_real_raft_CAS_before_Neo4j": joined,
-                "disposable_real_raft_voters_same_host": joined,
-                "disposable_two_voter_minority_denies_fresh_admission": joined,
+                "disposable_real_raft_voters_same_host": joined and not remote,
+                "distinct_physical_raft_hosts": remote,
+                "external_three_host_mtls_rbac": remote,
+                "disposable_two_voter_minority_denies_fresh_admission":
+                    joined and not remote,
                 "disposable_raft_tls_or_rbac": False,
                 "independent_physical_witness": False,
                 "production_neo4j_touched": False,
