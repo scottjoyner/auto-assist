@@ -130,3 +130,16 @@ def test_broker_is_not_given_raw_KV_config_in_split_mode():
     assert 'if joined and not split:' in src
     assert '"independent_host_or_mtls_policy_auth": False' in src
     assert "ASSISTX_DISPOSABLE_WRITER_SPLIT" in src
+
+
+def test_unauthenticated_disposable_writer_probe_and_graph_write_isolation():
+    probe = Path(__file__).with_name(
+        "trace_disposable_writer_unauth.py").read_text()
+    physical = Path(__file__).with_name(
+        "probe_trace_isolated_task_broker.py").read_text()
+    assert "status == 401" in probe
+    assert '"/v1/admit"' in probe
+    assert "writer_no_direct_neo4j_path" in physical
+    assert "WRITER_DIRECT_NEO4J_BYPASS" in physical
+    assert "UNAUTHENTICATED_POLICY_WRITER_ACCEPTED" in physical
+    assert 'for port in ("7687", "7474"):' in physical
