@@ -62,6 +62,12 @@ A further **fresh physical majority-loss run PASSED (62.56s)**: after committing
 
 **Score:** B03 **partial physical PASS** for real three-host quorum-before-read and minority denial; B05 **partial physical PASS** for writer-only mTLS/RBAC and network segregation. B01 **LIVE FAIL**, B02 **OPEN**, B04 production ingress identity **OPEN**, B06 generation-bound detached witness in this *same* execution **OPEN**, B07 restore/NOSPACE **OPEN**, B08–B11 **OPEN**. Broker→writer still cleartext fixture bearer, OS identities not independently protected and the writer key can perform raw exact-key etcd operations. Production graph admission and automatic failover remain **NO-GO**.
 
+## October 11 B06 verified-negative graph restart checkpoint
+
+[Joined physical graph restart and closure-denial report](./TRACE_JOINED_CLOSURE_NEGATIVES_20261011.md) records a PASS on **disposable Neo4j 5.26 + real Raft across x1-370/xwing/destroyer**. The isolated worker→broker→separate mTLS/RBAC writer had **3 pending/0 completed** after Task reads; physically stopping and restarting only the disposable Neo4j container retained **3 pending/0 completed** throughout, as proven by a fresh quorum read from the writer. A forged `close_with_witness` claim on each original **RESERVED, unbound** attempt returned **NO_VERIFIED_PHYSICAL_BINDING**. Majority-loss denial remained in force. The complete physical script exited 0, joined section 88.34s, with no production changes.
+
+**B06 remains HARD NO-GO for release.** This demonstrates **absence of premature automatic release**, not independently signed transaction closure. Current HTTP `/tx/commit` broker records no server-observed transaction ID/boot generation, has no independent signer or durable custody, and cannot safely release a reservation. [Exact run evidence](../research/evidence/assistx-b06-graph-restart-closure-negative-20261011.json). B01 live bypass, B02 full consumer migration, and all other production gates remain open.
+
 ## Open blockers — release-stopping
 
 | ID | Priority | Unresolved gate | Exact acceptance required to change status | Responsible discipline |
