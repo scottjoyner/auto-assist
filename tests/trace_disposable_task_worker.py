@@ -125,7 +125,7 @@ def main():
         "production_neo4j_or_api_touched": False,
         "raft_replay_and_payload_conflict_denied": (
             bool(CONFIG.get("requires_raft"))),
-        "raft_admission_integrated": False,
+        "raft_admission_integrated": bool(CONFIG.get("requires_raft")),
     }, sort_keys=True))
 
 
