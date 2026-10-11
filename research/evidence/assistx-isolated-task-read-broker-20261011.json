@@ -42,7 +42,11 @@
     "tested_two_field_projection_only": true,
     "get_task_full_property_equivalence": false,
     "claim_task_recovery_and_drain_semantics_tested": false,
-    "review_workflow_and_dispatch_calls_tested": false
+    "review_workflow_and_dispatch_calls_tested": false,
+    "exact_source_recovery_identity_misclassification_reproduced": true,
+    "exact_source_critical_queue_drain_misclassification_reproduced": true,
+    "worker_task_projection_safe_for_live_claim_endpoint": false,
+    "worker_task_projection_safe_for_live_recovery_endpoint": false
   },
   "non_goals": {
     "Raft_admission_integrated": false,
@@ -56,5 +60,6 @@
   },
   "cleanup": "All newly created Docker containers and networks removed by finally; no production Docker configuration changed.",
   "actual_production_isolation": "NETWORK_BYPASS_PRESENT_NO_GO_PER_DRAFT_PR_294",
-  "disposition": "RESEARCH_PASS_PRODUCTION_NO_GO"
+  "disposition": "RESEARCH_PASS_PRODUCTION_NO_GO",
+  "offline_negative_tests": 39
 }
