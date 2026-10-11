@@ -68,6 +68,7 @@ class TaskReadBrokerClient:
             headers={
                 "Content-Type": "application/json",
                 "Authorization": "Bearer " + self.bearer,
+                "Idempotency-Key": "fixture-" + uuid4().hex,
             },
         )
         try:
