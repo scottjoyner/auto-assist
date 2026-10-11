@@ -31,7 +31,7 @@ The previous dual-signed approval envelope bound `process_id` to the exact manif
 
 For now the signed contract intentionally **rejects multiple loaded GGUF model instances under one process** until a richer independently observed process-to-model mapping exists. Malformed UUID, zero start ticks, wrong hash and ambiguous model lists all refuse even when test keys correctly sign the altered envelope.
 
-`scripts/approve-runtime-projection.py` now persists `RuntimeInstance.linux_boot_id`, `process_start_ticks` and `process_model_sha256` from the verified signed envelope, inside the canonical transaction. It still refuses missing signer keys or missing database uniqueness constraints. No actual operational signer identity, private key, signature or approval is created.
+`scripts/approve-runtime-projection.py` now persists `RuntimeInstance.linux_boot_id`, `process_start_ticks` and `process_model_sha256` from the verified signed envelope, inside the canonical transaction. It still refuses missing signer keys or any of **three** required database uniqueness constraints. The transaction also checks whether an existing runtime ID has the same source-signed boot UUID, PID start ticks, PID and GGUF digest. Changes or missing legacy provenance refuse reusing that identity before any graph write. A legitimate restarted process requires a new runtime ID and independently reviewed approval. No operational signer, private key, signature or approval is created.
 
 ## Actual Beelink read-only evidence
 
@@ -55,7 +55,7 @@ The tested physical output had `observed_at_ms=1791745652280`; this is an histor
 On x1-370, a disposable downloaded exact-head research checkout passed:
 - **12/12** fake-/proc tests (parser, model/hash mismatch, symlink, process restarts, ambiguous flag and no-authority).
 - **35/35** signed-apply cryptographic/transaction negative tests (including boot identity and GGUF process-file binding).
-- **6/6** real Neo4j 5.23 isolated disposable tests: persisted boot UUID/PID start ticks/file SHA match the signed source, original observation times, approval replay prevention, rollback after write attempts, **eight independent simultaneous two-worker canonical CAS races** each with only one commit.
+- **8/8** real Neo4j 5.23 isolated disposable tests: persisted boot UUID/PID start ticks/file SHA match the signed source; approved stable-process continuation; restarted-process source with newly re-signed start ticks refused under the old runtime ID; original observation time custody; replay refusal, rollback; and **eight independent simultaneous two-worker canonical CAS races** each with only one commit.
 - Strict Ruff PASS. Disposable Neo4j container used existing image, random loopback-only port, 1.7GB RAM and 1.25 CPUs, no NAS/prod volumes, automatic removal.
 
 Earlier stacked [PR #307](https://github.com/scottjoyner/auto-assist/pull/307) independently enforces physical source observation ≤5 minutes and path canary ≤3 minutes. The boot/process source values do not change these short expiration windows or allow unattended renewal.
@@ -64,7 +64,14 @@ Earlier stacked [PR #307](https://github.com/scottjoyner/auto-assist/pull/307) i
 
 1. **Independent trusted source producer** running on a physical fleet node or separately attested host, including boot/process identity, loaded model proof, current capacity/leases and approved private-path completion; signers must have separate audited custody and revocation.
 2. **Independent operator-reviewer signing authority**, new unique approval ID and exact signed source receipt review; no arbitrary locally minted keys accepted.
-3. **DBA-reviewed unique constraints** for `FleetProjectionState.name` and `RuntimeProjectionApprovalReceipt.approval_id`. Still absent on x1 production, although duplicate audit found no current conflicts.
-4. **True host/process restart evidence:** an independent source observer must refuse any mismatch with previously approved boot UUID + start ticks during refresh; this is not accomplished merely by adding fields to stored rows.
+3. **DBA-reviewed unique constraints** for **all three** identity keys: `FleetProjectionState.name`, `RuntimeProjectionApprovalReceipt.approval_id`, and `RuntimeInstance.runtime_instance_id`. Read-only x1 audit found **all three missing**, though there is one canonical row, zero approval receipts, and **zero duplicate runtime IDs**. The draft apply refuses until all three exist. Proposed additional Neo4j 5 syntax (**DOCUMENTATION ONLY; NOT EXECUTED**):
+
+   ```cypher
+   CREATE CONSTRAINT unique_runtime_instance_id IF NOT EXISTS
+   FOR (r:RuntimeInstance) REQUIRE r.runtime_instance_id IS UNIQUE;
+   ```
+
+   Review nullable properties, duplicate preflight, backups, ongoing writers, and rollback with a designated DBA before any production DDL.
+4. **True host/process restart evidence:** draft transaction now refuses changed boot UUID/start ticks/model SHA for an existing runtime ID. Independent on-host signing, source/process→listener proof, and a reviewed new identity on legitimate restarts remain outstanding.
 5. Production Neo4j staging rollback, source/original timestamp reader compatibility, retirement of legacy unsigned trust, Auto-Router authenticated owner receipts [#37](https://github.com/scottjoyner/auto-router/issues/37) and admin auth [#41](https://github.com/scottjoyner/auto-router/pull/41) / [AssistX #288](https://github.com/scottjoyner/auto-assist/pull/288).
 6. Exact-build physical operator acceptance and separate explicit approval for any canonical generation beyond expired 643. **No reapproval or deployment attempted.**
