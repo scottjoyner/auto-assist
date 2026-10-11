@@ -120,7 +120,7 @@ def _source_tailnet_helper():
     ]
     assert {n.name for n in nodes} == wanted
     scope = {
-        "os": os, "HTTPException": HTTPException,
+        "os": os, "HTTPException": HTTPException, "Request": Request,
         "_TAILSCALE_LOGIN_HEADER": "Tailscale-User-Login",
         "decode_header": decode_header, "make_header": make_header,
     }
