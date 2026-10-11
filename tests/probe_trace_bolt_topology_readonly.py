@@ -18,6 +18,9 @@ from typing import Any, Mapping
 
 WATCH = ("neo4j", "assistx-worker", "assistx-api")
 BOLT = "7687/tcp"
+NEO4J_ENV_NAMES = (
+    "NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD", "NEO4J_DATABASE"
+)
 
 
 def published_on_all_interfaces(value: str | None) -> bool:
@@ -45,6 +48,7 @@ def analyze_docker_inspect(
         "verdict": "ISOLATION_UNPROVEN",
         "worker_common_graph_networks": {},
         "worker_direct_bolt_tcp": {},
+        "graph_client_env_keys_present": {},
         "neo4j_bolt_host_wildcard": bool(exposed_bolt),
         "bolt_host_published": bool(bolt_bindings),
         "graph_network_count": len(graph_nets),
@@ -58,6 +62,10 @@ def analyze_docker_inspect(
         result["worker_common_graph_networks"][actor] = bool(
             graph_nets & actor_nets)
         result["worker_direct_bolt_tcp"][actor] = observed.get(actor)
+        # Presence of configuration names is NOT a secret read, and does
+        # not establish whether a credential is valid or its Neo4j role.
+        result["graph_client_env_keys_present"][actor] = (
+            containers[actor].get("Neo4jCredentialConfig") or {})
     if exposed_bolt or any(result["worker_common_graph_networks"].values()
                             ) or any(v is True for v in observed.values()):
         result["verdict"] = "NETWORK_BYPASS_PRESENT_NO_GO"
@@ -71,8 +79,12 @@ def _read_inspect(name: str) -> dict:
     data = json.loads(p.stdout)
     if len(data) != 1:
         raise ValueError("REQUIRE_EXACT_DOCKER_CONTAINER")
-    # Explicitly return inspect fields only. Never emit Config.Env,
-    # mounts or labels containing credentials.
+    # Only project environment variable NAMES to booleans. Never write
+    # secret values, even to local console logs or GitHub evidence.
+    env_keys = {
+        entry.partition("=")[0]
+        for entry in data[0].get("Config", {}).get("Env", [])
+    }
     return {
         "NetworkSettings": {
             "Networks": {key: {} for key in
@@ -82,6 +94,9 @@ def _read_inspect(name: str) -> dict:
         "HostConfig": {
             "PortBindings": data[0].get("HostConfig", {}).get(
                 "PortBindings") or {}
+        },
+        "Neo4jCredentialConfig": {
+            name: (name in env_keys) for name in NEO4J_ENV_NAMES
         }
     }
 
