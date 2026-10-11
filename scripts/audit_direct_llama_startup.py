@@ -96,6 +96,7 @@ def audit_text(
     if len(entries) > MAX_CRON_LINES:
         raise ValueError("too many cron entries")
     findings = []
+    other_llama_launchers = []
     unreadable = 0
     boot_count = 0
     periodic_count = 0
@@ -116,16 +117,36 @@ def audit_text(
                 continue
             # Case-insensitive textual correlation is intentionally a
             # *candidate* only; comments/inactive branches may match.
-            if "llama-server" not in content or (
-                re.search(r"(?<!\d)" + re.escape(str(listener_port)) + r"(?!\d)",
-                          content) is None
-            ):
+            if "llama-server" not in content:
                 continue
+            is_target_launcher = re.search(
+                r"(?<!\d)" + re.escape(str(listener_port)) + r"(?!\d)",
+                content,
+            ) is not None
             sig = hashlib.sha256(raw).hexdigest()
             key = sig + ":" + schedule
             if key in seen_signatures:
                 continue
             seen_signatures.add(key)
+            if not is_target_launcher:
+                # This describes a different *script candidate*, not a
+                # proven active server or verified remote exposure.
+                other_llama_launchers.append({
+                    "schedule_kind": (
+                        "@reboot" if schedule == "@reboot" else "periodic"
+                    ),
+                    "launcher_basename": candidate.name,
+                    "launcher_sha256_prefix": sig[:12],
+                    "wildcard_host_text_found": bool(re.search(
+                        r"--host\\s+[\"']?0\\.0\\.0\\.0",
+                        content,
+                    )),
+                    "current_process_running_proven": False,
+                    "listener_exposure_proven": False,
+                    "can_approve": False,
+                    "can_dispatch": False,
+                })
+                continue
             boot_count += schedule == "@reboot"
             periodic_count += schedule != "@reboot"
             findings.append({
@@ -154,6 +175,9 @@ def audit_text(
         "candidate_periodic_entries": periodic_count,
         "undecodable_or_unreadable_candidates": unreadable,
         "candidate_launchers": findings,
+        "other_llama_launcher_entries": len(other_llama_launchers),
+        "other_llama_launchers": other_llama_launchers,
+        "other_launcher_current_process_proven": False,
         "relaunch_persistence_possible": persistence_possible,
         "proven_current_process_origin": False,
         "dependencies_completely_inventoried": False,
