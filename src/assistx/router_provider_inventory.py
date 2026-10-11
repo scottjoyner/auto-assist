@@ -119,6 +119,25 @@ def fetch_provider_inventory(
     base = base_url.strip().rstrip("/")
     if not override and not base:
         return {}
+    # An override may select a legacy route, never a different credential recipient.
+    # Reject malformed/userinfo URLs rather than allowing token-bearing SSRF.
+    try:
+        trusted = urlsplit(base)
+        target = urlsplit(override or base)
+        if (
+            trusted.scheme not in ("http", "https")
+            or not trusted.hostname
+            or trusted.username is not None
+            or trusted.password is not None
+            or target.scheme != trusted.scheme
+            or target.hostname != trusted.hostname
+            or target.port != trusted.port
+            or target.username is not None
+            or target.password is not None
+        ):
+            return {}
+    except ValueError:
+        return {}
     effective_url = f"{base}/admin/providers/effective" if not override else override
     is_legacy_override = bool(override) and not override.endswith("/admin/providers/effective")
     try:
