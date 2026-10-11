@@ -10,6 +10,7 @@ from pathlib import Path
 import socket
 import urllib.error
 import urllib.request
+from uuid import uuid4
 
 from trace_task_read_broker_client_research import TaskReadBrokerClient
 
