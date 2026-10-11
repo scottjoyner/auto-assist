@@ -94,3 +94,27 @@ Separately, on the orchestration node, the existing integrated Control
 Room fixtures plus the portable suite reported **28 tests and 15
 parameterized subtests passed**; Ruff passed for the touched source and
 test files. No live inference was attempted.
+
+## Repository-wide CI status and isolated change gate
+
+The source branch was cut directly from Auto-Assist main SHA
+`a300072d11787a58a4587fa325f1b8fd66803730`.
+GitHub [main CI run 37571131813](https://github.com/scottjoyner/auto-assist/actions/runs/37571131813)
+already shows **unit FAIL** and **recovery-canary FAIL** at that exact
+unchanged SHA. Candidate [PR #288 CI run 38116230764](https://github.com/scottjoyner/auto-assist/actions/runs/38116230764)
+has the same two failed jobs, with **77 failed, 681 passed** in unit,
+concentrated in unrelated repository-source-binding and legacy runtime
+contracts. Recovery-canary fails in repository source binding
+(`RepositorySourceBinding.from_contract_payload` unavailable).
+PR #288 did not edit repository source-binding, runtime or recovery code.
+This is evidence of **a pre-existing red baseline**, not proof that all
+candidate failures are identical to main; do not claim regression-free full
+suite until an independent apples-to-apples test establishes that.
+
+CI has an additional `provider-catalog-contract` job to run exactly
+the pure standard-library suite against only the candidate parser/test in a
+temporary directory, matching Lenovo's execution environment. It does not
+alter or skip the existing unit/recovery jobs; those must eventually be
+fixed and pass before release or branch protection changes. No pip
+installation, fleet credentials or external API calls are needed for the
+isolated job.
