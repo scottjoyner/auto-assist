@@ -1,0 +1,70 @@
+{
+  "schema": "assistx-task-claim-policy-projection-parity-research-v1",
+  "date": "2026-10-11",
+  "repo": "scottjoyner/auto-assist",
+  "branch": "research/assistx-task-policy-projection-parity-20261011",
+  "parent_pr": 295,
+  "execution": "disposable Docker-only on x1-370",
+  "physical_result": "PASS",
+  "physical_runtime_seconds": 57.53,
+  "images": [
+    "neo4j:5.26-enterprise",
+    "python:3.12-slim"
+  ],
+  "source_methods": [
+    "Neo4jClient.get_task",
+    "_is_recovery_task",
+    "_is_claim_allowed_for_workflow_control"
+  ],
+  "read_plans": {
+    "minimal": "get_task_read",
+    "claim_guard": "get_task_claim_guard"
+  },
+  "claim_guard_fields": [
+    "id",
+    "status",
+    "payload",
+    "payload_json",
+    "queue_class",
+    "required_capabilities"
+  ],
+  "observations": {
+    "neo4j_RBAC_restricted_to_Task_policy_fields": true,
+    "read_only_graph_user_CREATE_denied": true,
+    "worker_network_separated_from_graph_network": true,
+    "direct_worker_literal_ip_Bolt_denied": true,
+    "direct_worker_literal_ip_graph_HTTP_denied": true,
+    "broker_request_with_fixed_plan_succeeds": true,
+    "ordinary_minimal_plan_hides_policy_fields": true,
+    "claim_plan_preserves_critical_queue_class": true,
+    "claim_plan_preserves_recovery_required_capabilities": true,
+    "claim_plan_preserves_payload_json_runbook": true,
+    "claim_plan_preserves_payload_only_runbook": true,
+    "missing_any_required_policy_field_rejected_offline": true,
+    "unexpected_policy_value_types_rejected_offline": true,
+    "actual_source_recovery_and_drain_helper_parity_in_unit_tests": true,
+    "production_containers_or_database_touched": false
+  },
+  "limitations": {
+    "production_get_task_full_field_parity": false,
+    "api_claim_task_full_authorization_proven": false,
+    "review_completion_heartbeat_parity_proven": false,
+    "Raft_authority_connected_to_broker": false,
+    "actual_broker_authentication_production_grade": false,
+    "real_Tailnet_header_auth_proven": false,
+    "independent_Neo4j_transaction_witness_connected": false,
+    "production_network_isolation_installed": false,
+    "production_auto_failover": false
+  },
+  "disposition": "RESEARCH_PHYSICAL_PASS_LIVE_PROMOTION_NO_GO",
+  "origin_hardening": {
+    "fixture_exact_scheme_host_port_validated": true,
+    "lookalike_domain_suffix_denied": true,
+    "userinfo_query_path_fragment_denied": true,
+    "alternative_port_denied": true,
+    "malformed_fixture_origin_denied": true,
+    "production_mtls_identity_implemented": false
+  },
+  "final_physical_run_seconds": 54.04,
+  "final_physical_run_result": "PASS"
+}

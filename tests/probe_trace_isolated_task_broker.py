@@ -62,6 +62,9 @@ def run() -> dict:
     bearer = secrets.token_urlsafe(35)
     reader_user = "fixture_reader"
     task_id = "fixture-task-" + tag
+    critical_id = "fixture-task-" + tag + "-crit"
+    recovery_id = "fixture-task-" + tag + "-recov"
+    payload_recovery_id = "fixture-task-" + tag + "-payrec"
     made_networks = []
     made_containers = []
     started = time.monotonic()
@@ -104,12 +107,25 @@ def run() -> dict:
             statements = [
                 "CREATE ROLE " + role + " IF NOT EXISTS",
                 "GRANT ACCESS ON DATABASE neo4j TO " + role,
-                "GRANT MATCH {id, status} ON GRAPH neo4j NODES Task TO " + role,
+                "GRANT MATCH {id, status, payload, payload_json, queue_class, "
+                "required_capabilities} ON GRAPH neo4j NODES Task TO " + role,
                 "CREATE USER " + reader_user + " SET PASSWORD '" +
                 reader_password + "' CHANGE NOT REQUIRED",
                 "GRANT ROLE " + role + " TO " + reader_user,
                 "CREATE (:Task {id: '" + task_id +
                 "', status: 'READY'})",
+                "CREATE (:Task {id: '" + critical_id +
+                "', status: 'READY', queue_class: 'critical', "
+                "payload_json: '{\"queue_class\":\"critical\"}', "
+                "required_capabilities: []})",
+                "CREATE (:Task {id: '" + recovery_id +
+                "', status: 'READY', "
+                "payload_json: '{\"runbook\":\"fixture-only\"}', "
+                "required_capabilities: ['recovery']})",
+                "CREATE (:Task {id: '" + payload_recovery_id +
+                "', status: 'READY', "
+                "payload: '{\"runbook\":\"payload-only\"}', "
+                "required_capabilities: []})",
             ]
             for step, cypher in enumerate(statements, 1):
                 check = query(graph, admin, cypher, timeout=15)
@@ -162,7 +178,11 @@ def run() -> dict:
             made_containers.append(worker)
             (tmp / "worker-config.json").write_text(
                 json.dumps({
-                    "task_id": task_id, "bearer": bearer,
+                    "task_id": task_id,
+                    "critical_task_id": critical_id,
+                    "recovery_task_id": recovery_id,
+                    "payload_recovery_task_id": payload_recovery_id,
+                    "bearer": bearer,
                     "broker_host": broker, "neo4j_ip": neo_ip,
                 }), encoding="utf8")
             docker("cp", str(SOURCE / "trace_disposable_task_worker.py"),
@@ -194,6 +214,11 @@ def run() -> dict:
                 "runtime_seconds": round(time.monotonic() - started, 2),
                 "source_task_method": "Neo4jClient.get_task",
                 "tested_subset": ["Task.id", "Task.status"],
+                "claim_guard_fields": [
+                    "Task.id", "Task.status", "Task.queue_class",
+                    "Task.payload", "Task.payload_json",
+                    "Task.required_capabilities",
+                ],
                 "neo4j_actual_read": True,
                 "neo4j_reader_role_read": True,
                 "neo4j_reader_role_write_denied": True,

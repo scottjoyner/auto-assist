@@ -25,7 +25,7 @@ def ok_document(task):
 
 def test_exact_static_read_plan_matches_existing_neo4jclient_lookup():
     assert PLAN == "get_task_read"
-    assert CYPHER == "MATCH (t:Task {id: $id}) RETURN properties(t) AS task"
+    assert CYPHER == "MATCH (t:Task {id: $id}) RETURN t { .id, .status } AS task"
     assert GRAPH_ENDPOINT == "http://neo4j:7474/db/neo4j/tx/commit"
     assert "DELETE" not in CYPHER
     assert "CREATE" not in CYPHER
@@ -97,7 +97,8 @@ def test_resource_safety_network_topology_and_cleanup_guards():
     assert 'docker("rm", "-f", "-v", name' in probe
     assert 'docker("network", "rm", name' in probe
     assert '"NEO4J_AUTH=neo4j/" + admin' in probe
-    assert "GRANT MATCH {id, status} ON GRAPH neo4j NODES Task" in probe
+    assert "GRANT MATCH {id, status, payload, payload_json, queue_class" in probe
+    assert "required_capabilities} ON GRAPH neo4j NODES Task" in probe
     assert "READ_ONLY_ROLE_WAS_ALLOWED_TO_WRITE" in probe
     assert "NEO4J_AUTH=none" not in probe
     assert "production_authority" in probe
