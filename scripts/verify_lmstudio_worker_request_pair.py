@@ -29,13 +29,13 @@ IDENTITY_FIELDS = {
 }
 WORKER_FIELDS = {
     "audience", "role", "request_id", "owner_digest",
-    "request_sha256", "nonce_sha256", "worker_identity",
+    "request_sha256", "nonce_sha256", "model_instance_id", "worker_identity",
     "started_ms", "completed_ms", "completion_state",
     "finish_reason", "output_sha256", "completion_tokens",
 }
 GATEWAY_FIELDS = {
     "audience", "role", "request_id", "owner_digest",
-    "request_sha256", "nonce_sha256", "worker_identity",
+    "request_sha256", "nonce_sha256", "model_instance_id", "worker_identity",
     "started_ms", "completed_ms", "completion_state",
     "http_status", "response_id", "output_sha256", "worker_receipt_sha256",
 }
@@ -156,9 +156,14 @@ def correlate(
         for name in ("owner_digest", "request_sha256", "nonce_sha256",
                      "output_sha256"):
             lower_hash(payload[name], name)
+        if (not isinstance(payload["model_instance_id"], str)
+                or not re.fullmatch(r"[A-Za-z0-9_.:/@+-]{3,128}",
+                                    payload["model_instance_id"])):
+            raise ValueError("model instance ID invalid")
         process_identity(payload["worker_identity"])
     for name in ("request_id", "owner_digest", "request_sha256",
-                 "nonce_sha256", "output_sha256", "worker_identity"):
+                 "nonce_sha256", "output_sha256", "model_instance_id",
+                 "worker_identity"):
         if worker[name] != gateway[name]:
             raise ValueError("gateway and worker differ on " + name)
     if already_seen_request_ids is not None and (
