@@ -21,8 +21,8 @@ CLAIM_PLAN = "get_task_claim_guard"
 CYPHER = "MATCH (t:Task {id: $id}) RETURN t { .id, .status } AS task"
 CLAIM_CYPHER = (
     "MATCH (t:Task {id: $id}) "
-    "RETURN t { .id, .status, .payload_json, .queue_class, "
-    ".required_capabilities } AS task"
+    "RETURN t { .id, .status, .payload, .payload_json, "
+    ".queue_class, .required_capabilities } AS task"
 )
 STATIC_PLANS = {PLAN: CYPHER, CLAIM_PLAN: CLAIM_CYPHER}
 TASK_ID = re.compile(r"^fixture-task-[A-Za-z0-9_-]{4,48}$")
@@ -77,7 +77,7 @@ def decode_task_response(
         allowed = {"id", "status"}
     elif plan_id == CLAIM_PLAN:
         allowed = {
-            "id", "status", "payload_json", "queue_class",
+            "id", "status", "payload", "payload_json", "queue_class",
             "required_capabilities",
         }
     else:
@@ -91,6 +91,9 @@ def decode_task_response(
         # all policy keys must be present, even when source values are null.
         if set(task) != allowed:
             raise RequestDenied("GRAPH_RESPONSE_POLICY_FIELDS_MISSING")
+        if (task.get("payload") is not None and
+                type(task["payload"]) is not str):
+            raise RequestDenied("GRAPH_RESPONSE_UNAPPROVED_FIELDS")
         if (task.get("payload_json") is not None and
                 type(task["payload_json"]) is not str):
             raise RequestDenied("GRAPH_RESPONSE_UNAPPROVED_FIELDS")
