@@ -37,7 +37,9 @@ def raw_public(k: Ed25519PrivateKey) -> bytes:
 
 
 def wrap(k: Ed25519PrivateKey, payload: dict) -> dict:
-    return {"payload": payload, "signature": k.sign(M.canonical(payload)).hex()}
+    # Return an immutable snapshot of the signed payload for realistic replay.
+    snapshot = copy.deepcopy(payload)
+    return {"payload": snapshot, "signature": k.sign(M.canonical(snapshot)).hex()}
 
 
 def fixture():
