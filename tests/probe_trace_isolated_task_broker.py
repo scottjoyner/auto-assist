@@ -404,27 +404,12 @@ def run() -> dict:
                         if denied.returncode != 0:
                             raise RuntimeError(
                                 "WRITER_DIRECT_NEO4J_BYPASS")
-                    # The broker may contact this fixed RPC origin, but
-                    # an unauthenticated request cannot reserve capacity.
-                    verify_no_auth = (
-                        "import json,sys,urllib.request,urllib.error;"
-                        "u=sys.argv[1];"
-                        "req=urllib.request.Request("
-                        "u+'/v1/admit',method='POST',"
-                        "data=b'{}',"
-                        "headers={'Content-Type':'application/json'});"
-                        "code=0;"
-                        "\\ntry:\\n urllib.request.urlopen(req,timeout=4);"
-                        " code=200"
-                        "\\nexcept urllib.error.HTTPError as e:\\n code=e.code"
-                        "\\nassert code==401,code"
-                    )
-                    # No secrets in argv: only a fixed disposable URL.
-                    verify_no_auth = verify_no_auth.replace(
-                        "\\\\n", "\n")
+                    # Read only an uncredentialed status; no token logged.
+                    docker(
+                        "cp", str(SOURCE / "trace_disposable_writer_unauth.py"),
+                        broker + ":/tmp/writer-unauth.py")
                     unauth = docker(
-                        "exec", broker, "python", "-c", verify_no_auth,
-                        "http://" + writer + ":8810",
+                        "exec", broker, "python", "/tmp/writer-unauth.py",
                         timeout=9, check=False)
                     if unauth.returncode != 0:
                         raise RuntimeError(
