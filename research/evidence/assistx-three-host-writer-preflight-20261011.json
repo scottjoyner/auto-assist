@@ -1,0 +1,39 @@
+{
+  "schema": "assistx-three-host-writer-readiness-20261011-v1",
+  "date": "2026-10-11",
+  "scope": "READ_ONLY_SSH_DOCKER_IMAGE_INSPECT_NO_CONTAINER_LAUNCH",
+  "hosts": [
+    "x1-370",
+    "xwing",
+    "destroyer"
+  ],
+  "checks": {
+    "batch_ssh_reachable_all": true,
+    "docker_server_available_all": true,
+    "tailscale_ipv4_reported_on_each": true,
+    "cached_etcd_image_tag_all": "quay.io/coreos/etcd:v3.6.14",
+    "repo_digest_same_all": "sha256:dfd3941bf6ced5fdb700f9b2d98b22b7bca7ceee13aec16224f93ff30d9a59c4",
+    "os_all": "linux",
+    "arch_all": "amd64",
+    "image_created_metadata_same_all": "2026-07-23T12:21:52.793539054-07:00",
+    "rootfs_layers_all": 17,
+    "rootfs_layers_json_sha256_same_all": "d0f84c558a5f6991730215a483d8996641ae154a6ecebdc26dcdf9057e563b5e",
+    "docker_image_ids": {
+      "x1-370": "sha256:dfd3941bf6ced5fdb700f9b2d98b22b7bca7ceee13aec16224f93ff30d9a59c4",
+      "xwing": "sha256:35404af5b23f9c590e81461a1c3448a6e97f622b4c4d28234a10ab00a3b4f525",
+      "destroyer": "sha256:35404af5b23f9c590e81461a1c3448a6e97f622b4c4d28234a10ab00a3b4f525"
+    }
+  },
+  "interpretation": "RepoDigest, platform and RootFS layer fingerprints agree; Docker local image IDs differ. That mismatch alone does not establish drift. No container binary or signed digest provenance independently attested in this preflight.",
+  "limitations": {
+    "remote_docker_version": "x1-370 29.8.2, xwing 29.8.2, destroyer 29.8.1",
+    "remote_etcd_container_started": false,
+    "port_bind_preflight": false,
+    "remote_mtls_retested": false,
+    "remote_RBAC_retested": false,
+    "host_independent_power_domains_verified": false,
+    "signed_software_supply_chain_verified": false,
+    "production_service_mutation": false
+  },
+  "result": "READ_ONLY_HOST_AND_CACHED_IMAGE_READY_THREE_HOST_JOINED_WRITER_UNPROVEN"
+}
