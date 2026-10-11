@@ -212,8 +212,12 @@ def check_deployment_status():
 
 
 def verify_integration_endpoints():
-    """Verify integration endpoints are responding"""
+    """Verify public health and anonymous admin denial separately."""
     import requests
+    try:
+        from scripts.legacy_router_context_probe import probe_router_context
+    except ModuleNotFoundError:
+        from legacy_router_context_probe import probe_router_context
     
     print("\n🔗 Verifying Integration Endpoints...")
     print("=" * 60)
@@ -222,7 +226,6 @@ def verify_integration_endpoints():
         ('http://localhost:8000/health', 'auto-assist API'),
         ('http://localhost:8088/health', 'auto-router API'),
         ('http://localhost:8088/v1/models', 'auto-router models'),
-        ('http://localhost:8088/admin/context', 'auto-router context'),
     ]
     
     for url, name in endpoints:
@@ -234,6 +237,17 @@ def verify_integration_endpoints():
                 print(f"⚠️  {name:30s} - Status {response.status_code}: {url}")
         except Exception as e:
             print(f"❌ {name:30s} - Error: {e}")
+
+    # HTTP 401 without credentials is the intended security behavior.
+    # Never send the shared admin token, follow redirects, or read the body.
+    context_auth = probe_router_context()
+    state = context_auth['status']
+    if state == 'secured':
+        print("✅ auto-router context - secured (anonymous 401)")
+    elif state == 'anonymous_admin_exposure':
+        print("❌ auto-router context - UNSAFE anonymous 200")
+    else:
+        print("⚠️  auto-router context - authentication unverified")
 
 
 if __name__ == '__main__':
