@@ -9,6 +9,8 @@ Prerequisites:
   model_endpoint; ordinary services are never silently retyped.
 * Existing ambiguous/doubly-owned identities are rejected; never pick one.
 * The legacy writers are fenced OFF before any future authorized cutover.
+* Competing candidate writers revalidate ownership AFTER locking the
+  constrained ServiceEndpoint node inside one managed transaction.
 
 No delete, relationship pruning, account changes or schema DDL occur here.
 """
@@ -38,6 +40,16 @@ RETURN elementId(e) AS ref, labels(e) AS labels,
 MODEL_IDENTITY_QUERY = """
 MATCH (e:ModelEndpoint {model_endpoint_id:$endpoint_id})
 RETURN elementId(e) AS ref, e.endpoint_id AS endpoint_id
+"""
+# MERGE on a uniqueness key protects creation, but is not an ownership
+# authorization check. An explicit property write obtains the endpoint's
+# transaction-level write lock BEFORE revalidating its current owner.
+# If validation fails, execute_write rolls back this timestamp update.
+LOCK_QUERY = """
+MERGE (e:ServiceEndpoint {endpoint_id:$endpoint_id})
+ON CREATE SET e.created_at=datetime(), e.created_at_ts=timestamp()
+SET e.updated_at_ts=timestamp()
+RETURN elementId(e) AS ref
 """
 UPSERT_QUERY = """
 MERGE (n:SwarmNode {node_id:$node_id})
@@ -144,6 +156,13 @@ def _write_candidate(
     tx: Any, endpoint_id: str, node_id: str,
     safe_properties: Mapping[str, Any], model_ids: Sequence[str],
 ) -> dict[str, Any]:
+    _validate_preconditions(tx, endpoint_id, node_id)
+    # Serialize candidate writers using the unique ServiceEndpoint node.
+    # This is mandatory even when the pre-lock read saw no existing owner:
+    # a different owner may have committed while MERGE was waiting.
+    locked = list(tx.run(LOCK_QUERY, endpoint_id=endpoint_id))
+    if len(locked) != 1 or not locked[0].get("ref"):
+        raise EndpointIdentityHold("canonical identity lock unavailable")
     _validate_preconditions(tx, endpoint_id, node_id)
     rows = list(tx.run(
         UPSERT_QUERY,
