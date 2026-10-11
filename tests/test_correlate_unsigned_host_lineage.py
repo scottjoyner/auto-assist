@@ -1,7 +1,6 @@
 """Source-only regression tests: correlate two unsigned physical observations."""
 from __future__ import annotations
 
-import copy
 import importlib.util
 import json
 import sys
@@ -33,7 +32,7 @@ def proof():
         "model_loaded_attested": False, "owner_bound": False,
         "can_approve": False, "can_dispatch": False,
     }
-    l = {
+    lineage_row = {
         "schema": "lmstudio-worker-lineage-observation-v1",
         "source_kind": "unsigned_host_local_linux_process",
         "observed_at_ms": NOW - 10_000,
@@ -50,14 +49,14 @@ def proof():
         "owner_bound_request_attested": False, "can_approve": False,
         "can_dispatch": False,
     }
-    return p, l
+    return p, lineage_row
 
 
 class TestUnsignedHostCorrelation(unittest.TestCase):
     def check(self, **changes):
-        p, l = proof()
+        p, lineage_row = proof()
         params = {
-            "physical": p, "lineage": l,
+            "physical": p, "lineage": lineage_row,
             "expected_sha256": SHA, "expected_bytes": 1246255456,
             "expected_gateway_port": 1234, "expected_worker_port": 45435,
             "now_ms": NOW,
@@ -85,22 +84,22 @@ class TestUnsignedHostCorrelation(unittest.TestCase):
         self.assertNotIn(BOOT, json.dumps(r))
 
     def test_different_linux_boot_refused(self):
-        p, l = proof()
-        l["boot_id"] = "11111111-2222-3333-4444-555555555555"
+        p, lineage_row = proof()
+        lineage_row["boot_id"] = "11111111-2222-3333-4444-555555555555"
         with self.assertRaisesRegex(ValueError, "boot"):
-            self.check(physical=p, lineage=l)
+            self.check(physical=p, lineage=lineage_row)
 
     def test_pid_reuse_different_start_ticks_refused(self):
-        p, l = proof()
-        l["worker_process_start_ticks"] = 9999
+        p, lineage_row = proof()
+        lineage_row["worker_process_start_ticks"] = 9999
         with self.assertRaisesRegex(ValueError, "process"):
-            self.check(physical=p, lineage=l)
+            self.check(physical=p, lineage=lineage_row)
 
     def test_different_model_worker_refused(self):
-        p, l = proof()
-        l["worker_pid"] = 1006
+        p, lineage_row = proof()
+        lineage_row["worker_pid"] = 1006
         with self.assertRaisesRegex(ValueError, "process"):
-            self.check(physical=p, lineage=l)
+            self.check(physical=p, lineage=lineage_row)
 
     def test_wrong_model_digest_refused(self):
         with self.assertRaisesRegex(ValueError, "GGUF"):
@@ -115,46 +114,46 @@ class TestUnsignedHostCorrelation(unittest.TestCase):
             self.check(expected_worker_port=1235)
 
     def test_unverified_model_loaded_claim_refused(self):
-        p, l = proof()
-        l["model_loaded_inference_attested"] = True
+        p, lineage_row = proof()
+        lineage_row["model_loaded_inference_attested"] = True
         with self.assertRaisesRegex(ValueError, "authority"):
-            self.check(physical=p, lineage=l)
+            self.check(physical=p, lineage=lineage_row)
 
     def test_fake_signed_output_refused(self):
-        p, l = proof()
+        p, lineage_row = proof()
         p["signature_verified"] = True
         with self.assertRaisesRegex(ValueError, "authority"):
-            self.check(physical=p, lineage=l)
+            self.check(physical=p, lineage=lineage_row)
 
     def test_future_observation_refused(self):
-        p, l = proof()
+        p, lineage_row = proof()
         p["observed_at_ms"] = NOW + 6000
         with self.assertRaisesRegex(ValueError, "future"):
-            self.check(physical=p, lineage=l)
+            self.check(physical=p, lineage=lineage_row)
 
     def test_stale_process_observation_refused(self):
-        p, l = proof()
+        p, lineage_row = proof()
         p["observed_at_ms"] = NOW - 301_000
         with self.assertRaisesRegex(ValueError, "expired"):
-            self.check(physical=p, lineage=l)
+            self.check(physical=p, lineage=lineage_row)
 
     def test_gap_too_long_refused(self):
-        p, l = proof()
+        p, lineage_row = proof()
         p["observed_at_ms"] = NOW - 140_000
         with self.assertRaisesRegex(ValueError, "too far"):
-            self.check(physical=p, lineage=l)
+            self.check(physical=p, lineage=lineage_row)
 
     def test_unknown_raw_secret_field_refused(self):
-        p, l = proof()
-        l["api_token"] = "forbidden"
+        p, lineage_row = proof()
+        lineage_row["api_token"] = "forbidden"
         with self.assertRaisesRegex(ValueError, "unknown"):
-            self.check(physical=p, lineage=l)
+            self.check(physical=p, lineage=lineage_row)
 
     def test_missing_or_false_direct_health_refused(self):
-        p, l = proof()
-        l["direct_worker_health_ok"] = False
+        p, lineage_row = proof()
+        lineage_row["direct_worker_health_ok"] = False
         with self.assertRaisesRegex(ValueError, "incomplete"):
-            self.check(physical=p, lineage=l)
+            self.check(physical=p, lineage=lineage_row)
 
     def test_two_unsigned_records_do_not_authenticate_one_another(self):
         r = self.check()
@@ -162,10 +161,10 @@ class TestUnsignedHostCorrelation(unittest.TestCase):
         self.assertFalse(r["gateway_request_forwarding_attested"])
 
     def test_bool_timestamp_fails_closed(self):
-        p, l = proof()
+        p, lineage_row = proof()
         p["observed_at_ms"] = True
         with self.assertRaisesRegex(ValueError, "physical observation time"):
-            self.check(physical=p, lineage=l)
+            self.check(physical=p, lineage=lineage_row)
 
 
 if __name__ == "__main__":
