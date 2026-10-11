@@ -1,0 +1,55 @@
+{
+  "schema": "assistx-b06-joined-held-bolt-separate-observer-v1",
+  "date": "2026-10-11",
+  "repo": "scottjoyner/auto-assist",
+  "branch": "research/assistx-b06-joined-bolt-held-observer-20261011",
+  "tested_physical_source_sha": "3b3a2e2907eae3a5cac4406b70cfe34fb5c0d12d",
+  "result": "PASS",
+  "exit_code": 0,
+  "three_host_runtime_seconds": 105.37,
+  "joined_broker_runtime_seconds": 77.57,
+  "environment": {
+    "Raft_hosts": [
+      "x1-370",
+      "xwing",
+      "destroyer"
+    ],
+    "etcd": "v3.6.14, real three-host voters",
+    "raft_transport": "ephemeral client/peer mTLS + exact-key RBAC",
+    "neo4j": "disposable Enterprise 5.26",
+    "production_services_changed": false
+  },
+  "observed": {
+    "broker_real_Raft_CAS_preceded_Bolt": true,
+    "explicit_Bolt_transaction_created_inside_same_broker_request": true,
+    "worker_input_restricted_to_fixed_Task_read": true,
+    "broker_generated_exact_transaction_metadata": true,
+    "separate_Neo4j_observer_role_and_account": true,
+    "observer_write_privilege_denied": true,
+    "observer_network_is_graph_only": true,
+    "observer_identified_one_active_original_Bolt_transaction": true,
+    "observer_identified_two_absent_snapshots_after_commit": true,
+    "broker_transaction_committed_without_witness_signing": true,
+    "Raft_three_pending_zero_completed_after_graph_success": true,
+    "fourth_worker_request_denied_capacity": true,
+    "three_host_two_voter_minority_denied_fresh_admission": true,
+    "broker_and_worker_no_direct_etcd": true,
+    "writer_no_direct_graph": true,
+    "no_graph_host_published_ports": true,
+    "scoped_resources_destroyed": true
+  },
+  "proof_boundaries": {
+    "independently_attested_graph_boot_identity": false,
+    "server_signed_original_transaction_generation": false,
+    "observer_identity_has_production_mTLS": false,
+    "signed_closure_receipt_created": false,
+    "durable_independent_signer_key_custody": false,
+    "Raft_bind_witness_and_release_in_same_request": false,
+    "server_side_Neo4j_stale_term_rejection": false,
+    "all_production_graph_consumers_migrated": false,
+    "live_worker_API_direct_Bolt_bypass_closed": false,
+    "production_admission_enabled": false,
+    "automatic_failover_enabled": false
+  },
+  "decision": "B06_SAME_REQUEST_ACTIVE_TO_ABSENT_PHYSICAL_PASS_B06_SIGNED_CLOSURE_NO_GO"
+}
