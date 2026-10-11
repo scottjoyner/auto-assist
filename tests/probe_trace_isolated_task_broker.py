@@ -349,7 +349,8 @@ def run(external_writer: dict | None = None) -> dict:
                     "bearer": bearer,
                     "broker_host": broker, "neo4j_ip": neo_ip,
                     **({"quorum_ip": external_writer["raft_ip"],
-                        "quorum_port": external_writer["raft_port"]}
+                        "quorum_port": external_writer["raft_port"],
+                        "remote_three_host": True}
                        if remote else {"quorum_ip": json.loads(
                         docker("inspect", "assistx-broker-quorum-r1-" + tag
                                ).stdout)[0]["NetworkSettings"][
