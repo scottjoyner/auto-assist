@@ -271,7 +271,23 @@ def run(raft_authority=None) -> dict:
                     break
                 time.sleep(1)
             if result is None:
-                raise RuntimeError("WORKER_TO_BROKER_TASK_READ_ACCEPTANCE_FAILED")
+                # Do NOT print raw subprocess stderr: it can include URLs,
+                # parameters or future credentials. Report only fixed codes.
+                output = ((attempt.stdout or "") + " " +
+                          (attempt.stderr or ""))
+                markers = (
+                    "GRAPH_UNAVAILABLE", "ADMISSION_UNAVAILABLE",
+                    "AssertionError", "HTTPError", "PermissionError",
+                    "ConnectionRefusedError", "FileNotFoundError",
+                    "TimeoutError", "BROKER_RESPONSE_UNTRUSTED",
+                    "DIRECT_BOLT_BYPASS", "INVALID_PLAN_OR_PARAMETERS",
+                    "UNAUTHORIZED", "REQUEST_ALREADY_ADMITTED",
+                )
+                flags = [x for x in markers if x in output]
+                raise RuntimeError(
+                    "WORKER_TO_BROKER_TASK_READ_ACCEPTANCE_FAILED "
+                    "worker_exit=" + str(attempt.returncode) +
+                    " sanitized_markers=" + ",".join(flags))
             if raft_fence is not None:
                 pending = raft_fence.snapshot().document["pending"]
                 assert len(pending) >= 6, "REAL_RAFT_ADMISSION_NOT_COMMITTED"
