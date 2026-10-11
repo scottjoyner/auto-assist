@@ -139,6 +139,7 @@ class VerifiedHumanGateway:
         if not self.oidc_keys:
             raise HumanGatewayDenied("IdP key set cannot be empty")
         self.humans = {}
+        seen_human_owners: set[tuple[str, str]] = set()
         for row in roster["users"]:
             if not isinstance(row, dict) or set(row) != {
                 "sub", "tenant", "subject", "models", "kind"
@@ -155,6 +156,13 @@ class VerifiedHumanGateway:
                 or sub in self.humans
             ):
                 raise HumanGatewayDenied("invalid or duplicate human mapping")
+            # Distinct authenticated IdP subjects must not silently collapse
+            # into the same human owner. Account linking requires a separate,
+            # audited identity migration and cannot happen via this roster.
+            owner = (tenant, subject)
+            if owner in seen_human_owners:
+                raise HumanGatewayDenied("ambiguous human identity mapping")
+            seen_human_owners.add(owner)
             self.humans[sub] = (tenant, subject, frozenset(models))
         self.gateway_key = gateway_key
         self.gateway_kid = gateway_kid
@@ -255,22 +263,34 @@ class VerifiedHumanGateway:
         try:
             async with httpx.AsyncClient(
                 transport=transport, timeout=10.0, follow_redirects=False,
-                trust_env=False
+                trust_env=False,
             ) as client:
-                response = await client.post(
-                    self.router_url, json=payload, headers=headers,
-                )
+                # Streaming ingestion with a hard ceiling matters even for a
+                # non-streaming completion: client.post() buffers unbounded
+                # provider bytes *before* a later len(response.content) check.
+                async with client.stream(
+                    "POST", self.router_url, json=payload, headers=headers,
+                ) as response:
+                    if 300 <= response.status_code < 400:
+                        raise HumanGatewayDenied("unexpected router redirect")
+                    length = response.headers.get("content-length")
+                    if length is not None:
+                        try:
+                            declared = int(length)
+                        except ValueError as exc:
+                            raise HumanGatewayDenied("invalid router response length") from exc
+                        if declared < 0 or declared > 262144:
+                            raise HumanGatewayDenied("oversized router response")
+                    received = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if len(received) + len(chunk) > 262144:
+                            raise HumanGatewayDenied("oversized router response")
+                        received.extend(chunk)
+                    code = response.status_code
         except httpx.HTTPError as exc:
             raise HumanGatewayDenied("verified router unavailable") from exc
-        if len(response.content) > 262144:
-            raise HumanGatewayDenied("oversized router response")
-        try:
-            data = response.json()
-        except ValueError as exc:
-            raise HumanGatewayDenied("invalid router response") from exc
-        if not isinstance(data, dict):
-            raise HumanGatewayDenied("invalid router response shape")
-        return response.status_code, data
+        data = _json(bytes(received))
+        return code, data
 
 
 def install_verified_human_gateway(app: FastAPI) -> None:
