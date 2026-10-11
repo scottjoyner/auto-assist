@@ -1,0 +1,78 @@
+{
+  "schema": "assistx-live-boundary-audit-v1",
+  "observed_date": "2026-10-11",
+  "host": "x1-370",
+  "scope": "READ_ONLY_LIVE_DOCKER_INSPECT_AND_TCP_CONNECT_ONLY",
+  "source_branch": "research/assistx-proxy-bolt-boundary-negatives-20261011",
+  "repo": "scottjoyner/auto-assist",
+  "result": "NETWORK_BYPASS_PRESENT_NO_GO",
+  "neo4j": {
+    "container_name": "neo4j",
+    "image": "neo4j:5-enterprise",
+    "compose_file": "/home/scott/docker/neo4j-ssd.yml",
+    "networks": [
+      "docker_default",
+      "git_default",
+      "home_scott_git_auto-assist_default"
+    ],
+    "host_published_bolt": {
+      "container_port": 7687,
+      "host_port": 7688,
+      "host_interface": "WILDCARD"
+    },
+    "host_published_http": {
+      "container_port": 7474,
+      "host_port": 7475,
+      "host_interface": "WILDCARD"
+    },
+    "tailscale_serve_tcp_port_7687_present": true
+  },
+  "actors": [
+    {
+      "name": "assistx-worker",
+      "shared_network": "home_scott_git_auto-assist_default",
+      "bolt_tcp_neo4j_7687": "CONNECTED",
+      "http_tcp_neo4j_7474": "CONNECTED",
+      "credential_or_cypher_tested": false
+    },
+    {
+      "name": "assistx-api",
+      "shared_networks": [
+        "git_default",
+        "home_scott_git_auto-assist_default"
+      ],
+      "bolt_tcp_neo4j_7687": "CONNECTED",
+      "http_tcp_neo4j_7474": "CONNECTED",
+      "credential_or_cypher_tested": false
+    }
+  ],
+  "mobile_auth": {
+    "source": "src/assistx/mobile_agent_routes.py",
+    "api_host_publication": "127.0.0.1:8000",
+    "tailscale_serve_proxy_port": 8443,
+    "untagged_whoami_http_status": 401,
+    "synthetic_nonallowlisted_header_http_status": 403,
+    "synthetic_allowlisted_header_in_OFFLINE_request_helper": "ACCEPTED_WITHOUT_ASGI_PEER_ORIGIN_CHECK",
+    "allowlisted_real_account_spoof_tested": false,
+    "proxy_header_stripping_proven": false,
+    "all_alternate_network_paths_proven_absent": false,
+    "live_authentication_bypass_proven": false
+  },
+  "limitations": {
+    "tcp_connection_only_no_bolt_protocol": true,
+    "neo4j_credentials_accessed": false,
+    "neo4j_query_executed": false,
+    "production_network_mutations": false,
+    "actual_public_internet_reachability_tested": false,
+    "remote_xwing_destroyer_outbound_TCP": "NOT_CONCLUDED",
+    "deployed_fencing_runtime_wired": false
+  },
+  "safe_next_gate": [
+    "inventory real Neo4j direct callers and their exact allowlisted plan needs",
+    "introduce isolated exclusive graph broker in disposable environment, preserve legitimate functionality",
+    "separate gateway/worker OS principals, Neo4j credentials and network domains",
+    "block direct worker/API Bolt and host wildcard mappings only after functional migration",
+    "prove Tailnet Serve identity provenance against local/bridge alternative ingress without impersonating live accounts",
+    "rerun three-host etcd Raft and independent witness plus app regression before staging rollout"
+  ]
+}
