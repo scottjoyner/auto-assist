@@ -29,14 +29,16 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-          fetch-depth: 12
+          # Compare moving PR heads against older pinned dependencies using the full DAG.
+          # A shallow checkout can lose the common ancestor and falsely fail the merge.
+          fetch-depth: 0
 
       - name: Compose pinned, existing repair stack without committing
         shell: bash
         run: |
           set -euo pipefail
           client_sha="$(git rev-parse HEAD)"
-          git fetch --no-tags --depth=12 origin "refs/pull/${REPAIR_COMPOSITION_PR}/head"
+          git fetch --no-tags origin "refs/pull/${REPAIR_COMPOSITION_PR}/head"
           actual="$(git rev-parse FETCH_HEAD)"
           if [[ "${actual}" != "${PINNED_REPAIR_COMPOSITION_SHA}" ]]; then
             echo '::error::PR #265 head drifted; review differences and re-pin before retesting'
