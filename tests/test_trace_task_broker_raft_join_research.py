@@ -127,6 +127,7 @@ def test_optional_physical_join_is_explicit_and_never_production_default():
     assert 'run_isolated_broker(' in source
     probe = Path(__file__).with_name("probe_trace_isolated_task_broker.py").read_text()
     assert "raft_authority is not None" in probe
-    assert "allowed_uid=0" in probe
+    assert "allowed_uid=observe_disposable_peer_uid(" in probe
+    assert "SO_PEERCRED" in probe
     assert "incomplete_closure_capacity_retained" in probe
     assert "production_authority" in probe
