@@ -21,6 +21,7 @@ URL = "http://127.0.0.1:19341"
 ROUTE = "destroyer/k2"
 FINGERPRINT = "sha256:verified-test-artifact"
 TRACE = "00-" + "1" * 32 + "-" + "a" * 16 + "-01"
+OPERATOR_TOKEN = "synthetic-fleet-link-operator-proof-0123456789"
 
 
 def projection(*, expires=True, route=ROUTE, runtime="fleetlink:destroyer"):
@@ -64,6 +65,7 @@ def gateway(monkeypatch, *, projection_doc=None, ready=True, auth=True,
     monkeypatch.setenv("ASSISTX_FLEET_LINK_URL", URL)
     monkeypatch.setenv("ASSISTX_FLEET_LINK_RUNTIME_ID", "fleetlink:destroyer")
     monkeypatch.setenv("ASSISTX_FLEET_LINK_OPERATOR_USERS", "operator")
+    monkeypatch.setenv("ASSISTX_FLEET_LINK_OPERATOR_TOKEN", OPERATOR_TOKEN)
     events = [] if state is None else state
     model_doc = projection_doc if projection_doc is not None else projection()
     status, models = sidecar_ready(ready)
@@ -99,7 +101,9 @@ def gateway(monkeypatch, *, projection_doc=None, ready=True, auth=True,
     app = FastAPI()
     app.include_router(build_fleet_link_canary_router(
         auth_dependency,lambda: model_doc,client_factory))
-    return TestClient(app),events
+    client = TestClient(app)
+    client.headers["X-AssistX-Fleet-Operator-Token"] = OPERATOR_TOKEN
+    return client,events
 
 
 def test_preview_requires_two_live_proofs_and_approved_projection(monkeypatch):
@@ -337,3 +341,26 @@ def test_production_wired_projection_dependency_uses_signed_v2(monkeypatch):
         base64.urlsafe_b64decode(document["signature"] + "=="),
         runtime_projection_v2.signing_message(document),
     )
+
+
+@pytest.mark.parametrize("credential_state", [
+    "missing_header", "incorrect_header", "missing_server_token",
+    "short_server_token",
+])
+def test_trusted_identity_alone_cannot_authorize_operator(monkeypatch, credential_state):
+    # The fake upstream auth already asserts an operator identity. That must
+    # never suffice without the independent operator-only credential.
+    client, events = gateway(monkeypatch)
+    if credential_state == "missing_header":
+        del client.headers["X-AssistX-Fleet-Operator-Token"]
+    elif credential_state == "incorrect_header":
+        client.headers["X-AssistX-Fleet-Operator-Token"] = "wrong-operator-proof"
+    elif credential_state == "missing_server_token":
+        monkeypatch.delenv("ASSISTX_FLEET_LINK_OPERATOR_TOKEN")
+    else:
+        monkeypatch.setenv("ASSISTX_FLEET_LINK_OPERATOR_TOKEN", "too-short")
+    assert client.get("/api/fleet-link/preview").status_code == 403
+    assert client.post("/api/fleet-link/canary", json={
+        "model_handle": "model:v1:" + "1" * 32, "prompt": "hi",
+    }).status_code == 403
+    assert events == []
