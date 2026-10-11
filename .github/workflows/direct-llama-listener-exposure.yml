@@ -63,6 +63,10 @@ jobs:
               '"operator_change_approved": False',
               '"proven_current_process_origin": False',
               '"declared_host_loopback_proven": False',
+              '"other_launcher_current_process_proven": False',
+              '"listener_exposure_proven": False',
+              '"can_approve": False',
+              '"can_dispatch": False',
               'BLOCKED_CRON_PERSISTENCE_CANDIDATE',
               '["crontab", "-l"]',
           ):
