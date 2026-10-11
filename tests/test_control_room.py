@@ -38,6 +38,50 @@ def test_privileged_router_redirect_is_rejected_without_following(monkeypatch) -
     assert inspected == [("http://router:8088/admin/providers/effective", "synthetic", 2.0)]
 
 
+def test_privileged_router_metadata_read_is_size_bounded(monkeypatch) -> None:
+    """Admin responses fail closed before parsing a large untrusted JSON body."""
+    reads = []
+
+    class BoundedResponse(io.BytesIO):
+        def read(self, size=-1):
+            reads.append(size)
+            return super().read(size)
+
+    class FakeOpener:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def open(self, request, timeout):
+            assert request.get_header("X-admin-token") == "synthetic"
+            assert timeout == 2.0
+            return BoundedResponse(self.payload)
+
+    cap = control_room._MAX_ROUTER_ADMIN_JSON_BYTES
+    monkeypatch.setattr(
+        control_room,
+        "build_opener",
+        lambda *args: FakeOpener(b"X" * (cap + 1)),
+    )
+    with pytest.raises(ValueError, match="bounded metadata limit"):
+        control_room._http_json(
+            "http://router:8088", "/admin/providers/effective", admin_token="synthetic"
+        )
+    assert reads == [cap + 1]
+
+    reads.clear()
+    monkeypatch.setattr(
+        control_room,
+        "build_opener",
+        lambda *args: FakeOpener(b'{"providers": []}'),
+    )
+    result, elapsed_ms = control_room._http_json(
+        "http://router:8088", "/admin/providers/effective", admin_token="synthetic"
+    )
+    assert result == {"providers": []}
+    assert isinstance(elapsed_ms, float)
+    assert reads == [cap + 1]
+
+
 def test_classify_runtime_mode() -> None:
     assert control_room.classify_runtime_mode("LM Studio 0.4") == "LM_STUDIO"
     assert control_room.classify_runtime_mode("llama.cpp server") == "HEADLESS"
