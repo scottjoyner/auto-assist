@@ -30,6 +30,12 @@ ASSISTX_DISPOSABLE_GRAPH_BROKER=1 python3 tests/probe_trace_isolated_task_broker
 
 **Source/tests:** `tests/trace_disposable_task_broker.py`, `tests/trace_task_read_broker_client_research.py`, `tests/trace_disposable_task_worker.py`, `tests/probe_trace_isolated_task_broker.py`, `tests/test_trace_task_policy_projection_parity.py`. [Structured evidence](../research/evidence/assistx-task-policy-projection-parity-20261011.json).
 
+### Authenticated broker-origin anti-spoof hardening
+
+The draft worker-side client initially used a permissive hostname **prefix** check. A lookalike URL such as `http://assistx-broker-gateway-deadbeef.evil.com:8808` could have satisfied that condition and received the fixture bearer token. This was corrected by parsing the URL and requiring **exact** `http://assistx-broker-gateway-<8 lowercase hex>:8808` with no userinfo, alternate port, path, query, fragment or hostname suffix. Negative tests cover lookalikes and URL confusion.
+
+The physical Docker experiment was rerun with the stricter origin pin: **PASS, 54.04 seconds, exit 0**. Recovery capability, `payload_json` and payload-only runbooks, drain-critical classification, two-field field-hiding, RBAC write denial, and direct worker Bolt/HTTP denial remained intact. This is a fixture-only hostname pin; **production broker identity still requires mTLS, isolated secrets, and verified service identities**.
+
 ## Still-required production gates
 
 1. **Full Task consumer mapping**: enumerate field dependencies across claim, recovery, review, heartbeat, completion, workflow and admin routes. The new six-field plan only addresses the two cited claim/recovery helpers.
