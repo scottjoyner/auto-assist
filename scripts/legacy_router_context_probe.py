@@ -46,8 +46,15 @@ def probe_router_context(session_factory=None) -> dict[str, object]:
     except Exception:
         code = None
     finally:
-        if response is not None:
-            response.close()
-        if session is not None:
-            session.close()
+        # A failed cleanup must not be mistaken for a verified 401 receipt.
+        try:
+            if response is not None:
+                response.close()
+        except Exception:
+            code = None
+        try:
+            if session is not None:
+                session.close()
+        except Exception:
+            code = None
     return classify_router_context_status(code)
