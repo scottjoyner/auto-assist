@@ -98,6 +98,8 @@ def main():
             "ASSISTX_FLEET_LINK_URL":url,
             "ASSISTX_FLEET_LINK_RUNTIME_ID":"fleetlink:destroyer",
             "KIPNERTER_MOBILE_MODEL_HANDLE_SECRET":"ephemeral-integration-secret",
+            "ASSISTX_FLEET_LINK_OPERATOR_USERS":"authorized-operator",
+            "ASSISTX_FLEET_LINK_OPERATOR_TOKEN":"synthetic-disposable-operator-proof-0123456789",
         }
         document={
             "schema_version":"2","source":"assistx",
@@ -115,11 +117,12 @@ def main():
             lambda: "authorized-operator", lambda: document))
         with patch.dict(os.environ,env):
             client=TestClient(api)
-            preview=client.get("/api/fleet-link/preview")
+            operator_headers={"X-AssistX-Fleet-Operator-Token":env["ASSISTX_FLEET_LINK_OPERATOR_TOKEN"]}
+            preview=client.get("/api/fleet-link/preview",headers=operator_headers)
             handle=_mobile_model_handle(provider_model)
             trace="00-"+"1"*32+"-"+"2"*16+"-01"
             reply=client.post("/api/fleet-link/canary",
-                headers={"traceparent":trace},
+                headers={**operator_headers,"traceparent":trace},
                 json={"model_handle":handle,"prompt":"short synthetic canary","max_tokens":32})
             assert preview.status_code==200,preview.text
             assert preview.json()["ready_model_count"]==1,preview.text
