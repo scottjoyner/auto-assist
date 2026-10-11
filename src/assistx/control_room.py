@@ -23,6 +23,9 @@ from .deps import load_redis_module
 NeoFactory = Callable[[], Any]
 AuthDependency = Callable[..., Any]
 
+# Privileged router metadata is a bounded observation, never a bulk export.
+_MAX_ROUTER_ADMIN_JSON_BYTES = 4 * 1024 * 1024
+
 _PUBLIC_PROVIDER_KEYS = (
     "OPENROUTER_API_KEY",
     "GROQ_API_KEY",
@@ -129,7 +132,10 @@ def _http_json(
 
         opener = build_opener(_RejectAdminRedirect())
         with opener.open(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+            raw = response.read(_MAX_ROUTER_ADMIN_JSON_BYTES + 1)
+            if len(raw) > _MAX_ROUTER_ADMIN_JSON_BYTES:
+                raise ValueError("router admin response exceeds bounded metadata limit")
+            payload = json.loads(raw.decode("utf-8"))
     else:
         with urlopen(request, timeout=timeout) as response:  # noqa: S310 - operator-configured
             payload = json.loads(response.read().decode("utf-8"))
