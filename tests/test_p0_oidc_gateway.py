@@ -10,6 +10,7 @@ import base64
 import json
 import os
 import time
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import httpx
@@ -20,11 +21,16 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from assistx.p0_oidc_gateway import (
-    HumanGatewayDenied,
-    VerifiedHumanGateway,
-    install_verified_human_gateway,
-)
+# Avoid importing AssistX's unrelated heavy Neo4j/LLM package bootstrap
+# in this isolated security boundary test. The production API imports the
+# module normally only after its explicit feature flag is enabled.
+_module_file = Path(__file__).resolve().parents[1] / "src/assistx/p0_oidc_gateway.py"
+_spec = spec_from_file_location("p0_oidc_test_subject", _module_file)
+_gateway_module = module_from_spec(_spec)
+_spec.loader.exec_module(_gateway_module)
+HumanGatewayDenied = _gateway_module.HumanGatewayDenied
+VerifiedHumanGateway = _gateway_module.VerifiedHumanGateway
+install_verified_human_gateway = _gateway_module.install_verified_human_gateway
 
 
 def _b64(value: bytes) -> str:
