@@ -26,10 +26,8 @@ def proof():
     worker = test_keys.signed_worker()
     gateway = test_keys.signed_gateway()
     args = {
-        "stream": S.M.parse(
-            "".join(S.fixture()).encode("utf-8"),
-            expected_loaded_instance_id=S.INSTANCE,
-        ),
+        "sse_data": "".join(S.fixture()).encode("utf-8"),
+        "expected_loaded_instance_id": S.INSTANCE,
         "worker_envelope": worker,
         "gateway_envelope": gateway,
         "trusted_worker_public_key": F.raw_public(test_keys.worker_key),
@@ -117,11 +115,20 @@ class TestNativeWorkerJoin(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "stale"):
             J.join(**params)
 
-    def test_unsigned_dict_does_not_count_as_native_stream(self):
+    def test_caller_supplied_parsed_or_forged_dict_is_rejected(self):
         params, _ = proof()
-        params["stream"] = {"model_instance_id": S.INSTANCE}
-        with self.assertRaisesRegex(ValueError, "parser validated"):
+        params["sse_data"] = {"model_instance_id": S.INSTANCE}
+        with self.assertRaisesRegex(ValueError, "size budget"):
             J.join(**params)
+
+    def test_raw_sse_unexpected_model_load_cannot_be_overridden(self):
+        params, _ = proof()
+        events = S.fixture()
+        events.insert(1, S.event("model_load.start", model_instance_id=S.INSTANCE))
+        params["sse_data"] = "".join(events).encode("utf-8")
+        with self.assertRaisesRegex(ValueError, "unadmitted event"):
+            J.join(**params)
+
 
     def test_malformed_worker_physical_boot_id_rejected(self):
         params, t = proof()
