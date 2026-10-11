@@ -19,6 +19,7 @@ The earlier three-voter Raft quorum, independent Neo4j closure witness, RBAC-sco
 | Tailscale Serve configuration | TCP entry `7687` listed | Potential additional Tailnet entry; backend and access controls not independently validated |
 | `assistx-worker` networks | `home_scott_git_auto-assist_default` | Shares a network with Neo4j; Bolt TCP handshake succeeded |
 | `assistx-api` networks | `git_default`, `home_scott_git_auto-assist_default` | Shares networks with Neo4j; Bolt TCP handshake succeeded |
+| Neo4j client configuration in worker and API | Both running containers expose keys `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `NEO4J_DATABASE` in their environment name sets | Consistent with configured direct graph clients. **Only key presence was inspected; no values, validity, or roles were tested** |
 | Graph compose origin | `/home/scott/docker/neo4j-ssd.yml` | Defines unscoped `7475:7474` and `7688:7687` host mappings |
 | AssistX API | `127.0.0.1:8000` host mapping | Loopback host publication is more restricted, but local/bridge paths still matter |
 
@@ -37,7 +38,7 @@ The endpoint is fronted by Tailscale Serve 8443 from the tailnet and is publishe
 ## Executable guard and reproducibility
 
 - `tests/probe_trace_bolt_topology_readonly.py`: strictly opted-in inspection `ASSISTX_BOUNDARY_READONLY=1`; optional `ASSISTX_BOUNDARY_TCP_PROBE=1` sends only one TCP connect per worker/API container. No Neo4j authentication, credentials, writes, Docker network changes or service restart. Returns exit **2** deliberately when network bypass is found; exit 0 only when isolation remains *unproven* (not a promotion approval).
-- `tests/test_trace_bolt_topology_readonly.py`: **11 offline tests PASS**, covering network overlap, wildcard and IPv6 host publication, TCP-only evidence limitations, incomplete inventory denial and the synthetic allowlisted-header provenance counterexample.
+- `tests/test_trace_bolt_topology_readonly.py`: **12 offline tests PASS**, covering network overlap, wildcard and IPv6 host publication, environment-key *presence only* with secret-value exclusion, TCP-only evidence limitations, incomplete inventory denial and the synthetic allowlisted-header provenance counterexample.
 - `.github/workflows/trace-graph-entry-research.yml`: adds the tests to dedicated CI and compiles the manual-only probe; the CI runner never contacts fleet Docker.
 
 On live x1-370 the command:
