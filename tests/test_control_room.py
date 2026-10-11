@@ -382,8 +382,9 @@ def test_live_loaded_models_none_on_neo_failure() -> None:
 
 
 def test_live_loaded_models_ignores_unconfirmed_model_states() -> None:
+    fresh = control_room._now_ms()
     fake = _FakeNeo([
-        {"ms": 111},
+        {"ms": fresh},
         {"node": "mac-air", "states": [
             {"model_id": "ornith-4b", "online": True, "loaded": True, "inventory_authoritative": True},
             {"model_id": "qwen-8b", "online": True, "loaded": False, "inventory_authoritative": False},
@@ -393,8 +394,22 @@ def test_live_loaded_models_ignores_unconfirmed_model_states() -> None:
     result = control_room._live_loaded_models(lambda: fake)
 
     assert result == {
-        "mac-air": {"models": ["ornith-4b"], "online": True, "observed_at": "111", "latencies": {}},
+        "mac-air": {"models": ["ornith-4b"], "online": True, "observed_at": str(fresh), "latencies": {}},
     }
+    assert fake.closed
+
+
+def test_live_loaded_models_refuses_stale_snapshot() -> None:
+    fake = _FakeNeo([{"ms": control_room._now_ms() - 120_001}])
+    assert control_room._live_loaded_models(lambda: fake) == {}
+    assert fake._session.run.call_count == 1
+    assert fake.closed
+
+
+def test_live_loaded_models_refuses_future_snapshot() -> None:
+    fake = _FakeNeo([{"ms": control_room._now_ms() + 30_001}])
+    assert control_room._live_loaded_models(lambda: fake) == {}
+    assert fake._session.run.call_count == 1
     assert fake.closed
 
 
