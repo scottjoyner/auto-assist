@@ -130,4 +130,6 @@ def test_optional_physical_join_is_explicit_and_never_production_default():
     assert "allowed_uid=observe_disposable_peer_uid(" in probe
     assert "SO_PEERCRED" in probe
     assert "incomplete_closure_capacity_retained" in probe
+    assert "writer_death_blocks_new_broker_graph_read" in probe
+    assert "writer_death_preserves_real_raft_capacity" in probe
     assert "production_authority" in probe
