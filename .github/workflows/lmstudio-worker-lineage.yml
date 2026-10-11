@@ -21,9 +21,15 @@ jobs:
       - name: Install lint only
         run: python -m pip install 'ruff>=0.6,<1'
       - name: Exercise isolated process and socket inode ownership
-        run: python -m unittest discover -s tests -p 'test_lmstudio_worker_lineage.py' -q
+        run: |
+          python -m unittest discover -s tests -p 'test_lmstudio_worker_lineage.py' -q
+          python -m unittest discover -s tests -p 'test_correlate_unsigned_host_lineage.py' -q
       - name: Lint minimal observer and offline tests
-        run: ruff check scripts/collect_lmstudio_worker_lineage.py tests/test_lmstudio_worker_lineage.py
+        run: |
+          ruff check scripts/collect_lmstudio_worker_lineage.py \
+            scripts/correlate_unsigned_host_lineage.py \
+            tests/test_lmstudio_worker_lineage.py \
+            tests/test_correlate_unsigned_host_lineage.py
       - name: Refuse inference, credentials or authority from socket lineage
         run: |
           python - <<'PY'
@@ -43,5 +49,17 @@ jobs:
               'ssh ', '/v1/chat/completions', 'requests.post',
           ):
               assert forbidden not in code, forbidden
-          print('Lineage-only source, never a signed worker execution receipt.')
+          correlated=Path('scripts/correlate_unsigned_host_lineage.py').read_text()
+          for flag in (
+              '"source_attested": False',
+              '"model_loaded_execution_attested": False',
+              '"gateway_request_forwarding_attested": False',
+              '"authenticated_owner_receipt": False',
+              '"operator_approval_present": False',
+              '"can_approve": False',
+              '"can_auto_renew": False',
+              '"can_dispatch": False',
+          ):
+              assert flag in correlated, flag
+          print('Lineage and GGUF hashes correlate without granting execution authority.')
           PY
