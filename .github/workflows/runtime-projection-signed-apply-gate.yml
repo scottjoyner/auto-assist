@@ -1,0 +1,47 @@
+name: Canonical Runtime Two-Signer Apply Gate (Research)
+
+on:
+  push:
+    branches:
+      - experiment/runtime-projection-signed-apply-gate-20261011
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-only-signed-apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test-only verifier dependencies (no Neo4j server)
+        run: python -m pip install 'cryptography>=43,<46' 'PyYAML==6.0.2' 'neo4j==5.23.0' 'ruff>=0.6,<1'
+      - name: Test cryptographic source review, replay and no-write gates
+        run: |
+          python -m unittest discover -s tests -p 'test_runtime_projection_signed_apply_gate.py' -q
+          python -m unittest discover -s tests -p 'test_runtime_projection_review_preflight.py' -q
+      - name: Strict lint on changed approval and source gate
+        run: |
+          ruff check scripts/approve-runtime-projection.py \
+            scripts/runtime_projection_signed_apply_gate.py \
+            scripts/runtime-projection-review-preflight.py \
+            tests/test_runtime_projection_signed_apply_gate.py \
+            tests/test_runtime_projection_review_preflight.py
+      - name: Ensure the signed apply path is fail-closed
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          old=Path('scripts/approve-runtime-projection.py').read_text()
+          new=Path('scripts/runtime_projection_signed_apply_gate.py').read_text()
+          assert 'if args.signed_attestations is None:' in old
+          assert 'verify_signed_apply(' in old
+          assert 'CREATE (a:RuntimeProjectionApprovalReceipt' in old
+          assert 'Ed25519PublicKey' in new
+          assert 'source signer must be independent' in new
+          assert 'reviewer did not bind exact source signature' in new
+          print('Only signed independent source/operator evidence may enter canonical apply.')
+          PY
