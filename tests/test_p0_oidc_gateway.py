@@ -96,6 +96,15 @@ def _setup():
     return idp_private, signer, gateway, jwks, roster
 
 
+def _issue(gateway, jwt, model):
+    """Build a complete immutable delegated body for the synthetic IdP."""
+    return gateway.issue(jwt, model, {
+        "model": model,
+        "messages": [{"role": "user", "content": "synthetic-only"}],
+        "max_tokens": 8,
+    })
+
+
 def _delegated_claims(token, signer):
     header, body, signature = token.split(".")
     signer.public_key().verify(
@@ -109,8 +118,8 @@ def _delegated_claims(token, signer):
 
 def test_two_pinned_idp_subjects_get_separate_gateway_signed_attempts():
     idp, signer, gateway, _, _ = _setup()
-    token_a, a = gateway.issue(_oidc(idp, "idp-alice"), "auto/code")
-    token_b, b = gateway.issue(_oidc(idp, "idp-bob"), "auto/code")
+    token_a, a = _issue(gateway, _oidc(idp, "idp-alice"), "auto/code")
+    token_b, b = _issue(gateway, _oidc(idp, "idp-bob"), "auto/code")
     assert (a["tenant"], a["subject"]) == ("shared", "alice")
     assert (b["tenant"], b["subject"]) == ("shared", "bob")
     assert a["root_request_id"] != b["root_request_id"]
@@ -119,6 +128,9 @@ def test_two_pinned_idp_subjects_get_separate_gateway_signed_attempts():
     assert _delegated_claims(token_a, signer) == a
     assert _delegated_claims(token_b, signer) == b
     assert a["aud"] == b["aud"] == "auto-router-p0-shadow-user"
+    assert a["schema"] == b["schema"] == "p0-user-shadow-v2"
+    assert a["request_path"] == b["request_path"] == "/v1/chat/completions"
+    assert len(a["request_sha256"]) == len(b["request_sha256"]) == 64
     assert a["exp"] - a["iat"] == 60
 
 
@@ -133,29 +145,29 @@ def test_wrong_issuer_audience_expiry_or_time_is_rejected(change):
     idp, _, gateway, _, _ = _setup()
     token = _oidc(idp, "idp-alice", changes=change)
     with pytest.raises(HumanGatewayDenied):
-        gateway.issue(token, "auto/code")
+        _issue(gateway, token, "auto/code")
 
 
 def test_unknown_real_sub_is_not_a_client_supplied_user_identity():
     idp, _, gateway, _, _ = _setup()
     with pytest.raises(HumanGatewayDenied):
-        gateway.issue(_oidc(idp, "unknown-idp-user"), "auto/code")
+        _issue(gateway, _oidc(idp, "unknown-idp-user"), "auto/code")
     with pytest.raises(HumanGatewayDenied):
-        gateway.issue(_oidc(idp, "idp-alice"), "auto/other")
+        _issue(gateway, _oidc(idp, "idp-alice"), "auto/other")
     with pytest.raises(HumanGatewayDenied):
-        gateway.issue("unverified-bearer-token", "auto/code")
+        _issue(gateway, "unverified-bearer-token", "auto/code")
 
 
 def test_forged_signer_wrong_kid_and_noncanonical_identity_denied():
     idp, _, gateway, _, _ = _setup()
     forgery = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     with pytest.raises(HumanGatewayDenied):
-        gateway.issue(_oidc(forgery, "idp-alice"), "auto/code")
+        _issue(gateway, _oidc(forgery, "idp-alice"), "auto/code")
     with pytest.raises(HumanGatewayDenied):
-        gateway.issue(_oidc(idp, "idp-alice", kid="unknown"), "auto/code")
+        _issue(gateway, _oidc(idp, "idp-alice", kid="unknown"), "auto/code")
     token = _oidc(idp, "idp-alice")
     with pytest.raises(HumanGatewayDenied):
-        gateway.issue(token[:-1] + ("A" if token[-1] != "A" else "B"), "auto/code")
+        _issue(gateway, token[:-1] + ("A" if token[-1] != "A" else "B"), "auto/code")
 
 
 def test_gateway_forwards_only_signed_subject_and_server_chosen_headers():
