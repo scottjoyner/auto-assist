@@ -55,13 +55,13 @@ def correlate(
     expected_worker_port: int, now_ms: int,
 ) -> dict[str, Any]:
     p = envelope(physical, PHYSICAL_KEYS, "physical source")
-    l = envelope(lineage, LINEAGE_KEYS, "lineage source")
+    lineage_row = envelope(lineage, LINEAGE_KEYS, "lineage source")
     if p["schema"] != "linux-gguf-process-continuity-v1" or (
         p["source_kind"] != "unsigned_host_local_proc"
     ):
         raise ValueError("invalid physical source schema or kind")
-    if l["schema"] != "lmstudio-worker-lineage-observation-v1" or (
-        l["source_kind"] != "unsigned_host_local_linux_process"
+    if lineage_row["schema"] != "lmstudio-worker-lineage-observation-v1" or (
+        lineage_row["source_kind"] != "unsigned_host_local_linux_process"
     ):
         raise ValueError("invalid lineage source schema or kind")
     for flag in (
@@ -76,11 +76,11 @@ def correlate(
         "source_signature_verified", "operator_approval_present",
         "owner_bound_request_attested", "can_approve", "can_dispatch",
     ):
-        if l[flag] is not False:
+        if lineage_row[flag] is not False:
             raise ValueError("lineage source cannot declare authority")
     if p["continuity_checked"] is not True or (
-        l["listener_ownership_observed"] is not True or
-        l["direct_worker_health_ok"] is not True
+        lineage_row["listener_ownership_observed"] is not True or
+        lineage_row["direct_worker_health_ok"] is not True
     ):
         raise ValueError("incomplete process or listener checks")
 
@@ -94,7 +94,7 @@ def correlate(
             raise ValueError("invalid local port")
     now = typed_int(now_ms, "current UTC epoch ms")
     a = typed_int(p["observed_at_ms"], "physical observation time")
-    b = typed_int(l["observed_at_ms"], "lineage observation time")
+    b = typed_int(lineage_row["observed_at_ms"], "lineage observation time")
     for t in (a, b):
         if t > now + CLOCK_SKEW_MS:
             raise ValueError("future-dated host evidence")
@@ -102,17 +102,17 @@ def correlate(
             raise ValueError("host evidence expired")
     if abs(a - b) > CROSS_OBSERVATION_MAX_GAP_MS:
         raise ValueError("physical and lineage observations too far apart")
-    if not isinstance(p["boot_id"], str) or p["boot_id"] != l["boot_id"]:
+    if not isinstance(p["boot_id"], str) or p["boot_id"] != lineage_row["boot_id"]:
         raise ValueError("host boot identity mismatch")
-    if (typed_int(p["pid"], "model PID") != typed_int(l["worker_pid"], "worker PID")
+    if (typed_int(p["pid"], "model PID") != typed_int(lineage_row["worker_pid"], "worker PID")
             or typed_int(p["process_start_ticks"], "model start ticks")
-            != typed_int(l["worker_process_start_ticks"], "worker start ticks")):
+            != typed_int(lineage_row["worker_process_start_ticks"], "worker start ticks")):
         raise ValueError("physical model process and socket worker differ")
-    if (typed_int(l["worker_parent_pid"], "worker parent PID")
-            != typed_int(l["gateway_pid"], "gateway PID")):
+    if (typed_int(lineage_row["worker_parent_pid"], "worker parent PID")
+            != typed_int(lineage_row["gateway_pid"], "gateway PID")):
         raise ValueError("LM Studio child identity mismatch")
-    if (l["gateway_listener_port"] != expected_gateway_port
-            or l["worker_listener_port"] != expected_worker_port):
+    if (lineage_row["gateway_listener_port"] != expected_gateway_port
+            or lineage_row["worker_listener_port"] != expected_worker_port):
         raise ValueError("gateway or worker port differs from expected")
     if p["model_artifact_fingerprint"] != "sha256:" + expected_sha256 or (
         p["model_bytes"] != expected_bytes
@@ -129,10 +129,10 @@ def correlate(
         ).hexdigest()[:12],
         "worker_pid": p["pid"],
         "worker_start_ticks": p["process_start_ticks"],
-        "gateway_pid": l["gateway_pid"],
-        "gateway_start_ticks": l["gateway_process_start_ticks"],
-        "worker_port": l["worker_listener_port"],
-        "gateway_port": l["gateway_listener_port"],
+        "gateway_pid": lineage_row["gateway_pid"],
+        "gateway_start_ticks": lineage_row["gateway_process_start_ticks"],
+        "worker_port": lineage_row["worker_listener_port"],
+        "gateway_port": lineage_row["gateway_listener_port"],
         "model_sha256": expected_sha256,
         "model_bytes": expected_bytes,
         "source_attested": False,
