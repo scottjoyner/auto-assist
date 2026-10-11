@@ -172,3 +172,38 @@ def test_exact_metadata_contract_is_not_open_ended():
         "assistx_schema", "assistx_operation_id", "assistx_attempt_id",
         "assistx_reservation_id", "assistx_epoch", "assistx_term",
         "assistx_plan_id"}
+
+
+def test_pinned_metadata_is_not_mutable_after_custody():
+    source = dict(target().metadata)
+    pinned = PinnedGraphTarget(
+        "disposable-member-0", "disposable-boot-0",
+        "neo4j", "b"*32, source, "fixture-broker")
+    source["assistx_term"] = 999
+    assert pinned.metadata["assistx_term"] == 1
+    with pytest.raises(TypeError):
+        pinned.metadata["assistx_term"] = 999
+    assert capture_active(pinned, observation(1, [row()])).transaction_id
+
+
+def test_observer_snapshot_cannot_be_mutated_by_upstream_driver():
+    original = row()
+    snap = observation(1, [original])
+    original["transactionId"] = "neo4j-transaction-999"
+    original["metaData"]["assistx_term"] = 999
+    assert snap.rows[0]["transactionId"] == "neo4j-transaction-121"
+    assert snap.rows[0]["metaData"]["assistx_term"] == 1
+    with pytest.raises(TypeError):
+        snap.rows[0]["metaData"]["assistx_term"] = 10
+    with pytest.raises(TypeError):
+        snap.rows[0]["transactionId"] = "neo4j-transaction-999"
+    assert capture_active(target(), snap).transaction_id == (
+        "neo4j-transaction-121")
+
+
+def test_changed_snapshot_copy_cannot_rewrite_absence_sequence():
+    first = observation(2, [])
+    second = observation(3, [])
+    assert observe_absence_only(present(), first, second).release_authorized is False
+    with pytest.raises(AttributeError):
+        second.sequence = 2
