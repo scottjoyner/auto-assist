@@ -306,6 +306,12 @@
   };
   const modelEvidence = (node) => {
     const loaded = Array.isArray(node.loaded_models) ? node.loaded_models : [];
+    const inferred = Array.isArray(node.inferred_models) ? node.inferred_models : [];
+    const inferredHtml = inferred.length
+      ? `<div class="last-known"><span class="dependency-category">unverified / inferred</span> ${modelList(inferred, 3)}</div>`
+      : '';
+    const evidence = String(node.model_evidence || 'UNKNOWN');
+    const evidenceHtml = `<span class="source-badge source-${token(evidence)}">${esc(evidence.replace(/_/g, ' '))}</span>`;
     const source = sourceLabel(node);
     const sourceHtml = source ? `<span class="source-badge source-${token(source)}">${esc(source)}</span>` : '';
     const opacity = token(node.opacity);
@@ -314,7 +320,7 @@
       ? `<div class="last-known"><span class="dependency-category">last known</span> ${modelList(node.last_known.models, 3)} <span class="dependency-category">${fmtAge(node.last_known.age_ms)} ago</span></div>`
       : '';
     const clue = node.model_clue ? `<div class="fleet-clue">${esc(node.model_clue)}</div>` : '';
-    return `<div class="fleet-models">${modelList(loaded)}${sourceHtml}${opacityHtml}${lastKnown}${clue}</div>`;
+    return `<div class="fleet-models">${modelList(loaded)}${evidenceHtml}${sourceHtml}${inferredHtml}${opacityHtml}${lastKnown}${clue}</div>`;
   };
 
   function renderFleetNodes(snapshot) {
