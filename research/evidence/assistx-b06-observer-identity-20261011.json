@@ -39,5 +39,15 @@
     "production_deployment": false,
     "B06_release_gate_closed": false
   },
-  "decision": "B06_BOLT_OBSERVATION_PREDICATE_PHYSICAL_PASS_JOINED_BROKER_SIGNED_CLOSURE_NO_GO"
+  "decision": "B06_BOLT_OBSERVATION_PREDICATE_PHYSICAL_PASS_JOINED_BROKER_SIGNED_CLOSURE_NO_GO",
+  "final_physical_source_sha": "62658422e1fad2a63c6ff01843fd75a85f9f05e7",
+  "final_physical_result": "PASS",
+  "final_physical_exit": 0,
+  "immutable_custody_hardening": {
+    "pinned_metadata_copied_into_read_only_mapping": true,
+    "server_transaction_row_and_nested_metadata_copied_into_read_only_mapping": true,
+    "driver_source_mutation_after_capture_denied": true,
+    "post_capture_client_mutation_denied": true,
+    "independent_durable_signed_provenance": false
+  }
 }
