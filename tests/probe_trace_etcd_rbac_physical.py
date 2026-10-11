@@ -44,7 +44,9 @@ def _serve_real_rbac_policy(socket_path, endpoint, tls_paths, bearer,
         server.shutdown()
 
 
-def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
+def run_scoped_rbac(
+    clients, cluster_id, base, certs, ip, client_port, fault_context=None
+):
     transport = clients["r1"]
     isolated_key = base + "/rbac-readonly-gateway-authority"
     service_key = base + "/rbac-ipc-policy-writer"
@@ -338,6 +340,7 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
             "tls_client_dir": str(certs / "json-client"),
             "raft_ip": ip,
             "raft_port": client_port,
+            "fault_context": fault_context,
         })
         final_view = EtcdQuorumFence(
             root, joined_key, cluster_id).snapshot()
