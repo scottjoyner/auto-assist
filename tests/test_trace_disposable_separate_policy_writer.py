@@ -126,7 +126,8 @@ def test_broker_is_not_given_raw_KV_config_in_split_mode():
     assert '"writer_token": writer_token' in src
     assert "broker_no_raw_etcd_network_path" in src
     assert "WORKER_DIRECT_POLICY_BYPASS" in src
-    assert 'assert_disposable(writer, {writer_net, raft_net})' in src
+    assert 'if remote else {writer_net, raft_net}' in src
+    assert '{writer_net, writer_egress_net}' in src
     assert 'if joined and not split:' in src
     assert '"independent_host_or_mtls_policy_auth": False' in src
     assert "ASSISTX_DISPOSABLE_WRITER_SPLIT" in src
