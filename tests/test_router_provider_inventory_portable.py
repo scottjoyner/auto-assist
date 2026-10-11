@@ -128,12 +128,39 @@ class SafeProviderCatalog(unittest.TestCase):
 
         result = fetch_provider_inventory(
             base_url="http://router:8088",
-            override_url="http://router.test:9090/admin/providers",
+            override_url="http://router:8088/admin/providers",
             admin_token="synthetic",
             fetch_json=fetch,
         )
         self.assertEqual(result["destroyer"], ["Ornith-1.5"])
-        self.assertEqual(seen, ["http://router.test:9090/admin/providers"])
+        self.assertEqual(seen, ["http://router:8088/admin/providers"])
+
+    def test_cross_origin_overrides_never_receive_admin_token(self):
+        seen = []
+
+        def fetch(*args, **kwargs):
+            seen.append((args, kwargs))
+            return LEGACY, 1.0
+
+        for override in (
+            "http://other-router:8088/admin/providers",
+            "https://router:8088/admin/providers",
+            "http://router:9090/admin/providers",
+            "http://router:8088@attacker.test/admin/providers",
+            "http://user:password@router:8088/admin/providers",
+            "http://router:bad/admin/providers",
+        ):
+            with self.subTest(override=override):
+                self.assertEqual(
+                    fetch_provider_inventory(
+                        base_url="http://router:8088",
+                        override_url=override,
+                        admin_token="synthetic",
+                        fetch_json=fetch,
+                    ),
+                    {},
+                )
+        self.assertEqual(seen, [])
 
     def test_wrong_token_does_not_downgrade(self):
         for code in (400, 401, 403, 408, 429, 500, 503):
