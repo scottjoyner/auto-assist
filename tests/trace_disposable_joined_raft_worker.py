@@ -28,7 +28,7 @@ def connect(ip,port):
 
 assert not connect(CONFIG["neo4j_ip"],7687)
 assert not connect(CONFIG["neo4j_ip"],7474)
-assert not connect(CONFIG["quorum_ip"],2379)
+assert not connect(CONFIG["quorum_ip"],CONFIG.get("quorum_port",2379))
 assert call(bearer=False)[0]==401
 assert call(key=None)[0]==422
 status,resp=call()
