@@ -86,3 +86,16 @@ def test_no_production_identity_or_standalone_reader_permission_claim():
     assert 'assert not connect(CONFIG["quorum_ip"],2379)' in body
     assert "no_witness_or_automatic_capacity_release" in body
     assert "production_deployed" in body
+
+
+def test_joined_majority_loss_sends_no_graph_request():
+    physical = Path(__file__).with_name(
+        "probe_trace_isolated_task_broker.py").read_text()
+    worker = Path(__file__).with_name(
+        "trace_disposable_joined_quorum_loss.py").read_text()
+    assert '"assistx-broker-quorum-r" + str(voter_i) + "-" + tag' in physical
+    assert "for voter_i in (2, 3):" in physical
+    assert "MINORITY_BROKER_DID_NOT_FAIL_CLOSED" in physical
+    assert 'status==503' in worker
+    assert '"error":"ADMISSION_UNCERTAIN"' in worker
+    assert '"production_authority":False' in worker
