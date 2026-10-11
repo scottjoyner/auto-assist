@@ -459,7 +459,11 @@ def run():
         if os.getenv("ASSISTX_RAFT_RBAC_RESEARCH") == "1":
             from probe_trace_etcd_rbac_physical import run_scoped_rbac
             result["rbac_integration"] = run_scoped_rbac(
-                clients, cluster_id, base, certs, ip_map["r1"], client_port)
+                clients, cluster_id, base, certs, ip_map["r1"], client_port,
+                fault_context={"shell": shell,
+                               "container_names": dict(container_names)}
+                if os.getenv("ASSISTX_THREE_HOST_SPLIT_WRITER_RESEARCH") == "1"
+                else None)
             result["events"].append(
                 "real_three_host_rbac_reader_denied_raw_authority_txn")
 
