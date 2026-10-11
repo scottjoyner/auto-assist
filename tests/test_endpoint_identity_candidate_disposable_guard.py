@@ -55,6 +55,8 @@ class DisposableHarnessGuardTests(unittest.TestCase):
         script = SCRIPT.read_text()
         self.assertIn("concurrent_same_owner_no_duplicate_or_edge_fanout", script)
         self.assertIn("concurrent_distinct_owners_fail_closed_after_lock", script)
+        self.assertIn("concurrent_matching_service_and_model_writers_share_one_node", script)
+        self.assertIn("concurrent_generic_service_vs_model_does_not_retype", script)
         self.assertIn("Barrier(2)", script)
         self.assertIn("ThreadPoolExecutor(max_workers=2)", script)
 
