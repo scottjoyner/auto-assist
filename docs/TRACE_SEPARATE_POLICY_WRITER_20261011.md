@@ -4,7 +4,7 @@
 
 ## Result
 
-A fresh physical x1-370 **Docker-only** experiment PASSED in **62.51 seconds**. It builds on [draft #302](https://github.com/scottjoyner/auto-assist/pull/302), which had allowed the isolated graph broker itself to perform raw etcd CAS. This slice **removes the broker's direct network access to etcd** and moves Raft CAS into a separate, fixed-plan HTTP policy-writer container.
+A fresh physical x1-370 **Docker-only** experiment PASSED in **62.51 seconds**; the final strengthened authentication/network run also **PASSED in 63.63 seconds**. It builds on [draft #302](https://github.com/scottjoyner/auto-assist/pull/302), which had allowed the isolated graph broker itself to perform raw etcd CAS. This slice **removes the broker's direct network access to etcd** and moves Raft CAS into a separate, fixed-plan HTTP policy-writer container.
 
 Four strictly internal, temporary Docker networks were created without published ports, production mounts, Tailscale configuration changes, or references to live AssistX/Neo4j services:
 
@@ -32,6 +32,7 @@ The physical run reported:
 - **PASS**: real Raft CAS was required before the physical Neo4j query.
 - **PASS**: worker direct Bolt, graph HTTP, etcd and writer-IP connections denied.
 - **PASS**: broker direct etcd-IP connection denied; writer retains own raw etcd access.
+- **PASS**: policy writer direct Neo4j Bolt/HTTP connections denied; broker-to-writer request without a bearer returned HTTP 401.
 - **PASS**: duplicate logical request and changed-plan-with-same-key denied.
 - **PASS**: three pending reservations retained, zero closures; fourth request denied.
 - **PASS**: after stopping two temporary etcd voters, a fresh worker request received **HTTP 503 ADMISSION_UNCERTAIN**, with no broker-side raw graph fallback.
@@ -45,7 +46,8 @@ The physical run reported:
 - `tests/trace_disposable_separate_policy_writer.py`: standalone fixed-plan Raft admission service, secure-by-denial response normalization; uses disposable Raft HTTP transport.
 - `tests/trace_disposable_task_broker.py`: added `RemotePolicyAdmission`, exact writer host/port pin, bearer-only RPC, opaque reservation validation, no fallback to direct Raft on writer failure.
 - `tests/probe_trace_isolated_task_broker.py`: extra opt-in `ASSISTX_DISPOSABLE_WRITER_SPLIT=1`, four private bridges and separate process/container wiring. Original no-Raft and joined self-writer modes remain disabled by default.
-- `tests/test_trace_disposable_separate_policy_writer.py`: focused offline tests reject unsupported plans, untrusted writer URLs, invalid receipts, stale owner and transport failure.
+- `tests/test_trace_disposable_separate_policy_writer.py`: focused offline tests reject unsupported plans, untrusted writer URLs, invalid receipts, stale owner, transport failure and missing-writer-token negative.
+- `tests/trace_disposable_writer_unauth.py`: manual-only broker-to-writer RPC without bearer; expects HTTP 401. No secret material in command line.
 - Research GitHub workflow: offline tests and syntax compilation only. Hosted CI never launches the physical experiment.
 
 Exact physical command on the authorized x1-370 host:
