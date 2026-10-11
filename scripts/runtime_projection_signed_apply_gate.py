@@ -75,6 +75,36 @@ def verify_signature(wrapper: dict, key_bytes: bytes, name: str) -> dict:
     return payload
 
 
+
+def require_uniqueness_constraints(records: object) -> None:
+    """Reject apply unless both graph-wide replay and canonical CAS identity exist.
+
+    Results must come from Neo4j's trusted SHOW CONSTRAINTS result, NEVER from
+    the untrusted signed bundle or local config. This function writes nothing.
+    """
+    if not isinstance(records, list) or len(records) > 2048:
+        raise ValueError("unavailable or unreasonable database constraint inventory")
+    required = {
+        ("RuntimeProjectionApprovalReceipt", "approval_id"),
+        ("FleetProjectionState", "name"),
+    }
+    found: set[tuple[str, str]] = set()
+    for row in records:
+        exact(row, {"type", "labelsOrTypes", "properties"}, "constraint")
+        typ = row["type"]
+        if typ not in ("UNIQUENESS", "NODE_KEY"):
+            continue
+        labels, properties = row["labelsOrTypes"], row["properties"]
+        if not isinstance(labels, list) or not isinstance(properties, list):
+            raise ValueError("invalid graph constraint description")
+        if len(labels) == 1 and len(properties) == 1:
+            key = (labels[0], properties[0])
+            if key in required:
+                found.add(key)
+    if found != required:
+        raise ValueError("canonical and approval-replay uniqueness constraints required")
+
+
 def validate(
     manifest: dict[str, Any], attestation: dict, source_key: bytes,
     operator_key: bytes, now_ms: int,
