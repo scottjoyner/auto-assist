@@ -284,12 +284,19 @@ def _apply_transaction(
         """
     ).consume()
 
+    # Source observation times come from the verified signed receipt, NOT
+    # the time the operator approved/published the canonical generation.
+    signed_rows = {
+        row["runtime_instance_id"]: row
+        for row in attestation["source"]["payload"]["observations"]
+    }
     runtime_count = 0
     model_count = 0
     path_count = 0
     for runtime in payload["runtimes"]:
         runtime_count += 1
         runtime_id = str(runtime["runtime_instance_id"])
+        source_row = signed_rows[runtime_id]
         tx.run(
             """
             MERGE (r:RuntimeInstance {runtime_instance_id:$runtime_instance_id})
@@ -304,7 +311,7 @@ def _apply_transaction(
                 r.projection_generation=$generation,
                 r.approved_by=$approved_by,
                 r.approval_id=$approval_id,
-                r.observed_at_ts=$now_ms,
+                r.observed_at_ts=$observed_at_ts,
                 r.expires_at_ts=$expires_at_ts,
                 r.updated_at=datetime(), r.updated_at_ts=timestamp()
             """,
@@ -318,6 +325,7 @@ def _apply_transaction(
             approved_by=payload["approved_by"],
             approval_id=payload["approval_id"],
             now_ms=now_ms,
+            observed_at_ts=source_row["physical_observed_at_ms"],
             expires_at_ts=expires_at_ts,
         ).consume()
 
@@ -336,7 +344,7 @@ def _apply_transaction(
                 c.projection_generation=$generation,
                 c.approved_by=$approved_by,
                 c.approval_id=$approval_id,
-                c.observed_at_ts=$now_ms,
+                c.observed_at_ts=$observed_at_ts,
                 c.expires_at_ts=$expires_at_ts,
                 c.updated_at=datetime(), c.updated_at_ts=timestamp()
             WITH c
@@ -353,9 +361,11 @@ def _apply_transaction(
             approved_by=payload["approved_by"],
             approval_id=payload["approval_id"],
             now_ms=now_ms,
+            observed_at_ts=source_row["capacity_observed_at_ms"],
             expires_at_ts=expires_at_ts,
         ).consume()
 
+        signed_paths = {row["transport"]: row for row in source_row["paths"]}
         for path in runtime["access_paths"]:
             path_count += 1
             normalized_url = str(path["base_url"]).rstrip("/")
@@ -375,7 +385,7 @@ def _apply_transaction(
                     a.projection_generation=$generation,
                     a.approved_by=$approved_by,
                     a.approval_id=$approval_id,
-                    a.observed_at_ts=$now_ms,
+                    a.observed_at_ts=$observed_at_ts,
                     a.expires_at_ts=$expires_at_ts,
                     a.updated_at=datetime(), a.updated_at_ts=timestamp()
                 WITH a
@@ -392,6 +402,7 @@ def _apply_transaction(
                 approved_by=payload["approved_by"],
                 approval_id=payload["approval_id"],
                 now_ms=now_ms,
+                observed_at_ts=signed_paths[path["transport"]]["canary_observed_at_ms"],
                 expires_at_ts=expires_at_ts,
             ).consume()
 
@@ -422,7 +433,7 @@ def _apply_transaction(
                     m.projection_generation=$generation,
                     m.approved_by=$approved_by,
                     m.approval_id=$approval_id,
-                    m.observed_at_ts=$now_ms,
+                    m.observed_at_ts=$observed_at_ts,
                     m.expires_at_ts=$expires_at_ts,
                     m.updated_at=datetime(), m.updated_at_ts=timestamp()
                 WITH artifact, m
@@ -443,6 +454,7 @@ def _apply_transaction(
                 approved_by=payload["approved_by"],
                 approval_id=payload["approval_id"],
                 now_ms=now_ms,
+                observed_at_ts=source_row["model_observed_at_ms"],
                 expires_at_ts=expires_at_ts,
             ).consume()
 
