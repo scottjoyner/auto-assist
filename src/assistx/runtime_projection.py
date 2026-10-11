@@ -111,7 +111,7 @@ def projection_signature(
 ) -> str:
     message = (
         f"{generation}:{checksum}:{generated_at_ms}:{expires_at_ms}"
-    ).encode("utf-8")
+    ).encode()
     return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
@@ -123,6 +123,36 @@ def _required_expiry(value: Any, label: str, now_ms: int) -> int:
     if expiry <= now_ms:
         raise RuntimeProjectionBlocked(f"{label} evidence is expired")
     return expiry
+
+
+SIGNED_PHYSICAL_MAX_AGE_MS = 300_000
+SIGNED_PATH_MAX_AGE_MS = 180_000
+SIGNED_CLOCK_SKEW_MS = 5_000
+
+
+def _signed_observation_expiry(
+    observed: Any, now_ms: int, maximum_age_ms: int, label: str,
+) -> int:
+    """Original authenticated source observation bounds actual projection TTL."""
+    if type(observed) is not int or observed < 1:
+        raise RuntimeProjectionBlocked(label + " signed observation time missing")
+    if observed > now_ms + SIGNED_CLOCK_SKEW_MS:
+        raise RuntimeProjectionBlocked(label + " signed observation future-dated")
+    expires = observed + maximum_age_ms
+    if expires <= now_ms:
+        raise RuntimeProjectionBlocked(label + " signed source evidence stale")
+    return expires
+
+
+def _signed_generation(state: dict[str, Any]) -> bool:
+    digest = state.get("source_receipt_sha256")
+    if digest is None:
+        # Legacy projections are not upgraded into signed evidence by this
+        # reader. Rollout must retire old unsigned approval producers separately.
+        return False
+    if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise RuntimeProjectionBlocked("invalid verified source receipt digest")
+    return True
 
 
 def _projection_state(
@@ -140,7 +170,8 @@ def _projection_state(
                s.expires_at_ts AS expires_at_ts,
                s.approved_by AS approved_by,
                s.approval_id AS approval_id,
-               s.manifest_checksum AS manifest_checksum
+               s.manifest_checksum AS manifest_checksum,
+               s.source_receipt_sha256 AS source_receipt_sha256
         LIMIT 1
         """,
     )
@@ -196,6 +227,7 @@ def _runtime_rows(
                r.runtime_version AS runtime_version,
                r.headless AS headless,
                r.process_id AS process_id,
+               r.observed_at_ts AS observed_at_ts,
                r.updated_at_ts AS updated_at_ts,
                r.expires_at_ts AS expires_at_ts,
                collect(DISTINCT {
@@ -208,6 +240,7 @@ def _runtime_rows(
                    quantization: coalesce(m.quantization, a.quantization),
                    context_length: coalesce(m.context_length, a.context_length),
                    capabilities_json: coalesce(m.capabilities_json, a.capabilities_json),
+                   observed_at_ts: m.observed_at_ts,
                    updated_at_ts: m.updated_at_ts
                }) AS loaded_models
         ORDER BY r.node_id, r.runtime_instance_id
@@ -279,6 +312,7 @@ def build_runtime_projection(
         )
     now = int(now_ms if now_ms is not None else time.time() * 1000)
     state = _projection_state(neo_factory, now)
+    signed_mode = _signed_generation(state)
     runtimes = _runtime_rows(neo_factory, now)
     access_rows = _access_rows(neo_factory, now)
     capacity_rows = _capacity_rows(neo_factory, now)
@@ -301,6 +335,13 @@ def build_runtime_projection(
             )
         except RuntimeProjectionBlocked:
             continue
+        if signed_mode:
+            expiry = min(
+                expiry, _signed_observation_expiry(
+                    row.get("observed_at_ts"), now,
+                    SIGNED_PATH_MAX_AGE_MS, "private access path",
+                ),
+            )
         existing_urls = {
             item["base_url"] for item in access_by_runtime[runtime_id]
         }
@@ -331,6 +372,13 @@ def build_runtime_projection(
             continue
         if slots <= 0 or queue_limit < 0 or queue_timeout < 0:
             continue
+        if signed_mode:
+            expiry = min(
+                expiry, _signed_observation_expiry(
+                    row.get("observed_at_ts"), now,
+                    SIGNED_PHYSICAL_MAX_AGE_MS, "runtime capacity",
+                ),
+            )
         capacity_by_runtime[runtime_id] = {
             **row,
             "parallel_slots": slots,
@@ -357,6 +405,13 @@ def build_runtime_projection(
             )
         except RuntimeProjectionBlocked:
             continue
+        if signed_mode:
+            runtime_expiry = min(
+                runtime_expiry, _signed_observation_expiry(
+                    runtime.get("observed_at_ts"), now,
+                    SIGNED_PHYSICAL_MAX_AGE_MS, "physical runtime",
+                ),
+            )
         if not all(
             (
                 _known(runtime_id),
@@ -383,6 +438,13 @@ def build_runtime_projection(
                 )
             except RuntimeProjectionBlocked:
                 continue
+            if signed_mode:
+                model_expiry = min(
+                    model_expiry, _signed_observation_expiry(
+                        model.get("observed_at_ts"), now,
+                        SIGNED_PHYSICAL_MAX_AGE_MS, "loaded model",
+                    ),
+                )
             required = (
                 model.get("model_instance_id"),
                 model.get("model_key"),
