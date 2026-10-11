@@ -208,3 +208,112 @@ def candidate_register_model_endpoint(
     return session.execute_write(
         _write_candidate, endpoint_id, node_id, props, validated,
     )
+
+
+# Matching, unwired SERVICE writer. It must be staged together with the
+# model writer; continuing to use a legacy SET e += $props can silently
+# retype a registered model, even when uniqueness prevents duplicate nodes.
+SERVICE_UPSERT_QUERY = """
+MERGE (n:SwarmNode {node_id:$node_id})
+ON CREATE SET n.created_at=datetime(), n.created_at_ts=timestamp(),
+              n.status='online'
+MERGE (e:ServiceEndpoint {endpoint_id:$endpoint_id})
+ON CREATE SET e.created_at=datetime(), e.created_at_ts=timestamp()
+SET e.service_type=$service_type, e.node_id=$node_id,
+    e.updated_at=datetime(), e.updated_at_ts=timestamp()
+SET e += $safe_properties
+MERGE (n)-[:EXPOSES]->(e)
+RETURN elementId(e) AS ref
+"""
+ALLOWED_SERVICE_PROPERTIES = frozenset({"service", "port", "status"})
+
+
+def _validate_service_preconditions(
+    tx: Any, endpoint_id: str, node_id: str, service_type: str,
+) -> None:
+    schema_rows = [dict(row) for row in tx.run(CONSTRAINT_QUERY)]
+    if not any(
+        row.get("type") == "UNIQUENESS"
+        and row.get("entityType") == "NODE"
+        and row.get("labelsOrTypes") == ["ServiceEndpoint"]
+        and row.get("properties") == ["endpoint_id"]
+        for row in schema_rows
+    ):
+        raise EndpointIdentityHold("canonical uniqueness constraint unavailable")
+    services = [
+        dict(row) for row in tx.run(
+            SERVICE_IDENTITY_QUERY, endpoint_id=endpoint_id,
+        )
+    ]
+    models = [
+        dict(row) for row in tx.run(
+            MODEL_IDENTITY_QUERY, endpoint_id=endpoint_id,
+        )
+    ]
+    if len(services) > 1 or len(models) > 1:
+        raise EndpointIdentityHold("ambiguous existing identity")
+    if models and not services:
+        raise EndpointIdentityHold("orphan model endpoint identity")
+    if services and models and services[0].get("ref") != models[0].get("ref"):
+        raise EndpointIdentityHold("model and service keys resolve to different nodes")
+    if services:
+        row = services[0]
+        if row.get("service_type") not in (None, service_type):
+            raise EndpointIdentityHold("service kind cannot be changed by upsert")
+        if row.get("node_id") not in (None, node_id):
+            raise EndpointIdentityHold("service identity owned by another node")
+        if row.get("model_endpoint_id") not in (None, endpoint_id):
+            raise EndpointIdentityHold("noncanonical model endpoint ID")
+        owners = row.get("owners")
+        if not isinstance(owners, list) or any(
+            owner is None or owner != node_id for owner in owners
+        ):
+            raise EndpointIdentityHold("graph ownership is ambiguous")
+        if ("ModelEndpoint" in row.get("labels", [])) and (
+            service_type != "model_endpoint" or not models
+        ):
+            raise EndpointIdentityHold("model subtype identity incompatible with service type")
+    if models and models[0].get("endpoint_id") != endpoint_id:
+        raise EndpointIdentityHold("model record has conflicting service identity")
+
+
+def _write_service_candidate(
+    tx: Any, endpoint_id: str, node_id: str,
+    service_type: str, safe_properties: Mapping[str, Any],
+) -> dict[str, Any]:
+    _validate_service_preconditions(tx, endpoint_id, node_id, service_type)
+    locked = list(tx.run(LOCK_QUERY, endpoint_id=endpoint_id))
+    if len(locked) != 1 or not locked[0].get("ref"):
+        raise EndpointIdentityHold("canonical service identity lock unavailable")
+    _validate_service_preconditions(tx, endpoint_id, node_id, service_type)
+    result = list(tx.run(
+        SERVICE_UPSERT_QUERY,
+        endpoint_id=endpoint_id, node_id=node_id,
+        service_type=service_type, safe_properties=dict(safe_properties),
+    ))
+    if len(result) != 1 or not result[0].get("ref"):
+        raise EndpointIdentityHold("service writer did not return one identity")
+    return {
+        "status": "CANDIDATE_SERVICE_REGISTERED_IN_ISOLATED_GRAPH_ONLY",
+        "production_release_authorized": False,
+    }
+
+
+def candidate_register_service_endpoint(
+    session: Any, *, endpoint_id: str, node_id: str,
+    service_type: str, safe_properties: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Unwired service writer corresponding to the canonical model candidate.
+
+    A regular service cannot take a model endpoint's existing identity,
+    and model registrations cannot take a regular service's identity.
+    """
+    endpoint_id = _require_id(endpoint_id)
+    node_id = _require_id(node_id)
+    service_type = _require_id(service_type)
+    data = _require_safe_properties(safe_properties)
+    if set(data) - ALLOWED_SERVICE_PROPERTIES:
+        raise EndpointIdentityHold("service metadata contains model-only fields")
+    return session.execute_write(
+        _write_service_candidate, endpoint_id, node_id, service_type, data,
+    )
