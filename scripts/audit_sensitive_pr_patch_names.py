@@ -36,7 +36,7 @@ def classify(data: bytes) -> dict:
     }
 
 
-MAX_FIRST_PARENT_COMMITS = 256
+MAX_ANCESTRY_COMMITS = 256
 
 
 def _git_metadata(*args: str) -> bytes:
@@ -53,15 +53,15 @@ def audit(base: str, head: str) -> dict:
 
     # The final base-to-head diff is not enough: a previously pushed commit
     # can publish a secret-bearing file and then delete it before PR review.
-    # Inspect first-parent commit deltas since the fork, without reading blobs.
+    # Inspect every reachable commit since the fork, including merged side\n    # branches; an add-delete on a second parent must not escape review.
     fork = _git_metadata("merge-base", base, head).decode("ascii").strip()
     if not SHA.fullmatch(fork):
         raise ValueError("invalid merge base")
     revisions = _git_metadata(
-        "rev-list", "--first-parent", "--reverse", "--parents",
+        "rev-list", "--reverse", "--parents",
         f"{fork}..{head}",
     ).decode("ascii").splitlines()
-    if len(revisions) > MAX_FIRST_PARENT_COMMITS:
+    if len(revisions) > MAX_ANCESTRY_COMMITS:
         raise ValueError("too many commits for bounded custody review")
 
     final_diff = _git_metadata(
@@ -86,7 +86,7 @@ def audit(base: str, head: str) -> dict:
             history_sensitive += record["sensitive_change_count"]
 
     report.update(
-        first_parent_commits_examined=len(revisions),
+        ancestry_commits_examined=len(revisions),
         historical_sensitive_commit_count=touched_commits,
         historical_sensitive_change_count=history_sensitive,
         net_sensitive_change_count=net_sensitive,
