@@ -28,6 +28,10 @@ from trace_etcd_quorum_fence_research import (
 from trace_etcd_graph_admission_research import QuorumPlanGrantAdapter
 from trace_graph_entry_guarded import ProtectedGraphEntry, QueryPlan
 from trace_graph_entry_metadata import gateway_metadata, observed_exact
+from trace_b06_observation_gate_research import (
+    PinnedGraphTarget, GraphObservation, capture_active,
+    observe_absence_only, ObservationRejected,
+)
 from trace_graph_entry_research import AdmissionDenied
 from trace_graph_entry_research_journal import SqliteResearchJournal
 
@@ -71,9 +75,25 @@ def _detached_witness(uri, endpoint, certs, key, cluster_id,
                     channel.send({"result": "quorum-binding-denied"})
                     continue
                 txid = None
+                active_gate = None
+                gate_enabled = (
+                    os.getenv("ASSISTX_B06_OBSERVER_GATE_RESEARCH") == "1")
+                target = None
+                if gate_enabled:
+                    target = PinnedGraphTarget(
+                        server, generation, "neo4j", token, metadata,
+                        "fixture-gateway")
                 for _ in range(70):
-                    txid = observed_exact(_transactions(driver), metadata)
+                    rows = _transactions(driver)
+                    txid = observed_exact(rows, metadata)
                     if txid:
+                        if gate_enabled:
+                            active_gate = capture_active(
+                                target, GraphObservation(
+                                    "detached-witness-observer", server,
+                                    generation, 1, tuple(rows)))
+                            assert active_gate.transaction_id == txid
+                            assert active_gate.release_authorized is False
                         break
                     time.sleep(0.12)
                 if not txid:
@@ -83,7 +103,7 @@ def _detached_witness(uri, endpoint, certs, key, cluster_id,
                 # a lone minority voter or behind a stale term.
                 quorum.bind(token, pending["owner"], pending["term"],
                             server, generation, txid)
-                bindings[token] = (txid, metadata)
+                bindings[token] = (txid, metadata, active_gate)
                 channel.send({"result": "bound", "txid": txid})
             elif request["op"] == "closure":
                 token = request["token"]
@@ -91,18 +111,41 @@ def _detached_witness(uri, endpoint, certs, key, cluster_id,
                 if not observed:
                     channel.send({"result": "not-witnessed"})
                     continue
-                txid, _ = observed
+                txid, _, active_gate = observed
                 absent = 0
+                absent_rows = []
                 for _ in range(70):
                     rows = _transactions(driver)
-                    absent = (absent + 1 if not any(
-                        row["transactionId"] == txid for row in rows) else 0)
+                    if not any(
+                            row["transactionId"] == txid for row in rows):
+                        absent += 1
+                        if active_gate is not None:
+                            absent_rows.append(tuple(rows))
+                    else:
+                        absent = 0
+                        absent_rows.clear()
                     if absent >= 2:
                         break
                     time.sleep(0.12)
                 if absent < 2:
                     channel.send({"result": "still-active"})
                     continue
+                if active_gate is not None:
+                    # This gate does NOT sign. Old research witness signs
+                    # separately, using its preexisting guarded protocol.
+                    try:
+                        absence = observe_absence_only(
+                            active_gate,
+                            GraphObservation(
+                                "detached-witness-observer", server,
+                                generation, 2, absent_rows[-2]),
+                            GraphObservation(
+                                "detached-witness-observer", server,
+                                generation, 3, absent_rows[-1]))
+                        assert absence.release_authorized is False
+                    except ObservationRejected:
+                        channel.send({"result": "observation-only-rejected"})
+                        continue
                 view = quorum.snapshot()
                 pending = view.document["pending"].get(token)
                 if not pending or pending["state"] != "STARTED" or (
