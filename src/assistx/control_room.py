@@ -1110,8 +1110,7 @@ def collect_fleet_nodes(neo_factory: NeoFactory | None = None) -> list[dict[str,
 
     # Live loaded-model truth per hostname (latest live observation wins).
     live_models = _live_loaded_models(neo_factory)
-    # Backfill: most-recent snapshot that had ANY model, for idle-but-online nodes so the
-    # dashboard shows what they were running last instead of a blank LOADED cell.
+    # Historical observations are displayed as LAST KNOWN, never as verified LOADED.
     historical_models = _historical_loaded_models(neo_factory)
     url = _router_url("api/fleet/nodes", "AUTO_ROUTER_FLEET_NODES_URL")
     registry: dict[str, dict[str, Any]] = {}
@@ -1292,32 +1291,40 @@ def collect_fleet_nodes(neo_factory: NeoFactory | None = None) -> list[dict[str,
             if live_entry and live_entry.get("models"):
                 cleaned = [m for m in (_clean_model_name(m) for m in live_entry["models"]) if m]
                 entry["loaded_models"] = cleaned
+                entry["model_evidence"] = "VERIFIED_LOADED"
                 entry["model_source"] = "live"
                 entry["model_online"] = live_entry.get("online", True)
                 entry["model_observed_at"] = live_entry.get("observed_at")
             else:
                 entry["loaded_models"] = []
+                entry["model_evidence"] = "NO_VERIFIED_LOAD"
                 entry["model_source"] = "live-empty"
                 entry["model_observed_at"] = (live_entry or {}).get("observed_at")
                 entry["model_clue"] = "live graph reports no loaded models"
                 entry["opacity"] = "opaque"
         else:
             # No authoritative graph data: sanitize whatever the router reported so
-            # a raw file path never leaks into the LOADED column. If nothing clean,
-            # fall back to the manifest's primary_model when we know it.
+            # a raw file path never leaks. Unverified router/manifest values
+            # are clues, not evidence of current residency.
             router_models = entry.get("loaded_models") or []
             cleaned_router = [m for m in (_clean_model_name(m) for m in router_models) if m]
             if cleaned_router:
-                entry["loaded_models"] = cleaned_router
+                entry["inferred_models"] = cleaned_router
+                entry["loaded_models"] = []
+                entry["model_evidence"] = "UNVERIFIED_ROUTER_REPORT"
                 entry["model_source"] = "router"
+                entry["model_clue"] = "router registry lists models, but no authoritative live residency proof"
             elif hw and hw.get("primary_model"):
                 primary = _clean_model_name(hw["primary_model"])
-                entry["loaded_models"] = [primary] if primary else []
+                entry["inferred_models"] = [primary] if primary else []
+                entry["loaded_models"] = []
+                entry["model_evidence"] = "INFERRED_MANIFEST"
                 entry["model_source"] = "manifest-primary"
                 entry["opacity"] = "inferred"
                 entry["model_clue"] = "only known model is the operator-assigned primary — endpoint did not confirm it loaded"
             else:
                 entry["loaded_models"] = []
+                entry["model_evidence"] = "UNKNOWN"
 
         # --- Available (registered/installed) vs loaded, plus an opacity signal ---
         available = _available_for(entry)
@@ -1328,7 +1335,7 @@ def collect_fleet_nodes(neo_factory: NeoFactory | None = None) -> list[dict[str,
         # cell — surface it so Scott knows the endpoint isn't telling us anything.
         loaded = entry.get("loaded_models") or []
         if (entry.get("status") in ("ONLINE", "STALE")) and not loaded:
-            if entry.get("model_source") not in {"manifest-primary", "live-empty"}:
+            if entry.get("model_source") not in {"manifest-primary", "live-empty", "router"}:
                 entry["opacity"] = "opaque"
                 entry["model_clue"] = (
                     "endpoint reachable but reported no running models; source="
