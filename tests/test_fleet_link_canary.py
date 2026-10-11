@@ -259,3 +259,11 @@ def test_negative_no_wildcard_route_for_unknown_model(monkeypatch):
     source=projection(route="auto/local")
     # Even if a future router permits magic aliases, this is exact instance-only.
     assert _approved_candidates(source,URL)=={}
+
+
+def test_projection_builder_v2_compatibility_is_same_signed_builder():
+    from assistx.runtime_projection_v2 import (
+        build_runtime_projection,
+        build_runtime_projection_v2,
+    )
+    assert build_runtime_projection_v2 is build_runtime_projection
