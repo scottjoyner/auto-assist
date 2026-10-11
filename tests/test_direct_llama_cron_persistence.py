@@ -87,6 +87,32 @@ class TestCronPersistence(unittest.TestCase):
             ["embedding-server-persist.sh", "embedding-server-persist.sh"],
         )
 
+    def test_other_periodic_and_reboot_llama_launcher_is_latent_only(self):
+        self.other.write_text(
+            "#!/bin/sh\n"
+            "exec /opt/bin/llama-server --host 0.0.0.0 --port 4567\n"
+        )
+        result = self.inspect()
+        self.assertEqual(result["candidate_launcher_entries"], 2)
+        self.assertEqual(result["other_llama_launcher_entries"], 2)
+        self.assertFalse(result["other_launcher_current_process_proven"])
+        for row in result["other_llama_launchers"]:
+            self.assertEqual(row["launcher_basename"], "inference-server-persist.sh")
+            self.assertTrue(row["wildcard_host_text_found"])
+            self.assertFalse(row["current_process_running_proven"])
+            self.assertFalse(row["listener_exposure_proven"])
+            self.assertFalse(row["can_approve"])
+            self.assertFalse(row["can_dispatch"])
+
+    def test_other_launcher_does_not_mint_active_exposure(self):
+        r = self.inspect(
+            crontab=f"@reboot {self.other}\n"
+        )
+        self.assertFalse(r["relaunch_persistence_possible"])
+        self.assertEqual(r["other_llama_launcher_entries"], 1)
+        self.assertFalse(r["other_llama_launchers"][0]["listener_exposure_proven"])
+        self.assertEqual(r["status"], "BLOCKED_LAUNCH_SOURCE_UNRESOLVED")
+
     def test_comment_only_cron_excluded(self):
         t = "# " + f"@reboot {self.embedding}\n"
         r = self.inspect(crontab=t)
