@@ -1,0 +1,45 @@
+{
+  "schema": "assistx-b06-joined-closure-negative-20261011-v1",
+  "date": "2026-10-11",
+  "branch": "research/assistx-joined-closure-negative-20261011",
+  "tested_physical_source_sha": "9c200a0045e7683141e1a26e456b7803fdf724f5",
+  "scope": "ONLY_EPHEMERAL_THREE_HOST_RAFT_AND_DISPOSABLE_NEO4J",
+  "physical": {
+    "status": "PASS",
+    "hosts": [
+      "x1-370",
+      "xwing",
+      "destroyer"
+    ],
+    "joined_elapsed_seconds": 88.34,
+    "admitted_operations": 3,
+    "pending_reservations_before_graph_restart": 3,
+    "completed_operations_before_graph_restart": 0,
+    "pending_while_graph_stopped": 3,
+    "completed_while_graph_stopped": 0,
+    "pending_after_graph_restart": 3,
+    "completed_after_graph_restart": 0,
+    "neo4j_container_state_started_at_changed": true,
+    "same_graph_container_restarted": true,
+    "quorum_majority_loss_during_same_broker_path_denied_new_admission": true,
+    "two_disposable_remote_voters_restarted": true,
+    "unbound_raft_reservations_reject_forged_closure": true,
+    "forged_closure_changed_rafter_state": false,
+    "production_services_or_neo4j_touched": false,
+    "scoped_resources_cleaned": true
+  },
+  "hard_limitations": {
+    "original_graph_transaction_id_recorded_in_authority": false,
+    "independent_graph_member_generation_attested": false,
+    "server_side_stale_effect_fence": false,
+    "independent_witness_signer_in_joined_broker": false,
+    "signed_immutable_closure_custody": false,
+    "quorum_slot_released": false,
+    "realtime_production_graph_network_isolated": false,
+    "all_graph_consumers_migrated": false,
+    "separate_broker_writer_mtls": false,
+    "production_deployed": false,
+    "automatic_failover": false
+  },
+  "decision": "B06_FAIL_CLOSED_NEGATIVE_PASS_RESEARCH_ONLY_PRODUCTION_NO_GO"
+}
