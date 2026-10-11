@@ -10,7 +10,7 @@ An AST scan of `src/assistx` (excluding test subdirectories) produced **229 cand
 
 High-impact write candidates include `src/assistx/api.py` (14), `intent_orchestrator.py` (6), `neo4j_client.py` (6) and `fleet_executor.py` (4). There are direct graph use candidates in `routers/review.py` and in ingestion, workers, maintenance, projection and agent modules. Current `get_task` consumers are not synonymous with all these graph operations.
 
-**Implementation:** `tests/trace_graph_consumer_inventory_research.py` scans AST without importing AssistX or opening any Neo4j connections, producing per-file/line/owner/operation records and a categorized Markdown report. `tests/test_trace_graph_consumer_inventory_research.py` checks that real API task claim, heartbeat, completion, executor claim and review Task reads remain inventoried and **never marked safe**. CI can rerun this against any source revision.
+**Implementation:** `tests/trace_graph_consumer_inventory_research.py` scans AST without importing AssistX or opening any Neo4j connections, producing per-file/line/owner/operation records and a categorized Markdown report. **[Complete 229-site manifest](../research/evidence/assistx-graph-consumer-inventory-20261011.json)** records every candidate by source file, line, owner and operation for review. `tests/test_trace_graph_consumer_inventory_research.py` checks that real API task claim, heartbeat, completion, executor claim and review Task reads remain inventoried and **never marked safe**. CI can rerun this against any source revision.
 
 **Priority buckets:**
 
