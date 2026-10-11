@@ -547,8 +547,45 @@ def run(external_writer: dict | None = None) -> dict:
                             raise RuntimeError(
                                 "THREE_HOST_JOINED_RAFT_RECOVERY_FAILED")
                         time.sleep(2)
+            graph_restarted = False
+            if (remote and os.getenv("ASSISTX_B06_GRAPH_RESTART_RESEARCH")
+                    == "1"):
+                # Research-only: restart exactly the fixture graph, NEVER
+                # live Neo4j. Raft reservations MUST NOT clear on HTTP
+                # success, missing graph connection, or graph restart.
+                inspected = json.loads(docker("inspect", graph).stdout)[0]
+                before_started = inspected["State"]["StartedAt"]
+                docker("stop", "-t", "2", graph, timeout=18)
+                during = docker(
+                    "exec", writer, "python", "-c", verifier,
+                    timeout=12, check=False)
+                if during.returncode != 0 or json.loads(during.stdout) != {
+                        "pending": 3, "completed": 0}:
+                    raise RuntimeError("GRAPH_OUTAGE_FREED_RAFT_CAPACITY")
+                docker("start", graph, timeout=18)
+                deadline = time.monotonic() + 55
+                while True:
+                    health = query(graph, admin, "RETURN 1 AS ok",
+                                   timeout=8)
+                    if health.returncode == 0:
+                        break
+                    if time.monotonic() > deadline:
+                        raise RuntimeError("DISPOSABLE_NEO4J_RESTART_FAILED")
+                    time.sleep(2)
+                after_started = json.loads(
+                    docker("inspect", graph).stdout)[0]["State"]["StartedAt"]
+                if after_started == before_started:
+                    raise RuntimeError("GRAPH_RESTART_GENERATION_UNCHANGED")
+                after = docker(
+                    "exec", writer, "python", "-c", verifier, timeout=12)
+                if json.loads(after.stdout) != {
+                        "pending": 3, "completed": 0}:
+                    raise RuntimeError("GRAPH_RESTART_PREMATURE_CLOSURE")
+                graph_restarted = True
             return {
                 **result,
+                "b06_graph_restart_reservations_held": graph_restarted,
+                "b06_independent_witness_integrated": False,
                 "schema": "assistx-disposable-task-broker-20261011-v1",
                 "runtime_seconds": round(time.monotonic() - started, 2),
                 "source_task_method": "Neo4jClient.get_task",
