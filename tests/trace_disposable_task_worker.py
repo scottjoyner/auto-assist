@@ -56,6 +56,10 @@ def main():
     assert json.loads(critical["payload_json"])["queue_class"] == "critical"
     assert "recovery" in recovery["required_capabilities"]
     assert json.loads(recovery["payload_json"])["runbook"] == "fixture-only"
+    payload_recovery = task_client.get_task_claim_guard(
+        CONFIG["payload_recovery_task_id"])
+    assert json.loads(payload_recovery["payload"])["runbook"] == "payload-only"
+    assert payload_recovery["required_capabilities"] == []
     assert task_client.get_task(CONFIG["critical_task_id"]) == {
         "id": CONFIG["critical_task_id"], "status": "READY",
     }, "MINIMAL_PLAN_LEAKED_CLAIM_POLICY_FIELDS"
@@ -94,6 +98,7 @@ def main():
         "worker_get_task_client_adapter": True,
         "worker_claim_policy_projection_critical": True,
         "worker_claim_policy_projection_recovery": True,
+        "worker_claim_policy_projection_payload_only_recovery": True,
         "minimal_projection_does_not_leak_policy_fields": True,
         "worker_response_projection": "Task.id,Task.status",
         "missing_broker_bearer_denied": True,
