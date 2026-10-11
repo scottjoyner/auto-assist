@@ -83,7 +83,7 @@ def test_remote_broker_never_receives_raw_raft_credential():
     assert '"writer_endpoint": "http://" + writer + ":8810"' in harness
     assert '"writer_token": writer_token' in harness
     assert '"raft_bearer": external_writer["raft_bearer"]' in harness
-    assert '"writer_config.json"' in harness
+    assert '"writer-config.json"' in harness
     assert 'if joined and not remote:' in harness
     # No point-in-time assertion of the live system; this is source only.
     assert '"external_three_host_mtls_rbac": remote' in harness
