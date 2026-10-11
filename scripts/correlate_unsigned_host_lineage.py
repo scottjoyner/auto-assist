@@ -95,13 +95,13 @@ def correlate(
     now = typed_int(now_ms, "current UTC epoch ms")
     a = typed_int(p["observed_at_ms"], "physical observation time")
     b = typed_int(l["observed_at_ms"], "lineage observation time")
-    if abs(a - b) > CROSS_OBSERVATION_MAX_GAP_MS:
-        raise ValueError("physical and lineage observations too far apart")
     for t in (a, b):
         if t > now + CLOCK_SKEW_MS:
             raise ValueError("future-dated host evidence")
         if t + SOURCE_MAX_AGE_MS <= now:
             raise ValueError("host evidence expired")
+    if abs(a - b) > CROSS_OBSERVATION_MAX_GAP_MS:
+        raise ValueError("physical and lineage observations too far apart")
     if not isinstance(p["boot_id"], str) or p["boot_id"] != l["boot_id"]:
         raise ValueError("host boot identity mismatch")
     if (typed_int(p["pid"], "model PID") != typed_int(l["worker_pid"], "worker PID")
