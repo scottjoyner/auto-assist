@@ -97,7 +97,7 @@ def test_resource_safety_network_topology_and_cleanup_guards():
     assert 'docker("rm", "-f", "-v", name' in probe
     assert 'docker("network", "rm", name' in probe
     assert '"NEO4J_AUTH=neo4j/" + admin' in probe
-    assert "GRANT MATCH {id, status, payload_json, queue_class" in probe
+    assert "GRANT MATCH {id, status, payload, payload_json, queue_class" in probe
     assert "required_capabilities} ON GRAPH neo4j NODES Task" in probe
     assert "READ_ONLY_ROLE_WAS_ALLOWED_TO_WRITE" in probe
     assert "NEO4J_AUTH=none" not in probe
