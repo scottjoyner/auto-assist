@@ -301,6 +301,26 @@ def run() -> dict:
                 counts = json.loads(state.stdout)
                 if counts != {"pending": 3, "completed": 0}:
                     raise RuntimeError("INVALID_JOINED_RAFT_PENDING_COUNTS")
+                # Fault-inject only our newly created voter containers.
+                # With one of three left, a fresh linearizable read/CAS
+                # cannot be authorized; broker must deny before graph.
+                for voter_i in (2, 3):
+                    docker(
+                        "stop", "-t", "2",
+                        "assistx-broker-quorum-r" + str(voter_i) + "-" + tag,
+                        timeout=12)
+                docker(
+                    "cp", str(SOURCE / "trace_disposable_joined_quorum_loss.py"),
+                    worker + ":/tmp/minority.py")
+                minority = docker(
+                    "exec", worker, "python", "/tmp/minority.py",
+                    timeout=16, check=False)
+                if minority.returncode != 0:
+                    raise RuntimeError("MINORITY_BROKER_DID_NOT_FAIL_CLOSED")
+                minority_result = json.loads(minority.stdout)
+                if not minority_result.get(
+                        "disposable_two_voter_outage_denies_fresh_broker_read"):
+                    raise RuntimeError("MINORITY_DENIAL_NOT_PROVEN")
             return {
                 **result,
                 "schema": "assistx-disposable-task-broker-20261011-v1",
@@ -321,6 +341,7 @@ def run() -> dict:
                 "broker_triple_network_membership": joined,
                 "disposable_real_raft_CAS_before_Neo4j": joined,
                 "disposable_real_raft_voters_same_host": joined,
+                "disposable_two_voter_minority_denies_fresh_admission": joined,
                 "disposable_raft_tls_or_rbac": False,
                 "independent_physical_witness": False,
                 "production_neo4j_touched": False,
