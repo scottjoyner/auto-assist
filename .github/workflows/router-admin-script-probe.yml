@@ -4,16 +4,20 @@ on:
   pull_request:
     paths:
       - "scripts/router_admin_probe.py"
+      - "scripts/router_admin_transport_custody.py"
       - "scripts/coordination_check.py"
       - "scripts/sync_docs_to_neo4j.py"
       - "tests/test_router_admin_script_probe.py"
+      - "tests/test_router_admin_transport_custody.py"
       - ".github/workflows/router-admin-script-probe.yml"
   push:
     paths:
       - "scripts/router_admin_probe.py"
+      - "scripts/router_admin_transport_custody.py"
       - "scripts/coordination_check.py"
       - "scripts/sync_docs_to_neo4j.py"
       - "tests/test_router_admin_script_probe.py"
+      - "tests/test_router_admin_transport_custody.py"
       - ".github/workflows/router-admin-script-probe.yml"
 
 permissions:
@@ -31,6 +35,6 @@ jobs:
       - name: Install standalone test dependency
         run: python -m pip install "pytest>=8,<10"
       - name: Compile auth probe and legacy callers
-        run: python -m py_compile scripts/router_admin_probe.py scripts/coordination_check.py scripts/sync_docs_to_neo4j.py
+        run: python -m py_compile scripts/router_admin_probe.py scripts/router_admin_transport_custody.py scripts/coordination_check.py scripts/sync_docs_to_neo4j.py
       - name: Run isolated fail-closed admin-client tests
-        run: python -m pytest -q --noconftest tests/test_router_admin_script_probe.py
+        run: python -m pytest -q --noconftest tests/test_router_admin_script_probe.py tests/test_router_admin_transport_custody.py
