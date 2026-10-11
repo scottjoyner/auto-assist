@@ -8,16 +8,16 @@
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import argparse
 import importlib.util
 import json
 import logging
 import os
-from pathlib import Path
 import secrets
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from neo4j import GraphDatabase
 
