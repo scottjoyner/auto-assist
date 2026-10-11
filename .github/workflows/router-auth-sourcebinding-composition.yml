@@ -27,13 +27,15 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-          fetch-depth: 12
+          # Compare moving PR heads against older pinned dependencies using the full DAG.
+          # A shallow checkout can lose the common ancestor and falsely fail the merge.
+          fetch-depth: 0
 
       - name: Confirm external draft head and compose without a merge commit
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --no-tags --depth=12 origin "refs/pull/${SOURCE_BINDING_PR}/head"
+          git fetch --no-tags origin "refs/pull/${SOURCE_BINDING_PR}/head"
           actual="$(git rev-parse FETCH_HEAD)"
           if [[ "${actual}" != "${PINNED_SOURCE_BINDING_SHA}" ]]; then
             echo '::error::PR #217 head drifted; review and re-pin the source-binding dependency'
