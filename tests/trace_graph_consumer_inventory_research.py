@@ -37,6 +37,7 @@ def scan(root: Path) -> dict:
         raise FileNotFoundError("ASSISTX_SOURCE_ROOT_NOT_FOUND")
     records = []
     parse_errors = []
+    scanned_files = 0
     def register(path: Path, tree: ast.AST):
         rel = str(path.relative_to(root))
         owners = []
@@ -84,6 +85,7 @@ def scan(root: Path) -> dict:
     for path in sorted(sources.rglob("*.py")):
         if any(part in ("__pycache__", "tests") for part in path.relative_to(sources).parts):
             continue
+        scanned_files += 1
         try:
             register(path, ast.parse(path.read_text(encoding="utf-8"), str(path)))
         except (SyntaxError, UnicodeError) as exc:
@@ -101,7 +103,7 @@ def scan(root: Path) -> dict:
         "safe_to_remove_direct_neo4j": False,
         "parse_errors": parse_errors,
         "statistics": {
-            "source_files_scanned": len(list(sources.rglob("*.py"))),
+            "source_files_scanned": scanned_files,
             "candidate_graph_call_sites": len(records),
             "distinct_source_files_with_candidates":
                 len({x["file"] for x in records}),
@@ -134,11 +136,11 @@ def render_markdown(result: dict) -> str:
     for file, rows in sorted(groups.items(), key=lambda item: (
             -sum(r["kind"] == "write" for r in item[1]), -len(item[1]), item[0])):
         lines.append(
-            f"| \`{file}\` | {len(rows)} | "
+            f"| `{file}` | {len(rows)} | "
             f"{sum(r['kind']=='write' for r in rows)} | "
             f"{sum(r['kind']=='low_level' for r in rows)} | "
-            "**P0 do not migrate blindly**" if Path(file).name in POLICY_SENSITIVE
-            else f"| \`{file}\` | {len(rows)} | "
+            "**P0 do not migrate blindly** |" if Path(file).name in POLICY_SENSITIVE
+            else f"| `{file}` | {len(rows)} | "
                  f"{sum(r['kind']=='write' for r in rows)} | "
                  f"{sum(r['kind']=='low_level' for r in rows)} | Review |"
         )
@@ -159,8 +161,8 @@ def render_markdown(result: dict) -> str:
     ])
     for row in result["candidate_call_sites"]:
         if row["kind"] == "write" and Path(row["file"]).name in POLICY_SENSITIVE:
-            lines.append(f"- \`{row['file']}:{row['line']}\` "
-                         f"\`{row['owner']}\` → \`{row['operation']}\` (write candidate)")
+            lines.append(f"- `{row['file']}:{row['line']}` "
+                         f"`{row['owner']}` → `{row['operation']}` (write candidate)")
     return "\n".join(lines) + "\n"
 
 def main():
