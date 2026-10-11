@@ -33,6 +33,7 @@ RAFT_KEYS = {
     "raft_endpoint", "raft_key", "raft_cluster", "raft_genesis",
     "raft_owner", "raft_term",
 }
+POLICY_KEYS = {"writer_endpoint", "writer_token"}
 
 
 class JoinedRaftAdmission:
@@ -69,6 +70,69 @@ class JoinedRaftAdmission:
             self.owner, self.term, stable.operation,
             request_digest=stable.request_digest)
 
+
+
+class RemotePolicyAdmission:
+    """Broker holds only a writer RPC token, never an etcd KV credential."""
+    def __init__(self, config):
+        from urllib.parse import urlsplit
+        endpoint = config["writer_endpoint"]
+        token = config["writer_token"]
+        try:
+            url = urlsplit(endpoint)
+            port = url.port
+        except (TypeError, ValueError):
+            raise ValueError("INVALID_DISPOSABLE_POLICY_WRITER") from None
+        if (url.scheme != "http" or
+                not re.fullmatch(
+                    r"assistx-broker-policy-[0-9a-f]{8}",
+                    url.hostname or "") or
+                port != 8810 or url.username is not None or
+                url.password is not None or url.path or url.query or
+                url.fragment or
+                type(token) is not str or len(token) < 24):
+            raise ValueError("INVALID_DISPOSABLE_POLICY_WRITER")
+        self.endpoint = endpoint
+        self.token = token
+
+    def admit(self, key, plan, task_id):
+        from trace_graph_stable_identity_research import (
+            derive_stable_operation, InvalidStableRequest)
+        from trace_etcd_quorum_fence_research import FenceRefused
+        try:
+            stable = derive_stable_operation(
+                "fixture-authenticated-broker-principal", key, plan,
+                {"id": task_id})
+        except InvalidStableRequest:
+            raise RequestDenied("INVALID_IDEMPOTENCY_KEY") from None
+        request = urllib.request.Request(
+            self.endpoint + "/v1/admit", method="POST",
+            data=json.dumps({
+                "plan_id": plan,
+                "operation_id": stable.operation,
+                "request_digest": stable.request_digest,
+            }, separators=(",", ":")).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + self.token,
+            })
+        try:
+            with urllib.request.urlopen(request, timeout=5) as resp:
+                receipt = json.loads(resp.read(2048))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 409:
+                raise FenceRefused(
+                    "EXISTING_OPERATION_REQUIRES_RECONCILIATION") from None
+            raise FenceRefused("POLICY_WRITER_UNAVAILABLE_OR_UNCERTAIN") from None
+        except (urllib.error.URLError, OSError, TimeoutError, ValueError):
+            raise FenceRefused("POLICY_WRITER_UNAVAILABLE_OR_UNCERTAIN") from None
+        if (not isinstance(receipt, dict) or
+                set(receipt) != {"reserved", "reservation_id"} or
+                receipt["reserved"] is not True or
+                not isinstance(receipt["reservation_id"], str) or
+                not re.fullmatch(r"[0-9a-f]{32}", receipt["reservation_id"])):
+            raise FenceRefused("POLICY_WRITER_UNTRUSTED_RECEIPT")
+        return receipt["reservation_id"]
 
 
 class RequestDenied(Exception):
@@ -263,14 +327,17 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     config = json.loads(Path(CONFIG_PATH).read_text())
     primary = {"bearer", "reader_user", "reader_password"}
-    if set(config) not in (primary, primary | RAFT_KEYS):
+    if set(config) not in (
+            primary, primary | RAFT_KEYS, primary | POLICY_KEYS):
         raise RuntimeError("BAD_DISPOSABLE_CREDENTIAL_CONFIG")
     if not all(isinstance(config[k], str) and len(config[k]) >= 10
                for k in primary):
         raise RuntimeError("BAD_DISPOSABLE_CREDENTIAL_CONFIG")
     server = ThreadingHTTPServer(("0.0.0.0", 8808), Handler)
     server.raft_admission = (
-        JoinedRaftAdmission(config) if RAFT_KEYS <= set(config) else None)
+        RemotePolicyAdmission(config) if POLICY_KEYS <= set(config)
+        else JoinedRaftAdmission(config) if RAFT_KEYS <= set(config)
+        else None)
     server.bearer = config["bearer"]
     server.reader_user = config["reader_user"]
     server.reader_password = config["reader_password"]

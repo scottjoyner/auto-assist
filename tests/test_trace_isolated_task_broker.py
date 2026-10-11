@@ -93,7 +93,9 @@ def test_resource_safety_network_topology_and_cleanup_guards():
     assert 'docker("network", "connect", graph_net, broker)' in probe
     assert "assert_disposable(worker, {worker_net})" in probe
     assert "assert_disposable(graph, {graph_net})" in probe
-    assert "if joined else {graph_net, worker_net}" in probe
+    assert "if joined else" in probe
+    assert "{graph_net, worker_net}" in probe
+    assert "{graph_net, worker_net, writer_net}" in probe
     assert "{graph_net, worker_net, raft_net}" in probe
     assert 'docker("rm", "-f", "-v", name' in probe
     assert 'docker("network", "rm", name' in probe

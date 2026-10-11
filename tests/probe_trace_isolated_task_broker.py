@@ -53,9 +53,15 @@ def run() -> dict:
     if os.getenv("ASSISTX_DISPOSABLE_GRAPH_BROKER") != "1":
         raise RuntimeError("EXPLICIT_DISPOSABLE_GRAPH_BROKER_OPT_IN_REQUIRED")
     joined = os.getenv("ASSISTX_DISPOSABLE_RAFT_IN_BROKER") == "1"
+    split = os.getenv("ASSISTX_DISPOSABLE_WRITER_SPLIT") == "1"
+    if split and not joined:
+        raise RuntimeError("POLICY_WRITER_SPLIT_REQUIRES_JOINED_RAFT")
     tag = secrets.token_hex(4)
     worker_net = "assistx-broker-worker-" + tag
     raft_net = "assistx-broker-raft-" + tag
+    writer_net = "assistx-broker-ipc-" + tag
+    writer = "assistx-broker-policy-" + tag
+    writer_token = secrets.token_urlsafe(35)
     raft_aliases = ["assistx-quorum-r" + str(i) + "-" + tag for i in (1,2,3)]
     raft_key = "/assistx/research/fencing/taskbroker-" + tag
     raft_genesis = "disposable-task-broker-" + tag
@@ -79,8 +85,12 @@ def run() -> dict:
     with tempfile.TemporaryDirectory(prefix="assistx-isolated-broker-") as temp:
         tmp = Path(temp)
         try:
-            for network in ((graph_net, worker_net, raft_net)
-                            if joined else (graph_net, worker_net)):
+            networks = [graph_net, worker_net]
+            if joined:
+                networks.append(raft_net)
+            if split:
+                networks.append(writer_net)
+            for network in networks:
                 docker("network", "create", "--internal", "--driver", "bridge",
                        "--label", "assistx.trace.research=task-broker",
                        network)
@@ -205,31 +215,76 @@ def run() -> dict:
                 if not cluster:
                     raise RuntimeError("DISPOSABLE_RAFT_CLUSTER_ID_MISSING")
 
-            # Broker is the only component on BOTH graph/worker bridges.
+            if split:
+                # Distinct container with no access to graph/worker network.
+                docker("create", "--pull", "never", "--name", writer,
+                       "--network", writer_net,
+                       "--network-alias", writer, "--memory", "170m",
+                       "--cpus", "0.7", "--pids-limit", "96",
+                       PYTHON_IMAGE,
+                       "python", "-u", "/tmp/policy-writer.py", timeout=18)
+                made_containers.append(writer)
+                docker("network", "connect", raft_net, writer)
+                writer_config = {
+                    "writer_token": writer_token,
+                    "raft_endpoint": endpoint, "raft_key": raft_key,
+                    "raft_cluster": cluster, "raft_genesis": raft_genesis,
+                    "raft_owner": raft_owner, "raft_term": 1,
+                }
+                (tmp / "writer-config.json").write_text(
+                    json.dumps(writer_config), encoding="utf8")
+                for src, dst in (
+                    ("trace_disposable_separate_policy_writer.py",
+                     "policy-writer.py"),
+                    ("trace_etcd_quorum_fence_research.py",
+                     "trace_etcd_quorum_fence_research.py"),
+                    ("trace_disposable_raft_http.py",
+                     "trace_disposable_raft_http.py"),
+                ):
+                    docker("cp", str(SOURCE / src), writer + ":/tmp/" + dst)
+                docker("cp", str(tmp / "writer-config.json"),
+                       writer + ":/tmp/writer-config.json")
+                docker("start", writer)
+                assert_disposable(writer, {writer_net, raft_net})
+
+            # Graph broker has no raw Raft access in split mode.
             docker("create", "--pull", "never", "--name", broker,
                    "--network", worker_net, "--memory", "180m", "--cpus", "1",
                    "--pids-limit", "96", PYTHON_IMAGE,
                    "python", "-u", "/tmp/task-broker.py", timeout=18)
             made_containers.append(broker)
             docker("network", "connect", graph_net, broker)
-            if joined:
+            if joined and not split:
                 docker("network", "connect", raft_net, broker)
+            if split:
+                docker("network", "connect", writer_net, broker)
             config = {
                 "reader_user": reader_user,
                 "reader_password": reader_password,
                 "bearer": bearer,
             }
             if joined:
-                config.update({
-                    "raft_endpoint": endpoint, "raft_key": raft_key,
-                    "raft_cluster": cluster, "raft_genesis": raft_genesis,
-                    "raft_owner": raft_owner, "raft_term": 1,
-                })
-                for src in (
-                    "trace_etcd_quorum_fence_research.py",
-                    "trace_disposable_raft_http.py",
-                    "trace_graph_stable_identity_research.py",
-                ):
+                if split:
+                    config.update({
+                        "writer_endpoint": "http://" + writer + ":8810",
+                        "writer_token": writer_token,
+                    })
+                    broker_modules = (
+                        "trace_graph_stable_identity_research.py",
+                        "trace_etcd_quorum_fence_research.py",
+                    )
+                else:
+                    config.update({
+                        "raft_endpoint": endpoint, "raft_key": raft_key,
+                        "raft_cluster": cluster, "raft_genesis": raft_genesis,
+                        "raft_owner": raft_owner, "raft_term": 1,
+                    })
+                    broker_modules = (
+                        "trace_etcd_quorum_fence_research.py",
+                        "trace_disposable_raft_http.py",
+                        "trace_graph_stable_identity_research.py",
+                    )
+                for src in broker_modules:
                     docker("cp", str(SOURCE / src), broker + ":/tmp/" + src)
             (tmp / "broker-config.json").write_text(
                 json.dumps(config), encoding="utf8")
@@ -239,8 +294,10 @@ def run() -> dict:
                    broker + ":/tmp/broker-config.json")
             docker("start", broker)
             assert_disposable(
-                broker, {graph_net, worker_net, raft_net}
-                if joined else {graph_net, worker_net})
+                broker,
+                {graph_net, worker_net, writer_net} if split else
+                {graph_net, worker_net, raft_net} if joined else
+                {graph_net, worker_net})
 
             docker("create", "--pull", "never", "--name", worker,
                    "--network", worker_net, "--memory", "128m",
@@ -259,6 +316,10 @@ def run() -> dict:
                         docker("inspect", "assistx-broker-quorum-r1-" + tag
                                ).stdout)[0]["NetworkSettings"][
                         "Networks"][raft_net]["IPAddress"]} if joined else {}),
+                    **({"writer_ip": json.loads(
+                        docker("inspect", writer).stdout)[0]
+                        ["NetworkSettings"]["Networks"][writer_net]
+                        ["IPAddress"]} if split else {}),
                 }), encoding="utf8")
             docker("cp", str(SOURCE / (
                        "trace_disposable_joined_raft_worker.py" if joined
@@ -297,10 +358,62 @@ def run() -> dict:
                     "print(json.dumps({'pending':len(v.document['pending']),"
                     "'completed':len(v.document.get('completed',{}))}))"
                 )
-                state = docker("exec", broker, "python", "-c", verifier)
+                if split:
+                    verifier = verifier.replace(
+                        "'/tmp/broker-config.json'",
+                        "'/tmp/writer-config.json'")
+                state = docker(
+                    "exec", writer if split else broker,
+                    "python", "-c", verifier)
                 counts = json.loads(state.stdout)
                 if counts != {"pending": 3, "completed": 0}:
                     raise RuntimeError("INVALID_JOINED_RAFT_PENDING_COUNTS")
+                if split:
+                    # Even with a literal numeric IP, the graph broker
+                    # cannot reach the raw etcd port or graph worker writer.
+                    verify_isolation = (
+                        "import socket,sys;"
+                        "ip=sys.argv[1];port=int(sys.argv[2]);"
+                        "s=socket.socket();s.settimeout(1.5);"
+                        "status=s.connect_ex((ip,port));s.close();"
+                        "sys.exit(0 if status != 0 else 4)"
+                    )
+                    raft_ip = json.loads(
+                        docker("inspect", "assistx-broker-quorum-r1-" +
+                               tag).stdout)[0]["NetworkSettings"][
+                        "Networks"][raft_net]["IPAddress"]
+                    denied = docker(
+                        "exec", broker, "python", "-c", verify_isolation,
+                        raft_ip, "2379", timeout=8, check=False)
+                    if denied.returncode != 0:
+                        raise RuntimeError("BROKER_DIRECT_ETCD_BYPASS")
+                    policy_ip = json.loads(
+                        docker("inspect", writer).stdout)[0][
+                        "NetworkSettings"]["Networks"][writer_net][
+                        "IPAddress"]
+                    denied = docker(
+                        "exec", worker, "python", "-c", verify_isolation,
+                        policy_ip, "8810", timeout=8, check=False)
+                    if denied.returncode != 0:
+                        raise RuntimeError("WORKER_DIRECT_POLICY_BYPASS")
+                    for port in ("7687", "7474"):
+                        denied = docker(
+                            "exec", writer, "python", "-c",
+                            verify_isolation, neo_ip, port,
+                            timeout=8, check=False)
+                        if denied.returncode != 0:
+                            raise RuntimeError(
+                                "WRITER_DIRECT_NEO4J_BYPASS")
+                    # Read only an uncredentialed status; no token logged.
+                    docker(
+                        "cp", str(SOURCE / "trace_disposable_writer_unauth.py"),
+                        broker + ":/tmp/writer-unauth.py")
+                    unauth = docker(
+                        "exec", broker, "python", "/tmp/writer-unauth.py",
+                        timeout=9, check=False)
+                    if unauth.returncode != 0:
+                        raise RuntimeError(
+                            "UNAUTHENTICATED_POLICY_WRITER_ACCEPTED")
                 # Fault-inject only our newly created voter containers.
                 # With one of three left, a fresh linearizable read/CAS
                 # cannot be authorized; broker must deny before graph.
@@ -339,6 +452,12 @@ def run() -> dict:
                 "worker_graph_network_membership": False,
                 "broker_dual_network_membership": not joined,
                 "broker_triple_network_membership": joined,
+                "separate_policy_writer_container": split,
+                "broker_no_raw_etcd_network_path": split,
+                "worker_no_direct_policy_writer_path": split,
+                "writer_no_direct_neo4j_path": split,
+                "policy_writer_no_auth_denied": split,
+                "independent_host_or_mtls_policy_auth": False,
                 "disposable_real_raft_CAS_before_Neo4j": joined,
                 "disposable_real_raft_voters_same_host": joined,
                 "disposable_two_voter_minority_denies_fresh_admission": joined,

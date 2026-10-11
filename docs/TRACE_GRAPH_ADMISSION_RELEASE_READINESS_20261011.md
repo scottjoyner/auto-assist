@@ -48,6 +48,12 @@ A further **fresh physical majority-loss run PASSED (62.56s)**: after committing
 
 **B03 remains P0 / partially proven, not accepted** because this fixture uses single-host etcd with internal unauthenticated HTTP, no scoped mTLS or writer RBAC, no independent txID/generation closure witness, no separate secure secrets, and no true 3-host joined transaction. In particular, a successful HTTP read must never be treated as permission to release the three outstanding reservations. The real production worker/API still bypass this broker (B01 FAIL), and the caller census remains not migrated (B02 OPEN). Automatic failover remains HARD NO-GO.
 
+## October 11 B05 separate policy writer checkpoint
+
+[Separated broker/writer physical handoff](./TRACE_SEPARATE_POLICY_WRITER_20261011.md) advances **B03/B05 network-path separation**. A **real disposable** four-private-bridge test on x1-370 runs worker→broker→fixed-plan policy writer→three local etcd voters before a restricted Neo4j Task read. Broker has no direct etcd IP route; worker has no direct writer or graph route; writer has no direct Neo4j route. A broker-to-writer RPC without bearer was denied **401**. Duplicate/changed-plan replay, exact cap=3 and majority-loss fail-closed negatives passed. Final physical run **63.63s**, scoped cleanup verified.
+
+**Release remains NO-GO:** etcd HTTP/IPC are internal cleartext bearer-based research mechanisms, all voters share x1-370, writer/broker are not independently protected OS identities, and no independent generation-pinned Neo4j transaction witness or signed closure has been integrated. The worker/API's **live** direct Bolt access remains B01 FAIL; B02 full callsite migration is outstanding. This is **B05 partial, not B05 acceptance**. [Machine-readable evidence](../research/evidence/assistx-separated-policy-writer-20261011.json).
+
 ## Open blockers — release-stopping
 
 | ID | Priority | Unresolved gate | Exact acceptance required to change status | Responsible discipline |
