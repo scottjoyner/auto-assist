@@ -61,6 +61,12 @@ python3 tests/probe_trace_isolated_task_broker.py
 
 All disposable Docker resources use random names and have scoped cleanup.
 
+## Three-host next-gate readiness (read-only, no deployment)
+
+A separate read-only SSH/Docker inspection on October 11 contacted **x1-370, xwing, and destroyer**. Batch SSH, Docker and a local Tailscale IPv4 check succeeded for all three. Every host had `quay.io/coreos/etcd:v3.6.14` cached with the **same repository digest**, `linux/amd64` architecture, image creation metadata and **matching hashes of the 17 rootfs layers**. Local Docker image IDs were different across x1-370 versus xwing/destroyer; this does not alone establish different binary contents given the agreeing digest and layer fingerprint. No binary attestation, container start, port binding, mTLS check or authenticated writer admission occurred during the preflight. [Structured three-host preflight](../research/evidence/assistx-three-host-writer-preflight-20261011.json).
+
+**Infrastructure availability alone is not proof that the broker has been joined to the multi-host Raft quorum.** The actual split-writer physical experiment above remains **one-host research only**.
+
 ## Still NO-GO — critical authority gaps
 
 1. **No true independent Raft failure domains.** Three real etcd voters are **all on x1-370**. Rejoin the actual x1-370/xwing/destroyer research Raft deployment via mutually authenticated, RBAC-scoped writer transport.
