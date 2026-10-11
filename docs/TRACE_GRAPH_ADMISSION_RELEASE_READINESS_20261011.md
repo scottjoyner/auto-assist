@@ -74,6 +74,12 @@ A further **fresh physical majority-loss run PASSED (62.56s)**: after committing
 
 **B06 NOT CLOSED:** `release_authorized` is explicitly false for both observation results; graph member and boot are still fixture-supplied rather than independently attested; the older Bolt witness uses `NEO4J_AUTH=none` and no etcd RBAC, with a raw-KV bypass reproduced on a separate disposable key. The strictly isolated three-host broker from #308/#310 still uses one-shot HTTP and does NOT wire this witness into its *same* request/closure chain. B01 live direct Bolt bypass remains FAIL; release remains **NO-GO**.
 
+## October 11: first SAME-REQUEST explicit Bolt transaction inside the 3-host isolated broker
+
+[New B06 physical handoff](./TRACE_B06_JOINED_HELD_BOLT_OBSERVER_20261011.md) records **PASS** for the genuine **worker→isolated broker→separate writer→3 physical host etcd mTLS/exact-key RBAC CAS→explicit broker-owned Neo4j Bolt transaction→separate observer-only Neo4j account**. The broker holds the third accepted reservation's original Bolt transaction open until a second graph-only research service uniquely observes its exact `SHOW TRANSACTIONS` metadata; after the broker commits, that service observes absence under the strict #312 contract. The separate observer has no graph CREATE, Raft writer key, broker auth or signing/release capability. A fourth operation is denied at three pending slots; loss of the real two-voter majority denies subsequent new operations. Full run **PASS exit 0**, three-host harness ~105.37s, joined broker segment ~77.57s; tests/docs only, scoped resources removed.
+
+**This is a significant B06 partial physical PASS, but B06 is still P0 NO-GO:** the member/boot label is fixture-authored rather than independently attested, the original txid/boot is not bound to Raft in the same broker, the observer is unsigned and its absence-only result has `release_authorized=False`, no independent durable signer custody or exact signed release exists, and server-side stale-term effect fencing remains missing. Production B01 direct Bolt bypass and B02 full caller migration remain unresolved. [Exact evidence](../research/evidence/assistx-b06-joined-held-bolt-observer-20261011.json).
+
 ## Open blockers — release-stopping
 
 | ID | Priority | Unresolved gate | Exact acceptance required to change status | Responsible discipline |
