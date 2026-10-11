@@ -60,6 +60,10 @@ def run(external_writer: dict | None = None) -> dict:
     joined = remote or os.getenv("ASSISTX_DISPOSABLE_RAFT_IN_BROKER") == "1"
     split = remote or os.getenv("ASSISTX_DISPOSABLE_WRITER_SPLIT") == "1"
     b06 = remote and os.getenv("ASSISTX_B06_HELD_BOLT_RESEARCH") == "1"
+    bind_observed = (b06 and
+        os.getenv("ASSISTX_B06_RAFT_BIND_RESEARCH") == "1")
+    if os.getenv("ASSISTX_B06_RAFT_BIND_RESEARCH") == "1" and not b06:
+        raise RuntimeError("B06_BIND_REQUIRES_EXPLICIT_HELD_BOLT")
     if b06 and os.getenv("ASSISTX_B06_GRAPH_RESTART_RESEARCH") == "1":
         raise RuntimeError("B06_HELD_AND_RESTART_MODES_EXCLUSIVE")
     if split and not joined:
@@ -293,6 +297,11 @@ def run(external_writer: dict | None = None) -> dict:
                     docker(
                         "cp", external_writer["tls_client_dir"],
                         writer + ":/tmp/etcd-client")
+                if bind_observed:
+                    docker(
+                        "cp", str(SOURCE /
+                                  "trace_b06_writer_bind_observed.py"),
+                        writer + ":/tmp/trace_b06_writer_bind_observed.py")
                 docker("cp", str(tmp / "writer-config.json"),
                        writer + ":/tmp/writer-config.json")
                 docker("start", writer)
@@ -489,6 +498,37 @@ def run(external_writer: dict | None = None) -> dict:
                             "EXACT_ACTIVE_TRANSACTION_OBSERVED" or
                             active_data.get("release_authorized") is not False):
                         raise RuntimeError("B06_ACTIVE_OBSERVER_INVALID")
+                    if bind_observed:
+                        original_evidence = tmp / "b06-exact-observer.json"
+                        docker("cp", observer + ":/tmp/observer-active.json",
+                               str(original_evidence))
+                        docker("cp", str(original_evidence),
+                               writer + ":/tmp/b06-observer-active.json")
+                        docker("cp", str(local_target),
+                               writer + ":/tmp/b06-original-target.json")
+                        # Bad candidate first: must not change RESERVED.
+                        bad = docker(
+                            "exec", writer, "python",
+                            "/tmp/trace_b06_writer_bind_observed.py",
+                            "bad-txid", timeout=13)
+                        if json.loads(bad.stdout).get(
+                                "forged_observation_denied") is not True:
+                            raise RuntimeError("B06_FORGED_RAFT_BIND_ALLOWED")
+                        bound = docker(
+                            "exec", writer, "python",
+                            "/tmp/trace_b06_writer_bind_observed.py",
+                            "bind", timeout=13)
+                        if json.loads(bound.stdout).get(
+                                "exact_original_transaction_raft_bound"
+                                ) is not True:
+                            raise RuntimeError("B06_EXACT_RAFT_BIND_NOT_COMMITTED")
+                        replay = docker(
+                            "exec", writer, "python",
+                            "/tmp/trace_b06_writer_bind_observed.py",
+                            "replay", timeout=13)
+                        if json.loads(replay.stdout).get(
+                                "duplicate_binding_denied") is not True:
+                            raise RuntimeError("B06_REPEATED_RAFT_BIND_ACCEPTED")
                     docker("exec", broker, "python", "-c",
                            "from pathlib import Path;"
                            "Path('/tmp/b06-release').touch()", timeout=8)
@@ -722,6 +762,9 @@ def run(external_writer: dict | None = None) -> dict:
                 "b06_independent_witness_integrated": False,
                 "b06_explicit_broker_bolt_observed_active_and_absent":
                     b06_observed,
+                "b06_original_observed_tx_RAFT_bound_START_ONLY":
+                    bind_observed and b06_observed,
+                "b06_observer_binding_generation_attested": False,
                 "b06_separate_graph_principal_observer": b06_observed,
                 "b06_server_boot_independently_attested": False,
                 "b06_signed_closure_or_release_authorized": False,
