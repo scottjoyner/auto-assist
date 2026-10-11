@@ -528,7 +528,10 @@ def run(external_writer: dict | None = None) -> dict:
                 "external_three_host_mtls_rbac": remote,
                 "disposable_two_voter_minority_denies_fresh_admission":
                     joined and not remote,
-                "disposable_raft_tls_or_rbac": False,
+                "disposable_raft_tls_or_rbac": remote,
+                "writer_to_raft_mtls_and_exact_key_RBAC": remote,
+                "broker_to_writer_mtls": False,
+                "distinct_writer_os_identity_verified": False,
                 "independent_physical_witness": False,
                 "production_neo4j_touched": False,
                 "Raft_issuer_required_at_broker": joined,
