@@ -71,7 +71,10 @@ def test_disposable_cluster_only_one_host_and_explicit_opt_in():
     assert 'ASSISTX_DISPOSABLE_GRAPH_BROKER' in physical
     assert '("--network", "connect", raft_net, broker)' not in physical
     assert 'docker("network", "connect", raft_net, broker)' in physical
-    assert "if joined else (graph_net, worker_net)" in physical
+    assert "if joined:" in physical
+    assert "networks.append(raft_net)" in physical
+    assert "if split:" in physical
+    assert "networks.append(writer_net)" in physical
     assert "DISPOSABLE_RAFT_CLUSTER_ID_MISSING" in physical
     assert "INVALID_JOINED_RAFT_PENDING_COUNTS" in physical
     assert '"disposable_real_raft_voters_same_host": joined' in physical
