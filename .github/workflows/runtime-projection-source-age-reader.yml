@@ -1,0 +1,43 @@
+name: Signed Runtime Reader Source Age (Research)
+
+on:
+  push:
+    branches:
+      - experiment/runtime-projection-source-age-reader-20261011
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  signed-source-age-compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install only source-only test and lint dependencies
+        run: python -m pip install 'fastapi==0.115.0' 'ruff>=0.6,<1'
+      - name: Verify signed source observation expiry contract
+        run: python -m unittest discover -s tests -p 'test_runtime_projection_source_age_reader.py' -q
+      - name: Verify strict lint in reader and tests
+        run: ruff check src/assistx/runtime_projection.py tests/test_runtime_projection_source_age_reader.py
+      - name: Verify exact-source expiry evidence is required only for signed mode
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source=Path('src/assistx/runtime_projection.py').read_text()
+          for proof in (
+              's.source_receipt_sha256 AS source_receipt_sha256',
+              'r.observed_at_ts AS observed_at_ts',
+              'observed_at_ts: m.observed_at_ts',
+              'SIGNED_PATH_MAX_AGE_MS = 180_000',
+              'SIGNED_PHYSICAL_MAX_AGE_MS = 300_000',
+              'runtime_expiry = min(',
+              'model_expiry = min(',
+          ):
+              assert proof in source, proof
+          print('Signed source age caps enforced; legacy mode remains explicit.')
+          PY
