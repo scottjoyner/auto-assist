@@ -28,7 +28,7 @@ def connect(ip,port):
 
 assert not connect(CONFIG["neo4j_ip"],7687)
 assert not connect(CONFIG["neo4j_ip"],7474)
-assert not connect(CONFIG["quorum_ip"],2379)
+assert not connect(CONFIG["quorum_ip"],CONFIG.get("quorum_port",2379))
 assert call(bearer=False)[0]==401
 assert call(key=None)[0]==422
 status,resp=call()
@@ -49,6 +49,7 @@ print(json.dumps({
  "changed_plan_same_identity_denied":True,
  "cap_three_preserves_pending":True,
  "no_witness_or_automatic_capacity_release":True,
- "single_host_Raft_not_independent_failure_domains":True,
+ "single_host_Raft_not_independent_failure_domains":not CONFIG.get("remote_three_host",False),
+ "three_real_raft_hosts_mtls_RBAC":bool(CONFIG.get("remote_three_host",False)),
  "production_deployed":False,
 },sort_keys=True))
