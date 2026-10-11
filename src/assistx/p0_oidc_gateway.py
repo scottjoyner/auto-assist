@@ -92,7 +92,7 @@ def _delegated_body_digest(path: str, payload: dict[str, Any]) -> str:
     canon = json.dumps(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     ).encode("utf-8")
-    material = b"p0-delegated-body-v2\\x00"
+    material = b"p0-delegated-body-v2\x00"
     return hashlib.sha256(
         material + path.encode("ascii") + b"\x00" + canon
     ).hexdigest()
