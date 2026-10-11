@@ -305,7 +305,6 @@
     return '';
   };
   const modelEvidence = (node) => {
-    const loaded = Array.isArray(node.loaded_models) ? node.loaded_models : [];
     const inferred = Array.isArray(node.inferred_models) ? node.inferred_models : [];
     const inferredHtml = inferred.length
       ? `<div class="last-known"><span class="dependency-category">unverified / inferred</span> ${modelList(inferred, 3)}</div>`
@@ -320,7 +319,7 @@
       ? `<div class="last-known"><span class="dependency-category">last known</span> ${modelList(node.last_known.models, 3)} <span class="dependency-category">${fmtAge(node.last_known.age_ms)} ago</span></div>`
       : '';
     const clue = node.model_clue ? `<div class="fleet-clue">${esc(node.model_clue)}</div>` : '';
-    return `<div class="fleet-models">${modelList(loaded)}${evidenceHtml}${sourceHtml}${inferredHtml}${opacityHtml}${lastKnown}${clue}</div>`;
+    return `<div class="fleet-models">${evidenceHtml}${sourceHtml}${inferredHtml}${opacityHtml}${lastKnown}${clue}</div>`;
   };
 
   function renderFleetNodes(snapshot) {
@@ -363,9 +362,9 @@
         <td><span class="state state-${token(status)}">${status}</span></td>
         <td class="mono">${esc(n.ip || '--')}</td>
         <td class="mono">${fmtAge(n.last_seen_age_ms)}</td>
-        <td>${modelEvidence(n)}</td>
+        <td><div class="fleet-models">${modelList(n.loaded_models, 3)}</div></td>
         <td><div class="fleet-available">${modelList(n.available_models, 3)}</div></td>
-        <td>${n.model_clue ? `<span class="clue-badge">${esc(String(n.opacity || 'opacity').toUpperCase())}</span>` : '--'}</td>
+        <td>${modelEvidence(n)}</td>
         <td class="mono">${n.model_observed_at == null ? '--' : fmtAge(Number(n.model_observed_at))}</td>
         <td class="mono">${n.watchdog_us ? `${Math.round(n.watchdog_us / 1000000)}s wd` : '--'}</td>
         <td><div class="fleet-caps">${roleText}${capabilityText ? (roleText ? ' · ' : '') + capabilityText : ''}</div></td>
