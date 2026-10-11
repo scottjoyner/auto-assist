@@ -36,7 +36,19 @@ This does not make a socket test a cryptographically signed host execution recei
 
 Ed25519 signs `operator.payload` containing the same audience, `role=operator-reviewer`, **same complete manifest SHA256**, same generation and approval ID, reviewed `approved_by`, and the SHA256 of the *entire signed source envelope*. The independent review must occur after source issuance, and the operator's signature is valid for **no more than 120 seconds** for the apply attempt. It can never be reused for a different manifest, model, process, path, generation or approval ID.
 
-Both signatures are revalidated **at the start of every Neo4j transaction invocation/retry**, before the first Cypher write. A draft internal `RuntimeProjectionApprovalReceipt` node records the approval ID, generation, source signature digest and source/reviewer original timestamps atomically with the canonical generation and four observed evidence classes. Reuse of a recorded approval ID fails. **A production uniqueness constraint on `RuntimeProjectionApprovalReceipt.approval_id` is still a separate required rollout gate**, along with race/rollback testing and schema migration review. Do not assume the transactional prequery alone prevents duplicates across concurrent sessions.
+Both signatures are revalidated **at the start of every Neo4j transaction invocation/retry**, before the first Cypher write. A draft internal `RuntimeProjectionApprovalReceipt` node records the approval ID, generation, source signature digest and source/reviewer original timestamps atomically with the canonical generation and four observed evidence classes. Reuse of a recorded approval ID fails. **The code now refuses any `--apply` before writes unless live Neo4j reports BOTH uniqueness constraints:** `RuntimeProjectionApprovalReceipt.approval_id` and `FleetProjectionState.name`. The graph's other constraints do not satisfy this requirement. The schema check runs from a trusted database query, not from unsigned input. Transaction checks remain separately required, and a concurrency/rollback pilot is STILL a release gate.
+
+A read-only x1-370 query confirmed **53 existing UNIQUENESS constraints, but NEITHER required constraint exists** on the current AssistX database. **No schema mutation was attempted.** The designated operator/database maintainer must review and plan migrations; representative Neo4j 5 Cypher (DOCUMENTATION ONLY, never executed):
+
+```cypher
+CREATE CONSTRAINT canonical_fleet_projection_state_name_unique IF NOT EXISTS
+FOR (s:FleetProjectionState) REQUIRE s.name IS UNIQUE;
+
+CREATE CONSTRAINT runtime_projection_approval_receipt_id_unique IF NOT EXISTS
+FOR (r:RuntimeProjectionApprovalReceipt) REQUIRE r.approval_id IS UNIQUE;
+```
+
+Before applying migrations, check for existing duplicates and concurrent writers, snapshot/backup, obtain DBA/operator authorization, verify staging negative tests, and schedule explicit rollback. Do not allow a research PR to silently create constraints in production.
 
 ### External CLI behavior
 
@@ -63,7 +75,7 @@ The original `--apply` without an attestation bundle must now fail. Existing raw
 - CAS mismatch and prior approval-ID replay refusal **before retiring any admitted rows**;
 - mock-only application writes source/reviewer original timestamp metadata and a replay receipt in one transaction. This is an in-memory fake transaction, **not a real Neo4j integration or physical device proof**.
 
-Local source-only test count: **26 passed, strict Ruff passed**; independent hosted workflow tracks exact branch head. Existing broad AssistX CI has many unrelated inherited failures and must not be described as globally green.
+Local source-only test count: **30 new security tests plus 22 inherited review-only tests passed; strict Ruff passed**; independent hosted workflow tracks exact branch head. Existing broad AssistX CI has many unrelated inherited failures and must not be described as globally green.
 
 ## Remaining release NO-GO
 
