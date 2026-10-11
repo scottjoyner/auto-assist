@@ -111,7 +111,7 @@ def projection_signature(
 ) -> str:
     message = (
         f"{generation}:{checksum}:{generated_at_ms}:{expires_at_ms}"
-    ).encode("utf-8")
+    ).encode()
     return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
