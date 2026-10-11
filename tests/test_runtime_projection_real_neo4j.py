@@ -80,6 +80,10 @@ class TestRealNeo4jCanonicalApply(unittest.TestCase):
                 "FOR (r:RuntimeProjectionApprovalReceipt) "
                 "REQUIRE r.approval_id IS UNIQUE"
             ).consume()
+            session.run(
+                "CREATE CONSTRAINT test_runtime_identity IF NOT EXISTS "
+                "FOR (r:RuntimeInstance) REQUIRE r.runtime_instance_id IS UNIQUE"
+            ).consume()
 
     @classmethod
     def tearDownClass(cls):
