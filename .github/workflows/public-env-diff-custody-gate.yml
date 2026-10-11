@@ -1,0 +1,33 @@
+name: Public Env Diff Custody Gate
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  reject-sensitive-path-changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated test dependency
+        run: python -m pip install "pytest>=8,<10"
+      - name: Verify filename-only guard
+        run: |
+          python -m py_compile scripts/audit_sensitive_pr_patch_names.py
+          python -m pytest -q --noconftest tests/test_sensitive_pr_patch_names.py
+      - name: Block public environment-file patch exposure
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python scripts/audit_sensitive_pr_patch_names.py --base "$BASE_SHA" --head "$HEAD_SHA"

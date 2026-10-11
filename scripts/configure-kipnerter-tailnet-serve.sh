@@ -90,7 +90,7 @@ check_path_conflict() {
     /api/v1/model/chat/completions
   )
 
-  local path
+  path=""
   for path in "${MOBILE_PATHS[@]}"; do
     check_path_conflict "$path" "http://127.0.0.1:${API_PORT}${path}"
   done
@@ -116,6 +116,7 @@ Published AssistX paths:
   /api/v1/auth/whoami
   /api/v1/runtime/catalog
   /api/v1/agent/chat/completions
+  /api/v1/model/chat/completions
 
 Existing unrelated Serve roots and Funnel mappings were not reset or replaced.
 

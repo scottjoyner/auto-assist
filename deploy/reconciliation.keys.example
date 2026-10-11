@@ -1,0 +1,7 @@
+# Documentation-only placeholders for reconciliation signing-key mounts.
+# Never populate this tracked file with live paths, credentials or key material.
+# See compose.reconciliation.yml for the authoritative runtime wiring.
+ASSISTX_RUNTIME_PROJECTION_PRIVATE_KEY_FILE=<operator-provided-private-key-path>
+ASSISTX_RUNTIME_PROJECTION_PUBLIC_KEY_FILE=<operator-provided-public-key-path>
+ASSISTX_EXECUTOR_PRIVATE_KEY_FILE=<operator-provided-executor-private-key-path>
+ASSISTX_EXECUTOR_PUBLIC_KEY_FILE=<operator-provided-executor-public-key-path>
