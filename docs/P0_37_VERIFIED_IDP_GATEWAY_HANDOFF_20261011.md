@@ -109,3 +109,28 @@ are **NOT** covered by this focused result.
 
 **No release, merge, production switch, or physical inference is authorized
 by these synthetic gateway tests.**
+
+## Cross-repository acceptance checkpoint
+
+An **explicitly gated** integration test in [Auto-router draft PR #51]
+(https://github.com/scottjoyner/auto-router/pull/51) executes the pinned
+AssistX gateway module against actual Auto-router ASGI auth/delegation and
+idempotency middleware and one shared **disposable PostgreSQL** authority.
+With two separately signed *test* IdP subjects, the gateway constructs
+two matching Ed25519 owner-bound delegations; the router accepts both
+with distinct root/attempt scopes. Malicious caller `user` or
+`metadata` fields and an unknown signed IdP subject are rejected
+before forwarding. A database outage returns 503.
+
+The cross-repo test passed once at Auto-router code commit
+`c5f5f77ad5adbfdaeb01fc033d36d661e7fde873`
+before this documentation update and a further isolated HTTPX hardening
+commit. It does **not** call a physical provider: the completion route is
+a test stub. The actual HTTP client is configured with `trust_env=False`
+and `follow_redirects=False` to prevent ambient proxy and redirect
+paths from receiving the gateway's private service credential.
+
+**Still OPEN:** real IdP sessions, gateway key lifecycle,
+distributed owner failover fencing, provider process execution attestation,
+encrypted tenant/subject/producer/node trace custody and physical
+two-user/iPhone acceptance.
