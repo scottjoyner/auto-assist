@@ -106,8 +106,13 @@ def scenario(driver, results):
             safe_properties={"provider": "synthetic"},
             model_ids=(own("model-1"),),
         )
+        service_followup = candidate.candidate_register_service_endpoint(
+            session, endpoint_id=model_first_id, node_id=owner,
+            service_type="model_endpoint", safe_properties={"port": 1235},
+        )
         results["model_first_idempotent_no_duplicate"] = (
-            first["production_release_authorized"] is False
+            service_followup["production_release_authorized"] is False
+            and first["production_release_authorized"] is False
             and second["production_release_authorized"] is False
             and count(
                 session, """
@@ -134,12 +139,11 @@ def scenario(driver, results):
         )
 
         service_first_id = own("service-first")
-        session.run("""
-        MERGE (n:SwarmNode {node_id:$node_id})
-        MERGE (e:ServiceEndpoint {endpoint_id:$endpoint_id})
-        SET e.service_type='model_endpoint', e.node_id=$node_id
-        MERGE (n)-[:EXPOSES]->(e)
-        """, node_id=owner, endpoint_id=service_first_id).consume()
+        candidate.candidate_register_service_endpoint(
+            session, endpoint_id=service_first_id,
+            node_id=owner, service_type="model_endpoint",
+            safe_properties={"port": 1236},
+        )
         before_links = count(session, """
             MATCH (:SwarmNode {node_id:$node_id})-[:EXPOSES]->
                   (:ServiceEndpoint {endpoint_id:$endpoint_id})
@@ -167,12 +171,10 @@ def scenario(driver, results):
         )
 
         generic_id = own("ordinary-service")
-        session.run("""
-            MERGE (n:SwarmNode {node_id:$node_id})
-            MERGE (e:ServiceEndpoint {endpoint_id:$endpoint_id})
-            SET e.service_type='generic', e.node_id=$node_id
-            MERGE (n)-[:EXPOSES]->(e)
-        """, node_id=owner, endpoint_id=generic_id).consume()
+        candidate.candidate_register_service_endpoint(
+            session, endpoint_id=generic_id, node_id=owner,
+            service_type="generic", safe_properties={"service": "synthetic"},
+        )
         try:
             candidate.candidate_register_model_endpoint(
                 session, endpoint_id=generic_id, node_id=owner,
@@ -187,12 +189,10 @@ def scenario(driver, results):
             ) == 0
 
         foreign_id = own("different-owner")
-        session.run("""
-            MERGE (n:SwarmNode {node_id:$node_id})
-            MERGE (e:ServiceEndpoint {endpoint_id:$endpoint_id})
-            SET e.service_type='model_endpoint', e.node_id=$node_id
-            MERGE (n)-[:EXPOSES]->(e)
-        """, node_id=own("owner-b"), endpoint_id=foreign_id).consume()
+        candidate.candidate_register_service_endpoint(
+            session, endpoint_id=foreign_id, node_id=own("owner-b"),
+            service_type="model_endpoint",
+        )
         try:
             candidate.candidate_register_model_endpoint(
                 session, endpoint_id=foreign_id, node_id=owner,
