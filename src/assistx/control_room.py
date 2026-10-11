@@ -978,9 +978,12 @@ def _live_loaded_models(neo_factory: NeoFactory | None) -> dict[str, Any] | None
             try:
                 age_ms = _now_ms() - int(ms)
             except (TypeError, ValueError, OverflowError):
-                return {}
+                return {"__snapshot_warning__": {"kind": "INVALID_GRAPH_TIMESTAMP"}}
             if age_ms > 120_000 or age_ms < -30_000:
-                return {}
+                return {"__snapshot_warning__": {
+                    "kind": "STALE_GRAPH_SNAPSHOT" if age_ms > 120_000 else "FUTURE_GRAPH_SNAPSHOT",
+                    "age_ms": age_ms,
+                }}
             query = (
                 "MATCH (s:FleetSnapshot)-[:HAS_MODEL_STATE]->(m:FleetModelState) "
                 "WHERE s.captured_at_ms=$ms "
@@ -1216,7 +1219,12 @@ def collect_fleet_nodes(neo_factory: NeoFactory | None = None) -> list[dict[str,
     def _identities_for(entry) -> list[str]:
         return list(dict.fromkeys(_entry_identities(_hw_for(entry)) + _entry_identities(entry)))
 
-    live_by_key = {_identity_key(key): value for key, value in (live_models or {}).items()}
+    graph_warning = (live_models or {}).get("__snapshot_warning__")
+    live_by_key = {
+        _identity_key(key): value
+        for key, value in (live_models or {}).items()
+        if key != "__snapshot_warning__"
+    }
     history_by_key = {_identity_key(key): value for key, value in historical_models.items()}
 
     def _state_for(entry, states) -> dict[str, Any] | None:
@@ -1306,10 +1314,13 @@ def collect_fleet_nodes(neo_factory: NeoFactory | None = None) -> list[dict[str,
                 entry["model_observed_at"] = live_entry.get("observed_at")
             else:
                 entry["loaded_models"] = []
-                entry["model_evidence"] = "NO_VERIFIED_LOAD"
-                entry["model_source"] = "live-empty"
+                entry["model_evidence"] = graph_warning["kind"] if graph_warning else "NO_VERIFIED_LOAD"
+                entry["model_source"] = "graph-invalid" if graph_warning else "live-empty"
                 entry["model_observed_at"] = (live_entry or {}).get("observed_at")
-                entry["model_clue"] = "live graph reports no loaded models"
+                entry["model_clue"] = (
+                    "graph snapshot is outside the permitted freshness window; loaded residency unknown"
+                    if graph_warning else "live graph reports no loaded models"
+                )
                 entry["opacity"] = "opaque"
         else:
             # No authoritative graph data: sanitize whatever the router reported so
@@ -1344,7 +1355,7 @@ def collect_fleet_nodes(neo_factory: NeoFactory | None = None) -> list[dict[str,
         # cell — surface it so Scott knows the endpoint isn't telling us anything.
         loaded = entry.get("loaded_models") or []
         if (entry.get("status") in ("ONLINE", "STALE")) and not loaded:
-            if entry.get("model_source") not in {"manifest-primary", "live-empty", "router"}:
+            if entry.get("model_source") not in {"manifest-primary", "live-empty", "graph-invalid", "router"}:
                 entry["opacity"] = "opaque"
                 entry["model_clue"] = (
                     "endpoint reachable but reported no running models; source="
