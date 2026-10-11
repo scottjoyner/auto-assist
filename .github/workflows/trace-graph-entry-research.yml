@@ -35,6 +35,8 @@ on:
       - 'tests/test_trace_disposable_separate_policy_writer.py'
       - 'tests/test_trace_three_host_split_writer_guards.py'
       - 'tests/test_trace_three_host_joined_minority_guards.py'
+      - 'tests/test_trace_joined_closure_negative.py'
+      - 'docs/TRACE_JOINED_CLOSURE_NEGATIVES_20261011.md'
       - 'docs/TRACE_REAL_THREE_HOST_SPLIT_WRITER_20261011.md'
       - 'docs/TRACE_SEPARATE_POLICY_WRITER_20261011.md'
       - 'tests/test_trace_joined_disposable_raft_broker.py'
@@ -89,7 +91,8 @@ jobs:
             tests/test_trace_joined_disposable_raft_broker.py \
             tests/test_trace_disposable_separate_policy_writer.py \
             tests/test_trace_three_host_split_writer_guards.py \
-            tests/test_trace_three_host_joined_minority_guards.py
+            tests/test_trace_three_host_joined_minority_guards.py \
+            tests/test_trace_joined_closure_negative.py
       - name: Verify physical probes remain manual-only
         run: |
           python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py tests/probe_trace_fencing_two_primaries.py tests/probe_trace_etcd_three_hosts.py tests/probe_trace_quorum_neo4j_physical.py tests/probe_trace_etcd_rbac_physical.py tests/probe_trace_etcd_ack_loss.py tests/probe_trace_bolt_topology_readonly.py

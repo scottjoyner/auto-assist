@@ -347,6 +347,26 @@ def run_scoped_rbac(
         if (len(final_view.document["pending"]) != 3 or
                 final_view.document["completed"]):
             raise AssertionError("THREE_HOST_JOINED_PENDING_INVARIANT_FAILED")
+        # B06 negative: the protected *same joined request* remains only
+        # RESERVED with no server-observed txID, generation or signer.
+        # Even a synthetic well-shaped closure claim must fail closed.
+        # No production graph query/transaction/credential is consulted.
+        authority = EtcdQuorumFence(root, joined_key, cluster_id)
+        for token in final_view.document["pending"]:
+            try:
+                authority.close_with_witness(
+                    token,
+                    {"schema": "assistx-raft-closure-research-v1"},
+                    b"invalid-research-signature")
+            except FenceRefused as exc:
+                if str(exc) != "NO_VERIFIED_PHYSICAL_BINDING":
+                    raise
+            else:
+                raise AssertionError("UNOBSERVED_CLOSURE_ALLOWED")
+        final_after_negative = authority.snapshot()
+        if (len(final_after_negative.document["pending"]) != 3 or
+                final_after_negative.document["completed"]):
+            raise AssertionError("FORGED_CLOSURE_CHANGED_RESERVATIONS")
 
     # Administrative root may see the protected key, but must not be given
     # to a worker/gateway or used as an ordinary policy-writer identity.
