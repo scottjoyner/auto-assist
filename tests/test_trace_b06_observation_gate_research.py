@@ -188,6 +188,7 @@ def test_pinned_metadata_is_not_mutable_after_custody():
 
 def test_observer_snapshot_cannot_be_mutated_by_upstream_driver():
     original = row()
+    original["metaData"] = dict(original["metaData"])
     snap = observation(1, [original])
     original["transactionId"] = "neo4j-transaction-999"
     original["metaData"]["assistx_term"] = 999
