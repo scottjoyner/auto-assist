@@ -85,3 +85,44 @@ def test_inventory_no_runtime_connectors_or_prod_credentials():
     for banned in ("import neo4j", "GraphDatabase.driver(",
                    "os.environ", "subprocess.", "docker ", "urllib.request"):
         assert banned not in code
+
+
+def test_nine_task_lookup_consumers_remain_separately_unmigrated():
+    root = Path(__file__).resolve().parents[1] / "src" / "assistx"
+    result = inventory(root)
+    sites = {(row["file"], row["function"]) for row in
+             result["task_policy_calls"] if row["method"] == "get_task"}
+    assert {
+        ("api.py", "api_claim_task"),
+        ("api.py", "api_heartbeat_task"),
+        ("api.py", "api_complete_task"),
+        ("api.py", "api_workflow_replan"),
+        ("api.py", "api_workflow_budget_update"),
+        ("routers/review.py", "api_approve_review_task"),
+        ("routers/review.py", "api_reject_review_task"),
+        ("routers/review.py", "api_clarify_review_task"),
+    } <= sites
+    # Two get_task calls exist inside complete_task; don't equate distinct
+    # call sites with unique functions or endpoint counts.
+    assert len([x for x in result["task_policy_calls"]
+                if x["method"] == "get_task"]) >= 9
+
+
+def test_review_requires_title_and_completion_needs_full_task_semantics():
+    root = Path(__file__).resolve().parents[1] / "src" / "assistx"
+    review = (root / "routers/review.py").read_text()
+    api = (root / "api.py").read_text()
+    assert 'review_task.get("title")' in review
+    assert 'review_task.get("payload_json")' in review
+    assert "evaluate_completion(" in api
+    assert "improvement_evaluation" in api
+    # The claim-guard projector from PR #296 intentionally has no title.
+    broker = Path(__file__).with_name(
+        "trace_disposable_task_broker.py").read_text()
+    assert '"payload", "payload_json", "queue_class"' in broker
+    assert '".title"' not in broker
+    full_review = {"status": "REVIEW", "title": "Important review",
+                   "payload_json": '{"source_text":""}'}
+    claim_only = {k: v for k, v in full_review.items()
+                  if k in {"status", "payload_json"}}
+    assert full_review["title"] != claim_only.get("title", "")
