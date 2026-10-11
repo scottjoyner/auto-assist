@@ -10,6 +10,7 @@ import json
 import re
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 _TASK_ID = re.compile(r"^fixture-task-[A-Za-z0-9_-]{4,48}$")
 
@@ -24,11 +25,22 @@ class TaskReadBrokerClient:
     bearer: str
 
     def __post_init__(self):
-        if (not self.trusted_broker_origin.startswith("http://assistx-broker-")
-                and not self.trusted_broker_origin.startswith(
-                    "http://assistx-broker-gateway-")):
-            # The research broker address MUST come from deployment config,
-            # never request JSON. Production requires mTLS+identity binding.
+        # Do not trust a string prefix: "assistx-broker-...evil.com" would
+        # otherwise receive the bearer token. Pin the exact disposable
+        # Docker hostname pattern and fixed port; NO URL userinfo or suffix.
+        # This is still NOT a replacement for production mTLS service auth.
+        try:
+            url = urlsplit(self.trusted_broker_origin)
+            port = url.port
+        except (ValueError, TypeError):
+            raise ValueError("UNTRUSTED_RESEARCH_BROKER_ORIGIN") from None
+        if (url.scheme != "http"
+                or not re.fullmatch(
+                    r"assistx-broker-gateway-[0-9a-f]{8}",
+                    url.hostname or "")
+                or port != 8808
+                or url.username is not None or url.password is not None
+                or url.path or url.query or url.fragment):
             raise ValueError("UNTRUSTED_RESEARCH_BROKER_ORIGIN")
         if not self.bearer or len(self.bearer) < 16:
             raise ValueError("MISSING_BROKER_AUTH")
