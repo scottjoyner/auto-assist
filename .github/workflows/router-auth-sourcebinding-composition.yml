@@ -39,7 +39,12 @@ jobs:
             echo '::error::PR #217 head drifted; review and re-pin the source-binding dependency'
             exit 1
           fi
-          git merge --no-commit --no-ff --no-edit FETCH_HEAD
+          # Even --no-commit computes a synthetic merge author identity on
+          # GitHub runners. Scope it to this command; never configure Git
+          # globally, never create a merge commit or push the combined tree.
+          git -c user.name='CI Composition (Uncommitted)' \
+              -c user.email='ci-composition@invalid.example' \
+              merge --no-commit --no-ff --no-edit FETCH_HEAD
           if git ls-files -u | grep -q .; then
             echo '::error::Conflicting PR heads; cannot certify composition'
             exit 1
