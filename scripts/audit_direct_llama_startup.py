@@ -135,9 +135,12 @@ def audit_text(
                 "launch_binary_mentioned": True,
                 "listener_port_mentioned": True,
                 "contains_api_key_flag": "--api-key" in content,
-                "contains_explicit_loopback_host": any(
+                # A loopback literal may be used only for a health probe.
+                # It is NOT evidence of an actual --host binding.
+                "mentions_loopback_literal": any(
                     value in content for value in ("127.0.0.1", "::1", "localhost")
                 ),
+                "declared_host_loopback_proven": False,
                 "proof_of_actual_launch": False,
             })
     persistence_possible = bool(findings)
