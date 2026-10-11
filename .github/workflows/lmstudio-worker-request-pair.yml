@@ -1,0 +1,60 @@
+name: LM Studio Worker Request Pair (Offline Research)
+
+on:
+  push:
+    branches:
+      - experiment/lmstudio-request-worker-receipt-contract-20261011
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  request-pair-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test-only crypto and lint, no LM Studio SDK
+        run: python -m pip install 'cryptography>=43,<46' 'ruff>=0.6,<1'
+      - name: Verify ephemeral-signature paired request receipt contract
+        run: |
+          python -m unittest discover -s tests -p 'test_verify_lmstudio_worker_request_pair.py' -q
+          python -m unittest discover -s tests -p 'test_lmstudio_worker_lineage.py' -q
+          python -m unittest discover -s tests -p 'test_correlate_unsigned_host_lineage.py' -q
+      - name: Strict Ruff source lint
+        run: |
+          ruff check scripts/verify_lmstudio_worker_request_pair.py \
+            tests/test_verify_lmstudio_worker_request_pair.py \
+            scripts/collect_lmstudio_worker_lineage.py \
+            tests/test_lmstudio_worker_lineage.py \
+            scripts/correlate_unsigned_host_lineage.py \
+            tests/test_correlate_unsigned_host_lineage.py
+      - name: Reject authorization inferred from ephemeral signatures
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source=Path('scripts/verify_lmstudio_worker_request_pair.py').read_text()
+          for required in (
+              '"producer_key_custody_established": False',
+              '"independent_worker_execution_attested": False',
+              '"trusted_owner_binding_established": False',
+              '"signed_operator_approval": False',
+              '"can_renew": False',
+              '"can_dispatch": False',
+              'CRYPTOGRAPHIC_PAIR_CONSISTENT_ONLY',
+              'worker_receipt_sha256',
+              'Ed25519PublicKey',
+          ):
+              assert required in source, required
+          for forbidden in (
+              'Ed25519PrivateKey', 'GraphDatabase', 'subprocess',
+              'requests.', 'urllib.', 'socket.', '/v1/chat/completions',
+              'lmstudio.Client', 'open(', 'os.environ',
+          ):
+              assert forbidden not in source, forbidden
+          print('Pure offline mathematical consistency only, never execution authority.')
+          PY
