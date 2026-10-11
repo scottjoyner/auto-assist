@@ -50,7 +50,7 @@ def test_inventory_records_broker_migrations_and_direct_sessions(tmp_path):
         x["method"] for x in result["highest_method_calls"]
     }
     assert result["direct_session_calls"] == [{
-        "file": "api.py", "function": "route", "line": 6,
+        "file": "api.py", "function": "route", "line": 7,
         "symbol": "neo._session", "class": "DIRECT_SESSION_REVIEW",
     }]
     assert not result["interpretation"]["not_runtime_call_graph"] is False
