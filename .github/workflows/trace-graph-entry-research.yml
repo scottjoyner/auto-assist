@@ -26,8 +26,13 @@ on:
       - 'tests/test_trace_task_read_broker_client.py'
       - 'tests/test_trace_task_policy_projection_negative.py'
       - 'tests/test_trace_task_policy_projection_parity.py'
-      - 'tests/trace_graph_consumer_census.py'
+      - 'tests/trace_graph_consumer_census.py tests/trace_disposable_raft_http.py tests/trace_disposable_joined_bootstrap.py tests/trace_disposable_joined_raft_worker.py'
       - 'tests/test_trace_graph_consumer_census.py'
+      - 'tests/trace_disposable_raft_http.py'
+      - 'tests/trace_disposable_joined_bootstrap.py'
+      - 'tests/trace_disposable_joined_raft_worker.py'
+      - 'tests/test_trace_joined_disposable_raft_broker.py'
+      - 'docs/TRACE_JOINED_RAFT_ISOLATED_TASK_BROKER_20261011.md'
       - 'docs/TRACE_NEO4J_CONSUMER_CENSUS_20261011.md'
       - 'tests/probe_trace_quorum_neo4j*.py'
       - 'tests/test_trace_quorum_neo4j*.py'
@@ -74,7 +79,8 @@ jobs:
             tests/test_trace_task_read_broker_client.py \
             tests/test_trace_task_policy_projection_negative.py \
             tests/test_trace_task_policy_projection_parity.py \
-            tests/test_trace_graph_consumer_census.py
+            tests/test_trace_graph_consumer_census.py \
+            tests/test_trace_joined_disposable_raft_broker.py
       - name: Verify physical probes remain manual-only
         run: |
           python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py tests/probe_trace_fencing_two_primaries.py tests/probe_trace_etcd_three_hosts.py tests/probe_trace_quorum_neo4j_physical.py tests/probe_trace_etcd_rbac_physical.py tests/probe_trace_etcd_ack_loss.py tests/probe_trace_bolt_topology_readonly.py
@@ -113,5 +119,8 @@ jobs:
           broker = Path('tests/probe_trace_isolated_task_broker.py').read_text()
           assert 'EXPLICIT_DISPOSABLE_GRAPH_BROKER_OPT_IN_REQUIRED' in broker
           assert 'production_authority' in broker
-          print('Physical probes, RBAC, topology and isolated broker remain opt-in; CI never runs them.')
+          physical = Path('tests/probe_trace_isolated_task_broker.py').read_text()
+          assert 'ASSISTX_DISPOSABLE_RAFT_IN_BROKER' in physical
+          assert '"disposable_real_raft_voters_same_host": joined' in physical
+          print('Physical probes, RBAC, topology, single-host Raft and isolated broker remain opt-in; CI never runs them.')
           PY
