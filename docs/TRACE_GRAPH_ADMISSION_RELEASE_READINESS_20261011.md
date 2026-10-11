@@ -54,6 +54,14 @@ A further **fresh physical majority-loss run PASSED (62.56s)**: after committing
 
 **Release remains NO-GO:** etcd HTTP/IPC are internal cleartext bearer-based research mechanisms, all voters share x1-370, writer/broker are not independently protected OS identities, and no independent generation-pinned Neo4j transaction witness or signed closure has been integrated. The worker/API's **live** direct Bolt access remains B01 FAIL; B02 full callsite migration is outstanding. This is **B05 partial, not B05 acceptance**. [Machine-readable evidence](../research/evidence/assistx-separated-policy-writer-20261011.json).
 
+## October 11: physically joined THREE-host Raft → separate writer → isolated Neo4j broker
+
+[Dedicated physical handoff](./TRACE_REAL_THREE_HOST_SPLIT_WRITER_20261011.md) documents the first **joined** broker/writer/Neo4j fixture actually backed by three Raft voters on **x1-370, xwing and destroyer**, using ephemeral mTLS and **exact-key etcd RBAC**. A separate writer, not the broker, holds Raft credentials. Worker→writer/Neo4j/etcd, broker→etcd, and writer→Neo4j numeric-IP bypasses are denied. A writer RPC without bearer is rejected, Neo4j's reader cannot CREATE, repeat/conflicting requests are rejected and **three pending/zero closed** are preserved.
+
+**Final physical fault PASS:** stop the disposable voters on xwing and destroyer while the joined broker stays running → fresh authenticated worker request receives **503 ADMISSION_UNCERTAIN**; restart both named voters in `finally` → **3 pending, 0 completed** observed after recovery. Full run exit 0 (~86.78s), joined section ~63.55s. [Machine-readable evidence](../research/evidence/assistx-real-three-host-split-writer-20261011.json).
+
+**Score:** B03 **partial physical PASS** for real three-host quorum-before-read and minority denial; B05 **partial physical PASS** for writer-only mTLS/RBAC and network segregation. B01 **LIVE FAIL**, B02 **OPEN**, B04 production ingress identity **OPEN**, B06 generation-bound detached witness in this *same* execution **OPEN**, B07 restore/NOSPACE **OPEN**, B08–B11 **OPEN**. Broker→writer still cleartext fixture bearer, OS identities not independently protected and the writer key can perform raw exact-key etcd operations. Production graph admission and automatic failover remain **NO-GO**.
+
 ## Open blockers — release-stopping
 
 | ID | Priority | Unresolved gate | Exact acceptance required to change status | Responsible discipline |
