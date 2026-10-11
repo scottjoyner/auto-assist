@@ -241,7 +241,7 @@ def test_gateway_default_off_does_not_mount_route(monkeypatch):
     monkeypatch.delenv("ASSISTX_P0_VERIFIED_HUMAN_GATEWAY_ENABLED", raising=False)
     app = FastAPI()
     install_verified_human_gateway(app)
-    assert "/api/p0/verified-local-chat" not in {r.path for r in app.routes}
+    assert "/api/p0/verified-local-chat" not in {getattr(r, "path", None) for r in app.routes}
 
 
 def test_gateway_refuses_enabled_missing_pinned_identity_files(monkeypatch):
@@ -286,7 +286,7 @@ def test_enabled_gateway_installer_requires_private_files_and_mounts_only_new_la
         monkeypatch.setenv(key, str(file))
     app = FastAPI()
     install_verified_human_gateway(app)
-    assert "/api/p0/verified-local-chat" in {r.path for r in app.routes}
+    assert "/api/p0/verified-local-chat" in {getattr(r, "path", None) for r in app.routes}
     # The bearer must be an independently verified JWT, not Basic nor a
     # spoofed trusted-user header. No provider request is made here.
     with TestClient(app) as client:
