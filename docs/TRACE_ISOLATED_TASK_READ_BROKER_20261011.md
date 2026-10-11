@@ -29,7 +29,7 @@ The prototype's graph HTTP path is internally restricted and uses Neo4j Basic cr
 - `tests/trace_task_read_broker_client_research.py`: worker-side `get_task`-shaped shim; no automatic fallback to Bolt on broker failure.
 - `tests/trace_disposable_task_worker.py`: runs physically from an isolated worker container; reads synthetic Task, denies injected plans/auth and literal-IP Bolt/HTTP.
 - `tests/probe_trace_isolated_task_broker.py`: manual-only Docker topology, ephemeral Neo4j role+user, seed synthetic Task, verify read/write separation, start broker+worker, validate and clean up.
-- `tests/test_trace_isolated_task_broker.py` and `tests/test_trace_task_read_broker_client.py`: 36 offline tests of exact plan, error boundaries, response validation, origin refusal, and isolation source guards.
+- `tests/test_trace_isolated_task_broker.py` and `tests/test_trace_task_read_broker_client.py`: 36 offline tests; plus 3 exact-source policy counterexamples of exact plan, error boundaries, response validation, origin refusal, and isolation source guards.
 - `.github/workflows/trace-graph-entry-research.yml`: runs those offline tests and compiles physical probe; never runs Docker/physical experiment on GitHub Actions.
 
 Manual opt-in on x1-370, with cached images:
@@ -38,6 +38,15 @@ PYTHONPATH=tests ASSISTX_DISPOSABLE_GRAPH_BROKER=1 \
 python3 tests/probe_trace_isolated_task_broker.py
 ```
 The research harness prints a sanitized JSON result. Source and results: [evidence](../research/evidence/assistx-isolated-task-read-broker-20261011.json).
+
+### Demonstrated security-semantic migration counterexamples
+
+A subsequent offline test extracts the **actual** `_is_recovery_task` and `_is_claim_allowed_for_workflow_control` source functions from `src/assistx/api.py`, rather than mocking their decisions.
+
+- A synthetic Task with `required_capabilities=["recovery"]` is correctly classified as recovery by the current helper, but the two-field broker projection is **not**. Feeding that projection to `api_claim_task` could skip `_verify_recovery_node_identity` for a recovery task. **This is an authorization regression if promoted.**
+- In drain mode, a synthetic task whose `payload_json` contains `queue_class="critical"` is accepted by the current workflow admission helper. The reduced projection silently defaults to `interactive` and gets **incorrectly denied**. This is a functionality/liveness regression.
+
+`tests/test_trace_task_policy_projection_negative.py` has **3 passing counterexample tests**. These make the next dependency explicit: preserve claim/recovery policy fields before any substitution of `get_task()`. The existing canary is safe only because it is **unwired** from those endpoints.
 
 ## Concrete remaining migration plan
 
