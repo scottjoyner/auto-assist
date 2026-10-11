@@ -11,6 +11,8 @@ In the current disposable fixture it is NOT a server-signed generation.
 """
 from __future__ import annotations
 from dataclasses import dataclass
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 import re
 
@@ -54,6 +56,10 @@ class PinnedGraphTarget:
                            for k, v in self.metadata.items()
                            if k != "assistx_term")):
             raise ObservationRejected("INVALID_PINNED_TRANSACTION_METADATA")
+        # A frozen dataclass containing a mutable dict is NOT an immutable
+        # observation. All metadata values are already scalar-validated.
+        object.__setattr__(self, "metadata",
+                           MappingProxyType(dict(self.metadata)))
 
 
 @dataclass(frozen=True)
@@ -68,8 +74,20 @@ class GraphObservation:
     def __post_init__(self):
         if (type(self.sequence) is not int or self.sequence < 1
                 or type(self.rows) is not tuple
-                or type(self.read_complete) is not bool):
+                or type(self.read_complete) is not bool
+                or any(not isinstance(row, Mapping)
+                       for row in self.rows)):
             raise ObservationRejected("BAD_OBSERVER_SNAPSHOT")
+        # Snapshot each row and its metadata independently. Neither the
+        # upstream Neo4j driver nor a later caller may rewrite evidence.
+        copies = []
+        for row in self.rows:
+            copied = dict(row)
+            if isinstance(copied.get("metaData"), Mapping):
+                copied["metaData"] = MappingProxyType(
+                    dict(copied["metaData"]))
+            copies.append(MappingProxyType(copied))
+        object.__setattr__(self, "rows", tuple(copies))
 
 
 @dataclass(frozen=True)
@@ -98,7 +116,7 @@ def _check(target: PinnedGraphTarget, observation: GraphObservation) -> None:
         raise ObservationRejected("OBSERVER_IDENTITY_OR_GENERATION_CHANGED")
     if not observation.read_complete:
         raise ObservationRejected("OBSERVER_READ_UNCERTAIN")
-    if not all(type(row) is dict and
+    if not all(isinstance(row, Mapping) and
                "transactionId" in row and "database" in row
                and "metaData" in row for row in observation.rows):
         raise ObservationRejected("OBSERVER_RESPONSE_INCOMPLETE")
@@ -109,7 +127,7 @@ def _matching_count(target: PinnedGraphTarget, rows: tuple[dict, ...]) -> int:
     return sum(
         row.get("database") == target.database
         and row.get("metaData") == target.metadata
-        and type(row.get("metaData")) is dict
+        and isinstance(row.get("metaData"), Mapping)
         and type(row.get("transactionId")) is str
         and bool(_TXID.fullmatch(row["transactionId"]))
         for row in rows
@@ -121,7 +139,16 @@ def capture_active(target: PinnedGraphTarget,
     _check(target, snapshot)
     if _matching_count(target, snapshot.rows) != 1:
         raise ObservationRejected("MISSING_OR_AMBIGUOUS_ORIGINAL_TRANSACTION")
-    txid = observed_exact(snapshot.rows, target.metadata, target.database)
+    # observed_exact's source API requires a concrete dict for metadata.
+    # Pass a detached normalized view rather than mutable stored evidence.
+    rows = tuple({
+        "transactionId": row.get("transactionId"),
+        "database": row.get("database"),
+        "metaData": dict(row["metaData"])
+        if isinstance(row.get("metaData"), Mapping)
+        else row.get("metaData"),
+    } for row in snapshot.rows)
+    txid = observed_exact(rows, target.metadata, target.database)
     if not txid:
         raise ObservationRejected("MISSING_OR_AMBIGUOUS_ORIGINAL_TRANSACTION")
     return ObservedActive(target, txid, snapshot.sequence)
