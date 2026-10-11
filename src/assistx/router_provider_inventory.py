@@ -113,7 +113,10 @@ def fetch_provider_inventory(
     Explicit legacy URL overrides are preserved for existing operator rollout.
     Authentication failures, invalid snapshots and outages NEVER downgrade.
     """
-    if not admin_token:
+    # A configured token and an origin-only base URL are required before
+    # constructing any privileged request. Never append admin paths to a
+    # caller-supplied URL path or send a whitespace-only credential.
+    if not isinstance(admin_token, str) or not admin_token.strip():
         return {}
     override = override_url.strip()
     base = base_url.strip().rstrip("/")
@@ -127,6 +130,7 @@ def fetch_provider_inventory(
         if (
             trusted.scheme not in ("http", "https")
             or not trusted.hostname
+            or trusted.path not in ("", "/")
             or trusted.username is not None
             or trusted.password is not None
             or target.scheme != trusted.scheme
