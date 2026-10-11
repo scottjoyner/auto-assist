@@ -446,6 +446,80 @@ def run(external_writer: dict | None = None) -> dict:
                 time.sleep(1)
             if result is None:
                 raise RuntimeError("WORKER_TO_BROKER_TASK_READ_ACCEPTANCE_FAILED")
+            b06_observed = False
+            if b06:
+                # Two real Raft slots are already occupied. This worker's
+                # third operation now goes through the SAME authenticated
+                # broker→scoped writer admission and opens a real explicit
+                # Bolt transaction in the broker (not in this host).
+                docker("cp", str(SOURCE / "trace_b06_worker_held_request.py"),
+                       worker + ":/tmp/held-worker.py")
+                docker("cp", str(SOURCE / "trace_b06_worker_capacity.py"),
+                       worker + ":/tmp/held-capacity.py")
+                active_proc = subprocess.Popen(
+                    ["docker", "exec", worker, "python",
+                     "/tmp/held-worker.py"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                try:
+                    deadline = time.monotonic() + 24
+                    while True:
+                        exists = docker(
+                            "exec", broker, "test", "-f",
+                            "/tmp/b06-target.json", timeout=6, check=False)
+                        if exists.returncode == 0:
+                            break
+                        if active_proc.poll() is not None:
+                            raise RuntimeError("B06_BROKER_HELD_REQUEST_EXITED")
+                        if time.monotonic() > deadline:
+                            raise RuntimeError("B06_BROKER_BOLT_NOT_HELD")
+                        time.sleep(.25)
+                    local_target = tmp / "b06-observed-target.json"
+                    docker("cp", broker + ":/tmp/b06-target.json",
+                           str(local_target))
+                    docker("cp", str(local_target),
+                           observer + ":/tmp/observer-target.json")
+                    active = docker(
+                        "exec", observer, "python", "/tmp/" +
+                        "trace_b06_observer_disposable.py", "active",
+                        timeout=22, check=False)
+                    if active.returncode != 0:
+                        raise RuntimeError("B06_INDEPENDENT_ACTIVE_NOT_OBSERVED")
+                    active_data = json.loads(active.stdout)
+                    if (active_data.get("status") !=
+                            "EXACT_ACTIVE_TRANSACTION_OBSERVED" or
+                            active_data.get("release_authorized") is not False):
+                        raise RuntimeError("B06_ACTIVE_OBSERVER_INVALID")
+                    docker("exec", broker, "python", "-c",
+                           "from pathlib import Path;"
+                           "Path('/tmp/b06-release').touch()", timeout=8)
+                    worker_output, _ = active_proc.communicate(timeout=17)
+                    if active_proc.returncode != 0:
+                        raise RuntimeError("B06_HELD_WORKER_TRANSACTION_FAILED")
+                    worker_ok = json.loads(worker_output)
+                    if worker_ok.get("held_bolt_request_finished") is not True:
+                        raise RuntimeError("B06_HELD_WORKER_NOT_COMPLETE")
+                    absent = docker(
+                        "exec", observer, "python",
+                        "/tmp/trace_b06_observer_disposable.py",
+                        "absent", timeout=22, check=False)
+                    if absent.returncode != 0:
+                        raise RuntimeError("B06_OBSERVER_ABSENCE_FAILED")
+                    absent_data = json.loads(absent.stdout)
+                    if (absent_data.get("status") !=
+                            "ABSENT_OBSERVATIONS_ONLY" or
+                            absent_data.get("release_authorized") is not False):
+                        raise RuntimeError("B06_OBSERVER_RELEASE_ESCALATION")
+                    cap = docker(
+                        "exec", worker, "python", "/tmp/held-capacity.py",
+                        timeout=11)
+                    if not json.loads(cap.stdout).get(
+                            "fourth_request_denied_after_observed_bolt"):
+                        raise RuntimeError("B06_CAPACITY_RELEASED_UNVERIFIED")
+                    b06_observed = True
+                finally:
+                    if active_proc.poll() is None:
+                        active_proc.kill()
+                        active_proc.communicate(timeout=5)
             if joined:
                 verifier = (
                     "import json,sys;sys.path.insert(0,'/tmp');"
@@ -646,6 +720,11 @@ def run(external_writer: dict | None = None) -> dict:
                 **result,
                 "b06_graph_restart_reservations_held": graph_restarted,
                 "b06_independent_witness_integrated": False,
+                "b06_explicit_broker_bolt_observed_active_and_absent":
+                    b06_observed,
+                "b06_separate_graph_principal_observer": b06_observed,
+                "b06_server_boot_independently_attested": False,
+                "b06_signed_closure_or_release_authorized": False,
                 "schema": "assistx-disposable-task-broker-20261011-v1",
                 "runtime_seconds": round(time.monotonic() - started, 2),
                 "source_task_method": "Neo4jClient.get_task",
