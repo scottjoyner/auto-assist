@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import os
 import re
 import time
@@ -166,13 +167,27 @@ def build_fleet_link_canary_router(
     client_factory: Callable[[], httpx.AsyncClient] = _make_client,
 ) -> APIRouter:
     """Fully opt-in operator-only AssistX shadow admission, not mobile promotion."""
-    def require_operator(identity: str = Depends(auth_dependency)) -> str:
-        # General AssistX authentication is not sufficient for an execution canary.
-        # An unset allowlist denies everyone; identity must be established upstream.
+    def require_operator(
+        identity: str = Depends(auth_dependency),
+        x_assistx_fleet_operator_token: str | None = Header(default=None),
+    ) -> str:
+        # A trusted identity header can be spoofed if an ingress is misconfigured.
+        # Require independent operator proof even for allowlisted identities.
         allowed = {name.strip() for name in os.getenv(
             "ASSISTX_FLEET_LINK_OPERATOR_USERS", ""
         ).split(",") if name.strip()}
-        if not isinstance(identity, str) or not identity or identity not in allowed:
+        expected = os.getenv("ASSISTX_FLEET_LINK_OPERATOR_TOKEN", "")
+        if (
+            not isinstance(identity, str)
+            or not identity
+            or identity not in allowed
+            or len(expected) < 32
+            or not x_assistx_fleet_operator_token
+            or not hmac.compare_digest(
+                expected.encode("utf-8"),
+                x_assistx_fleet_operator_token.encode("utf-8"),
+            )
+        ):
             raise HTTPException(status_code=403, detail="fleet link operator forbidden")
         return identity
 
