@@ -121,6 +121,7 @@ def test_only_operator_can_observe_embedded_proof_intersection(monkeypatch):
         "automatic_promotion":False,
         "artifact_identity_independently_proved":False,
         "sidecar_identity_cryptographically_verified":False,
+        "projection_ed25519_pin_verified":False,
         "catalog_generation_hint":1,
     }
     assert calls==[("GET","/fleet/nodes"),("GET","/fleet/embeddings")]
