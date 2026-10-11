@@ -23,12 +23,15 @@ jobs:
       - name: Test native model-instance stream and receipt protocols offline
         run: |
           python -m unittest discover -s tests -p 'test_verify_lmstudio_native_stream_instance.py' -q
+          python -m unittest discover -s tests -p 'test_join_native_stream_worker_receipt.py' -q
           python -m unittest discover -s tests -p 'test_verify_lmstudio_worker_request_pair.py' -q
           python -m unittest discover -s tests -p 'test_correlate_unsigned_host_lineage.py' -q
           python -m unittest discover -s tests -p 'test_lmstudio_worker_lineage.py' -q
       - name: Lint bounded SSE parser and model receipt suite
         run: |
           ruff check scripts/verify_lmstudio_native_stream_instance.py \
+            scripts/join_native_stream_worker_receipt.py \
+            tests/test_join_native_stream_worker_receipt.py \
             tests/test_verify_lmstudio_native_stream_instance.py \
             scripts/verify_lmstudio_worker_request_pair.py \
             tests/test_verify_lmstudio_worker_request_pair.py \
@@ -60,5 +63,17 @@ jobs:
               'socket.connect(', 'os.environ',
           ):
               assert prohibited not in source, prohibited
-          print('Native SSE only; no physical PID or execution authority.')
+          joined=Path('scripts/join_native_stream_worker_receipt.py').read_text()
+          for expected in (
+              'NATIVE_STREAM_AND_TEST_RECEIPTS_CONSISTENT_ONLY',
+              '"producer_public_keys_independently_trusted": False',
+              '"physical_worker_process_execution_attested": False',
+              '"ingress_owner_binding_attested": False',
+              '"can_renew": False',
+              '"can_dispatch": False',
+              'sse_data: bytes',
+              'stream = parse(',
+          ):
+              assert expected in joined, expected
+          print('Native SSE + signed test receipt pairing only; no authority.')
           PY
