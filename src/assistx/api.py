@@ -593,6 +593,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AssistX API & UI", lifespan=lifespan)
+# Research-only separate verified-human P0 lane; absent unless explicitly
+# enabled. Never interpret legacy Basic or TRUSTED_AUTH_HEADER as two humans.
+if os.getenv("ASSISTX_P0_VERIFIED_HUMAN_GATEWAY_ENABLED", "").lower() in {
+    "1", "true", "yes", "on"
+}:
+    from .p0_oidc_gateway import install_verified_human_gateway
+
+    install_verified_human_gateway(app)
 setup_logging()
 install_logging_middleware(app)
 
