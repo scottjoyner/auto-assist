@@ -24,10 +24,14 @@ jobs:
         run: |
           python -m unittest discover -s tests \
             -p 'test_direct_llama_listener_exposure.py' -q
+          python -m unittest discover -s tests \
+            -p 'test_direct_llama_cron_persistence.py' -q
       - name: Strict lint
         run: |
           ruff check scripts/audit_direct_llama_listener.py \
-            tests/test_direct_llama_listener_exposure.py
+            scripts/audit_direct_llama_startup.py \
+            tests/test_direct_llama_listener_exposure.py \
+            tests/test_direct_llama_cron_persistence.py
       - name: Audit source remains read-only, default DENY, and without network
         run: |
           python - <<'PY'
@@ -51,5 +55,20 @@ jobs:
               'ufw ', 'sysctl ', 'docker run',
           ):
               assert absent not in src, absent
-          print('Read-only source; never physical execution proof or dispatch.')
+          cron=Path('scripts/audit_direct_llama_startup.py').read_text()
+          for val in (
+              '"can_change_cron": False',
+              '"can_change_listener": False',
+              '"can_dispatch": False',
+              '"operator_change_approved": False',
+              '"proven_current_process_origin": False',
+              '"declared_host_loopback_proven": False',
+              'BLOCKED_CRON_PERSISTENCE_CANDIDATE',
+              '["crontab", "-l"]',
+          ):
+              assert val in cron, val
+          for forbidden in ('crontab -e', 'crontab -r', 'systemctl restart',
+                            'systemctl stop', 'os.kill(', 'subprocess.Popen('):
+              assert forbidden not in cron, forbidden
+          print('Read-only direct socket and cron persistence audits only.')
           PY
