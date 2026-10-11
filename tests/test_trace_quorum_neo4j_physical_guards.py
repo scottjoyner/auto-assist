@@ -54,7 +54,10 @@ def test_quorum_loss_preserves_active_tx_and_prevents_another_query():
 def test_separate_signer_observes_real_transaction_and_rejects_active():
     assert 'ctx.Process(' in PHYSICAL
     assert 'target=_detached_witness' in PHYSICAL
-    assert 'observed_exact(_transactions(driver), metadata)' in PHYSICAL
+    assert 'txid = observed_exact(rows, metadata)' in PHYSICAL
+    assert 'active_gate = capture_active(' in PHYSICAL
+    assert 'absence = observe_absence_only(' in PHYSICAL
+    assert 'assert absence.release_authorized is False' in PHYSICAL
     assert 'channel.recv()["result"] == "still-active"' in PHYSICAL
     assert 'absent >= 2' in PHYSICAL
     assert 'quorum.close_with_witness' not in PHYSICAL

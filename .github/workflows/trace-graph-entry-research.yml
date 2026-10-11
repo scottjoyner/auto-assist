@@ -36,6 +36,9 @@ on:
       - 'tests/test_trace_three_host_split_writer_guards.py'
       - 'tests/test_trace_three_host_joined_minority_guards.py'
       - 'tests/test_trace_joined_closure_negative.py'
+      - 'tests/trace_b06_observation_gate_research.py'
+      - 'tests/test_trace_b06_observation_gate_research.py'
+      - 'docs/TRACE_B06_OBSERVER_IDENTITY_20261011.md'
       - 'docs/TRACE_JOINED_CLOSURE_NEGATIVES_20261011.md'
       - 'docs/TRACE_REAL_THREE_HOST_SPLIT_WRITER_20261011.md'
       - 'docs/TRACE_SEPARATE_POLICY_WRITER_20261011.md'
@@ -64,7 +67,7 @@ jobs:
         run: python -m pip install 'pytest>=8,<10' 'cryptography>=41,<49' 'fastapi>=0.115,<1' 'httpx>=0.27,<1'
       - name: Compile research-only modules
         run: |
-          python -m compileall -q tests/trace_graph_entry_research.py tests/trace_graph_entry_guarded.py tests/trace_graph_entry_research_journal.py tests/trace_graph_entry_metadata.py tests/trace_fencing_term_authority_research.py tests/trace_etcd_quorum_fence_research.py tests/trace_etcd_graph_admission_research.py tests/trace_etcd_bearer_rbac_research.py tests/trace_etcd_policy_writer_research.py tests/trace_graph_stable_identity_research.py tests/trace_graph_http_ingress_research.py tests/trace_graph_consumer_census.py tests/trace_disposable_raft_http.py tests/trace_disposable_joined_bootstrap.py tests/trace_disposable_joined_raft_worker.py tests/trace_disposable_joined_quorum_loss.py tests/trace_disposable_separate_policy_writer.py tests/trace_disposable_writer_unauth.py
+          python -m compileall -q tests/trace_graph_entry_research.py tests/trace_graph_entry_guarded.py tests/trace_graph_entry_research_journal.py tests/trace_graph_entry_metadata.py tests/trace_fencing_term_authority_research.py tests/trace_etcd_quorum_fence_research.py tests/trace_etcd_graph_admission_research.py tests/trace_etcd_bearer_rbac_research.py tests/trace_etcd_policy_writer_research.py tests/trace_graph_stable_identity_research.py tests/trace_graph_http_ingress_research.py tests/trace_graph_consumer_census.py tests/trace_disposable_raft_http.py tests/trace_disposable_joined_bootstrap.py tests/trace_disposable_joined_raft_worker.py tests/trace_disposable_joined_quorum_loss.py tests/trace_disposable_separate_policy_writer.py tests/trace_b06_observation_gate_research.py tests/trace_disposable_writer_unauth.py
       - name: Run offline denial and journal tests
         run: |
           python -m pytest --noconftest -q \
@@ -92,7 +95,8 @@ jobs:
             tests/test_trace_disposable_separate_policy_writer.py \
             tests/test_trace_three_host_split_writer_guards.py \
             tests/test_trace_three_host_joined_minority_guards.py \
-            tests/test_trace_joined_closure_negative.py
+            tests/test_trace_joined_closure_negative.py \
+            tests/test_trace_b06_observation_gate_research.py
       - name: Verify physical probes remain manual-only
         run: |
           python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py tests/probe_trace_fencing_two_primaries.py tests/probe_trace_etcd_three_hosts.py tests/probe_trace_quorum_neo4j_physical.py tests/probe_trace_etcd_rbac_physical.py tests/probe_trace_etcd_ack_loss.py tests/probe_trace_bolt_topology_readonly.py

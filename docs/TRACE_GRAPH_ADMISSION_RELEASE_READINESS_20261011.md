@@ -68,6 +68,12 @@ A further **fresh physical majority-loss run PASSED (62.56s)**: after committing
 
 **B06 remains HARD NO-GO for release.** This demonstrates **absence of premature automatic release**, not independently signed transaction closure. Current HTTP `/tx/commit` broker records no server-observed transaction ID/boot generation, has no independent signer or durable custody, and cannot safely release a reservation. [Exact run evidence](../research/evidence/assistx-b06-graph-restart-closure-negative-20261011.json). B01 live bypass, B02 full consumer migration, and all other production gates remain open.
 
+## October 11: exact active Bolt transaction observer (separate subprobe, release NO-GO)
+
+[Research B06 observer identity report](./TRACE_B06_OBSERVER_IDENTITY_20261011.md) adds strict fail-closed observation-only predicates (exact gateway metadata, unique original transaction ID, different observer principal, member+boot pinned, complete reads, monotonic and nonambiguous absence sequence). The existing *separate* three-host physical Bolt witness subprobe passed with these predicates enabled, including active transaction during majority loss, no premature release, and the old detached signer completing its existing tested closure path. [Machine-readable evidence](../research/evidence/assistx-b06-observer-identity-20261011.json).
+
+**B06 NOT CLOSED:** `release_authorized` is explicitly false for both observation results; graph member and boot are still fixture-supplied rather than independently attested; the older Bolt witness uses `NEO4J_AUTH=none` and no etcd RBAC, with a raw-KV bypass reproduced on a separate disposable key. The strictly isolated three-host broker from #308/#310 still uses one-shot HTTP and does NOT wire this witness into its *same* request/closure chain. B01 live direct Bolt bypass remains FAIL; release remains **NO-GO**.
+
 ## Open blockers — release-stopping
 
 | ID | Priority | Unresolved gate | Exact acceptance required to change status | Responsible discipline |

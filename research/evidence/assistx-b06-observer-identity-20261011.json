@@ -1,0 +1,53 @@
+{
+  "schema": "assistx-b06-independent-observation-gate-research-v1",
+  "date": "2026-10-11",
+  "repo": "scottjoyner/auto-assist",
+  "branch": "research/assistx-b06-observer-identity-gate-20261011",
+  "physical_mode": "THREE_HOST_RAFT_RESEARCH_PLUS_EXISTING_DETACHED_BOLT_WITNESS_SUBPROBE",
+  "physical_source_sha": "2ca23eea6718802079ee030d77cb8ec0099aa9ef",
+  "execution": "ASSISTX_THREE_HOST_RAFT_RESEARCH=1 ASSISTX_QUORUM_NEO4J_RESEARCH=1 ASSISTX_B06_OBSERVER_GATE_RESEARCH=1 python3 tests/probe_trace_etcd_three_hosts.py",
+  "physical_result": "PASS",
+  "process_exit": 0,
+  "hosts": [
+    "x1-370",
+    "xwing",
+    "destroyer"
+  ],
+  "observations": {
+    "real_raft_three_hosts": true,
+    "real_disposable_Neo4j_Bolt_transaction": true,
+    "exact_assistx_metadata_transaction_observed": true,
+    "duplicate_or_missing_transaction_matches_rejected_by_observation_contract": true,
+    "original_transaction_survived_two_voter_loss": true,
+    "minority_new_graph_entry_denied": true,
+    "detached_signer_denied_active_tx_then_signed_after_absence": true,
+    "witness_receipt_replay_denied": true,
+    "stale_owner_term_denied_after_takeover": true,
+    "observation_contract_returns_no_signing_or_release_authority": true,
+    "disposable_resources_removed": true,
+    "running_AssistX_or_Neo4j_services_mutated": false
+  },
+  "restrictions": {
+    "same_request_chain_as_PR_308_isolated_broker": false,
+    "Neo4j_Bolt_fixture_auth_enabled": false,
+    "independent_graph_member_signed_identity": false,
+    "generation_independently_attested": false,
+    "witness_external_durable_custody": false,
+    "etcd_exact_key_RBAC_in_this_subprobe": false,
+    "raw_etcd_KV_policy_bypass_reproduced_in_this_subprobe": true,
+    "server_enforced_stale_effect_fence": false,
+    "production_deployment": false,
+    "B06_release_gate_closed": false
+  },
+  "decision": "B06_BOLT_OBSERVATION_PREDICATE_PHYSICAL_PASS_JOINED_BROKER_SIGNED_CLOSURE_NO_GO",
+  "final_physical_source_sha": "62658422e1fad2a63c6ff01843fd75a85f9f05e7",
+  "final_physical_result": "PASS",
+  "final_physical_exit": 0,
+  "immutable_custody_hardening": {
+    "pinned_metadata_copied_into_read_only_mapping": true,
+    "server_transaction_row_and_nested_metadata_copied_into_read_only_mapping": true,
+    "driver_source_mutation_after_capture_denied": true,
+    "post_capture_client_mutation_denied": true,
+    "independent_durable_signed_provenance": false
+  }
+}
