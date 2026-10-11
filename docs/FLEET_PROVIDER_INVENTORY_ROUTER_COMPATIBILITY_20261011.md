@@ -219,3 +219,41 @@ The safest order is independent review of PR #217's authority-preserving
 source-binding changes, resolution of full AssistX unit/recovery baseline,
 then review of PR #288 against the updated base. Neither PR is merged by the
 composition workflow, and no live fleet services or storage are touched.
+
+## October 11: broader green-repair-stack composition (PR #265 + PR #288)
+
+[AssistX draft research PR #265](https://github.com/scottjoyner/auto-assist/pull/265)
+was identified as a **previously hosted-green full unit and recovery-canary
+composition** of existing separately scoped fixes (#254, #217, #189, and
+other operator dashboard, System-One, supervisor and test-fixture patches).
+Its exact head is `2208903fa029b179f835d749c0f4526684dd936d`.
+The #265 branch is itself **stacked on #263**, not main; green CI there does
+not mean any of its upstream PRs are reviewed, merged, authorized, or deployed.
+
+A completely disposable local worktree checked out this exact #265 head and
+performed a **no-commit git merge** with the exact client-migration PR #288
+head `45ad72b7b908bd701bfe32f6526217dc3a0cb86e`. Git reported
+**zero conflicts**, including at the overlapping `src/assistx/api.py`: the
+only introduced hunks there add a fail-closed credential requirement and a
+read-only admin report HTTP client with redirects disabled. Eleven focused
+modules covering the separate repair families and PR #288 provider/admin
+code passed **176 tests and 38 subtests**, without exclusions or live service
+requests. The source-pinned receipt is in
+`docs/evidence/assistx-pr265-pr288-composition-20261011.json`.
+
+A new separate, conditional read-only workflow,
+`.github/workflows/router-auth-green-ci-composition.yml`, now requests both
+**full non-integration unit** and **disposable Neo4j recovery-canary** tests
+on the uncommitted combined tree, in isolated GitHub workers. It pins the
+external PR #265 **exact SHA** and refuses drift. It neither creates a merge
+commit nor writes to either PR, production, fleet, NAS or runtime projections.
+**Full combined-tree CI is not yet certified by the local 176-test suite.**
+The original broad CI checks on PR #288 remain release gates; do not disable
+them to force a green PR. Since #265 carries multiple upstream fixes and is a
+research stack, separately review constituent PRs, authority boundaries,
+provenance, and any secrets or deployment-script custody before production.
+
+The previously tracked `.env.bak-sync-20261006T051130Z` is **deleted** in
+#265's tree; its new gateway env example contains no credential-key
+assignments in the bounded local check. This is source-status evidence only,
+not proof that the repository's entire history or every file is credential-free.
