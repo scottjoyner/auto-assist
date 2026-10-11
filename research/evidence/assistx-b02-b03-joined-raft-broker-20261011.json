@@ -1,0 +1,29 @@
+{
+  "date": "2026-10-11",
+  "result": "PASS",
+  "mode": "disposable research",
+  "physical_source_sha": "cc385e16803094f75ae11083454ce284814bfa8b",
+  "hosts": [
+    "x1-370",
+    "xwing",
+    "destroyer"
+  ],
+  "seconds": 78.16,
+  "validated": [
+    "Raft CAS before isolated Task read",
+    "direct worker graph network denied",
+    "Neo4j read-only role denied CREATE",
+    "same-ID replay denied",
+    "writer shutdown denied new graph reads",
+    "existing Raft reservations retained",
+    "leader and minority tests passed"
+  ],
+  "remaining": [
+    "independent closure witness",
+    "production identity",
+    "full consumer parity",
+    "live network isolation",
+    "rollback"
+  ],
+  "production_rollout": "NO_GO"
+}
