@@ -331,3 +331,60 @@ behavior. Adjust the threshold only with separately reviewed evidence and
 never let a longer threshold imply attested model residency after a node
 is offline. The newest warning-state commits still require their own hosted
 exact-head results; previous green runs do not certify newer commits.
+
+## Read-only FleetSnapshot cadence acceptance — pending physical evidence
+
+**Not executed against production as part of this PR.** This is a bounded,
+read-only procedure for an authenticated, approved Neo4j reader. It must
+not run migrations, writes, model probes, Router reloads or autoload actions.
+
+Sample only the last 24 hours of `FleetSnapshot.captured_at_ms`, bounding the
+result size and returning timestamps rather than model names, coordinates,
+tokens or host secret configuration:
+
+```cypher
+MATCH (s:FleetSnapshot)
+WHERE s.captured_at_ms IS NOT NULL
+  AND s.captured_at_ms >= $window_start_ms
+  AND s.captured_at_ms <= $window_end_ms
+WITH DISTINCT toInteger(s.captured_at_ms) AS snapshot_ms
+ORDER BY snapshot_ms DESC
+LIMIT 10000
+RETURN snapshot_ms ORDER BY snapshot_ms ASC
+```
+
+The operator supplies `window_start_ms` and `window_end_ms` based on their
+measured UTC clock, using a 24-hour range. Independently verify that the
+return count is below the cap; if it equals 10,000, the series is truncated
+and percentiles **must not** be labeled complete. Derive consecutive
+inter-arrival gaps locally, not by writing aggregate metrics to Neo4j.
+Record sample count, coverage, p50/p95/p99/max gap, most recent snapshot
+age at query time, unexpected gaps >120 seconds, and UTC clock offset.
+Include separate online/offline intervals when source data permits.
+
+The gate accepts **model residency** only when a live observation is
+independently authoritative, current under the selected freshness policy,
+and the physical provider/node identity matches. A 120-second graph
+snapshot window is a provisional conservative limit, not proof that a
+particular model is still running. An authoritative *empty* fresh
+snapshot is different from a stale/failed snapshot; stale evidence is
+`STALE_GRAPH_SNAPSHOT`, with no verified LOADED claim.
+
+Acceptance: demonstrate a bounded 24-hour production sample, identify
+snapshot producer and expected emission schedule, compare producer clock
+skew against the reader, test a missed-snapshot interval, and save only a
+sanitized aggregate receipt. Do not increase the freshness threshold
+based solely on intermittent green CI or synthetic fixtures.
+
+### Latest exact-head hosted check (before any new documentation commit)
+
+At head `28428fa33db7b56d90af57927edd3b8484376616`:
+- [source-binding composition run 38147663006](https://github.com/scottjoyner/auto-assist/actions/runs/38147663006) **success**.
+- [repair-stack full unit/recovery run 38147662967](https://github.com/scottjoyner/auto-assist/actions/runs/38147662967) **success** for both matrix jobs.
+- [ordinary CI 38147663029](https://github.com/scottjoyner/auto-assist/actions/runs/38147663029) **failure** for standalone unit/recovery; isolated provider catalog **success**.
+- [implementer handoff 38147663059](https://github.com/scottjoyner/auto-assist/actions/runs/38147663059) **success**.
+
+The ordinary CI failure log continues to report upstream source-binding,
+dashboard, runtime, LLM-output, gateway fixture and recovery families.
+A green *uncommitted pinned composition* is useful release integration
+evidence, but is not standalone branch green or permission to deploy.
