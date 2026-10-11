@@ -38,7 +38,7 @@ There are **two release tracks**:
 
 The nine source-level `get_task` call sites demonstrate why the two narrow broker plans are insufficient for general migration: review approval needs `title` fallback and task/dispatch writes; replan reads then directly writes `SET`; completion invokes improvement evaluation/benchmark logic; heartbeat and review rejection/clarification require separate behavior/authorization gates. A graph read alone cannot remove the live worker network bypass.
 
-Latest exact scanner+research head `0b0c2c10e7c04da3ad31ad9be342b1656c18ded8`: **231/231 focused local tests pass**. This is research-only CI, not staging or release approval.
+Latest reviewed source and consumer-guard head `c73532b9f9c5a292d53674467f486e5c48561e2d`: **233/233 focused local tests pass**. This is research-only CI, not staging or release approval.
 
 ## Open blockers — release-stopping
 
