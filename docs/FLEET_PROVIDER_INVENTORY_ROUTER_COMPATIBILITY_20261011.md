@@ -175,3 +175,47 @@ stdlib CI isolation job and passed on Lenovo alongside the other tests:
 **19 portable tests PASS**. Source and fixture digests are recorded in
 `docs/evidence/assistx-cross-repo-pr41-producer-20261011.json`.
 This is source-contract validation only, not deployed ASGI/HTTP evidence.
+
+## October 11: cross-draft source-binding integration gate (PR #217 + PR #288)
+
+Both exact current draft heads share main ancestor
+`a300072d11787a58a4587fa325f1b8fd66803730`. An **uncommitted,
+non-published disposable git merge** of AssistX PR #217 source-binding
+head `42240ec5640c312ece54c50741c5c71fab4745b7` into this PR's
+client-migration tested head
+`0b48e60c1a1bc0c2c1d008c6f94b6c8298dec4f8` applied **without
+conflicts**. It touched only PR #217's four source-contract files and
+three scoped test files; no overlap with PR #288's provider/admin changes.
+
+The selected `not integration` suite of seven test modules passed **86 tests,
+38 subtests, 1 deliberately deselected** in a local Python environment:
+source binding, repository task generation, improvement runtime, read-only
+provider catalog, admin report client, producer-generated schema-v1
+fixture and the Control Room. The excluded test
+`test_repo_generator_does_not_start_when_disabled` can start a controller
+loop and was also deliberately excluded in an earlier separate PR #217
+worker-run acceptance; it needs its own isolated runner before counting
+full-suite acceptance.
+
+A wider local run could not collect every module because this host lacks the
+`langgraph` package. Do not treat this as the actual GitHub CI root cause:
+the hosted original main and PR #288 unit suites fail for additional
+source-binding/runtime reasons. PR #217 separately has passing hosted
+`recovery-canary` and failing hosted `unit`. None of those failing global
+gates has been suppressed, waived, changed or promoted.
+
+To make this compatibility experiment reproducible in a GitHub runner with
+declared dependencies, `.github/workflows/router-auth-sourcebinding-composition.yml`
+checks out **the exact client PR head**, fetches **only PR #217's exact
+pinned head**, hard-fails on any head drift, applies the merge **without
+committing it**, and runs the same seven-module selection with integration
+tests excluded. It runs only for the named client-migration draft PR. A
+green check means the pinned pair is compatible for this limited test,
+**not** that either PR should be merged or deployed. The structured local
+receipt and exclusions are in
+`docs/evidence/assistx-pr217-pr288-uncommitted-composition-20261011.json`.
+
+The safest order is independent review of PR #217's authority-preserving
+source-binding changes, resolution of full AssistX unit/recovery baseline,
+then review of PR #288 against the updated base. Neither PR is merged by the
+composition workflow, and no live fleet services or storage are touched.
