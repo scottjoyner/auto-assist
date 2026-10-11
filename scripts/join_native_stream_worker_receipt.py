@@ -9,21 +9,25 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from verify_lmstudio_native_stream_instance import StreamEvidence
+from verify_lmstudio_native_stream_instance import parse
 from verify_lmstudio_worker_request_pair import correlate
 
 OPAQUE_ID = re.compile(r"[a-zA-Z0-9_-]{16,96}\Z")
 
 
 def join(
-    *, stream: StreamEvidence, gateway_envelope: Any,
+    *, sse_data: bytes, expected_loaded_instance_id: str,
+    gateway_envelope: Any,
     worker_envelope: Any, trusted_gateway_public_key: bytes,
     trusted_worker_public_key: bytes, expected_request_id: str,
     now_ms: int, already_seen_request_ids: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Reject valid-looking but inconsistent SSE and paired signed receipts."""
-    if not isinstance(stream, StreamEvidence):
-        raise ValueError("native stream evidence must be parser validated")
+    # Parse raw bounded SSE in this trust boundary. A caller can freely
+    # construct dataclass objects and cannot substitute one as evidence.
+    stream = parse(
+        sse_data, expected_loaded_instance_id=expected_loaded_instance_id,
+    )
     if not isinstance(expected_request_id, str) or not OPAQUE_ID.fullmatch(
         expected_request_id
     ):
