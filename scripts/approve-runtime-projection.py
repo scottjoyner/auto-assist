@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 import yaml
 from neo4j import GraphDatabase
+from runtime_projection_signed_apply_gate import require_uniqueness_constraints
 from runtime_projection_signed_apply_gate import validate as verify_signed_apply
 
 _TAILSCALE = ipaddress.ip_network("100.64.0.0/10")
@@ -592,6 +593,13 @@ def main() -> int:
         driver = GraphDatabase.driver(uri, auth=(user, password))
         try:
             with driver.session(database=database) as session:
+                # Trusted read-only database schema check, before ANY write.
+                # Fail closed if no unique canonical name or approval receipt ID.
+                constraints = session.run(
+                    "SHOW CONSTRAINTS YIELD type, labelsOrTypes, properties "
+                    "RETURN type, labelsOrTypes, properties"
+                ).data()
+                require_uniqueness_constraints(constraints)
                 applied = session.execute_write(
                     _apply_transaction,
                     manifest,
