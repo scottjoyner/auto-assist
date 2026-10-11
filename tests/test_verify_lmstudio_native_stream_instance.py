@@ -79,6 +79,70 @@ class TestNativeSSE(unittest.TestCase):
             RESPONSE,
         )
 
+    def test_official_prompt_processing_events_are_supported(self):
+        stream = fixture()
+        stream[1:1] = [
+            event("prompt_processing.start"),
+            event("prompt_processing.progress", progress=0.0),
+            event("prompt_processing.progress", progress=0.5),
+            event("prompt_processing.progress", progress=1.0),
+            event("prompt_processing.end"),
+        ]
+        result = self.check(stream)
+        self.assertEqual(result.model_instance_id, INSTANCE)
+        self.assertEqual(result.event_count, 11)
+
+    def test_prompt_processing_must_terminate_before_message(self):
+        stream = fixture()
+        stream.insert(1, event("prompt_processing.start"))
+        with self.assertRaisesRegex(ValueError, "message.start"):
+            self.check(stream)
+
+    def test_prompt_processing_outside_expected_phase_refused(self):
+        stream = fixture()
+        stream.insert(3, event("prompt_processing.start"))
+        with self.assertRaisesRegex(ValueError, "prompt_processing.start"):
+            self.check(stream)
+
+    def test_repeated_prompt_processing_start_is_rejected(self):
+        stream = fixture()
+        stream[1:1] = [
+            event("prompt_processing.start"),
+            event("prompt_processing.end"),
+            event("prompt_processing.start"),
+        ]
+        with self.assertRaisesRegex(ValueError, "repeated prompt_processing.start"):
+            self.check(stream)
+
+    def test_progress_without_start_is_rejected(self):
+        stream = fixture()
+        stream.insert(1, event("prompt_processing.progress", progress=0.25))
+        with self.assertRaisesRegex(ValueError, "prompt_processing.progress"):
+            self.check(stream)
+
+    def test_invalid_prompt_processing_progress_values_fail_closed(self):
+        for progress in (True, None, -0.1, 1.01, "1.0", float("nan"),
+                         float("inf")):
+            with self.subTest(progress=str(progress)):
+                stream = fixture()
+                stream[1:1] = [
+                    event("prompt_processing.start"),
+                    event("prompt_processing.progress", progress=progress),
+                    event("prompt_processing.end"),
+                ]
+                with self.assertRaisesRegex(ValueError, "bounded"):
+                    self.check(stream)
+
+    def test_model_load_inside_supported_prompt_processing_still_rejected(self):
+        stream = fixture()
+        stream[1:1] = [
+            event("prompt_processing.start"),
+            event("model_load.start", model_instance_id=INSTANCE),
+            event("prompt_processing.end"),
+        ]
+        with self.assertRaisesRegex(ValueError, "unadmitted event"):
+            self.check(stream)
+
     def test_wrong_expected_instance_refused(self):
         with self.assertRaisesRegex(ValueError, "loaded model instance"):
             M.parse(
