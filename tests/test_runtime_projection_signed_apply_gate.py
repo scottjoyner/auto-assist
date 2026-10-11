@@ -342,6 +342,50 @@ class TestSignedApply(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "writable"):
                     A._read_trusted_key("ASSISTX_RUNTIME_SOURCE_PUBKEY_FILE")
 
+    def test_both_trusted_graph_constraints_are_required(self):
+        constraints = [
+            {"type": "UNIQUENESS", "labelsOrTypes": ["FleetProjectionState"],
+             "properties": ["name"]},
+            {"type": "UNIQUENESS", "labelsOrTypes": ["RuntimeProjectionApprovalReceipt"],
+             "properties": ["approval_id"]},
+        ]
+        self.assertIsNone(G.require_uniqueness_constraints(constraints))
+        with self.assertRaisesRegex(ValueError, "uniqueness constraints"):
+            G.require_uniqueness_constraints(constraints[:1])
+        with self.assertRaisesRegex(ValueError, "uniqueness constraints"):
+            G.require_uniqueness_constraints(constraints[1:])
+
+    def test_unrelated_neo4j_constraints_do_not_grant_approval(self):
+        constraints = [
+            {"type": "UNIQUENESS", "labelsOrTypes": ["RuntimeInstance"],
+             "properties": ["runtime_instance_id"]},
+            {"type": "NODE_PROPERTY_EXISTENCE",
+             "labelsOrTypes": ["FleetProjectionState"], "properties": ["name"]},
+        ]
+        with self.assertRaisesRegex(ValueError, "uniqueness constraints"):
+            G.require_uniqueness_constraints(constraints)
+
+    def test_forged_compound_constraint_cannot_satisfy_single_key(self):
+        constraints = [
+            {"type": "UNIQUENESS",
+             "labelsOrTypes": ["FleetProjectionState"],
+             "properties": ["name", "generation"]},
+            {"type": "NODE_KEY",
+             "labelsOrTypes": ["RuntimeProjectionApprovalReceipt"],
+             "properties": ["approval_id"]},
+        ]
+        with self.assertRaisesRegex(ValueError, "uniqueness constraints"):
+            G.require_uniqueness_constraints(constraints)
+
+    def test_schema_probe_is_pure_and_rejects_untrusted_extra_fields(self):
+        constraints = [{
+            "type": "UNIQUENESS",
+            "labelsOrTypes": ["FleetProjectionState"], "properties": ["name"],
+            "client_generated_authority": True,
+        }]
+        with self.assertRaisesRegex(ValueError, "keys invalid"):
+            G.require_uniqueness_constraints(constraints)
+
     def test_unsigned_wrapper_cannot_claim_real_source_role(self):
         self.evidence["schema"] = "fictional-only"
         with self.assertRaisesRegex(ValueError, "schema"):
