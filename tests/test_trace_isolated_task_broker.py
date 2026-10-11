@@ -93,7 +93,11 @@ def test_resource_safety_network_topology_and_cleanup_guards():
     assert 'docker("network", "connect", graph_net, broker)' in probe
     assert "assert_disposable(worker, {worker_net})" in probe
     assert "assert_disposable(graph, {graph_net})" in probe
-    assert "assert_disposable(broker, {graph_net, worker_net})" in probe
+    assert "assert_disposable(" in probe
+    assert "broker, {graph_net, worker_net}," in probe
+    assert "str(policy_socket_dir) if policy_socket_dir else None" in probe
+    assert "expected_mount" in probe or "allowed_policy_mount" in probe
+    assert "assert_disposable(worker, {worker_net})" in probe
     assert 'docker("rm", "-f", "-v", name' in probe
     assert 'docker("network", "rm", name' in probe
     assert '"NEO4J_AUTH=neo4j/" + admin' in probe
