@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -19,7 +20,8 @@ MAX_CONTENT_BYTES = 8192
 INSTANCE = re.compile(r"[A-Za-z0-9_.:/@+-]{3,128}\Z")
 RESPONSE = re.compile(r"resp_[A-Za-z0-9_-]{8,128}\Z")
 ACCEPTED = {
-    "chat.start", "message.start", "message.delta",
+    "chat.start", "prompt_processing.start", "prompt_processing.progress",
+    "prompt_processing.end", "message.start", "message.delta",
     "message.end", "chat.end",
 }
 
@@ -68,6 +70,7 @@ def parse(
         raise ValueError("event budget invalid")
 
     phase = "before_start"
+    prompt_processing_seen = False
     model_id: str | None = None
     response_id: str | None = None
     content_parts: list[str] = []
@@ -98,6 +101,23 @@ def parse(
             model_id = payload["model_instance_id"]
             if not isinstance(model_id, str) or model_id != expected_loaded_instance_id:
                 raise ValueError("loaded model instance ID mismatch")
+            phase = "started"
+        elif name == "prompt_processing.start":
+            if (phase != "started" or prompt_processing_seen
+                    or set(payload) != {"type"}):
+                raise ValueError("unexpected or repeated prompt_processing.start")
+            prompt_processing_seen = True
+            phase = "prompt_processing"
+        elif name == "prompt_processing.progress":
+            if phase != "prompt_processing" or set(payload) != {"type", "progress"}:
+                raise ValueError("unexpected prompt_processing.progress")
+            progress = payload["progress"]
+            if (type(progress) not in (int, float)
+                    or not math.isfinite(progress) or not 0 <= progress <= 1):
+                raise ValueError("invalid bounded prompt_processing.progress")
+        elif name == "prompt_processing.end":
+            if phase != "prompt_processing" or set(payload) != {"type"}:
+                raise ValueError("unexpected prompt_processing.end")
             phase = "started"
         elif name == "message.start":
             if phase != "started" or set(payload) != {"type"}:
