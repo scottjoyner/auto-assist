@@ -48,6 +48,9 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
     transport = clients["r1"]
     isolated_key = base + "/rbac-readonly-gateway-authority"
     service_key = base + "/rbac-ipc-policy-writer"
+    three_host_join = os.getenv("ASSISTX_THREE_HOST_SPLIT_WRITER_RESEARCH") == "1"
+    joined_key = base + "/rbac-three-host-exclusive-broker"
+    joined_genesis = "joined-three-host-broker-genesis"
     operator = Ed25519PrivateKey.generate()
     witness = Ed25519PrivateKey.generate()
     public = lambda k: k.public_key().public_bytes(
@@ -65,12 +68,18 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
         public(witness), capacity=1
     )
 
+    if three_host_join:
+        EtcdQuorumFence(transport, joined_key, cluster_id).bootstrap(
+            joined_genesis, "three-host-exclusive-broker",
+            public(operator), public(witness), capacity=3)
+
     # Prepare genuine etcd v3 users and exact-key roles BEFORE enabling auth.
     # Unique disposable cluster, no existing production root/users/roles.
     root_password = secrets.token_urlsafe(36)
     reader_password = secrets.token_urlsafe(36)
     writer_password = secrets.token_urlsafe(36)
     service_password = secrets.token_urlsafe(36)
+    joined_password = secrets.token_urlsafe(36) if three_host_join else None
     for path, payload in [
         ("/v3/auth/user/add",
          {"name": "root", "password": root_password}),
@@ -109,7 +118,17 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
         ("/v3/auth/user/grant", {
             "user": "ipc-service-policy", "role": "ipc-service-write"
         }),
-    ]:
+    ] + ([
+        ("/v3/auth/role/add", {"name": "joined-broker-writer"}),
+        ("/v3/auth/role/grant", {
+            "name": "joined-broker-writer",
+            "perm": {"permType": "READWRITE", "key": b64(joined_key)}}),
+        ("/v3/auth/user/add", {
+            "name": "joined-broker-policy", "password": joined_password}),
+        ("/v3/auth/user/grant", {
+            "user": "joined-broker-policy",
+            "role": "joined-broker-writer"}),
+    ] if three_host_join else []):
         transport._post(path, payload)
     transport._post("/v3/auth/enable", {})
 
@@ -162,6 +181,8 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
     writer = login("authority-policy", writer_password)
     service_writer = login("ipc-service-policy", service_password)
     root = login("root", root_password)
+    joined_writer = (login("joined-broker-policy", joined_password)
+                     if three_host_join else None)
     assert "REDACTED" in repr(reader) and reader_password not in repr(reader)
 
     read_auth = EtcdQuorumFence(reader, isolated_key, cluster_id)
@@ -291,12 +312,38 @@ def run_scoped_rbac(clients, cluster_id, base, certs, ip, client_port):
         assert reservation_id in EtcdQuorumFence(
             root, service_key, cluster_id).snapshot().document["pending"]
 
+    joined_integration = None
+    if three_host_join:
+        # Runs only on the disposable, uniquely named 3-host RBAC key.
+        # The separate writer holds the scoped mTLS+RBAC credential;
+        # the broker and worker never see it.
+        from probe_trace_isolated_task_broker import run as run_isolated
+        joined_integration = run_isolated(external_writer={
+            "raft_tls_endpoint": address,
+            "raft_bearer": joined_writer._token,
+            "raft_key": joined_key,
+            "raft_cluster": cluster_id,
+            "raft_genesis": joined_genesis,
+            "raft_owner": "three-host-exclusive-broker",
+            "raft_term": 1,
+            "tls_client_dir": str(certs / "json-client"),
+            "raft_ip": ip,
+            "raft_port": client_port,
+        })
+        final_view = EtcdQuorumFence(
+            root, joined_key, cluster_id).snapshot()
+        if (len(final_view.document["pending"]) != 3 or
+                final_view.document["completed"]):
+            raise AssertionError("THREE_HOST_JOINED_PENDING_INVARIANT_FAILED")
+
     # Administrative root may see the protected key, but must not be given
     # to a worker/gateway or used as an ordinary policy-writer identity.
     assert EtcdQuorumFence(root, isolated_key, cluster_id).snapshot().document[
         "owner"] == "malicious-authority-writer"
     return {
         "real_three_host_etcd_rbac": True,
+        "joined_three_host_isolated_broker": (
+            joined_integration if three_host_join else None),
         "json_gateway_requires_bearer_not_tls_cn": True,
         "authenticated_exact_key_read_only": True,
         "read_only_credential_direct_txn_denied": True,
