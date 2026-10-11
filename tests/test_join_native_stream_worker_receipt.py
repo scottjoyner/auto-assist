@@ -53,6 +53,21 @@ class TestNativeWorkerJoin(unittest.TestCase):
         ):
             self.assertFalse(r[label], label)
 
+    def test_documented_prompt_processing_still_matches_signed_pair(self):
+        params, _ = proof()
+        stream = S.fixture()
+        stream[1:1] = [
+            S.event("prompt_processing.start"),
+            S.event("prompt_processing.progress", progress=0.5),
+            S.event("prompt_processing.end"),
+        ]
+        params["sse_data"] = "".join(stream).encode("utf-8")
+        result = J.join(**params)
+        self.assertEqual(
+            result["status"], "NATIVE_STREAM_AND_TEST_RECEIPTS_CONSISTENT_ONLY"
+        )
+        self.assertFalse(result["can_dispatch"])
+
     def test_stream_instance_differs_from_signed_worker(self):
         params, t = proof()
         t.worker["model_instance_id"] = "other-preloaded-instance"
