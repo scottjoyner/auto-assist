@@ -138,7 +138,7 @@ def audit_text(
                     "launcher_basename": candidate.name,
                     "launcher_sha256_prefix": sig[:12],
                     "wildcard_host_text_found": bool(re.search(
-                        r"--host\\s+[\"']?0\\.0\\.0\\.0",
+                        r"--host\s+["']?0\.0\.0\.0",
                         content,
                     )),
                     "current_process_running_proven": False,
