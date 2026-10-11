@@ -76,6 +76,6 @@ def test_drain_mode_misclassifies_critical_task_when_payload_is_missing():
 def test_broker_returns_only_two_fields_so_security_parity_not_claimed():
     broker = Path(__file__).with_name("trace_disposable_task_broker.py")
     source = broker.read_text()
-    assert 'set(task) - {"id", "status"}' in source
-    assert 'MATCH (t:Task {id: $id}) RETURN properties(t) AS task' in source
+    assert 'allowed = {"id", "status"}' in source
+    assert 'MATCH (t:Task {id: $id}) RETURN t { .id, .status } AS task' in source
     assert REQUIRED_POLICY_FIELDS - {"id", "status"}
