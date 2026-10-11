@@ -16,6 +16,8 @@ on:
       - 'tests/probe_trace_entry*.py'
       - 'tests/probe_trace_fencing*.py'
       - 'tests/probe_trace_etcd_*.py'
+      - 'tests/probe_trace_bolt_topology_readonly.py'
+      - 'tests/test_trace_bolt_topology_readonly.py'
       - 'tests/probe_trace_quorum_neo4j*.py'
       - 'tests/test_trace_quorum_neo4j*.py'
       - '.github/workflows/trace-graph-entry-research.yml'
@@ -55,10 +57,11 @@ jobs:
             tests/test_trace_etcd_bearer_rbac_research.py \
             tests/test_trace_etcd_policy_writer_research.py \
             tests/test_trace_admission_retry_reconciliation.py \
-            tests/test_trace_graph_http_ingress_research.py
+            tests/test_trace_graph_http_ingress_research.py \
+            tests/test_trace_bolt_topology_readonly.py
       - name: Verify physical probes remain manual-only
         run: |
-          python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py tests/probe_trace_fencing_two_primaries.py tests/probe_trace_etcd_three_hosts.py tests/probe_trace_quorum_neo4j_physical.py tests/probe_trace_etcd_rbac_physical.py tests/probe_trace_etcd_ack_loss.py
+          python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py tests/probe_trace_fencing_two_primaries.py tests/probe_trace_etcd_three_hosts.py tests/probe_trace_quorum_neo4j_physical.py tests/probe_trace_etcd_rbac_physical.py tests/probe_trace_etcd_ack_loss.py tests/probe_trace_bolt_topology_readonly.py
           python - <<'PY'
           from pathlib import Path
           a = Path('tests/probe_trace_entry_network_isolation.py').read_text()
@@ -88,5 +91,8 @@ jobs:
           assert 'real_http_network_partition_injected": False' in h
           assert 'production_authority": False' in h
           assert 'ASSISTX_RAFT_ACK_LOSS_RESEARCH' in e
-          print('Physical probes, RBAC and ack-loss exercise remain opt-in; CI never runs them.')
+          topology = Path('tests/probe_trace_bolt_topology_readonly.py').read_text()
+          assert 'EXPLICIT_BOUNDARY_READONLY_OPT_IN_REQUIRED' in topology
+          assert 'ASSISTX_BOUNDARY_TCP_PROBE' in topology
+          print('Physical probes, RBAC, ack-loss and topology probes remain opt-in; CI never runs them.')
           PY
