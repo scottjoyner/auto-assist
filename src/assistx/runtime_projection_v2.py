@@ -118,6 +118,11 @@ def build_runtime_projection(
     return document
 
 
+# Compatibility entrypoint consumed by mobile and cross-repository projection clients.
+# Preserve the same signed v2 builder; never substitute unsigned legacy output.
+build_runtime_projection_v2 = build_runtime_projection
+
+
 def build_runtime_projection_router(
     neo_factory: Callable[[], Any],
     auth_dependency: Any | None = None,
