@@ -39,6 +39,27 @@ Without an approved hash, omit `--expected-model-sha256` and the observer will e
 5. CLI API-key flag presence is an *observation only*, **not proof** of configured enforcement. Never inspect/reveal the argument value or assume that an authenticated proxy exists.
 6. **Every output** denies model-execution attestation, owner receipts, operator approval, source-signer provenance, canonical reapproval, and direct dispatch. A loopback bind alone also remains denied.
 
+## Read-only cron/watchdog persistence finding (2026-10-11)
+
+Fleet Commander inspected the live Beelink process and its current owner crontab without changing it:
+
+- Physical direct server belongs to non-root account scott, parent PID 1, process cgroup **cron.service**. It is not registered as a standalone llama-server systemd service.
+- The owner's crontab has **five enabled entries**. The matching **embedding-server-persist.sh** is invoked both **@reboot** and **periodically**. Its bounded script content mentions the direct model server and the exposed listener port. A separate inference-server-persist.sh has independent cron entries.
+- This is strong evidence of an unattended relaunch/watchdog path, **not conclusive proof of the exact invocation that started today's PID**. A listener-only change could be reverted by the periodic job or next reboot.
+- At the instant sampled, there were **zero established TCP sockets** and one LISTEN socket associated with the direct server. Intermittent consumers remain unknown.
+- A localhost literal in the launcher is **not proof of a loopback listener**: the observed kernel listening socket is wildcard-bound. It may be a local health-check URL.
+
+New bounded read-only tool **scripts/audit_direct_llama_startup.py** inspects only the current user's crontab and small, directly referenced nonsymlink scripts under that user's home directory. It never prints raw cron lines, command arguments, paths, secrets, HTTP payloads or source code, and never starts/stops jobs or touches cron configuration. The physical audit returned **BLOCKED_CRON_PERSISTENCE_CANDIDATE**, with one matching reboot and one matching periodic entry; no permission to mutate, approve or dispatch. Its exit code 1 is intentional default DENY.
+
+### Coupled operator-approved containment gates
+
+1. Review short-lived consumers, embedding service ownership, existing Tailnet ACLs, and both cron launchers before changing any listener; zero observed ESTABLISHED sockets is not a dependency inventory.
+2. Review the watchdog script **and recurring cron entry** alongside the active process. Any later listener hardening must survive watchdog execution and reboot; do not change just the live command line.
+3. In an authorized reversible change window, prefer loopback binding behind an authenticated gateway or a narrowly justified ACL and server authentication. Preserve rollback for the embedding consumer and the unrelated inference service.
+4. After authorized implementation, run negative unauthenticated Tailnet GET checks, positive authenticated consumer checks, and persistence regression after a cron iteration/reboot-equivalent test.
+5. Keep all signed source/owner admissions OFF until physical request execution provenance, independent signer custody, DBA-approved three Neo4j identity constraints and a newly operator-approved canonical generation exist.
+
+**Test evidence:** 15 new synthetic cron-persistence/security tests in tests/test_direct_llama_cron_persistence.py plus 17 existing physical listener audit tests = **32 source-only tests**. This is a preflight, **not a deployed mitigation**.
 ## Ordered remediation gates — no automatic live mutation
 
 1. **Operator-owned dependency audit:** identify who owns the independent direct server, which local services depend on it and why the listener is non-loopback. Review affected client/service behavior; do not disconnect it blindly.
