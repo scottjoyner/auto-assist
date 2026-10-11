@@ -7,7 +7,6 @@ The tests intentionally write synthetic nodes to that isolated database.
 """
 from __future__ import annotations
 
-import copy
 import importlib.util
 import os
 import sys
