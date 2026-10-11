@@ -105,7 +105,7 @@ def run(raft_authority=None) -> dict:
                     serialization.Encoding.Raw, serialization.PublicFormat.Raw)
                 raft_fence.bootstrap(
                     "task-broker-raft-genesis", "task-broker-owner",
-                    pub(operator), pub(witness), capacity=32,
+                    pub(operator), pub(witness), capacity=16,
                 )
                 policy_socket_dir = tmp / "private-policy"
                 policy_socket_dir.mkdir(mode=0o700)
