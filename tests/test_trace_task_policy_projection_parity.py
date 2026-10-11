@@ -19,7 +19,7 @@ from trace_disposable_task_broker import (
 def projection(**changes):
     value = {
         "id": "fixture-task-abcd", "status": "READY",
-        "payload_json": None, "queue_class": None,
+        "payload": None, "payload_json": None, "queue_class": None,
         "required_capabilities": [],
     }
     value.update(changes)
@@ -46,6 +46,7 @@ def test_distinct_reviewed_cypher_plans_share_only_task_id_parameter():
     assert CLAIM_PLAN == "get_task_claim_guard"
     assert CYPHER == "MATCH (t:Task {id: $id}) RETURN t { .id, .status } AS task"
     assert ".required_capabilities" in CLAIM_CYPHER
+    assert ".payload" in CLAIM_CYPHER
     assert ".payload_json" in CLAIM_CYPHER
     assert ".queue_class" in CLAIM_CYPHER
     assert "CREATE" not in CLAIM_CYPHER and "SET" not in CLAIM_CYPHER
@@ -80,6 +81,20 @@ def test_actual_drain_mode_preserves_critical_queue_policy():
     assert check({"id": actual["id"], "status": actual["status"]})[0] is False
 
 
+def test_actual_recovery_helper_payload_only_runbook_preserved():
+    actual = {
+        "id": "fixture-task-abcd", "status": "READY",
+        "payload": '{"runbook":"payload-only"}',
+        "payload_json": None,
+        "queue_class": None, "required_capabilities": [],
+    }
+    check = source_function("_is_recovery_task", {"json": json})
+    assert check(actual) is True
+    assert check(projection(**actual)) is True
+    reduced = {"id": actual["id"], "status": actual["status"]}
+    assert check(reduced) is False
+
+
 def test_actual_drain_mode_rejects_interactive_task_after_projection():
     actual = {
         "id": "fixture-task-abcd", "status": "READY",
@@ -108,6 +123,7 @@ def test_missing_any_policy_field_does_not_downgrade_to_ordinary_task(truncated)
     {"required_capabilities": "recovery"},
     {"required_capabilities": ["recovery", 99]},
     {"required_capabilities": ["recovery"] * 40},
+    {"payload": {"runbook": "fixture-only"}},
     {"queue_class": {"critical": True}},
     {"payload_json": {"queue_class": "critical"}},
 ])
