@@ -407,7 +407,7 @@ def test_live_loaded_models_refuses_stale_snapshot() -> None:
 
 
 def test_live_loaded_models_refuses_future_snapshot() -> None:
-    fake = _FakeNeo([{"ms": control_room._now_ms() + 30_001}])
+    fake = _FakeNeo([{"ms": control_room._now_ms() + 60_000}])
     assert control_room._live_loaded_models(lambda: fake) == {}
     assert fake._session.run.call_count == 1
     assert fake.closed
