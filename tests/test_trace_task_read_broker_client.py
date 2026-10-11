@@ -24,7 +24,7 @@ class Reply:
 
 def client():
     return TaskReadBrokerClient(
-        "http://assistx-broker-gateway-disposable:8808",
+        "http://assistx-broker-gateway-deadbeef:8808",
         "disposable-unprivileged-broker-bearer-token",
     )
 
@@ -82,6 +82,13 @@ def test_broker_outage_never_causes_raw_graph_query():
     "http://127.0.0.1:7475",
     "http://example.com",
     "https://arbitrary-target.example",
+    "http://assistx-broker-gateway-deadbeef.evil.com:8808",
+    "http://assistx-broker-gateway-deadbeef:8808@evil.com",
+    "http://assistx-broker-gateway-deadbeef:8808/path",
+    "http://assistx-broker-gateway-deadbeef:8808?redirect=evil",
+    "http://assistx-broker-gateway-deadbeef:8808#evil",
+    "http://assistx-broker-gateway-deadbeef:8080",
+    "http://assistx-broker-gateway-nothex:8808",
 ])
 def test_untrusted_direct_bolt_or_http_target_rejected(origin):
     with pytest.raises(ValueError, match="UNTRUSTED_RESEARCH_BROKER_ORIGIN"):
