@@ -14,7 +14,7 @@ from router_admin_probe import probe_router_context  # noqa: E402
 class FakeResponse:
     def __init__(self, status_code=200, data=None):
         self.status_code = status_code
-        self._data = {"a": 1} if data is None else data
+        self._data = {"revision": "synthetic", "source": "test", "providers": [{"name": "example"}]} if data is None else data
 
     def json(self):
         return self._data
@@ -61,11 +61,26 @@ def test_redirect_is_rejected_without_following(monkeypatch, status):
     assert transport.calls[0][1]["allow_redirects"] is False
 
 
-@pytest.mark.parametrize("payload", [[], {}, {"context": True}])
-def test_authenticated_read_only_response_does_not_copy_contents(monkeypatch, payload):
+@pytest.mark.parametrize("payload,has_context", [
+    ({"revision": "r1", "source": "assistx", "providers": []}, False),
+    ({"revision": "r1", "source": "assistx", "providers": [{"name": "synthetic"}]}, True),
+])
+def test_authenticated_read_only_response_does_not_copy_contents(monkeypatch, payload, has_context):
     monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "synthetic-test-only")
     transport = FakeRequests(FakeResponse(200, payload))
-    assert probe_router_context(transport) == {"status": "ok", "has_context": bool(payload)}
+    assert probe_router_context(transport) == {"status": "ok", "has_context": has_context}
+
+
+@pytest.mark.parametrize("payload", [
+    [], {}, {"context": True}, {"detail": "unauthorized"},
+    {"error": "unsupported endpoint"},
+    {"revision": "r1", "source": "assistx", "providers": "invalid"},
+    {"revision": "", "source": "assistx", "providers": []},
+])
+def test_http_200_is_not_sufficient_without_semantic_context_shape(monkeypatch, payload):
+    monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "synthetic-test-only")
+    transport = FakeRequests(FakeResponse(200, payload))
+    assert probe_router_context(transport) == {"status": "invalid_response", "has_context": None}
 
 
 @pytest.mark.parametrize("status", [404, 500, 503])
@@ -83,3 +98,10 @@ def test_transport_failure_has_no_error_body_or_token(monkeypatch):
             raise RuntimeError("token should never appear in returned diagnostics")
 
     assert probe_router_context(BrokenRequests()) == {"status": "unreachable", "has_context": None}
+
+
+def test_whitespace_admin_token_never_contacts_server(monkeypatch):
+    monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "   ")
+    transport = FakeRequests()
+    assert probe_router_context(transport) == {"status": "auth_required", "has_context": None}
+    assert transport.calls == []
