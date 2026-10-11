@@ -247,7 +247,7 @@ A new separate, conditional read-only workflow,
 on the uncommitted combined tree, in isolated GitHub workers. It pins the
 external PR #265 **exact SHA** and refuses drift. It neither creates a merge
 commit nor writes to either PR, production, fleet, NAS or runtime projections.
-**Full combined-tree CI is not yet certified by the local 176-test suite.**
+**The earlier local 176-test suite does not itself certify the full combined-tree CI; hosted exact-head composition is required.**
 The original broad CI checks on PR #288 remain release gates; do not disable
 them to force a green PR. Since #265 carries multiple upstream fixes and is a
 research stack, separately review constituent PRs, authority boundaries,
@@ -257,3 +257,50 @@ The previously tracked `.env.bak-sync-20261006T051130Z` is **deleted** in
 #265's tree; its new gateway env example contains no credential-key
 assignments in the bounded local check. This is source-status evidence only,
 not proof that the repository's entire history or every file is credential-free.
+
+## October 11 follow-up: latest Fleet evidence + full-history composition
+
+At client head `d04b8ab364d47dfe360a12d87ad0f04048737c2d`, GitHub
+reported these **completed** Actions results:
+
+| Exact workflow | Actions run | Conclusion | Scope |
+| --- | --- | --- | --- |
+| `router-auth-sourcebinding-composition` | [38146275645](https://github.com/scottjoyner/auto-assist/actions/runs/38146275645) | **success** | Exact PR #217 SHA + draft client, selected source/auth/Fleet test modules |
+| `router-auth-green-ci-composition` | [38146275675](https://github.com/scottjoyner/auto-assist/actions/runs/38146275675) | **success** | Exact PR #265 SHA + draft client, both full non-integration unit and recovery-canary jobs |
+| `implementer-handoff` | [38146275632](https://github.com/scottjoyner/auto-assist/actions/runs/38146275632) | **success** | Handoff validation only |
+| `ci` | [38146275606](https://github.com/scottjoyner/auto-assist/actions/runs/38146275606) | **failure** | Standalone unit/recovery jobs fail; isolated provider-catalog contract succeeds |
+
+The two composition workflows were failing at their *composition* step on
+prior client commits despite PR #217 and PR #265 still matching their pinned
+SHAs. Their checkout logic now uses full Git history (`fetch-depth: 0`),
+retaining the **exact pinned dependency SHAs** and uncommitted merge semantics.
+The new hosted success is the actual certification of the combined tree;
+independent constituent review and standalone green requirements are NOT waived.
+
+Fleet-model semantics have also been tightened. `loaded_models` is now
+reserved for authoritative live graph evidence; router-registry and operator
+manifest model clues are returned separately as `inferred_models` with
+explicit `model_evidence` states. The Fleet browser's LOADED column uses
+only `loaded_models`, with inference and historical observations displayed
+under EVIDENCE. This affects observability only, not inference routing,
+autoloading, provider admission or graph writes. The browser rendering was
+source/syntax checked, **not** physically accepted on an iPhone or through a
+live browser session.
+
+Additional security hardening rejects token-bearing urllib redirects and
+cross-origin provider-catalog overrides; legacy compatibility is retained
+only for same-origin authenticated reads with the narrow 404-only fallback.
+
+### Still-blocking acceptance
+
+- Review and reconcile failed standalone unit/recovery checks against main;
+  green *combined-tree* jobs are not a waiver.
+- Run controlled browser assertions for verified LOADED vs INFERRED/LAST KNOWN
+  and missing evidence under both graph-available and graph-unavailable states.
+- Enumerate all privileged router callers, attest 401/403 and 404-only fallback
+  behaviors on supervised live targets, and validate PR #41's authentication
+  boundary before any router-side rollout.
+- Review stacked dependency PR #265 and repository credential history before
+  merge. Confirm Destroyer listeners and physical iPhone separately.
+- Keep both PRs draft; do not deploy router or AssistX, broaden Tailnet
+  scanning, load models or change routing on the strength of these tests.
