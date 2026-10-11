@@ -21,6 +21,12 @@ On **x1-370** a disposable research fixture used `neo4j:5.26-enterprise`, a work
 
 [Structured physical evidence](../research/evidence/assistx-disposable-joined-raft-broker-20261011.json).
 
+### Final majority-loss physical negative — PASS
+
+A second complete, fresh disposable run (**62.56 seconds, exit 0**) repeated the accepted Task reads and authoritative snapshot (`3 pending, 0 closed`). **Then the harness explicitly stopped two of its own three etcd voter containers**, leaving one Raft minority member, and sent a fresh authenticated request through the **same isolated worker → broker** path. The broker returned **HTTP 503 `ADMISSION_UNCERTAIN`**, rather than executing a new graph read without majority confirmation. This is a real Raft protocol minority, but **all voters share the same physical x1-370 host**, so it does not establish independence from correlated power/storage failure. No production etcd service was touched and scoped fixtures were removed.
+
+The original successful run (62.77 seconds) remains recorded. The additional fail-closed quorum test is in `tests/trace_disposable_joined_quorum_loss.py` and is launched only with the same two opt-in environment flags.
+
 ### Implementation and test surface
 
 - `tests/trace_disposable_task_broker.py`: opt-in `JoinedRaftAdmission`; no worker-supplied owner/term/permit; pinned genesis/cluster, CAS *before* graph; fail-closed on uncertain quorum, and typed safe duplicate responses.
@@ -28,7 +34,7 @@ On **x1-370** a disposable research fixture used `neo4j:5.26-enterprise`, a work
 - `tests/trace_etcd_quorum_fence_research.py`: signature-verifier imports lazy-loaded so admission-only broker can reuse original exact CAS implementation without installing third-party packages. Signature verification for witness/term takeover remains in the original code path; no bypass introduced.
 - `tests/probe_trace_isolated_task_broker.py`: unchanged legacy no-Raft mode plus separately opted-in joined 3-voter mode, all resources temporary and scoped.
 - `tests/trace_disposable_joined_bootstrap.py` and `tests/trace_disposable_joined_raft_worker.py`: exact three-voter bootstrap and physically isolated worker replay, capacity, reachability cases.
-- `tests/test_trace_joined_disposable_raft_broker.py`: six negative/guard tests including fake-KV exact ID collision, stale owner, quorum outage and reservation release omission.
+- `tests/test_trace_joined_disposable_raft_broker.py`: seven negative/guard tests including fake-KV exact ID collision, stale owner, quorum outage and reservation release omission.
 
 ### Explicit B03 blockers remaining
 
