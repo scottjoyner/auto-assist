@@ -1,0 +1,65 @@
+{
+  "schema": "assistx-disposable-isolated-task-read-broker-v1",
+  "date": "2026-10-11",
+  "repository": "scottjoyner/auto-assist",
+  "branch": "research/assistx-isolated-task-read-broker-20261011",
+  "run_mode": "EXPLICIT_MANUAL_DISPOSABLE_RESEARCH",
+  "opt_in": "ASSISTX_DISPOSABLE_GRAPH_BROKER=1",
+  "host": "x1-370",
+  "test_run_1_seconds": 47.31,
+  "test_run_2_seconds": 57.7,
+  "final_execution_exit_code": 0,
+  "images": [
+    "neo4j:5.26-enterprise",
+    "python:3.12-slim"
+  ],
+  "physical_observations": {
+    "graph_container_on_private_graph_network_only": true,
+    "worker_container_on_private_worker_network_only": true,
+    "broker_dual_homed_private_networks": true,
+    "graph_host_published_ports": 0,
+    "graph_host_mounts": 0,
+    "worker_lacks_direct_bolt_literal_ip": true,
+    "worker_lacks_direct_neo4j_http_literal_ip": true,
+    "worker_reaches_broker": true,
+    "broker_uses_fixed_cypher": true,
+    "neo4j_scoped_task_reader_role": true,
+    "neo4j_reader_can_read_task": true,
+    "neo4j_reader_cannot_write_task": true,
+    "get_task_worker_client_adapter_returned_synthetic_task": true,
+    "missing_task_returns_none": true,
+    "arbitrary_cypher_rejected": true,
+    "injected_parameters_rejected": true,
+    "missing_broker_bearer_denied": true,
+    "production_containers_untouched": true
+  },
+  "supported_fields": [
+    "Task.id",
+    "Task.status"
+  ],
+  "application_parity": {
+    "source_method": "Neo4jClient.get_task",
+    "tested_two_field_projection_only": true,
+    "get_task_full_property_equivalence": false,
+    "claim_task_recovery_and_drain_semantics_tested": false,
+    "review_workflow_and_dispatch_calls_tested": false,
+    "exact_source_recovery_identity_misclassification_reproduced": true,
+    "exact_source_critical_queue_drain_misclassification_reproduced": true,
+    "worker_task_projection_safe_for_live_claim_endpoint": false,
+    "worker_task_projection_safe_for_live_recovery_endpoint": false
+  },
+  "non_goals": {
+    "Raft_admission_integrated": false,
+    "authenticated_trusted_user_principal_bound_to_broker": false,
+    "broker_production_credential_custody": false,
+    "production_graph_network_isolation": false,
+    "full_neo4j_RBAC_migration": false,
+    "production_automatic_failover": false,
+    "broker_server_side_fencing_enforced": false,
+    "independent_witness_integrated": false
+  },
+  "cleanup": "All newly created Docker containers and networks removed by finally; no production Docker configuration changed.",
+  "actual_production_isolation": "NETWORK_BYPASS_PRESENT_NO_GO_PER_DRAFT_PR_294",
+  "disposition": "RESEARCH_PASS_PRODUCTION_NO_GO",
+  "offline_negative_tests": 39
+}
