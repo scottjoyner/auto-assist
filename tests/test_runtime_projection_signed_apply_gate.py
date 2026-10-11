@@ -48,7 +48,7 @@ def manifest() -> dict:
             ],
             "models": [{
                 "model_instance_id": "model_instance_a", "model_key": "model_a",
-                "provider_model": "model_a", "artifact_fingerprint": "abcdef0123456789",
+                "provider_model": "model_a", "artifact_fingerprint": "sha256:" + "c" * 64,
                 "quantization": "Q8_0", "context_length": 8192,
                 "capabilities": ["local_only"], "evidence_ref": "source_ref_test",
             }],
@@ -78,6 +78,9 @@ def package(m: dict, source_key: Ed25519PrivateKey,
         "observations": [{
             "runtime_instance_id": runtime["runtime_instance_id"],
             "node_id": runtime["node_id"], "process_id": runtime["process_id"],
+            "linux_boot_id": "d867483a-d299-49d0-ac3a-7fa4a7d41c1a",
+            "process_start_ticks": 2340,
+            "process_model_sha256": "c" * 64,
             "physical_observed_at_ms": NOW - 31_000,
             "model_observed_at_ms": NOW - 31_000,
             "capacity_observed_at_ms": NOW - 31_000,
@@ -219,6 +222,46 @@ class TestSignedApply(unittest.TestCase):
         ] = ["different"]
         self.resign_source()
         with self.assertRaisesRegex(ValueError, "loaded physical model"):
+            self.signed()
+
+    def test_signed_process_boot_identity_is_required(self):
+        row = self.evidence["source"]["payload"]["observations"][0]
+        row["linux_boot_id"] = "unknown"
+        self.resign_source()
+        with self.assertRaisesRegex(ValueError, "boot UUID"):
+            self.signed()
+
+    def test_pid_reuse_different_start_ticks_is_not_implicitly_new_attestation(self):
+        row = self.evidence["source"]["payload"]["observations"][0]
+        row["process_start_ticks"] = 0
+        self.resign_source()
+        with self.assertRaisesRegex(ValueError, "start ticks"):
+            self.signed()
+
+    def test_wrong_model_file_hash_rejected_with_valid_signatures(self):
+        row = self.evidence["source"]["payload"]["observations"][0]
+        row["process_model_sha256"] = "f" * 64
+        self.resign_source()
+        with self.assertRaisesRegex(ValueError, "GGUF does not bind"):
+            self.signed()
+
+    def test_multiple_loaded_artifacts_rejected_for_one_pid_witness(self):
+        row = self.evidence["source"]["payload"]["observations"][0]
+        self.manifest["runtimes"][0]["models"].append({
+            **self.manifest["runtimes"][0]["models"][0],
+            "model_instance_id": "model_instance_extra",
+            "artifact_fingerprint": "sha256:" + "d" * 64,
+        })
+        row["loaded_model_fingerprints"] = [
+            x["artifact_fingerprint"] for x in self.manifest["runtimes"][0]["models"]
+        ]
+        row["process_model_sha256"] = "c" * 64
+        # Preserve valid signatures over the modified complete manifest.
+        digest = hashlib.sha256(G.canonical(self.manifest)).hexdigest()
+        self.evidence["source"]["payload"]["manifest_sha256"] = digest
+        self.evidence["operator"]["payload"]["manifest_sha256"] = digest
+        self.resign_source()
+        with self.assertRaisesRegex(ValueError, "exactly one"):
             self.signed()
 
     def test_wrong_model_url_denied_even_with_valid_signature(self):
