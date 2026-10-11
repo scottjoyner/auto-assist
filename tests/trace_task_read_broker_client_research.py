@@ -78,7 +78,7 @@ class TaskReadBrokerClient:
         else:
             allowed = {"id", "status", "payload_json", "queue_class",
                        "required_capabilities"}
-            if set(value) - allowed:
+            if set(value) != allowed:
                 raise BrokerUnavailable("BROKER_RESPONSE_UNTRUSTED")
             if (value.get("payload_json") is not None and
                     type(value["payload_json"]) is not str):
