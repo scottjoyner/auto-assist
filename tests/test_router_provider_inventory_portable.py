@@ -167,6 +167,34 @@ class SafeProviderCatalog(unittest.TestCase):
                 )
         self.assertEqual(seen, [])
 
+    def test_privileged_fetch_requires_origin_only_base_and_nonblank_token(self):
+        calls = []
+
+        def fetch(*args, **kwargs):
+            calls.append((args, kwargs))
+            return EFFECTIVE, 1.0
+
+        for base in (
+            "http://router:8088/admin",
+            "http://router:8088/v1",
+            "http://router:8088/other/path",
+            "http://user:password@router:8088",
+            "http://router:8088?redirect=1",
+            "http://router:bad",
+        ):
+            with self.subTest(base=base):
+                self.assertEqual(fetch_provider_inventory(
+                    base_url=base, override_url="", admin_token="synthetic",
+                    fetch_json=fetch,
+                ), {})
+        for token in ("", " ", "\t \n"):
+            with self.subTest(blank_token=repr(token)):
+                self.assertEqual(fetch_provider_inventory(
+                    base_url="http://router:8088", override_url="",
+                    admin_token=token, fetch_json=fetch,
+                ), {})
+        self.assertEqual(calls, [])
+
     def test_wrong_token_does_not_downgrade(self):
         for code in (400, 401, 403, 408, 429, 500, 503):
             with self.subTest(code=code):
