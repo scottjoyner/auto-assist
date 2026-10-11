@@ -351,7 +351,6 @@ def run_scoped_rbac(
         # RESERVED with no server-observed txID, generation or signer.
         # Even a synthetic well-shaped closure claim must fail closed.
         # No production graph query/transaction/credential is consulted.
-        from trace_etcd_quorum_fence_research import FenceRefused
         authority = EtcdQuorumFence(root, joined_key, cluster_id)
         for token in final_view.document["pending"]:
             try:
