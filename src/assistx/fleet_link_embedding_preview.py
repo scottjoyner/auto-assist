@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends
 
 from .fleet_link_canary import _MODEL_RE, _json_get, _make_client, _pinned_sidecar_url
 from .runtime_projection import projection_checksum
+from .fleet_link_signature_witness import verify_pinned_projection_signature
 
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SIGNATURE = re.compile(r"^[A-Za-z0-9_-]{80,90}$")
@@ -184,6 +185,7 @@ def _empty_preview() -> dict[str, Any]:
         "automatic_promotion": False,
         "artifact_identity_independently_proved": False,
         "sidecar_identity_cryptographically_verified": False,
+        "projection_ed25519_pin_verified": False,
         "catalog_generation_hint": None,
     }
 
@@ -205,6 +207,17 @@ def build_fleet_link_embedding_preview_router(
             # Separate feature flag from the chat canary. Opt-in remains required.
             url = _pinned_sidecar_url("ASSISTX_FLEET_LINK_EMBEDDING_PREVIEW")
             projection = projection_factory()
+            public_key = os.getenv(
+                "ASSISTX_RUNTIME_PROJECTION_VERIFY_PUBLIC_KEY_HEX", ""
+            ).strip()
+            pinned_verified = verify_pinned_projection_signature(
+                projection, public_key
+            ) if public_key else False
+            # A deliberately pinned but invalid signer is a hard failure.
+            # Unpinned legacy observation remains possible but is explicitly
+            # labeled unverified, never an authorization or execution receipt.
+            if public_key and not pinned_verified:
+                return _empty_preview()
             approved = _admitted_embedding_routes(projection, url)
             # No approved artifact: do not probe even the loopback sidecar.
             if not approved:
@@ -223,6 +236,7 @@ def build_fleet_link_embedding_preview_router(
                 "automatic_promotion": False,
                 "artifact_identity_independently_proved": False,
                 "sidecar_identity_cryptographically_verified": False,
+                "projection_ed25519_pin_verified": pinned_verified,
                 "catalog_generation_hint": status["generation"]
                     if ready and isinstance(status.get("generation"), int) else None,
             }
