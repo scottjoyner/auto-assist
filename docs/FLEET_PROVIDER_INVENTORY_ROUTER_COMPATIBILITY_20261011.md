@@ -304,3 +304,30 @@ only for same-origin authenticated reads with the narrow 404-only fallback.
   merge. Confirm Destroyer listeners and physical iPhone separately.
 - Keep both PRs draft; do not deploy router or AssistX, broaden Tailnet
   scanning, load models or change routing on the strength of these tests.
+
+## Latest independent evidence: test correction and stale-graph truthfulness
+
+[Exact-head source-binding run 38147065813](https://github.com/scottjoyner/auto-assist/actions/runs/38147065813)
+**passed** at client SHA `6b7f2cefbecb6b8fa940e783de9ac2910b233dab`.
+[Exact-head repair-stack run 38147065865](https://github.com/scottjoyner/auto-assist/actions/runs/38147065865)
+**passed** both full unit and recovery-canary jobs at that same SHA.
+The isolated provider-catalog contract and implementer handoff also passed;
+standalone unit and recovery CI remained failed, and are not waived.
+
+A subsequent draft-only correction separates an **expired/future graph
+snapshot** from an **authoritatively empty, fresh graph snapshot**.
+The old stale-snapshot path produced an empty mapping, which the Fleet UI
+misread as positive evidence that no model was loaded. The graph reader now
+returns an explicit warning status; Fleet leaves `loaded_models` empty,
+sets `model_evidence=STALE_GRAPH_SNAPSHOT` (or future/invalid timestamp),
+and says residency is *unknown*, not confirmed empty. Historical and
+operator-assigned model information remains non-authoritative.
+
+**120 seconds is currently a provisional freshness threshold, not a measured
+fleet-wide service-level objective.** Before authorizing rollout, obtain
+read-only observation intervals from actual FleetSnapshot producers, including
+p50/p95/p99 intervals, maximum gap, clock skew and intermittent-offline
+behavior. Adjust the threshold only with separately reviewed evidence and
+never let a longer threshold imply attested model residency after a node
+is offline. The newest warning-state commits still require their own hosted
+exact-head results; previous green runs do not certify newer commits.
