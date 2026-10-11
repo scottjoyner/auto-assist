@@ -209,25 +209,35 @@ class TestRealNeo4jCanonicalApply(unittest.TestCase):
         self.assertIs(current["admitted"], True)
 
     def test_competing_generation_approvals_never_both_commit(self):
-        left, lproof = self.bundle(generation=1, approval_id="test_race_left")
-        right, rproof = self.bundle(generation=1, approval_id="test_race_right")
-        barrier = threading.Barrier(2)
+        # Multiple freshly emptied experimental generations exercise real
+        # session contention; 1/1 is not sufficient confidence for CAS.
+        for trial in range(8):
+            with self.subTest(trial=trial):
+                with self.driver.session(database="neo4j") as session:
+                    session.run("MATCH (n) DETACH DELETE n").consume()
+                left, lproof = self.bundle(
+                    generation=1, approval_id=f"test_race_left_{trial}"
+                )
+                right, rproof = self.bundle(
+                    generation=1, approval_id=f"test_race_right_{trial}"
+                )
+                barrier = threading.Barrier(2)
 
-        def runner(m, receipt):
-            try:
-                barrier.wait(timeout=6)
-                self.apply(m, receipt)
-                return "committed"
-            except Exception:
-                return "refused"
+                def runner(m, receipt):
+                    try:
+                        barrier.wait(timeout=6)
+                        self.apply(m, receipt)
+                        return "committed"
+                    except Exception:
+                        return "refused"
 
-        with ThreadPoolExecutor(max_workers=2) as workers:
-            futures = [workers.submit(runner, left, lproof),
-                       workers.submit(runner, right, rproof)]
-            outcome = [f.result(timeout=20) for f in futures]
-        self.assertEqual(outcome.count("committed"), 1, outcome)
-        self.assertEqual(self.counts()["receipts"], 1)
-        self.assertEqual(self.canonical()["generation"], 1)
+                with ThreadPoolExecutor(max_workers=2) as workers:
+                    futures = [workers.submit(runner, left, lproof),
+                               workers.submit(runner, right, rproof)]
+                    outcome = [f.result(timeout=20) for f in futures]
+                self.assertEqual(outcome.count("committed"), 1, outcome)
+                self.assertEqual(self.counts()["receipts"], 1)
+                self.assertEqual(self.canonical()["generation"], 1)
 
 
 if __name__ == "__main__":
