@@ -7,6 +7,7 @@ The tests intentionally write synthetic nodes to that isolated database.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
 import sys
@@ -79,6 +80,10 @@ class TestRealNeo4jCanonicalApply(unittest.TestCase):
                 "FOR (r:RuntimeProjectionApprovalReceipt) "
                 "REQUIRE r.approval_id IS UNIQUE"
             ).consume()
+            session.run(
+                "CREATE CONSTRAINT test_runtime_identity IF NOT EXISTS "
+                "FOR (r:RuntimeInstance) REQUIRE r.runtime_instance_id IS UNIQUE"
+            ).consume()
 
     @classmethod
     def tearDownClass(cls):
@@ -143,6 +148,20 @@ class TestRealNeo4jCanonicalApply(unittest.TestCase):
         self.assertEqual(self.counts()["runtime"], 1)
         observation = receipt["source"]["payload"]["observations"][0]
         with self.driver.session(database="neo4j") as s:
+            source_identity = s.run(
+                "MATCH (r:RuntimeInstance {runtime_instance_id:'runtime_a'}) "
+                "RETURN r.linux_boot_id AS boot_id, "
+                "r.process_start_ticks AS process_start_ticks, "
+                "r.process_model_sha256 AS process_model_sha256"
+            ).single()
+        self.assertEqual(source_identity["boot_id"], observation["linux_boot_id"])
+        self.assertEqual(
+            source_identity["process_start_ticks"], observation["process_start_ticks"]
+        )
+        self.assertEqual(
+            source_identity["process_model_sha256"], observation["process_model_sha256"]
+        )
+        with self.driver.session(database="neo4j") as s:
             row = s.run(
                 "MATCH (r:RuntimeInstance)-[:SERVES]->(m:LoadedModelInstance) "
                 "MATCH (r)-[:HAS_CAPACITY_OBSERVATION]->(c:CapacityObservation) "
@@ -176,6 +195,40 @@ class TestRealNeo4jCanonicalApply(unittest.TestCase):
             self.apply(next_manifest, next_receipt)
         self.assertEqual(self.canonical()["generation"], 1)
         self.assertEqual(self.counts()["receipts"], 1)
+
+    def test_same_source_bound_process_can_receive_separate_new_review(self):
+        manifest, proof = self.bundle()
+        self.apply(manifest, proof)
+        newer, newproof = self.bundle(
+            generation=2, approval_id="different_operator_approval"
+        )
+        result = self.apply(newer, newproof)
+        self.assertEqual(result["generation"], 2)
+        self.assertEqual(self.canonical()["generation"], 2)
+        self.assertEqual(self.counts()["receipts"], 2)
+        self.assertEqual(self.counts()["runtime"], 1)
+
+    def test_recycled_pid_cannot_reuse_old_runtime_identity(self):
+        manifest, proof = self.bundle()
+        self.apply(manifest, proof)
+        previous = self.counts()
+        newer, newproof = self.bundle(
+            generation=2, approval_id="new_review_after_restart"
+        )
+        observation = newproof["source"]["payload"]["observations"][0]
+        observation["process_start_ticks"] += 1
+        newproof["source"] = F.sign(
+            self.source_key, newproof["source"]["payload"]
+        )
+        operator = newproof["operator"]["payload"]
+        operator["source_receipt_sha256"] = hashlib.sha256(
+            G.canonical(newproof["source"])
+        ).hexdigest()
+        newproof["operator"] = F.sign(self.operator_key, operator)
+        with self.assertRaisesRegex(RuntimeError, "process identity changed"):
+            self.apply(newer, newproof)
+        self.assertEqual(self.counts(), previous)
+        self.assertEqual(self.canonical()["generation"], 1)
 
     def test_late_failure_rolls_back_retirement_and_approval_receipt(self):
         manifest, receipt = self.bundle()

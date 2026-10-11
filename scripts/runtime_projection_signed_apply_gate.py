@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -77,7 +78,7 @@ def verify_signature(wrapper: dict, key_bytes: bytes, name: str) -> dict:
 
 
 def require_uniqueness_constraints(records: object) -> None:
-    """Reject apply unless both graph-wide replay and canonical CAS identity exist.
+    """Reject apply without globally unique canonical, runtime and approval IDs.
 
     Results must come from Neo4j's trusted SHOW CONSTRAINTS result, NEVER from
     the untrusted signed bundle or local config. This function writes nothing.
@@ -87,6 +88,7 @@ def require_uniqueness_constraints(records: object) -> None:
     required = {
         ("RuntimeProjectionApprovalReceipt", "approval_id"),
         ("FleetProjectionState", "name"),
+        ("RuntimeInstance", "runtime_instance_id"),
     }
     found: set[tuple[str, str]] = set()
     for row in records:
@@ -102,7 +104,7 @@ def require_uniqueness_constraints(records: object) -> None:
             if key in required:
                 found.add(key)
     if found != required:
-        raise ValueError("canonical and approval-replay uniqueness constraints required")
+        raise ValueError("canonical, runtime and approval-replay uniqueness constraints required")
 
 
 def validate(
@@ -176,6 +178,7 @@ def validate(
     for entry in observations:
         exact(entry, {
             "runtime_instance_id", "node_id", "process_id",
+            "linux_boot_id", "process_start_ticks", "process_model_sha256",
             "physical_observed_at_ms", "model_observed_at_ms",
             "capacity_observed_at_ms", "loaded_model_fingerprints",
             "max_safe_slots", "paths",
@@ -190,6 +193,20 @@ def validate(
         if (row is None or row["node_id"] != runtime["node_id"]
                 or str(row["process_id"]) != str(runtime["process_id"])):
             raise ValueError("runtime physical process identity mismatch")
+        boot_id = row["linux_boot_id"]
+        if not isinstance(boot_id, str):
+            raise ValueError("host boot UUID must be a canonical string")
+        try:
+            canonical_boot = str(uuid.UUID(boot_id))
+        except ValueError as exc:
+            raise ValueError("unverified host boot UUID") from exc
+        if boot_id != canonical_boot:
+            raise ValueError("host boot UUID must be canonical lower-case")
+        if integer(row["process_start_ticks"], "process start ticks") <= 0:
+            raise ValueError("process start ticks missing")
+        process_sha = row["process_model_sha256"]
+        if not isinstance(process_sha, str) or not HEX.fullmatch(process_sha):
+            raise ValueError("process GGUF SHA256 must be exact lower-case digest")
         for field in ("physical_observed_at_ms", "model_observed_at_ms",
                       "capacity_observed_at_ms"):
             t = fresh(row[field], now_ms, PHYSICAL_WINDOW_MS, field)
@@ -205,6 +222,11 @@ def validate(
                 len(artifacts) != len(set(artifacts)) or
                 sorted(artifacts) != sorted(expected)):
             raise ValueError("loaded physical model artifact binding mismatch")
+        # This first host-local protocol supports exactly ONE verified GGUF
+        # artifact per llama-server process. Refuse apparent multi-model proof
+        # until independently observed model-to-process mapping is available.
+        if len(expected) != 1 or expected[0] != "sha256:" + process_sha:
+            raise ValueError("GGUF does not bind exactly one loaded model fingerprint")
         paths = row["paths"]
         if not isinstance(paths, list) or len(paths) != len(runtime["access_paths"]):
             raise ValueError("source path count mismatch")

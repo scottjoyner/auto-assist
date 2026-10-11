@@ -1,0 +1,58 @@
+name: Linux GGUF Boot and Process Identity (Research)
+
+on:
+  push:
+    branches:
+      - experiment/runtime-physical-boot-identity-20261011
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  process-identity-source-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install source-only test dependencies
+        run: |
+          python -m pip install 'cryptography>=43,<46' 'PyYAML==6.0.2' \
+            'neo4j==5.23.0' 'fastapi==0.115.0' 'ruff>=0.6,<1'
+      - name: Verify unsigned Linux GGUF source and two-signer contract
+        run: |
+          python -m unittest discover -s tests -p 'test_linux_process_continuity.py' -q
+          python -m unittest discover -s tests -p 'test_runtime_projection_signed_apply_gate.py' -q
+          python -m unittest discover -s tests -p 'test_runtime_projection_review_preflight.py' -q
+          python -m unittest discover -s tests -p 'test_runtime_projection_source_age_reader.py' -q
+          # Actual Neo4j integration requires a separately acknowledged
+          # disposable, loopback-only instance and MUST skip on hosted CI.
+          python -m unittest discover -s tests -p 'test_runtime_projection_real_neo4j.py' -q
+      - name: Strict source-only lint
+        run: |
+          ruff check scripts/approve-runtime-projection.py \
+            scripts/runtime_projection_signed_apply_gate.py \
+            scripts/collect_linux_process_continuity.py \
+            tests/test_linux_process_continuity.py \
+            tests/test_runtime_projection_signed_apply_gate.py \
+            tests/test_runtime_projection_real_neo4j.py \
+            tests/test_runtime_projection_source_age_reader.py
+      - name: Verify physical observation cannot mint approval
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source=Path('scripts/collect_linux_process_continuity.py').read_text()
+          gate=Path('scripts/runtime_projection_signed_apply_gate.py').read_text()
+          apply=Path('scripts/approve-runtime-projection.py').read_text()
+          assert '"signature_verified": False' in source
+          assert '"can_approve": False' in source
+          assert '"can_dispatch": False' in source
+          for field in ('linux_boot_id', 'process_start_ticks', 'process_model_sha256'):
+              assert field in gate and field in apply, field
+          for missing in ('Ed25519PrivateKey', 'Neo4j', 'subprocess', 'urllib'):
+              assert missing not in source, missing
+          print('Host observation unsigned; trusted signatures remain external.')
+          PY
