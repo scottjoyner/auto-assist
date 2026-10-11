@@ -414,12 +414,24 @@ class TestSignedApply(unittest.TestCase):
              "properties": ["name"]},
             {"type": "UNIQUENESS", "labelsOrTypes": ["RuntimeProjectionApprovalReceipt"],
              "properties": ["approval_id"]},
+            {"type": "UNIQUENESS", "labelsOrTypes": ["RuntimeInstance"],
+             "properties": ["runtime_instance_id"]},
         ]
         self.assertIsNone(G.require_uniqueness_constraints(constraints))
         with self.assertRaisesRegex(ValueError, "uniqueness constraints"):
             G.require_uniqueness_constraints(constraints[:1])
         with self.assertRaisesRegex(ValueError, "uniqueness constraints"):
             G.require_uniqueness_constraints(constraints[1:])
+
+    def test_missing_runtime_identity_constraint_blocks_approval(self):
+        constraints = [
+            {"type": "UNIQUENESS", "labelsOrTypes": ["FleetProjectionState"],
+             "properties": ["name"]},
+            {"type": "UNIQUENESS", "labelsOrTypes": ["RuntimeProjectionApprovalReceipt"],
+             "properties": ["approval_id"]},
+        ]
+        with self.assertRaisesRegex(ValueError, "uniqueness constraints"):
+            G.require_uniqueness_constraints(constraints)
 
     def test_unrelated_neo4j_constraints_do_not_grant_approval(self):
         constraints = [
