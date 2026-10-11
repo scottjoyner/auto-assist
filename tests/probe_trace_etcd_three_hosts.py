@@ -297,6 +297,17 @@ def run():
                 clients, cluster_id, base, run_id, ip_map, client_port,
                 certs, shell, container_names, started, result)
 
+        # New scoped B03 composition proof: actual three-voter Raft CAS
+        # issued over a private Unix socket INSIDE an isolated broker
+        # before that broker executes a real Neo4j read. This is not an
+        # independent durable transaction closure or production release.
+        if os.getenv("ASSISTX_BROKER_RAFT_RESEARCH") == "1":
+            from probe_trace_isolated_task_broker import run as run_isolated_broker
+            result["isolated_broker_raft_integration"] = run_isolated_broker(
+                (clients["r1"], cluster_id, base + "/isolated-task-broker"))
+            result["events"].append(
+                "real_three_voter_raft_reservation_before_isolated_broker_read")
+
         # Explicit client-authentication negative: CA trust without a client
         # certificate MUST be insufficient to issue a Raft KV read.
         unauthenticated = ssl.create_default_context(
