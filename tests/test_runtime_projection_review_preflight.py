@@ -1,7 +1,6 @@
 """No-service, no-Neo4j tests for operator-only renewal review evidence."""
 from __future__ import annotations
 
-import copy
 import importlib.util
 import sys
 import unittest
