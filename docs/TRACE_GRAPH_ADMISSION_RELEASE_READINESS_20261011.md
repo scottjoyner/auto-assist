@@ -40,6 +40,12 @@ The nine source-level `get_task` call sites demonstrate why the two narrow broke
 
 Latest reviewed source and consumer-guard head `c73532b9f9c5a292d53674467f486e5c48561e2d`: **233/233 focused local tests pass**. This is research-only CI, not staging or release approval.
 
+## October 11 B03 joined-request feasibility checkpoint
+
+[New physical joined-broker experiment](./TRACE_JOINED_RAFT_ISOLATED_TASK_BROKER_20261011.md) now demonstrates **real quorum CAS before an actual Neo4j read inside one isolated broker request**: the worker has no direct Bolt/HTTP or Raft network; replay and changed-plan key rejected; 3 pending slots remain and a fourth admission is denied. **Physical PASS, 62.77s**, on x1-370 with *three real Raft voters on that one host*. See [machine-readable evidence](../research/evidence/assistx-disposable-joined-raft-broker-20261011.json).
+
+**B03 remains P0 / partially proven, not accepted** because this fixture uses single-host etcd with internal unauthenticated HTTP, no scoped mTLS or writer RBAC, no independent txID/generation closure witness, no separate secure secrets, and no true 3-host joined transaction. In particular, a successful HTTP read must never be treated as permission to release the three outstanding reservations. The real production worker/API still bypass this broker (B01 FAIL), and the caller census remains not migrated (B02 OPEN). Automatic failover remains HARD NO-GO.
+
 ## Open blockers — release-stopping
 
 | ID | Priority | Unresolved gate | Exact acceptance required to change status | Responsible discipline |
