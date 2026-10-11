@@ -33,7 +33,14 @@
       "shared_network": "home_scott_git_auto-assist_default",
       "bolt_tcp_neo4j_7687": "CONNECTED",
       "http_tcp_neo4j_7474": "CONNECTED",
-      "credential_or_cypher_tested": false
+      "credential_or_cypher_tested": false,
+      "neo4j_environment_key_presence": {
+        "NEO4J_URI": true,
+        "NEO4J_USER": true,
+        "NEO4J_PASSWORD": true,
+        "NEO4J_DATABASE": true
+      },
+      "secret_values_read_or_printed": false
     },
     {
       "name": "assistx-api",
@@ -43,7 +50,14 @@
       ],
       "bolt_tcp_neo4j_7687": "CONNECTED",
       "http_tcp_neo4j_7474": "CONNECTED",
-      "credential_or_cypher_tested": false
+      "credential_or_cypher_tested": false,
+      "neo4j_environment_key_presence": {
+        "NEO4J_URI": true,
+        "NEO4J_USER": true,
+        "NEO4J_PASSWORD": true,
+        "NEO4J_DATABASE": true
+      },
+      "secret_values_read_or_printed": false
     }
   ],
   "mobile_auth": {
@@ -65,7 +79,8 @@
     "production_network_mutations": false,
     "actual_public_internet_reachability_tested": false,
     "remote_xwing_destroyer_outbound_TCP": "NOT_CONCLUDED",
-    "deployed_fencing_runtime_wired": false
+    "deployed_fencing_runtime_wired": false,
+    "neo4j_configured_client_key_presence_is_not_valid_credentials": true
   },
   "safe_next_gate": [
     "inventory real Neo4j direct callers and their exact allowlisted plan needs",
@@ -74,5 +89,6 @@
     "block direct worker/API Bolt and host wildcard mappings only after functional migration",
     "prove Tailnet Serve identity provenance against local/bridge alternative ingress without impersonating live accounts",
     "rerun three-host etcd Raft and independent witness plus app regression before staging rollout"
-  ]
+  ],
+  "latest_physical_probe_source_commit": "0a1cf11eac0015d8fbe4e00ad3451b038305ed99"
 }
