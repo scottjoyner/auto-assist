@@ -295,6 +295,104 @@ def scenario(driver, results):
             and final_state[0]["owner"] == final_state[0]["graph_owners"][0]
         )
 
+    # Cross-writer concurrency: one model candidate and one service candidate
+    # both observe an initially empty identity before taking the write lock.
+    def cross_writer_race(service_kind):
+        endpoint_id = own("cross-writer-" + service_kind)
+        barrier = Barrier(2)
+        counter_lock = Lock()
+        seen = 0
+        original_model = candidate._validate_preconditions
+        original_service = candidate._validate_service_preconditions
+
+        def wait_at_first_read():
+            nonlocal seen
+            with counter_lock:
+                seen += 1
+                first = seen <= 2
+            if first:
+                barrier.wait(timeout=12)
+
+        def wrap_model(tx, key, node):
+            original_model(tx, key, node)
+            if key == endpoint_id:
+                wait_at_first_read()
+
+        def wrap_service(tx, key, node, kind):
+            original_service(tx, key, node, kind)
+            if key == endpoint_id:
+                wait_at_first_read()
+
+        def run_model():
+            with driver.session(database="neo4j") as session:
+                try:
+                    candidate.candidate_register_model_endpoint(
+                        session, endpoint_id=endpoint_id, node_id=owner,
+                    )
+                    return "COMPLETED"
+                except candidate.EndpointIdentityHold:
+                    return "HOLD"
+                except Exception:
+                    return "REJECTED_OTHER"
+
+        def run_service():
+            with driver.session(database="neo4j") as session:
+                try:
+                    candidate.candidate_register_service_endpoint(
+                        session, endpoint_id=endpoint_id, node_id=owner,
+                        service_type=service_kind,
+                    )
+                    return "COMPLETED"
+                except candidate.EndpointIdentityHold:
+                    return "HOLD"
+                except Exception:
+                    return "REJECTED_OTHER"
+
+        candidate._validate_preconditions = wrap_model
+        candidate._validate_service_preconditions = wrap_service
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(run_model)
+                second = executor.submit(run_service)
+                outcomes = (first.result(), second.result())
+        finally:
+            candidate._validate_preconditions = original_model
+            candidate._validate_service_preconditions = original_service
+
+        with driver.session(database="neo4j") as session:
+            rows = list(session.run("""
+                MATCH (e:ServiceEndpoint {endpoint_id:$endpoint_id})
+                OPTIONAL MATCH (n:SwarmNode)-[:EXPOSES]->(e)
+                RETURN e.service_type AS kind, e:ModelEndpoint AS is_model,
+                       collect(DISTINCT n.node_id) AS owners
+            """, endpoint_id=endpoint_id))
+        if len(rows) != 1 or rows[0]["owners"] != [owner]:
+            return False
+        if service_kind == "model_endpoint":
+            return (
+                outcomes.count("COMPLETED") == 2
+                and rows[0]["kind"] == "model_endpoint"
+                and rows[0]["is_model"] is True
+            )
+        return (
+            outcomes.count("COMPLETED") == 1
+            and outcomes.count("HOLD") == 1
+            and (
+                (rows[0]["kind"] == "generic" and rows[0]["is_model"] is False)
+                or (
+                    rows[0]["kind"] == "model_endpoint"
+                    and rows[0]["is_model"] is True
+                )
+            )
+        )
+
+    results["concurrent_matching_service_and_model_writers_share_one_node"] = (
+        cross_writer_race("model_endpoint")
+    )
+    results["concurrent_generic_service_vs_model_does_not_retype"] = (
+        cross_writer_race("generic")
+    )
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
