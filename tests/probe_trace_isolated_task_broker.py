@@ -10,8 +10,11 @@ import json
 import os
 from pathlib import Path
 import secrets
+import socket
+import struct
 import subprocess
 import tempfile
+import threading
 import time
 
 GRAPH_IMAGE = "neo4j:5.26-enterprise"
@@ -26,13 +29,24 @@ def docker(*args: str, timeout: int = 25, check: bool = True):
     )
 
 
-def assert_disposable(container: str, expected_networks: set[str]):
+def assert_disposable(container: str, expected_networks: set[str],
+                      allowed_policy_mount: str | None = None):
     info = json.loads(docker("inspect", container).stdout)[0]
     networks = set(info["NetworkSettings"]["Networks"])
     host = info["HostConfig"]
+    mounts = [m for m in info.get("Mounts", []) if m["Type"] == "bind"]
+    expected_mount = []
+    if allowed_policy_mount is not None:
+        expected_mount = [(
+            allowed_policy_mount, "/run/assistx-policy"
+        )]
+    actual_mount = [
+        (m["Source"], m["Destination"]) for m in mounts
+    ]
     if (networks != expected_networks
-            or host.get("PortBindings") or host.get("Binds")
-            or any(m["Type"] == "bind" for m in info.get("Mounts", []))):
+            or host.get("PortBindings")
+            or actual_mount != expected_mount
+            or any(not m.get("RW", True) is False for m in mounts)):
         raise RuntimeError("UNSAFE_DISPOSABLE_FIXTURE")
     return info
 
@@ -48,7 +62,49 @@ def query(graph: str, admin: str, statement: str,
     return proc
 
 
-def run() -> dict:
+def observe_disposable_peer_uid(private_dir: Path) -> int:
+    """Measure *kernel host-side* SO_PEERCRED for ephemeral container root.
+
+    Docker user namespaces can map container root to the host overflow UID
+    (observed 65534), NOT host 0. This identifies only a shared numeric UID,
+    NOT a cryptographic service identity. Use solely for this opt-in fixture.
+    """
+    listen_path = private_dir / "uid-discovery.sock"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(str(listen_path))
+        os.chmod(listen_path, 0o600)
+        server.settimeout(10)
+        server.listen(1)
+        child = subprocess.Popen(
+            ["docker", "run", "--rm", "--pull", "never",
+             "--network", "none",
+             "--mount", "type=bind,src=" + str(private_dir) +
+                        ",dst=/run/assistx-policy,readonly",
+             PYTHON_IMAGE, "python", "-c",
+             "import socket; s=socket.socket(socket.AF_UNIX);"
+             "s.settimeout(3);"
+             "s.connect('/run/assistx-policy/uid-discovery.sock');"
+             "s.close()"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            connection, _ = server.accept()
+            with connection:
+                peer = connection.getsockopt(
+                    socket.SOL_SOCKET, socket.SO_PEERCRED,
+                    struct.calcsize("3i"))
+                _, peer_uid, _ = struct.unpack("3i", peer)
+            if child.wait(timeout=10) != 0 or peer_uid < 0:
+                raise RuntimeError("DISPOSABLE_UID_IDENTITY_PROBE_FAILED")
+            return peer_uid
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+            listen_path.unlink(missing_ok=True)
+
+
+def run(raft_authority=None) -> dict:
     if os.getenv("ASSISTX_DISPOSABLE_GRAPH_BROKER") != "1":
         raise RuntimeError("EXPLICIT_DISPOSABLE_GRAPH_BROKER_OPT_IN_REQUIRED")
     tag = secrets.token_hex(4)
@@ -71,7 +127,45 @@ def run() -> dict:
 
     with tempfile.TemporaryDirectory(prefix="assistx-isolated-broker-") as temp:
         tmp = Path(temp)
+        policy_service = None
+        policy_thread = None
+        raft_fence = None
+        policy_socket_dir = None
         try:
+            if raft_authority is not None:
+                # This requires an externally created three-voter disposable
+                # etcd cluster; never a configured production authority.
+                from cryptography.hazmat.primitives import serialization
+                from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+                from trace_etcd_quorum_fence_research import EtcdQuorumFence
+                from trace_etcd_policy_writer_research import (
+                    PolicyEngine, UnixPolicyWriterServer
+                )
+                etcd_client, cluster_id, keyspace = raft_authority
+                raft_fence = EtcdQuorumFence(etcd_client, keyspace, cluster_id)
+                witness = Ed25519PrivateKey.generate()
+                operator = Ed25519PrivateKey.generate()
+                pub = lambda k: k.public_key().public_bytes(
+                    serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+                raft_fence.bootstrap(
+                    "task-broker-raft-genesis", "task-broker-owner",
+                    pub(operator), pub(witness), capacity=16,
+                )
+                policy_socket_dir = tmp / "private-policy"
+                policy_socket_dir.mkdir(mode=0o700)
+                policy_service = UnixPolicyWriterServer(
+                    policy_socket_dir / "authority.sock",
+                    PolicyEngine(raft_fence, "task-broker-owner", 1,
+                                 "task-broker-raft-genesis",
+                                 frozenset({"get_task_read",
+                                            "get_task_claim_guard"})),
+                    allowed_uid=observe_disposable_peer_uid(
+                        policy_socket_dir),
+                )
+                policy_thread = threading.Thread(
+                    target=policy_service.serve_forever, daemon=True)
+                policy_thread.start()
+
             for network in (graph_net, worker_net):
                 docker("network", "create", "--internal", "--driver", "bridge",
                        "--label", "assistx.trace.research=task-broker",
@@ -151,9 +245,16 @@ def run() -> dict:
                 raise RuntimeError("READ_ONLY_ROLE_WAS_ALLOWED_TO_WRITE")
 
             # Broker is the only component on BOTH bridges.
-            docker("create", "--pull", "never", "--name", broker,
-                   "--network", worker_net, "--memory", "180m", "--cpus", "1",
-                   "--pids-limit", "96", PYTHON_IMAGE,
+            broker_command = ["create", "--pull", "never", "--name", broker,
+                              "--network", worker_net, "--memory", "180m",
+                              "--cpus", "1", "--pids-limit", "96"]
+            if raft_fence is not None:
+                broker_command += [
+                    "--env", "ASSISTX_DISPOSABLE_REQUIRE_RAFT=1",
+                    "--mount", "type=bind,src=" + str(policy_socket_dir) +
+                               ",dst=/run/assistx-policy,readonly",
+                ]
+            docker(*broker_command, PYTHON_IMAGE,
                    "python", "-u", "/tmp/task-broker.py", timeout=18)
             made_containers.append(broker)
             docker("network", "connect", graph_net, broker)
@@ -162,6 +263,11 @@ def run() -> dict:
                 "reader_password": reader_password,
                 "bearer": bearer,
             }
+            if raft_fence is not None:
+                config.update({
+                    "admission_socket": "/run/assistx-policy/authority.sock",
+                    "worker_subject": "fixture-worker",
+                })
             (tmp / "broker-config.json").write_text(
                 json.dumps(config), encoding="utf8")
             docker("cp", str(SOURCE / "trace_disposable_task_broker.py"),
@@ -169,7 +275,9 @@ def run() -> dict:
             docker("cp", str(tmp / "broker-config.json"),
                    broker + ":/tmp/broker-config.json")
             docker("start", broker)
-            assert_disposable(broker, {graph_net, worker_net})
+            assert_disposable(
+                broker, {graph_net, worker_net},
+                str(policy_socket_dir) if policy_socket_dir else None)
 
             docker("create", "--pull", "never", "--name", worker,
                    "--network", worker_net, "--memory", "128m",
@@ -184,6 +292,7 @@ def run() -> dict:
                     "payload_recovery_task_id": payload_recovery_id,
                     "bearer": bearer,
                     "broker_host": broker, "neo4j_ip": neo_ip,
+                    "requires_raft": raft_fence is not None,
                 }), encoding="utf8")
             docker("cp", str(SOURCE / "trace_disposable_task_worker.py"),
                    worker + ":/tmp/task-worker.py")
@@ -207,7 +316,59 @@ def run() -> dict:
                     break
                 time.sleep(1)
             if result is None:
-                raise RuntimeError("WORKER_TO_BROKER_TASK_READ_ACCEPTANCE_FAILED")
+                # Do NOT print raw subprocess stderr: it can include URLs,
+                # parameters or future credentials. Report only fixed codes.
+                output = ((attempt.stdout or "") + " " +
+                          (attempt.stderr or ""))
+                markers = (
+                    "GRAPH_UNAVAILABLE", "ADMISSION_UNAVAILABLE",
+                    "AssertionError", "HTTPError", "PermissionError",
+                    "ConnectionRefusedError", "FileNotFoundError",
+                    "TimeoutError", "BROKER_RESPONSE_UNTRUSTED",
+                    "DIRECT_BOLT_BYPASS", "INVALID_PLAN_OR_PARAMETERS",
+                    "UNAUTHORIZED", "REQUEST_ALREADY_ADMITTED",
+                )
+                flags = [x for x in markers if x in output]
+                raise RuntimeError(
+                    "WORKER_TO_BROKER_TASK_READ_ACCEPTANCE_FAILED "
+                    "worker_exit=" + str(attempt.returncode) +
+                    " sanitized_markers=" + ",".join(flags))
+            if raft_fence is not None:
+                pending = raft_fence.snapshot().document["pending"]
+                assert len(pending) >= 6, "REAL_RAFT_ADMISSION_NOT_COMMITTED"
+                # Unbound graph reads remain held; there is NO synthetic
+                # witness closure or unsafe automatic capacity release.
+                assert all(item["state"] == "RESERVED"
+                           for item in pending.values())
+                # Disconnect the policy writer AFTER successful reads. The
+                # still-running worker and broker MUST deny new graph work,
+                # preserving every occupied Raft slot (no TTL/HTTP release).
+                before_count = len(pending)
+                policy_service.shutdown()
+                policy_thread.join(timeout=3)
+                policy_service = None
+                stop_test = (
+                    "import sys,runpy;sys.path.insert(0,'/tmp');"
+                    "request=runpy.run_path('/tmp/task-worker.py')['request'];"
+                    "p={'plan_id':'get_task_read','parameters':{'id':'" +
+                    task_id +
+                    "'}};"
+                    "status,body=request(p,idempotency_key="
+                    "'fixture-writer-death-retry-key');"
+                    "assert status==503 and body=={'error':'GRAPH_UNAVAILABLE'};"
+                    "print('POLICY_WRITER_DEATH_GRAPH_DENIED')"
+                )
+                stop_reply = docker(
+                    "exec", worker, "python", "-c", stop_test,
+                    check=False, timeout=10)
+                assert (stop_reply.returncode == 0 and
+                        "POLICY_WRITER_DEATH_GRAPH_DENIED" in stop_reply.stdout), (
+                    "POLICY_WRITER_SHUTDOWN_NOT_FAIL_CLOSED")
+                assert len(raft_fence.snapshot().document["pending"]) == before_count
+                result["writer_death_blocks_new_broker_graph_read"] = True
+                result["writer_death_preserves_real_raft_capacity"] = True
+                result["real_three_host_raft_grants_committed"] = True
+                result["incomplete_closure_capacity_retained"] = True
             return {
                 **result,
                 "schema": "assistx-disposable-task-broker-20261011-v1",
@@ -226,7 +387,8 @@ def run() -> dict:
                 "worker_graph_network_membership": False,
                 "broker_dual_network_membership": True,
                 "production_neo4j_touched": False,
-                "Raft_issuer_required_at_broker": False,
+                "Raft_issuer_required_at_broker": raft_fence is not None,
+                "broker_policy_socket_only_when_raft_enabled": True,
                 "production_authority": False,
             }
         finally:
@@ -235,6 +397,9 @@ def run() -> dict:
                 docker("rm", "-f", "-v", name, check=False, timeout=22)
             for name in reversed(made_networks):
                 docker("network", "rm", name, check=False, timeout=20)
+            if policy_service is not None:
+                policy_service.shutdown()
+                policy_thread.join(timeout=3)
 
 
 if __name__ == "__main__":

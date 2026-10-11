@@ -16,7 +16,7 @@ on:
       - 'tests/probe_trace_entry*.py'
       - 'tests/probe_trace_fencing*.py'
       - 'tests/probe_trace_etcd_*.py'
-      - 'tests/probe_trace_bolt_topology_readonly.py tests/probe_trace_isolated_task_broker.py tests/trace_disposable_task_broker.py tests/trace_disposable_task_worker.py tests/trace_task_read_broker_client_research.py'
+      - 'tests/probe_trace_bolt_topology_readonly.py'
       - 'tests/test_trace_bolt_topology_readonly.py'
       - 'tests/trace_disposable_task_broker.py'
       - 'tests/trace_disposable_task_worker.py'
@@ -26,6 +26,9 @@ on:
       - 'tests/test_trace_task_read_broker_client.py'
       - 'tests/test_trace_task_policy_projection_negative.py'
       - 'tests/test_trace_task_policy_projection_parity.py'
+      - 'tests/trace_graph_consumer_inventory_research.py'
+      - 'tests/test_trace_graph_consumer_inventory_research.py'
+      - 'tests/test_trace_task_broker_raft_join_research.py'
       - 'tests/probe_trace_quorum_neo4j*.py'
       - 'tests/test_trace_quorum_neo4j*.py'
       - '.github/workflows/trace-graph-entry-research.yml'
@@ -48,7 +51,7 @@ jobs:
         run: python -m pip install 'pytest>=8,<10' 'cryptography>=41,<49' 'fastapi>=0.115,<1' 'httpx>=0.27,<1'
       - name: Compile research-only modules
         run: |
-          python -m compileall -q tests/trace_graph_entry_research.py tests/trace_graph_entry_guarded.py tests/trace_graph_entry_research_journal.py tests/trace_graph_entry_metadata.py tests/trace_fencing_term_authority_research.py tests/trace_etcd_quorum_fence_research.py tests/trace_etcd_graph_admission_research.py tests/trace_etcd_bearer_rbac_research.py tests/trace_etcd_policy_writer_research.py tests/trace_graph_stable_identity_research.py tests/trace_graph_http_ingress_research.py
+          python -m compileall -q tests/trace_graph_entry_research.py tests/trace_graph_entry_guarded.py tests/trace_graph_entry_research_journal.py tests/trace_graph_entry_metadata.py tests/trace_fencing_term_authority_research.py tests/trace_etcd_quorum_fence_research.py tests/trace_etcd_graph_admission_research.py tests/trace_etcd_bearer_rbac_research.py tests/trace_etcd_policy_writer_research.py tests/trace_graph_stable_identity_research.py tests/trace_graph_http_ingress_research.py tests/trace_graph_consumer_inventory_research.py tests/trace_disposable_task_broker.py tests/trace_disposable_task_worker.py
       - name: Run offline denial and journal tests
         run: |
           python -m pytest --noconftest -q \
@@ -70,10 +73,12 @@ jobs:
             tests/test_trace_isolated_task_broker.py \
             tests/test_trace_task_read_broker_client.py \
             tests/test_trace_task_policy_projection_negative.py \
-            tests/test_trace_task_policy_projection_parity.py
+            tests/test_trace_task_policy_projection_parity.py \
+            tests/test_trace_graph_consumer_inventory_research.py \
+            tests/test_trace_task_broker_raft_join_research.py
       - name: Verify physical probes remain manual-only
         run: |
-          python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py tests/probe_trace_fencing_two_primaries.py tests/probe_trace_etcd_three_hosts.py tests/probe_trace_quorum_neo4j_physical.py tests/probe_trace_etcd_rbac_physical.py tests/probe_trace_etcd_ack_loss.py tests/probe_trace_bolt_topology_readonly.py
+          python -m compileall -q tests/probe_trace_entry_network_isolation.py tests/probe_trace_entry_pg_neo_smoke.py tests/probe_trace_entry_three_party.py tests/probe_trace_fencing_two_primaries.py tests/probe_trace_etcd_three_hosts.py tests/probe_trace_quorum_neo4j_physical.py tests/probe_trace_etcd_rbac_physical.py tests/probe_trace_etcd_ack_loss.py tests/probe_trace_bolt_topology_readonly.py tests/probe_trace_isolated_task_broker.py
           python - <<'PY'
           from pathlib import Path
           a = Path('tests/probe_trace_entry_network_isolation.py').read_text()
@@ -109,5 +114,7 @@ jobs:
           broker = Path('tests/probe_trace_isolated_task_broker.py').read_text()
           assert 'EXPLICIT_DISPOSABLE_GRAPH_BROKER_OPT_IN_REQUIRED' in broker
           assert 'production_authority' in broker
+          assert 'ASSISTX_BROKER_RAFT_RESEARCH' in e
+          assert 'raft_authority is not None' in broker
           print('Physical probes, RBAC, topology and isolated broker remain opt-in; CI never runs them.')
           PY

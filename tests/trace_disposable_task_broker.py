@@ -8,6 +8,8 @@ This is a network + least-privilege functionality canary, not a fence.
 from __future__ import annotations
 
 import base64
+import hashlib
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -141,6 +143,70 @@ def fetch_task(
         raise RequestDenied("GRAPH_QUERY_UNAVAILABLE") from None
 
 
+def reserve_via_quorum_policy_socket(
+    socket_path: str, subject: str, idempotency_key: str,
+    plan: str, task_id: str,
+) -> None:
+    """Fail closed before graph query. Broker never gets raw etcd credentials.
+
+    This socket is a temporary host-mounted research path; allowed peer
+    identity is still UID-based and NOT production mTLS or service custody.
+    """
+    if (not isinstance(idempotency_key, str) or
+            not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", idempotency_key)
+            or not subject or not socket_path):
+        raise RequestDenied("GRAPH_ADMISSION_UNAVAILABLE")
+    identity = json.dumps(
+        {"subject": subject, "request_id": idempotency_key},
+        sort_keys=True, separators=(",", ":")).encode()
+    operation = "auth:" + hashlib.sha256(identity).hexdigest()
+    fingerprint = json.dumps(
+        {"plan": plan, "parameters": {"id": task_id}},
+        sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    digest = hashlib.sha256(fingerprint).hexdigest()
+    outgoing = json.dumps({
+        "kind": "admit_stable", "plan_id": plan,
+        "operation_id": operation, "request_digest": digest,
+    }, separators=(",", ":")).encode() + b"\n"
+    if len(outgoing) > 4096:
+        raise RequestDenied("GRAPH_ADMISSION_UNAVAILABLE")
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+            channel.settimeout(4)
+            channel.connect(socket_path)
+            channel.sendall(outgoing)
+            inbound = bytearray()
+            while len(inbound) <= 4096:
+                part = channel.recv(1)
+                if not part:
+                    break
+                inbound.extend(part)
+                if part == b"\n":
+                    break
+        reply = json.loads(inbound)
+    except (OSError, ValueError, TypeError):
+        raise RequestDenied("GRAPH_ADMISSION_UNAVAILABLE") from None
+    if isinstance(reply, dict) and isinstance(reply.get("denied"), str):
+        if reply["denied"] in {
+            "EXISTING_OPERATION_REQUIRES_RECONCILIATION",
+            "IDEMPOTENCY_KEY_PAYLOAD_CONFLICT",
+            "CLOSED_OPERATION_REPLAY_DENIED",
+        }:
+            raise RequestDenied("GRAPH_ADMISSION_DUPLICATE")
+        raise RequestDenied("GRAPH_ADMISSION_UNAVAILABLE")
+    if (not isinstance(reply, dict) or set(reply) != {"ok"}
+            or not isinstance(reply["ok"], dict)
+            or set(reply["ok"]) != {"reservation_id", "term", "epoch"}
+            or not re.fullmatch(
+                r"[0-9a-f]{32}", str(reply["ok"]["reservation_id"]))
+            or type(reply["ok"]["term"]) is not int
+            or reply["ok"]["term"] < 1
+            or reply["ok"]["epoch"] != "task-broker-raft-genesis"):
+        # Grant may have committed but response was malformed: hold
+        # capacity, deny graph execution and require reconciliation.
+        raise RequestDenied("GRAPH_ADMISSION_UNAVAILABLE")
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ResearchStaticGraphBroker/1"
 
@@ -185,13 +251,21 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(self.rfile.read(length))
             task_id = validate(payload)
+            if self.server.admission_socket:
+                reserve_via_quorum_policy_socket(
+                    self.server.admission_socket, self.server.worker_subject,
+                    self.headers.get("Idempotency-Key", ""),
+                    payload["plan_id"], task_id,
+                )
             task = fetch_task(
                 task_id, self.server.reader_user,
                 self.server.reader_password,
                 payload["plan_id"],
             )
         except (RequestDenied, ValueError, UnicodeError) as exc:
-            if isinstance(exc, RequestDenied) and str(exc).startswith("GRAPH_"):
+            if isinstance(exc, RequestDenied) and str(exc) == "GRAPH_ADMISSION_DUPLICATE":
+                self.reply(409, {"error": "REQUEST_ALREADY_ADMITTED"})
+            elif isinstance(exc, RequestDenied) and str(exc).startswith("GRAPH_"):
                 self.reply(503, {"error": "GRAPH_UNAVAILABLE"})
             else:
                 self.reply(422, {"error": "INVALID_PLAN_OR_PARAMETERS"})
@@ -201,7 +275,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     config = json.loads(Path(CONFIG_PATH).read_text())
-    if set(config) != {"bearer", "reader_user", "reader_password"}:
+    expected = {"bearer", "reader_user", "reader_password"}
+    if os.getenv("ASSISTX_DISPOSABLE_REQUIRE_RAFT") == "1":
+        expected |= {"admission_socket", "worker_subject"}
+    if set(config) != expected:
         raise RuntimeError("BAD_DISPOSABLE_CREDENTIAL_CONFIG")
     if not all(isinstance(v, str) and len(v) >= 10
                for v in config.values()):
@@ -210,6 +287,8 @@ def main():
     server.bearer = config["bearer"]
     server.reader_user = config["reader_user"]
     server.reader_password = config["reader_password"]
+    server.admission_socket = config.get("admission_socket")
+    server.worker_subject = config.get("worker_subject")
     server.serve_forever(poll_interval=0.1)
 
 
