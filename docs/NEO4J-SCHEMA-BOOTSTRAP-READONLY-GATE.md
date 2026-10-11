@@ -58,3 +58,10 @@ This source-based result does **not** prove whether the missing constraint was n
 6. Separately finish credential custody, the complete permitted graph-client inventory, and reversible IPv4+IPv6 network containment before promoting any production release.
 
 **Current boundary:** only the AST parser, schema-metadata audit and synthetic tests are implemented in this draft. The proposed verify-only startup mode, scoped roles, real ingestion test and production network containment are **not implemented or authorized**.
+
+
+### Additional index metadata check
+
+A second bounded `SHOW INDEXES` metadata query found **no standalone or constraint-owned index** for the missing `ServiceEndpoint.endpoint_id` key. This does not prove duplicate records exist; it means an arbitrary duplicate-key query may require a large graph scan. **No duplicate-data scan was performed.**
+
+Before adding the missing uniqueness constraint, the graph owner should identify which services write ServiceEndpoint records, assess the size/cost of a bounded data-quality audit, confirm data ownership and rollback, and separately review conflicting duplicates if found. Do not perform an unconditional live `MATCH/GROUP BY` scan or `CREATE CONSTRAINT` from this read-only PR.
