@@ -163,9 +163,7 @@ def test_noncanonical_header_configuration_disables_identity_trust(monkeypatch):
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "X-Forwarded-User")
     monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS",
                        "synthetic-boundary@example.invalid")
-    src = Path(__file__).resolve().parents[1] / "src"
-    monkeypatch.syspath_prepend(str(src))
-    mod = importlib.import_module("assistx.mobile_agent_routes")
+    mod = _source_tailnet_helper()
     request = Request({
         "type": "http", "method": "GET", "path": "/test",
         "headers": [(b"tailscale-user-login",
