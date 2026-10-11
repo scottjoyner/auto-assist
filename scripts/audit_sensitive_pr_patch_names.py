@@ -36,16 +36,70 @@ def classify(data: bytes) -> dict:
     }
 
 
+MAX_FIRST_PARENT_COMMITS = 256
+
+
+def _git_metadata(*args: str) -> bytes:
+    # Only request commit IDs and file *names/statuses*, never blob data,
+    # patches, commit messages, or the contents of historical env files.
+    return subprocess.check_output(
+        ["git", *args], stderr=subprocess.DEVNULL, timeout=15,
+    )
+
+
 def audit(base: str, head: str) -> dict:
     if not SHA.fullmatch(base) or not SHA.fullmatch(head):
         raise ValueError("invalid pinned commit")
-    data = subprocess.check_output(
-        ["git", "diff", "--no-renames", "--name-status", "-z", base, head, "--"],
-        stderr=subprocess.DEVNULL,
-        timeout=15,
-    )
-    return classify(data if data else b"\0")
 
+    # The final base-to-head diff is not enough: a previously pushed commit
+    # can publish a secret-bearing file and then delete it before PR review.
+    # Inspect first-parent commit deltas since the fork, without reading blobs.
+    fork = _git_metadata("merge-base", base, head).decode("ascii").strip()
+    if not SHA.fullmatch(fork):
+        raise ValueError("invalid merge base")
+    revisions = _git_metadata(
+        "rev-list", "--first-parent", "--reverse", "--parents",
+        f"{fork}..{head}",
+    ).decode("ascii").splitlines()
+    if len(revisions) > MAX_FIRST_PARENT_COMMITS:
+        raise ValueError("too many commits for bounded custody review")
+
+    final_diff = _git_metadata(
+        "diff", "--no-renames", "--name-status", "-z", base, head, "--",
+    )
+    report = classify(final_diff if final_diff else b"\0")
+    net_sensitive = report["sensitive_change_count"]
+    history_sensitive = 0
+    touched_commits = 0
+    for revision in revisions:
+        parts = revision.split()
+        if len(parts) < 2 or not all(SHA.fullmatch(x) for x in parts):
+            raise ValueError("invalid commit ancestry")
+        commit, first_parent = parts[:2]
+        delta = _git_metadata(
+            "diff", "--no-renames", "--name-status", "-z",
+            first_parent, commit, "--",
+        )
+        record = classify(delta if delta else b"\0")
+        if record["sensitive_change_count"]:
+            touched_commits += 1
+            history_sensitive += record["sensitive_change_count"]
+
+    report.update(
+        first_parent_commits_examined=len(revisions),
+        historical_sensitive_commit_count=touched_commits,
+        historical_sensitive_change_count=history_sensitive,
+        net_sensitive_change_count=net_sensitive,
+        # An add-then-delete pair is still publicly reachable by commit SHA.
+        status="HOLD_PUBLIC_ENV_HISTORY" if history_sensitive
+        else "HOLD_PUBLIC_ENV_DIFF" if net_sensitive
+        else "PASS_NO_ENV_DIFF",
+        # A clean patch is never an attestation that old tracked credentials
+        # have been revoked, rotated or removed from Git history.
+        credential_custody_closed=False,
+        production_release_authorized=False,
+    )
+    return report
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
