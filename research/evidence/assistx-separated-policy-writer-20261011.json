@@ -1,0 +1,73 @@
+{
+  "schema": "assistx-separated-disposable-policy-writer-20261011-v1",
+  "date": "2026-10-11",
+  "scope": "STRICT_OPT_IN_DISPOSABLE_DOCKER_ON_X1_370",
+  "base_pr": 302,
+  "physical_test_source_head": "dfadf617318862dd227381f859146b35ba51e44f",
+  "flags": [
+    "ASSISTX_DISPOSABLE_GRAPH_BROKER=1",
+    "ASSISTX_DISPOSABLE_RAFT_IN_BROKER=1",
+    "ASSISTX_DISPOSABLE_WRITER_SPLIT=1"
+  ],
+  "result": "PASS",
+  "runtime_seconds": 62.51,
+  "topology": {
+    "neo4j": [
+      "graph_internal"
+    ],
+    "worker": [
+      "worker_internal"
+    ],
+    "broker": [
+      "graph_internal",
+      "worker_internal",
+      "policy_ipc_internal"
+    ],
+    "policy_writer": [
+      "policy_ipc_internal",
+      "raft_internal"
+    ],
+    "three_actual_etcd_voters": [
+      "raft_internal"
+    ],
+    "physical_hosts": 1,
+    "all_networks_internal": true,
+    "host_ports_published": false
+  },
+  "tests": {
+    "worker_to_broker_allowed": true,
+    "worker_to_neo4j_bolt_denied": true,
+    "worker_to_neo4j_http_denied": true,
+    "worker_to_etcd_denied": true,
+    "worker_direct_writer_denied": true,
+    "broker_direct_etcd_numeric_ip_denied": true,
+    "policy_writer_real_quorum_CAS_before_neo4j": true,
+    "repeat_identity_denied": true,
+    "changed_plan_same_identity_denied": true,
+    "three_pending_raft_slots_zero_closed": true,
+    "fourth_admission_denied": true,
+    "two_of_three_voters_stopped": true,
+    "fresh_request_denied_503_ADMISSION_UNCERTAIN": true,
+    "real_neo4j_reader_MATCH_allowed": true,
+    "real_neo4j_reader_CREATE_denied": true,
+    "production_graph_or_credentials_touched": false,
+    "scoped_containers_removed": true
+  },
+  "limitations": {
+    "one_host_only": true,
+    "etcd_cleartext_only_internal": true,
+    "etcd_auth_and_RBAC": false,
+    "writer_bearer_on_internal_HTTP_not_mTLS": true,
+    "separate_OS_service_principals": false,
+    "writer_token_in_broker_config_accessible_to_broker_process": true,
+    "broker_can_request_arbitrary_allowed_plan_stable_ids": true,
+    "actual_verified_user_binding": false,
+    "independent_physical_graph_witness": false,
+    "physical_txid_generation_binding": false,
+    "server_side_stale_term_fence": false,
+    "live_graph_caller_parity": false,
+    "live_graph_isolation": false,
+    "production_deployment": false
+  },
+  "decision": "NETWORK_SEPARATED_POLICY_WRITER_RESEARCH_PASS_B01_B03_B05_PARTIAL_PRODUCTION_NO_GO"
+}
