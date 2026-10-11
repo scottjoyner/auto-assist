@@ -166,10 +166,20 @@ def build_fleet_link_canary_router(
     client_factory: Callable[[], httpx.AsyncClient] = _make_client,
 ) -> APIRouter:
     """Fully opt-in operator-only AssistX shadow admission, not mobile promotion."""
+    def require_operator(identity: str = Depends(auth_dependency)) -> str:
+        # General AssistX authentication is not sufficient for an execution canary.
+        # An unset allowlist denies everyone; identity must be established upstream.
+        allowed = {name.strip() for name in os.getenv(
+            "ASSISTX_FLEET_LINK_OPERATOR_USERS", ""
+        ).split(",") if name.strip()}
+        if not isinstance(identity, str) or not identity or identity not in allowed:
+            raise HTTPException(status_code=403, detail="fleet link operator forbidden")
+        return identity
+
     router = APIRouter(
         prefix="/api/fleet-link",
         tags=["fleet-link-canary"],
-        dependencies=[Depends(auth_dependency)],
+        dependencies=[Depends(require_operator)],
     )
 
     @router.get("/preview")
