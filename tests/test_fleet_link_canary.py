@@ -63,6 +63,7 @@ def gateway(monkeypatch, *, projection_doc=None, ready=True, auth=True,
     monkeypatch.setenv("ASSISTX_FLEET_LINK_CANARY", "1")
     monkeypatch.setenv("ASSISTX_FLEET_LINK_URL", URL)
     monkeypatch.setenv("ASSISTX_FLEET_LINK_RUNTIME_ID", "fleetlink:destroyer")
+    monkeypatch.setenv("ASSISTX_FLEET_LINK_OPERATOR_USERS", "operator")
     events = [] if state is None else state
     model_doc = projection_doc if projection_doc is not None else projection()
     status, models = sidecar_ready(ready)
@@ -279,3 +280,14 @@ def test_incomplete_upstream_completion_is_not_reported_as_success(monkeypatch, 
     assert response.status_code == 503
     assert response.json() == {"detail": {"error": "fleet_link_canary_unavailable"}}
     assert [event["path"] for event in events][-1] == "/v1/chat/completions"
+
+
+@pytest.mark.parametrize("allowlist", ["", "other", "operator2"])
+def test_authenticated_nonoperator_never_reaches_fleet_sidecar(monkeypatch, allowlist):
+    client, events = gateway(monkeypatch)
+    monkeypatch.setenv("ASSISTX_FLEET_LINK_OPERATOR_USERS", allowlist)
+    assert client.get("/api/fleet-link/preview").status_code == 403
+    assert client.post("/api/fleet-link/canary", json={
+        "model_handle": "model:v1:" + "1" * 32, "prompt": "hi",
+    }).status_code == 403
+    assert events == []
