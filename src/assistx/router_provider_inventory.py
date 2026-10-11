@@ -134,6 +134,9 @@ def fetch_provider_inventory(
             or target.port != trusted.port
             or target.username is not None
             or target.password is not None
+            or trusted.query or trusted.fragment
+            or (override and (target.path not in ("/admin/providers", "/admin/providers/effective")
+                                 or target.query or target.fragment))
         ):
             return {}
     except ValueError:
