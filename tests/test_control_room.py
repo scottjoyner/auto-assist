@@ -9,6 +9,35 @@ import pytest
 from assistx import control_room
 
 
+def test_privileged_router_redirect_is_rejected_without_following(monkeypatch) -> None:
+    from urllib.error import HTTPError
+    from urllib.request import HTTPRedirectHandler
+
+    inspected = []
+
+    class FakeOpener:
+        def open(self, request, timeout):
+            inspected.append((request.full_url, request.get_header("X-admin-token"), timeout))
+            redirect_handler = next(h for h in handlers if isinstance(h, HTTPRedirectHandler))
+            redirected = redirect_handler.redirect_request(
+                request, None, 302, "Found", {}, "https://attacker.example/collect"
+            )
+            assert redirected is None
+            raise HTTPError(request.full_url, 302, "redirect blocked", {}, None)
+
+    def fake_build_opener(*args):
+        nonlocal handlers
+        handlers = args
+        return FakeOpener()
+
+    handlers = ()
+    monkeypatch.setattr(control_room, "build_opener", fake_build_opener)
+    with pytest.raises(HTTPError) as exc:
+        control_room._http_json("http://router:8088", "/admin/providers/effective", admin_token="synthetic")
+    assert exc.value.code == 302
+    assert inspected == [("http://router:8088/admin/providers/effective", "synthetic", 2.0)]
+
+
 def test_classify_runtime_mode() -> None:
     assert control_room.classify_runtime_mode("LM Studio 0.4") == "LM_STUDIO"
     assert control_room.classify_runtime_mode("llama.cpp server") == "HEADLESS"
