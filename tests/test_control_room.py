@@ -327,6 +327,7 @@ def test_collect_fleet_nodes_uses_exact_provider_endpoint_override(_fleet_env, m
     monkeypatch.setattr(control_room, "_live_loaded_models", lambda _f: None)
     monkeypatch.setattr(control_room, "_historical_loaded_models", lambda _f: {})
     monkeypatch.setenv("AUTO_ROUTER_ADMIN_PROVIDERS_URL", "http://router.test:9090/admin/providers")
+    monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "synthetic-test-token")
     _open_registry(monkeypatch, {"nodes": []})
 
     nodes = control_room.collect_fleet_nodes(lambda: None)
@@ -382,3 +383,63 @@ def test_historical_loaded_models_empty_on_neo_failure() -> None:
 
     assert control_room._historical_loaded_models(_broken_factory) == {}
 
+
+
+def test_provider_catalog_effective_snapshot_keeps_loaded_proof_out_of_fleet(_fleet_env, monkeypatch):
+    """An in-memory provider model is AVAILABLE, not independently loaded."""
+    from assistx.router_provider_inventory import parse_provider_inventory
+
+    observed = []
+    monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://router.test:8088")
+    monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "synthetic-test-token")
+    monkeypatch.delenv("AUTO_ROUTER_ADMIN_PROVIDERS_URL", raising=False)
+    mock_snapshot = {
+        "schema_version": 1,
+        "kind": "EFFECTIVE_ROUTER_MEMORY_READ_ONLY",
+        "state_source": "LIVE_ASGI_STATE_NOT_BOOTSTRAP_PROVIDER_FILE",
+        "no_probes_or_dispatch": True,
+        "may_prove_model_loaded": False,
+        "may_modify_routes": False,
+        "provider_count": 1,
+        "providers": [{
+            "node_id": "mac-air",
+            "provider_id": "mac-air-ornith",
+            "enabled_in_router_memory": True,
+            "effective_base_url": {"status": "PARSED_NOT_PROBED", "hostname": "100.64.0.5"},
+            "configured_models": [{"provider_model": "Ornith-4B"}],
+            "resident_model_identity_verified": False,
+            "service_reachability_verified": False,
+            "admission_granted": False,
+        }],
+    }
+
+    def fake_http_json(url, path, **kwargs):
+        observed.append((url, path, kwargs.get("admin_token")))
+        return mock_snapshot, 1.0
+
+    monkeypatch.setattr(control_room, "_http_json", fake_http_json)
+    monkeypatch.setattr(control_room, "_live_loaded_models", lambda _f: {})
+    monkeypatch.setattr(control_room, "_historical_loaded_models", lambda _f: {})
+    _open_registry(monkeypatch, {"nodes": []})
+    nodes = control_room.collect_fleet_nodes(lambda: None)
+    air = next(node for node in nodes if node["ip"] == "100.64.0.5")
+
+    assert observed == [(
+        "http://router.test:8088/admin/providers/effective", "", "synthetic-test-token"
+    )]
+    assert air["available_models"] == ["Ornith-4B"]
+    assert air["loaded_models"] == []
+    assert air["model_source"] == "live-empty"
+    assert air["opacity"] == "opaque"
+    assert parse_provider_inventory(mock_snapshot, effective=True)["mac-air"] == ["Ornith-4B"]
+
+
+def test_provider_catalog_without_token_makes_no_admin_requests(monkeypatch):
+    monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://router.test:8088")
+    monkeypatch.delenv("AUTO_ROUTER_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("AUTO_ROUTER_ADMIN_PROVIDERS_URL", raising=False)
+    monkeypatch.setattr(
+        control_room, "_http_json",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("unauthorized admin GET")),
+    )
+    assert control_room._provider_catalog() == {}

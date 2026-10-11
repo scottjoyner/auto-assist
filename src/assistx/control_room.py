@@ -1062,45 +1062,15 @@ def _historical_loaded_models(neo_factory: NeoFactory | None) -> dict[str, Any]:
 
 
 def _provider_catalog(neo_factory: NeoFactory | None = None) -> dict[str, list[str]]:
-    """Return available provider models indexed by node identity."""
-    base_url = os.getenv("AUTO_ROUTER_BASE_URL", "").strip()
-    url = os.getenv("AUTO_ROUTER_ADMIN_PROVIDERS_URL", "").strip()
-    if not url:
-        if not base_url:
-            return {}
-        url = f"{base_url.rstrip('/')}/admin/providers"
-    admin_token = os.getenv("AUTO_ROUTER_ADMIN_TOKEN", "").strip()
-    try:
-        data, _ = _http_json(url, "", admin_token=admin_token)
-    except Exception:
-        return {}
-    out: dict[str, list[str]] = {}
-    for provider in data.get("providers", []) or []:
-        if not provider.get("enabled"):
-            continue
-        node_id = str(provider.get("node_id") or "").lower()
-        runtime_id = str(provider.get("runtime_instance_id") or "").lower()
-        base = str(provider.get("base_url") or "")
-        host = ""
-        try:
-            from urllib.parse import urlsplit as _urlsplit
-            host = (_urlsplit(base).hostname or "").lower()
-        except Exception:
-            host = base.split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0].lower()
-        models = [
-            model.get("provider_model") or model.get("alias") or model.get("model_instance_id")
-            for model in (provider.get("models") or [])
-            if model and (model.get("provider_model") or model.get("alias") or model.get("model_instance_id"))
-        ]
-        for identity in (node_id, runtime_id, host):
-            if not identity:
-                continue
-            bucket = out.setdefault(identity, [])
-            for model in models:
-                if model and model not in bucket:
-                    bucket.append(model)
-    return out
+    """Non-authoritative configured-model inventory, never loaded-model proof."""
+    from .router_provider_inventory import fetch_provider_inventory
 
+    return fetch_provider_inventory(
+        base_url=os.getenv("AUTO_ROUTER_BASE_URL", ""),
+        override_url=os.getenv("AUTO_ROUTER_ADMIN_PROVIDERS_URL", ""),
+        admin_token=os.getenv("AUTO_ROUTER_ADMIN_TOKEN", ""),
+        fetch_json=_http_json,
+    )
 
 def collect_fleet_nodes(neo_factory: NeoFactory | None = None) -> list[dict[str, Any]]:
     """Live fleet node matrix from the auto-router pubsub registry (10s cache).
