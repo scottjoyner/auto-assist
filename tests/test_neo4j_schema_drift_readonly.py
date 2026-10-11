@@ -112,7 +112,7 @@ class SchemaAuditContract(unittest.TestCase):
             SOURCE.replace(
                 '"CREATE INDEX IF NOT EXISTS FOR (t:Task)   ON (t.status)",',
                 '"CREATE INDEX IF NOT EXISTS FOR (t:Task) ON (t.status)",'
-                ', "CREATE INDEX IF NOT EXISTS FOR (t:Task) ON (t.status)",',
+                '\n            "CREATE INDEX IF NOT EXISTS FOR (t:Task) ON (t.status)",',
             ),
         )
         for variant in variants:
