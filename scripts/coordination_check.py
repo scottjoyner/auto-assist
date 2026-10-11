@@ -8,6 +8,11 @@ import subprocess
 import json
 from datetime import datetime, timedelta
 
+try:
+    from scripts.legacy_router_context_probe import probe_router_context
+except ModuleNotFoundError:
+    from legacy_router_context_probe import probe_router_context
+
 
 def check_system_health():
     """Check health of all services and return status dict"""
@@ -55,14 +60,14 @@ def check_system_health():
     except Exception as e:
         health['integration']['models_endpoint'] = {'status': 'error', 'error': str(e)}
     
-    try:
-        resp = requests.get('http://localhost:8088/admin/context', timeout=5)
-        health['integration']['context_endpoint'] = {
-            'status': 'ok' if resp.status_code == 200 else 'error',
-            'has_context': bool(resp.json()) if resp.headers.get('content-type') == 'application/json' else False
-        }
-    except Exception as e:
-        health['integration']['context_endpoint'] = {'status': 'error', 'error': str(e)}
+    # /admin/context must reject anonymous requests. Never read private
+    # context content or pass the shared admin token to this readiness probe.
+    context_auth = probe_router_context()
+    health['integration']['context_endpoint'] = context_auth
+    if context_auth['status'] == 'anonymous_admin_exposure':
+        health['issues'].append('auto-router admin context allows anonymous reads')
+    elif context_auth['status'] == 'unverified':
+        health['issues'].append('auto-router admin context authentication unverified')
     
     return health
 
@@ -126,7 +131,7 @@ def generate_coordination_report():
     # Integration status
     report += "\n## Integration Endpoints\n\n"
     for endpoint, data in health['integration'].items():
-        status_icon = '✅' if data.get('status') == 'ok' else '⚠️'
+        status_icon = '✅' if data.get('status') in ('ok', 'secured') else '⚠️'
         report += f"- {status_icon} {endpoint}: {data.get('status', 'unknown')}\n"
     
     # Neo4j sync status
