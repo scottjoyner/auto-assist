@@ -56,7 +56,7 @@ class FakeTx:
             if self.after_lock_services is not None:
                 self.services = self.after_lock_services
             return iter([{"ref": "same-node"}])
-        if statement == contract.UPSERT_QUERY:
+        if statement in (contract.UPSERT_QUERY, contract.SERVICE_UPSERT_QUERY):
             return iter(self.write_result)
         if statement == contract.SERVES_QUERY:
             return iter(self.serve_result)
@@ -276,6 +276,101 @@ class IdentityCandidateOfflineTests(unittest.TestCase):
             / "src/assistx/swarm_core.py"
         ).read_text()
         self.assertNotIn("endpoint_identity_candidate", code)
+
+
+
+
+def call_service(tx, *, service_type="model_endpoint", **kwargs):
+    return contract.candidate_register_service_endpoint(
+        FakeSession(tx), endpoint_id="endpoint-1",
+        node_id="x1", service_type=service_type, **kwargs,
+    )
+
+
+class ServiceCandidateOfflineTests(unittest.TestCase):
+    def test_model_kind_service_first_creates_shared_key(self):
+        tx = FakeTx()
+        result = call_service(tx, safe_properties={"port": 1235})
+        self.assertEqual(result["status"], "CANDIDATE_SERVICE_REGISTERED_IN_ISOLATED_GRAPH_ONLY")
+        self.assertFalse(result["production_release_authorized"])
+        statements = [query for query, _ in tx.queries]
+        self.assertIn(contract.LOCK_QUERY, statements)
+        self.assertLess(statements.index(contract.LOCK_QUERY),
+                        statements.index(contract.SERVICE_UPSERT_QUERY))
+        self.assertEqual(statements.count(contract.SERVICE_IDENTITY_QUERY), 2)
+
+    def test_service_candidate_can_follow_compatible_model(self):
+        tx = FakeTx(
+            services=[service(model=True, model_id="endpoint-1")],
+            models=[{"ref": "same-node", "endpoint_id": "endpoint-1"}],
+        )
+        call_service(tx)
+        self.assertIn(contract.SERVICE_UPSERT_QUERY, [q for q, _ in tx.queries])
+
+    def test_generic_service_new_key_is_valid_but_not_model_identity(self):
+        tx = FakeTx()
+        call_service(tx, service_type="generic", safe_properties={"service": "api"})
+        self.assertIn(contract.SERVICE_UPSERT_QUERY, [q for q, _ in tx.queries])
+
+    def test_generic_service_cannot_retype_model_endpoint(self):
+        tx = FakeTx(
+            services=[service(model=True, model_id="endpoint-1")],
+            models=[{"ref": "same-node", "endpoint_id": "endpoint-1"}],
+        )
+        with self.assertRaises(contract.EndpointIdentityHold):
+            call_service(tx, service_type="generic")
+        self.assertNotIn(contract.SERVICE_UPSERT_QUERY, [q for q, _ in tx.queries])
+
+    def test_model_service_cannot_retype_generic_endpoint(self):
+        tx = FakeTx(services=[service(service_type="generic")])
+        with self.assertRaises(contract.EndpointIdentityHold):
+            call_service(tx)
+        self.assertNotIn(contract.SERVICE_UPSERT_QUERY, [q for q, _ in tx.queries])
+
+    def test_service_foreign_ownership_is_not_overwritten(self):
+        tx = FakeTx(services=[service(node_id="other", owners=["other"])])
+        with self.assertRaises(contract.EndpointIdentityHold):
+            call_service(tx)
+        self.assertNotIn(contract.SERVICE_UPSERT_QUERY, [q for q, _ in tx.queries])
+
+    def test_service_foreign_owner_appears_only_after_lock(self):
+        tx = FakeTx(after_lock_services=[service(node_id="other", owners=["other"])])
+        with self.assertRaises(contract.EndpointIdentityHold):
+            call_service(tx)
+        self.assertIn(contract.LOCK_QUERY, [q for q, _ in tx.queries])
+        self.assertNotIn(contract.SERVICE_UPSERT_QUERY, [q for q, _ in tx.queries])
+
+    def test_service_missing_unique_constraint_denied(self):
+        tx = FakeTx(constraints=[])
+        with self.assertRaises(contract.EndpointIdentityHold):
+            call_service(tx)
+        self.assertEqual(len(tx.queries), 1)
+
+    def test_service_unsafe_metadata_denied_before_transaction(self):
+        for field in ("endpoint_id", "model_endpoint_id", "provider", "service_type"):
+            with self.subTest(field=field):
+                session = FakeSession(FakeTx())
+                with self.assertRaises(contract.EndpointIdentityHold):
+                    contract.candidate_register_service_endpoint(
+                        session, endpoint_id="endpoint-1", node_id="x1",
+                        service_type="model_endpoint",
+                        safe_properties={field: "unsafe"},
+                    )
+                self.assertEqual(session.writes_started, 0)
+
+    def test_service_orphan_model_identity_is_denied(self):
+        tx = FakeTx(models=[{"ref": "orphan", "endpoint_id": "endpoint-1"}])
+        with self.assertRaises(contract.EndpointIdentityHold):
+            call_service(tx)
+
+    def test_service_writer_no_destructive_commands(self):
+        sql = " ".join(contract.SERVICE_UPSERT_QUERY.upper().split())
+        self.assertIn("MERGE (E:SERVICEENDPOINT {ENDPOINT_ID:$ENDPOINT_ID})", sql)
+        self.assertIn("MERGE (N)-[:EXPOSES]->(E)", sql)
+        for forbidden in (" DELETE ", " DETACH ", " DROP ", "CREATE CONSTRAINT",
+                          "REMOVE ", "SET E:MODELENDPOINT"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, sql)
 
 
 if __name__ == "__main__":
