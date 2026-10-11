@@ -35,7 +35,8 @@ def service(
 
 class FakeTx:
     def __init__(self, *, constraints=None, services=None, models=None,
-                 write_result=None, serve_result=None):
+                 write_result=None, serve_result=None, after_lock_services=None):
+        self.after_lock_services = after_lock_services
         self.constraints = [CONSTRAINT] if constraints is None else constraints
         self.services = [] if services is None else services
         self.models = [] if models is None else models
@@ -51,6 +52,10 @@ class FakeTx:
             return iter(self.services)
         if statement == contract.MODEL_IDENTITY_QUERY:
             return iter(self.models)
+        if statement == contract.LOCK_QUERY:
+            if self.after_lock_services is not None:
+                self.services = self.after_lock_services
+            return iter([{"ref": "same-node"}])
         if statement == contract.UPSERT_QUERY:
             return iter(self.write_result)
         if statement == contract.SERVES_QUERY:
@@ -84,6 +89,10 @@ class IdentityCandidateOfflineTests(unittest.TestCase):
         self.assertEqual([s for s, _ in tx.queries][-2:], [
             contract.UPSERT_QUERY, contract.SERVES_QUERY,
         ])
+        all_queries = [s for s, _ in tx.queries]
+        self.assertLess(all_queries.index(contract.LOCK_QUERY),
+                        all_queries.index(contract.UPSERT_QUERY))
+        self.assertEqual(all_queries.count(contract.SERVICE_IDENTITY_QUERY), 2)
 
     def test_existing_service_model_type_can_be_promoted(self):
         tx = FakeTx(services=[service()])
@@ -154,6 +163,35 @@ class IdentityCandidateOfflineTests(unittest.TestCase):
                     call(tx)
                 self.assertNotIn(contract.UPSERT_QUERY, [s for s, _ in tx.queries])
 
+    def test_competing_owner_claim_after_lock_fails_before_upsert(self):
+        tx = FakeTx(after_lock_services=[service(node_id="other", owners=["other"])])
+        with self.assertRaises(contract.EndpointIdentityHold):
+            call(tx)
+        statements = [s for s, _ in tx.queries]
+        self.assertIn(contract.LOCK_QUERY, statements)
+        self.assertNotIn(contract.UPSERT_QUERY, statements)
+        self.assertEqual(statements.count(contract.SERVICE_IDENTITY_QUERY), 2)
+
+    def test_competing_ordinary_service_claim_after_lock_fails(self):
+        tx = FakeTx(after_lock_services=[
+            service(service_type="generic", node_id="x1")
+        ])
+        with self.assertRaises(contract.EndpointIdentityHold):
+            call(tx)
+        self.assertNotIn(contract.UPSERT_QUERY, [s for s, _ in tx.queries])
+
+    def test_unknown_lock_result_fails_without_upsert(self):
+        class MissingLockTx(FakeTx):
+            def run(self, statement, **kwargs):
+                if statement == contract.LOCK_QUERY:
+                    self.queries.append((statement, kwargs))
+                    return iter([])
+                return super().run(statement, **kwargs)
+        tx = MissingLockTx()
+        with self.assertRaises(contract.EndpointIdentityHold):
+            call(tx)
+        self.assertNotIn(contract.UPSERT_QUERY, [s for s, _ in tx.queries])
+
     def test_conflicting_model_id_is_rejected(self):
         tx = FakeTx(services=[service(model=True, model_id="different")])
         with self.assertRaises(contract.EndpointIdentityHold):
@@ -222,7 +260,7 @@ class IdentityCandidateOfflineTests(unittest.TestCase):
             call(tx, model_ids=("m1",))
 
     def test_no_delete_or_schema_ddl_in_candidate_writes(self):
-        for q in (contract.UPSERT_QUERY, contract.SERVES_QUERY):
+        for q in (contract.LOCK_QUERY, contract.UPSERT_QUERY, contract.SERVES_QUERY):
             upper = " ".join(q.upper().split())
             for marker in ("DETACH DELETE", " DELETE ", "DROP ", "CREATE CONSTRAINT",
                            "CREATE INDEX", "REMOVE "):
