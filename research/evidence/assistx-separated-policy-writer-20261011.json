@@ -51,7 +51,11 @@
     "real_neo4j_reader_MATCH_allowed": true,
     "real_neo4j_reader_CREATE_denied": true,
     "production_graph_or_credentials_touched": false,
-    "scoped_containers_removed": true
+    "scoped_containers_removed": true,
+    "policy_writer_no_token_request_rejected_401": true,
+    "writer_to_neo4j_Bolt_denied": true,
+    "writer_to_neo4j_HTTP_denied": true,
+    "no_graph_or_raft_network_change_in_production": true
   },
   "limitations": {
     "one_host_only": true,
@@ -69,5 +73,8 @@
     "live_graph_isolation": false,
     "production_deployment": false
   },
-  "decision": "NETWORK_SEPARATED_POLICY_WRITER_RESEARCH_PASS_B01_B03_B05_PARTIAL_PRODUCTION_NO_GO"
+  "decision": "NETWORK_SEPARATED_POLICY_WRITER_RESEARCH_PASS_B01_B03_B05_PARTIAL_PRODUCTION_NO_GO",
+  "final_physical_test_source_head": "19dc3ba80396c9bf29af67aa4f9b88b5893c69f0",
+  "final_physical_result": "PASS",
+  "final_physical_seconds": 63.63
 }
