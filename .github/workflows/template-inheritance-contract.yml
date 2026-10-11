@@ -1,0 +1,32 @@
+name: Operator Jinja template inheritance contract
+
+on:
+  pull_request:
+    paths:
+      - "templates/*.html"
+      - "tests/test_template_inheritance_contract.py"
+      - ".github/workflows/template-inheritance-contract.yml"
+  push:
+    paths:
+      - "templates/*.html"
+      - "tests/test_template_inheritance_contract.py"
+      - ".github/workflows/template-inheritance-contract.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  render-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install standalone static-render checks
+        run: python -m pip install 'jinja2>=3.1,<4' 'pytest>=8,<10' 'ruff>=0.13,<1'
+      - name: Lint template contract tests
+        run: ruff check tests/test_template_inheritance_contract.py
+      - name: Render inherited operator pages (no private services)
+        run: python -m pytest -q --noconftest tests/test_template_inheritance_contract.py

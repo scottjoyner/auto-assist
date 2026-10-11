@@ -91,15 +91,17 @@ def _validate_canonical_path(value: str, *, field: str) -> str:
         raise ValueError(f"{field} must be an absolute path, not {text!r}")
     if ".." in PurePosixPath(text).parts:
         raise ValueError(f"{field} must not contain '..' traversal segments")
-    if text != os.path.normpath(text):
-        raise ValueError(f"{field} must be canonical, not {text!r}")
+    if text != os.path.normpath(text) or text != os.path.realpath(text):
+        raise ValueError(f"{field} must be a canonical realpath, not {text!r}")
+    if text == "/":
+        raise ValueError(f"{field} must not name the filesystem root")
     try:
         home = os.path.normpath(os.path.realpath(os.path.expanduser("~")))
     except (OSError, RuntimeError):
         home = ""
     # $HOME is never a legitimate repository or worktree root. Treating it as
     # one is the specific silent-fallback failure this contract exists to stop.
-    if home and os.path.normpath(text) == home:
+    if home and os.path.realpath(text) == home:
         raise ValueError(f"{field} must not be the home directory")
     return text
 
@@ -209,10 +211,26 @@ class RepositorySourceBinding(BaseModel):
             raise ValueError("task_id/work_id must not contain control characters")
         return value
 
+    def to_contract_payload(self) -> dict[str, object]:
+        """Serialize only canonical provenance fields, never capability grants."""
+        return self.model_dump(mode="json")
+
+    @classmethod
+    def from_contract_payload(cls, raw: object) -> RepositorySourceBinding | None:
+        """Absent legacy bindings stay absent; supplied malformed data fails closed."""
+        if raw is None:
+            return None
+        if raw == {}:
+            raise ValueError("explicit empty source_binding is malformed")
+        if isinstance(raw, cls):
+            return raw
+        if not isinstance(raw, dict):
+            raise ValueError("source_binding must be a canonical object")
+        return cls.model_validate(raw)
+
     def provenance(self) -> dict[str, object]:
         """Compact payload safe to embed in a task or result."""
-
-        return self.model_dump(mode="json")
+        return self.to_contract_payload()
 
 
 class ObservedSourceState(BaseModel):
