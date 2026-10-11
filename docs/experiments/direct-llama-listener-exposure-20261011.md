@@ -51,6 +51,15 @@ Fleet Commander inspected the live Beelink process and its current owner crontab
 
 New bounded read-only tool **scripts/audit_direct_llama_startup.py** inspects only the current user's crontab and small, directly referenced nonsymlink scripts under that user's home directory. It never prints raw cron lines, command arguments, paths, secrets, HTTP payloads or source code, and never starts/stops jobs or touches cron configuration. The physical audit returned **BLOCKED_CRON_PERSISTENCE_CANDIDATE**, with one matching reboot and one matching periodic entry; no permission to mutate, approve or dispatch. Its exit code 1 is intentional default DENY.
 
+### Second watchdog — distinguish latent startup risk from live exposure
+
+Read-only inspection confirmed that the same account also schedules `inference-server-persist.sh` **at reboot and every 15 minutes**. That separate launcher contains a `llama-server` command with a wildcard host token but targets a different service; do NOT misattribute it to the exposed embedding listener. At the checkpoint, Beelink had only the cron-owned embedding process and LM Studio's loopback-owned child worker — **no distinct running inference-server process was observed**. This is a *latent startup-configuration risk*, not a verified second accessible endpoint.
+
+Extended the existing `scripts/audit_direct_llama_startup.py` to report `other_llama_launchers` separately: basename, abbreviated checksum, `@reboot` or periodic cadence, and `wildcard_host_text_found` without private paths or raw source. These records ALWAYS say `current_process_running_proven=false`, `listener_exposure_proven=false`, `can_approve=false`, `can_dispatch=false`. The target embedding launcher remains independently blocked. Physical live socket inspection is required before calling any sibling launcher an actual exposed service.
+
+**Live sanitized source output:** `candidate_launcher_entries=2` (embedding reboot+periodic), `other_llama_launcher_entries=2` (inference reboot+periodic), and `status=BLOCKED_CRON_PERSISTENCE_CANDIDATE`. Both scripts specify a wildcard host in their launcher source; only the embedding process's current non-loopback endpoint has separately been verified remotely unauthenticated. The cron interval on both is **every 15 minutes**, so a safe change must survive at least a real watchdog interval and reboot-equivalent acceptance, not just a restart.
+
+**34 focused tests** now pass (17 listener, **17 cron**, including new negative checks that a sibling wildcard launch script is not proof of an active second listener). The hosted dedicated CI is separately checked at the exact head. Both cron scripts remain untouched and their consumers still need operator review.
 ### Coupled operator-approved containment gates
 
 1. Review short-lived consumers, embedding service ownership, existing Tailnet ACLs, and both cron launchers before changing any listener; zero observed ESTABLISHED sockets is not a dependency inventory.
@@ -59,7 +68,7 @@ New bounded read-only tool **scripts/audit_direct_llama_startup.py** inspects on
 4. After authorized implementation, run negative unauthenticated Tailnet GET checks, positive authenticated consumer checks, and persistence regression after a cron iteration/reboot-equivalent test.
 5. Keep all signed source/owner admissions OFF until physical request execution provenance, independent signer custody, DBA-approved three Neo4j identity constraints and a newly operator-approved canonical generation exist.
 
-**Test evidence:** 15 new synthetic cron-persistence/security tests in tests/test_direct_llama_cron_persistence.py plus 17 existing physical listener audit tests = **32 source-only tests**. This is a preflight, **not a deployed mitigation**.
+**Test evidence:** 15 new synthetic cron-persistence/security tests in tests/test_direct_llama_cron_persistence.py plus 17 existing physical listener audit tests = **34 source-only tests**. This is a preflight, **not a deployed mitigation**.
 ## Ordered remediation gates — no automatic live mutation
 
 1. **Operator-owned dependency audit:** identify who owns the independent direct server, which local services depend on it and why the listener is non-loopback. Review affected client/service behavior; do not disconnect it blindly.
