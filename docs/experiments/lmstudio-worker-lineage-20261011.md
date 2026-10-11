@@ -48,6 +48,30 @@ Related independent physical source observation in [draft PR #309](https://githu
 
 `tests/test_lmstudio_worker_lineage.py` has **15** synthetic Linux /proc+TCP table cases, covering both owned listeners, wrong parent, wrong process, TCP connection mistaken for LISTEN, swapped inode, process restart, boot swap, health failure, alternate listener port, and no-authority fields. Standard-library only; no hosted CI listener/model required. Exact source-only local run: **15/15 tests PASS, Ruff PASS**.
 
+## Offline correlation of the two physical witnesses
+
+A second standard-library utility, `scripts/correlate_unsigned_host_lineage.py`, requires two **fresh, independently collected** unsigned observations from the **same Linux boot**:
+
+1. The GGUF continuity collector in [draft PR #309](https://github.com/scottjoyner/auto-assist/pull/309), pinning worker PID/start ticks and exact GGUF SHA256/byte count.
+2. The new parent/child+socket ownership collector in this PR, pinning gateway and worker PIDs/start ticks/ports and direct worker health.
+
+It rejects source age >5 minutes, future-dated records, evidence captured more than 90 seconds apart, process replacement, boot mismatch, wrong GGUF hash/size, changed listener ports, ambiguous/incomplete health, unknown fields, or either unsigned collector attempting to claim signing, model execution, forwarding, approval, owner identity or dispatch authority.
+
+**It does not authenticate either input or grant authority from their agreement.** Its result is always `status=CORRELATED_LOCAL_PROCESS_AND_SOCKET_ONLY`, `source_attested=false`, `model_loaded_execution_attested=false`, `gateway_request_forwarding_attested=false`, `authenticated_owner_receipt=false`, `can_approve=false`, `can_auto_renew=false`, and `can_dispatch=false`. It redacts the raw boot UUID to a short one-way checksum in its output and never includes raw model paths, private endpoints, SSH coordinates, operator references or credentials.
+
+### Fresh live joint observation through Fleet Commander
+
+On Beelink, the approved GGUF process witness ran again and found process **PID 4783**, start ticks **2340**, original hash `c40c8a9239dbc2d8874c5508110b9b1f3d325376eecffdba7bce2dcb49a0207c` and **1,246,255,456 bytes**. The new separate listener collector found worker PID **4783**, parent/gateway PID **1535**, start ticks **1125**, API port **1234**, worker port **45435**, same boot hash prefix `3bded808be0d`, direct worker health okay. The two records were freshly collected <1 second apart and correlated successfully on x1-370. Neither raw record was stored on Beelink, published to GitHub, or uploaded to NAS.
+
+**Result:** `CORRELATED_LOCAL_PROCESS_AND_SOCKET_ONLY`, both source ages <1 second at validation, and every authorization/execution/forwarding claim **false**. The comparison is a defensible data lineage/continuity checkpoint, not the missing signed source-to-worker execution receipt.
+
+### Combined testing
+
+- `tests/test_lmstudio_worker_lineage.py`: **15/15 passing**.
+- `tests/test_correlate_unsigned_host_lineage.py`: **17/17 passing**, covering stale or mismatched source ages, different boot, recycled PID, model swap, wrong listener, future timestamps, unknown/private fields and forged authority.
+- Local scratch source run: **32/32 tests, strict Ruff PASS** on commit `ee822782d943cbb96c0a4adcafb1309bbcec5e67`.
+- Branch CI additionally protects the no-authority output and never accesses production services.
+
 ## Next, before trusted source signing
 
 1. Confirm model process and endpoint linkage using **authenticated, source-custodied execution evidence** that can actually bind gateway request ID → selected worker process/boot/start ticks → model artifact digest → completed response, without extracting credentials from the worker or installing surveillance tools. A merely observed parent/child relationship does NOT close this gate.
