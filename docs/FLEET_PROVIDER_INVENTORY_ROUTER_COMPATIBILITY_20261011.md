@@ -158,3 +158,20 @@ correctly receive **401**. Do **not** add admin tokens to query strings or
 browser URLs to work around this: use an authenticated API client or a
 separately reviewed session-aware operator interface. This UX acceptance
 remains **OPEN** and is not silently certified by the AssistX parser tests.
+
+## Frozen cross-repository producer/consumer witness
+
+The real `effective_snapshot` function from Auto-Router PR #41 head
+`0f5b416` was invoked **offline** with a synthetic provider in memory.
+The resulting schema-1 JSON (not a handwritten payload) was accepted by
+the actual AssistX PR #288 provider catalog parser. Configured-model
+identities are preserved; loaded, service health and admission still
+remain unverified. The frozen payload is in
+`tests/fixtures/router_effective_snapshot_v1.json`.
+
+`tests/test_router_effective_cross_repo_fixture.py` independently verifies
+the producer checksum and consumer interpretation. It is included in the
+stdlib CI isolation job and passed on Lenovo alongside the other tests:
+**19 portable tests PASS**. Source and fixture digests are recorded in
+`docs/evidence/assistx-cross-repo-pr41-producer-20261011.json`.
+This is source-contract validation only, not deployed ASGI/HTTP evidence.

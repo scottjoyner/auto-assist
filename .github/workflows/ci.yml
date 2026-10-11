@@ -205,5 +205,8 @@ jobs:
           cp src/assistx/router_admin_client.py "${sandbox}/assistx/"
           cp tests/test_router_provider_inventory_portable.py "${sandbox}/tests/"
           cp tests/test_router_admin_proxy_contract.py "${sandbox}/tests/"
+          cp tests/test_router_effective_cross_repo_fixture.py "${sandbox}/tests/"
+          mkdir -p "${sandbox}/tests/fixtures"
+          cp tests/fixtures/router_effective_snapshot_v1.json "${sandbox}/tests/fixtures/"
           cd "${sandbox}"
           python -m unittest discover -s tests -p 'test_router_*.py' -v
