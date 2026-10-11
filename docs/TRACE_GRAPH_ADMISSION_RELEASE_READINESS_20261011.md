@@ -80,6 +80,12 @@ A further **fresh physical majority-loss run PASSED (62.56s)**: after committing
 
 **This is a significant B06 partial physical PASS, but B06 is still P0 NO-GO:** the member/boot label is fixture-authored rather than independently attested, the original txid/boot is not bound to Raft in the same broker, the observer is unsigned and its absence-only result has `release_authorized=False`, no independent durable signer custody or exact signed release exists, and server-side stale-term effect fencing remains missing. Production B01 direct Bolt bypass and B02 full caller migration remain unresolved. [Exact evidence](../research/evidence/assistx-b06-joined-held-bolt-observer-20261011.json).
 
+## October 11 B06: exact observer transaction bound to original Raft reservation as STARTED
+
+[Physical B06 original-transaction binding report](./TRACE_B06_OBSERVED_RAFT_BIND_20261011.md) now verifies the SAME isolated worker→broker→separate policy writer→real three-physical-host Raft mTLS/RBAC→explicit Bolt transaction. A separate Neo4j observer sees the original live transaction. **While Bolt remains active**, the privileged disposable coordinator passes its observed row to the scoped writer, which rejects a forged txid, compares the exact reservation/metadata/owner/term against an authoritative Raft snapshot, and atomically changes **RESERVED→STARTED with the observed original member/fixture generation/txid**. Replayed binding is refused. After Bolt completion, ordered absence observations are recorded; no slot is freed (**3 pending, 0 completed**). Real 2-voter minority failure still denies new admission. **Physical PASS**, 3 hosts x1-370/xwing/destroyer, joined 79.85s, full run 106.43s; no production change. [Evidence](../research/evidence/assistx-b06-joined-observed-raft-bind-20261011.json).
+
+**B06 still RELEASE NO-GO:** member/boot identity comes from the disposable fixture, not an independently attested graph identity; the privileged coordinator can fabricate coherent observation JSON, so the binding is NOT independently verified signed custody. No detached durable signature, closure CAS, or capacity release is wired. This is a significant **research STARTED binding PASS**, not authenticated physical closure. B01 live direct Bolt bypass, B02 caller parity and the other release gates remain unresolved.
+
 ## Open blockers — release-stopping
 
 | ID | Priority | Unresolved gate | Exact acceptance required to change status | Responsible discipline |
