@@ -84,7 +84,8 @@ def test_disposable_cluster_only_one_host_and_explicit_opt_in():
 def test_no_production_identity_or_standalone_reader_permission_claim():
     body = Path(__file__).with_name(
         "trace_disposable_joined_raft_worker.py").read_text()
-    assert '"single_host_Raft_not_independent_failure_domains":True' in body
+    assert '"single_host_Raft_not_independent_failure_domains":not CONFIG.get(' in body
+    assert '"three_real_raft_hosts_mtls_RBAC":bool(CONFIG.get(' in body
     assert 'assert not connect(CONFIG["neo4j_ip"],7687)' in body
     assert 'CONFIG.get("quorum_port",2379)' in body
     assert "no_witness_or_automatic_capacity_release" in body
