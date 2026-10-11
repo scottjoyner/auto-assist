@@ -401,10 +401,14 @@ def _unavailable_mobile_runtime_catalog() -> dict[str, Any]:
     }
 
 
-def _current_runtime_projection() -> dict[str, Any]:
-    from .api import _neo
+def _current_runtime_projection(
+    neo_factory: Callable[[], Any] | None = None,
+) -> dict[str, Any]:
     from .runtime_projection_v2 import build_runtime_projection_v2
 
+    if neo_factory is None:
+        from .api import _neo
+        neo_factory = _neo
     try:
         ttl_seconds = int(
             os.getenv("ASSISTX_RUNTIME_PROJECTION_TTL_SECONDS", "900")
@@ -412,7 +416,7 @@ def _current_runtime_projection() -> dict[str, Any]:
     except ValueError:
         ttl_seconds = 900
     return build_runtime_projection_v2(
-        _neo,
+        neo_factory,
         ttl_seconds=max(30, min(ttl_seconds, 3600)),
     )
 
