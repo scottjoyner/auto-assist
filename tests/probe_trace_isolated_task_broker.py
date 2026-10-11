@@ -498,6 +498,55 @@ def run(external_writer: dict | None = None) -> dict:
                     if not minority_result.get(
                             "disposable_two_voter_outage_denies_fresh_broker_read"):
                         raise RuntimeError("MINORITY_DENIAL_NOT_PROVEN")
+                if remote and external_writer.get("fault_context") is not None:
+                    fault = external_writer["fault_context"]
+                    remote_shell = fault["shell"]
+                    names = fault["container_names"]
+                    stopped = []
+                    try:
+                        for host in ("xwing", "destroyer"):
+                            name = names[host]
+                            if not name.startswith("assistx-raft-"):
+                                raise RuntimeError("UNSAFE_FAULT_TARGET")
+                            remote_shell(
+                                ["docker", "stop", "--time", "2", name],
+                                host, timeout=20)
+                            stopped.append((host, name))
+                        docker(
+                            "cp", str(SOURCE /
+                                      "trace_disposable_joined_quorum_loss.py"),
+                            worker + ":/tmp/minority.py")
+                        minority = docker(
+                            "exec", worker, "python", "/tmp/minority.py",
+                            timeout=17, check=False)
+                        if minority.returncode != 0:
+                            raise RuntimeError(
+                                "THREE_HOST_JOINED_MINORITY_NOT_DENIED")
+                        minority_result = json.loads(minority.stdout)
+                        if not minority_result.get(
+                                "disposable_two_voter_outage_denies_fresh_broker_read"):
+                            raise RuntimeError("THREE_HOST_MINOR_DENIAL_NOT_PROVEN")
+                    finally:
+                        # Restore ONLY the exact research voter names, even
+                        # after a failed assertion. Parent harness owns their
+                        # final teardown and all certificates.
+                        for host, name in reversed(stopped):
+                            remote_shell(
+                                ["docker", "start", name],
+                                host, timeout=25)
+                    recovery_deadline = time.monotonic() + 45
+                    while True:
+                        checked = docker(
+                            "exec", writer, "python", "-c", verifier,
+                            timeout=10, check=False)
+                        if checked.returncode == 0:
+                            recovered = json.loads(checked.stdout)
+                            if recovered == {"pending": 3, "completed": 0}:
+                                break
+                        if time.monotonic() >= recovery_deadline:
+                            raise RuntimeError(
+                                "THREE_HOST_JOINED_RAFT_RECOVERY_FAILED")
+                        time.sleep(2)
             return {
                 **result,
                 "schema": "assistx-disposable-task-broker-20261011-v1",
@@ -527,7 +576,8 @@ def run(external_writer: dict | None = None) -> dict:
                 "distinct_physical_raft_hosts": remote,
                 "external_three_host_mtls_rbac": remote,
                 "disposable_two_voter_minority_denies_fresh_admission":
-                    joined and not remote,
+                    joined and (not remote or
+                                external_writer.get("fault_context") is not None),
                 "disposable_raft_tls_or_rbac": remote,
                 "writer_to_raft_mtls_and_exact_key_RBAC": remote,
                 "broker_to_writer_mtls": False,
