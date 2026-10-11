@@ -10,6 +10,12 @@ The new `tests/trace_b06_observation_gate_research.py` enforces: an exact seven-
 
 **Crucial authorization boundary:** both `ObservedActive` and `ObservedAbsenceOnly` have `signer_authorized=False` and `release_authorized=False`. They contain no signature, signing key, closure receipt or writer method. These predicates are **necessary checks, not sufficient grounds to free a reservation**. The member/boot identity supplied by the existing fixture is *not independently server-attested*; a forged observation caller could spoof it. Do not promote any successful observation into production closure.
 
+### Immutable observation custody hardening
+
+Review found a subtler TOCTOU risk: `@dataclass(frozen=True)` does **not** freeze a nested Python `dict`. An untrusted or reused driver-result object could otherwise mutate a previously captured transaction ID, epoch or metadata. The observer now copies and wraps the original target metadata, each observed transaction row and each nested row's `metaData` in **read-only mappings** at capture time. The source caller cannot rewrite these fields after custody, and the original pointer cannot be modified by a later driver-result mutation. A normalized detached copy is passed to the existing `observed_exact` verifier. Three additional offline tests exercise mutation-after-capture and observation immutability.
+
+**A second complete three-host physical Bolt-witness test PASSED** after this change, at source SHA `62658422e1fad2a63c6ff01843fd75a85f9f05e7`, with no production graph activity. This protects research-process in-memory evidence only; it is **not** externally durable custody, independently authenticated graph boot identity or signing authority.
+
 ### Physical compatibility check — PASS
 
 Command:
