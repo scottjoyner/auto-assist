@@ -93,6 +93,18 @@ class TestStatusClassification(unittest.TestCase):
         self.assertEqual(x["status"],"unverified")
         self.assertTrue(s.closed)
         self.assertFalse(x["release_authorized"])
+    def test_failed_response_cleanup_cannot_claim_secure_401(self):
+        s=Session(401)
+        s.response.close=lambda: (_ for _ in ()).throw(RuntimeError("synthetic cleanup failure"))
+        result=probe.probe_router_context(lambda:s)
+        self.assertEqual(result["status"],"unverified")
+        self.assertTrue(s.closed)
+    def test_failed_session_cleanup_cannot_claim_secure_401(self):
+        s=Session(401)
+        s.close=lambda: (_ for _ in ()).throw(RuntimeError("synthetic session cleanup failure"))
+        result=probe.probe_router_context(lambda:s)
+        self.assertEqual(result["status"],"unverified")
+        self.assertTrue(s.response.closed)
     def test_probe_never_uses_token_parameter(self):
         import inspect
         self.assertNotIn("AUTO_ROUTER_ADMIN_TOKEN",inspect.getsource(probe))
