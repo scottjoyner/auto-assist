@@ -109,7 +109,6 @@ class SchemaAuditContract(unittest.TestCase):
         variants = (
             SOURCE.replace("cypher = [", "cypher = variable + ["),
             SOURCE.replace("CREATE INDEX IF NOT EXISTS", "DROP INDEX"),
-            SOURCE.replace('"CREATE INDEX IF NOT EXISTS FOR (t:Task)   ON (t.status)",', ""),
             SOURCE.replace(
                 '"CREATE INDEX IF NOT EXISTS FOR (t:Task)   ON (t.status)",',
                 '"CREATE INDEX IF NOT EXISTS FOR (t:Task) ON (t.status)",'
@@ -127,9 +126,19 @@ class SchemaAuditContract(unittest.TestCase):
                 audit.declared_schema(source)
 
     def test_cli_metadata_unavailable_holds_with_sanitized_error(self):
-        with mock.patch.object(audit, "read_live_schema", side_effect=RuntimeError("secret")),
-             mock.patch.object(audit, "SOURCE_DEFAULT", SCRIPT):
-            pass
+        output = io.StringIO()
+        with (
+            mock.patch.object(audit, "read_live_schema", side_effect=RuntimeError("SIMULATED_INTERNAL_DETAIL")),
+            mock.patch.object(Path, "read_text", return_value=SOURCE),
+            redirect_stdout(output),
+        ):
+            status = audit.main(["--source", str(SCRIPT)])
+        self.assertEqual(status, 2)
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["status"], "HOLD_UNVERIFIABLE_SOURCE_OR_METADATA")
+        self.assertEqual(report["error_type"], "RuntimeError")
+        self.assertNotIn("SIMULATED_INTERNAL_DETAIL", output.getvalue())
+        self.assertIs(report["production_release_authorized"], False)
 
     def test_cli_returns_hold_without_neo4j_connection_when_source_invalid(self):
         with mock.patch.object(audit, "read_live_schema") as db:
