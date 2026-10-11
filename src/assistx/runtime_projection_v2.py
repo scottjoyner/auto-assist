@@ -19,6 +19,8 @@ _ALGORITHM = "Ed25519"
 _DEFAULT_KEY_ID = "assistx-runtime-projection-v1"
 _INTERNAL_COMPAT_SECRET = "assistx-ed25519-projection-wrapper"
 
+RuntimeProjectionSigningError = legacy.RuntimeProjectionBlocked
+
 
 def _b64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
@@ -114,6 +116,11 @@ def build_runtime_projection(
     signer = private_key or load_private_key()
     document["signature"] = projection_signature(document, signer)
     return document
+
+
+# Compatibility entrypoint consumed by mobile and cross-repository projection clients.
+# Preserve the same signed v2 builder; never substitute unsigned legacy output.
+build_runtime_projection_v2 = build_runtime_projection
 
 
 def build_runtime_projection_router(
