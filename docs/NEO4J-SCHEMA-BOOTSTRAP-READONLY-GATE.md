@@ -65,3 +65,43 @@ This source-based result does **not** prove whether the missing constraint was n
 A second bounded `SHOW INDEXES` metadata query found **no standalone or constraint-owned index** for the missing `ServiceEndpoint.endpoint_id` key. This does not prove duplicate records exist; it means an arbitrary duplicate-key query may require a large graph scan. **No duplicate-data scan was performed.**
 
 Before adding the missing uniqueness constraint, the graph owner should identify which services write ServiceEndpoint records, assess the size/cost of a bounded data-quality audit, confirm data ownership and rollback, and separately review conflicting duplicates if found. Do not perform an unconditional live `MATCH/GROUP BY` scan or `CREATE CONSTRAINT` from this read-only PR.
+
+## ServiceEndpoint identity-collision gate — production-safe discovery
+
+[P0 #322](https://github.com/scottjoyner/auto-assist/issues/322) isolates a **writer identity-model conflict** preventing the missing `ServiceEndpoint.endpoint_id` uniqueness constraint. The companion `scripts/neo4j_service_endpoint_collision_readonly.py` uses a single aggregate-only `MATCH` query with the **existing configured application database and read-only Neo4j session**; it returns counts, never identifiers, node properties, relationships, or graph records. The script has no merge/delete/schema operations, and an affirmative result is not release authorization.
+
+For an authorized operator inside an existing AssistX container with its current `NEO4J_* ` environment:
+
+```sh
+python3 scripts/neo4j_service_endpoint_collision_readonly.py
+```
+
+Exit **2** means a collision or incomplete/untrusted evidence. Exit **0** means only that *the scoped ServiceEndpoint identity scan* found no current duplicate nonnull `endpoint_id` values; it is not a guarantee against concurrent new writes, app semantics or schema correctness.
+
+### October 11 physical evidence
+
+A value-free aggregate query found **6 ServiceEndpoint nodes**, **one duplicate identifier group**, **two involved nodes**, and **one excess node**. The two colliding nodes are structurally different: one is `ServiceEndpoint`, the other `ModelEndpoint:ServiceEndpoint`. Their property counts are 9 and 17; relationships are `EXPOSES` versus `EXPOSES` plus `SERVES`. Both are exposed by **the same SwarmNode**, but have different `service_type` values. The dual-labeled model node has matching `model_endpoint_id` and `endpoint_id`. No value of any of those identifiers or application records was printed or committed.
+
+Deployed `swarm_core.py` has two incompatible upsert identities:
+
+- Service registration around line 508 uses `MERGE (e:ServiceEndpoint {endpoint_id:$endpoint_id})`.
+- Model registration around line 699 uses `MERGE (e:ModelEndpoint:ServiceEndpoint {model_endpoint_id:$endpoint_id})` and then sets `e.endpoint_id` to that model endpoint ID when unset.
+
+Both can create separate nodes with the *same* ServiceEndpoint key. That explanation is supported by a fully disposable Neo4j **5.26 Enterprise** reproduction on an **internal-only Docker bridge**, with no published ports or production mounts. Only synthetic identifiers and temporary credentials were used, and its container and network were removed afterward.
+
+| Disposable experiment | Outcome |
+|---|---|
+| Service registration, then model registration | **Two colliding ServiceEndpoint nodes** |
+| Model registration, then service registration | **One shared dual-labeled node** |
+| Repeating service MERGE after the collision | **Matches both nodes (fan-out)** |
+| Creating uniqueness constraint with collision present | **Neo4j rejects conflicting data** |
+| Removing only conflicting synthetic nodes, then creating constraint | **Succeeds** |
+| Service registration followed by model registration after uniqueness enforced | **Model registration rejected as conflicting identity** |
+
+This demonstrates why **neither adding the constraint nor deleting a duplicate is a complete safe repair**. The model and service writers must adopt an explicitly reviewed, order-independent canonical identity rule before any schema migration. The `EXPOSES` and `SERVES` relationship graph and model discovery clients require preservation and regression proof.
+
+### Owner decision and release hold
+
+No production graph DDL, merge, label removal, deletion, account migration, credential revocation, service restart, model-routing edit or firewall change is authorized by these tools. The owner must approve the identity namespace or subtype contract, migration plan with relationship retention, synthetic concurrent-write/replay tests, and rollback. **Existing production records remain untouched.**
+
+The private x1 owner release preflight now independently requires both the **schema metadata gate** and **ServiceEndpoint collision gate** to pass, alongside four authenticated app reads, full approved caller inventory, credential custody, dual-stack Tailnet denial and unchanged-container evidence. Both schema and collision gates currently return **HOLD**.
