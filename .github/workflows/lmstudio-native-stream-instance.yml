@@ -1,0 +1,64 @@
+name: Native LM Studio Model Instance SSE (Offline Research)
+
+on:
+  push:
+    branches:
+      - experiment/lmstudio-native-stream-instance-evidence-20261011
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  instance-stream-no-worker-authority:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install only test dependencies
+        run: python -m pip install 'cryptography>=43,<46' 'ruff>=0.6,<1'
+      - name: Test native model-instance stream and receipt protocols offline
+        run: |
+          python -m unittest discover -s tests -p 'test_verify_lmstudio_native_stream_instance.py' -q
+          python -m unittest discover -s tests -p 'test_verify_lmstudio_worker_request_pair.py' -q
+          python -m unittest discover -s tests -p 'test_correlate_unsigned_host_lineage.py' -q
+          python -m unittest discover -s tests -p 'test_lmstudio_worker_lineage.py' -q
+      - name: Lint bounded SSE parser and model receipt suite
+        run: |
+          ruff check scripts/verify_lmstudio_native_stream_instance.py \
+            tests/test_verify_lmstudio_native_stream_instance.py \
+            scripts/verify_lmstudio_worker_request_pair.py \
+            tests/test_verify_lmstudio_worker_request_pair.py \
+            scripts/correlate_unsigned_host_lineage.py \
+            tests/test_correlate_unsigned_host_lineage.py \
+            scripts/collect_lmstudio_worker_lineage.py \
+            tests/test_lmstudio_worker_lineage.py
+      - name: Review-only model instance never grants physical source authority
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source=Path('scripts/verify_lmstudio_native_stream_instance.py').read_text()
+          for expected in (
+              'GATEWAY_MODEL_INSTANCE_ONLY',
+              '"gateway_source_authenticated": False',
+              '"physical_worker_pid_attested": False',
+              '"worker_execution_attested": False',
+              '"owner_bound_request_attested": False',
+              '"can_sign_physical_source": False',
+              '"can_approve": False',
+              '"can_dispatch": False',
+              'model_load.start',
+              'MAX_STREAM_BYTES = 131_072',
+          ):
+              assert expected in source, expected
+          for prohibited in (
+              'GraphDatabase', 'Ed25519PrivateKey', 'subprocess',
+              'urllib.request', 'requests.post', 'open(', '/api/v1/chat',
+              'socket.connect(', 'os.environ',
+          ):
+              assert prohibited not in source, prohibited
+          print('Native SSE only; no physical PID or execution authority.')
+          PY
