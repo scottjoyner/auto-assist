@@ -25,7 +25,23 @@ Physical read-only Beelink evidence from PR #311: gateway `lm-studio` PID 1535 o
 
 `tests/test_verify_lmstudio_native_stream_instance.py` includes **29 source-only synthetic SSE acceptance and negative cases**: valid preloaded model ID, CRLF, missing terminal boundary, stream too large/invalid UTF-8, unexpected load events, errors, tool/reasoning privacy guard, start/end wrong instance, invalid/missing response ID, token limits, different final output, duplicate/extra events, unexpected content fields, and non-authority flags. Initial exact-head scratch run on x1-370: **29 passed, strict Ruff passed**, no LM Studio server/model access.
 
-In the stacked draft tree, CI also reruns [PR #314](https://github.com/scottjoyner/auto-assist/pull/314)'s 34 signed gateway/worker synthetic receipt tests, 17 unsigned physical cross-observation tests, and 15 socket-inode lineage tests: **95 focused tests**, all offline. These tests establish **protocol validation only** and will never be called live physical worker acceptance.
+In the stacked draft tree, CI also reruns [PR #314](https://github.com/scottjoyner/auto-assist/pull/314)'s 34 signed gateway/worker synthetic receipt tests, 17 unsigned physical cross-observation tests, and 15 socket-inode lineage tests: **110 focused tests**, all offline. These tests establish **protocol validation only** and will never be called live physical worker acceptance.
+
+## Offline native-stream ↔ synthetic signed-receipt bridge
+
+The second narrowly scoped check in this draft is `scripts/join_native_stream_worker_receipt.py`. It **reparses raw, bounded SSE bytes inside the join trust boundary** — a caller cannot manufacture a Python `StreamEvidence` object and have it accepted without parsing a real stream. This also forces unexpected `model_load.*`, truncated/incomplete or tool/reasoning SSE events to fail at the join itself.
+
+The signed pair protocol inherited from [PR #314](https://github.com/scottjoyner/auto-assist/pull/314) is strengthened to require an **exact `model_instance_id` in both independently signed worker and gateway receipt payloads**. The bridge compares that matched instance with the native SSE `chat.start`/`chat.end` selection, and additionally compares:
+- An externally expected opaque client `request_id` to both signed gateway/worker request IDs; it does **not** confuse LM Studio's stored `response_id` with client authentication.
+- LM Studio's native SSE `response_id` to the signed gateway response ID.
+- The single bounded simple SSE message's `SHA256(UTF8(message_content))` to the identical worker and gateway signed output digest.
+- All existing cryptographic signature, nonce, owner digest, boot/PID/start-tick/GGUF, terminal completion, source freshness and known-request-replay checks.
+
+Even a passing three-way bridge returns only `NATIVE_STREAM_AND_TEST_RECEIPTS_CONSISTENT_ONLY` with **`producer_public_keys_independently_trusted=false`**, **`physical_worker_process_execution_attested=false`**, **`ingress_owner_binding_attested=false`**, **`can_renew=false`**, **`can_dispatch=false`**. This does **not** upgrade an unsigned gateway stream into a real independently attested physical worker execution.
+
+**New negative tests:** 13 offline cross-contract cases check wrong streamed model instance, response-ID mismatch, worker output mismatch, owner/request-ID confusion, bad signatures, stale/replayed requests, boot mismatch, and attempts to submit a forged parsed object or bypass JIT detection. Two new signed-worker tests require both roles to name the same valid model instance. CI now runs **110** synthetic tests total (29 native SSE + 13 bridge +36 signed pair +17 process evidence correlation +15 socket lineage).
+
+**Source results:** x1-370 fetched the exact latest committed source into `/tmp` and verified **36/36** signed pair tests + **29/29** SSE tests + **13/13** cross-bridge tests, Ruff clean; the 17/17 and 15/15 inherited tests had separately passed on the parent and are now part of the consolidated hosted lane. There was **no inference, user prompt, real output capture, credentials, key provisioning, physical worker proof or Neo4j/NAS mutation**.
 
 ## Actual physical acceptance remains blocked
 
