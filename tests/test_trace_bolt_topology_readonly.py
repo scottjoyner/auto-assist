@@ -6,13 +6,15 @@ demonstrates the current *code-level conditional trust assumption*.
 """
 from __future__ import annotations
 
-import importlib
+import ast
+from email.header import decode_header, make_header
 import json
+import os
 from pathlib import Path
-import sys
+from types import SimpleNamespace
 
 import pytest
-from fastapi import Request
+from fastapi import Request, HTTPException
 
 from probe_trace_bolt_topology_readonly import (
     analyze_docker_inspect, published_on_all_interfaces,
@@ -99,6 +101,36 @@ def test_probe_is_manual_readonly_and_has_no_mutating_docker_commands():
         assert dangerous not in script
 
 
+def _source_tailnet_helper():
+    """Load the exact four checked-in source functions without package init.
+
+    Hosted research CI intentionally does not install the entire AssistX
+    production dependency graph or open any sockets.
+    """
+    source = Path(__file__).resolve().parents[1] / (
+        "src/assistx/mobile_agent_routes.py")
+    tree = ast.parse(source.read_text())
+    wanted = {
+        "_decode_identity_header", "_trusted_login_header_name",
+        "_allowed_tailnet_login", "_tailnet_identity",
+    }
+    nodes = [
+        n for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name in wanted
+    ]
+    assert {n.name for n in nodes} == wanted
+    scope = {
+        "os": os, "HTTPException": HTTPException,
+        "_TAILSCALE_LOGIN_HEADER": "Tailscale-User-Login",
+        "decode_header": decode_header, "make_header": make_header,
+    }
+    exec(compile(ast.Module(body=nodes, type_ignores=[]),
+                 str(source), "exec"), scope)
+    return SimpleNamespace(**{
+        name: scope[name] for name in wanted
+    })
+
+
 def test_synthetic_allowed_header_current_helper_has_no_peer_provenance(monkeypatch):
     """COUNTEREXAMPLE to a claim of code-enforced proxy identity provenance.
 
@@ -109,9 +141,7 @@ def test_synthetic_allowed_header_current_helper_has_no_peer_provenance(monkeypa
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
     monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS",
                        "synthetic-boundary@example.invalid")
-    src = Path(__file__).resolve().parents[1] / "src"
-    monkeypatch.syspath_prepend(str(src))
-    mod = importlib.import_module("assistx.mobile_agent_routes")
+    mod = _source_tailnet_helper()
     scope = {
         "type": "http", "method": "GET",
         "scheme": "http", "http_version": "1.1",
