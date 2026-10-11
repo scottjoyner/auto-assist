@@ -333,6 +333,29 @@ class TestSignedApply(unittest.TestCase):
             for q, _ in tx.calls
         ))
 
+    def test_observation_times_are_not_laundered_into_approval_timestamp(self):
+        tx = DummyTransaction()
+        with patch.object(A.time, "time", return_value=NOW / 1000):
+            A._apply_transaction(
+                tx, A.validate_manifest(self.manifest), self.evidence,
+                public(self.source_priv), public(self.operator_priv),
+            )
+        observed = {}
+        for statement, params in tx.calls:
+            if "r.observed_at_ts=$observed_at_ts" in statement:
+                observed["runtime"] = params["observed_at_ts"]
+            if "c.observed_at_ts=$observed_at_ts" in statement:
+                observed["capacity"] = params["observed_at_ts"]
+            if "a.observed_at_ts=$observed_at_ts" in statement:
+                observed["lan_or_tail"] = params["observed_at_ts"]
+            if "m.observed_at_ts=$observed_at_ts" in statement:
+                observed["model"] = params["observed_at_ts"]
+        self.assertEqual(observed["runtime"], NOW - 31_000)
+        self.assertEqual(observed["model"], NOW - 31_000)
+        self.assertEqual(observed["capacity"], NOW - 31_000)
+        self.assertEqual(observed["lan_or_tail"], NOW - 15_000)
+        self.assertTrue(all(value < NOW for value in observed.values()))
+
     def test_public_key_file_requires_restricted_mode(self):
         with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
             path = Path(tmp) / "source.pub"
