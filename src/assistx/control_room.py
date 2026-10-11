@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request as UrlRequest
+from urllib.request import HTTPRedirectHandler, Request as UrlRequest, build_opener
 from urllib.request import urlopen
 
 from fastapi import APIRouter, Depends, Request
@@ -120,8 +120,19 @@ def _http_json(
         headers["X-Admin-Token"] = admin_token
     started = time.monotonic()
     request = UrlRequest(url, headers=headers)
-    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - private URLs are operator-configured
-        payload = json.loads(response.read().decode("utf-8"))
+    if admin_token:
+        # urllib's default redirect handler can forward X-Admin-Token across
+        # origins. A privileged router read must never follow any redirect.
+        class _RejectAdminRedirect(HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        opener = build_opener(_RejectAdminRedirect())
+        with opener.open(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    else:
+        with urlopen(request, timeout=timeout) as response:  # noqa: S310 - operator-configured
+            payload = json.loads(response.read().decode("utf-8"))
     return payload, _elapsed_ms(started)
 
 
