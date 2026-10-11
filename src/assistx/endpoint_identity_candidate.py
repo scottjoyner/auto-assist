@@ -94,12 +94,14 @@ def _require_id(value: Any) -> str:
     return value
 
 
-def _require_safe_properties(value: Mapping[str, Any] | None) -> dict[str, Any]:
+def _require_safe_properties(
+    value: Mapping[str, Any] | None, *, allowed: frozenset[str] = ALLOWED_PROPERTIES,
+) -> dict[str, Any]:
     if value is None:
         return {}
     if not isinstance(value, Mapping):
         raise EndpointIdentityHold("invalid endpoint metadata")
-    if set(value) - ALLOWED_PROPERTIES:
+    if set(value) - allowed:
         raise EndpointIdentityHold("endpoint metadata contains unapproved keys")
     props = dict(value)
     if any(
@@ -311,9 +313,9 @@ def candidate_register_service_endpoint(
     endpoint_id = _require_id(endpoint_id)
     node_id = _require_id(node_id)
     service_type = _require_id(service_type)
-    data = _require_safe_properties(safe_properties)
-    if set(data) - ALLOWED_SERVICE_PROPERTIES:
-        raise EndpointIdentityHold("service metadata contains model-only fields")
+    data = _require_safe_properties(
+        safe_properties, allowed=ALLOWED_SERVICE_PROPERTIES,
+    )
     return session.execute_write(
         _write_service_candidate, endpoint_id, node_id, service_type, data,
     )
