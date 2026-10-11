@@ -340,6 +340,33 @@ def run(raft_authority=None) -> dict:
                 # witness closure or unsafe automatic capacity release.
                 assert all(item["state"] == "RESERVED"
                            for item in pending.values())
+                # Disconnect the policy writer AFTER successful reads. The
+                # still-running worker and broker MUST deny new graph work,
+                # preserving every occupied Raft slot (no TTL/HTTP release).
+                before_count = len(pending)
+                policy_service.shutdown()
+                policy_thread.join(timeout=3)
+                policy_service = None
+                stop_test = (
+                    "import sys;sys.path.insert(0,'/tmp');"
+                    "from trace_disposable_task_worker import request;"
+                    "p={'plan_id':'get_task_read','parameters':{'id':'" +
+                    task_id +
+                    "'}};"
+                    "status,body=request(p,idempotency_key="
+                    "'fixture-writer-death-retry-key');"
+                    "assert status==503 and body=={'error':'GRAPH_UNAVAILABLE'};"
+                    "print('POLICY_WRITER_DEATH_GRAPH_DENIED')"
+                )
+                stop_reply = docker(
+                    "exec", worker, "python", "-c", stop_test,
+                    check=False, timeout=10)
+                assert (stop_reply.returncode == 0 and
+                        "POLICY_WRITER_DEATH_GRAPH_DENIED" in stop_reply.stdout), (
+                    "POLICY_WRITER_SHUTDOWN_NOT_FAIL_CLOSED")
+                assert len(raft_fence.snapshot().document["pending"]) == before_count
+                result["writer_death_blocks_new_broker_graph_read"] = True
+                result["writer_death_preserves_real_raft_capacity"] = True
                 result["real_three_host_raft_grants_committed"] = True
                 result["incomplete_closure_capacity_retained"] = True
             return {
