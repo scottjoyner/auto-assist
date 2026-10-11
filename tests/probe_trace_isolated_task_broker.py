@@ -167,6 +167,8 @@ def run() -> dict:
                 }), encoding="utf8")
             docker("cp", str(SOURCE / "trace_disposable_task_worker.py"),
                    worker + ":/tmp/task-worker.py")
+            docker("cp", str(SOURCE / "trace_task_read_broker_client_research.py"),
+                   worker + ":/tmp/trace_task_read_broker_client_research.py")
             docker("cp", str(tmp / "worker-config.json"),
                    worker + ":/tmp/worker-config.json")
             docker("start", worker)
