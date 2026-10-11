@@ -43,8 +43,11 @@ def test_inventory_records_broker_migrations_and_direct_sessions(tmp_path):
     assert result["potential_graph_method_calls"] == 3
     assert result["direct_session_calls_outside_client"] == 1
     assert result["files_with_evidence"] == 2
-    assert set(x["method"] for x in result["task_policy_calls"]) >= {
-        "get_task", "upsert_ticket"
+    assert "get_task" in {
+        x["method"] for x in result["task_policy_calls"]
+    }
+    assert {"get_task", "upsert_ticket"} <= {
+        x["method"] for x in result["highest_method_calls"]
     }
     assert result["direct_session_calls"] == [{
         "file": "api.py", "function": "route", "line": 6,
