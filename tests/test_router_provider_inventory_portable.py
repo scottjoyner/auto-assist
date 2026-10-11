@@ -149,6 +149,11 @@ class SafeProviderCatalog(unittest.TestCase):
             "http://router:8088@attacker.test/admin/providers",
             "http://user:password@router:8088/admin/providers",
             "http://router:bad/admin/providers",
+            "http://router:8088/admin/ops/summary",
+            "http://router:8088/admin/providers?debug=1",
+            "http://router:8088/admin/providers#fragment",
+            "http://router:8088/admin/providers/effective/extra",
+            "http://router:8088/api/fleet/nodes",
         ):
             with self.subTest(override=override):
                 self.assertEqual(
