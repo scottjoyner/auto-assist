@@ -34,6 +34,7 @@ RAFT_KEYS = {
     "raft_owner", "raft_term",
 }
 POLICY_KEYS = {"writer_endpoint", "writer_token"}
+B06_KEYS = {"b06_explicit", "b06_genesis"}
 
 
 class JoinedRaftAdmission:
@@ -293,7 +294,7 @@ class Handler(BaseHTTPRequestHandler):
                 # Crucial ordering: exact Raft CAS committed BEFORE graph
                 # HTTP. No worker-provided grant/token/owner is accepted.
                 try:
-                    self.server.raft_admission.admit(
+                    reserved_token = self.server.raft_admission.admit(
                         self.headers.get("Idempotency-Key"),
                         payload["plan_id"], task_id)
                 except RequestDenied:
@@ -310,11 +311,43 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         self.reply(503, {"error": "ADMISSION_UNCERTAIN"})
                     return
-            task = fetch_task(
-                task_id, self.server.reader_user,
-                self.server.reader_password,
-                payload["plan_id"],
-            )
+            if (self.server.b06_explicit and
+                    self.headers.get("X-B06-Explicit-Bolt") == "1"):
+                if payload["plan_id"] != PLAN or (
+                        self.server.raft_admission is None):
+                    self.reply(422, {"error": "INVALID_RESEARCH_PLAN"})
+                    return
+                from trace_graph_stable_identity_research import (
+                    derive_stable_operation)
+                from trace_b06_broker_held_bolt import held_task
+                original = derive_stable_operation(
+                    "fixture-authenticated-broker-principal",
+                    self.headers.get("Idempotency-Key"), PLAN,
+                    {"id": task_id})
+                metadata = {
+                    "assistx_schema": "research-gateway-entry-v1",
+                    "assistx_operation_id": original.operation,
+                    "assistx_attempt_id": "b06-" + reserved_token,
+                    "assistx_reservation_id": reserved_token,
+                    "assistx_epoch": self.server.b06_genesis,
+                    "assistx_term": 1,
+                    "assistx_plan_id": PLAN,
+                }
+                try:
+                    task = held_task(
+                        task_id, self.server.reader_user,
+                        self.server.reader_password, metadata)
+                except Exception:
+                    # Never auto-release the committed Raft intent, even
+                    # if the graph transaction or observer fails.
+                    self.reply(503, {"error": "B06_TRANSACTION_UNCERTAIN"})
+                    return
+            else:
+                task = fetch_task(
+                    task_id, self.server.reader_user,
+                    self.server.reader_password,
+                    payload["plan_id"],
+                )
         except (RequestDenied, ValueError, UnicodeError) as exc:
             if isinstance(exc, RequestDenied) and str(exc).startswith("GRAPH_"):
                 self.reply(503, {"error": "GRAPH_UNAVAILABLE"})
@@ -328,7 +361,8 @@ def main():
     config = json.loads(Path(CONFIG_PATH).read_text())
     primary = {"bearer", "reader_user", "reader_password"}
     if set(config) not in (
-            primary, primary | RAFT_KEYS, primary | POLICY_KEYS):
+            primary, primary | RAFT_KEYS, primary | POLICY_KEYS,
+            primary | POLICY_KEYS | B06_KEYS):
         raise RuntimeError("BAD_DISPOSABLE_CREDENTIAL_CONFIG")
     if not all(isinstance(config[k], str) and len(config[k]) >= 10
                for k in primary):
@@ -338,6 +372,12 @@ def main():
         RemotePolicyAdmission(config) if POLICY_KEYS <= set(config)
         else JoinedRaftAdmission(config) if RAFT_KEYS <= set(config)
         else None)
+    server.b06_explicit = config.get("b06_explicit") is True
+    server.b06_genesis = config.get("b06_genesis")
+    if server.b06_explicit and (
+            type(server.b06_genesis) is not str or
+            not (10 <= len(server.b06_genesis) <= 128)):
+        raise RuntimeError("INVALID_B06_RESEARCH_GENESIS")
     server.bearer = config["bearer"]
     server.reader_user = config["reader_user"]
     server.reader_password = config["reader_password"]

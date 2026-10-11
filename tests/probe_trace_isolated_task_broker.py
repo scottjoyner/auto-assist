@@ -59,6 +59,9 @@ def run(external_writer: dict | None = None) -> dict:
         raise RuntimeError("EXPLICIT_DISPOSABLE_GRAPH_BROKER_OPT_IN_REQUIRED")
     joined = remote or os.getenv("ASSISTX_DISPOSABLE_RAFT_IN_BROKER") == "1"
     split = remote or os.getenv("ASSISTX_DISPOSABLE_WRITER_SPLIT") == "1"
+    b06 = remote and os.getenv("ASSISTX_B06_HELD_BOLT_RESEARCH") == "1"
+    if b06 and os.getenv("ASSISTX_B06_GRAPH_RESTART_RESEARCH") == "1":
+        raise RuntimeError("B06_HELD_AND_RESTART_MODES_EXCLUSIVE")
     if split and not joined:
         raise RuntimeError("POLICY_WRITER_SPLIT_REQUIRES_JOINED_RAFT")
     tag = secrets.token_hex(4)
@@ -83,6 +86,9 @@ def run(external_writer: dict | None = None) -> dict:
     reader_password = "R" + secrets.token_urlsafe(25)
     bearer = secrets.token_urlsafe(35)
     reader_user = "fixture_reader"
+    observer_user = "fixture_observer"
+    observer_password = "O" + secrets.token_urlsafe(25)
+    observer = "assistx-broker-observer-" + tag
     task_id = "fixture-task-" + tag
     critical_id = "fixture-task-" + tag + "-crit"
     recovery_id = "fixture-task-" + tag + "-recov"
@@ -160,6 +166,17 @@ def run(external_writer: dict | None = None) -> dict:
                 "payload: '{\"runbook\":\"payload-only\"}', "
                 "required_capabilities: []})",
             ]
+            if b06:
+                role_observer = "fixture_tx_observer"
+                statements.extend([
+                    "CREATE ROLE " + role_observer + " IF NOT EXISTS",
+                    "GRANT ACCESS ON DATABASE neo4j TO " + role_observer,
+                    "GRANT SHOW TRANSACTION (fixture_reader) ON DATABASE "
+                    "neo4j TO " + role_observer,
+                    "CREATE USER " + observer_user + " SET PASSWORD '" +
+                    observer_password + "' CHANGE NOT REQUIRED",
+                    "GRANT ROLE " + role_observer + " TO " + observer_user,
+                ])
             for step, cypher in enumerate(statements, 1):
                 check = query(graph, admin, cypher, timeout=15)
                 if check.returncode != 0:
@@ -322,6 +339,16 @@ def run(external_writer: dict | None = None) -> dict:
                     )
                 for src in broker_modules:
                     docker("cp", str(SOURCE / src), broker + ":/tmp/" + src)
+                if b06:
+                    config.update({"b06_explicit": True,
+                                   "b06_genesis": raft_genesis})
+                    docker("cp", str(SOURCE / "trace_b06_broker_held_bolt.py"),
+                           broker + ":/tmp/trace_b06_broker_held_bolt.py")
+                    # Use only the locally installed Python-driver package,
+                    # copied into a disposable container with no bind mount.
+                    import neo4j
+                    package = Path(neo4j.__file__).resolve().parent
+                    docker("cp", str(package), broker + ":/tmp/neo4j")
             (tmp / "broker-config.json").write_text(
                 json.dumps(config), encoding="utf8")
             docker("cp", str(SOURCE / "trace_disposable_task_broker.py"),
@@ -329,6 +356,38 @@ def run(external_writer: dict | None = None) -> dict:
             docker("cp", str(tmp / "broker-config.json"),
                    broker + ":/tmp/broker-config.json")
             docker("start", broker)
+            if b06:
+                docker(
+                    "create", "--pull", "never", "--name", observer,
+                    "--network", graph_net, "--memory", "128m",
+                    "--cpus", "0.7", "--pids-limit", "96",
+                    PYTHON_IMAGE, "sleep", "160", timeout=18)
+                made_containers.append(observer)
+                observer_config = {
+                    "observer_user": observer_user,
+                    "observer_password": observer_password,
+                }
+                (tmp / "observer-config.json").write_text(
+                    json.dumps(observer_config), encoding="utf8")
+                for src in (
+                    "trace_b06_observer_disposable.py",
+                    "trace_b06_observation_gate_research.py",
+                    "trace_graph_entry_metadata.py",
+                    "trace_graph_entry_research.py",
+                ):
+                    docker("cp", str(SOURCE / src),
+                           observer + ":/tmp/" + src)
+                docker("cp", str(tmp / "observer-config.json"),
+                       observer + ":/tmp/observer-config.json")
+                docker("start", observer)
+                assert_disposable(observer, {graph_net})
+                # Observer must not possess Neo4j task-write privileges.
+                denied = query(
+                    graph, observer_password,
+                    "CREATE (:Task {id:'denied-observer-write'})",
+                    user=observer_user)
+                if denied.returncode == 0:
+                    raise RuntimeError("OBSERVER_GRAPH_WRITE_ALLOWED")
             assert_disposable(
                 broker,
                 {graph_net, worker_net, writer_net} if split else
@@ -348,6 +407,7 @@ def run(external_writer: dict | None = None) -> dict:
                     "payload_recovery_task_id": payload_recovery_id,
                     "bearer": bearer,
                     "broker_host": broker, "neo4j_ip": neo_ip,
+                    **({"b06_explicit": True} if b06 else {}),
                     **({"quorum_ip": external_writer["raft_ip"],
                         "quorum_port": external_writer["raft_port"],
                         "remote_three_host": True}
@@ -386,6 +446,80 @@ def run(external_writer: dict | None = None) -> dict:
                 time.sleep(1)
             if result is None:
                 raise RuntimeError("WORKER_TO_BROKER_TASK_READ_ACCEPTANCE_FAILED")
+            b06_observed = False
+            if b06:
+                # Two real Raft slots are already occupied. This worker's
+                # third operation now goes through the SAME authenticated
+                # broker→scoped writer admission and opens a real explicit
+                # Bolt transaction in the broker (not in this host).
+                docker("cp", str(SOURCE / "trace_b06_worker_held_request.py"),
+                       worker + ":/tmp/held-worker.py")
+                docker("cp", str(SOURCE / "trace_b06_worker_capacity.py"),
+                       worker + ":/tmp/held-capacity.py")
+                active_proc = subprocess.Popen(
+                    ["docker", "exec", worker, "python",
+                     "/tmp/held-worker.py"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                try:
+                    deadline = time.monotonic() + 24
+                    while True:
+                        exists = docker(
+                            "exec", broker, "test", "-f",
+                            "/tmp/b06-target.json", timeout=6, check=False)
+                        if exists.returncode == 0:
+                            break
+                        if active_proc.poll() is not None:
+                            raise RuntimeError("B06_BROKER_HELD_REQUEST_EXITED")
+                        if time.monotonic() > deadline:
+                            raise RuntimeError("B06_BROKER_BOLT_NOT_HELD")
+                        time.sleep(.25)
+                    local_target = tmp / "b06-observed-target.json"
+                    docker("cp", broker + ":/tmp/b06-target.json",
+                           str(local_target))
+                    docker("cp", str(local_target),
+                           observer + ":/tmp/observer-target.json")
+                    active = docker(
+                        "exec", observer, "python", "/tmp/" +
+                        "trace_b06_observer_disposable.py", "active",
+                        timeout=22, check=False)
+                    if active.returncode != 0:
+                        raise RuntimeError("B06_INDEPENDENT_ACTIVE_NOT_OBSERVED")
+                    active_data = json.loads(active.stdout)
+                    if (active_data.get("status") !=
+                            "EXACT_ACTIVE_TRANSACTION_OBSERVED" or
+                            active_data.get("release_authorized") is not False):
+                        raise RuntimeError("B06_ACTIVE_OBSERVER_INVALID")
+                    docker("exec", broker, "python", "-c",
+                           "from pathlib import Path;"
+                           "Path('/tmp/b06-release').touch()", timeout=8)
+                    worker_output, _ = active_proc.communicate(timeout=17)
+                    if active_proc.returncode != 0:
+                        raise RuntimeError("B06_HELD_WORKER_TRANSACTION_FAILED")
+                    worker_ok = json.loads(worker_output)
+                    if worker_ok.get("held_bolt_request_finished") is not True:
+                        raise RuntimeError("B06_HELD_WORKER_NOT_COMPLETE")
+                    absent = docker(
+                        "exec", observer, "python",
+                        "/tmp/trace_b06_observer_disposable.py",
+                        "absent", timeout=22, check=False)
+                    if absent.returncode != 0:
+                        raise RuntimeError("B06_OBSERVER_ABSENCE_FAILED")
+                    absent_data = json.loads(absent.stdout)
+                    if (absent_data.get("status") !=
+                            "ABSENT_OBSERVATIONS_ONLY" or
+                            absent_data.get("release_authorized") is not False):
+                        raise RuntimeError("B06_OBSERVER_RELEASE_ESCALATION")
+                    cap = docker(
+                        "exec", worker, "python", "/tmp/held-capacity.py",
+                        timeout=11)
+                    if not json.loads(cap.stdout).get(
+                            "fourth_request_denied_after_observed_bolt"):
+                        raise RuntimeError("B06_CAPACITY_RELEASED_UNVERIFIED")
+                    b06_observed = True
+                finally:
+                    if active_proc.poll() is None:
+                        active_proc.kill()
+                        active_proc.communicate(timeout=5)
             if joined:
                 verifier = (
                     "import json,sys;sys.path.insert(0,'/tmp');"
@@ -586,6 +720,11 @@ def run(external_writer: dict | None = None) -> dict:
                 **result,
                 "b06_graph_restart_reservations_held": graph_restarted,
                 "b06_independent_witness_integrated": False,
+                "b06_explicit_broker_bolt_observed_active_and_absent":
+                    b06_observed,
+                "b06_separate_graph_principal_observer": b06_observed,
+                "b06_server_boot_independently_attested": False,
+                "b06_signed_closure_or_release_authorized": False,
                 "schema": "assistx-disposable-task-broker-20261011-v1",
                 "runtime_seconds": round(time.monotonic() - started, 2),
                 "source_task_method": "Neo4jClient.get_task",

@@ -36,8 +36,11 @@ assert (status,resp)==(200,{"task":{"id":CONFIG["task_id"],"status":"READY"}}),(
 assert call()[0]==409
 assert call(plan="get_task_claim_guard")[0]==409
 assert call(key="research-second-unique-request-0002")[0]==200
-assert call(key="research-third-unique-request-0003")[0]==200
-assert call(key="research-fourth-unique-request-0004")[0]==503  # cap=3
+if not CONFIG.get("b06_explicit",False):
+    assert call(key="research-third-unique-request-0003")[0]==200
+    assert call(key="research-fourth-unique-request-0004")[0]==503  # cap=3
+# In B06 mode the third slot is reserved by a *held explicit Bolt* request
+# driven later by the isolated coordinator and separately observed.
 print(json.dumps({
  "real_Raft_committed_before_graph_read":True,
  "direct_worker_bolt_denied":True,
