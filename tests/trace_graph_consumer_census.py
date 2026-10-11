@@ -21,7 +21,10 @@ PRIORITY_TERMS = (
     "task", "claim", "recovery", "heartbeat", "review", "complete",
     "dispatch", "reservation", "trace", "intent", "control", "agent",
 )
-DIRECT_METHODS = {"_session", "session", "execute_query", "run", "driver"}
+IGNORED_METHODS = {"close", "_session", "session", "driver"}
+# Close() is shared by many non-graph objects; session access is inventoried
+# separately as direct driver reachability. Do not inflate broker plan counts.
+
 
 
 def _function(node: ast.AST) -> str:
@@ -98,7 +101,7 @@ def inventory(root: Path) -> dict:
                         "line": call.lineno, "symbol": symbol,
                         "class": "DIRECT_SESSION_REVIEW",
                     })
-                if attr not in methods:
+                if attr not in methods or attr in IGNORED_METHODS:
                     continue
                 # Mark potential client calls, never infer a safe origin
                 # from a variable name or from mere method-name agreement.
@@ -123,6 +126,7 @@ def inventory(root: Path) -> dict:
         "source_root": root.as_posix(),
         "neo4j_client_declared_methods": len(methods),
         "potential_graph_method_calls": len(records),
+        "excluded_ambiguous_method_names": sorted(IGNORED_METHODS),
         "direct_session_calls_outside_client": len(session_sites),
         "files_with_evidence": len(file_counts),
         "highest_callsite_files": [
