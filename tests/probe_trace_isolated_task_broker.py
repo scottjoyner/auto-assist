@@ -64,6 +64,7 @@ def run() -> dict:
     task_id = "fixture-task-" + tag
     critical_id = "fixture-task-" + tag + "-crit"
     recovery_id = "fixture-task-" + tag + "-recov"
+    payload_recovery_id = "fixture-task-" + tag + "-payrec"
     made_networks = []
     made_containers = []
     started = time.monotonic()
@@ -106,7 +107,7 @@ def run() -> dict:
             statements = [
                 "CREATE ROLE " + role + " IF NOT EXISTS",
                 "GRANT ACCESS ON DATABASE neo4j TO " + role,
-                "GRANT MATCH {id, status, payload_json, queue_class, "
+                "GRANT MATCH {id, status, payload, payload_json, queue_class, "
                 "required_capabilities} ON GRAPH neo4j NODES Task TO " + role,
                 "CREATE USER " + reader_user + " SET PASSWORD '" +
                 reader_password + "' CHANGE NOT REQUIRED",
@@ -121,6 +122,10 @@ def run() -> dict:
                 "', status: 'READY', "
                 "payload_json: '{\"runbook\":\"fixture-only\"}', "
                 "required_capabilities: ['recovery']})",
+                "CREATE (:Task {id: '" + payload_recovery_id +
+                "', status: 'READY', "
+                "payload: '{\"runbook\":\"payload-only\"}', "
+                "required_capabilities: []})",
             ]
             for step, cypher in enumerate(statements, 1):
                 check = query(graph, admin, cypher, timeout=15)
@@ -176,6 +181,7 @@ def run() -> dict:
                     "task_id": task_id,
                     "critical_task_id": critical_id,
                     "recovery_task_id": recovery_id,
+                    "payload_recovery_task_id": payload_recovery_id,
                     "bearer": bearer,
                     "broker_host": broker, "neo4j_ip": neo_ip,
                 }), encoding="utf8")
@@ -210,7 +216,8 @@ def run() -> dict:
                 "tested_subset": ["Task.id", "Task.status"],
                 "claim_guard_fields": [
                     "Task.id", "Task.status", "Task.queue_class",
-                    "Task.payload_json", "Task.required_capabilities",
+                    "Task.payload", "Task.payload_json",
+                    "Task.required_capabilities",
                 ],
                 "neo4j_actual_read": True,
                 "neo4j_reader_role_read": True,
