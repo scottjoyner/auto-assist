@@ -17,12 +17,13 @@ from trace_task_read_broker_client_research import TaskReadBrokerClient
 CONFIG = json.loads(Path("/tmp/worker-config.json").read_text())
 
 
-def request(payload, bearer=True):
+def request(payload, bearer=True, idempotency_key=None):
     req = urllib.request.Request(
         "http://" + CONFIG["broker_host"] + ":8808/v1/plan",
         data=json.dumps(payload).encode(), method="POST",
         headers={
             "Content-Type": "application/json",
+            "Idempotency-Key": idempotency_key or "fixture-" + uuid4().hex,
             **({"Authorization": "Bearer " + CONFIG["bearer"]} if bearer else {}),
         },
     )
@@ -94,6 +95,18 @@ def main():
     assert not socket_open(CONFIG["neo4j_ip"], 7474), "DIRECT_GRAPH_HTTP_BYPASS"
     assert socket_open(CONFIG["broker_host"], 8808)
 
+    if CONFIG.get("requires_raft"):
+        stable = "fixture-stable-replay-request-1"
+        first_status, _ = request(valid, idempotency_key=stable)
+        assert first_status == 200, "FRESH_REAL_RAFT_ADMISSION_REFUSED"
+        second_status, second = request(valid, idempotency_key=stable)
+        assert second_status == 409, (second_status, second)
+        changed_status, changed = request({
+            "plan_id": "get_task_claim_guard",
+            "parameters": {"id": task_id}
+        }, idempotency_key=stable)
+        assert changed_status == 409, (changed_status, changed)
+
     print(json.dumps({
         "worker_restricted_task_lookup": True,
         "worker_get_task_client_adapter": True,
@@ -110,6 +123,8 @@ def main():
         "direct_graph_http_literal_ip_denied": True,
         "broker_endpoint_accessible": True,
         "production_neo4j_or_api_touched": False,
+        "raft_replay_and_payload_conflict_denied": (
+            bool(CONFIG.get("requires_raft"))),
         "raft_admission_integrated": False,
     }, sort_keys=True))
 
