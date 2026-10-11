@@ -972,6 +972,15 @@ def _live_loaded_models(neo_factory: NeoFactory | None) -> dict[str, Any] | None
             ms = rows[0]["ms"] if rows else None
             if not ms:
                 return None
+            # A graph snapshot is not residency proof after the fleet's
+            # online freshness horizon. Retain history separately, but fail
+            # closed for currently LOADED rather than promoting old data.
+            try:
+                age_ms = _now_ms() - int(ms)
+            except (TypeError, ValueError, OverflowError):
+                return {}
+            if age_ms > 120_000 or age_ms < -30_000:
+                return {}
             query = (
                 "MATCH (s:FleetSnapshot)-[:HAS_MODEL_STATE]->(m:FleetModelState) "
                 "WHERE s.captured_at_ms=$ms "
