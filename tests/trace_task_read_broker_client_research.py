@@ -10,6 +10,7 @@ import json
 import re
 import urllib.error
 import urllib.request
+from uuid import uuid4
 from urllib.parse import urlsplit
 
 _TASK_ID = re.compile(r"^fixture-task-[A-Za-z0-9_-]{4,48}$")
