@@ -16,7 +16,6 @@ from urllib.parse import urlparse
 
 import yaml
 from neo4j import GraphDatabase
-
 from runtime_projection_signed_apply_gate import validate as verify_signed_apply
 
 
