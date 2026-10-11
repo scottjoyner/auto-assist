@@ -12,7 +12,7 @@ import os
 def probe_router_context(requests_module):
     """Return explicit status without changing router or local runtime state."""
     token = os.environ.get("AUTO_ROUTER_ADMIN_TOKEN")
-    if not token:
+    if not isinstance(token, str) or not token.strip():
         return {"status": "auth_required", "has_context": None}
     try:
         response = requests_module.get(
@@ -35,6 +35,16 @@ def probe_router_context(requests_module):
         payload = response.json()
     except (TypeError, ValueError):
         return {"status": "invalid_response", "has_context": None}
-    if not isinstance(payload, (dict, list)):
+    # HTTP 200 can still carry an error object or a non-context JSON body.
+    # The deployed /admin/context response has revision, source and providers;
+    # none of these metadata fields grants fresh signed execution admission.
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("revision"), str)
+        or not payload["revision"].strip()
+        or not isinstance(payload.get("source"), str)
+        or not payload["source"].strip()
+        or not isinstance(payload.get("providers"), list)
+    ):
         return {"status": "invalid_response", "has_context": None}
-    return {"status": "ok", "has_context": bool(payload)}
+    return {"status": "ok", "has_context": bool(payload["providers"])}
