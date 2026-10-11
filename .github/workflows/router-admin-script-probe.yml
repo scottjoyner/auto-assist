@@ -1,0 +1,36 @@
+name: Router admin script client contract
+
+on:
+  pull_request:
+    paths:
+      - "scripts/router_admin_probe.py"
+      - "scripts/coordination_check.py"
+      - "scripts/sync_docs_to_neo4j.py"
+      - "tests/test_router_admin_script_probe.py"
+      - ".github/workflows/router-admin-script-probe.yml"
+  push:
+    paths:
+      - "scripts/router_admin_probe.py"
+      - "scripts/coordination_check.py"
+      - "scripts/sync_docs_to_neo4j.py"
+      - "tests/test_router_admin_script_probe.py"
+      - ".github/workflows/router-admin-script-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-admin-client-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install standalone test dependency
+        run: python -m pip install "pytest>=8,<10"
+      - name: Compile auth probe and legacy callers
+        run: python -m py_compile scripts/router_admin_probe.py scripts/coordination_check.py scripts/sync_docs_to_neo4j.py
+      - name: Run isolated fail-closed admin-client tests
+        run: python -m pytest -q --noconftest tests/test_router_admin_script_probe.py
