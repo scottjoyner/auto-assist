@@ -24,13 +24,16 @@ jobs:
         run: |
           python -m unittest discover -s tests -p 'test_runtime_projection_signed_apply_gate.py' -q
           python -m unittest discover -s tests -p 'test_runtime_projection_review_preflight.py' -q
+          # Host-only Docker tests MUST skip on hosted CI; no Docker daemon required.
+          python -m unittest discover -s tests -p 'test_runtime_projection_real_neo4j.py' -q
       - name: Strict lint on changed approval and source gate
         run: |
           ruff check scripts/approve-runtime-projection.py \
             scripts/runtime_projection_signed_apply_gate.py \
             scripts/runtime-projection-review-preflight.py \
             tests/test_runtime_projection_signed_apply_gate.py \
-            tests/test_runtime_projection_review_preflight.py
+            tests/test_runtime_projection_review_preflight.py \
+            tests/test_runtime_projection_real_neo4j.py
       - name: Ensure the signed apply path is fail-closed
         run: |
           python - <<'PY'
