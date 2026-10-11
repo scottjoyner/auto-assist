@@ -11,6 +11,8 @@ import socket
 import urllib.error
 import urllib.request
 
+from trace_task_read_broker_client_research import TaskReadBrokerClient
+
 CONFIG = json.loads(Path("/tmp/worker-config.json").read_text())
 
 
@@ -40,6 +42,13 @@ def socket_open(host: str, port: int) -> bool:
 
 def main():
     task_id = CONFIG["task_id"]
+    task_client = TaskReadBrokerClient(
+        "http://" + CONFIG["broker_host"] + ":8808", CONFIG["bearer"])
+    # This is the actual Neo4jClient.get_task-shaped worker method canary,
+    # returning an intentionally limited id/status subset from the fixture.
+    assert task_client.get_task(task_id) == {
+        "id": task_id, "status": "READY"}
+    assert task_client.get_task("fixture-task-notpresent") is None
     valid = {"plan_id": "get_task_read", "parameters": {"id": task_id}}
     accepted_status, body = request(valid)
     assert accepted_status == 200, (accepted_status, body)
@@ -72,6 +81,7 @@ def main():
 
     print(json.dumps({
         "worker_restricted_task_lookup": True,
+        "worker_get_task_client_adapter": True,
         "worker_response_projection": "Task.id,Task.status",
         "missing_broker_bearer_denied": True,
         "arbitrary_cypher_plan_denied": True,
