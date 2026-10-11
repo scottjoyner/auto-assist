@@ -18,7 +18,6 @@ import yaml
 from neo4j import GraphDatabase
 from runtime_projection_signed_apply_gate import validate as verify_signed_apply
 
-
 _TAILSCALE = ipaddress.ip_network("100.64.0.0/10")
 _UNKNOWN = {"", "unknown", "unresolved", "none", "null", "replace-me"}
 _ALLOWED_TRANSPORTS = {"lan", "tailscale", "loopback", "host_gateway", "local_dns"}
