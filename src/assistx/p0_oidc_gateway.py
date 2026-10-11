@@ -254,7 +254,8 @@ class VerifiedHumanGateway:
         # are not forwarded under any circumstances.
         try:
             async with httpx.AsyncClient(
-                transport=transport, timeout=10.0, follow_redirects=False
+                transport=transport, timeout=10.0, follow_redirects=False,
+                trust_env=False
             ) as client:
                 response = await client.post(
                     self.router_url, json=payload, headers=headers,
