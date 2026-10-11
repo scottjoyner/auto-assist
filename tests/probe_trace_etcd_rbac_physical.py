@@ -347,10 +347,11 @@ def run_scoped_rbac(
         if (len(final_view.document["pending"]) != 3 or
                 final_view.document["completed"]):
             raise AssertionError("THREE_HOST_JOINED_PENDING_INVARIANT_FAILED")
-        # B06 negative: the protected *same joined request* remains only
-        # RESERVED with no server-observed txID, generation or signer.
-        # Even a synthetic well-shaped closure claim must fail closed.
-        # No production graph query/transaction/credential is consulted.
+        # B06 negative: the original reservation may now be STARTED
+        # with the observer's txID, but neither fixture graph boot identity
+        # nor observation carries a verified SIGNED closure receipt.
+        # Even a forged close on this STARTED entry must fail closed.
+        # No production graph/credentials are consulted.
         authority = EtcdQuorumFence(root, joined_key, cluster_id)
         for token in final_view.document["pending"]:
             try:
@@ -359,7 +360,12 @@ def run_scoped_rbac(
                     {"schema": "assistx-raft-closure-research-v1"},
                     b"invalid-research-signature")
             except FenceRefused as exc:
-                if str(exc) != "NO_VERIFIED_PHYSICAL_BINDING":
+                expected = (
+                    "MISMATCHED_WITNESS_RECEIPT"
+                    if final_view.document["pending"][token]["state"]
+                       == "STARTED"
+                    else "NO_VERIFIED_PHYSICAL_BINDING")
+                if str(exc) != expected:
                     raise
             else:
                 raise AssertionError("UNOBSERVED_CLOSURE_ALLOWED")

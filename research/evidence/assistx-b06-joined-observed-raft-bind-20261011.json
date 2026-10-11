@@ -1,0 +1,57 @@
+{
+  "schema": "assistx-b06-exact-observed-bolt-raft-bind-v1",
+  "date": "2026-10-11",
+  "repo": "scottjoyner/auto-assist",
+  "branch": "research/assistx-b06-joined-observed-raft-bind-20261011",
+  "physical_source_head": "687b62f59d27402bd1fa8643221b61d9c56be2a5",
+  "physical_result": "PASS",
+  "exit": 0,
+  "physical_full_elapsed_seconds": 106.43,
+  "joined_broker_elapsed_seconds": 79.85,
+  "hosts": [
+    "x1-370",
+    "xwing",
+    "destroyer"
+  ],
+  "scope": "Manual opt-in disposable 3-host etcd + isolated graph, worker, broker, observer and policy writer only.",
+  "mode": [
+    "ASSISTX_THREE_HOST_RAFT_RESEARCH=1",
+    "ASSISTX_RAFT_RBAC_RESEARCH=1",
+    "ASSISTX_THREE_HOST_SPLIT_WRITER_RESEARCH=1",
+    "ASSISTX_DISPOSABLE_GRAPH_BROKER=1",
+    "ASSISTX_B06_HELD_BOLT_RESEARCH=1",
+    "ASSISTX_B06_RAFT_BIND_RESEARCH=1"
+  ],
+  "proof": {
+    "real_mtls_rbac_three_host_raft": true,
+    "broker_original_CAS_before_explicit_bolt": true,
+    "separate_neo4j_observer_original_active_tx": true,
+    "observer_origin_read_only_role": true,
+    "separate_writer_forged_txid_denied_before_bind": true,
+    "separate_writer_exact_observed_reservation_binding": true,
+    "one_original_entry_persisted_STARTED_during_bolt_hold": true,
+    "binding_replay_rejected": true,
+    "transaction_absent_after_broker_commits": true,
+    "three_pending_zero_completed_after_execution": true,
+    "fourth_operation_capacity_denied": true,
+    "two_remote_raft_voters_stopped_new_admission_denied": true,
+    "two_remote_raft_voters_recovered": true,
+    "forged_unsigned_closure_rejected_for_STARTED_and_RESERVED": true,
+    "scoped_resources_cleaned": true,
+    "production_changes": false
+  },
+  "limits": {
+    "graph_member_from_fixture_not_independently_attested": true,
+    "graph_boot_generation_from_fixture_not_independently_attested": true,
+    "observer_to_writer_evidence_transferred_by_privileged_host": true,
+    "observer_record_not_signed_or_durable": true,
+    "bound_txid_could_be_coherently_forged_by_privileged_coordinator": true,
+    "writer_broker_mtls_not_proven": true,
+    "distinct_protected_OS_credential_custody_not_proven": true,
+    "signed_closure_and_capacity_release_not_implemented": true,
+    "automatic_failover_disabled": true,
+    "production_B01_direct_Bolt_bypass_still_present": true,
+    "B02_consumer_parity_not_accepted": true
+  },
+  "decision": "B06_UNATTESTED_OBSERVED_RAFT_STARTED_BIND_PHYSICAL_PASS__INDEPENDENT_CLOSURE_NO_GO"
+}
