@@ -23,9 +23,19 @@ Physical read-only Beelink evidence from PR #311: gateway `lm-studio` PID 1535 o
 
 ## Test evidence
 
-`tests/test_verify_lmstudio_native_stream_instance.py` includes **29 source-only synthetic SSE acceptance and negative cases**: valid preloaded model ID, CRLF, missing terminal boundary, stream too large/invalid UTF-8, unexpected load events, errors, tool/reasoning privacy guard, start/end wrong instance, invalid/missing response ID, token limits, different final output, duplicate/extra events, unexpected content fields, and non-authority flags. Initial exact-head scratch run on x1-370: **29 passed, strict Ruff passed**, no LM Studio server/model access.
+`tests/test_verify_lmstudio_native_stream_instance.py` includes **36 source-only synthetic SSE acceptance and negative cases**: valid preloaded model ID, CRLF, missing terminal boundary, stream too large/invalid UTF-8, unexpected load events, errors, tool/reasoning privacy guard, start/end wrong instance, invalid/missing response ID, token limits, different final output, duplicate/extra events, unexpected content fields, and non-authority flags. Initial exact-head scratch run on x1-370: **29 passed, strict Ruff passed**, no LM Studio server/model access.
 
-In the stacked draft tree, CI also reruns [PR #314](https://github.com/scottjoyner/auto-assist/pull/314)'s 34 signed gateway/worker synthetic receipt tests, 17 unsigned physical cross-observation tests, and 15 socket-inode lineage tests: **110 focused tests**, all offline. These tests establish **protocol validation only** and will never be called live physical worker acceptance.
+In the stacked draft tree, CI also reruns [PR #314](https://github.com/scottjoyner/auto-assist/pull/314)'s 34 signed gateway/worker synthetic receipt tests, 17 unsigned physical cross-observation tests, and 15 socket-inode lineage tests: **118 focused tests**, all offline. These tests establish **protocol validation only** and will never be called live physical worker acceptance.
+
+## Official `prompt_processing.*` compatibility correction (2026-10-11)
+
+A documentation-versus-implementation review found a false negative in the earlier strict SSE parser: LM Studio's [official streaming event catalog](https://lmstudio.ai/docs/developer/rest/streaming-events) includes `prompt_processing.start`, `prompt_processing.progress` and `prompt_processing.end` **on an otherwise healthy, already-loaded chat stream**. The previous parser rejected them as unknown events, incorrectly treating a benign generation as unsupported.
+
+The draft parser now permits **at most one correctly ordered prompt-processing section** between `chat.start` and `message.start`, validates that progress values are numeric, finite, **0–1** (not booleans or NaN), and requires `prompt_processing.end` before message generation. Missing/duplicate/out-of-order events fail closed. **Model loads, reasoning, tool calls, errors and unauthorized content remain unconditionally rejected**, including model loads inserted within prompt processing.
+
+Added 7 independent parser tests and 1 signed-receipt-bridge compatibility test, raising the source-only acceptance set to **118 cases** (36 native SSE, 14 raw SSE bridge, 36 paired synthetic signatures, 17 host GGUF correlation, 15 Linux socket lineage). Fleet Commander verified exact committed source at `dd48028c6df10e8d74b239c03ce5d98440cb02d2` on x1-370: **118 tests passed, strict Ruff passed, no live model requests**. Await separate exact-head hosted CI verification.
+
+A passing result still proves only structural **gateway-side** model instance and test-receipt consistency; the provider has not issued real worker-specific request/owner receipts and the observer has no signing authority.
 
 ## Offline native-stream ↔ synthetic signed-receipt bridge
 
