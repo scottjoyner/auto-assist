@@ -401,16 +401,37 @@ def test_live_loaded_models_ignores_unconfirmed_model_states() -> None:
 
 def test_live_loaded_models_refuses_stale_snapshot() -> None:
     fake = _FakeNeo([{"ms": control_room._now_ms() - 120_001}])
-    assert control_room._live_loaded_models(lambda: fake) == {}
+    result = control_room._live_loaded_models(lambda: fake)
+    assert result["__snapshot_warning__"]["kind"] == "STALE_GRAPH_SNAPSHOT"
+    assert result["__snapshot_warning__"]["age_ms"] >= 120_000
     assert fake._session.run.call_count == 1
     assert fake.closed
 
 
 def test_live_loaded_models_refuses_future_snapshot() -> None:
     fake = _FakeNeo([{"ms": control_room._now_ms() + 60_000}])
-    assert control_room._live_loaded_models(lambda: fake) == {}
+    result = control_room._live_loaded_models(lambda: fake)
+    assert result["__snapshot_warning__"]["kind"] == "FUTURE_GRAPH_SNAPSHOT"
+    assert result["__snapshot_warning__"]["age_ms"] < -30_000
     assert fake._session.run.call_count == 1
     assert fake.closed
+
+
+def test_collect_fleet_nodes_stale_graph_is_unknown_not_empty(_fleet_env, monkeypatch) -> None:
+    monkeypatch.setattr(control_room, "_live_loaded_models", lambda _f: {
+        "__snapshot_warning__": {"kind": "STALE_GRAPH_SNAPSHOT", "age_ms": 180_000},
+    })
+    monkeypatch.setattr(control_room, "_historical_loaded_models", lambda _f: {})
+    monkeypatch.setattr(control_room, "_provider_catalog", lambda _f=None: {})
+    _open_registry(monkeypatch, _registry_payload())
+
+    nodes = control_room.collect_fleet_nodes(lambda: None)
+    air = next(node for node in nodes if node["ip"] == "100.64.0.5")
+    assert air["loaded_models"] == []
+    assert air["model_evidence"] == "STALE_GRAPH_SNAPSHOT"
+    assert air["model_source"] == "graph-invalid"
+    assert "residency unknown" in air["model_clue"]
+    assert "live graph reports no loaded models" not in air["model_clue"]
 
 
 def test_historical_loaded_models_uses_immutable_observations() -> None:
