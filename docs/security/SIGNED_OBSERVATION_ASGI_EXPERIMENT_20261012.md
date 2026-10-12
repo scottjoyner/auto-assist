@@ -52,3 +52,22 @@ those gates; leave all production admission/routing/release flags on HOLD.
 The dedicated offline `rc2-bridge-auth-negative` CI lane tests this module
 without Docker, production API imports, HTTP network calls or provider tokens.
 Its green status is a *source contract*, not deployment authorization.
+
+## Optional disposable end-to-end acceptance
+
+The existing PR #212 guarded real-Redis runner is extended *in this stacked
+research branch only* to instantiate a synthetic FastAPI observation route
+using this signed-ASGI adapter, connected to the same real Redis nonce fence.
+With its explicit `--approve-disposable-replay`, exact clean source head and
+immutable preinstalled image SHA pins, it runs one read-only/network-none,
+host-port-free Redis container with synthetic keys and a temporary TestClient.
+
+Acceptance requires **ten simultaneous signed HTTP observation requests**:
+exactly one HTTP 200 and nine HTTP 401 denials. Missing/legacy forged
+Tailnet headers must also get 401. The disposable Redis is then restarted
+without persistent data; an old signed HTTP assertion must still get 401
+because the receiver's pinned Redis generation changed. This does not prove
+durable anti-rollback on re-provisioning a new generation, nor does it
+authenticate a real gateway/Tailscale client. The runner only cleans up its
+own exact container identity and refuses pre-existing names; there are no
+API containers, host ports, NAS paths, or production credentials involved.
