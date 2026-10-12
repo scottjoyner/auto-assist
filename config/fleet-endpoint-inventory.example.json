@@ -1,0 +1,40 @@
+{
+  "schema": "fleet-endpoint-inventory/v1",
+  "endpoints": [
+    {
+      "id": "kilo-northmini-free",
+      "kind": "cloud_chat",
+      "provider": "kilo_free",
+      "model": "cohere/north-mini-code:free",
+      "upstream_group": "unknown"
+    },
+    {
+      "id": "kilo-nemotron-lightning-free",
+      "kind": "cloud_chat",
+      "provider": "kilo_free",
+      "model": "nvidia/nemotron-3.5-lightning:free",
+      "upstream_group": "unknown"
+    },
+    {
+      "id": "example-fleet-chat-node",
+      "kind": "local_chat",
+      "provider": "local_example",
+      "model": "example-chat-model",
+      "upstream_group": "local"
+    },
+    {
+      "id": "example-fleet-embedding-node",
+      "kind": "embedding",
+      "provider": "local_example",
+      "model": "example-embedding-model",
+      "upstream_group": "local"
+    },
+    {
+      "id": "example-assistx-gateway",
+      "kind": "gateway",
+      "provider": "gateway_example",
+      "model": "example-gateway-catalog",
+      "upstream_group": "unknown"
+    }
+  ]
+}
