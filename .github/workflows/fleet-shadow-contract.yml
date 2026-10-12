@@ -1,0 +1,75 @@
+name: fleet-shadow-contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/fleet-shadow-contract.yml"
+      - "config/fleet-endpoint-inventory.example.json"
+      - "docs/fleet_endpoint_harness_shadow_20261010.md"
+      - "scripts/fleet_endpoint_*.py"
+      - "scripts/fleet_serve_preflight.py"
+      - "src/assistx/fleet_endpoint_*.py"
+      - "src/assistx/fleet_ingress_boundary.py"
+      - "src/assistx/fleet_sso_ingest.py"
+      - "src/assistx/fleet_serve_*.py"
+      - "src/assistx/fleet_tailnet_witness.py"
+      - "tests/test_fleet_*.py"
+      - "tests/test_harness_*.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shadow-contract-no-authority:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install repository test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Compile only shadow harness modules
+        run: >-
+          python -B -m py_compile
+          src/assistx/fleet_endpoint_harness.py
+          src/assistx/fleet_endpoint_shadow_gate.py
+          src/assistx/fleet_ingress_boundary.py
+          src/assistx/fleet_serve_https_probe.py
+          src/assistx/fleet_serve_preflight.py
+          src/assistx/fleet_sso_ingest.py
+          src/assistx/fleet_tailnet_witness.py
+          scripts/fleet_endpoint_harness.py
+          scripts/fleet_endpoint_shadow_gate.py
+          scripts/fleet_endpoint_snapshot.py
+          scripts/fleet_serve_preflight.py
+      - name: Type check isolated ingress inventory
+        run: >-
+          python -m mypy src/assistx/fleet_ingress_boundary.py
+          --ignore-missing-imports --follow-imports=skip
+      - name: No-authority contract and regression suites
+        run: >-
+          python -B -m pytest -q -m "not integration"
+          tests/test_fleet_endpoint_harness.py
+          tests/test_fleet_endpoint_shadow_gate.py
+          tests/test_fleet_endpoint_snapshot.py
+          tests/test_fleet_ingress_boundary.py
+          tests/test_fleet_serve_https_probe.py
+          tests/test_fleet_serve_preflight.py
+          tests/test_fleet_sso_ingest.py
+          tests/test_fleet_tailnet_witness.py
+          tests/test_harness_chain.py
+          tests/test_harness_gates.py
+          tests/test_harness_suites.py
