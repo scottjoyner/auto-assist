@@ -1,0 +1,47 @@
+name: Legacy Router Context Status Guard (Draft, No Deploy)
+
+on:
+  pull_request:
+    paths:
+      - "scripts/legacy_router_context_probe.py"
+      - "scripts/coordination_check.py"
+      - "scripts/sync_docs_to_neo4j.py"
+      - "tests/test_legacy_router_context_probe.py"
+      - ".github/workflows/legacy-router-context-status.yml"
+  push:
+    branches: [security/legacy-context-probe-401-20261011]
+    paths:
+      - "scripts/legacy_router_context_probe.py"
+      - "scripts/coordination_check.py"
+      - "scripts/sync_docs_to_neo4j.py"
+      - "tests/test_legacy_router_context_probe.py"
+      - ".github/workflows/legacy-router-context-status.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  anonymous-admin-denial-classification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Parse scripts with no environment or network accesses
+        run: |
+          python -m py_compile \
+            scripts/legacy_router_context_probe.py \
+            scripts/coordination_check.py \
+            scripts/sync_docs_to_neo4j.py
+      - name: Test synthetic response status and caller behavior
+        run: python -m unittest discover -s tests -p test_legacy_router_context_probe.py -v
+      - name: Declare explicit evidence boundary
+        run: |
+          echo 'synthetic_only=true'
+          echo 'real_admin_responses_read=false'
+          echo 'admin_tokens_sent=false'
+          echo 'router_deployed=false'
