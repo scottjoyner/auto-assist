@@ -50,6 +50,40 @@
     </div>
   </section>
 
+  <section class="card half component-health" id="component-health" aria-labelledby="component-health-heading">
+    <div class="section-header">
+      <div>
+        <h3 id="component-health-heading">Observed Component Health</h3>
+        <p class="kicker">Only fresh evidence contributes to the score; unknown is not healthy or failed.</p>
+      </div>
+    </div>
+    <div id="component-health-items" aria-live="polite">
+      <div class="component-health-item">
+        <span class="component-name">Awaiting evidence</span>
+        <span class="component-status">unknown</span>
+        <span class="component-score">—</span>
+      </div>
+    </div>
+    <div class="metric-note" id="fleet-health-score">Overall health: unknown (no measured components)</div>
+    <div class="metric-note" id="fleet-critical-alerts">No observed critical incidents</div>
+  </section>
+
+  <section class="card half trend-analysis" id="trend-analysis" aria-labelledby="trend-analysis-heading">
+    <div class="section-header">
+      <div>
+        <h3 id="trend-analysis-heading">Trend Evidence</h3>
+        <p class="kicker">A single fleet snapshot is not a historical trend.</p>
+      </div>
+    </div>
+    <div id="trend-evidence-items" aria-live="polite">
+      <div class="trend-item">
+        <span class="trend-metric">Inventory</span>
+        <span class="trend-value">—</span>
+        <span class="trend-change">Awaiting baseline</span>
+      </div>
+    </div>
+  </section>
+
   <section class="card half" id="section-nodes">
     <div class="section-header">
       <div>
@@ -698,11 +732,60 @@
     wrap.innerHTML = html;
   }
 
+  function renderEvidence(data) {
+    const health = document.getElementById('component-health-items');
+    health.replaceChildren();
+    for (const component of data.component_health || []) {
+      const item = document.createElement('div');
+      item.className = 'component-health-item';
+      const name = document.createElement('span');
+      name.className = 'component-name';
+      name.textContent = String(component.name || 'Unknown component');
+      const status = document.createElement('span');
+      status.className = 'component-status';
+      status.textContent = String(component.status || 'unknown');
+      const score = document.createElement('span');
+      score.className = 'component-score';
+      score.textContent = component.score_valid === true ? String(component.score) + '/100' : '— (unmeasured)';
+      item.append(name, status, score);
+      health.appendChild(item);
+    }
+    document.getElementById('fleet-health-score').textContent =
+      data.health_score_valid === true
+        ? 'Measured component score: ' + String(data.health_score) + '/100'
+        : 'Overall health: unknown (no measured components)';
+    document.getElementById('fleet-critical-alerts').textContent =
+      (data.critical_alerts || []).length
+        ? String(data.critical_alerts.length) + ' reported critical incident(s)'
+        : 'No observed critical incidents';
+
+    const trends = document.getElementById('trend-evidence-items');
+    trends.replaceChildren();
+    for (const trend of data.trend_data || []) {
+      const item = document.createElement('div');
+      item.className = 'trend-item';
+      const metric = document.createElement('span');
+      metric.className = 'trend-metric';
+      metric.textContent = String(trend.metric || 'Unknown metric');
+      const value = document.createElement('span');
+      value.className = 'trend-value';
+      value.textContent = trend.current == null ? '—' : String(trend.current);
+      const change = document.createElement('span');
+      change.className = 'trend-change';
+      change.textContent = trend.history_available === true
+        ? String(trend.trend || 'unknown')
+        : 'No historical baseline';
+      item.append(metric, value, change);
+      trends.appendChild(item);
+    }
+  }
+
   async function refresh() {
     const [data, controlRoom] = await Promise.all([loadDashboard(), loadControlRoom()]);
     renderServiceHealth(controlRoom);
     if (data) {
       renderSummary(data);
+      renderEvidence(data);
       renderNodes(data);
       renderModelMatrix(data);
       renderRouting(data);
