@@ -1,0 +1,53 @@
+{
+  "enabled_count": 1,
+  "kind": "EFFECTIVE_ROUTER_MEMORY_READ_ONLY",
+  "may_modify_routes": false,
+  "may_prove_model_loaded": false,
+  "no_probes_or_dispatch": true,
+  "observed_at_ms": 1770000000000,
+  "projection": {
+    "expires_at_ms": 1770000005000,
+    "generation": 7,
+    "present": true,
+    "revision": "synthetic-only",
+    "state": "PROJECTION_CLAIM_CURRENT_AT_CAPTURE_NOT_PROVIDER_HEALTH"
+  },
+  "provider_count": 1,
+  "providers": [
+    {
+      "admission_granted": false,
+      "configured_models": [
+        {
+          "alias": "Ornith-1.5",
+          "provider_model": "ornith-1.5-synthetic"
+        }
+      ],
+      "effective_access_urls": [
+        {
+          "hostname": "100.64.0.5",
+          "port": 1236,
+          "scheme": "https",
+          "status": "PARSED_NOT_PROBED",
+          "userinfo_or_query_present": false
+        }
+      ],
+      "effective_base_url": {
+        "hostname": "destroyer.test",
+        "port": 1236,
+        "scheme": "https",
+        "status": "PARSED_NOT_PROBED",
+        "userinfo_or_query_present": true
+      },
+      "enabled_in_router_memory": true,
+      "name": "synthetic-destroyer-ornith",
+      "node_id": "DESTROYER",
+      "provider_id": "synthetic-destroyer-ornith",
+      "resident_model_identity_verified": false,
+      "service_reachability_verified": false,
+      "type": "lmstudio"
+    }
+  ],
+  "schema_version": 1,
+  "snapshot_sha256": "25a8e795459f85e555fbb3cf40807f23eb964562db64aaffd7c3756214feb814",
+  "state_source": "LIVE_ASGI_STATE_NOT_BOOTSTRAP_PROVIDER_FILE"
+}

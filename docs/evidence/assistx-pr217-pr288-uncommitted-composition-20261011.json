@@ -1,0 +1,31 @@
+{
+  "captured_at_utc": "2026-10-11T07:51:38.852960+00:00",
+  "client_migration_head": "0b48e60c1a1bc0c2c1d008c6f94b6c8298dec4f8",
+  "composition_location": "disposable local git worktree (not published, merged, or deployed)",
+  "deliberately_excluded_tests": [
+    "test_repo_generator_does_not_start_when_disabled"
+  ],
+  "exclusion_reason": "Prior isolated runner reported controller-loop side effect; requires supervised acceptance",
+  "full_suite_limitation": "broader local pytest collection missing langgraph; hosted unit jobs remain failing",
+  "full_suite_passed": false,
+  "git_merge_commit_created": false,
+  "git_merge_conflicts": 0,
+  "kind": "ASSISTX_PR217_PR288_UNCOMMITTED_MERGE_COMPATIBILITY",
+  "log_sha256": "688fd87ca58eb04e859a1da7a569f4212f4d8ffb6098881fc4362f31346f3845",
+  "production_services_restarted": false,
+  "pytest_exit_status": 0,
+  "pytest_selectors": [
+    "tests/test_repository_source_binding.py",
+    "tests/test_repo_task_generator.py",
+    "tests/test_improvement_runtime.py",
+    "tests/test_router_provider_inventory_portable.py",
+    "tests/test_router_admin_proxy_contract.py",
+    "tests/test_router_effective_cross_repo_fixture.py",
+    "tests/test_control_room.py"
+  ],
+  "pytest_subtests_passed": 38,
+  "real_neo4j_or_router_or_nas_mutated": false,
+  "schema_version": 1,
+  "source_binding_head": "42240ec5640c312ece54c50741c5c71fab4745b7",
+  "targeted_tests_passed": 86
+}

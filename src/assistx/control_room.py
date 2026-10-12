@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request as UrlRequest
+from urllib.request import HTTPRedirectHandler, Request as UrlRequest, build_opener
 from urllib.request import urlopen
 
 from fastapi import APIRouter, Depends, Request
@@ -22,6 +22,9 @@ from .deps import load_redis_module
 
 NeoFactory = Callable[[], Any]
 AuthDependency = Callable[..., Any]
+
+# Privileged router metadata is a bounded observation, never a bulk export.
+_MAX_ROUTER_ADMIN_JSON_BYTES = 4 * 1024 * 1024
 
 _PUBLIC_PROVIDER_KEYS = (
     "OPENROUTER_API_KEY",
@@ -120,8 +123,22 @@ def _http_json(
         headers["X-Admin-Token"] = admin_token
     started = time.monotonic()
     request = UrlRequest(url, headers=headers)
-    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - private URLs are operator-configured
-        payload = json.loads(response.read().decode("utf-8"))
+    if admin_token:
+        # urllib's default redirect handler can forward X-Admin-Token across
+        # origins. A privileged router read must never follow any redirect.
+        class _RejectAdminRedirect(HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        opener = build_opener(_RejectAdminRedirect())
+        with opener.open(request, timeout=timeout) as response:
+            raw = response.read(_MAX_ROUTER_ADMIN_JSON_BYTES + 1)
+            if len(raw) > _MAX_ROUTER_ADMIN_JSON_BYTES:
+                raise ValueError("router admin response exceeds bounded metadata limit")
+            payload = json.loads(raw.decode("utf-8"))
+    else:
+        with urlopen(request, timeout=timeout) as response:  # noqa: S310 - operator-configured
+            payload = json.loads(response.read().decode("utf-8"))
     return payload, _elapsed_ms(started)
 
 
@@ -961,6 +978,18 @@ def _live_loaded_models(neo_factory: NeoFactory | None) -> dict[str, Any] | None
             ms = rows[0]["ms"] if rows else None
             if not ms:
                 return None
+            # A graph snapshot is not residency proof after the fleet's
+            # online freshness horizon. Retain history separately, but fail
+            # closed for currently LOADED rather than promoting old data.
+            try:
+                age_ms = _now_ms() - int(ms)
+            except (TypeError, ValueError, OverflowError):
+                return {"__snapshot_warning__": {"kind": "INVALID_GRAPH_TIMESTAMP"}}
+            if age_ms > 120_000 or age_ms < -30_000:
+                return {"__snapshot_warning__": {
+                    "kind": "STALE_GRAPH_SNAPSHOT" if age_ms > 120_000 else "FUTURE_GRAPH_SNAPSHOT",
+                    "age_ms": age_ms,
+                }}
             query = (
                 "MATCH (s:FleetSnapshot)-[:HAS_MODEL_STATE]->(m:FleetModelState) "
                 "WHERE s.captured_at_ms=$ms "
@@ -1062,45 +1091,15 @@ def _historical_loaded_models(neo_factory: NeoFactory | None) -> dict[str, Any]:
 
 
 def _provider_catalog(neo_factory: NeoFactory | None = None) -> dict[str, list[str]]:
-    """Return available provider models indexed by node identity."""
-    base_url = os.getenv("AUTO_ROUTER_BASE_URL", "").strip()
-    url = os.getenv("AUTO_ROUTER_ADMIN_PROVIDERS_URL", "").strip()
-    if not url:
-        if not base_url:
-            return {}
-        url = f"{base_url.rstrip('/')}/admin/providers"
-    admin_token = os.getenv("AUTO_ROUTER_ADMIN_TOKEN", "").strip()
-    try:
-        data, _ = _http_json(url, "", admin_token=admin_token)
-    except Exception:
-        return {}
-    out: dict[str, list[str]] = {}
-    for provider in data.get("providers", []) or []:
-        if not provider.get("enabled"):
-            continue
-        node_id = str(provider.get("node_id") or "").lower()
-        runtime_id = str(provider.get("runtime_instance_id") or "").lower()
-        base = str(provider.get("base_url") or "")
-        host = ""
-        try:
-            from urllib.parse import urlsplit as _urlsplit
-            host = (_urlsplit(base).hostname or "").lower()
-        except Exception:
-            host = base.split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0].lower()
-        models = [
-            model.get("provider_model") or model.get("alias") or model.get("model_instance_id")
-            for model in (provider.get("models") or [])
-            if model and (model.get("provider_model") or model.get("alias") or model.get("model_instance_id"))
-        ]
-        for identity in (node_id, runtime_id, host):
-            if not identity:
-                continue
-            bucket = out.setdefault(identity, [])
-            for model in models:
-                if model and model not in bucket:
-                    bucket.append(model)
-    return out
+    """Non-authoritative configured-model inventory, never loaded-model proof."""
+    from .router_provider_inventory import fetch_provider_inventory
 
+    return fetch_provider_inventory(
+        base_url=os.getenv("AUTO_ROUTER_BASE_URL", ""),
+        override_url=os.getenv("AUTO_ROUTER_ADMIN_PROVIDERS_URL", ""),
+        admin_token=os.getenv("AUTO_ROUTER_ADMIN_TOKEN", ""),
+        fetch_json=_http_json,
+    )
 
 def collect_fleet_nodes(neo_factory: NeoFactory | None = None) -> list[dict[str, Any]]:
     """Live fleet node matrix from the auto-router pubsub registry (10s cache).
@@ -1129,8 +1128,7 @@ def collect_fleet_nodes(neo_factory: NeoFactory | None = None) -> list[dict[str,
 
     # Live loaded-model truth per hostname (latest live observation wins).
     live_models = _live_loaded_models(neo_factory)
-    # Backfill: most-recent snapshot that had ANY model, for idle-but-online nodes so the
-    # dashboard shows what they were running last instead of a blank LOADED cell.
+    # Historical observations are displayed as LAST KNOWN, never as verified LOADED.
     historical_models = _historical_loaded_models(neo_factory)
     url = _router_url("api/fleet/nodes", "AUTO_ROUTER_FLEET_NODES_URL")
     registry: dict[str, dict[str, Any]] = {}
@@ -1227,7 +1225,12 @@ def collect_fleet_nodes(neo_factory: NeoFactory | None = None) -> list[dict[str,
     def _identities_for(entry) -> list[str]:
         return list(dict.fromkeys(_entry_identities(_hw_for(entry)) + _entry_identities(entry)))
 
-    live_by_key = {_identity_key(key): value for key, value in (live_models or {}).items()}
+    graph_warning = (live_models or {}).get("__snapshot_warning__")
+    live_by_key = {
+        _identity_key(key): value
+        for key, value in (live_models or {}).items()
+        if key != "__snapshot_warning__"
+    }
     history_by_key = {_identity_key(key): value for key, value in historical_models.items()}
 
     def _state_for(entry, states) -> dict[str, Any] | None:
@@ -1311,32 +1314,43 @@ def collect_fleet_nodes(neo_factory: NeoFactory | None = None) -> list[dict[str,
             if live_entry and live_entry.get("models"):
                 cleaned = [m for m in (_clean_model_name(m) for m in live_entry["models"]) if m]
                 entry["loaded_models"] = cleaned
+                entry["model_evidence"] = "VERIFIED_LOADED"
                 entry["model_source"] = "live"
                 entry["model_online"] = live_entry.get("online", True)
                 entry["model_observed_at"] = live_entry.get("observed_at")
             else:
                 entry["loaded_models"] = []
-                entry["model_source"] = "live-empty"
+                entry["model_evidence"] = graph_warning["kind"] if graph_warning else "NO_VERIFIED_LOAD"
+                entry["model_source"] = "graph-invalid" if graph_warning else "live-empty"
                 entry["model_observed_at"] = (live_entry or {}).get("observed_at")
-                entry["model_clue"] = "live graph reports no loaded models"
+                entry["model_clue"] = (
+                    "graph snapshot is outside the permitted freshness window; loaded residency unknown"
+                    if graph_warning else "live graph reports no loaded models"
+                )
                 entry["opacity"] = "opaque"
         else:
             # No authoritative graph data: sanitize whatever the router reported so
-            # a raw file path never leaks into the LOADED column. If nothing clean,
-            # fall back to the manifest's primary_model when we know it.
+            # a raw file path never leaks. Unverified router/manifest values
+            # are clues, not evidence of current residency.
             router_models = entry.get("loaded_models") or []
             cleaned_router = [m for m in (_clean_model_name(m) for m in router_models) if m]
             if cleaned_router:
-                entry["loaded_models"] = cleaned_router
+                entry["inferred_models"] = cleaned_router
+                entry["loaded_models"] = []
+                entry["model_evidence"] = "UNVERIFIED_ROUTER_REPORT"
                 entry["model_source"] = "router"
+                entry["model_clue"] = "router registry lists models, but no authoritative live residency proof"
             elif hw and hw.get("primary_model"):
                 primary = _clean_model_name(hw["primary_model"])
-                entry["loaded_models"] = [primary] if primary else []
+                entry["inferred_models"] = [primary] if primary else []
+                entry["loaded_models"] = []
+                entry["model_evidence"] = "INFERRED_MANIFEST"
                 entry["model_source"] = "manifest-primary"
                 entry["opacity"] = "inferred"
                 entry["model_clue"] = "only known model is the operator-assigned primary — endpoint did not confirm it loaded"
             else:
                 entry["loaded_models"] = []
+                entry["model_evidence"] = "UNKNOWN"
 
         # --- Available (registered/installed) vs loaded, plus an opacity signal ---
         available = _available_for(entry)
@@ -1347,7 +1361,7 @@ def collect_fleet_nodes(neo_factory: NeoFactory | None = None) -> list[dict[str,
         # cell — surface it so Scott knows the endpoint isn't telling us anything.
         loaded = entry.get("loaded_models") or []
         if (entry.get("status") in ("ONLINE", "STALE")) and not loaded:
-            if entry.get("model_source") not in {"manifest-primary", "live-empty"}:
+            if entry.get("model_source") not in {"manifest-primary", "live-empty", "graph-invalid", "router"}:
                 entry["opacity"] = "opaque"
                 entry["model_clue"] = (
                     "endpoint reachable but reported no running models; source="
