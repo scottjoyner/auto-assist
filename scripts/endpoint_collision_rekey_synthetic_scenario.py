@@ -7,7 +7,17 @@ parent guarded --run-disposable Neo4j harness with synthetic IDs.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+from sys import modules
 from typing import Any
+
+FENCE_SOURCE = Path(__file__).resolve().parents[1] / "src/assistx/endpoint_writer_fence_shadow.py"
+_fence_spec = spec_from_file_location("disposable_endpoint_fence_shadow", FENCE_SOURCE)
+assert _fence_spec is not None and _fence_spec.loader is not None
+fence = module_from_spec(_fence_spec)
+modules[_fence_spec.name] = fence
+_fence_spec.loader.exec_module(fence)
 
 
 class SyntheticRekeyHold(ValueError):
@@ -249,6 +259,77 @@ def synthetic_rekey_scenarios(driver: Any, candidate: Any, prefix: str) -> dict[
             )
         except candidate.EndpointIdentityHold:
             result["both_canonical_writers_reaccept_preserved_nodes"] = False
+
+        # SHADOW FENCE GREEN NEGATIVE — explicitly synthetic and UNWIRED.
+        # Even when a post-rekey model and service share their historical
+        # relationship shape, old-ID registrations must be denied BEFORE
+        # the legacy MERGE is invoked. This does not install a live fence.
+        sandbox_policy = fence.SyntheticFence(
+            blocked_ids=frozenset({old}),
+            issuer_policy_approved=True,
+            producer_inventory_verified=True,
+            queues_drained=True,
+            synthetic_rehearsal=True,
+            generation=1,
+        )
+        callbacks = []
+        def unsafe_legacy_callback() -> None:
+            callbacks.append(True)
+            session.run("""
+            MATCH (n:SwarmNode {node_id:$node_id})
+            MERGE (e:ServiceEndpoint {endpoint_id:$endpoint_id})
+            SET e.service_type='generic'
+            MERGE (n)-[:EXPOSES]->(e)
+            """, node_id=owner, endpoint_id=old).consume()
+        protected_inputs = {
+            "node_register": (
+                "node_register",
+                {"node_id": owner,
+                 "services": [{"endpoint_id": old, "service_type": "generic"}]},
+                {},
+            ),
+            "node_heartbeat": (
+                "node_heartbeat",
+                {"services": [{"endpoint_id": old, "service_type": "generic"}]},
+                {"route_node_id": owner},
+            ),
+            "model_probe": (
+                "model_probe", {},
+                {"route_endpoint_id": old},
+            ),
+            "swarm_event_replay": (
+                "event_ingest",
+                {"event_type": "swarm.node.heartbeat",
+                 "node_id": owner,
+                 "payload": {"node_id": owner,
+                             "services": [{"endpoint_id": old,
+                                           "service_type": "generic"}]},
+                 "subject": {"kind": "synthetic", "id": prefix + ":event-subject"}},
+                {},
+            ),
+        }
+        for name, (operation, payload, kwargs) in protected_inputs.items():
+            decision = fence.guarded_synthetic_call(
+                operation, payload, sandbox_policy,
+                unsafe_legacy_callback, **kwargs,
+            )
+            result["shadow_fence_denies_" + name] = (
+                decision.status == "DENY_SYNTHETIC_FENCED_ENDPOINT"
+                and decision.would_invoke_next_stage is False
+                and decision.production_release_authorized is False
+                and callbacks == []
+            )
+        model_before_redteam = session.run("""
+        MATCH (model:ModelEndpoint:ServiceEndpoint {endpoint_id:$old})
+        RETURN model.service_type AS kind,
+               count { (model)-[:SERVES]->(:Model) } AS served
+        """, old=old).single()
+        result["shadow_fence_preserves_model_kind_and_serves_before_redteam"] = (
+            model_before_redteam is not None
+            and model_before_redteam["kind"] == "model_endpoint"
+            and model_before_redteam["served"] == 1
+            and callbacks == []
+        )
 
         # RED TEAM NEGATIVE — reproduce only in the disposable graph.
         # The *current* legacy swarm_core service registration still MERGEs
