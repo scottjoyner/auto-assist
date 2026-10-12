@@ -38,9 +38,10 @@ def adapt_tailnet_witness(witness: dict[str, Any]) -> tuple[dict, dict, dict]:
             if not isinstance(model, dict):
                 skipped += 1
                 continue
-            kind = KIND_MAP.get(model.get("model_kind"))
+            model_kind = model.get("model_kind")
+            kind = KIND_MAP.get(model_kind) if isinstance(model_kind, str) else None
             model_id = model.get("id")
-            if kind is None or not _exact_model(model_id):
+            if kind is None or not isinstance(model_id, str) or not _exact_model(model_id):
                 skipped += 1
                 continue
             locator_parts = (

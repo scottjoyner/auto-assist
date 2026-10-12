@@ -53,7 +53,7 @@ def shadow_quota_assessment(report: dict[str, Any],
             raise ValueError("invalid endpoint row")
         provider = endpoint.get("provider")
         kind = endpoint.get("kind")
-        group = ALIASES.get(provider)
+        group = ALIASES.get(provider) if isinstance(provider, str) else None
         reasons = ["missing_authenticated_cross_node_lease",
                    "upstream_billing_and_quota_not_verified"]
         if kind != "cloud_chat":
@@ -72,8 +72,9 @@ def shadow_quota_assessment(report: dict[str, Any],
                     reasons.append("lease_group_not_observed")
                 else:
                     slots, active = row.get("slots"), row.get("active")
-                    if (not _checked_nonnegative_int(slots) or slots == 0
-                            or not _checked_nonnegative_int(active)
+                    if (not isinstance(slots, int) or isinstance(slots, bool)
+                            or slots <= 0 or not isinstance(active, int)
+                            or isinstance(active, bool) or active < 0
                             or type(row.get("circuit_open")) is not bool):
                         reasons.append("invalid_lease_group_counters")
                     elif row["circuit_open"] is True:

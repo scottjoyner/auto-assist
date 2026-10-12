@@ -70,7 +70,7 @@ def assess_serve_configuration(
                 raise ValueError("invalid Serve handler document")
             matched.append((listener[1], info["Handlers"]))
     # Never combine distinct listeners as one imaginary same-host service.
-    identity_and_observation = []
+    identity_and_observation: list[dict[str, Any]] = []
     for port, handlers in matched:
         registered = {
             name: (

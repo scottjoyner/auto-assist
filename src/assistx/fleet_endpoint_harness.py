@@ -130,7 +130,7 @@ def _latest_run(provider: str, model: str, state_root: Path, now: float, max_age
     result: dict[str, Any] = {"status": "no_execution_evidence", "fresh": False}
     if directory.is_symlink() or not directory.is_dir():
         return result
-    candidates = []
+    candidates: list[Path] = []
     for path in directory.glob("*.json"):
         if path.is_symlink() or not path.is_file():
             continue
@@ -204,9 +204,12 @@ def build_report(
             raise ValueError("invalid endpoint")
         endpoint_id = entry.get("id")
         provider, model, kind = entry.get("provider"), entry.get("model"), entry.get("kind")
-        if not all(isinstance(x, str) and EXACT_NAME.fullmatch(x) for x in (endpoint_id, provider)):
+        if (not isinstance(endpoint_id, str) or not EXACT_NAME.fullmatch(endpoint_id)
+                or not isinstance(provider, str) or not EXACT_NAME.fullmatch(provider)):
             raise ValueError("invalid endpoint identity")
-        if endpoint_id in seen or kind not in KINDS or not _exact_model(model):
+        if not isinstance(model, str) or not _exact_model(model):
+            raise ValueError("invalid exact model")
+        if endpoint_id in seen or kind not in KINDS:
             raise ValueError("duplicate endpoint, unknown kind, or model alias")
         seen.add(endpoint_id)
         group = entry.get("upstream_group")
