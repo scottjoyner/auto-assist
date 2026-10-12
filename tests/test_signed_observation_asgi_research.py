@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import base64
-from datetime import UTC, datetime
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,15 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
+
+# This is an intentionally standalone security lane, not an AssistX app test.
+# Loading src/assistx/__init__.py would import production config/LLM clients
+# and unrelated dependencies. Register an import-only package path instead.
+_PACKAGE_DIR = Path(__file__).resolve().parents[1] / "src" / "assistx"
+if "assistx" not in sys.modules:
+    _package = types.ModuleType("assistx")
+    _package.__path__ = [str(_PACKAGE_DIR)]
+    sys.modules["assistx"] = _package
 
 from assistx.signed_observation_asgi_research import verify_observation_asgi_identity
 from assistx.trusted_gateway_identity_contract import (
