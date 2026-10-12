@@ -48,6 +48,61 @@ def _trusted_read(url: str) -> tuple[int, bytes | None]:
         # TLS succeeded even for 401/403/404; do not reveal error body.
         return int(exc.code), None
 
+_OBSERVATION_STATES = {"fresh", "stale", "invalid", "unavailable", "not_configured"}
+_MODEL_STATES = {"resident_verified", "advertised_unverified", "installed_not_loaded"}
+_SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ +:\\-]{0,99}")
+_IPV4_LIKE = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?")
+_HEX_DIGEST = re.compile(r"[0-9a-f]{64}")
+
+
+def _observation_contract(parsed: Any) -> tuple[bool, bool, str]:
+    """Validate the sanitized, strictly non-actionable mobile observation shape.
+
+    A valid stale/empty response is *not* fresh observation evidence.
+    This checks data presentation only, never source custody or SSO transport.
+    """
+    if (not isinstance(parsed, dict)
+            or type(parsed.get("schema_version")) is not int
+            or parsed["schema_version"] != 1
+            or parsed.get("source") != "tailnet_observational_only"
+            or parsed.get("authority") != "not_admitted"
+            or parsed.get("state") not in _OBSERVATION_STATES):
+        return False, False, "invalid_contract"
+    state = parsed["state"]
+    models = parsed.get("models")
+    if (not isinstance(models, list) or len(models) > 80
+            or type(parsed.get("truncated")) is not bool
+            or any(type(parsed.get(key)) is not int or parsed[key] < 0
+                   for key in ("observed_nodes", "observed_endpoints", "resident_endpoints"))):
+        return False, False, "invalid_contract"
+    for item in models:
+        if not isinstance(item, dict) or set(item) != {
+            "display_name", "state", "observed_instances", "admitted", "selectable"
+        }:
+            return False, False, "invalid_contract"
+        name = item.get("display_name")
+        if (not isinstance(name, str) or not _SAFE_NAME.fullmatch(name)
+                or ".." in name or _IPV4_LIKE.fullmatch(name)
+                or item.get("state") not in _MODEL_STATES
+                or type(item.get("observed_instances")) is not int
+                or item["observed_instances"] < 1
+                or item.get("admitted") is not False
+                or item.get("selectable") is not False):
+            return False, False, "invalid_contract"
+    if state != "fresh":
+        if models or parsed["truncated"] or any(
+            parsed[key] != 0 for key in ("observed_nodes", "observed_endpoints", "resident_endpoints")
+        ):
+            return False, False, "invalid_contract"
+    else:
+        if (not isinstance(parsed.get("observation_sha256"), str)
+                or not _HEX_DIGEST.fullmatch(parsed["observation_sha256"])
+                or not isinstance(parsed.get("source_inventory_sha256"), str)
+                or not _HEX_DIGEST.fullmatch(parsed["source_inventory_sha256"])):
+            return False, False, "invalid_contract"
+    return True, state == "fresh", state
+
+
 def probe_self(
     hostname: str,
     port: int,
@@ -89,14 +144,11 @@ def probe_self(
                     and isinstance(parsed.get("runtimes"), list)
                 )
             if key == "observations" and status == 200:
-                row["observational_only_schema"] = False
                 parsed = json.loads(body) if isinstance(body, bytes) else None
-                row["observational_only_schema"] = bool(
-                    isinstance(parsed, dict)
-                    and parsed.get("schema_version") == 1
-                    and parsed.get("source") == "tailnet_observational_only"
-                    and parsed.get("authority") == "not_admitted"
-                )
+                valid, fresh, safe_state = _observation_contract(parsed)
+                row["observational_only_schema"] = valid
+                row["fresh_nonselectable_observations"] = valid and fresh
+                row["observations_state"] = safe_state
         except (OSError, ValueError, TypeError, UnicodeError, error.URLError):
             if row["transport_state"] == "http_response":
                 row["response_contract_invalid"] = True

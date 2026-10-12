@@ -86,3 +86,93 @@ def test_malformed_and_wrong_schema_do_not_claim_success():
 def test_destination_restriction(hostname, port):
     with pytest.raises(ValueError):
         probe_self(hostname, port, transport=fake_responses)
+
+
+def observation_response(*, state="fresh"):
+    result = {
+        "schema_version": 1,
+        "source": "tailnet_observational_only",
+        "authority": "not_admitted",
+        "state": state,
+        "observed_nodes": 1 if state == "fresh" else 0,
+        "observed_endpoints": 1 if state == "fresh" else 0,
+        "resident_endpoints": 1 if state == "fresh" else 0,
+        "models": [{
+            "display_name": "k2.gguf",
+            "state": "resident_verified",
+            "observed_instances": 1,
+            "admitted": False,
+            "selectable": False,
+        }] if state == "fresh" else [],
+        "truncated": False,
+        "observation_sha256": "a" * 64 if state == "fresh" else None,
+        "source_inventory_sha256": "b" * 64 if state == "fresh" else None,
+    }
+    return result
+
+
+def _probe_observations(payload):
+    def reader(path):
+        if path.endswith("/api/v1/runtime/observations"):
+            return 200, json.dumps(payload).encode()
+        return fake_responses(path)
+    return probe_self("x1-370.example.ts.net", 8443, transport=reader)
+
+
+def test_fresh_observation_contract_is_nonselectable_and_not_admission():
+    result = _probe_observations(observation_response())
+    row = result["routes"]["observations"]
+    assert row["observational_only_schema"] is True
+    assert row["fresh_nonselectable_observations"] is True
+    assert row["observations_state"] == "fresh"
+    assert result["private_observation_source_bound"] is False
+    assert result["trusted_reverse_proxy_header_boundary_verified"] is False
+    assert result["acceptance"] == "HOLD"
+    assert result["model_authorizations"] == result["model_requests"] == 0
+    assert "k2.gguf" not in json.dumps(result)
+
+
+def test_stale_response_may_have_valid_schema_but_is_not_fresh_evidence():
+    result = _probe_observations(observation_response(state="stale"))
+    row = result["routes"]["observations"]
+    assert row["observational_only_schema"] is True
+    assert row["fresh_nonselectable_observations"] is False
+    assert row["observations_state"] == "stale"
+
+
+@pytest.mark.parametrize("change", [
+    lambda d: d["models"][0].update(selectable=True),
+    lambda d: d["models"][0].update(admitted=True),
+    lambda d: d["models"][0].update(display_name="100.64.4.10:1234"),
+    lambda d: d["models"][0].update(display_name="node/private-model"),
+    lambda d: d["models"][0].update(display_name="secret@node"),
+    lambda d: d["models"][0].update(state="loaded_and_admitted"),
+    lambda d: d["models"][0].update(observed_instances=0),
+    lambda d: d["models"][0].update(connected_host="private-node"),
+    lambda d: d.update(authority="admitted"),
+    lambda d: d.update(schema_version=True),
+    lambda d: d.update(observed_nodes=True),
+    lambda d: d.update(observation_sha256=None),
+    lambda d: d.update(source_inventory_sha256="private-host"),
+    lambda d: d.update(models=[{}] * 81),
+    lambda d: d.update(state="stale"),
+])
+def test_actionable_malformed_or_stale_with_models_is_not_valid_observation(change):
+    payload = observation_response()
+    change(payload)
+    report = _probe_observations(payload)
+    row = report["routes"]["observations"]
+    assert row["http_status"] == 200
+    assert row["observational_only_schema"] is False
+    assert row["fresh_nonselectable_observations"] is False
+    assert row["observations_state"] == "invalid_contract"
+    assert report["model_authorizations"] == 0
+    assert report["acceptance"] == "HOLD"
+
+
+def test_non_fresh_state_with_models_cannot_claim_empty_sanitized_observation():
+    payload = observation_response(state="unavailable")
+    payload["models"] = observation_response()["models"]
+    row = _probe_observations(payload)["routes"]["observations"]
+    assert row["observational_only_schema"] is False
+    assert row["observations_state"] == "invalid_contract"
