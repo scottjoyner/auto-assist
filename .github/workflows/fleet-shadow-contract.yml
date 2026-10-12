@@ -55,6 +55,10 @@ jobs:
           scripts/fleet_endpoint_shadow_gate.py
           scripts/fleet_endpoint_snapshot.py
           scripts/fleet_serve_preflight.py
+      - name: Type check isolated ingress inventory
+        run: >-
+          python -m mypy src/assistx/fleet_ingress_boundary.py
+          --ignore-missing-imports --follow-imports=skip
       - name: No-authority contract and regression suites
         run: >-
           python -B -m pytest -q -m "not integration"

@@ -45,13 +45,15 @@ def assess_ingress_boundary(
     if not isinstance(portmap, dict):
         raise ValueError("invalid ingress metadata")
     bindings = portmap.get("8000/tcp")
-    bindings_known = isinstance(bindings, list) and bool(bindings)
-    loopback = bindings_known and all(
-        isinstance(item, dict)
-        and item.get("HostIp") in _LOCAL
-        and item.get("HostPort") == "8000"
-        for item in bindings
-    )
+    if isinstance(bindings, list) and bindings:
+        loopback = all(
+            isinstance(item, dict)
+            and item.get("HostIp") in _LOCAL
+            and item.get("HostPort") == "8000"
+            for item in bindings
+        )
+    else:
+        loopback = False
     trusted = bool(flags.get("TRUSTED_AUTH_HEADER", "").strip())
     strict = flags.get("ASSISTX_REQUIRE_BASIC_AUTH", "").strip().lower() in _TRUE
     allowlist = bool(flags.get("KIPNERTER_TAILNET_ALLOWED_LOGINS", "").strip())
