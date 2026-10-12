@@ -59,6 +59,8 @@ def test_disposable_runner_restricts_network_and_secret_surface():
         "ThreadPoolExecutor(max_workers=10)",
         "REAL_REDIS_10_WORKER_SINGLE_USE_GATEWAY_IDENTITY_PASS",
         "REAL_REDIS_RESTART_STALE_GATEWAY_ASSERTION_DENIED_PASS",
+        "REAL_REDIS_ASGI_10_WORKER_SIGNED_OBSERVATION_PASS",
+        "REAL_REDIS_ASGI_RESTART_REPLAY_DENIED_PASS",
         'assert_topology(cid, expected_image_id)',
     ):
         assert expected in source

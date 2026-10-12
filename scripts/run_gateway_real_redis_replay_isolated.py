@@ -144,6 +144,79 @@ def trial(cid: str, expected_image_id: str) -> None:
         raise RuntimeError("ten-worker real Redis replay gate not atomic")
     print("REAL_REDIS_10_WORKER_SINGLE_USE_GATEWAY_IDENTITY_PASS", flush=True)
 
+    # Additional RESEARCH-ONLY HTTP/ASGI acceptance against the same disposable
+    # Redis nonce fence. Load a pure submodule without importing AssistX API or
+    # reading any production configuration/credentials.
+    import base64
+    import types
+    from fastapi import FastAPI, HTTPException, Request
+    from fastapi.testclient import TestClient
+    if "assistx" not in sys.modules:
+        package = types.ModuleType("assistx")
+        package.__path__ = [str(ROOT / "src" / "assistx")]
+        sys.modules["assistx"] = package
+    from assistx.signed_observation_asgi_research import (
+        GatewayIdentityDenied, verify_observation_asgi_identity,
+    )
+    observation = "/api/v1/runtime/observations"
+    receipt = dict(claim)
+    receipt["nonce"] = secrets.token_hex(16)
+    receipt["target"] = observation
+    receipt["scope"] = "model:observe"
+    receipt["issued_at_ms"] = int(time.time() * 1000) - 500
+    receipt["expires_at_ms"] = receipt["issued_at_ms"] + 20_000
+    receipt_data = verifier.canonical_claim(receipt)
+    receipt_signature = signer.sign(verifier.PREFIX + receipt_data)
+    signed_headers = {
+        "X-AssistX-Gateway-Claim": base64.urlsafe_b64encode(
+            receipt_data).rstrip(b"=").decode("ascii"),
+        "X-AssistX-Gateway-Signature": base64.urlsafe_b64encode(
+            receipt_signature).rstrip(b"=").decode("ascii"),
+    }
+    app = FastAPI()
+
+    def synthetic_observation(request: Request):
+        try:
+            verify_observation_asgi_identity(
+                scope=request.scope,
+                headers=request.scope["headers"],
+                receiver_public_key=pub,
+                receiver_key_id=receipt["key_id"],
+                now_ms=int(time.time() * 1000),
+                consume_nonce_once=receiver.consume,
+            )
+        except GatewayIdentityDenied:
+            raise HTTPException(status_code=401, detail="signed identity required")
+        return {"authority": "not_admitted", "models": [], "selectable": False}
+
+    # This runner imports Request locally and uses deferred annotations.
+    # Give FastAPI the actual Request class before registering this endpoint,
+    # otherwise it can misclassify 'request' as a query parameter (HTTP 422).
+    synthetic_observation.__annotations__["request"] = Request
+    app.add_api_route(observation, synthetic_observation, methods=["GET"])
+
+    client = TestClient(app)
+    print("ASGI_SYNTHETIC_OBSERVATION_ROUTE_READY", flush=True)
+    if (client.get(observation).status_code != 401
+            or client.get(observation, headers={
+                "Tailscale-User-Login": "synthetic-forged@example.invalid"
+            }).status_code != 401):
+        print("ASGI_UNSIGNED_NEGATIVE_FAIL", flush=True)
+        raise RuntimeError("synthetic unsigned observation request admitted")
+    print("ASGI_UNSIGNED_NEGATIVE_PASS", flush=True)
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        codes = list(pool.map(
+            lambda _: client.get(observation, headers=signed_headers).status_code,
+            range(10),
+        ))
+    if codes.count(200) != 1 or codes.count(401) != 9:
+        print("ASGI_CONCURRENT_STATUS_COUNTS",
+              "accepted", codes.count(200), "denied", codes.count(401),
+              "other", len(codes) - codes.count(200) - codes.count(401),
+              flush=True)
+        raise RuntimeError("real Redis ASGI ten-worker single-use gate failed")
+    print("REAL_REDIS_ASGI_10_WORKER_SIGNED_OBSERVATION_PASS", flush=True)
+
     # Only the disposable container is restarted. Its keyspace is volatile.
     command("docker", "restart", "-t", "1", cid, timeout=18)
     assert_topology(cid, expected_image_id)
@@ -160,7 +233,10 @@ def trial(cid: str, expected_image_id: str) -> None:
     # nonce keys. Never automatically authorize a new generation pin.
     if verified():
         raise RuntimeError("replay admitted after Redis lost its nonce data")
+    if client.get(observation, headers=signed_headers).status_code != 401:
+        raise RuntimeError("ASGI replay admitted across Redis restart")
     print("REAL_REDIS_RESTART_STALE_GATEWAY_ASSERTION_DENIED_PASS", flush=True)
+    print("REAL_REDIS_ASGI_RESTART_REPLAY_DENIED_PASS", flush=True)
 
 
 def main(argv: list[str] | None = None) -> int:
