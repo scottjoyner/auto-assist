@@ -1,3 +1,5 @@
+import hashlib
+import re
 from pathlib import Path
 
 
@@ -34,4 +36,34 @@ def test_keepalive_reproves_before_each_short_lease_and_uses_real_v2_export():
     assert "from assistx.runtime_projection_v2 import build_runtime_projection;" in text
     assert "build_runtime_projection_v2" not in text
     assert 'APPROVE_SCRIPT = Path("/home/scott/git/auto-assist/scripts/approve-runtime-projection.py")' in text
-    assert "5df9efa67d2292d978193915e9e9b0a9d04d884d8ba37f758b3b0733c8f800f3" in text
+    assert re.search(r'APPROVE_SCRIPT_SHA256 = "[0-9a-f]{64}"', text)
+
+
+def test_keepalive_pinned_approval_checksum_matches_the_approver_this_tree_ships():
+    """The pin must equal the approver shipped in the same tree, or the tool is dead.
+
+    assistx-fleet-admit-live.py refuses to execute when the approval script's
+    checksum differs from its pinned constant, and that refusal is the right
+    behaviour: it is the only thing binding "which code approved this generation"
+    to a specific artifact. But it also means a change that edits
+    scripts/approve-runtime-projection.py without updating the pin lands a tool
+    that can never approve anything -- fail-closed, and silently so, because it
+    fails at run time rather than at review time.
+
+    Asserting the constant is merely present does not catch that. It has to equal
+    the file. This is the assertion that was missing.
+    """
+    text = SCRIPT.read_text()
+    match = re.search(r'APPROVE_SCRIPT_SHA256 = "([0-9a-f]{64})"', text)
+    assert match, "assistx-fleet-admit-live.py no longer pins its approval script"
+
+    approver = ROOT / "scripts" / "approve-runtime-projection.py"
+    assert approver.is_file(), "the pinned approval script is absent from this tree"
+
+    actual = hashlib.sha256(approver.read_bytes()).hexdigest()
+    assert match.group(1) == actual, (
+        "assistx-fleet-admit-live.py pins an approval-script checksum that does not "
+        "match the approver shipped alongside it, so it would fail closed with "
+        "'approval script checksum drifted' on its first run and could never "
+        f"approve anything (pinned={match.group(1)}, actual={actual})"
+    )
