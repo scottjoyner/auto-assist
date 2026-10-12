@@ -249,4 +249,51 @@ def synthetic_rekey_scenarios(driver: Any, candidate: Any, prefix: str) -> dict[
             )
         except candidate.EndpointIdentityHold:
             result["both_canonical_writers_reaccept_preserved_nodes"] = False
+
+        # RED TEAM NEGATIVE — reproduce only in the disposable graph.
+        # The *current* legacy swarm_core service registration still MERGEs
+        # on endpoint_id and blindly SETs service properties. A stale event
+        # carrying the pre-rekey ordinary-service ID now matches the *model*
+        # endpoint, even though uniqueness has been installed.
+        #
+        # Never run this against production. This intentionally corrupts one
+        # synthetic test node to prove migration requires legacy-writer
+        # fencing, not merely a new uniqueness constraint.
+        session.run("""
+        MATCH (n:SwarmNode {node_id:$node_id})
+        MERGE (e:ServiceEndpoint {endpoint_id:$endpoint_id})
+        ON CREATE SET e.created_at=datetime(), e.created_at_ts=timestamp()
+        SET e += $props, e.updated_at=datetime(), e.updated_at_ts=timestamp()
+        MERGE (n)-[:EXPOSES]->(e)
+        """, node_id=owner, endpoint_id=old,
+             props={"service_type": "generic", "status": "synthetic"}).consume()
+
+        redteam = session.run("""
+        MATCH (model:ModelEndpoint:ServiceEndpoint {endpoint_id:$old})
+        MATCH (service:ServiceEndpoint {endpoint_id:$new})
+        RETURN model.service_type AS model_kind,
+               service.service_type AS service_kind,
+               count { (model)-[:SERVES]->(:Model) } AS model_links,
+               count { (:SwarmNode)-[:EXPOSES]->(model) } AS model_owners,
+               count { (:SwarmNode)-[:EXPOSES]->(service) } AS service_owners
+        """, old=old, new=renamed).single()
+        result["stale_legacy_service_registration_corrupts_model_kind_even_after_uniqueness"] = (
+            redteam is not None
+            and redteam["model_kind"] == "generic"
+            and redteam["service_kind"] == "generic"
+            and redteam["model_links"] == 1
+            and redteam["model_owners"] == 1
+            and redteam["service_owners"] == 1
+        )
+
+        # The new canonical model writer must fail closed after the stale
+        # writer's semantic corruption; it does not silently fix bad history.
+        try:
+            candidate.candidate_register_model_endpoint(
+                session, endpoint_id=old, node_id=owner,
+                model_ids=(prefix + ":test-model",),
+            )
+            result["canonical_writer_denies_legacy_semantic_corruption"] = False
+        except candidate.EndpointIdentityHold:
+            result["canonical_writer_denies_legacy_semantic_corruption"] = True
     return result

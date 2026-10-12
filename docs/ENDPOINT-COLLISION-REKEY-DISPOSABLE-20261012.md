@@ -35,3 +35,30 @@ ingress and credential custody issue closure.
 The synthetic test proves graph behavior, not authorizes live repair.
 No production CREATE/SET/DELETE, schema DDL, roles, credentials, models,
 Tailscale routes, iPhone release, or NAS actions are performed.
+
+## Mandatory stale-writer negative: uniqueness does not prevent semantic corruption
+
+The actual `swarm_core.py` legacy ordinary-service writer still uses
+`MERGE (e:ServiceEndpoint {endpoint_id:$endpoint_id})` followed by an
+unrestricted `SET e += $props`. After the synthetic ordinary-service identity
+is rekeyed, the *old* endpoint ID remains on the model endpoint. If a queued,
+late, retried or concurrent legacy generic-service registration uses the old
+ID, its MERGE targets the **model** endpoint and changes its
+`service_type` to `generic`. The uniqueness constraint still holds: this
+is a semantic conflict, not a duplicate-key conflict.
+
+The disposable harness intentionally replays that stale legacy statement as
+a **negative** at the end of all successful canonical-writer tests. It must
+observe synthetic model-kind corruption while retaining EXPOSES/SERVES
+relationships; the unwired canonical model writer must then reject that bad
+state. This is never a viable runtime operation. It is an adversarial proof
+that simply fixing the duplicate nodes and adding uniqueness is **insufficient**.
+
+**Non-waivable migration sequence:** inventory all producers/queues/retries
+that use the old endpoint ID; freeze or fence both legacy registrations; drain
+and reconcile in-flight messages; approve consumer-visible ID remapping and
+rollback; repair data in a reviewed transaction; enforce uniqueness; then
+enable the revised canonical writers. Independently validate runtime role
+permissions, service/model event semantics and sustained absence of late
+legacy registrations. If any writer still has authority to send the old ID,
+the cutover must remain NO-GO.

@@ -119,6 +119,20 @@ class SyntheticRekeyUnitTests(unittest.TestCase):
         with self.assertRaises(subject.SyntheticRekeyHold):rekey(tx)
         self.assertEqual(tx.write_count,0)
 
+    def test_stale_legacy_writer_negative_is_synthetic_and_explicit(self):
+        text = SOURCE.read_text()
+        self.assertIn(
+            "stale_legacy_service_registration_corrupts_model_kind_even_after_uniqueness",
+            text,
+        )
+        self.assertIn("canonical_writer_denies_legacy_semantic_corruption", text)
+        self.assertIn("MERGE (e:ServiceEndpoint {endpoint_id:$endpoint_id})", text)
+        self.assertIn("SET e += $props", text)
+        self.assertIn("endpoint_id=old", text)
+        self.assertIn("service_type\": \"generic\"", text)
+        self.assertNotIn("bolt://", text)
+        self.assertNotIn("docker exec", text)
+
     def test_no_general_purpose_delete_or_deployment_entrance(self):
         text=SOURCE.read_text()
         self.assertNotIn("DETACH DELETE",text)
