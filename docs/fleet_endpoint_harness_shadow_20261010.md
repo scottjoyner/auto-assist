@@ -159,3 +159,11 @@ Both variants remain `acceptance=HOLD`, `production_admitted=false`. The live HT
 **Narrow deployment gate:** merge/test the existing AssistX `mobile_agent_routes.py` observation endpoint from the separate, still-uncommitted Tailnet worktree; reconcile CI/auth/Serve path ownership; validate a fresh, same-session `whoami` + observations response with private witness hash; then independently verify reverse-proxy header stripping against direct-origin spoof attempts. Only after those tests should an operator approve changes to actual Tailscale Serve routing. Do not alter production Serve configuration as part of this read-only harness. The independent cross-node quota coordinator and model completion acceptance remain separate HOLD gates.
 
 Current relevant test set: **127 passing** including new port/route and TLS-probe contracts; no provider tokens, model loads, router writes, NAS transfers or scheduled service changes.
+
+## October 12: separate hosted shadow-contract lane (not release CI)
+
+The `.github/workflows/fleet-shadow-contract.yml` workflow provides a **separate, path-scoped GitHub Actions result** for this branch's fail-closed endpoint harness. It compiles only the new modules and executes the 128 synthetic/offline contract tests already checked locally. It uses repository test dependencies, `contents: read` token permission, no production environment, no API credentials or provider token calls, and no NAS/archive/service side effects. The workflow cannot prove physical Tailnet identity ingress or cross-node execution authority.
+
+**Important:** this lane is not a substitute for `ci.yml`, the recovery canary, source-binding owner review, historical credentials incident #156, operator-approved rollout or iPhone physical proof. On its own, a PASS must **never** set `production_admitted`, `may_dispatch`, `cross_node_lease_authorized`, or release readiness to true. PR #326 and the research-only CI integration PR #327 remain DRAFT/HOLD while inherited repository CI blockers remain unresolved.
+
+The CI job uses a controlled test allowlist, deliberately excluding network and physical `tests/integration`, to distinguish regressions attributable to the harness from the 28 inherited CI failures in the broader integration tree. If any listed test fails, the shadow-contract check fails; it never downgrades them to warnings.
