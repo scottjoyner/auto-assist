@@ -222,7 +222,6 @@ def verify_integration_endpoints():
         ('http://localhost:8000/health', 'auto-assist API'),
         ('http://localhost:8088/health', 'auto-router API'),
         ('http://localhost:8088/v1/models', 'auto-router models'),
-        ('http://localhost:8088/admin/context', 'auto-router context'),
     ]
     
     for url, name in endpoints:
@@ -234,6 +233,18 @@ def verify_integration_endpoints():
                 print(f"⚠️  {name:30s} - Status {response.status_code}: {url}")
         except Exception as e:
             print(f"❌ {name:30s} - Error: {e}")
+
+    # Protected admin GET is a distinct credential-bearing read-only probe.
+    # Never silently fall back to a formerly anonymous administrative route.
+    try:
+        from router_admin_context_readonly import probe_admin_context
+    except ModuleNotFoundError:  # package-mode module execution
+        from scripts.router_admin_context_readonly import probe_admin_context
+    context = probe_admin_context()
+    if context["status"] == "ok":
+        print("✅ auto-router context - authenticated admin HTTP 200")
+    else:
+        print("⚠️  auto-router context - " + context["reason"])
 
 
 if __name__ == '__main__':
