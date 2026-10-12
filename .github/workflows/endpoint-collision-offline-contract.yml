@@ -6,12 +6,15 @@ on:
       - ".github/workflows/endpoint-collision-offline-contract.yml"
       - "src/assistx/endpoint_identity_candidate.py"
       - "src/assistx/endpoint_writer_fence_shadow.py"
+      - "src/assistx/event_projection_replay_shadow.py"
       - "scripts/endpoint_identity_candidate_disposable.py"
       - "scripts/endpoint_collision_rekey_synthetic_scenario.py"
+      - "scripts/endpoint_projection_gap_disposable_scenario.py"
       - "tests/test_endpoint_identity_candidate.py"
       - "tests/test_endpoint_identity_candidate_disposable_guard.py"
       - "tests/test_endpoint_collision_rekey_synthetic_scenario.py"
       - "tests/test_endpoint_writer_fence_shadow.py"
+      - "tests/test_event_projection_replay_shadow.py"
   workflow_dispatch:
 
 permissions:
@@ -47,25 +50,33 @@ jobs:
           PY
       - name: Install only offline-test dependencies
         run: |
-          python -m pip install --disable-pip-version-check "pytest>=8,<9" "neo4j>=5.26,<6"
+          python -m pip install --disable-pip-version-check "pytest>=8,<9" "neo4j>=5.26,<6" "pydantic>=2,<3" "python-dotenv>=1,<2"
       - name: Compile isolated research source
         run: |
           python -m py_compile \
             src/assistx/endpoint_identity_candidate.py \
             src/assistx/endpoint_writer_fence_shadow.py \
+            src/assistx/event_projection_replay_shadow.py \
             scripts/endpoint_identity_candidate_disposable.py \
             scripts/endpoint_collision_rekey_synthetic_scenario.py \
+            scripts/endpoint_projection_gap_disposable_scenario.py \
             tests/test_endpoint_identity_candidate.py \
             tests/test_endpoint_identity_candidate_disposable_guard.py \
             tests/test_endpoint_collision_rekey_synthetic_scenario.py \
-            tests/test_endpoint_writer_fence_shadow.py
+            tests/test_endpoint_writer_fence_shadow.py \
+            tests/test_event_projection_replay_shadow.py
       - name: Offline synthetic contract regression tests
+        env:
+          PYTHONPATH: src
+          PYTHON_DOTENV_DISABLED: "1"
+          ASSISTX_OUTBOX_DB: ${{ runner.temp }}/shadow-only-outbox.sqlite
         run: |
           python -m pytest --noconftest -q \
             tests/test_endpoint_identity_candidate.py \
             tests/test_endpoint_identity_candidate_disposable_guard.py \
             tests/test_endpoint_collision_rekey_synthetic_scenario.py \
-            tests/test_endpoint_writer_fence_shadow.py
+            tests/test_endpoint_writer_fence_shadow.py \
+            tests/test_event_projection_replay_shadow.py
       - name: Ensure disposable runner refuses implicit execution
         run: |
           python - <<'PY'
