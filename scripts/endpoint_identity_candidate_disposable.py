@@ -22,7 +22,6 @@ from pathlib import Path
 from neo4j import GraphDatabase
 
 from endpoint_collision_rekey_synthetic_scenario import synthetic_rekey_scenarios
-from endpoint_projection_gap_disposable_scenario import synthetic_projection_gap_scenarios
 
 # New disposable schemas emit harmless missing-label warnings; do not dump
 # query bodies or transient database context into operator logs.
@@ -484,6 +483,12 @@ def main():
             scenario(driver, report["scenarios"])
             report["scenarios"].update(
                 synthetic_rekey_scenarios(driver, candidate, PREFIX)
+            )
+            # The actual AssistX runtime dependency is loaded *only* after
+            # explicit --run-disposable opt-in and isolated graph creation.
+            # Ordinary invocation remains a dependency-free fail-closed HOLD.
+            from endpoint_projection_gap_disposable_scenario import (
+                synthetic_projection_gap_scenarios,
             )
             report["scenarios"].update(
                 synthetic_projection_gap_scenarios(driver, PREFIX)
