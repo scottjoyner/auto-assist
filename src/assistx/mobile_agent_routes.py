@@ -651,12 +651,8 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
             # Return a sanitized zero-runtime catalog so clients can represent
             # the degraded state without ever treating stale runtimes as usable.
             from .runtime_projection import RuntimeProjectionBlocked
-            from .runtime_projection_v2 import RuntimeProjectionSigningError
 
-            if isinstance(
-                exc,
-                (RuntimeProjectionBlocked, RuntimeProjectionSigningError),
-            ):
+            if isinstance(exc, RuntimeProjectionBlocked):
                 return _unavailable_mobile_runtime_catalog()
             raise HTTPException(
                 status_code=503,
