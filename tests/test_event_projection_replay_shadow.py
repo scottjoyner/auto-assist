@@ -6,14 +6,55 @@ evidence. No event data or Neo4j credentials leave memory.
 """
 from __future__ import annotations
 
+import ast
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 
-from assistx import swarm_core
+
+def exact_record_event_code_without_package_imports():
+    """Compile the *unaltered AST* of four actual source functions.
+
+    Hosted CI must not import the entire AssistX package: importing assistx
+    runs unrelated LLM, plugin and runtime initialization code. The disposable
+    Neo4j harness separately calls the genuine imported runtime function.
+    """
+    source = Path(__file__).resolve().parents[1] / "src/assistx/swarm_core.py"
+    tree = ast.parse(source.read_text(), filename=str(source))
+    names = {"record_event", "validate_event_envelope", "payload_hash", "_json_dumps"}
+    functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+    if len(functions) != len(names) or {fn.name for fn in functions} != names:
+        raise AssertionError("expected exact four source functions")
+    module = ast.fix_missing_locations(ast.Module(body=[
+        ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")],level=0),
+        *functions,
+    ],type_ignores=[]))
+    namespace = {
+        "__name__":"source_bound_record_event_test",
+        "json":json,
+        "hashlib":hashlib,
+        "SUPPORTED_SCHEMA_VERSIONS":{"1.0","2026-06-08.v1"},
+        "EventValidationError":type("EventValidationError",(ValueError,),{}),
+        "EventConflictError":type("EventConflictError",(ValueError,),{}),
+        # Metadata and artifacts are not under test; give source callbacks
+        # safe inert synthetic dependencies without DB or network effects.
+        "build_event_metadata":lambda event,metadata:{"request":{"request_id":event["event_id"]}},
+        "upsert_artifact_refs":lambda neo,refs:[],
+        "reconcile_event":lambda neo,event:None,
+    }
+    instance=ModuleType("source_bound_record_event_test")
+    instance.__dict__.update(namespace)
+    exec(compile(module,str(source),"exec"),instance.__dict__)
+    return instance
+
+
+swarm_core = exact_record_event_code_without_package_imports()
 
 SRC=Path(__file__).resolve().parents[1]/"src/assistx/event_projection_replay_shadow.py"
 spec=importlib.util.spec_from_file_location("event_projection_replay_shadow",SRC)
