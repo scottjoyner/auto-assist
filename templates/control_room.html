@@ -1,15 +1,4 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AssistX // Fleet Control Room</title>
-  <link rel="stylesheet" href="/static/css/base.css">
-  <link rel="stylesheet" href="/static/css/components.css">
-  <link rel="stylesheet" href="/static/css/control_room.css">
-</head>
-<body>
-  {% extends "base.html" %}
+{% extends "base.html" %}
   {% block content %}
   <main>
     <section id="summary-strip" class="summary-strip" aria-label="Fleet summary">
@@ -142,6 +131,6 @@
     </section>
   </main>
   {% endblock %}
-  <script src="/static/js/control_room.js"></script>
-</body>
-</html>
+{% block scripts %}
+<script src="/static/js/control_room.js"></script>
+{% endblock %}

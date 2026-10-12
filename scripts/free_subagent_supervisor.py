@@ -905,6 +905,18 @@ def emit_projection(
 
     # Read-only trace exporter integration (never mutates state).
     if trace_exporter_path and trace_exporter_path.exists():
+        # A missing local OpenCode DB is "source unavailable", not zero
+        # observed history. Keep a complete read-only projection shape so
+        # callers can display it without inventing a successful export.
+        projection.update({
+            "trace_records_count": 0,
+            "trace_records_sample": [],
+            "trace_provider_summary": {},
+            "trace_route_kind_summary": {},
+            "trace_model_attribution_summary": {},
+            "trace_unresolved_router_aliases": [],
+            "trace_records_status": "source_unavailable",
+        })
         try:
             import importlib.util
 
@@ -917,6 +929,7 @@ def emit_projection(
             opencode_db_path = pathlib.Path.home() / ".local" / "share" / "opencode" / "opencode.db"
             if opencode_db_path.exists():
                 raw_records = trace_exporter_module.export_sessions(opencode_db_path)
+                projection["trace_records_status"] = "observed"
                 trace_records = [_annotate_trace_session(r) for r in raw_records]
                 projection["trace_records_count"] = len(trace_records)
                 projection["trace_records_sample"] = [

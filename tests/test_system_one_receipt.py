@@ -572,3 +572,31 @@ def test_receipt_identity_mismatch_is_contained_inside_observer_job(
     )
 
     assert neo.recorded == []
+
+
+def test_shadow_observer_has_no_activity_without_opt_in(monkeypatch):
+    monkeypatch.delenv("MY_JEV_POLICY_SHADOW_ENABLED", raising=False)
+    monkeypatch.setattr(my_jev_policy, "request_policy_shadow",
+        lambda _: (_ for _ in ()).throw(AssertionError("must not make network request")))
+    class _NeverWrite:
+        def record_intent_policy_shadow(self, *_):
+            raise AssertionError("must not record")
+    io._record_my_jev_policy_shadow(_NeverWrite(), {"id": "synthetic-absent"})
+
+
+def test_shadow_observer_records_only_complete_validated_evidence(monkeypatch):
+    monkeypatch.setenv("MY_JEV_POLICY_SHADOW_ENABLED", "true")
+    observed = []
+    class _Store:
+        def record_intent_policy_shadow(self, intent_id, evidence):
+            observed.append((intent_id, evidence))
+    store = _Store()
+    good = {"shadow": True, "receipt_evidence": {
+        "schema": SHADOW_BINDING_SCHEMA, "authoritative_behavior_changed": False}}
+    monkeypatch.setattr(my_jev_policy, "request_policy_shadow", lambda _: good)
+    io._record_my_jev_policy_shadow(store, {"id": "synthetic-good"})
+    assert observed == [("synthetic-good", good)]
+    monkeypatch.setattr(my_jev_policy, "request_policy_shadow",
+        lambda _: (_ for _ in ()).throw(ValueError("invalid receipt")))
+    io._record_my_jev_policy_shadow(store, {"id": "synthetic-bad"})
+    assert observed == [("synthetic-good", good)]

@@ -1,11 +1,18 @@
 from pathlib import Path
+import os
 
 from fastapi.testclient import TestClient
 
 from assistx.api_router import app
 
 ROOT = Path(__file__).resolve().parents[1]
-AUTH = ("neo4j", "redacted-rotate-credentials")
+# Use the test runner's configured operator credentials rather than a
+# historical fixture password that differs from GitHub CI. This is test-only:
+# no runtime relaxation of Basic auth or trusted proxy headers.
+AUTH = (
+    os.environ.get("BASIC_AUTH_USER", "neo4j"),
+    os.environ.get("BASIC_AUTH_PASS", "redacted-rotate-credentials"),
+)
 
 
 def test_workbench_route_renders_chat_first_surface():
@@ -21,6 +28,13 @@ def test_workbench_route_renders_chat_first_surface():
     assert "/static/js/workbench.js" in response.text
     assert "/static/css/workbench.css" in response.text
 
+
+
+
+def test_workbench_rejects_wrong_basic_identity_without_proxy_bypass():
+    client = TestClient(app)
+    response = client.get("/workbench", auth=(AUTH[0], "deliberately-incorrect-test-password"))
+    assert response.status_code == 401
 
 def test_workbench_uses_existing_hermes_agent_boundary_only():
     script = (ROOT / "static" / "js" / "workbench.js").read_text(encoding="utf-8")

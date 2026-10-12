@@ -35,7 +35,7 @@ ENV_VARIANTS = (
 )
 
 #: Documented templates that must remain addable.
-ENV_TEMPLATES = (".env.example", ".env.kipnerter-gateway.example")
+ENV_TEMPLATES = (".env.example", ".env.kipnerter-gateway.example", ".env.reconciliation.example")
 
 #: Tracked by name, but not a live environment. Archived after a
 #: secret-removal incident; it holds placeholder values, not real ones, and it
