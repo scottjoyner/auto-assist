@@ -50,7 +50,7 @@ jobs:
           PY
       - name: Install only offline-test dependencies
         run: |
-          python -m pip install --disable-pip-version-check "pytest>=8,<9" "neo4j>=5.26,<6" "pydantic>=2,<3" "python-dotenv>=1,<2"
+          python -m pip install --disable-pip-version-check "pytest>=8,<9" "neo4j>=5.26,<6" "pydantic>=2,<3" "python-dotenv>=1,<2" "requests>=2,<3"
       - name: Compile isolated research source
         run: |
           python -m py_compile \
