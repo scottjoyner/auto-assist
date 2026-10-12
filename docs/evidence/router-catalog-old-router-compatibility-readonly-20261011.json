@@ -1,0 +1,62 @@
+{
+  "schema": "assistx.router-catalog-old-router-readonly-v1",
+  "observation_date_utc": "2026-10-11",
+  "observed_client_source_sha": "eec2215839867a85e7524964aff585c7bd5cc7fe",
+  "method": "Streamed the candidate stdlib router_provider_inventory.py into a bounded one-shot Python process inside existing running assistx-api; one configured X-Admin-Token retrieved internally and never printed or exported",
+  "live_server_context": "Auto-Router prior to PR #41; no service redeployment",
+  "privileged_reads": [
+    {
+      "route": "GET /admin/providers/effective",
+      "status": 404,
+      "transport": "same existing private Docker-network origin",
+      "redirects_followed": false
+    },
+    {
+      "route": "GET /admin/providers",
+      "status": 200,
+      "trigger": "404_ONLY_COMPATIBILITY",
+      "credential_header_sent": true,
+      "redirects_followed": false
+    }
+  ],
+  "resulting_catalog": {
+    "distinct_model_aliases": 1,
+    "identity_index_entries": 3,
+    "authority": "CONFIGURED_AVAILABLE_ONLY",
+    "loaded_residency_proven": false,
+    "admission_proven": false
+  },
+  "authentication_limit": "Legacy live router is known to return HTTP 200 on inherited admin GETs without a token; including a valid header in the request does not prove the legacy endpoint enforces caller authentication",
+  "focused_exact_head_local": {
+    "commit": "eec2215839867a85e7524964aff585c7bd5cc7fe",
+    "tests": "tests/test_control_room.py tests/test_router_provider_inventory_portable.py tests/test_router_admin_proxy_contract.py tests/test_router_effective_cross_repo_fixture.py",
+    "passed": 44,
+    "subtests_passed": 58,
+    "failed": 0
+  },
+  "privileged_http_size_gate": {
+    "limit_bytes": 4194304,
+    "reject_before_json": true,
+    "negative_and_positive_regressions_passed": true
+  },
+  "scope": {
+    "synthetic_or_live": "LIVE_OLD_ROUTER_GET_ONLY",
+    "credential_values_captured": false,
+    "response_model_names_captured": false,
+    "node_service_mutations": false,
+    "router_configuration_mutations": false,
+    "model_load_or_inference": false,
+    "graph_approval_or_writes": false
+  },
+  "promotion": {
+    "go": false,
+    "reason": [
+      "PR #288 not deployed",
+      "PR #41 not deployed",
+      "PR #291 public-sensitive-path custody HOLD",
+      "Canonical projection generation 642 expired and zero loaded resident x1 model",
+      "Four raw physical listeners not isolated",
+      "Exact physical iPhone acceptance absent"
+    ]
+  }
+}

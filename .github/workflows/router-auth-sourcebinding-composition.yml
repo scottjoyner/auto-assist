@@ -1,0 +1,76 @@
+name: router-auth-sourcebinding-composition
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  exact-head-compatibility:
+    # This is experimental evidence for the ONE client-migration draft, not a
+    # replacement for repository-wide unit, security or recovery gates.
+    if: github.head_ref == 'feat/sanitized-effective-provider-catalog-20261011'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      SOURCE_BINDING_PR: '217'
+      PINNED_SOURCE_BINDING_SHA: '42240ec5640c312ece54c50741c5c71fab4745b7'
+      BASIC_AUTH_USER: neo4j
+      BASIC_AUTH_PASS: redacted-rotate-credentials
+      ASSISTX_RUNTIME_PROFILE: test
+      ASSISTX_DEPENDENCY_MODE: compat
+    steps:
+      - name: Checkout exact AssistX PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          # Compare moving PR heads against older pinned dependencies using the full DAG.
+          # A shallow checkout can lose the common ancestor and falsely fail the merge.
+          fetch-depth: 0
+
+      - name: Confirm external draft head and compose without a merge commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "refs/pull/${SOURCE_BINDING_PR}/head"
+          actual="$(git rev-parse FETCH_HEAD)"
+          if [[ "${actual}" != "${PINNED_SOURCE_BINDING_SHA}" ]]; then
+            echo '::error::PR #217 head drifted; review and re-pin the source-binding dependency'
+            exit 1
+          fi
+          # Even --no-commit computes a synthetic merge author identity on
+          # GitHub runners. Scope it to this command; never configure Git
+          # globally, never create a merge commit or push the combined tree.
+          git -c user.name='CI Composition (Uncommitted)' \
+              -c user.email='ci-composition@invalid.example' \
+              merge --no-commit --no-ff --no-edit FETCH_HEAD
+          if git ls-files -u | grep -q .; then
+            echo '::error::Conflicting PR heads; cannot certify composition'
+            exit 1
+          fi
+          echo "Client SHA: $(git rev-parse HEAD)"
+          echo "Source-binding SHA: ${actual}"
+          echo 'Merge is uncommitted and is not promoted to any branch.'
+
+      - name: Install test-only dependencies in disposable runner
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run narrowed source-binding and client contract smoke
+        env:
+          PYTHONPATH: src
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest -q -m 'not integration' --disable-warnings \
+            tests/test_repository_source_binding.py \
+            tests/test_repo_task_generator.py \
+            tests/test_improvement_runtime.py \
+            tests/test_router_provider_inventory_portable.py \
+            tests/test_router_admin_proxy_contract.py \
+            tests/test_router_effective_cross_repo_fixture.py \
+            tests/test_control_room.py \
+            -k 'not test_repo_generator_does_not_start_when_disabled'
