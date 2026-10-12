@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from assistx.fleet_serve_preflight import _self_dns, assess_serve_configuration
 from assistx.fleet_serve_https_probe import probe_self
+from assistx.fleet_ingress_boundary import assess_ingress_boundary
 
 
 def _load_file(path: Path) -> dict:
@@ -37,11 +38,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--read-current", action="store_true")
     parser.add_argument("--probe-self", action="store_true",
                         help="Opt-in: three read-only HTTPS GETs against this node's configured Serve listener")
+    parser.add_argument("--audit-ingress", action="store_true",
+                        help="Opt-in, read-only Docker AssistX API ingress inventory; emit booleans only")
     parser.add_argument("--serve-json", type=Path)
     parser.add_argument("--status-json", type=Path)
     args = parser.parse_args(argv)
     if args.probe_self and not args.read_current:
         parser.error("--probe-self requires --read-current")
+    if args.audit_ingress and not args.read_current:
+        parser.error("--audit-ingress requires --read-current")
     if args.read_current == bool(args.serve_json):
         parser.error("choose --read-current or the paired --serve-json/--status-json")
     if not args.read_current and not args.status_json:
@@ -53,6 +58,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             serve, status = _load_file(args.serve_json), _load_file(args.status_json)
         report = assess_serve_configuration(serve, status)
+        if args.audit_ingress:
+            container = _live_json("docker", "inspect", "--format",
+                                   "{{json .}}", "assistx-api")
+            report["ingress_boundary"] = assess_ingress_boundary(container, report)
         if args.probe_self:
             ports = report["identity_route_https_ports"]
             if len(ports) != 1:

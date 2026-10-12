@@ -9,6 +9,7 @@ on:
       - "scripts/fleet_endpoint_*.py"
       - "scripts/fleet_serve_preflight.py"
       - "src/assistx/fleet_endpoint_*.py"
+      - "src/assistx/fleet_ingress_boundary.py"
       - "src/assistx/fleet_sso_ingest.py"
       - "src/assistx/fleet_serve_*.py"
       - "src/assistx/fleet_tailnet_witness.py"
@@ -45,6 +46,7 @@ jobs:
           python -B -m py_compile
           src/assistx/fleet_endpoint_harness.py
           src/assistx/fleet_endpoint_shadow_gate.py
+          src/assistx/fleet_ingress_boundary.py
           src/assistx/fleet_serve_https_probe.py
           src/assistx/fleet_serve_preflight.py
           src/assistx/fleet_sso_ingest.py
@@ -59,6 +61,7 @@ jobs:
           tests/test_fleet_endpoint_harness.py
           tests/test_fleet_endpoint_shadow_gate.py
           tests/test_fleet_endpoint_snapshot.py
+          tests/test_fleet_ingress_boundary.py
           tests/test_fleet_serve_https_probe.py
           tests/test_fleet_serve_preflight.py
           tests/test_fleet_sso_ingest.py
