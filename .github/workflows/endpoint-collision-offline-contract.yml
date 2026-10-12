@@ -1,0 +1,85 @@
+name: endpoint-collision-offline-contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/endpoint-collision-offline-contract.yml"
+      - "src/assistx/endpoint_identity_candidate.py"
+      - "scripts/endpoint_identity_candidate_disposable.py"
+      - "scripts/endpoint_collision_rekey_synthetic_scenario.py"
+      - "tests/test_endpoint_identity_candidate.py"
+      - "tests/test_endpoint_identity_candidate_disposable_guard.py"
+      - "tests/test_endpoint_collision_rekey_synthetic_scenario.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-source-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify exact reviewed source revision
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          expected = os.environ["EXPECTED_SOURCE_SHA"].strip()
+          actual = subprocess.check_output(
+              ["git", "rev-parse", "HEAD"], text=True
+          ).strip()
+          if actual != expected or len(actual) != 40:
+              raise SystemExit("source-revision binding mismatch")
+          print("EXACT_HEAD_BOUND_SOURCE_PASS")
+          PY
+      - name: Install only offline-test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check "pytest>=8,<9" "neo4j>=5.26,<6"
+      - name: Compile isolated research source
+        run: |
+          python -m py_compile \
+            src/assistx/endpoint_identity_candidate.py \
+            scripts/endpoint_identity_candidate_disposable.py \
+            scripts/endpoint_collision_rekey_synthetic_scenario.py \
+            tests/test_endpoint_identity_candidate.py \
+            tests/test_endpoint_identity_candidate_disposable_guard.py \
+            tests/test_endpoint_collision_rekey_synthetic_scenario.py
+      - name: Offline synthetic contract regression tests
+        run: |
+          python -m pytest --noconftest -q \
+            tests/test_endpoint_identity_candidate.py \
+            tests/test_endpoint_identity_candidate_disposable_guard.py \
+            tests/test_endpoint_collision_rekey_synthetic_scenario.py
+      - name: Ensure disposable runner refuses implicit execution
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+          p = subprocess.run(
+              ["python", "scripts/endpoint_identity_candidate_disposable.py"],
+              capture_output=True, text=True, timeout=8,
+          )
+          try:
+              data = json.loads(p.stdout)
+          except ValueError:
+              raise SystemExit("disposable proof guard returned invalid JSON")
+          if (
+              p.returncode != 2
+              or data.get("docker_commands_executed") is not False
+              or data.get("production_release_authorized") is not False
+              or data.get("status") != "HOLD_EXPLICIT_DISPOSABLE_OPT_IN_REQUIRED"
+          ):
+              raise SystemExit("disposable execution guard did not deny")
+          print("IMPLICIT_DOCKER_EXECUTION_DENIED_PASS")
+          PY
