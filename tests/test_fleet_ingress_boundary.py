@@ -121,3 +121,107 @@ def test_no_header_or_no_bind_is_not_false_identity_proof():
 def test_invalid_serve_evidence_rejected_before_env_projection():
     with pytest.raises(ValueError):
         assess_ingress_boundary(container(), {"schema": "untrusted"})
+
+
+# Docker metadata is synthetic. Network IDs and peer IDs never enter reports.
+def topology_container():
+    row = container()
+    row["Id"] = "a" * 64
+    row["NetworkSettings"]["Networks"] = {
+        "synthetic-private-A": {"NetworkID": "b" * 64},
+        "synthetic-private-B": {"NetworkID": "c" * 64},
+    }
+    return row
+
+
+def topology_network(network_id, peers, *, driver="bridge"):
+    members = {"a" * 64: {"Name": "assistx-api", "IPv4Address": "172.24.0.5/16"}}
+    members.update({
+        peer: {"Name": f"synthetic-peer-{i}", "IPv4Address": "172.24.0.9/16"}
+        for i, peer in enumerate(peers)
+    })
+    return {"Id": network_id, "Driver": driver, "Internal": False,
+            "Containers": members}
+
+
+def test_two_bridge_networks_report_peer_attachments_without_identities():
+    from assistx.fleet_ingress_boundary import network_inspection_ids
+    item = topology_container()
+    networks = [
+        topology_network("b" * 64, ["d" * 64, "e" * 64]),
+        topology_network("c" * 64, ["d" * 64, "f" * 64]),
+    ]
+    assert network_inspection_ids(item) == ["b" * 64, "c" * 64]
+    result = assess_ingress_boundary(item, serve(), network_inspections=networks)
+    assert result["docker_network_inventory_complete"] is True
+    assert result["docker_bridge_network_count"] == 2
+    assert result["docker_bridge_peer_attachments"] == 4
+    assert result["docker_unique_bridge_peer_count"] == 3
+    assert result["docker_shared_bridge_peers_present"] is True
+    assert result["docker_peer_bypass_ruled_out"] is False
+    assert result["acceptance"] == "HOLD"
+    assert "shared_docker_bridge_peers_attached" in result["reasons"]
+    encoded = json.dumps(result)
+    for forbidden in (SYNTHETIC_SECRET, "synthetic-private-A",
+                      "172.24.0.9", "synthetic-peer", "d" * 64):
+        assert forbidden not in encoded
+
+
+def test_missing_topology_remains_explicitly_unknown():
+    result = assess_ingress_boundary(topology_container(), serve())
+    assert result["docker_network_inventory_complete"] is False
+    assert result["docker_bridge_peer_attachments"] is None
+    assert result["docker_shared_bridge_peers_present"] is None
+    assert "docker_peer_topology_not_examined" in result["reasons"]
+    assert result["acceptance"] == "HOLD"
+
+
+def test_zero_bridge_peers_still_not_proof_of_safe_header_provenance():
+    item = topology_container()
+    networks = [topology_network("b" * 64, []),
+                topology_network("c" * 64, [])]
+    result = assess_ingress_boundary(item, serve(mapped=True),
+                                     network_inspections=networks)
+    assert result["docker_bridge_peer_attachments"] == 0
+    assert result["docker_shared_bridge_peers_present"] is False
+    assert result["docker_peer_bypass_ruled_out"] is False
+    assert result["identity_header_provenance_verified"] is False
+    assert result["acceptance"] == "HOLD"
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda nets: nets.pop(),
+    lambda nets: nets.append(nets[0]),
+    lambda nets: nets[0].update(Id="f" * 64),
+    lambda nets: nets[0].update(Containers=None),
+    lambda nets: nets[0].get("Containers").pop("a" * 64),
+    lambda nets: nets[0]["Containers"].update({"bad id": {}}),
+])
+def test_incomplete_unbound_or_malformed_network_inventory_fails_closed(mutation):
+    item = topology_container()
+    networks = [topology_network("b" * 64, ["d" * 64]),
+                topology_network("c" * 64, ["e" * 64])]
+    mutation(networks)
+    with pytest.raises(ValueError):
+        assess_ingress_boundary(item, serve(), network_inspections=networks)
+
+
+def test_non_bridge_network_is_not_falsely_reported_as_bridge_peer():
+    item = topology_container()
+    networks = [topology_network("b" * 64, ["d" * 64], driver="host"),
+                topology_network("c" * 64, [], driver="bridge")]
+    row = assess_ingress_boundary(item, serve(), network_inspections=networks)
+    assert row["docker_bridge_network_count"] == 1
+    assert row["docker_bridge_peer_attachments"] == 0
+    assert row["acceptance"] == "HOLD"
+
+
+def test_network_id_must_be_canonical_and_nonduplicate():
+    from assistx.fleet_ingress_boundary import network_inspection_ids
+    item = topology_container()
+    item["NetworkSettings"]["Networks"]["synthetic-private-B"]["NetworkID"] = "invalid"
+    with pytest.raises(ValueError):
+        network_inspection_ids(item)
+    item["NetworkSettings"]["Networks"]["synthetic-private-B"]["NetworkID"] = "b" * 64
+    with pytest.raises(ValueError):
+        network_inspection_ids(item)

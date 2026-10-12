@@ -6,6 +6,75 @@ statuses. They must never be returned, logged, archived, or published.
 from __future__ import annotations
 
 from typing import Any
+import re
+
+_DOCKER_ID = re.compile(r"[0-9a-f]{64}")
+
+
+def network_inspection_ids(container: dict[str, Any]) -> list[str]:
+    """Resolve only locally attached, exact Docker network IDs; never names."""
+    net = container.get("NetworkSettings")
+    attached = net.get("Networks") if isinstance(net, dict) else None
+    if not isinstance(attached, dict) or len(attached) > 12:
+        raise ValueError("untrusted Docker network membership")
+    ids: list[str] = []
+    for connection in attached.values():
+        ident = connection.get("NetworkID") if isinstance(connection, dict) else None
+        if not isinstance(ident, str) or not _DOCKER_ID.fullmatch(ident):
+            raise ValueError("untrusted Docker network ID")
+        if ident in ids:
+            raise ValueError("duplicate Docker network ID")
+        ids.append(ident)
+    return ids
+
+
+def assess_shared_bridge_peers(
+    container: dict[str, Any], network_inspections: list[dict[str, Any]],
+) -> dict[str, int | bool]:
+    """Reconcile Docker memberships without echoing peer IDs or addresses.
+
+    Attached Docker peers indicate a reachable-network concern, NOT a
+    demonstrated forged-header exploit and NOT an admission verdict.
+    """
+    container_id = container.get("Id")
+    if not isinstance(container_id, str) or not _DOCKER_ID.fullmatch(container_id):
+        raise ValueError("missing exact Docker container identity")
+    expected = set(network_inspection_ids(container))
+    if (not isinstance(network_inspections, list)
+            or len(network_inspections) != len(expected)):
+        raise ValueError("incomplete Docker network inventory")
+    seen: set[str] = set()
+    unique_peers: set[str] = set()
+    attachments = 0
+    bridge_networks = 0
+    for network in network_inspections:
+        if not isinstance(network, dict):
+            raise ValueError("invalid Docker network metadata")
+        ident = network.get("Id")
+        members = network.get("Containers")
+        if (not isinstance(ident, str) or ident not in expected
+                or ident in seen or not isinstance(members, dict)
+                or len(members) > 512 or container_id not in members):
+            raise ValueError("unbound Docker network inventory")
+        seen.add(ident)
+        if network.get("Driver") != "bridge":
+            continue
+        bridge_networks += 1
+        for peer_id in members:
+            if not isinstance(peer_id, str) or not _DOCKER_ID.fullmatch(peer_id):
+                raise ValueError("invalid Docker peer identity")
+            if peer_id != container_id:
+                attachments += 1
+                unique_peers.add(peer_id)
+    if seen != expected:
+        raise ValueError("missing Docker network")
+    return {
+        "bridge_network_count": bridge_networks,
+        "bridge_peer_attachments": attachments,
+        "unique_bridge_peer_count": len(unique_peers),
+        "shared_bridge_peers_present": bool(unique_peers),
+    }
+
 
 _AUTH_KEYS = {
     "TRUSTED_AUTH_HEADER",
@@ -20,6 +89,7 @@ _LOCAL = {"127.0.0.1", "::1"}
 
 def assess_ingress_boundary(
     container: dict[str, Any], serve_report: dict[str, Any],
+    *, network_inspections: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Return booleans/reason-codes only; even a good layout is not SSO proof."""
     if (not isinstance(container, dict) or container.get("Name") != "/assistx-api"
@@ -61,12 +131,20 @@ def assess_ingress_boundary(
     observation_mapped = (
         isinstance(present, dict) and present.get("observations") is True
     )
+    topology = (
+        assess_shared_bridge_peers(container, network_inspections)
+        if network_inspections is not None else None
+    )
     reasons = [
         "identity_header_strip_and_injection_unverified",
         "same_bridge_peer_negative_unverified",
         "independent_gateway_attestation_unverified",
         "physical_client_authorization_unverified",
     ]
+    if topology is None:
+        reasons.append("docker_peer_topology_not_examined")
+    elif topology["shared_bridge_peers_present"]:
+        reasons.append("shared_docker_bridge_peers_attached")
     if trusted and not strict:
         reasons.append("header_only_identity_precedes_basic")
     if not loopback:
@@ -86,6 +164,19 @@ def assess_ingress_boundary(
         "mobile_login_allowlist_configured": allowlist,
         "api_8000_host_binding_loopback_only": bool(loopback),
         "docker_peer_bypass_ruled_out": False,
+        "docker_network_inventory_complete": topology is not None,
+        "docker_bridge_network_count": (
+            topology["bridge_network_count"] if topology is not None else None
+        ),
+        "docker_bridge_peer_attachments": (
+            topology["bridge_peer_attachments"] if topology is not None else None
+        ),
+        "docker_unique_bridge_peer_count": (
+            topology["unique_bridge_peer_count"] if topology is not None else None
+        ),
+        "docker_shared_bridge_peers_present": (
+            topology["shared_bridge_peers_present"] if topology is not None else None
+        ),
         "identity_header_provenance_verified": False,
         "signed_gateway_receiver_wired_and_verified": False,
         "physical_negative_ingress_verified": False,

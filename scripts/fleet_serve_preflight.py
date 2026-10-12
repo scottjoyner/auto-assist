@@ -11,7 +11,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from assistx.fleet_serve_preflight import _self_dns, assess_serve_configuration
 from assistx.fleet_serve_https_probe import probe_self
-from assistx.fleet_ingress_boundary import assess_ingress_boundary
+from assistx.fleet_ingress_boundary import (
+    assess_ingress_boundary, network_inspection_ids,
+)
 
 
 def _load_file(path: Path) -> dict:
@@ -61,7 +63,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.audit_ingress:
             container = _live_json("docker", "inspect", "--format",
                                    "{{json .}}", "assistx-api")
-            report["ingress_boundary"] = assess_ingress_boundary(container, report)
+            # Local Docker metadata only. Collect all of the target API's
+            # attached networks; incomplete inventory denies certification.
+            networks = [
+                _live_json("docker", "network", "inspect", "--format",
+                           "{{json .}}", identity)
+                for identity in network_inspection_ids(container)
+            ]
+            report["ingress_boundary"] = assess_ingress_boundary(
+                container, report, network_inspections=networks
+            )
         if args.probe_self:
             ports = report["identity_route_https_ports"]
             if len(ports) != 1:
