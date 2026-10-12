@@ -54,7 +54,7 @@ def _executor_wrapped_app() -> tuple[FastAPI, SimpleNamespace]:
 
 def test_whoami_maps_tailscale_identity(monkeypatch):
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
-    monkeypatch.delenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", raising=False)
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
     client = TestClient(_app())
 
     response = client.get(
@@ -99,9 +99,62 @@ def test_tailnet_login_allowlist_is_enforced(monkeypatch):
     assert response.status_code == 403
 
 
-def test_executor_security_does_not_break_tailnet_mobile_auth(monkeypatch):
+def test_unconfigured_tailnet_allowlist_rejects_every_login(monkeypatch):
+    monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    client = TestClient(_app())
+    for value in (None, "", "  ,  "):
+        if value is None:
+            monkeypatch.delenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", raising=False)
+        else:
+            monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", value)
+        response = client.get(
+            "/api/v1/auth/whoami",
+            headers={"Tailscale-User-Login": "scott@example.com"},
+        )
+        assert response.status_code == 403
+
+
+def test_file_backed_tailnet_allowlist_supports_existing_container_restart(monkeypatch, tmp_path):
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
     monkeypatch.delenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", raising=False)
+    monkeypatch.setenv("ASSISTX_FLEET_STATE_DIR", str(tmp_path))
+    (tmp_path / "kipnerter-mobile-allowlist.txt").write_text(
+        "scott@example.com\n", encoding="utf-8"
+    )
+    client = TestClient(_app())
+    allowed = client.get(
+        "/api/v1/auth/whoami",
+        headers={"Tailscale-User-Login": "scott@example.com"},
+    )
+    denied = client.get(
+        "/api/v1/auth/whoami",
+        headers={"Tailscale-User-Login": "other@example.com"},
+    )
+    assert allowed.status_code == 200
+    assert denied.status_code == 403
+
+
+def test_environment_allowlist_takes_precedence_over_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "env@example.com")
+    monkeypatch.setenv("ASSISTX_FLEET_STATE_DIR", str(tmp_path))
+    (tmp_path / "kipnerter-mobile-allowlist.txt").write_text(
+        "file@example.com\n", encoding="utf-8"
+    )
+    client = TestClient(_app())
+    assert client.get(
+        "/api/v1/auth/whoami",
+        headers={"Tailscale-User-Login": "env@example.com"},
+    ).status_code == 200
+    assert client.get(
+        "/api/v1/auth/whoami",
+        headers={"Tailscale-User-Login": "file@example.com"},
+    ).status_code == 403
+
+
+def test_executor_security_does_not_break_tailnet_mobile_auth(monkeypatch):
+    monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
     app, auth_module = _executor_wrapped_app()
 
     # Production executor security deliberately takes ownership of the legacy
@@ -125,7 +178,7 @@ def test_executor_security_does_not_break_tailnet_mobile_auth(monkeypatch):
 
 def test_executor_internal_identity_header_cannot_authenticate_mobile_route(monkeypatch):
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
-    monkeypatch.delenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", raising=False)
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
     app, _ = _executor_wrapped_app()
 
     response = TestClient(app).get(
@@ -138,7 +191,7 @@ def test_executor_internal_identity_header_cannot_authenticate_mobile_route(monk
 
 def test_non_tailscale_trusted_header_configuration_fails_closed(monkeypatch):
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "x-assistx-executor-identity")
-    monkeypatch.delenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", raising=False)
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
     client = TestClient(_app())
 
     response = client.get(
@@ -153,7 +206,7 @@ def test_non_tailscale_trusted_header_configuration_fails_closed(monkeypatch):
 
 def test_agent_chat_invokes_hermes_server_side_and_streams_openai_sse(monkeypatch):
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
-    monkeypatch.delenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", raising=False)
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
     captured = {}
 
     def fake_run(prompt: str, *, timeout: int, model, provider):
@@ -203,7 +256,7 @@ def test_agent_chat_invokes_hermes_server_side_and_streams_openai_sse(monkeypatc
 
 def test_agent_chat_returns_gateway_failure_when_hermes_fails(monkeypatch):
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
-    monkeypatch.delenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", raising=False)
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
     monkeypatch.setattr(
         mobile,
         "_run_hermes",
@@ -231,7 +284,7 @@ def test_agent_chat_returns_gateway_failure_when_hermes_fails(monkeypatch):
 
 def test_agent_chat_maps_projection_failure_to_stable_mobile_error(monkeypatch):
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
-    monkeypatch.delenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", raising=False)
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
     monkeypatch.setattr(
         mobile,
         "_run_hermes",

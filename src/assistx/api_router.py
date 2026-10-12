@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from fastapi import APIRouter
+
 from . import api as api_module
 from . import control_room as control_room_module
 from . import router_integration as router_integration_module
@@ -10,6 +12,7 @@ from .control_room import LEGACY_UI_PATHS, build_control_room_router
 from .control_room_runtime import install_control_room_runtime
 from .executor_claims import install_live_executor_claims
 from .executor_security import install_executor_security
+from .mobile_agent_routes import register_mobile_agent_routes
 from .overlay_routes import build_overlay_router
 from .passive_agents import build_passive_agent_router
 from .passive_claims import build_passive_claim_router
@@ -87,6 +90,16 @@ app.include_router(
 app.include_router(build_control_room_router(_neo, auth, templates))
 app.include_router(build_router_integration_router(_neo))
 app.include_router(build_runtime_projection_router(_neo, auth_dependency=auth))
+
+# The iPhone, Workbench, and Tailnet Serve edge all target these exact mobile
+# routes. Defining mobile_agent_routes.py alone did not expose them in the live
+# assistx.api_router:app process (the public contract returned 404).
+# Keep the existing Tailnet identity and Basic-auth fallback; this is routing
+# registration only, not a new authentication or execution policy.
+_mobile_router = APIRouter()
+register_mobile_agent_routes(_mobile_router, auth)
+app.include_router(_mobile_router)
+
 app.include_router(build_overlay_router())
 app.include_router(build_passive_agent_router(_neo, auth_dependency=auth))
 app.include_router(build_passive_claim_router(_neo, auth_dependency=auth))

@@ -7,6 +7,14 @@ from fastapi.testclient import TestClient
 
 from assistx import mobile_agent_routes as mobile
 
+# These tests exercise catalog assembly and response sanitisation, not admission
+# policy. Since the Tailnet allowlist went fail-closed, an unconfigured
+# deployment denies every login, so the allowlist has to be stated here rather
+# than assumed -- otherwise each of these routes answers 403 for a reason that
+# has nothing to do with what it is testing. Admission itself is covered by
+# tests/test_mobile_agent_routes.py, including the unconfigured case.
+_ALLOWED_LOGIN = "scott@example.com"
+
 
 def _projection() -> dict:
     return {
@@ -360,6 +368,7 @@ def _app() -> FastAPI:
 
 def test_mobile_runtime_catalog_route_uses_tailnet_boundary(monkeypatch):
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", _ALLOWED_LOGIN)
     monkeypatch.setattr(
         mobile,
         "_mobile_runtime_catalog",
@@ -380,6 +389,7 @@ def test_mobile_runtime_catalog_route_uses_tailnet_boundary(monkeypatch):
 
 def test_mobile_model_chat_resolves_handle_and_sanitizes_router_response(monkeypatch):
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", _ALLOWED_LOGIN)
     monkeypatch.setenv(
         "KIPNERTER_MOBILE_MODEL_HANDLE_SECRET",
         "test-mobile-handle-secret",
@@ -468,6 +478,7 @@ def test_mobile_runtime_catalog_route_returns_safe_empty_catalog_for_expired_pro
     from assistx.runtime_projection import RuntimeProjectionBlocked
 
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", _ALLOWED_LOGIN)
 
     def fail_closed():
         raise RuntimeProjectionBlocked(
@@ -490,6 +501,7 @@ def test_mobile_runtime_catalog_route_returns_safe_empty_catalog_for_expired_pro
 
 def test_mobile_runtime_catalog_route_sanitizes_backend_failure(monkeypatch):
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", _ALLOWED_LOGIN)
 
     def fail():
         raise RuntimeError("bolt://neo4j:7687 super-secret-detail")
