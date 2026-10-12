@@ -6,6 +6,10 @@ Designed to be used with Hermes Agent's delegate_task tool or cronjob.
 
 import subprocess
 import json
+try:
+    from router_admin_context_readonly import probe_admin_context
+except ModuleNotFoundError:  # also support python -m scripts.coordination_check
+    from scripts.router_admin_context_readonly import probe_admin_context
 from datetime import datetime, timedelta
 
 
@@ -55,14 +59,9 @@ def check_system_health():
     except Exception as e:
         health['integration']['models_endpoint'] = {'status': 'error', 'error': str(e)}
     
-    try:
-        resp = requests.get('http://localhost:8088/admin/context', timeout=5)
-        health['integration']['context_endpoint'] = {
-            'status': 'ok' if resp.status_code == 200 else 'error',
-            'has_context': bool(resp.json()) if resp.headers.get('content-type') == 'application/json' else False
-        }
-    except Exception as e:
-        health['integration']['context_endpoint'] = {'status': 'error', 'error': str(e)}
+    # The admin context route requires a token. Fail closed and never read
+    # private context bodies or let redirects/proxy settings carry the token.
+    health['integration']['context_endpoint'] = probe_admin_context()
     
     return health
 
