@@ -5,11 +5,13 @@ on:
     paths:
       - ".github/workflows/endpoint-collision-offline-contract.yml"
       - "src/assistx/endpoint_identity_candidate.py"
+      - "src/assistx/endpoint_writer_fence_shadow.py"
       - "scripts/endpoint_identity_candidate_disposable.py"
       - "scripts/endpoint_collision_rekey_synthetic_scenario.py"
       - "tests/test_endpoint_identity_candidate.py"
       - "tests/test_endpoint_identity_candidate_disposable_guard.py"
       - "tests/test_endpoint_collision_rekey_synthetic_scenario.py"
+      - "tests/test_endpoint_writer_fence_shadow.py"
   workflow_dispatch:
 
 permissions:
@@ -50,17 +52,20 @@ jobs:
         run: |
           python -m py_compile \
             src/assistx/endpoint_identity_candidate.py \
+            src/assistx/endpoint_writer_fence_shadow.py \
             scripts/endpoint_identity_candidate_disposable.py \
             scripts/endpoint_collision_rekey_synthetic_scenario.py \
             tests/test_endpoint_identity_candidate.py \
             tests/test_endpoint_identity_candidate_disposable_guard.py \
-            tests/test_endpoint_collision_rekey_synthetic_scenario.py
+            tests/test_endpoint_collision_rekey_synthetic_scenario.py \
+            tests/test_endpoint_writer_fence_shadow.py
       - name: Offline synthetic contract regression tests
         run: |
           python -m pytest --noconftest -q \
             tests/test_endpoint_identity_candidate.py \
             tests/test_endpoint_identity_candidate_disposable_guard.py \
-            tests/test_endpoint_collision_rekey_synthetic_scenario.py
+            tests/test_endpoint_collision_rekey_synthetic_scenario.py \
+            tests/test_endpoint_writer_fence_shadow.py
       - name: Ensure disposable runner refuses implicit execution
         run: |
           python - <<'PY'
