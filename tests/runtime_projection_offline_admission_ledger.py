@@ -70,7 +70,7 @@ def initialize(db_path: Path, *, trusted_genesis_generation: int) -> None:
         db.execute(
             "CREATE TABLE IF NOT EXISTS replay (approval_id TEXT PRIMARY KEY, "
             "generation INTEGER NOT NULL, source_sha256 TEXT NOT NULL, "
-            "state TEXT NOT NULL CHECK(state='PENDING_UNCERTAIN_GRAPH_OUTCOME'))")
+            "state TEXT NOT NULL CHECK(state IN ('PENDING_UNCERTAIN_GRAPH_OUTCOME','CONFIRMED_SYNTHETIC_READBACK')))")
         state = db.execute(
             "SELECT last_confirmed_generation FROM custody WHERE singleton=1"
         ).fetchone()
