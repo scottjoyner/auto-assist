@@ -11,8 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from runtime_projection_offline_admission_ledger import AdmissionHold, _connect
-
-from scripts.runtime_projection_signed_apply_gate import (
+from runtime_projection_signed_apply_gate import (
     CLOCK_SKEW_MS,
     canonical,
     exact,
