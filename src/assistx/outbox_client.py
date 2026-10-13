@@ -1,7 +1,7 @@
 import os, json, sqlite3, time, threading, uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List, Callable
-from urllib.request import Request, urlopen, build_opener, HTTPRedirectHandler
+from urllib.request import Request, build_opener, HTTPRedirectHandler
 from urllib.parse import urlsplit
 import ipaddress
 from urllib.error import URLError, HTTPError
@@ -18,8 +18,8 @@ RETRY_MAX_S = int(os.environ.get("ASSISTX_OUTBOX_RETRY_MAX_S", "300"))
 TTL_DAYS = int(os.environ.get("ASSISTX_OUTBOX_TTL_DAYS", "7"))
 MAX_PENDING = int(os.environ.get("ASSISTX_OUTBOX_MAX_PENDING", "100000"))
 
-def _authenticated_transport_permitted(url: str) -> bool:
-    """Require HTTPS for remote credentials; loopback HTTP is local-only."""
+def _outbox_destination_permitted(url: str) -> bool:
+    """Require HTTPS for remote event payloads; loopback HTTP is local-only."""
     try:
         target = urlsplit(url)
         hostname = target.hostname
@@ -27,6 +27,7 @@ def _authenticated_transport_permitted(url: str) -> bool:
             return False
         if target.query or target.fragment:
             return False
+        _ = target.port  # Reject malformed/out-of-range ports fail closed.
         if target.scheme == "https":
             return True
         if target.scheme != "http":
@@ -41,8 +42,8 @@ def _authenticated_transport_permitted(url: str) -> bool:
         return False
 
 
-class _NoAuthorizationRedirects(HTTPRedirectHandler):
-    """Never forward credentials to redirects, even on the same origin."""
+class _RejectOutboxRedirects(HTTPRedirectHandler):
+    """Never forward outbox payloads or credentials through redirects."""
 
     def redirect_request(self, request, fp, code, msg, headers, newurl):
         return None
@@ -221,24 +222,19 @@ class OutboxClient:
         if not self.api_url:
             return False
         url = f"{self.api_url}/api/events"
+        if not _outbox_destination_permitted(url):
+            return False
         data = entry.payload_json.encode("utf-8")
         req = Request(url, data=data, method="POST")
         req.add_header("Content-Type", "application/json")
         if self._auth_header:
-            if not _authenticated_transport_permitted(url):
-                return False
             req.add_header("Authorization", self._auth_header)
         try:
-            # urllib may forward explicit headers across redirect boundaries.
-            # Redirects of authenticated requests are always failures; leave
-            # the event in the outbox for bounded retry/review.
-            if self._auth_header:
-                response = build_opener(_NoAuthorizationRedirects()).open(
-                    req, timeout=15
-                )
-            else:
-                response = urlopen(req, timeout=15)
-            with response as resp:
+            # Never follow redirects with event payloads or credentials.
+            # A redirect leaves the event pending for bounded retry/review.
+            with build_opener(_RejectOutboxRedirects()).open(
+                req, timeout=15
+            ) as resp:
                 body = resp.read().decode()
                 result = json.loads(body)
                 accepted = result.get("accepted", False)
