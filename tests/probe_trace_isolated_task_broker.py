@@ -17,6 +17,7 @@ import time
 GRAPH_IMAGE = "neo4j:5.26-enterprise"
 PYTHON_IMAGE = "python:3.12-slim"
 SOURCE = Path(__file__).resolve().parent
+from trace_b01_multipeer_disposable import run_synthetic_peers, ALL_ROLE_NAMES
 
 
 def docker(*args: str, timeout: int = 25, check: bool = True):
@@ -208,11 +209,21 @@ def run() -> dict:
                 time.sleep(1)
             if result is None:
                 raise RuntimeError("WORKER_TO_BROKER_TASK_READ_ACCEPTANCE_FAILED")
+            synthetic_peers = run_synthetic_peers(
+                docker=docker, assert_disposable=assert_disposable,
+                made_containers=made_containers, worker_net=worker_net,
+                graph_ip=neo_ip, broker=broker, tag=tag,
+                python_image=PYTHON_IMAGE)
             return {
                 **result,
                 "schema": "assistx-disposable-task-broker-20261011-v1",
                 "runtime_seconds": round(time.monotonic() - started, 2),
                 "source_task_method": "Neo4jClient.get_task",
+                "synthetic_peer_roles": sorted(ALL_ROLE_NAMES),
+                "synthetic_peer_count": len(synthetic_peers)+1,
+                "synthetic_peer_network_denials": synthetic_peers,
+                "production_roles_replicated": False,
+                "published_port_and_tailnet_paths_proven": False,
                 "tested_subset": ["Task.id", "Task.status"],
                 "claim_guard_fields": [
                     "Task.id", "Task.status", "Task.queue_class",
