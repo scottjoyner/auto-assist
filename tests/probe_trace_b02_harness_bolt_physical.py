@@ -23,6 +23,9 @@ from trace_b02_harness_projection_candidate import (
 from fastapi.security import HTTPBasicCredentials
 from trace_b02_tenant_broker_boundary import (
     BrokerBoundaryDenied, ServerOwnedDirectory, resolve_scoped_read)
+from trace_b02_harness_counts_canary import (
+    QUERY as COUNTS_QUERY, fixed_params as counts_fixed_params,
+    validate_rows as validate_counts_rows)
 from probe_trace_isolated_task_broker import docker, GRAPH_IMAGE as GRAPH
 
 def assert_isolated(graph, network):
@@ -234,6 +237,15 @@ def run():
                     and scoped_other_ids==["fixture-other-scope"])
                 if not scoped_predicate_test:
                     raise RuntimeError("TENANT_PREDICATE_PHYSICAL_ISOLATION_FAILED")
+                aggregate=validate_counts_rows(execute(
+                    scoped,COUNTS_QUERY,data=counts_fixed_params()))
+                if (aggregate["matching_task_count"]!=47
+                        or aggregate["kind_counts"]["harness_reflect"]!=46
+                        or aggregate["kind_counts"]["harness_deploy"]!=1
+                        or aggregate["status_counts"]["READY"]!=46
+                        or aggregate["status_counts"]["ERROR"]!=1
+                        or aggregate["contains_task_values"]):
+                    raise RuntimeError("B02_AGGREGATE_FIXED_PLAN_PARITY_FAILED")
             return {
                 "schema":"assistx-b02-neo4j-bolt-physical-v1",
                 "result":"PASS","disposable_graph_image":GRAPH,
@@ -251,6 +263,8 @@ def run():
                 "tenant_scoped_synthetic_predicate_pass":scoped_predicate_test,
                 "synthetic_broker_scope_override_denied":spoofed_scope_denied,
                 "synthetic_principal_to_directory_query_parity":True,
+                "counts_only_fixed_aggregate_physical_pass":True,
+                "counts_only_synthetic_fixture_task_count":aggregate["matching_task_count"],
                 "tenant_scoped_query_principal_binding_proven":False,
                 "production_task_tenant_property_parity_proven":False,
                 "tenant_isolation_proven":False,
