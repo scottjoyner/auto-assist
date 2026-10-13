@@ -278,3 +278,63 @@ harness view, silently backfill ownership for 31,074 Tasks, promote
 global operator scope, remove B01 Bolt connectivity, or enable B06
 signed closure or automatic failover. Establish an independently
 approved operator-only policy or a real Task ownership model first.
+
+## Read-only live harness Task counts — October 13
+
+The existing `harness_evolution_snapshot` view reads five kinds
+(`harness_reflect`, `harness_train`, `harness_deploy`,
+`harness_rescore`, `adaptive_model_benchmark`) and six Task
+statuses (`READY`, `CLAIMED`, `RUNNING`, `DONE`, `FAILED`,
+`ERROR`). These enumerations are source-pinned in
+`tests/trace_b02_harness_counts_canary.py`.
+
+A new **explicit-opt-in**, fixed read-only probe
+`tests/probe_trace_b02_harness_counts_readonly.py` was executed
+inside the running AssistX API container using only aggregate queries
+and its existing Neo4j configuration. It emitted no Task IDs, titles,
+payloads, errors, coordinates, or credential values and did not mount
+a new route or create/update any graph records.
+
+### Live results (non-randomized, at time of probe)
+
+- Total Task nodes established by the prior ownership metadata probe:
+  **31,074**.
+- `kind` is present on **31,027** Task nodes.
+- `status` is present on **31,028** Task nodes; all 31,028 have one of
+  the six existing supported statuses.
+- **Zero** Task nodes have one of the five harness-specific `kind`
+  values. Consequently, zero Task rows match any of the 30 fixed
+  harness kind/status cells.
+- This does **not** establish that no EvaluationRun or other harness
+  data exists, nor that the harness page is unused. It establishes
+  there were no Task records of these kinds at the observed time.
+  Data can change after the probe.
+
+### Repeatable narrow acceptance
+
+`tests/trace_b02_harness_counts_canary.py` defines a fixed 5×6
+aggregation and rejects unexpected field names, kind/status values,
+duplicate cells, negative/non-integer counts and oversized results.
+It reports counts only and explicitly disclaims global operator
+authorization, content-view equivalence, broker admission and release.
+`tests/test_trace_b02_harness_counts_canary.py` locks its enumerations
+to the existing `assistx.harness_views` source and rejects any
+client-specified query or raw Task fields.
+
+Initial focused suite: **20 passed**. Expanded local suite: **142 passed**.
+The opt-in disposable Neo4j 5.26 physical runner additionally
+performed the fixed aggregation with the existing restricted reader
+and verified **47** synthetic matching Task nodes (46 reflect, 1 deploy),
+without returning raw Task fields. **Physical PASS in 21.48 seconds**.
+Source-exact PR/CI verification is a distinct next gate.
+
+### Prioritization consequence
+
+No production read shadow is warranted solely for the currently
+zero-match harness Task workload. Do not infer that all
+`harness_evolution_snapshot` output is empty: its EvaluationRun
+path is independent. This strengthens the case to focus B01/B02 on
+real deployed Neo4j consumer traffic and B06 on real transaction
+provenance. It does not authorize global operator credentials,
+reveal payload text, remove graph network access, or backfill
+31,074 legacy Tasks with unverified tenant owners.
