@@ -162,3 +162,71 @@ summary, error messages or fail_set have been classified. Both
 
 This prototype is an alternative to a specifically approved global-operator
 view, NOT an automatically selectable production mode. Release HOLD.
+
+## October 13: offline broker request binding and Task-origin schema audit
+
+New `trace_b02_tenant_broker_boundary.py` is a **pure, not-mounted**
+research broker-request contract. It allows only an explicit fixed plan
+and status in the caller request: any supplied tenant_id, principal,
+unreviewed filter, query, or limit is denied, *including* a matching
+tenant ID. It uses the existing Basic-verification/allowlist helper
+to authenticate a synthetic operator principal, then resolves that
+principal to a tenant solely from a separately injected, fixture
+server-owned directory. No caller-provided tenant hint is used.
+
+The research directory is **not signed, independently provisioned,
+rollback-protected, or authenticated to the real broker**. The
+`ReadIntent` always reports production execution and graph release
+authorization false. This is a test of function behavior, not a
+trustworthy deployed identity service or multi-user authentication.
+
+### Exact source compatibility gap
+
+Inspection of `src/assistx/neo4j_client.py` shows:
+- `upsert_ticket()` populates `title`, `ticket_type`, `status`,
+  `kind`, `required_capabilities`, `target_agent_id`, `priority`,
+  `payload_json`, `preemptible`, and `max_migrations`, but **no
+  `tenant_id`**.
+- `create_tasks_batch()` likewise constructs Task property maps
+  without `tenant_id`.
+- The Task constraints/index list has indexes for status, kind,
+  ticket_type, claimed_by, created_at_ts, and idempotency_key,
+  but no declared `tenant_id` index/constraint.
+- The current `/api/harness/evolution` path uses `auth` and
+  `get_tasks_by_status(status,limit=40)`; it performs no
+  principal-to-tenant mapping.
+
+These are **source-only findings**, not a live data-count or a proof
+that every historic Task lacks a tenant property: other producers and
+manual writes can exist. Do not infer tenant from a title, payload, agent,
+IP address, or current creator without an accepted owner registry. A
+tenant predicate could silently omit legacy Tasks if the field is absent.
+
+### Physical broker-facade negative and positive
+
+The opt-in disposable Bolt test now:
+1. Seeds 45 synthetic Task records under tenant A and one under B.
+2. Reproduces that the status-only query returns tenant B to the reader.
+3. Exercises a synthetic authenticated caller A against the fixture
+   server-side A mapping; obtains only A data.
+4. Repeats for synthetic caller B and obtains B data.
+5. Submits a caller tenant override for B while logged in as A,
+   and verifies denial **before query execution**.
+
+The synthetic graph DB principal itself still has MATCH access to both
+tenants, which means a client bypassing the hypothetical broker could
+query both; B01 exclusive graph network access remains unproven.
+Neither this test nor the directory provides a real signed
+principal/tenant binding. A single configured Basic account cannot
+substitute for a multi-user issuer.
+
+**Local acceptance:** 84/84 focused tests pass, disposable physical
+Neo4j test PASS in 23.59 seconds, exit 0. Exact remote head CI and
+committed physical runner are separate gates. No real data or
+production network touched.
+
+**Remaining decision:** Explicitly authorize global-operator visibility
+*or* establish per-Task tenant provenance (including legacy Task
+handling), a separately governed principal-to-tenant directory and a
+trusted broker ingress. Until then: NO production shadow, cutover,
+reservation release or automatic failover.
