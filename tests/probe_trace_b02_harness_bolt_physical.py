@@ -9,13 +9,20 @@ import json
 import os
 from pathlib import Path
 import secrets
+import sys
 import time
+
+# Standalone opt-in runner needs checked-out AssistX pure auth helper.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from neo4j import GraphDatabase
 from neo4j.exceptions import Neo4jError, ServiceUnavailable
 from trace_b02_harness_projection_candidate import (
-    CYPHER, CYPHER_TENANT_SCOPED, KEYS, params, tenant_scoped_params,
+    CYPHER, CYPHER_TENANT_SCOPED, KEYS, TENANT_PLAN_ID, params,
     validate_broker_rows, run_shadow_parity)
+from fastapi.security import HTTPBasicCredentials
+from trace_b02_tenant_broker_boundary import (
+    BrokerBoundaryDenied, ServerOwnedDirectory, resolve_scoped_read)
 from probe_trace_isolated_task_broker import docker, GRAPH_IMAGE as GRAPH
 
 def assert_isolated(graph, network):
@@ -179,14 +186,46 @@ def run():
                     for row in mixed)
                 if not status_only_cross_scope:
                     raise RuntimeError("EXPECTED_UNSCOPED_QUERY_COUNTEREXAMPLE_MISSING")
+                # Fake broker authority: caller chooses only plan + status,
+                # not a tenant. Source is a synthetic server-owned directory,
+                # not a validated production principal/tenant issuer.
+                directory=ServerOwnedDirectory(
+                    revision="fixture-scope-rev-1",
+                    principal_tenants={
+                        "fixture-owner-a":"synthetic-primary-tenant",
+                        "fixture-owner-b":"synthetic-other-tenant"})
+                def intent_for(principal):
+                    return resolve_scoped_read(
+                        principal=principal,
+                        credentials=HTTPBasicCredentials(
+                            username=principal,password="offline-only"),
+                        configured_user=principal,
+                        configured_password="offline-only",
+                        allowed_basic_operators=principal,
+                        server_owned_directory=directory,
+                        request={"plan_id":TENANT_PLAN_ID,"status":"READY"})
+                first=intent_for("fixture-owner-a")
+                second=intent_for("fixture-owner-b")
                 scoped_primary=execute(
-                    scoped,CYPHER_TENANT_SCOPED,
-                    data=tenant_scoped_params(
-                        "READY",trusted_tenant_from_server="synthetic-primary-tenant"))
+                    scoped,first.cypher,data=first.parameters)
                 scoped_other=execute(
-                    scoped,CYPHER_TENANT_SCOPED,
-                    data=tenant_scoped_params(
-                        "READY",trusted_tenant_from_server="synthetic-other-tenant"))
+                    scoped,second.cypher,data=second.parameters)
+                spoofed_scope_denied=False
+                try:
+                    resolve_scoped_read(
+                        principal="fixture-owner-a",
+                        credentials=HTTPBasicCredentials(
+                            username="fixture-owner-a",password="offline-only"),
+                        configured_user="fixture-owner-a",
+                        configured_password="offline-only",
+                        allowed_basic_operators="fixture-owner-a",
+                        server_owned_directory=directory,
+                        request={"plan_id":TENANT_PLAN_ID,"status":"READY",
+                                 "tenant_id":"synthetic-other-tenant"})
+                except BrokerBoundaryDenied:
+                    spoofed_scope_denied=True
+                if not spoofed_scope_denied:
+                    raise RuntimeError("TENANT_SCOPE_OVERRIDE_NOT_DENIED")
                 scoped_primary_ids=[x["task"]["id"] for x in scoped_primary]
                 scoped_other_ids=[x["task"]["id"] for x in scoped_other]
                 scoped_predicate_test=(
@@ -210,6 +249,8 @@ def run():
                 "secret_property_inaccessible":secret_inaccessible,
                 "status_only_synthetic_cross_scope_negative_reproduced":status_only_cross_scope,
                 "tenant_scoped_synthetic_predicate_pass":scoped_predicate_test,
+                "synthetic_broker_scope_override_denied":spoofed_scope_denied,
+                "synthetic_principal_to_directory_query_parity":True,
                 "tenant_scoped_query_principal_binding_proven":False,
                 "production_task_tenant_property_parity_proven":False,
                 "tenant_isolation_proven":False,
