@@ -9,6 +9,24 @@ STATUS = frozenset(("READY","CLAIMED","RUNNING","DONE","FAILED","ERROR"))
 KEYS = frozenset(("id","kind","title","status","target_agent_id","payload_json",
                   "updated_at_ts","summary","last_error"))
 PLAN_ID = "harness_evolution_tasks_read_v1"
+TENANT_PLAN_ID = "harness_evolution_tasks_scoped_read_v1"
+CYPHER_TENANT_SCOPED = (
+    "MATCH (t:Task {status: $status, tenant_id: $tenant_id}) "
+    "RETURN t { .id, .kind, .title, .status, .target_agent_id, "
+    ".payload_json, .updated_at_ts, .summary, .last_error } AS task "
+    "ORDER BY t.created_at_ts DESC LIMIT $limit"
+)
+
+def tenant_scoped_params(status: str, *, trusted_tenant_from_server: str,
+                         limit: int = 40) -> dict:
+    """Never accept this tenant scope from untrusted client query parameters."""
+    import re
+    base=params(status, limit)
+    tenant=trusted_tenant_from_server
+    if (type(tenant) is not str or
+            re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,63}", tenant) is None):
+        raise ProjectionDenied("UNVERIFIED_OR_INVALID_TENANT_SCOPE")
+    return {**base, "tenant_id": tenant}
 # This fixed query is a design witness; it is NEVER executed by this module.
 CYPHER = (
     "MATCH (t:Task {status: $status}) "
