@@ -130,3 +130,26 @@ def test_unscoped_source_query_lacks_tenant_authorization():
     assert "user_id" not in CYPHER
     assert "principal" not in CYPHER
     assert disposition()["tenant_isolation_proven"] is False
+
+@pytest.mark.parametrize("tenant",[
+    "", "A", "SYNTHETIC-UPPER", "with space", "test/../../",
+    "fake?tenant=other", "bad:scope", None, True, "t"*70,
+])
+def test_untrusted_or_invalid_tenant_scope_refused(tenant):
+    from trace_b02_harness_projection_candidate import (
+        ProjectionDenied,tenant_scoped_params)
+    with pytest.raises(ProjectionDenied):
+        tenant_scoped_params(
+            "READY",trusted_tenant_from_server=tenant)
+
+def test_fixed_tenant_scope_query_is_structurally_distinct():
+    from trace_b02_harness_projection_candidate import (
+        TENANT_PLAN_ID,CYPHER,CYPHER_TENANT_SCOPED,tenant_scoped_params)
+    assert TENANT_PLAN_ID=="harness_evolution_tasks_scoped_read_v1"
+    assert "tenant_id" not in CYPHER
+    assert "tenant_id: $tenant_id" in CYPHER_TENANT_SCOPED
+    assert tenant_scoped_params(
+        "READY",trusted_tenant_from_server="synthetic-primary-tenant"
+    )=={"status":"READY","limit":40,"tenant_id":"synthetic-primary-tenant"}
+    assert "DELETE " not in CYPHER_TENANT_SCOPED
+    assert disposition()["tenant_isolation_proven"] is False
