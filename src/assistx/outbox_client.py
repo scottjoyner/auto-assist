@@ -1,7 +1,7 @@
 import os, json, sqlite3, time, threading, uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List, Callable
-from urllib.request import Request, build_opener, HTTPRedirectHandler
+from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 from urllib.parse import urlsplit
 import ipaddress
 from urllib.error import URLError, HTTPError
@@ -21,6 +21,8 @@ MAX_PENDING = int(os.environ.get("ASSISTX_OUTBOX_MAX_PENDING", "100000"))
 def _outbox_destination_permitted(url: str) -> bool:
     """Require HTTPS for remote event payloads; loopback HTTP is local-only."""
     try:
+        if any(ord(char) < 32 for char in url):
+            return False
         target = urlsplit(url)
         hostname = target.hostname
         if not hostname or target.username is not None or target.password is not None:
@@ -232,9 +234,12 @@ class OutboxClient:
         try:
             # Never follow redirects with event payloads or credentials.
             # A redirect leaves the event pending for bounded retry/review.
-            with build_opener(_RejectOutboxRedirects()).open(
-                req, timeout=15
-            ) as resp:
+            handlers = [_RejectOutboxRedirects()]
+            if urlsplit(url).scheme == "http":
+                # Even a loopback URL must not be forwarded by environment
+                # HTTP_PROXY settings to a network proxy.
+                handlers.append(ProxyHandler({}))
+            with build_opener(*handlers).open(req, timeout=15) as resp:
                 body = resp.read().decode()
                 result = json.loads(body)
                 accepted = result.get("accepted", False)
