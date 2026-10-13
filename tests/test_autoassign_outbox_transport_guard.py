@@ -43,12 +43,14 @@ def _never_network(*args, **kwargs):
         "ftp://service.example.invalid",
         "https://user:synthetic@example.invalid",
         "http://localhost:8090/?unexpected=1",
+        "https://example.invalid:99999",
+        "https://example.invalid:invalid",
     ],
 )
-def test_credential_delivery_denied_before_network(monkeypatch, base_url):
-    monkeypatch.setattr(subject, "urlopen", _never_network)
+@pytest.mark.parametrize("authenticated", [True, False])
+def test_credential_delivery_denied_before_network(monkeypatch, base_url, authenticated):
     monkeypatch.setattr(subject, "build_opener", _never_network)
-    assert _synthetic_client(base_url)._deliver(_event()) is False
+    assert _synthetic_client(base_url, authenticated=authenticated)._deliver(_event()) is False
 
 
 @pytest.mark.parametrize(
@@ -66,17 +68,16 @@ def test_accepted_transport_uses_nonredirecting_opener(monkeypatch, base_url):
             return io.BytesIO(b'{"accepted":true}')
 
     def build(handler):
-        assert isinstance(handler, subject._NoAuthorizationRedirects)
+        assert isinstance(handler, subject._RejectOutboxRedirects)
         return OfflineOpener()
 
     monkeypatch.setattr(subject, "build_opener", build)
-    monkeypatch.setattr(subject, "urlopen", _never_network)
     assert _synthetic_client(base_url)._deliver(_event()) is True
     assert len(intercepts) == 1
 
 
 def test_authorized_redirect_handler_disallows_all_redirects():
-    handler = subject._NoAuthorizationRedirects()
+    handler = subject._RejectOutboxRedirects()
     req = Request("https://assign.example.invalid/api/events", method="POST")
     result = handler.redirect_request(
         req, None, 302, "synthetic redirect", {}, "http://other.invalid",
@@ -90,25 +91,30 @@ def test_rejected_redirect_retries_as_nondelivery(monkeypatch):
             raise HTTPError(req.full_url, 302, "redirect denied", {}, None)
 
     monkeypatch.setattr(subject, "build_opener", lambda *_: RedirectOpener())
-    monkeypatch.setattr(subject, "urlopen", _never_network)
     assert _synthetic_client("https://assign.example.invalid")._deliver(_event()) is False
 
 
 def test_insecure_local_hostname_is_not_treated_as_loopback():
-    assert subject._authenticated_transport_permitted(
+    assert subject._outbox_destination_permitted(
         "http://host.docker.internal:8090/api/events"
     ) is False
 
 
-def test_no_credentials_uses_previous_unauthenticated_client_path(monkeypatch):
+def test_loopback_without_credentials_uses_nonredirecting_opener(monkeypatch):
     calls = []
 
-    def offline(req, timeout):
-        calls.append(req.full_url)
-        return io.BytesIO(b'{"accepted":true}')
+    class OfflineOpener:
+        def open(self, req, *, timeout):
+            assert isinstance(req, Request)
+            assert req.get_header("Authorization") is None
+            calls.append(req.full_url)
+            return io.BytesIO(b'{"accepted":true}')
 
-    monkeypatch.setattr(subject, "urlopen", offline)
-    monkeypatch.setattr(subject, "build_opener", _never_network)
+    def build(handler):
+        assert isinstance(handler, subject._RejectOutboxRedirects)
+        return OfflineOpener()
+
+    monkeypatch.setattr(subject, "build_opener", build)
     assert _synthetic_client("http://127.0.0.1:8090", authenticated=False)._deliver(
         _event()
     ) is True
