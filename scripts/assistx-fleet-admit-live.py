@@ -31,6 +31,16 @@ LAN_BASE = "http://192.168.1.237:1234/v1"
 TS_BASE = "http://100.64.43.123:1234/v1"
 LMS_BIN = Path("/home/scott/.lmstudio/bin/lms")
 STATE = Path("/home/scott/.local/state/assistx-live-admission")
+# Operator-controlled live admission only. Ordinary invocation must perform no I/O.
+# The former DRY_RUN branch wrote production-mounted evidence before exiting.
+if sys.argv[1:] != ["--apply"] or os.environ.get("DRY_RUN"):
+    print(
+        "FLEET_ADMISSION_BLOCKED: explicit --apply required; "
+        "DRY_RUN is not read-only and is forbidden",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
 STATE.mkdir(parents=True, exist_ok=True)
 
 
@@ -264,13 +274,6 @@ with manifest.open("a") as handle:
         evidence_sha256: {orn_sha}
 """)
 container_manifest = "/app/artifacts/" + str(manifest.relative_to(artifacts_root))
-if os.getenv("DRY_RUN") == "1":
-    print(
-        f"FLEET_ADMISSION_DRY_RUN generation={next_generation} "
-        f"runtime=x1-lmstudio-1234 manifest={manifest}"
-    )
-    raise SystemExit(0)
-
 approval = subprocess.run(
     ["docker", "exec", "-i", "assistx-api", "python", "-", container_manifest, "--apply"],
     input=approve_script.read_bytes(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
