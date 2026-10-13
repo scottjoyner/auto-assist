@@ -41,6 +41,11 @@ jobs:
           tests/test_runtime_projection_signed_graph_readback_research.py
           tests/test_runtime_projection_offline_admission_ledger.py
           tests/test_runtime_projection_signed_apply_gate.py
+      - name: Console pytest collection parity with broad CI
+        run: >-
+          pytest --noconftest --collect-only -q
+          tests/test_runtime_projection_signed_graph_readback_research.py
+          tests/test_runtime_projection_offline_admission_ledger.py
       - name: Strict offline research lint
         run: >-
           python -m ruff check
