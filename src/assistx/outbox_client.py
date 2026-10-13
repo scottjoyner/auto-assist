@@ -242,10 +242,10 @@ class OutboxClient:
             with build_opener(*handlers).open(req, timeout=15) as resp:
                 body = resp.read().decode()
                 result = json.loads(body)
-                accepted = result.get("accepted", False)
-                if accepted:
-                    return True
-                return False
+                # Only a real JSON boolean true acknowledges durable delivery.
+                # Truthy strings/numbers or malformed envelopes must not cause
+                # an outbox event to be marked delivered.
+                return isinstance(result, dict) and result.get("accepted") is True
         except (URLError, HTTPError, OSError, json.JSONDecodeError):
             return False
 
