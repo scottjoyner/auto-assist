@@ -71,3 +71,58 @@ ASSISTX_B02_DISPOSABLE_BOLT=1 python3 tests/probe_trace_b02_harness_bolt_physica
 4. Review all 343 B02 source indications before any B01 graph-network cutover.
 5. Keep B06 independent graph identity, closure custody, and stale-effect
    fencing separate and HOLD. No automatic release or failover.
+
+## October 13 follow-up: authorization and tenant-negative gate
+
+Fleet Commander read-only production configuration inspection confirmed that
+`TRUSTED_AUTH_HEADER`, `BASIC_AUTH_USER` and `BASIC_AUTH_PASS` are all
+**configured** in the running `assistx-api` container. Their values were
+not read. The current reviewed `src/assistx/api.py::_auth_user_from_credentials`
+checks the configured trusted header before the Basic credentials; the
+harness evolution route depends on this generic `auth` and has no
+separate operator allowlist or tenant authorization predicate.
+This is a **source-level ingress trust requirement**, not proof of a live
+identity spoof or credential bypass. The API host port was observed
+bound to 127.0.0.1; proxy strip/forward rules were not fully verified.
+
+New offline-only `tests/trace_b02_harness_shadow_policy.py`:
+- Reuses `assistx.trace_preview_access.basic_preview_permitted`, which
+  requires independently verified HTTP Basic credentials, configured
+  principal and an explicit operator allowlist. Header-only authorization
+  is refused. Disabled/unreviewed operator-global scope denies by default.
+- `minimize_payload` strips unconsumed `payload_json` keys and unexpected
+  nested chain/failure keys while preserving the existing harness view's
+  synthetic output. It rejects malformed/oversized payloads, invalid types
+  and credential-like endpoint URL components. It neither parses live
+  credentials nor calls the graph.
+- A synthetic test deliberately demonstrates that allowed `fail_set.actual`
+  strings can still contain sensitive content; Task `title`,
+  `summary`, and `last_error` similarly require separate data-class
+  review. **No PII clearance or tenant boundary is claimed.**
+- No FastAPI route is mounted. Neither a Basic operator credential nor
+  a research policy fixture grants real-data or production read permission.
+
+The **physical disposable Bolt probe** now includes a deliberate
+cross-tenant **negative control**: after proving the 40-row sorted projection,
+restricted MATCH grants and CREATE/SET/DELETE denials, it inserts a synthetic
+Task with `tenant_id='synthetic-other-tenant'` and status READY. The
+current status-only query returns that record to the same restricted reader.
+The probe must observe this cross-scope result before it can pass, and
+reports `tenant_isolation_proven=false` and
+`global_operator_scope_reviewed=false`.
+This does NOT establish actual production tenant policy or a live
+cross-tenant exposure; it demonstrates a missing query-layer tenant guard.
+
+**Local precommit verification:** 41/41 projection + shadow-policy tests
+pass; updated physical probe PASS, exit 0 (20.81 seconds), with
+`status_only_synthetic_cross_scope_negative_reproduced=true`.
+Re-run at exact new PR SHA and reconcile CI before recording this as the
+new evidence head.
+
+**Next critical requirement:** Decide whether this endpoint is limited
+to a globally privileged operator or must use a separately authenticated
+tenant/task scope; document where that authority comes from and prove
+the non-authorized scope is denied *by Neo4j query and broker API*, not
+only in a client formatter. No live shadow/cutover is authorized until
+payload content, principal provenance and tenant policy are independently
+accepted.
