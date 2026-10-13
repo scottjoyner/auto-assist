@@ -1,9 +1,10 @@
 """Offline safety checks for P0 disposable Neo4j RBAC counterexample."""
 from __future__ import annotations
+
 import importlib.util
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
