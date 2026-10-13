@@ -151,3 +151,24 @@ def test_denied_transport_keeps_event_undelivered_in_outbox(monkeypatch, tmp_pat
     assert len(pending) == 1
     assert pending[0].event_id == "synthetic-undelivered"
     assert pending[0].attempt_count == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"accepted":"true"}',
+        b'{"accepted":1}',
+        b'{"accepted":0}',
+        b'{"accepted":false}',
+        b'{"accepted":null}',
+        b'[]',
+        b'null',
+    ],
+)
+def test_ambiguous_receipt_cannot_mark_event_delivered(monkeypatch, body):
+    class OfflineOpener:
+        def open(self, req, *, timeout):
+            return io.BytesIO(body)
+
+    monkeypatch.setattr(subject, "build_opener", lambda *_: OfflineOpener())
+    assert _synthetic_client("https://assign.example.invalid")._deliver(_event()) is False
