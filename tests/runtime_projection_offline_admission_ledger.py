@@ -10,11 +10,17 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from scripts.runtime_projection_signed_apply_gate import validate
+# Both the `pytest` console runner and `python -m pytest` must resolve
+# the same exact checked-out verifier; never import an installed/adjacent fork.
+_SCRIPT_DIR = str(Path(__file__).resolve().parents[1] / "scripts")
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+from runtime_projection_signed_apply_gate import validate  # noqa: E402
 
 OPT_IN = "ASSISTX_P0_LEDGER_RESEARCH"
 
@@ -70,7 +76,7 @@ def initialize(db_path: Path, *, trusted_genesis_generation: int) -> None:
         db.execute(
             "CREATE TABLE IF NOT EXISTS replay (approval_id TEXT PRIMARY KEY, "
             "generation INTEGER NOT NULL, source_sha256 TEXT NOT NULL, "
-            "state TEXT NOT NULL CHECK(state='PENDING_UNCERTAIN_GRAPH_OUTCOME'))")
+            "state TEXT NOT NULL CHECK(state IN ('PENDING_UNCERTAIN_GRAPH_OUTCOME','CONFIRMED_SYNTHETIC_READBACK')))")
         state = db.execute(
             "SELECT last_confirmed_generation FROM custody WHERE singleton=1"
         ).fetchone()
