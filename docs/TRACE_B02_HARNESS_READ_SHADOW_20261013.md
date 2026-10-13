@@ -126,3 +126,39 @@ the non-authorized scope is denied *by Neo4j query and broker API*, not
 only in a client formatter. No live shadow/cutover is authorized until
 payload content, principal provenance and tenant policy are independently
 accepted.
+
+## Optional tenant-keyed research plan (still not authorizing a live migration)
+
+The B02 offline candidate now exposes a distinct fixed-plan identifier:
+`harness_evolution_tasks_scoped_read_v1`, with a required
+`tenant_id: $tenant_id` property predicate and exactly the same
+nine-field projection, six status allowlist and limit=40. Invalid tenant
+strings, booleans, empty identities and invalid statuses are denied by the
+parameter constructor. The signature names the input
+`trusted_tenant_from_server` deliberately; **the function itself cannot
+prove its caller acquired a trustworthy tenant scope**.
+
+The updated disposable Neo4j 5.26 fixture granted the synthetic reader
+MATCH on the tenant_id property for filtering, seeded 45 Task rows tagged
+`synthetic-primary-tenant`, and inserted a Task tagged
+`synthetic-other-tenant`. Two physical assertions now pass:
+
+1. The original status-only query returns the other synthetic tenant's
+   Task (**deliberately unsafe negative reproduced**).
+2. The tenant-scoped query returns 40 primary-tenant rows without the
+   other tenant, and separately returns only the other row when explicitly
+   parameterized for that tenant (**fixed-predicate capability PASS**).
+
+The updated physical experiment completed in 20.82 seconds, exit 0,
+with CREATE/SET/DELETE still denied, no production graph access and no
+host-published ports. The new focused suite passed 54/54 local tests.
+
+**Not proven:** existing production Task records contain a reliable tenant
+property; a server-side authoritative principal-to-tenant mapping exists;
+the broker prevents callers from selecting arbitrary tenant IDs;
+operator-global access has been reviewed; sensitive values inside title,
+summary, error messages or fail_set have been classified. Both
+`tenant_isolation_proven` and `production_cutover_authorized` remain false.
+
+This prototype is an alternative to a specifically approved global-operator
+view, NOT an automatically selectable production mode. Release HOLD.
