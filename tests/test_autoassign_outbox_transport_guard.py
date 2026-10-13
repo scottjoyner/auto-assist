@@ -45,6 +45,7 @@ def _never_network(*args, **kwargs):
         "http://localhost:8090/?unexpected=1",
         "https://example.invalid:99999",
         "https://example.invalid:invalid",
+        "https://good.example.invalid\t.evil.invalid",
     ],
 )
 @pytest.mark.parametrize("authenticated", [True, False])
@@ -67,8 +68,14 @@ def test_accepted_transport_uses_nonredirecting_opener(monkeypatch, base_url):
             intercepts.append(req.full_url)
             return io.BytesIO(b'{"accepted":true}')
 
-    def build(handler):
-        assert isinstance(handler, subject._RejectOutboxRedirects)
+    def build(*handlers):
+        assert isinstance(handlers[0], subject._RejectOutboxRedirects)
+        if base_url.startswith("http://"):
+            assert any(
+                isinstance(handler, subject.ProxyHandler)
+                and handler.proxies == {}
+                for handler in handlers[1:]
+            ), "loopback request must not inherit HTTP_PROXY"
         return OfflineOpener()
 
     monkeypatch.setattr(subject, "build_opener", build)
@@ -110,8 +117,13 @@ def test_loopback_without_credentials_uses_nonredirecting_opener(monkeypatch):
             calls.append(req.full_url)
             return io.BytesIO(b'{"accepted":true}')
 
-    def build(handler):
-        assert isinstance(handler, subject._RejectOutboxRedirects)
+    def build(*handlers):
+        assert isinstance(handlers[0], subject._RejectOutboxRedirects)
+        assert any(
+            isinstance(handler, subject.ProxyHandler)
+            and handler.proxies == {}
+            for handler in handlers[1:]
+        ), "even unauthenticated local HTTP must not use an external proxy"
         return OfflineOpener()
 
     monkeypatch.setattr(subject, "build_opener", build)
