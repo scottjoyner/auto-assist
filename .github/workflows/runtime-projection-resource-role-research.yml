@@ -33,7 +33,7 @@ jobs:
           'cryptography>=43,<46' 'PyYAML==6.0.2' 'ruff>=0.6,<1'
       - name: Run offline role safety and signed-apply regression
         run: >-
-          python -m pytest -q
+          python -m pytest --noconftest -q
           tests/test_runtime_projection_broker_rbac_research.py
           tests/test_runtime_projection_signed_apply_gate.py
       - name: Strict research lint
