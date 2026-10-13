@@ -1,0 +1,55 @@
+name: P0 Signed Admission Ledger (Offline Research)
+
+on:
+  push:
+    branches:
+      - research/assistx-p0-offline-approval-ledger-20261013
+  pull_request:
+    branches:
+      - research/assistx-p0-neo4j-resource-role-negative-20261013
+    paths:
+      - tests/runtime_projection_offline_admission_ledger.py
+      - tests/test_runtime_projection_offline_admission_ledger.py
+      - docs/experiments/p0-offline-signed-admission-ledger-20261013.md
+      - .github/workflows/p0-offline-signed-admission-ledger.yml
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-source-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ASSISTX_P0_LEDGER_RESEARCH: "0"
+      ASSISTX_P0_DISPOSABLE_ROLE_PROOF: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install minimal offline dependencies
+        run: >-
+          python -m pip install 'pytest>=8,<9' 'cryptography>=43,<46'
+          'neo4j==5.26.0' 'PyYAML==6.0.2' 'ruff>=0.6,<1'
+      - name: Test two-signature validation and durable quarantine (no Docker)
+        run: >-
+          python -m pytest --noconftest -q
+          tests/test_runtime_projection_offline_admission_ledger.py
+          tests/test_runtime_projection_signed_apply_gate.py
+      - name: Check isolated admission research style
+        run: >-
+          python -m ruff check
+          tests/runtime_projection_offline_admission_ledger.py
+          tests/test_runtime_projection_offline_admission_ledger.py
+      - name: Reject authorization or live graph effects
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('tests/runtime_projection_offline_admission_ledger.py').read_text()
+          assert 'GraphDatabase.driver' not in s
+          assert 'NEO4J_PASSWORD' not in s
+          assert 'NO_INDEPENDENT_GRAPH_COMMIT_PROOF_PERSIST_HOLD' in s
+          assert 'graph_write_authorized: bool = False' in s
+          print('Offline ledger cannot authorize graph effects.')
+          PY
