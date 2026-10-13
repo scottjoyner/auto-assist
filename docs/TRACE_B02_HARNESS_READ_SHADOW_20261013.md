@@ -230,3 +230,51 @@ production network touched.
 handling), a separately governed principal-to-tenant directory and a
 trusted broker ingress. Until then: NO production shadow, cutover,
 reservation release or automatic failover.
+
+## Live source-of-truth schema preflight — October 13, 2026
+
+A bounded **production READ-ONLY metadata-only** check was performed
+inside the running `assistx-api` container using its existing configured
+Neo4j connection; no credential values, Task IDs, titles, payloads or
+other Task property values were returned. The queries used an explicit
+Neo4j READ_ACCESS session, fixed Cypher, a 100-node sample limit, and
+a three-second query timeout.
+
+Observed:
+- Exact `Task` label count: **31,074** nodes.
+- `CALL db.propertyKeys()` returned **none** of the three prospective
+  ownership property keys: `tenant_id`, `owner_user`, `created_by`.
+  This is the database property-key catalog, **not a Task owner registry**.
+- The bounded first-100 Task sample: **100** sampled, **55** have
+  `payload_json`; no Task property values were emitted.
+- Existing `upsert_ticket()` and `create_tasks_batch()` writers do
+  not generate `tenant_id`, consistent with the catalog result.
+
+The sample is **not randomized** and should not be treated as a
+representative percentage of all Tasks. The lack of catalog ownership
+keys does not exclude an ownership mapping stored outside those fields
+or under another representation. Neither presence nor absence of a
+property is proof of an authorized principal-to-tenant binding.
+
+### Repeatable strict metadata-only contract
+
+`tests/probe_trace_b02_task_schema_readonly.py` requires explicit
+`ASSISTX_B02_SCHEMA_READONLY=1`; it runs three **fixed** read-only
+queries (property-key catalog, Task count, first-100 existence counts)
+and emits counts and status flags only. Its report is intentionally
+NO-GO even if expected field names appear in a future schema: property
+names alone cannot authorize tenants or a staging shadow.
+
+`tests/test_trace_b02_task_schema_readonly.py` verifies strict
+operator opt-in, absent config denial, no raw Task values, bounded
+sampling, absence of authorization flags and invalid-metadata denial.
+The first local focused run passed **20/20**; the same script returned
+`HOLD_NO_AUTHORITATIVE_TASK_OWNERSHIP` when executed inside the live
+`assistx-api` container. It was not installed into the running image
+or exposed on a new HTTP route.
+
+Current release consequence: do **not** run a tenant-filtered live
+harness view, silently backfill ownership for 31,074 Tasks, promote
+global operator scope, remove B01 Bolt connectivity, or enable B06
+signed closure or automatic failover. Establish an independently
+approved operator-only policy or a real Task ownership model first.
