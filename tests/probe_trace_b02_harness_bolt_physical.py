@@ -164,6 +164,19 @@ def run():
                 if not run_shadow_parity(runs=[],raw_tasks=old_rows,
                                          snapshot_fn=module.harness_evolution_snapshot):
                     raise RuntimeError("HARNESS_VIEW_PARITY_DIFF")
+                # Intentional negative: this status-only research query lacks
+                # a tenant predicate. A *synthetic* second-tenant row is
+                # visible to the same restricted reader. No real tenant data.
+                execute(root, """CREATE (:Task {id:'fixture-other-scope',
+                    status:'READY',kind:'harness_reflect',
+                    title:'Other synthetic scope',created_at_ts:9000,
+                    tenant_id:'synthetic-other-tenant'})""")
+                mixed=execute(scoped,CYPHER,data=params("READY"))
+                status_only_cross_scope=any(
+                    row["task"].get("id")=="fixture-other-scope"
+                    for row in mixed)
+                if not status_only_cross_scope:
+                    raise RuntimeError("EXPECTED_UNSCOPED_QUERY_COUNTEREXAMPLE_MISSING")
             return {
                 "schema":"assistx-b02-neo4j-bolt-physical-v1",
                 "result":"PASS","disposable_graph_image":GRAPH,
@@ -177,6 +190,9 @@ def run():
                 "legacy_harness_view_parity":True,
                 "reader_denied_mutations":denied,
                 "secret_property_inaccessible":secret_inaccessible,
+                "status_only_synthetic_cross_scope_negative_reproduced":status_only_cross_scope,
+                "tenant_isolation_proven":False,
+                "global_operator_scope_reviewed":False,
                 "elapsed_seconds":round(time.monotonic()-start,2),
                 "production_graph_queried":False,
                 "production_cutover_authorized":False,
