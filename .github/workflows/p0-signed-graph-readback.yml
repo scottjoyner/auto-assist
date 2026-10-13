@@ -1,0 +1,62 @@
+name: P0 Sealed Graph Readback (Offline Research)
+
+on:
+  push:
+    branches:
+      - research/assistx-p0-signed-graph-readback-20261013
+  pull_request:
+    branches:
+      - research/assistx-p0-offline-approval-ledger-20261013
+    paths:
+      - tests/runtime_projection_signed_graph_readback_research.py
+      - tests/test_runtime_projection_signed_graph_readback_research.py
+      - tests/probe_runtime_projection_signed_readback_bolt_physical.py
+      - tests/runtime_projection_offline_admission_ledger.py
+      - docs/experiments/p0-signed-graph-readback-20261013.md
+      - .github/workflows/p0-signed-graph-readback.yml
+
+permissions:
+  contents: read
+
+jobs:
+  offline-no-graph:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ASSISTX_P0_LEDGER_RESEARCH: "0"
+      ASSISTX_P0_DISPOSABLE_SIGNED_READBACK: "0"
+      ASSISTX_P0_DISPOSABLE_ROLE_PROOF: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install minimal test dependencies
+        run: >-
+          python -m pip install 'pytest>=8,<9' 'cryptography>=43,<46'
+          'neo4j==5.26.0' 'PyYAML==6.0.2' 'ruff>=0.6,<1'
+      - name: Run source/reviewer/observer signature and replay test
+        run: >-
+          python -m pytest --noconftest -q
+          tests/test_runtime_projection_signed_graph_readback_research.py
+          tests/test_runtime_projection_offline_admission_ledger.py
+          tests/test_runtime_projection_signed_apply_gate.py
+      - name: Strict offline research lint
+        run: >-
+          python -m ruff check
+          tests/runtime_projection_signed_graph_readback_research.py
+          tests/test_runtime_projection_signed_graph_readback_research.py
+          tests/probe_runtime_projection_signed_readback_bolt_physical.py
+          tests/runtime_projection_offline_admission_ledger.py
+      - name: Deny Docker or remote Neo4j on hosted CI
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          s=Path('tests/runtime_projection_signed_graph_readback_research.py').read_text()
+          assert 'GraphDatabase.driver' not in s
+          assert 'NEO4J_PASSWORD' not in s
+          assert 'production_graph_commit_proven: bool = False' in s
+          assert os.environ['ASSISTX_P0_DISPOSABLE_SIGNED_READBACK']=='0'
+          print('No hosted graph activity, no production write authority.')
+          PY
