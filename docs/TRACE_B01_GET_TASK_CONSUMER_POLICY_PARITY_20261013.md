@@ -75,3 +75,30 @@ two-field substitution could skip the route's existing
 a proposed unsafe replacement was shown to misclassify a recovery Task.
 Do not enable this replacement, merge, deploy, revoke live credentials,
 disconnect production networks, or promote failover based on this slice.
+
+## Positive metadata-only policy prototype (synthetic / not mounted)
+
+A second pure test module now accepts exactly the internal six-field
+claim-guard projection, validates synthetic Task IDs and bounded JSON,
+then calls the **same checked-in API helper functions** in synthetic
+drain mode. Its result contains only the Task ID/status and two booleans:
+`requires_recovery_node_identity` and `drain_mode_policy_candidate`.
+It **never** returns a runbook, raw Task payload, required capability list,
+secret or query. Its `claim_authorized`, `resource_fence_verified` and
+`release_authorized` flags are hard-coded **false**.
+
+Validation deliberately rejects missing/extra fields, malformed or
+oversized JSON, duplicate keys, unexpected capability types, unapproved
+queues and contradictions between payload sources or queue-class fields.
+This is stricter than the historical helpers in some ambiguous cases;
+any mismatch must be reviewed rather than silently changing live work.
+
+Synthetic policy-classification tests: **31 PASS**. This is a
+candidate *read-only classification*, not permission to claim a task.
+The consuming API must still verify recovery-node identity when required,
+and graph resource-side transaction/admission fencing must protect the
+actual claim/update. Source function parity with fixture inputs does not
+prove tenant/task ownership, production credentials or compatibility.
+
+Do not auto-enable a route or replace existing `get_task` callsites.
+Keep B01/B02/B06 draft-only and NO-GO until independently reviewed.
