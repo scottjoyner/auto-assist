@@ -7,12 +7,12 @@ credential writing an arbitrary digest: RBAC != cryptographic verification.
 """
 from __future__ import annotations
 
-from collections import Counter
 import json
 import os
 import secrets
 import subprocess
 import time
+from collections import Counter
 
 from neo4j import GraphDatabase
 from neo4j.exceptions import Neo4jError, ServiceUnavailable
