@@ -93,7 +93,7 @@ def main() -> int:
     producer.legacy.build_runtime_projection = (
         lambda *_args, **_kwargs: dict(legacy_document)
     )
-    document = producer.build_runtime_projection_v2(
+    document = producer.build_runtime_projection(
         lambda: None,
         private_key=private_key,
         key_id="cross-repo-test",

@@ -66,6 +66,24 @@ def valid_manifest() -> dict:
                         "quantization": "Q4_K_M",
                         "context_length": 32768,
                         "capabilities": ["chat", "code", "local_only"],
+                        "task_family_scores": {
+                            "tool_use": {
+                                "quality_floor_passed": True,
+                                "tool_call_probe": {
+                                    "schema_version": "1",
+                                    "passed": True,
+                                    "passed_probes": [
+                                        "wrong_tool_selection",
+                                        "mixed_serialization",
+                                        "duplicate_semantic_call",
+                                        "malformed_arguments",
+                                        "hidden_info_spelunking",
+                                    ],
+                                    "failed_probes": [],
+                                    "missing_probes": [],
+                                },
+                            }
+                        },
                         "evidence_ref": "artifacts/xwing-model.json",
                     }
                 ],
@@ -81,6 +99,11 @@ def test_valid_manifest_is_checksum_stable_and_dry_run_safe() -> None:
     assert first.checksum == second.checksum
     assert first.payload["generation"] == 3
     assert first.payload["runtimes"][0]["capacity"]["parallel_slots"] == 1
+    assert (
+        first.payload["runtimes"][0]["models"][0]["task_family_scores"]["tool_use"]
+        ["tool_call_probe"]["passed"]
+        is True
+    )
 
 
 def test_manifest_rejects_generation_skip_public_path_and_unknown_artifact() -> None:
@@ -98,6 +121,14 @@ def test_manifest_rejects_generation_skip_public_path_and_unknown_artifact() -> 
     assert "exactly expected_current_generation + 1" in message
     assert "private and valid" in message
     assert "artifact_fingerprint must be resolved" in message
+
+
+def test_manifest_rejects_non_mapping_task_family_scores() -> None:
+    payload = valid_manifest()
+    payload["runtimes"][0]["models"][0]["task_family_scores"] = ["not", "a", "mapping"]
+
+    with pytest.raises(ValueError, match="task_family_scores must be a mapping"):
+        module.validate_manifest(payload)
 
 
 def test_manifest_requires_lan_first_and_tailscale_fallback() -> None:
