@@ -131,3 +131,23 @@ def test_loopback_without_credentials_uses_nonredirecting_opener(monkeypatch):
         _event()
     ) is True
     assert len(calls) == 1
+
+
+def test_denied_transport_keeps_event_undelivered_in_outbox(monkeypatch, tmp_path):
+    monkeypatch.setattr(subject, "build_opener", _never_network)
+    client = subject.OutboxClient(
+        db_path=str(tmp_path / "synthetic-outbox.sqlite"),
+        api_url="http://10.0.0.2:8090",
+        api_user="synthetic-user",
+        api_pass="synthetic-password-not-real",
+        auto_flush=False,
+    )
+    client.enqueue({"event_id": "synthetic-undelivered"})
+    assert client.flush(max_attempts=3) == 0
+    stats = client.get_stats()
+    assert stats.get("pending") == 1
+    assert stats.get("delivered", 0) == 0
+    pending = client.get_pending()
+    assert len(pending) == 1
+    assert pending[0].event_id == "synthetic-undelivered"
+    assert pending[0].attempt_count == 1
