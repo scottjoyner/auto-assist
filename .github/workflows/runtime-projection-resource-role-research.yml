@@ -1,0 +1,63 @@
+name: P0 Neo4j Broker Role Boundary (Synthetic Research)
+
+on:
+  push:
+    branches:
+      - research/assistx-p0-neo4j-resource-role-negative-20261013
+  pull_request:
+    branches:
+      - experiment/runtime-projection-signed-apply-gate-20261011
+    paths:
+      - tests/probe_runtime_projection_broker_rbac_physical.py
+      - tests/test_runtime_projection_broker_rbac_research.py
+      - docs/experiments/runtime-projection-resource-side-role-boundary-20261013.md
+      - .github/workflows/runtime-projection-resource-role-research.yml
+
+permissions:
+  contents: read
+
+jobs:
+  hosted-source-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ASSISTX_P0_DISPOSABLE_ROLE_PROOF: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install minimal source-only dependencies
+        run: >-
+          python -m pip install 'pytest>=8,<9' 'neo4j==5.26.0'
+          'cryptography>=43,<46' 'PyYAML==6.0.2' 'ruff>=0.6,<1'
+      - name: Run offline role safety and signed-apply regression
+        run: >-
+          python -m pytest --noconftest -q
+          tests/test_runtime_projection_broker_rbac_research.py
+          tests/test_runtime_projection_signed_apply_gate.py
+      - name: Strict research lint
+        run: >-
+          python -m ruff check
+          tests/probe_runtime_projection_broker_rbac_physical.py
+          tests/test_runtime_projection_broker_rbac_research.py
+          scripts/runtime_projection_signed_apply_gate.py
+      - name: Deny physical Docker fixture execution on hosted CI
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
+          source = Path('tests/probe_runtime_projection_broker_rbac_physical.py')
+          spec = importlib.util.spec_from_file_location('research_probe', source)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          assert os.environ.get(module.OPT_IN) != '1'
+          try:
+              module.run()
+          except RuntimeError as exc:
+              assert str(exc) == 'EXPLICIT_DISPOSABLE_OPT_IN_REQUIRED'
+          else:
+              raise AssertionError('disposable physical test ran without opt-in')
+          print('Physical Docker experiment is gated; hosted check is source-only.')
+          PY
