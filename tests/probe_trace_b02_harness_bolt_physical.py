@@ -14,7 +14,8 @@ import time
 from neo4j import GraphDatabase
 from neo4j.exceptions import Neo4jError, ServiceUnavailable
 from trace_b02_harness_projection_candidate import (
-    CYPHER, KEYS, params, validate_broker_rows, run_shadow_parity)
+    CYPHER, CYPHER_TENANT_SCOPED, KEYS, params, tenant_scoped_params,
+    validate_broker_rows, run_shadow_parity)
 from probe_trace_isolated_task_broker import docker, GRAPH_IMAGE as GRAPH
 
 def assert_isolated(graph, network):
@@ -86,7 +87,7 @@ def run():
                 "CREATE ROLE fixture_harness_role IF NOT EXISTS",
                 "GRANT ACCESS ON DATABASE neo4j TO fixture_harness_role",
                 ("GRANT MATCH {id,kind,title,status,target_agent_id,payload_json,"
-                 "updated_at_ts,summary,last_error,created_at_ts} "
+                 "updated_at_ts,summary,last_error,created_at_ts,tenant_id} "
                  "ON GRAPH neo4j NODES Task TO fixture_harness_role"),
                 ("CREATE USER "+reader_user+" SET PASSWORD '"+reader_password+
                  "' CHANGE NOT REQUIRED"),
@@ -99,7 +100,8 @@ def run():
  id:'fixture-'+toString(i),kind:'harness_reflect',
  title:'Objective '+toString(i),status:'READY',target_agent_id:'agent-A',
  payload_json:'{"suite_id":"fixture","chain":{"chain_id":"chain-1"}}',
- updated_at_ts:i,created_at_ts:i,summary:'summary '+toString(i),
+ updated_at_ts:i,created_at_ts:i,tenant_id:'synthetic-primary-tenant',
+ summary:'summary '+toString(i),
  last_error:'',secret_token:'UNAUTHORIZED_FIXTURE_VALUE'})""",
                 """CREATE (:Task {id:'fixture-ERROR',kind:'harness_deploy',
  status:'ERROR',created_at_ts:100,updated_at_ts:101,title:'Failed demo',
@@ -177,6 +179,22 @@ def run():
                     for row in mixed)
                 if not status_only_cross_scope:
                     raise RuntimeError("EXPECTED_UNSCOPED_QUERY_COUNTEREXAMPLE_MISSING")
+                scoped_primary=execute(
+                    scoped,CYPHER_TENANT_SCOPED,
+                    data=tenant_scoped_params(
+                        "READY",trusted_tenant_from_server="synthetic-primary-tenant"))
+                scoped_other=execute(
+                    scoped,CYPHER_TENANT_SCOPED,
+                    data=tenant_scoped_params(
+                        "READY",trusted_tenant_from_server="synthetic-other-tenant"))
+                scoped_primary_ids=[x["task"]["id"] for x in scoped_primary]
+                scoped_other_ids=[x["task"]["id"] for x in scoped_other]
+                scoped_predicate_test=(
+                    len(scoped_primary_ids)==40
+                    and "fixture-other-scope" not in scoped_primary_ids
+                    and scoped_other_ids==["fixture-other-scope"])
+                if not scoped_predicate_test:
+                    raise RuntimeError("TENANT_PREDICATE_PHYSICAL_ISOLATION_FAILED")
             return {
                 "schema":"assistx-b02-neo4j-bolt-physical-v1",
                 "result":"PASS","disposable_graph_image":GRAPH,
@@ -191,6 +209,9 @@ def run():
                 "reader_denied_mutations":denied,
                 "secret_property_inaccessible":secret_inaccessible,
                 "status_only_synthetic_cross_scope_negative_reproduced":status_only_cross_scope,
+                "tenant_scoped_synthetic_predicate_pass":scoped_predicate_test,
+                "tenant_scoped_query_principal_binding_proven":False,
+                "production_task_tenant_property_parity_proven":False,
                 "tenant_isolation_proven":False,
                 "global_operator_scope_reviewed":False,
                 "elapsed_seconds":round(time.monotonic()-start,2),
