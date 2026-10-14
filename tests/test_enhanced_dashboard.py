@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.testclient import TestClient
 
-from assistx import control_room
+from assistx import control_room, control_room_runtime
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = (ROOT / "templates/base.html").read_text()
@@ -23,6 +23,18 @@ FRONTEND = (ROOT / "static/js/control_room.js").read_text()
 
 @pytest.fixture()
 def observations(monkeypatch):
+    # The API installs a snapshot-cache wrapper and older unit tests
+    # deliberately seed that global cache with synthetic values. A contract
+    # test must never interpret another test's cached value as observed data.
+    monkeypatch.setattr(control_room_runtime, "_CACHE_VALUE", None)
+    monkeypatch.setattr(control_room_runtime, "_CACHE_EXPIRES_AT", 0.0)
+    monkeypatch.setattr(
+        control_room_runtime, "collect_router_telemetry",
+        lambda _factory: {
+            "activity": [], "performance": [], "runtime_samples": [],
+            "event_count": 0,
+        },
+    )
     data = {
         "dependencies": [],
         "runtimes": [],
