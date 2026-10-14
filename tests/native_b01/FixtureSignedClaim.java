@@ -3,6 +3,12 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
 import java.security.MessageDigest;
 import java.security.Signature;
+import java.security.SecureRandom;
+import java.net.URL;
+import java.net.Proxy;
+import java.net.HttpURLConnection;
+import java.io.OutputStream;
+import java.io.InputStream;
 import java.security.spec.X509EncodedKeySpec;
 import java.time.Instant;
 import java.util.Arrays;
@@ -72,6 +78,53 @@ public final class FixtureSignedClaim {
         nonce,policy,Long.toString(issued),Long.toString(expiry));
     return body.getBytes(StandardCharsets.US_ASCII);
   }
+  private static void requireWitness(String issuerSig, String deviceSig,
+      byte[] originalSignedMessage) throws Exception {
+    // Pinned exact fixture destination, never client-provided endpoint.
+    String url=System.getenv("B01_FIXTURE_WITNESS_URL");
+    if(!"http://b01-witness:8812/reserve".equals(url)) throw denied();
+    String bearer=System.getenv("B01_FIXTURE_WITNESS_BEARER");
+    if (bearer==null || bearer.length()<30 || bearer.length()>200) throw denied();
+    byte[] challenge=new byte[32];
+    new SecureRandom().nextBytes(challenge);
+    String raw=new String(originalSignedMessage,StandardCharsets.US_ASCII)
+        +"\n"+issuerSig+"\n"+deviceSig+"\n"
+        +HexFormat.of().formatHex(challenge);
+    byte[] request=raw.getBytes(StandardCharsets.US_ASCII);
+    HttpURLConnection link=(HttpURLConnection)new URL(url).openConnection(Proxy.NO_PROXY);
+    link.setConnectTimeout(2500);
+    link.setReadTimeout(4000);
+    link.setInstanceFollowRedirects(false);
+    link.setUseCaches(false);
+    link.setRequestMethod("POST");
+    link.setRequestProperty("X-Fixture-Graph-Bearer",bearer);
+    link.setRequestProperty("Content-Type","text/plain");
+    link.setDoOutput(true);
+    int status;
+    String reply;
+    try {
+      try(OutputStream out=link.getOutputStream()) {
+        out.write(request);
+      }
+      status=link.getResponseCode();
+      if(status!=200) throw denied();
+      try(InputStream in=link.getInputStream()) {
+        reply=new String(in.readNBytes(180),StandardCharsets.US_ASCII);
+      }
+    } finally {
+      link.disconnect();
+    }
+    if(reply.length()!=136 || !reply.startsWith("PENDING\n")) throw denied();
+    byte[] receiptMessage=MessageDigest.getInstance("SHA-256").digest(request);
+    byte[] domain="B01-WITNESS-PENDING-v0\n".getBytes(StandardCharsets.US_ASCII);
+    byte[] signedReceipt=Arrays.copyOf(domain,domain.length+receiptMessage.length);
+    System.arraycopy(receiptMessage,0,signedReceipt,domain.length,receiptMessage.length);
+    // The witness signs this request's random fresh-challenge digest. An
+    // earlier HTTP 200/receipt cannot authorize a new attempt.
+    verify(envRoot("B01_FIXTURE_WITNESS_ROOT"),
+        reply.substring(8),signedReceipt);
+  }
+
   @Procedure(name="b01research.claimFixture",mode=Mode.WRITE)
   public Stream<Receipt> claim(
       @Name("instance") String instance,
@@ -118,6 +171,10 @@ public final class FixtureSignedClaim {
         if(!(seenValue instanceof String[])) throw denied();
         String[] seen=(String[])seenValue;
         if(Arrays.asList(seen).contains(nonce)) throw denied();
+        // Persist a remote PENDING witness *before* the Neo4j write. If the
+        // remote service fails after reservation, graph TX rolls back and
+        // the remote witness remains pending: never replay automatically.
+        requireWitness(issuerSig,deviceSig,bytes);
         String[] next=Arrays.copyOf(seen,seen.length+1);
         next[seen.length]=nonce;
         guard.setProperty("high_water",sequence);
@@ -129,7 +186,7 @@ public final class FixtureSignedClaim {
         return Stream.of(new Receipt("FIXTURE_CLAIMED",term,sequence));
       }
     } catch (Exception exc) {
-      // Suppress proof, topology and key material diagnostics.
+      // Deny without disclosing witness response, network, proof, or keys.
       throw denied();
     }
   }
