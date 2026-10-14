@@ -126,10 +126,12 @@ def test_optional_only_probes_never_imply_full_health(observations):
 def test_runtime_summary_uses_actual_active_queued_slots(observations):
     observations["runtimes"] = [
         {
+            "runtime_instance_id": "fixture-runtime-a", "node_id": "fixture-node-a",
             "status": "online", "active": 2, "queued": 3,
             "parallel_slots": 3, "loaded_models": ["model-a"],
         },
         {
+            "runtime_instance_id": "fixture-runtime-b", "node_id": "fixture-node-b",
             "status": "offline", "active": 1, "queued": 1,
             "parallel_slots": 0, "loaded_models": [],
         },
