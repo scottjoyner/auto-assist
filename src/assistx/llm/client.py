@@ -1,6 +1,8 @@
 import os, json, time, threading, requests
 from typing import Optional, Dict, Any, List, Generator
 from dotenv import load_dotenv
+
+from . import output_integrity
 load_dotenv()
 
 # Import Neo4jClient at module top-level (NOT lazily inside functions).  Lazy
@@ -957,6 +959,12 @@ def chat(messages: List[Dict[str, str]], model: Optional[str] = None, json_mode:
             try:
                 out = dispatch(messages, candidate, json_mode, base_url=base_url,
                                _timeout_override=TIMEOUT)
+                # A successful HTTP request is not necessarily usable model
+                # text. Preserve the caller's return value, routing order, and
+                # existing breaker state for null/empty/mojibake/tool-only data.
+                # Neither healthy credit nor a hard-failure penalty is earned.
+                if not output_integrity.is_usable(output_integrity.classify_text(out)):
+                    return out
                 elapsed = time.time() - t0
                 # Estimate TPS if we can recover token counts from usage.
                 tps = None
@@ -1118,6 +1126,9 @@ def _stream_openai(
     try:
         with requests.post(url, json=payload, headers=headers, stream=True, timeout=(5, 600)) as r:
             r.raise_for_status()
+            # requests defaults charset-less text/event-stream to latin-1.
+            # Pin UTF-8 before it lazily decodes the first SSE chunk.
+            output_integrity.pin_stream_encoding(r)
             yield {"event": "model", "data": {"model": model}}
             for raw in r.iter_lines(decode_unicode=True):
                 if not raw:
@@ -1160,6 +1171,9 @@ def _stream_openai_fleet(
     try:
         with requests.post(url, json=payload, headers=headers, stream=True, timeout=(5, 600)) as r:
             r.raise_for_status()
+            # requests defaults charset-less text/event-stream to latin-1.
+            # Pin UTF-8 before it lazily decodes the first SSE chunk.
+            output_integrity.pin_stream_encoding(r)
             yield {"event": "model", "data": {"model": model}}
             for raw in r.iter_lines(decode_unicode=True):
                 if not raw:
