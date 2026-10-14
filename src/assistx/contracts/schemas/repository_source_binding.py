@@ -209,10 +209,32 @@ class RepositorySourceBinding(BaseModel):
             raise ValueError("task_id/work_id must not contain control characters")
         return value
 
+    @classmethod
+    def from_contract_payload(
+        cls, payload: RepositorySourceBinding | dict[str, object] | None
+    ) -> RepositorySourceBinding | None:
+        """Convert only a fully valid, explicit binding; absent legacy is unbound.
+
+        Never interpret a partial or extra-field payload as an unbound success.
+        Canonical path, configured authority, HEAD, and work identity retain
+        their original strict Pydantic validators.
+        """
+        if payload is None or payload == {}:
+            return None
+        if isinstance(payload, cls):
+            return payload
+        if not isinstance(payload, dict):
+            raise ValueError("source binding must be a mapping or absent")
+        return cls.model_validate(payload)
+
+    def to_contract_payload(self) -> dict[str, object]:
+        """Canonical version of the exact binding, without added authority."""
+        return self.model_dump(mode="json")
+
     def provenance(self) -> dict[str, object]:
         """Compact payload safe to embed in a task or result."""
 
-        return self.model_dump(mode="json")
+        return self.to_contract_payload()
 
 
 class ObservedSourceState(BaseModel):
