@@ -173,48 +173,47 @@ def test_sqlite_session_history_is_not_treated_as_concurrent_process_duplication
     assert supervisor.detect_duplicate_worktrees(records) == []
 
 
-def test_discover_live_sessions_readonly_query_only():
-    import sys, sqlite3
-    sys.path.insert(0, "scripts")
+def test_discover_live_sessions_readonly_query_only(monkeypatch, tmp_path):
+    import sqlite3
     from free_subagent_supervisor import discover_live_sessions, _opencode_db_uri
+
+    # A hosted CI runner has no user OpenCode database. Build an isolated
+    # synthetic source database rather than probing or creating a real one.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    db_path = tmp_path / ".local" / "share" / "opencode" / "opencode.db"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE session (id TEXT, title TEXT, slug TEXT, "
+            "directory TEXT, agent TEXT, model TEXT, "
+            "time_updated INTEGER, time_archived INTEGER)"
+        )
     result = discover_live_sessions(query_only=True)
-    assert isinstance(result, list)
-    # Verify path derived from HOME (not a literal hardcoded /home/scott in source)
+    assert result == []
     db_uri = _opencode_db_uri()
     assert db_uri.startswith("file:")
-    assert "opencode.db" in db_uri
-    # Prove mode=ro + PRAGMA query_only by asserting a write fails
+    assert "opencode.db?mode=ro" in db_uri
+    assert str(tmp_path) in db_uri
+    # The source remains read-only, even for a TEMP table mutation.
     conn = sqlite3.connect(db_uri, uri=True)
     conn.execute("PRAGMA query_only = ON")
     try:
         conn.execute("CREATE TEMP TABLE _assert_write_fail (id INTEGER)")
-        assert False, "Write should have failed on mode=ro with query_only"
+        assert False, "Read-only SQLite connection unexpectedly writable"
     except sqlite3.OperationalError:
-        pass  # expected
-    conn.close()
+        pass
+    finally:
+        conn.close()
 
 
-def test_projection_with_trace_exporter_integration():
-    import sys, json
-    sys.path.insert(0, "scripts")
+def test_projection_with_trace_exporter_integration(tmp_path):
     from free_subagent_supervisor import emit_projection
 
-    # Create a temporary trace exporter module for testing
-    import importlib.util
-    import pathlib
-
-    trace_exporter_path = pathlib.Path(__file__).parent / "fixtures" / "empty_trace_exporter.py"
-    if not trace_exporter_path.exists():
-        # Create a mock trace exporter
-        trace_exporter_path.write_text('''
-import json
-import pathlib
-import sqlite3
-from typing import Any
-
-def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
-    return []
-''')
+    # Fixture owned by this test, never written to the checked-out repository.
+    trace_exporter_path = tmp_path / "empty_trace_exporter.py"
+    trace_exporter_path.write_text(
+        "def export_sessions(db_path):\n    return []\n", encoding="utf-8"
+    )
 
     # Test projection with trace exporter (will fail gracefully if no DB)
     proj = emit_projection(
@@ -227,7 +226,12 @@ def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
     assert "trace_records_count" in proj
     assert "trace_records_sample" in proj
     assert "trace_provider_summary" in proj
-    assert "trace_exporter_error" not in proj or isinstance(proj.get("trace_exporter_error"), str)
+    assert proj["trace_exporter_status"] in {"unavailable", "observed"}
+    # No database is not evidence of an observed zero count.
+    if proj["trace_exporter_status"] == "unavailable":
+        assert proj["trace_records_count"] is None
+        assert proj["trace_records_sample"] == []
+    assert "trace_exporter_error" not in proj
 
 
 def test_trace_exporter_readonly_query_only():
