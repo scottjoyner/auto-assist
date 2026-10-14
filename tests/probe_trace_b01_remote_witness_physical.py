@@ -24,6 +24,9 @@ from probe_trace_isolated_task_broker import (
     docker, assert_disposable, GRAPH_IMAGE, PYTHON_IMAGE)
 from trace_b01_remote_monotonic_witness import bootstrap
 from trace_b01_native_claim_protocol import params, CALL
+from trace_b01_readonly_effect_reconcile import (
+    GraphObservation, WitnessObservation, classify)
+
 
 SOURCE=Path(__file__).resolve().parent/'native_b01'/'FixtureSignedClaim.java'
 
@@ -68,6 +71,62 @@ def make_jar(temp):
     if not (temp/'b01-fixture.jar').is_file():
         raise RuntimeError('DISPOSABLE_NATIVE_MODULE_NOT_COMPILED')
     return temp/'b01-fixture.jar'
+def diagnostic_fixture_readback(root_driver, witness_name, fixture_task):
+    """Read-only synthetic graph+ledger classification; never a write grant.
+
+    Snapshot provenance is asserted, NOT independently signed or post-COMMIT.
+    The observed graph term is only a surrogate for claim term because the
+    old fixture Task does not retain an independently certified claim term.
+    """
+    graph=query(root_driver,
+        "MATCH (g:FixtureFence {scope:'fixture-assistx-b01'}) "
+        "MATCH (t:FixtureTask {id:$id}) "
+        "RETURN g.instance AS instance,g.term AS term,"
+        "g.high_water AS high_water,t.id AS task_id,"
+        "t.owner_id AS agent_id,t.status AS status,"
+        "t.claim_sequence AS claim_sequence,t.claim_nonce AS claim_nonce",
+        {'id':fixture_task})
+    if len(graph)!=1:
+        raise RuntimeError('AMBIGUOUS_DISPOSABLE_GRAPH_READBACK')
+    read=docker('exec',witness_name,'python','-c',
+        'import json,sqlite3;'
+        'c=sqlite3.connect("/tmp/witness-db/ledger.sqlite");'
+        's=json.loads(c.execute("SELECT document FROM state WHERE id=1")'
+        '.fetchone()[0]);'
+        'print(json.dumps({k:s[k] for k in '
+        '["instance","agent_id","term","high_water","pending"]}))',
+        timeout=8)
+    witness=json.loads(read.stdout)
+    g=graph[0]
+    pending=witness['pending']
+    status=g['status']
+    if status not in ('READY','CLAIMED'):
+        raise RuntimeError('UNREVIEWED_DISPOSABLE_TASK_STATUS')
+    # The Task identifier must originate from the off-graph signed pending
+    # receipt when one exists. A fresh empty witness can only use the local
+    # known fixture identifier; it is fundamentally rollback-ambiguous.
+    task_id=pending['task_id'] if pending is not None else fixture_task
+    wo=WitnessObservation(instance=witness['instance'],task_id=task_id,
+        agent_id=witness['agent_id'],term=witness['term'],
+        high_water=witness['high_water'],pending=pending is not None,
+        pending_term=pending['term'] if pending is not None else None,
+        pending_sequence=pending['sequence'] if pending is not None else None,
+        pending_nonce=pending['nonce'] if pending is not None else None)
+    go=GraphObservation(instance=g['instance'],task_id=g['task_id'],
+        agent_id=g['agent_id'],term=g['term'],high_water=g['high_water'],
+        task_status=status,
+        claim_term=g['term'] if status=='CLAIMED' else None,
+        claim_sequence=g['claim_sequence'] if status=='CLAIMED' else None,
+        claim_nonce=g['claim_nonce'] if status=='CLAIMED' else None)
+    result=classify(wo,go)
+    if (result['automatic_reexecute_authorized']
+            or result['automatic_pending_clear_authorized']
+            or result['failover_authorized']
+            or result['production_decision']!='HOLD'):
+        raise RuntimeError('UNEXPECTED_DIAGNOSTIC_GRANT')
+    return result['diagnostic']
+
+
 def run(mode="normal"):
     if os.getenv('ASSISTX_B01_REMOTE_WITNESS_PHYSICAL')!='1':
         raise RuntimeError('EXPLICIT_DISPOSABLE_REMOTE_WITNESS_OPT_IN_REQUIRED')
@@ -295,7 +354,15 @@ def run(mode="normal"):
                         values=check.stdout.strip().split()
                         if len(values)!=2 or values[0] not in ('0','1'):
                             raise RuntimeError('UNEXPECTED_WITNESS_UNCERTAINTY_STATE')
+                        observation=diagnostic_fixture_readback(
+                            root,witness,taskids[0])
+                        expected=('GRAPH_REWIND_OR_UNCERTAIN_UNCOMMITTED_EFFECT'
+                                  if values==['1','1'] else
+                                  'EMPTY_OR_COHERENTLY_RESTORED_INDETERMINATE')
+                        if observation!=expected:
+                            raise RuntimeError('OUTAGE_READONLY_RECONCILE_MISMATCH')
                         return {
+                            'readonly_reconciliation_state':observation,
                             'schema':'assistx-b01-remote-uncertain-outage-v0',
                             'verdict':'PASS_FAIL_CLOSED_UNCERTAIN_NO_AUTO_RETRY',
                             'graph_state_unchanged_after_witness_timeout':state()==before,
@@ -326,6 +393,9 @@ def run(mode="normal"):
                     after=state()
                     if after['guard']['head']!=1 or after['tasks'][0]['status']!='CLAIMED':
                         raise RuntimeError('SIGNATURE_RESOURCE_EFFECT_NOT_APPLIED')
+                    observed_match=diagnostic_fixture_readback(root,witness,taskids[0])
+                    if observed_match!='MATCHING_UNATTESTED_SNAPSHOTS':
+                        raise RuntimeError('MATCHING_READONLY_SNAPSHOT_NOT_RECONCILED')
                     expect_rejected('valid_proof_replay',
                         lambda:query(actor,CALL,one),state,after)
                     expect_rejected('stale_sequence',
@@ -375,6 +445,9 @@ def run(mode="normal"):
                             if time.monotonic()>=deadline:
                                 raise RuntimeError('RESTORED_WITNESS_NOT_READY')
                             time.sleep(0.4)
+                        coherent=diagnostic_fixture_readback(root,witness,taskids[0])
+                        if coherent!='EMPTY_OR_COHERENTLY_RESTORED_INDETERMINATE':
+                            raise RuntimeError('CO_RESTORE_INDETERMINACY_NOT_DETECTED')
                         admitted=query(actor,CALL,one)
                         if admitted!=[{'result':'FIXTURE_CLAIMED','term':1,'highWater':1}]:
                             raise RuntimeError('EXPECTED_COORDINATED_REPLAY_NOT_REPRODUCED')
@@ -384,11 +457,16 @@ def run(mode="normal"):
                             'previously_consumed_dual_signed_proof_readmitted':True,
                             'graph_and_witness_rewound_together':True,
                             'same_test_roots_and_instance':True,
+                            'readonly_reconciliation_after_co_restore':coherent,
                             'independent_immutable_anchor_proven':False,
                             'production_admission_authorized':False,
                             'production_graph_queried':False,
                             'elapsed_seconds':round(time.monotonic()-started,2),
                         }
+                    rollback_observed=diagnostic_fixture_readback(
+                        root,witness,taskids[0])
+                    if rollback_observed!='GRAPH_REWIND_OR_UNCERTAIN_UNCOMMITTED_EFFECT':
+                        raise RuntimeError('GRAPH_ROLLBACK_DIAGNOSTIC_NOT_DETECTED')
                     expect_rejected('graph_only_restore_signed_replay',
                         lambda:query(actor,CALL,one),state,rewound)
                     return {
@@ -400,6 +478,8 @@ def run(mode="normal"):
                         'fresh_challenge_receipt_verified_inside_graph_proc':True,
                         'remote_pending_survived_disposable_container_restart':True,
                         'old_valid_signature_denied_after_graph_rewind':True,
+                        'readonly_reconciliation_before_graph_rewind':observed_match,
+                        'readonly_reconciliation_after_graph_rewind':rollback_observed,
                         'atomic_graph_and_witness_commit':False,
                         'automatic_reconciliation_or_failover_safe':False,
                         'coordinated_witness_restore_resistant':False,
