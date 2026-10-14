@@ -4,10 +4,15 @@ Start with the current documents below. Files under `archive/`, dated plans,
 and the legacy `STATUS.md` are design or deployment records rather than current
 operating instructions.
 
+## Release candidate evidence
+
+- [2026-10-14 AssistX release packet](RELEASE_CANDIDATE_EVIDENCE_20261014.md) — exact source / PR / CI boundaries, mobile contract, unresolved security and rollback gates. **DRAFT / HOLD**, not a deployed release.
+
 ## Current system
 
 | Document | Purpose |
 |---|---|
+| [`CHANGELOG.md`](CHANGELOG.md) | **Unreleased** candidate-level changes and rollback boundaries; no deployment declaration |
 | [`HIGH_LEVEL_DESIGN.md`](HIGH_LEVEL_DESIGN.md) | Canonical system context, authority boundaries, major components, control flows, security, availability, and architectural decisions |
 | [`LOW_LEVEL_DESIGN.md`](LOW_LEVEL_DESIGN.md) | Canonical implementation map, graph model, state machines, APIs, fencing, recovery, degraded operation, improvement, configuration, and test contracts |
 | [`FLEET_CAPABILITY_ROUTING_DEPLOYMENT.md`](FLEET_CAPABILITY_ROUTING_DEPLOYMENT.md) | Complete Tailscale census, heterogeneous worker roles, LMS benchmark-matrix import, family-specific allocation/routing, scheduled refresh, validation, canaries, and rollback |
