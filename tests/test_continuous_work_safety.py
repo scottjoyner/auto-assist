@@ -144,6 +144,16 @@ def test_repository_scan_refreshes_head_and_skips_unchanged_tree(
     assert proposals
     assert all(task["payload"]["execution_mode"] == "analysis_only" for task in analysis)
     assert all(task["requires_approval"] is True for task in proposals)
+    # The strict source binding must be minted for the configured real Git
+    # checkout with stable task/work provenance, not silently omitted.
+    for task in analysis:
+        binding = task["payload"]["source_binding"]
+        assert isinstance(binding, dict)
+        assert binding["task_id"] == task["id"]
+        assert binding["work_id"] == f"{task['id']}:source-snapshot"
+        assert binding["repo_realpath"] == str(repo.resolve())
+        assert binding["worktree_realpath"] == str(repo.resolve())
+        assert binding["head_sha"] == second
 
 
 def test_repository_map_has_no_source_controlled_machine_paths(monkeypatch) -> None:

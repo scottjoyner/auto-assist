@@ -81,18 +81,11 @@ def build_evidence(repo, tmp_path):
 
 
 def test_workspace_records_whether_the_binding_matches_the_executed_head(tmp_path):
-    """The provenance the work packet carries has to be falsifiable.
+    """The exact bound source must match or fail before worktree creation.
 
-    `prepare_repository` resolves HEAD itself and creates the worktree there. The
-    contract's source binding names the commit the task was derived from. Nothing
-    compared the two, so a task bound to commit X could execute against commit Y
-    while the packet asserted X -- and the packet now carries that binding, so
-    unreviewed provenance that is wrong is worse than none at all.
-
-    Reported, not enforced: a binding is documented as evidence that "grants
-    nothing on its own", so blocking on a mismatch would invent a gate the design
-    deliberately does not have. The point is that the record says which commit ran
-    and whether it is the one that was bound.
+    A source binding is identity evidence, not authorization to execute a
+    different worktree or HEAD. Legacy report-only mismatch behavior would let
+    a stale checkout run without proving what it inspected.
     """
     repo = initialized_repo(tmp_path)
     env = runtime_env(repo, tmp_path)
@@ -101,30 +94,45 @@ def test_workspace_records_whether_the_binding_matches_the_executed_head(tmp_pat
         capture_output=True, text=True, check=True,
     ).stdout.strip()
 
+    # The current canonical binding requires full trusted repository/worktree
+    # and task/attempt provenance. A HEAD-only payload is intentionally invalid.
+    from assistx.contracts.schemas.repository_source_binding import RepositorySourceBinding
+
+    def source_binding(commit: str, task_id: str) -> dict:
+        return RepositorySourceBinding(
+            repository="repo",
+            repo_realpath=str(repo.resolve()),
+            worktree_realpath=str(repo.resolve()),
+            branch=git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip(),
+            head_sha=commit,
+            task_id=task_id,
+            work_id=task_id + ":review",
+        ).to_contract_payload()
+
     # No binding at all: absence is legitimate for non-repository tasks and must
     # not read as a mismatch.
     plain = prepare_repository(contract(), task_id="t-plain", env=env)
     assert plain["ok"] is True
-    assert plain["source_binding_head_sha"] is None
-    assert plain["source_binding_matches"] is None
+    assert plain["source_binding_verification"] is None
 
     # Bound to the commit that will actually run: matches.
     matching = dict(contract())
-    matching["source_binding"] = {"head_sha": head}
+    matching["source_binding"] = source_binding(head, "t-same")
     same = prepare_repository(matching, task_id="t-same", env=env)
     assert same["ok"] is True
     assert same["head"] == head
-    assert same["source_binding_matches"] is True
+    assert same["source_binding_verification"]["state"] == "MATCH"
+    assert same["source_binding_verification"]["accepted"] is True
 
-    # Bound to some other commit: reported as a mismatch, still executed.
+    # Bound to some other commit: reject before creating a worktree.
     other = "b" * 40
     bound_elsewhere = dict(contract())
-    bound_elsewhere["source_binding"] = {"head_sha": other}
+    bound_elsewhere["source_binding"] = source_binding(other, "t-diff")
     different = prepare_repository(bound_elsewhere, task_id="t-diff", env=env)
-    assert different["ok"] is True, "a mismatch is reported, not enforced"
-    assert different["source_binding_head_sha"] == other
-    assert different["source_binding_matches"] is False
-    assert different["head"] == head
+    assert different["ok"] is False
+    assert different["reason"] == "repository_source_binding_rejected:HEAD_MISMATCH"
+    assert different["source_binding_verification"]["accepted"] is False
+    assert different["source_binding_verification"]["expected"]["head_sha"] == other
 
 
 def test_executor_uses_isolated_worktree_and_exports_signed_patch(tmp_path):

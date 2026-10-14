@@ -46,12 +46,13 @@ STALE_MIRROR = "/home/scott/embed_x1"
 def _binding(**overrides) -> RepositorySourceBinding:
     values = {
         "repository": "auto-assist",
-        "repository_realpath": MAIN_REPO,
+        "repo_realpath": MAIN_REPO,
         "worktree_realpath": BOUND_WORKTREE,
         "branch": "main",
         "head_sha": HEAD_A,
-        "dirty_expectation": DirtyStateExpectation.CLEAN_REQUIRED,
+        "expected_dirty": DirtyStateExpectation.CLEAN_REQUIRED,
         "task_id": "task-1",
+        "work_id": "attempt-1",
     }
     values.update(overrides)
     return RepositorySourceBinding(**values)
@@ -95,7 +96,14 @@ def test_binding_rejects_home_directory_and_filesystem_root():
     with pytest.raises(ValueError):
         _binding(worktree_realpath=os.path.expanduser("~"))
     with pytest.raises(ValueError):
-        _binding(repository_realpath="/")
+        _binding(repo_realpath="/")
+
+
+def test_binding_requires_provenance_task_and_work_identity():
+    with pytest.raises(ValueError):
+        _binding(work_id="")
+    with pytest.raises(ValueError):
+        _binding(task_id="")
 
 
 def test_binding_rejects_short_or_non_hex_head():
@@ -178,7 +186,7 @@ def test_dirty_worktree_rejected_when_clean_is_required():
 
 
 def test_dirty_worktree_allowed_when_expected():
-    binding = _binding(dirty_expectation=DirtyStateExpectation.DIRTY_ALLOWED)
+    binding = _binding(expected_dirty=DirtyStateExpectation.ANY)
     assert verify_repository_source(binding, _observed(dirty=True)).state is (
         SourceBindingState.MATCH
     )
@@ -186,11 +194,11 @@ def test_dirty_worktree_allowed_when_expected():
 
 def test_branch_mismatch_is_explicit():
     result = verify_repository_source(_binding(), _observed(branch="other-branch"))
-    assert result.state is SourceBindingState.BRANCH_MISMATCH
+    assert result.state is SourceBindingState.HEAD_MISMATCH
 
 
 def test_branchless_binding_tolerates_detached_observed_branch():
-    binding = _binding(branch=None)
+    binding = _binding(branch="DETACHED")
     assert (
         verify_repository_source(binding, _observed(branch=None)).state
         is SourceBindingState.MATCH
@@ -199,8 +207,9 @@ def test_branchless_binding_tolerates_detached_observed_branch():
 
 def test_non_repository_task_is_unaffected():
     result = verify_repository_source(None, _observed())
-    assert result.state is SourceBindingState.UNBOUND
-    assert result.accepted is True
+    assert result.state is SourceBindingState.SOURCE_UNAVAILABLE
+    assert result.accepted is False
+    assert "no_repository_source_binding" in result.reasons
 
 
 def test_multiple_deviations_never_report_match():
@@ -307,6 +316,8 @@ def _bind(repo, worktree="target"):
         repository="auto-assist",
         worktree_path=repo[worktree],
         base_repository_path=repo["main"],
+        task_id="fixture-task",
+        work_id="fixture-review-1",
     )
 
 
@@ -345,6 +356,22 @@ def test_real_missing_worktree_is_rejected(fleet_repo):
     assert result.accepted is False
 
 
+def test_builder_requires_explicit_task_and_attempt_ids(fleet_repo):
+    with pytest.raises(ValueError, match="task_id"):
+        build_source_binding(
+            repository="auto-assist",
+            worktree_path=fleet_repo["target"],
+            base_repository_path=fleet_repo["main"],
+        )
+    with pytest.raises(ValueError, match="work_id"):
+        build_source_binding(
+            repository="auto-assist",
+            worktree_path=fleet_repo["target"],
+            base_repository_path=fleet_repo["main"],
+            task_id="task-fixture",
+        )
+
+
 def test_build_binding_refuses_unregistered_sibling_directory(fleet_repo):
     impostor = fleet_repo["root"] / "auto-ingest-swarm-20261002"
     impostor.mkdir()
@@ -353,6 +380,8 @@ def test_build_binding_refuses_unregistered_sibling_directory(fleet_repo):
             repository="auto-assist",
             worktree_path=impostor,
             base_repository_path=fleet_repo["main"],
+            task_id="fixture-task",
+            work_id="fixture-review-1",
         )
 
 
@@ -362,13 +391,15 @@ def test_build_binding_refuses_mirror_as_worktree(fleet_repo):
             repository="auto-assist",
             worktree_path=fleet_repo["mirror"],
             base_repository_path=fleet_repo["main"],
+            task_id="fixture-task",
+            work_id="fixture-review-1",
         )
 
 
 def test_build_binding_binds_registered_worktree_of_same_repository(fleet_repo):
     binding = _bind(fleet_repo, worktree="other")
     assert binding.worktree_realpath == str(fleet_repo["other"].resolve())
-    assert binding.repository_realpath == str(fleet_repo["main"].resolve())
+    assert binding.repo_realpath == str(fleet_repo["main"].resolve())
 
 
 # --------------------------------------------------------------------------
