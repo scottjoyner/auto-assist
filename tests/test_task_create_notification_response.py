@@ -10,7 +10,6 @@ from types import SimpleNamespace
 
 import pytest
 
-
 SOURCE = Path(__file__).resolve().parents[1] / "src/assistx/api.py"
 
 
