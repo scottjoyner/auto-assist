@@ -13,7 +13,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import APIRouter, Depends, HTTPException
 
 from . import runtime_projection as legacy
-
+from .fleet_routing_projection import (
+    benchmark_projection_index,
+    node_routing_policy_index,
+)
 
 _ALGORITHM = "Ed25519"
 _DEFAULT_KEY_ID = "assistx-runtime-projection-v1"
@@ -88,6 +91,77 @@ def projection_signature(
     return _b64url(private_key.sign(signing_message(document)))
 
 
+def _apply_benchmark_routing(
+    document: dict[str, Any],
+    neo_factory: Callable[[], Any],
+) -> None:
+    """Attach *non-authorizing* role/benchmark hints to admitted records only.
+
+    Model admission, artifact identity, runtime lease, and generation come from
+    the signed canonical projection. Benchmarks are diagnostic metadata and
+    MUST NOT mint a provider, model, execution permission or new route. Missing
+    metadata is an observer-only denial; graph query failures block issuance.
+    """
+    try:
+        policies = node_routing_policy_index(neo_factory)
+        profiles = benchmark_projection_index(neo_factory)
+    except Exception as exc:
+        raise legacy.RuntimeProjectionBlocked(
+            "routing metadata evidence unavailable"
+        ) from exc
+    if not isinstance(policies, dict) or not isinstance(profiles, dict):
+        raise legacy.RuntimeProjectionBlocked(
+            "routing metadata evidence invalid"
+        )
+
+    for provider in document.get("providers") or []:
+        if not isinstance(provider, dict):
+            raise legacy.RuntimeProjectionBlocked(
+                "runtime provider record is invalid"
+            )
+        node_id = str(provider.get("node_id") or "").strip()
+        row = policies.get(node_id)
+        policy = row if isinstance(row, dict) else {}
+        role_values = policy.get("routing_roles")
+        roles = (
+            sorted({role for role in role_values
+                    if isinstance(role, str) and 0 < len(role) <= 64})
+            if isinstance(role_values, list) else []
+        )
+        mode = policy.get("worker_mode")
+        if mode not in ("observer_only", "auxiliary", "agent", "full_agent"):
+            mode = "observer_only"
+        provider["routing_roles"] = roles
+        provider["worker_mode"] = mode
+        provider["allow_agent_runtime"] = False
+        provider["allow_code_execution"] = False
+
+        for model in provider.get("models") or []:
+            if not isinstance(model, dict):
+                raise legacy.RuntimeProjectionBlocked(
+                    "runtime model record is invalid"
+                )
+            # No provider-wide grants and no inferred model permissions.
+            model["routing_roles"] = list(roles)
+            model["worker_mode"] = mode
+            model["allow_agent_runtime"] = False
+            model["allow_code_execution"] = False
+            identity = str(model.get("alias") or "").strip()
+            evidence = profiles.get((node_id, identity))
+            candidate = (
+                evidence.get("task_family_scores")
+                if isinstance(evidence, dict) else None
+            )
+            # Preserve only read-only measured scores matched by exact
+            # (node_id, admitted alias); never use benchmark output to admit.
+            model["task_family_scores"] = (
+                {family: dict(score)
+                 for family, score in candidate.items()
+                 if isinstance(family, str) and isinstance(score, dict)}
+                if isinstance(candidate, dict) else {}
+            )
+
+
 def build_runtime_projection(
     neo_factory: Callable[[], Any],
     *,
@@ -102,6 +176,7 @@ def build_runtime_projection(
         ttl_seconds=ttl_seconds,
         now_ms=now_ms,
     )
+    _apply_benchmark_routing(document, neo_factory)
     document["schema_version"] = "2"
     document["signature_algorithm"] = _ALGORITHM
     document["signature_key_id"] = (
@@ -114,6 +189,28 @@ def build_runtime_projection(
     signer = private_key or load_private_key()
     document["signature"] = projection_signature(document, signer)
     return document
+
+
+def build_runtime_projection_v2(
+    neo_factory: Callable[[], Any],
+    *,
+    ttl_seconds: int = 60,
+    now_ms: int | None = None,
+    private_key: Ed25519PrivateKey | None = None,
+    key_id: str | None = None,
+) -> dict[str, Any]:
+    """Stable v2 public entry point for mobile and cross-repo consumers.
+
+    The singular builder is canonical; this name adds zero bypasses and retains
+    the same policy-read failure behavior, checksum, and Ed25519 signature.
+    """
+    return build_runtime_projection(
+        neo_factory,
+        ttl_seconds=ttl_seconds,
+        now_ms=now_ms,
+        private_key=private_key,
+        key_id=key_id,
+    )
 
 
 def build_runtime_projection_router(

@@ -10,6 +10,16 @@ from assistx import runtime_projection_v2
 
 
 def _install_fixtures(monkeypatch) -> None:
+    # Independent signed-projection fixtures must explicitly supply routing
+    # policy evidence. Do not query a live graph or silently bypass policy.
+    monkeypatch.setattr(
+        runtime_projection_v2, "node_routing_policy_index",
+        lambda _factory: {},
+    )
+    monkeypatch.setattr(
+        runtime_projection_v2, "benchmark_projection_index",
+        lambda _factory: {},
+    )
     monkeypatch.setattr(
         legacy,
         "_projection_state",
@@ -148,3 +158,104 @@ def test_private_key_file_requires_strict_permissions(tmp_path, monkeypatch):
 
     path.chmod(0o600)
     assert isinstance(runtime_projection_v2.load_private_key(), Ed25519PrivateKey)
+
+
+def test_signed_projection_missing_role_metadata_does_not_grant_execution(monkeypatch):
+    _install_fixtures(monkeypatch)
+    document = runtime_projection_v2.build_runtime_projection(
+        lambda: None, private_key=Ed25519PrivateKey.generate(),
+        now_ms=1_000_000,
+    )
+    assert len(document["providers"]) == 1
+    provider = document["providers"][0]
+    assert provider["worker_mode"] == "observer_only"
+    assert provider["routing_roles"] == []
+    assert provider["allow_agent_runtime"] is False
+    assert provider["allow_code_execution"] is False
+    assert len(provider["models"]) == 1
+    model = provider["models"][0]
+    assert model["task_family_scores"] == {}
+    assert model["allow_agent_runtime"] is False
+    assert model["allow_code_execution"] is False
+
+
+def test_signed_projection_routing_reader_failure_blocks_issuance(monkeypatch):
+    _install_fixtures(monkeypatch)
+
+    def read_denied(_factory):
+        raise PermissionError("Synthetic restricted reader")
+
+    monkeypatch.setattr(runtime_projection_v2, "node_routing_policy_index", read_denied)
+    with pytest.raises(legacy.RuntimeProjectionBlocked, match="metadata evidence unavailable"):
+        runtime_projection_v2.build_runtime_projection(
+            lambda: None, private_key=Ed25519PrivateKey.generate(),
+            now_ms=1_000_000,
+        )
+
+
+def test_metadata_cannot_admit_unknown_models_or_grant_privileges(monkeypatch):
+    _install_fixtures(monkeypatch)
+    monkeypatch.setattr(
+        runtime_projection_v2, "node_routing_policy_index",
+        lambda _factory: {
+            "xwing": {
+                "worker_mode": "full_agent",
+                "routing_roles": ["coding"],
+                "allow_agent_runtime": True,
+                "allow_code_execution": True,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        runtime_projection_v2, "benchmark_projection_index",
+        lambda _factory: {
+            ("xwing", "local/qwen"): {
+                "task_family_scores": {"coding": {
+                    "quality_score": 0.9, "quality_floor_passed": True
+                }},
+                "allow_code_execution": True,
+            },
+            ("xwing", "non-admitted-model"): {
+                "task_family_scores": {"coding": {
+                    "quality_score": 1.0, "quality_floor_passed": True
+                }}
+            },
+        },
+    )
+    key = Ed25519PrivateKey.generate()
+    document = runtime_projection_v2.build_runtime_projection(
+        lambda: None, private_key=key, now_ms=1_000_000,
+    )
+    provider = document["providers"][0]
+    assert provider["worker_mode"] == "full_agent"
+    assert provider["allow_code_execution"] is False
+    assert provider["allow_agent_runtime"] is False
+    assert len(provider["models"]) == 1
+    model = provider["models"][0]
+    assert model["alias"] == "local/qwen"
+    assert model["task_family_scores"]["coding"]["quality_score"] == 0.9
+    assert model["allow_code_execution"] is False
+    assert model["allow_agent_runtime"] is False
+    key.public_key().verify(
+        _decode(document["signature"]),
+        runtime_projection_v2.signing_message(document),
+    )
+
+
+def test_v2_public_alias_is_exactly_same_signed_builder(monkeypatch):
+    _install_fixtures(monkeypatch)
+    key = Ed25519PrivateKey.generate()
+    args = {
+        "private_key": key,
+        "key_id": "synthetic-contract-key",
+        "now_ms": 1_000_000,
+    }
+    canonical = runtime_projection_v2.build_runtime_projection(lambda: None, **args)
+    compatibility = runtime_projection_v2.build_runtime_projection_v2(
+        lambda: None, **args
+    )
+    assert canonical == compatibility
+    key.public_key().verify(
+        _decode(compatibility["signature"]),
+        runtime_projection_v2.signing_message(compatibility),
+    )

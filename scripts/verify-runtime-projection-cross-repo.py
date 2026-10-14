@@ -35,8 +35,9 @@ def main() -> int:
     _add_source(args.router_src)
     _add_source(args.assistx_src)
 
-    from assistx import runtime_projection_v2 as producer
     from auto_router import runtime_projection_v2 as consumer
+
+    from assistx import runtime_projection_v2 as producer
 
     private_key = Ed25519PrivateKey.generate()
     public_pem = private_key.public_key().public_bytes(
@@ -93,6 +94,10 @@ def main() -> int:
     producer.legacy.build_runtime_projection = (
         lambda *_args, **_kwargs: dict(legacy_document)
     )
+    # Explicit synthetic read-only policy inputs; graph credential custody is
+    # not provided by the cross-repository schema/crypto contract test.
+    producer.node_routing_policy_index = lambda _factory: {}
+    producer.benchmark_projection_index = lambda _factory: {}
     document = producer.build_runtime_projection_v2(
         lambda: None,
         private_key=private_key,
