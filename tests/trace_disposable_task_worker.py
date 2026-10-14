@@ -16,13 +16,15 @@ from trace_task_read_broker_client_research import TaskReadBrokerClient
 CONFIG = json.loads(Path("/tmp/worker-config.json").read_text())
 
 
-def request(payload, bearer=True):
+def request(payload, bearer=True, *, node_token=None):
     req = urllib.request.Request(
         "http://" + CONFIG["broker_host"] + ":8808/v1/plan",
         data=json.dumps(payload).encode(), method="POST",
         headers={
             "Content-Type": "application/json",
             **({"Authorization": "Bearer " + CONFIG["bearer"]} if bearer else {}),
+            **({"X-Research-Node-Token": node_token}
+               if node_token is not None else {}),
         },
     )
     try:
@@ -88,6 +90,73 @@ def main():
     })
     assert missing_task == 200 and missing_body == {"task": None}
 
+    # The research classifier is only a fixed read plan, never a claim.
+    policy_plan = "get_task_policy_classification"
+    agent_id = CONFIG["policy_agent_id"]
+    token = CONFIG["policy_agent_token"]
+    def policy_request(tid, **params):
+        return {"plan_id":policy_plan,
+                "parameters":{"id":tid,"agent_id":agent_id,**params}}
+
+    status, envelope = request(
+        policy_request(CONFIG["recovery_task_id"]), node_token=token)
+    assert status == 200, (status, envelope)
+    policy = envelope["policy"]
+    assert set(envelope) == {"policy"}
+    assert policy["requires_recovery_node_identity"] is True
+    assert policy["claim_authorized"] is False
+    assert policy["resource_fence_verified"] is False
+    assert policy["release_authorized"] is False
+    assert set(policy) == {
+        "schema","id","status","requires_recovery_node_identity",
+        "drain_mode_policy_candidate","claim_authorized",
+        "resource_fence_verified","release_authorized"}
+    assert "runbook" not in json.dumps(envelope)
+    assert "payload" not in json.dumps(envelope)
+
+    missing_status, missing_envelope = request(
+        policy_request(CONFIG["recovery_task_id"]))
+    assert (missing_status, missing_envelope) == (
+        403, {"error":"NODE_IDENTITY_REQUIRED"})
+    wrong_status, wrong_envelope = request(
+        policy_request(CONFIG["recovery_task_id"]),
+        node_token="synthetic-incorrect-credential")
+    assert (wrong_status, wrong_envelope) == (
+        403, {"error":"NODE_IDENTITY_REQUIRED"})
+    foreign_status, foreign_envelope = request(
+        policy_request(CONFIG["recovery_task_id"],
+                       agent_id="fixture-agent-unapproved"),
+        node_token=token)
+    assert (foreign_status, foreign_envelope) == (
+        403, {"error":"NODE_IDENTITY_REQUIRED"})
+    missing_bearer_status, _ = request(
+        policy_request(CONFIG["recovery_task_id"]),
+        node_token=token, bearer=False)
+    assert missing_bearer_status == 401
+
+    unknown_status, unknown_envelope = request(
+        policy_request("fixture-task-nonexistent"), node_token=token)
+    assert (unknown_status, unknown_envelope) == (200, {"policy":None})
+    critical_status, critical_envelope = request(
+        policy_request(CONFIG["critical_task_id"]), node_token=token)
+    assert critical_status == 200
+    assert critical_envelope["policy"]["drain_mode_policy_candidate"] is True
+    assert critical_envelope["policy"]["requires_recovery_node_identity"] is False
+    assert critical_envelope["policy"]["claim_authorized"] is False
+
+    bad_status, bad_envelope = request(
+        policy_request(CONFIG["malformed_policy_task_id"]), node_token=token)
+    assert (bad_status, bad_envelope) == (
+        503, {"error":"POLICY_OR_GRAPH_UNAVAILABLE"})
+
+    extra_status, extra_envelope = request({
+        "plan_id":policy_plan,
+        "parameters":{"id":CONFIG["recovery_task_id"],
+                      "agent_id":agent_id,"query":"MATCH (n) RETURN n"}},
+        node_token=token)
+    assert extra_status == 422
+    assert extra_envelope == {"error":"INVALID_PLAN_OR_PARAMETERS"}
+
     # Use literal Neo4j IP, not just DNS: this is the crucial bypass denial.
     assert not socket_open(CONFIG["neo4j_ip"], 7687), "DIRECT_BOLT_BYPASS"
     assert not socket_open(CONFIG["neo4j_ip"], 7474), "DIRECT_GRAPH_HTTP_BYPASS"
@@ -95,6 +164,14 @@ def main():
 
     print(json.dumps({
         "worker_restricted_task_lookup": True,
+        "policy_http_recovery_success": True,
+        "policy_http_missing_node_denied": True,
+        "policy_http_bad_node_denied": True,
+        "policy_http_wrong_agent_denied": True,
+        "policy_http_bearer_denied": True,
+        "policy_http_privacy_pass": True,
+        "policy_http_malformed_graph_denied": True,
+        "policy_http_never_claims_or_fences": True,
         "worker_get_task_client_adapter": True,
         "worker_claim_policy_projection_critical": True,
         "worker_claim_policy_projection_recovery": True,
