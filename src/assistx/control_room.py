@@ -1421,7 +1421,10 @@ def build_overview(neo_factory: NeoFactory) -> dict[str, Any]:
 
     return {
         "collected_at_ts": collected_at,
-        "overall_status": "healthy" if not required_failures else "degraded",
+        "overall_status": (
+            "unknown" if not any(item.get("required") for item in dependencies)
+            else "degraded" if required_failures else "healthy"
+        ),
         "summary": {
             "runtime_count": len(runtimes),
             "healthy_runtime_count": sum(1 for item in runtimes if item.get("status") in {"online", "healthy"}),
