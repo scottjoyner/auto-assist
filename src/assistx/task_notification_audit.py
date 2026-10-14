@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ CAPTURE_SKEW_LIMIT = timedelta(minutes=5)
 
 
 def _snapshot_items(data: dict, *, schema: str, field: str, now: datetime) -> list[str]:
-    if data.get("schema") != schema or data.get("complete") is not True:
+    if not isinstance(data, dict) or data.get("schema") != schema or data.get("complete") is not True:
         raise ValueError("incomplete or unrecognized source-declared snapshot")
     when = datetime.fromisoformat(str(data.get("captured_at", "")))
     if when.tzinfo is None:
@@ -47,7 +48,7 @@ def _read_offline_outbox(path: str) -> list[dict[str, Any]]:
         raise ValueError("offline SQLite snapshot does not exist")
     uri = "file:" + quote(str(Path(path).resolve()), safe="/") + "?mode=ro"
     try:
-        with sqlite3.connect(uri, uri=True, timeout=3) as conn:
+        with closing(sqlite3.connect(uri, uri=True, timeout=3)) as conn:
             conn.execute("PRAGMA query_only=ON")
             rows = conn.execute(
                 "SELECT event_id, status, payload_json FROM outbox"
@@ -67,9 +68,11 @@ def _read_offline_outbox(path: str) -> list[dict[str, Any]]:
         if status not in ("pending", "failed", "dead", "delivered"):
             raise ValueError("unrecognized outbox event status")
         key = event.get("idempotency_key")
-        task = (event.get("subject") or {}).get("task_id")
+        subject = event.get("subject")
+        task = subject.get("task_id") if isinstance(subject, dict) else None
         if (
-            not isinstance(key, str) or not isinstance(task, str)
+            not isinstance(event_id, str)
+            or not isinstance(key, str) or not isinstance(task, str)
             or key != f"assistx-task-created:{task}"
         ):
             raise ValueError("outbox task/key provenance mismatch")
@@ -85,7 +88,10 @@ def audit(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Return aggregate evidence categories, NEVER automatic replay authority."""
-    now = (now or datetime.now(UTC)).astimezone(UTC)
+    now = now or datetime.now(UTC)
+    if now.tzinfo is None:
+        raise ValueError("audit clock must be timezone-aware")
+    now = now.astimezone(UTC)
     ids = _snapshot_items(tasks, schema=TASK_SCHEMA, field="task_ids", now=now)
     keys = _snapshot_items(
         inbound, schema=RECEIVER_SCHEMA, field="idempotency_keys", now=now
