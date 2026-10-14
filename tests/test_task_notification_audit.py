@@ -1,6 +1,8 @@
 """Offline-only coverage reconciliation tests; no graph, network or replay."""
 import json
 import sqlite3
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -187,3 +189,74 @@ def test_offline_sqlite_is_not_mutated(tmp_path):
     before = (tmp_path / "synthetic-outbox.sqlite").read_bytes()
     subject.audit(tasks, inbound, path, now=NOW)
     assert (tmp_path / "synthetic-outbox.sqlite").read_bytes() == before
+
+
+@pytest.mark.parametrize("wrong_subject", ["wrong", [], 42, None])
+def test_outbox_subject_must_be_an_object(tmp_path, wrong_subject):
+    tasks, inbound = _snapshots()
+    path = _outbox(tmp_path)
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO outbox VALUES(?,?,?)",
+            (
+                "evt_bad-subject",
+                "pending",
+                json.dumps({
+                    "event_type": "task.candidate.created",
+                    "idempotency_key": "assistx-task-created:synthetic-task-a",
+                    "subject": wrong_subject,
+                }),
+            ),
+        )
+    with pytest.raises(ValueError, match="provenance mismatch"):
+        subject.audit(tasks, inbound, path, now=NOW)
+
+
+def test_naive_audit_time_fails_closed(tmp_path):
+    tasks, inbound = _snapshots()
+    with pytest.raises(ValueError, match="timezone-aware"):
+        subject.audit(
+            tasks, inbound, _outbox(tmp_path),
+            now=datetime(2026, 10, 14, 0, 0),
+        )
+
+
+def test_nonmapping_task_snapshot_fails_closed(tmp_path):
+    _, inbound = _snapshots()
+    with pytest.raises(ValueError, match="unrecognized"):
+        subject.audit([], inbound, _outbox(tmp_path), now=NOW)
+
+
+@pytest.mark.parametrize("have_receiver_witness", [True, False])
+def test_cli_offline_aggregate_only_and_exit_gate(
+    tmp_path, have_receiver_witness
+):
+    live_stamp = datetime.now(UTC).isoformat()
+    tasks, inbound = _snapshots(
+        task_ids=["synthetic-never-identifying-123"],
+        receiver_keys=(
+            ["assistx-task-created:synthetic-never-identifying-123"]
+            if have_receiver_witness else []
+        ),
+        captured_at=datetime.fromisoformat(live_stamp),
+    )
+    task_file = tmp_path / "task-snapshot.json"
+    inbound_file = tmp_path / "inbound-snapshot.json"
+    task_file.write_text(json.dumps(tasks))
+    inbound_file.write_text(json.dumps(inbound))
+    outbox = _outbox(tmp_path)
+    p = subprocess.run(
+        [
+            sys.executable, "-m", "assistx.task_notification_audit",
+            "--task-snapshot", str(task_file),
+            "--receiver-snapshot", str(inbound_file),
+            "--outbox-sqlite-copy", outbox,
+        ],
+        text=True, capture_output=True, timeout=10, check=False,
+    )
+    report = json.loads(p.stdout)
+    assert p.returncode == (0 if have_receiver_witness else 2)
+    assert report["production_release_authorized"] is False
+    assert "synthetic-never-identifying-123" not in p.stdout
+    assert "synthetic-never-identifying-123" not in p.stderr
+    assert report["automatic_reenqueue_or_network_effects"] == 0
