@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -28,7 +28,7 @@ def _snapshot_items(data: dict, *, schema: str, field: str, now: datetime) -> li
     when = datetime.fromisoformat(str(data.get("captured_at", "")))
     if when.tzinfo is None:
         raise ValueError("snapshot timestamp is not timezone-aware")
-    age = now - when.astimezone(timezone.utc)
+    age = now - when.astimezone(UTC)
     if age > CAPTURE_AGE_LIMIT or age < -timedelta(minutes=1):
         raise ValueError("snapshot is stale or from the future")
     items = data.get(field)
@@ -85,7 +85,7 @@ def audit(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Return aggregate evidence categories, NEVER automatic replay authority."""
-    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    now = (now or datetime.now(UTC)).astimezone(UTC)
     ids = _snapshot_items(tasks, schema=TASK_SCHEMA, field="task_ids", now=now)
     keys = _snapshot_items(
         inbound, schema=RECEIVER_SCHEMA, field="idempotency_keys", now=now
