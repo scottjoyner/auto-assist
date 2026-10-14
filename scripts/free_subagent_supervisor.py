@@ -924,7 +924,9 @@ def emit_projection(
 
             # OpenCode SQLite read-only path
             opencode_db_path = pathlib.Path.home() / ".local" / "share" / "opencode" / "opencode.db"
-            if opencode_db_path.exists():
+            if not opencode_db_path.exists():
+                projection["trace_exporter_status"] = "unavailable"
+            else:
                 raw_records = trace_exporter_module.export_sessions(opencode_db_path)
                 trace_records = [_annotate_trace_session(r) for r in raw_records]
                 projection["trace_records_count"] = len(trace_records)
