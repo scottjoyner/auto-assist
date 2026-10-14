@@ -191,6 +191,28 @@ def build_runtime_projection(
     return document
 
 
+def build_runtime_projection_v2(
+    neo_factory: Callable[[], Any],
+    *,
+    ttl_seconds: int = 60,
+    now_ms: int | None = None,
+    private_key: Ed25519PrivateKey | None = None,
+    key_id: str | None = None,
+) -> dict[str, Any]:
+    """Stable v2 public entry point for mobile and cross-repo consumers.
+
+    The singular builder is canonical; this name adds zero bypasses and retains
+    the same policy-read failure behavior, checksum, and Ed25519 signature.
+    """
+    return build_runtime_projection(
+        neo_factory,
+        ttl_seconds=ttl_seconds,
+        now_ms=now_ms,
+        private_key=private_key,
+        key_id=key_id,
+    )
+
+
 def build_runtime_projection_router(
     neo_factory: Callable[[], Any],
     auth_dependency: Any | None = None,
