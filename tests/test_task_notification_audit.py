@@ -1,8 +1,10 @@
 """Offline-only coverage reconciliation tests; no graph, network or replay."""
 import json
+import os
 import sqlite3
 import subprocess
 import sys
+from pathlib import Path
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -247,12 +249,16 @@ def test_cli_offline_aggregate_only_and_exit_gate(
     outbox = _outbox(tmp_path)
     p = subprocess.run(
         [
-            sys.executable, "-m", "assistx.task_notification_audit",
+            sys.executable, str(
+                Path(__file__).resolve().parents[1]
+                / "src/assistx/task_notification_audit.py"
+            ),
             "--task-snapshot", str(task_file),
             "--receiver-snapshot", str(inbound_file),
             "--outbox-sqlite-copy", outbox,
         ],
         text=True, capture_output=True, timeout=10, check=False,
+        env={"PATH": os.environ.get("PATH", "")},
     )
     report = json.loads(p.stdout)
     assert p.returncode == (0 if have_receiver_witness else 2)
