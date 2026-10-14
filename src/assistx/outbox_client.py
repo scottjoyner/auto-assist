@@ -51,6 +51,10 @@ class _RejectOutboxRedirects(HTTPRedirectHandler):
         return None
 
 
+class OutboxCapacityExceeded(RuntimeError):
+    """New enqueue denied to preserve previously accepted pending events."""
+
+
 class OutboxEntry:
     def __init__(
         self,
@@ -160,34 +164,20 @@ class OutboxClient:
             finally:
                 conn.close()
 
-    def _enforce_pending_cap(self, conn: sqlite3.Connection) -> int:
-        """Demote oldest pending rows to 'dead' when the queue exceeds MAX_PENDING.
+    def _assert_enqueue_capacity(self, conn: sqlite3.Connection) -> None:
+        """Reject new events rather than silently dead-letter queued evidence.
 
-        Stale notifications are worthless next to recent state; dropping from
-        the front keeps the newest events deliverable and bounds retry load.
-        Returns the number of demoted rows.
+        Counting and inserting occur under the caller's SQLite IMMEDIATE
+        transaction, which serializes competing writers across processes.
+        A duplicate event is resolved before this capacity check.
         """
         if MAX_PENDING <= 0:
-            return 0
+            return
         depth = conn.execute(
             "SELECT COUNT(*) FROM outbox WHERE status IN ('pending', 'failed')"
         ).fetchone()[0]
-        excess = depth - MAX_PENDING
-        if excess <= 0:
-            return 0
-        ids = [
-            r[0]
-            for r in conn.execute(
-                "SELECT outbox_id FROM outbox WHERE status IN ('pending', 'failed') "
-                "ORDER BY created_at ASC LIMIT ?",
-                (excess,),
-            ).fetchall()
-        ]
-        conn.executemany(
-            "UPDATE outbox SET status='dead' WHERE outbox_id=?",
-            [(i,) for i in ids],
-        )
-        return len(ids)
+        if depth >= MAX_PENDING:
+            raise OutboxCapacityExceeded("outbox pending capacity reached")
 
     def enqueue(self, event: Dict[str, Any]) -> OutboxEntry:
         event_id = str(event.get("event_id", ""))
@@ -201,6 +191,10 @@ class OutboxClient:
         with self._lock:
             conn = sqlite3.connect(self.db_path)
             try:
+                # BEGIN IMMEDIATE serializes cross-process producers before
+                # duplicate lookup and capacity check. No existing queued
+                # event is discarded when the cap is reached.
+                conn.execute("BEGIN IMMEDIATE")
                 if event_id:
                     row = conn.execute(
                         "SELECT outbox_id, event_id, payload_json, attempt_count, last_attempt_at, status, created_at "
@@ -209,12 +203,13 @@ class OutboxClient:
                         (event_id,),
                     ).fetchone()
                     if row:
+                        conn.rollback()
                         return OutboxEntry(*row)
+                self._assert_enqueue_capacity(conn)
                 conn.execute(
                     "INSERT INTO outbox (outbox_id, event_id, payload_json, attempt_count, last_attempt_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (entry.outbox_id, entry.event_id, entry.payload_json, entry.attempt_count, entry.last_attempt_at, entry.status, entry.created_at),
                 )
-                self._enforce_pending_cap(conn)
                 conn.commit()
             finally:
                 conn.close()
