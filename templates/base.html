@@ -22,11 +22,12 @@
         <span id="stream-state" class="state state-unknown">CONNECTING</span>
         <span id="data-age" class="mono">age --</span>
         <span class="health-indicator">
-          <span class="health-score">--</span>
+          <span class="health-score">unknown</span>
           <span class="critical-alerts" style="display:none;"></span>
         </span>
         <a class="btn btn-outline" href="/workbench">WORKBENCH</a>
-        <button id="export-data" type="button" class="btn btn-outline">EXPORT DATA</button>
+        <button id="export-data" type="button" class="btn btn-outline"
+          title="Download includes internal fleet identifiers and infrastructure metadata">EXPORT DATA (INTERNAL JSON)</button>
         <button id="manual-refresh" type="button">REFRESH</button>
         <button id="quick-actions" type="button" class="quick-actions-btn">⚡ QUICK ACTIONS</button>
       </div>
@@ -52,6 +53,14 @@
         <div class="summary-cell"><span>DEPENDENCIES</span><strong id="summary-dependencies">--</strong><small>required failures</small></div>
       </section>
 
+      <section class="panel" id="health-indicator" aria-label="Observed fleet health">
+        <div class="panel-head">
+          <div><span class="panel-index">00.5</span><h2>OBSERVED HEALTH</h2></div>
+          <p>Only observed telemetry is scored. Unknown is not healthy.</p>
+        </div>
+        <div>Evidence score: <span id="health-status-note">Unknown until a source responds</span></div>
+      </section>
+
       <section class="panel panel-runtimes">
         <div class="panel-head">
           <div><span class="panel-index">01</span><h2>PHYSICAL RUNTIMES</h2></div>
@@ -66,6 +75,29 @@
             </thead>
             <tbody id="runtime-body"><tr><td colspan="8" class="empty">WAITING FOR RUNTIME TELEMETRY</td></tr></tbody>
           </table>
+        </div>
+      </section>
+
+      <section class="panel" id="component-health-panel">
+        <div class="panel-head">
+          <div><span class="panel-index">01.5</span><h2>COMPONENT HEALTH</h2></div>
+          <p>Observed system, dependency, runtime and power status.</p>
+        </div>
+        <div class="component-health-grid">
+          <div class="component-health-header">COMPONENT / STATUS / SCORE / ISSUES</div>
+          <div id="component-health" class="component-health">
+            <div class="empty">UNKNOWN — NO OBSERVATIONS</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="trend-analysis">
+        <div class="panel-head">
+          <div><span class="panel-index">01.6</span><h2>OBSERVED INDICATORS</h2></div>
+          <p>Current snapshot only; time-series trend or change is unknown without history.</p>
+        </div>
+        <div id="trend-data" class="trend-data">
+          <div class="empty">NO OBSERVED ISSUES; TREND UNKNOWN</div>
         </div>
       </section>
 
