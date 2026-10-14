@@ -7,7 +7,7 @@
     reconnects: 0,
     lastReceivedAt: 0,
     lastDataUpdate: 0,
-    healthScore: 0,
+    healthScore: null,
     criticalAlerts: [],
   };
 
@@ -36,10 +36,22 @@
     if (value < 60000) return `${(value / 1000).toFixed(1)}s`;
     return `${Math.floor(value / 60000)}m ${Math.round((value % 60000) / 1000)}s`;
   };
-  const statusClass = (status) => `status-${String(status || 'unknown').toLowerCase()}`;
+  const statusClass = (status) => {
+    const normalized = String(status || 'unknown').toLowerCase();
+    const allowed = ['healthy', 'warning', 'critical', 'degraded',
+      'unknown', 'failed', 'online', 'offline', 'error', 'disabled'];
+    return `status-${allowed.includes(normalized) ? normalized : 'unknown'}`;
+  };
   const modelName = (model) => model.model_key || model.served_name || model.model_id || 'unknown';
   const healthScore = (snapshot) => {
-    if (!snapshot) return 0;
+    if (!snapshot) return null;
+    const countsPresent = snapshot.doctor?.counts &&
+      (snapshot.doctor.counts.fail != null || snapshot.doctor.counts.warn != null);
+    const powerPresent = snapshot.power &&
+      (snapshot.power.error != null || snapshot.power.stale != null ||
+       Array.isArray(snapshot.power.plugs));
+    if (!countsPresent && !(snapshot.dependencies || []).length &&
+        !(snapshot.runtimes || []).length && !powerPresent) return null;
     let score = 100;
     const doctor = snapshot.doctor || {};
     const counts = doctor.counts || {};
@@ -64,18 +76,20 @@
     const components = [];
     const doctor = snapshot.doctor || {};
     const counts = doctor.counts || {};
+    if (doctor.counts && (counts.fail != null || counts.warn != null)) {
     components.push({
       name: 'System',
       status: counts.fail > 0 || counts.warn > 0 ? 'critical' : 'healthy',
       score: Math.max(0, 100 - (counts.fail * 10 + counts.warn * 5)),
       issues: counts.fail > 0 ? `${counts.fail} failed` : counts.warn > 0 ? `${counts.warn} warnings` : 'none'
     });
+    }
     const dependencies = snapshot.dependencies || [];
     for (const dep of dependencies) {
       components.push({
         name: dep.name,
         status: dep.status,
-        score: dep.status === 'healthy' ? 100 : dep.status === 'degraded' ? 50 : 0,
+        score: dep.status === 'healthy' ? 100 : dep.status === 'degraded' ? 50 : dep.status === 'failed' ? 0 : null,
         issues: dep.status === 'degraded' ? 'degraded' : dep.status === 'failed' ? 'failed' : 'none',
         category: dep.category,
         required: dep.required
@@ -86,13 +100,14 @@
       components.push({
         name: runtime.node_id || runtime.runtime_instance_id || 'unknown',
         status: runtime.status,
-        score: runtime.status === 'online' ? 100 : runtime.status === 'offline' ? 0 : 50,
+        score: runtime.status === 'online' ? 100 : runtime.status === 'offline' ? 0 : runtime.status === 'error' ? 0 : null,
         issues: runtime.status === 'offline' ? 'offline' : runtime.status === 'error' ? 'error' : 'none',
         runtime: runtime.runtime_kind,
         transport: runtime.selected_transport
       });
     }
     const power = snapshot.power || {};
+    if (power.error != null || power.stale != null || Array.isArray(power.plugs)) {
     components.push({
       name: 'Power',
       status: power.error ? 'critical' : power.stale ? 'warning' : 'healthy',
@@ -100,6 +115,7 @@
       issues: power.error ? `error: ${power.error}` : power.stale ? 'stale' : 'none',
       plugCount: (power.plugs || {}).length
     });
+    }
     return components;
   };
   const getTrendData = (snapshot) => {
@@ -109,8 +125,8 @@
       trends.push({
         metric: 'Component Failures',
         current: snapshot.doctor.counts.fail,
-        trend: 'increasing',
-        change: '+1',
+        trend: 'unknown',
+        change: 'snapshot only',
         severity: snapshot.doctor.counts.fail > 2 ? 'critical' : snapshot.doctor.counts.fail > 0 ? 'warning' : 'stable'
       });
     }
@@ -120,8 +136,8 @@
       trends.push({
         metric: 'Failed Dependencies',
         current: failedDeps,
-        trend: 'increasing',
-        change: `+${failedDeps}`,
+        trend: 'unknown',
+        change: 'snapshot only',
         severity: failedDeps > 2 ? 'critical' : failedDeps > 0 ? 'warning' : 'stable'
       });
     }
@@ -130,8 +146,8 @@
       trends.push({
         metric: 'Offline Runtimes',
         current: offlineRuntimes,
-        trend: 'increasing',
-        change: `+${offlineRuntimes}`,
+        trend: 'unknown',
+        change: 'snapshot only',
         severity: offlineRuntimes > 2 ? 'critical' : offlineRuntimes > 0 ? 'warning' : 'stable'
       });
     }
@@ -140,8 +156,8 @@
       trends.push({
         metric: 'Error Runtimes',
         current: errorRuntimes,
-        trend: 'increasing',
-        change: `+${errorRuntimes}`,
+        trend: 'unknown',
+        change: 'snapshot only',
         severity: errorRuntimes > 1 ? 'critical' : errorRuntimes > 0 ? 'warning' : 'stable'
       });
     }
@@ -500,13 +516,13 @@
     $('collected-at').textContent = `snapshot ${compactTime(snapshot.collected_at_ts)}`;
     const healthScoreElement = document.querySelector('.health-score');
     if (healthScoreElement) {
-      healthScoreElement.textContent = `${state.healthScore}`;
-      healthScoreElement.className = `health-score ${state.healthScore >= 90 ? 'healthy' : state.healthScore >= 70 ? 'warning' : 'critical'}`;
+      healthScoreElement.textContent = state.healthScore == null ? 'unknown' : `${state.healthScore}`;
+      healthScoreElement.className = `health-score ${state.healthScore == null ? 'unknown' : state.healthScore >= 90 ? 'healthy' : state.healthScore >= 70 ? 'warning' : 'critical'}`;
     }
     const alertsElement = document.querySelector('.critical-alerts');
     if (alertsElement) {
       if (state.criticalAlerts.length > 0) {
-        alertsElement.innerHTML = state.criticalAlerts.map(alert => `<span class="alert-badge critical">${alert}</span>`).join('');
+        alertsElement.innerHTML = state.criticalAlerts.map(alert => `<span class="alert-badge critical">${esc(alert)}</span>`).join('');
         alertsElement.style.display = 'flex';
       } else {
         alertsElement.style.display = 'none';
@@ -527,28 +543,28 @@
     const componentHealthElement = document.querySelector('.component-health');
     if (componentHealthElement) {
       const components = getComponentHealth(snapshot);
-      componentHealthElement.innerHTML = components.map(comp => `
+      componentHealthElement.innerHTML = components.length ? components.map(comp => `
         <div class="component-health-item">
-          <span class="component-name">${comp.name}</span>
-          <span class="component-status ${comp.status}">${comp.status.toUpperCase()}</span>
-          <span class="component-score">${comp.score}</span>
-          <span class="component-issues">${comp.issues}</span>
-          ${comp.category ? `<span class="component-category">${comp.category}</span>` : ''}
-          ${comp.runtime ? `<span class="component-runtime">${comp.runtime}</span>` : ''}
+          <span class="component-name">${esc(comp.name)}</span>
+          <span class="component-status ${statusClass(comp.status)}">${esc(String(comp.status).toUpperCase())}</span>
+          <span class="component-score">${esc(comp.score == null ? 'unknown' : comp.score)}</span>
+          <span class="component-issues">${esc(comp.issues)}</span>
+          ${comp.category ? `<span class="component-category">${esc(comp.category)}</span>` : ''}
+          ${comp.runtime ? `<span class="component-runtime">${esc(comp.runtime)}</span>` : ''}
         </div>
-      `).join('');
+      `).join('') : '<div class="empty">UNKNOWN — NO OBSERVATIONS</div>';
     }
     const trendDataElement = document.querySelector('.trend-data');
     if (trendDataElement) {
       const trends = getTrendData(snapshot);
-      trendDataElement.innerHTML = trends.map(trend => `
+      trendDataElement.innerHTML = trends.length ? trends.map(trend => `
         <div class="trend-item ${trend.severity}">
-          <span class="trend-metric">${trend.metric}</span>
-          <span class="trend-value">${trend.current}</span>
-          <span class="trend-change ${trend.trend}">${trend.change}</span>
-          <span class="trend-severity ${trend.severity}">${trend.severity.toUpperCase()}</span>
+          <span class="trend-metric">${esc(trend.metric)}</span>
+          <span class="trend-value">${esc(trend.current)}</span>
+          <span class="trend-change ${trend.trend}">${esc(trend.change)}</span>
+          <span class="trend-severity ${trend.severity}">${esc(String(trend.severity).toUpperCase())}</span>
         </div>
-      `).join('');
+      `).join('') : '<div class="empty">TREND UNKNOWN — NO HISTORICAL SERIES</div>';
     }
   }
 
