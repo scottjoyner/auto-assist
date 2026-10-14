@@ -137,7 +137,10 @@ class FixtureRemoteWitness:
             updated={**state,'high_water':fields['sequence'],
                 'used_nonces':[*state['used_nonces'],fields['nonce']],
                 'pending':{'request_sha256':sha256(raw).hexdigest(),
-                           'term':fields['term'],'sequence':fields['sequence']}}
+                           'term':fields['term'],'sequence':fields['sequence'],
+                           'task_id':fields['task_id'],
+                           'agent_id':fields['agent_id'],
+                           'nonce':fields['nonce']}}
             _atomic_anchor(self.anchor,updated)  # crash first => mismatch/NO-GO
             conn.execute('UPDATE state SET document=? WHERE id=1',(
                 json.dumps(updated,sort_keys=True,separators=(',',':')),))
