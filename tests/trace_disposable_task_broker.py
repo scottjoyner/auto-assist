@@ -15,16 +15,25 @@ from pathlib import Path
 import re
 import urllib.error
 import urllib.request
+from hmac import compare_digest
+
+from trace_b01_task_policy_classification import (
+    ClassificationDenied, classify_policy,
+)
 
 PLAN = "get_task_read"
 CLAIM_PLAN = "get_task_claim_guard"
+POLICY_PLAN = "get_task_policy_classification"
+POLICY_SOURCE = Path("/tmp/assistx-policy-api-source.py")
+AGENT_ID = re.compile(r"^fixture-agent-[A-Za-z0-9_-]{4,48}$")
 CYPHER = "MATCH (t:Task {id: $id}) RETURN t { .id, .status } AS task"
 CLAIM_CYPHER = (
     "MATCH (t:Task {id: $id}) "
     "RETURN t { .id, .status, .payload, .payload_json, "
     ".queue_class, .required_capabilities } AS task"
 )
-STATIC_PLANS = {PLAN: CYPHER, CLAIM_PLAN: CLAIM_CYPHER}
+STATIC_PLANS = {PLAN: CYPHER, CLAIM_PLAN: CLAIM_CYPHER,
+                POLICY_PLAN: CLAIM_CYPHER}
 TASK_ID = re.compile(r"^fixture-task-[A-Za-z0-9_-]{4,48}$")
 MAX_REQUEST_BYTES = 2048
 GRAPH_ENDPOINT = "http://neo4j:7474/db/neo4j/tx/commit"
@@ -35,6 +44,19 @@ class RequestDenied(Exception):
     pass
 
 
+def verify_fixture_identity(parameters: dict, supplied_token: str,
+                            expected_agent_id: str, expected_token: str) -> None:
+    """Synthetic server-owned principal binding, NOT a production issuer."""
+    if (type(parameters) is not dict
+            or type(parameters.get("agent_id")) is not str
+            or type(supplied_token) is not str
+            or type(expected_agent_id) is not str
+            or type(expected_token) is not str
+            or not compare_digest(parameters["agent_id"], expected_agent_id)
+            or not compare_digest(supplied_token, expected_token)):
+        raise RequestDenied("NODE_IDENTITY_REQUIRED")
+
+
 def validate(payload: object) -> str:
     if not isinstance(payload, dict) or set(payload) != {"plan_id", "parameters"}:
         raise RequestDenied("BAD_REQUEST_SHAPE")
@@ -42,8 +64,14 @@ def validate(payload: object) -> str:
             payload["plan_id"] not in STATIC_PLANS):
         raise RequestDenied("UNKNOWN_STATIC_PLAN")
     params = payload["parameters"]
-    if not isinstance(params, dict) or set(params) != {"id"}:
+    if not isinstance(params, dict) or set(params) != (
+            {"id", "agent_id"} if payload["plan_id"] == POLICY_PLAN
+            else {"id"}):
         raise RequestDenied("INVALID_PARAMETERS")
+    if payload["plan_id"] == POLICY_PLAN and (
+            type(params["agent_id"]) is not str or
+            AGENT_ID.fullmatch(params["agent_id"]) is None):
+        raise RequestDenied("INVALID_SYNTHETIC_AGENT")
     task_id = params["id"]
     if type(task_id) is not str or not TASK_ID.fullmatch(task_id):
         raise RequestDenied("INVALID_TASK_ID")
@@ -75,7 +103,7 @@ def decode_task_response(
         raise RequestDenied("GRAPH_RESPONSE_INVALID")
     if plan_id == PLAN:
         allowed = {"id", "status"}
-    elif plan_id == CLAIM_PLAN:
+    elif plan_id in (CLAIM_PLAN, POLICY_PLAN):
         allowed = {
             "id", "status", "payload", "payload_json", "queue_class",
             "required_capabilities",
@@ -86,7 +114,7 @@ def decode_task_response(
             type(task.get("id")) is not str or
             type(task.get("status")) is not str):
         raise RequestDenied("GRAPH_RESPONSE_UNAPPROVED_FIELDS")
-    if plan_id == CLAIM_PLAN:
+    if plan_id in (CLAIM_PLAN, POLICY_PLAN):
         # Never interpret a truncated policy response as ordinary work:
         # all policy keys must be present, even when source values are null.
         if set(task) != allowed:
@@ -169,7 +197,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         # Caller cannot supply role, identity, Cypher, db URI, or auth headers
         # for the downstream graph. Separate fixture bearer required.
-        from hmac import compare_digest
         actual = self.headers.get("Authorization", "")
         if not compare_digest(actual, "Bearer " + self.server.bearer):
             self.reply(401, {"error": "UNAUTHORIZED"})
@@ -185,23 +212,40 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(self.rfile.read(length))
             task_id = validate(payload)
+            is_policy = payload["plan_id"] == POLICY_PLAN
+            if is_policy:
+                # Authenticate agent fixture BEFORE any graph read. This is
+                # deliberately stricter than conditional recovery auth.
+                verify_fixture_identity(
+                    payload["parameters"],
+                    self.headers.get("X-Research-Node-Token", ""),
+                    self.server.policy_agent_id, self.server.policy_agent_token)
             task = fetch_task(
                 task_id, self.server.reader_user,
                 self.server.reader_password,
                 payload["plan_id"],
             )
-        except (RequestDenied, ValueError, UnicodeError) as exc:
-            if isinstance(exc, RequestDenied) and str(exc).startswith("GRAPH_"):
-                self.reply(503, {"error": "GRAPH_UNAVAILABLE"})
+            if is_policy:
+                policy = (classify_policy(task, api_source=POLICY_SOURCE)
+                          if task is not None else None)
+        except (RequestDenied, ClassificationDenied, ValueError,
+                UnicodeError) as exc:
+            if isinstance(exc, RequestDenied) and str(exc) == "NODE_IDENTITY_REQUIRED":
+                self.reply(403, {"error": "NODE_IDENTITY_REQUIRED"})
+            elif (isinstance(exc, ClassificationDenied)
+                  or (isinstance(exc, RequestDenied)
+                      and str(exc).startswith("GRAPH_"))):
+                self.reply(503, {"error": "POLICY_OR_GRAPH_UNAVAILABLE"})
             else:
                 self.reply(422, {"error": "INVALID_PLAN_OR_PARAMETERS"})
             return
-        self.reply(200, {"task": task})
+        self.reply(200, {"policy": policy} if is_policy else {"task": task})
 
 
 def main():
     config = json.loads(Path(CONFIG_PATH).read_text())
-    if set(config) != {"bearer", "reader_user", "reader_password"}:
+    if set(config) != {"bearer", "reader_user", "reader_password",
+                       "policy_agent_id", "policy_agent_token"}:
         raise RuntimeError("BAD_DISPOSABLE_CREDENTIAL_CONFIG")
     if not all(isinstance(v, str) and len(v) >= 10
                for v in config.values()):
@@ -210,6 +254,10 @@ def main():
     server.bearer = config["bearer"]
     server.reader_user = config["reader_user"]
     server.reader_password = config["reader_password"]
+    if AGENT_ID.fullmatch(config["policy_agent_id"]) is None:
+        raise RuntimeError("BAD_DISPOSABLE_AGENT_CONFIG")
+    server.policy_agent_id = config["policy_agent_id"]
+    server.policy_agent_token = config["policy_agent_token"]
     server.serve_forever(poll_interval=0.1)
 
 
