@@ -2936,13 +2936,22 @@ class Neo4jClient:
 
         # Notify auto-assign about the new task candidate
         correlation_id = (payload or {}).get("correlation_id")
-        notify_task_created(
+        notification_queued = notify_task_created(
             task_id=task_id,
             correlation_id=correlation_id,
             title=title,
             required_capabilities=required_capabilities,
             kind=kind,
         )
+        # Task creation has already committed to the graph. Do not claim its
+        # outbox notification was persisted when capacity/backpressure or an
+        # unavailable destination prevented enqueueing.
+        result["auto_assign_notification_queued"] = notification_queued is True
+        if not notification_queued:
+            logger.warning(
+                "Auto-Assign notification not queued after task creation; "
+                "explicit reconciliation is required"
+            )
 
         if context_query:
             packet = self.create_context_packet(

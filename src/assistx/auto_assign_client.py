@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid5
 
 from .config import settings
 from .outbox_client import OutboxClient
@@ -27,22 +27,26 @@ def notify_task_created(
     required_capabilities: list[str] | None = None,
     kind: str | None = None,
 ) -> bool:
-    """POST a ``task.candidate.created`` event to auto-assign.
+    """Durably enqueue a task candidate with a stable idempotency identity.
 
-    Returns ``True`` when the event was accepted (HTTP 2xx), ``False``
-    when auto-assign is unreachable, misconfigured, or the URL is not set.
+    True means locally queued (or idempotently already queued), not that the
+    receiver accepted or processed it. False requires separate reconciliation.
     """
     base = settings.auto_assign_base_url
     if not base:
         return False
 
-    cid = correlation_id or uuid4().hex
+    key = f"assistx-task-created:{task_id}"
+    # Retry/reconciliation attempts of the same canonical task MUST carry
+    # the same event identity to avoid multiplying pending outbox rows.
+    event_id = f"evt_{uuid5(NAMESPACE_URL, key).hex}"
+    cid = correlation_id or uuid5(NAMESPACE_URL, f"{key}:trace").hex
     body = {
-        "event_id": f"evt_{uuid4().hex}",
+        "event_id": event_id,
         "event_type": "task.candidate.created",
         "source_repo": "auto-assist",
         "source_service": "assistx",
-        "idempotency_key": f"assistx-task-created:{task_id}",
+        "idempotency_key": key,
         "subject": {"task_id": task_id},
         "payload": {
             "task_id": task_id,

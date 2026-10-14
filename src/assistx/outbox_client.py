@@ -1,7 +1,9 @@
 import os, json, sqlite3, time, threading, uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List, Callable
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
+from urllib.parse import urlsplit
+import ipaddress
 from urllib.error import URLError, HTTPError
 
 DEFAULT_DB_PATH = os.path.expanduser("~/.assistx_outbox.db")
@@ -15,6 +17,42 @@ RETRY_MAX_S = int(os.environ.get("ASSISTX_OUTBOX_RETRY_MAX_S", "300"))
 # poison queue (2026-08-23 incident: ~300k pending entries retrying for hours).
 TTL_DAYS = int(os.environ.get("ASSISTX_OUTBOX_TTL_DAYS", "7"))
 MAX_PENDING = int(os.environ.get("ASSISTX_OUTBOX_MAX_PENDING", "100000"))
+
+def _outbox_destination_permitted(url: str) -> bool:
+    """Require HTTPS for remote event payloads; loopback HTTP is local-only."""
+    try:
+        if any(ord(char) < 32 for char in url):
+            return False
+        target = urlsplit(url)
+        hostname = target.hostname
+        if not hostname or target.username is not None or target.password is not None:
+            return False
+        if target.query or target.fragment:
+            return False
+        _ = target.port  # Reject malformed/out-of-range ports fail closed.
+        if target.scheme == "https":
+            return True
+        if target.scheme != "http":
+            return False
+        if hostname.lower() == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            return False
+    except ValueError:
+        return False
+
+
+class _RejectOutboxRedirects(HTTPRedirectHandler):
+    """Never forward outbox payloads or credentials through redirects."""
+
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
+
+
+class OutboxCapacityExceeded(RuntimeError):
+    """New enqueue denied to preserve previously accepted pending events."""
 
 
 class OutboxEntry:
@@ -126,34 +164,20 @@ class OutboxClient:
             finally:
                 conn.close()
 
-    def _enforce_pending_cap(self, conn: sqlite3.Connection) -> int:
-        """Demote oldest pending rows to 'dead' when the queue exceeds MAX_PENDING.
+    def _assert_enqueue_capacity(self, conn: sqlite3.Connection) -> None:
+        """Reject new events rather than silently dead-letter queued evidence.
 
-        Stale notifications are worthless next to recent state; dropping from
-        the front keeps the newest events deliverable and bounds retry load.
-        Returns the number of demoted rows.
+        Counting and inserting occur under the caller's SQLite IMMEDIATE
+        transaction, which serializes competing writers across processes.
+        A duplicate event is resolved before this capacity check.
         """
         if MAX_PENDING <= 0:
-            return 0
+            return
         depth = conn.execute(
             "SELECT COUNT(*) FROM outbox WHERE status IN ('pending', 'failed')"
         ).fetchone()[0]
-        excess = depth - MAX_PENDING
-        if excess <= 0:
-            return 0
-        ids = [
-            r[0]
-            for r in conn.execute(
-                "SELECT outbox_id FROM outbox WHERE status IN ('pending', 'failed') "
-                "ORDER BY created_at ASC LIMIT ?",
-                (excess,),
-            ).fetchall()
-        ]
-        conn.executemany(
-            "UPDATE outbox SET status='dead' WHERE outbox_id=?",
-            [(i,) for i in ids],
-        )
-        return len(ids)
+        if depth >= MAX_PENDING:
+            raise OutboxCapacityExceeded("outbox pending capacity reached")
 
     def enqueue(self, event: Dict[str, Any]) -> OutboxEntry:
         event_id = str(event.get("event_id", ""))
@@ -167,6 +191,10 @@ class OutboxClient:
         with self._lock:
             conn = sqlite3.connect(self.db_path)
             try:
+                # BEGIN IMMEDIATE serializes cross-process producers before
+                # duplicate lookup and capacity check. No existing queued
+                # event is discarded when the cap is reached.
+                conn.execute("BEGIN IMMEDIATE")
                 if event_id:
                     row = conn.execute(
                         "SELECT outbox_id, event_id, payload_json, attempt_count, last_attempt_at, status, created_at "
@@ -175,12 +203,13 @@ class OutboxClient:
                         (event_id,),
                     ).fetchone()
                     if row:
+                        conn.rollback()
                         return OutboxEntry(*row)
+                self._assert_enqueue_capacity(conn)
                 conn.execute(
                     "INSERT INTO outbox (outbox_id, event_id, payload_json, attempt_count, last_attempt_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (entry.outbox_id, entry.event_id, entry.payload_json, entry.attempt_count, entry.last_attempt_at, entry.status, entry.created_at),
                 )
-                self._enforce_pending_cap(conn)
                 conn.commit()
             finally:
                 conn.close()
@@ -190,19 +219,28 @@ class OutboxClient:
         if not self.api_url:
             return False
         url = f"{self.api_url}/api/events"
+        if not _outbox_destination_permitted(url):
+            return False
         data = entry.payload_json.encode("utf-8")
         req = Request(url, data=data, method="POST")
         req.add_header("Content-Type", "application/json")
         if self._auth_header:
             req.add_header("Authorization", self._auth_header)
         try:
-            with urlopen(req, timeout=15) as resp:
+            # Never follow redirects with event payloads or credentials.
+            # A redirect leaves the event pending for bounded retry/review.
+            handlers = [_RejectOutboxRedirects()]
+            if urlsplit(url).scheme == "http":
+                # Even a loopback URL must not be forwarded by environment
+                # HTTP_PROXY settings to a network proxy.
+                handlers.append(ProxyHandler({}))
+            with build_opener(*handlers).open(req, timeout=15) as resp:
                 body = resp.read().decode()
                 result = json.loads(body)
-                accepted = result.get("accepted", False)
-                if accepted:
-                    return True
-                return False
+                # Only a real JSON boolean true acknowledges durable delivery.
+                # Truthy strings/numbers or malformed envelopes must not cause
+                # an outbox event to be marked delivered.
+                return isinstance(result, dict) and result.get("accepted") is True
         except (URLError, HTTPError, OSError, json.JSONDecodeError):
             return False
 
@@ -219,6 +257,14 @@ class OutboxClient:
                 conn.close()
 
     def flush(self, max_attempts: Optional[int] = None) -> int:
+        # This is a local configuration rejection, not a delivery attempt.
+        # Do not consume retries or dead-letter queued events while an
+        # unapproved/missing HTTP destination is blocked. Enqueue depth caps
+        # and retention remain separate custody constraints.
+        if not self.api_url or not _outbox_destination_permitted(
+            f"{self.api_url}/api/events"
+        ):
+            return 0
         max_attempts = max_attempts or self.max_retries
         max_retries = max_attempts
         with self._lock:
