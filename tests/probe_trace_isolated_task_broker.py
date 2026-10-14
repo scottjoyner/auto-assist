@@ -61,11 +61,14 @@ def run() -> dict:
     admin = "A" + secrets.token_urlsafe(25)
     reader_password = "R" + secrets.token_urlsafe(25)
     bearer = secrets.token_urlsafe(35)
+    policy_agent_id = "fixture-agent-" + tag
+    policy_agent_token = secrets.token_urlsafe(36)
     reader_user = "fixture_reader"
     task_id = "fixture-task-" + tag
     critical_id = "fixture-task-" + tag + "-crit"
     recovery_id = "fixture-task-" + tag + "-recov"
     payload_recovery_id = "fixture-task-" + tag + "-payrec"
+    malformed_policy_id = "fixture-task-" + tag + "-malformed"
     made_networks = []
     made_containers = []
     started = time.monotonic()
@@ -127,6 +130,8 @@ def run() -> dict:
                 "', status: 'READY', "
                 "payload: '{\"runbook\":\"payload-only\"}', "
                 "required_capabilities: []})",
+                "CREATE (:Task {id: '" + malformed_policy_id +
+                "', status: 'READY', payload_json: '{bad-json'})",
             ]
             for step, cypher in enumerate(statements, 1):
                 check = query(graph, admin, cypher, timeout=15)
@@ -162,11 +167,22 @@ def run() -> dict:
                 "reader_user": reader_user,
                 "reader_password": reader_password,
                 "bearer": bearer,
+                "policy_agent_id": policy_agent_id,
+                "policy_agent_token": policy_agent_token,
             }
             (tmp / "broker-config.json").write_text(
                 json.dumps(config), encoding="utf8")
             docker("cp", str(SOURCE / "trace_disposable_task_broker.py"),
                    broker + ":/tmp/task-broker.py")
+            for source, dest in (
+                (SOURCE / "trace_b01_task_policy_classification.py",
+                 "/tmp/trace_b01_task_policy_classification.py"),
+                (SOURCE / "trace_b01_task_consumer_parity.py",
+                 "/tmp/trace_b01_task_consumer_parity.py"),
+                (SOURCE.parent / "src/assistx/api.py",
+                 "/tmp/assistx-policy-api-source.py"),
+            ):
+                docker("cp", str(source), broker + ":" + dest)
             docker("cp", str(tmp / "broker-config.json"),
                    broker + ":/tmp/broker-config.json")
             docker("start", broker)
@@ -183,7 +199,10 @@ def run() -> dict:
                     "critical_task_id": critical_id,
                     "recovery_task_id": recovery_id,
                     "payload_recovery_task_id": payload_recovery_id,
+                    "malformed_policy_task_id": malformed_policy_id,
                     "bearer": bearer,
+                    "policy_agent_id": policy_agent_id,
+                    "policy_agent_token": policy_agent_token,
                     "broker_host": broker, "neo4j_ip": neo_ip,
                 }), encoding="utf8")
             docker("cp", str(SOURCE / "trace_disposable_task_worker.py"),
@@ -223,6 +242,13 @@ def run() -> dict:
                 "synthetic_peer_count": len(synthetic_peers)+1,
                 "synthetic_peer_network_denials": synthetic_peers,
                 "production_roles_replicated": False,
+                "policy_http_classification_verified": bool(
+                    result.get("policy_http_recovery_success")
+                    and result.get("policy_http_missing_node_denied")
+                    and result.get("policy_http_bad_node_denied")
+                    and result.get("policy_http_wrong_agent_denied")
+                    and result.get("policy_http_bearer_denied")
+                    and result.get("policy_http_privacy_pass")) ,
                 "published_port_and_tailnet_paths_proven": False,
                 "tested_subset": ["Task.id", "Task.status"],
                 "claim_guard_fields": [
