@@ -262,6 +262,14 @@ class OutboxClient:
                 conn.close()
 
     def flush(self, max_attempts: Optional[int] = None) -> int:
+        # This is a local configuration rejection, not a delivery attempt.
+        # Do not consume retries or dead-letter queued events while an
+        # unapproved/missing HTTP destination is blocked. Enqueue depth caps
+        # and retention remain separate custody constraints.
+        if not self.api_url or not _outbox_destination_permitted(
+            f"{self.api_url}/api/events"
+        ):
+            return 0
         max_attempts = max_attempts or self.max_retries
         max_retries = max_attempts
         with self._lock:
