@@ -17,7 +17,10 @@ def test_outbox_without_explicit_destination_does_not_deliver(tmp_path):
     client.enqueue({"event_id": "event-2"})
 
     assert client.flush(max_attempts=1) == 0
-    assert client.get_stats()["failed"] == 1
+    # No destination means no network attempt was made. Never consume the
+    # retry budget or mark the event failed for configuration alone.
+    assert client.get_stats()["pending"] == 1
+    assert client.get_pending()[0].attempt_count == 0
 
 
 def test_outbox_enforces_pending_depth_cap(tmp_path, monkeypatch):
