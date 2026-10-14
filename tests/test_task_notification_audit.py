@@ -1,14 +1,13 @@
 """Offline-only coverage reconciliation tests; no graph, network or replay."""
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from assistx import task_notification_audit as subject
 
-
-NOW = datetime(2026, 10, 14, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 14, 0, 0, tzinfo=UTC)
 TASK_IDS = ["synthetic-task-a", "synthetic-task-b"]
 
 
