@@ -1,11 +1,21 @@
-{% extends "base.html" %}
-{% block title %}AssistX // Agent Workbench{% endblock %}
-{% block nav_active %}control_room{% endblock %}
-{% block heading %}Agent Workbench{% endblock %}
-{% block head %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>AssistX // Agent Workbench</title>
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+  <link rel="stylesheet" href="/static/css/control_room.css">
   <link rel="stylesheet" href="/static/css/workbench.css">
-{% endblock %}
-{% block content %}
+</head>
+<body>
+  <main class="control-shell" id="agent-workbench" aria-label="Agent Workbench">
+    <nav class="command-nav" aria-label="Operator navigation">
+      <a href="/control-room">CONTROL ROOM</a>
+      <a class="active" href="/workbench" aria-current="page">AGENT WORKBENCH</a>
+    </nav>
 <section class="workbench-shell" aria-label="AssistX agent workbench">
   <div class="workbench-context-strip" aria-label="Current execution context">
     <div class="context-primary">
@@ -92,7 +102,7 @@
     </aside>
   </div>
 </section>
-{% endblock %}
-{% block scripts %}
+  </main>
   <script src="/static/js/workbench.js"></script>
-{% endblock %}
+</body>
+</html>
