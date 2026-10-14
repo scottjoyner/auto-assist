@@ -160,28 +160,31 @@ def test_dashboard_inference_state_reflects_sessions(client, monkeypatch):
 
 # ─── Fleet dashboard HTML template ─────────────────────────────────────────
 
-def test_fleet_dashboard_html_includes_inference_section(client, monkeypatch):
-    r = client.get("/fleet-dashboard")
+def test_active_control_room_html_includes_inference_summary(client, monkeypatch):
+    # The served Control Room is base.html, not the dead historical
+    # fleet_dashboard.js markup. An API session listing alone is not a new page.
+    r = client.get("/control-room")
     assert r.status_code == 200
     html = r.text
-    assert "section-inference-state" in html
-    assert "inference-state" in html
-    assert "fleet_dashboard.js" in html
+    assert 'id="summary-inference"' in html
+    assert 'id="runtime-body"' in html
+    assert "/static/js/control_room.js" in html
 
 
 # ─── Fleet dashboard HTML includes all key sections ─────────────────────────
 
-def test_fleet_dashboard_html_has_all_sections(client, monkeypatch):
-    r = client.get("/fleet-dashboard")
+def test_active_control_room_html_has_source_backed_sections(client, monkeypatch):
+    r = client.get("/control-room")
+    assert r.status_code == 200
     html = r.text
-    for section_id in [
-        "section-nodes", "section-model-matrix", "section-routing",
-        "section-routing-regret", "section-loadout-simulation",
-        "section-capacity-forecast", "section-self-healing",
-        "section-benchmarks", "section-tasks", "section-completions",
-        "section-service-health", "section-hardware", "section-inference-state",
-    ]:
-        assert section_id in html, f"missing section {section_id}"
+    for section_id in (
+        "summary-strip", "runtime-body", "dependency-grid",
+        "performance-body", "activity-feed", "recovery-grid",
+        "fleet-nodes-body", "power-grid", "component-health", "trend-data",
+    ):
+        assert f'id="{section_id}"' in html, f"missing live panel {section_id}"
+    # No code-mutation authority or output claiming an unobserved routing plan.
+    assert "section-loadout-simulation" not in html
 
 
 # ─── Helper stubs ──────────────────────────────────────────────────────────

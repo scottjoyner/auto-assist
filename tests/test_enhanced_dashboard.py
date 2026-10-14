@@ -1,321 +1,213 @@
-"""Tests for the enhanced dashboard functionality.
+"""Active Control Room read-only telemetry and observed-health contract.
 
-Tests for the new dashboard features including:
-- Component health metrics and scoring
-- Trend analysis and predictive indicators
-- Export functionality
-- Quick actions
-- Health score calculation
-- Critical alerts
+The retired dashboard asserts fabricated per-component scores and time-series
+history. The live Control Room uses real observed dependency/runtime/perf data.
+No production graph, API service, or external probes run in this test module.
 """
+from __future__ import annotations
+
+from pathlib import Path
+
 import pytest
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from fastapi.testclient import TestClient
 
-import assistx.api as api
-from assistx.api import app
-from assistx.llm import client as llm_client
+from assistx import control_room, control_room_runtime
 
-
-class _FakeExecutor:
-    _nodes = []
-    _node_inflight = {}
-    _node_latency = {}
-
-    def _refresh_nodes(self):
-        pass
-
-    @property
-    def _stop(self):
-        class S:
-            def is_set(self):
-                return False
-        return S()
-
-
-class _FakeRouting:
-    _model_to_node = {}
-    _routing = {}
-    _node_specs = {}
-    _state = {}
-    _loadout = {"routing": {}}
-
-    def get_model_perf(self, node, model):
-        return None
-
-    def update(self, projection):
-        pass
-
-
-class _FakeNeo:
-    def _session(self):
-        class Ctx:
-            def __enter__(self):
-                return self
-            def __exit__(self, *a):
-                pass
-            def run(self, query, params=None):
-                return _FakeResult()
-            def consume(self):
-                pass
-        return Ctx()
-
-    def close(self):
-        pass
-
-
-class _FakeResult:
-    def data(self):
-        return []
-
-
-class _FakeSelfHealing:
-    def status(self):
-        return {"automatic_quarantine": False}
-
-
-class _FakeBenchCtrl:
-    def status(self):
-        return {"enabled": False}
-
-
-class _FakeRecovery:
-    def status(self):
-        return {"execution_enabled": False}
-
-
-def _clear():
-    llm_client._inference_sessions.clear()
-    llm_client._inference_session_id = 0
-
-
-@pytest.fixture(autouse=True)
-def _isolate():
-    _clear()
-    yield
-    _clear()
+ROOT = Path(__file__).resolve().parents[1]
+TEMPLATE = (ROOT / "templates/base.html").read_text()
+FRONTEND = (ROOT / "static/js/control_room.js").read_text()
 
 
 @pytest.fixture()
-def client(monkeypatch):
-    from assistx.api import auth
-    app.dependency_overrides[auth] = lambda: "test-user"
-    monkeypatch.setattr(api, "_get_fleet_executor", lambda: _FakeExecutor())
-    monkeypatch.setattr(api, "_get_fleet_routing", lambda: _FakeRouting())
-    monkeypatch.setattr(api, "_auto_router_base_url", lambda: "")
-    monkeypatch.setattr(api, "_neo", lambda: _FakeNeo())
-    monkeypatch.setattr(api.requests, "get", lambda *a, **kw: _FakeResp(404, {}))
-    yield TestClient(app, raise_server_exceptions=True)
-    app.dependency_overrides.clear()
+def observations(monkeypatch):
+    # The API installs a snapshot-cache wrapper and older unit tests
+    # deliberately seed that global cache with synthetic values. A contract
+    # test must never interpret another test's cached value as observed data.
+    monkeypatch.setattr(control_room_runtime, "_CACHE_VALUE", None)
+    monkeypatch.setattr(control_room_runtime, "_CACHE_EXPIRES_AT", 0.0)
+    monkeypatch.setattr(
+        control_room_runtime, "collect_router_telemetry",
+        lambda _factory: {
+            "activity": [], "performance": [], "runtime_samples": [],
+            "event_count": 0,
+        },
+    )
+    data = {
+        "dependencies": [],
+        "runtimes": [],
+        "activity": [],
+        "performance": [],
+        "power": {},
+        "doctor": {},
+    }
+    monkeypatch.setattr(
+        control_room, "collect_dependencies",
+        lambda _factory: (data["dependencies"], {}),
+    )
+    monkeypatch.setattr(
+        control_room, "collect_runtimes",
+        lambda _factory, _admission: data["runtimes"],
+    )
+    monkeypatch.setattr(
+        control_room, "collect_activity",
+        lambda _factory: data["activity"],
+    )
+    monkeypatch.setattr(
+        control_room, "collect_performance",
+        lambda _factory: data["performance"],
+    )
+    monkeypatch.setattr(control_room, "collect_fleet_nodes", lambda _factory: [])
+    monkeypatch.setattr(control_room, "collect_power", lambda: data["power"])
+    monkeypatch.setattr(
+        control_room, "_load_doctor_findings", lambda: data["doctor"]
+    )
+    monkeypatch.setattr(
+        control_room, "island_recovery_snapshot", lambda: {}
+    )
+    return data
 
 
-class _FakeResp:
-    def __init__(self, status_code=200, payload=None):
-        self.status_code = status_code
-        self._payload = payload or {}
-
-    def json(self):
-        return self._payload
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise RuntimeError(f"http {self.status_code}")
+def snapshot():
+    return control_room.build_overview(lambda: None)
 
 
-def test_dashboard_includes_component_health(client, monkeypatch):
-    # Stub out the pieces that would need real data
-    monkeypatch.setattr(api, "_capacity_task_rows", lambda *a, **kw: [])
-    monkeypatch.setattr(api, "build_capacity_forecast", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "build_allocation_plan", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "diagnose_incident", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "_self_healing", _FakeSelfHealing())
-    monkeypatch.setattr(api, "_benchmark_controller", _FakeBenchCtrl())
-    monkeypatch.setattr(api, "_recovery_control", _FakeRecovery())
+def isolated_control_room():
+    app = FastAPI()
+    app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
+    templates = Jinja2Templates(directory=str(ROOT / "templates"))
+    app.include_router(
+        control_room.build_control_room_router(
+            lambda: None, lambda: "synthetic-reader", templates,
+        )
+    )
+    return TestClient(app)
 
-    r = client.get("/api/fleet/dashboard")
+
+def test_missing_required_observations_is_unknown_not_healthy(observations):
+    state = snapshot()
+    assert state["overall_status"] == "unknown"
+    assert state["summary"]["required_dependency_failures"] == 0
+    assert state["summary"]["average_tokens_per_second"] is None
+    assert state["summary"]["error_percent"] is None
+    assert state["runtimes"] == []
+    assert state["performance"] == []
+
+
+def test_required_failed_dependency_marks_degraded(observations):
+    observations["dependencies"] = [
+        {"name": "Neo4j", "status": "failed", "required": True},
+        {"name": "Dashboard", "status": "healthy", "required": False},
+    ]
+    state = snapshot()
+    assert state["overall_status"] == "degraded"
+    assert state["summary"]["required_dependency_failures"] == 1
+    assert state["dependencies"][0]["name"] == "Neo4j"
+
+
+def test_required_healthy_dependency_comes_from_observed_probe(observations):
+    observations["dependencies"] = [
+        {"name": "Neo4j", "status": "healthy", "required": True}
+    ]
+    state = snapshot()
+    assert state["overall_status"] == "healthy"
+    assert state["summary"]["required_dependency_failures"] == 0
+
+
+def test_optional_only_probes_never_imply_full_health(observations):
+    observations["dependencies"] = [
+        {"name": "Optional service", "status": "healthy", "required": False},
+    ]
+    assert snapshot()["overall_status"] == "unknown"
+
+
+def test_runtime_summary_uses_actual_active_queued_slots(observations):
+    observations["runtimes"] = [
+        {
+            "runtime_instance_id": "fixture-runtime-a", "node_id": "fixture-node-a",
+            "status": "online", "active": 2, "queued": 3,
+            "parallel_slots": 3, "loaded_models": ["model-a"],
+        },
+        {
+            "runtime_instance_id": "fixture-runtime-b", "node_id": "fixture-node-b",
+            "status": "offline", "active": 1, "queued": 1,
+            "parallel_slots": 0, "loaded_models": [],
+        },
+    ]
+    summary = snapshot()["summary"]
+    assert summary["runtime_count"] == 2
+    assert summary["healthy_runtime_count"] == 1
+    assert summary["active_requests"] == 3
+    assert summary["queued_requests"] == 4
+    assert summary["available_slots"] == 0
+    assert summary["loaded_model_count"] == 1
+
+
+def test_weighted_performance_from_actual_runs_not_synthetic_score(observations):
+    observations["performance"] = [
+        {"runs": 2, "tps_avg": 10.0, "error_percent": 0.0},
+        {"runs": 1, "tps_avg": 4.0, "error_percent": 30.0},
+    ]
+    summary = snapshot()["summary"]
+    assert summary["average_tokens_per_second"] == 8.0
+    assert summary["error_percent"] == 10.0
+
+
+def test_no_computed_historical_trend_or_export_claim_in_raw_overview(observations):
+    state = snapshot()
+    assert "trend_data" not in state
+    assert "component_health" not in state
+    assert "export_available" not in state
+    assert "health_score" not in state
+    assert "critical_alerts" not in state
+    assert "collected_at_ts" in state
+
+
+def test_control_room_route_serves_health_and_trend_panels():
+    with isolated_control_room() as client:
+        r = client.get("/control-room")
     assert r.status_code == 200
-    body = r.json()
-    assert "component_health" in body
-    comp_health = body["component_health"]
-    assert isinstance(comp_health, list)
-    assert len(comp_health) > 0
-    component = comp_health[0]
-    assert "name" in component
-    assert "status" in component
-    assert "score" in component
-    assert "issues" in component
+    assert 'id="component-health"' in r.text
+    assert 'class="component-health"' in r.text
+    assert 'id="trend-data"' in r.text
+    assert 'class="trend-data"' in r.text
 
 
-def test_dashboard_includes_trend_data(client, monkeypatch):
-    monkeypatch.setattr(api, "_capacity_task_rows", lambda *a, **kw: [])
-    monkeypatch.setattr(api, "build_capacity_forecast", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "build_allocation_plan", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "diagnose_incident", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "_self_healing", _FakeSelfHealing())
-    monkeypatch.setattr(api, "_benchmark_controller", _FakeBenchCtrl())
-    monkeypatch.setattr(api, "_recovery_control", _FakeRecovery())
-
-    r = client.get("/api/fleet/dashboard")
+def test_control_room_route_exposes_manual_export_with_internal_data_warning():
+    with isolated_control_room() as client:
+        r = client.get("/control-room")
     assert r.status_code == 200
-    body = r.json()
-    assert "trend_data" in body
-    trends = body["trend_data"]
-    assert isinstance(trends, list)
-    # Should have at least one trend
-    assert len(trends) > 0
-    trend = trends[0]
-    assert "metric" in trend
-    assert "current" in trend
-    assert "trend" in trend
-    assert "severity" in trend
+    assert 'id="export-data"' in r.text
+    assert "EXPORT DATA (INTERNAL JSON)" in r.text
+    assert "Download includes internal fleet identifiers" in r.text
+    assert 'id="quick-actions"' in r.text
 
 
-def test_dashboard_includes_export_functionality(client, monkeypatch):
-    monkeypatch.setattr(api, "_capacity_task_rows", lambda *a, **kw: [])
-    monkeypatch.setattr(api, "build_capacity_forecast", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "build_allocation_plan", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "diagnose_incident", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "_self_healing", _FakeSelfHealing())
-    monkeypatch.setattr(api, "_benchmark_controller", _FakeBenchCtrl())
-    monkeypatch.setattr(api, "_recovery_control", _FakeRecovery())
-
-    r = client.get("/api/fleet/dashboard")
-    assert r.status_code == 200
-    body = r.json()
-    assert "export_available" in body
-    assert body["export_available"] == True
+def test_health_status_uses_unknown_for_unobserved_snapshot():
+    assert "if (!hasDoctor" not in FRONTEND  # fixed spelling
+    assert "if (!countsPresent" in FRONTEND
+    assert "return null;" in FRONTEND
+    assert "healthScoreElement.textContent = state.healthScore == null" in FRONTEND
+    assert '"overall_status": (' in (
+        ROOT / "src/assistx/control_room.py"
+    ).read_text()
 
 
-def test_dashboard_includes_health_score(client, monkeypatch):
-    monkeypatch.setattr(api, "_capacity_task_rows", lambda *a, **kw: [])
-    monkeypatch.setattr(api, "build_capacity_forecast", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "build_allocation_plan", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "diagnose_incident", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "_self_healing", _FakeSelfHealing())
-    monkeypatch.setattr(api, "_benchmark_controller", _FakeBenchCtrl())
-    monkeypatch.setattr(api, "_recovery_control", _FakeRecovery())
-
-    r = client.get("/api/fleet/dashboard")
-    assert r.status_code == 200
-    body = r.json()
-    assert "health_score" in body
-    assert isinstance(body["health_score"], int)
-    assert 0 <= body["health_score"] <= 100
+def test_component_text_is_escaped_before_html_injection():
+    for value in (
+        "${esc(comp.name)}", "${esc(comp.issues)}",
+        "${esc(comp.category)}", "${esc(comp.runtime)}",
+        "${esc(trend.metric)}", "${esc(trend.change)}",
+        "${esc(alert)}",
+        "${statusClass(comp.status)}",
+    ):
+        assert value in FRONTEND
 
 
-def test_dashboard_includes_critical_alerts(client, monkeypatch):
-    monkeypatch.setattr(api, "_capacity_task_rows", lambda *a, **kw: [])
-    monkeypatch.setattr(api, "build_capacity_forecast", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "build_allocation_plan", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "diagnose_incident", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "_self_healing", _FakeSelfHealing())
-    monkeypatch.setattr(api, "_benchmark_controller", _FakeBenchCtrl())
-    monkeypatch.setattr(api, "_recovery_control", _FakeRecovery())
-
-    r = client.get("/api/fleet/dashboard")
-    assert r.status_code == 200
-    body = r.json()
-    assert "critical_alerts" in body
-    alerts = body["critical_alerts"]
-    assert isinstance(alerts, list)
-    # Should be empty initially
-    assert len(alerts) == 0
-
-
-def test_dashboard_html_includes_component_health_section(client, monkeypatch):
-    r = client.get("/fleet-dashboard")
-    assert r.status_code == 200
-    html = r.text
-    assert "component-health" in html
-    assert "component-health-item" in html
-    assert "component-name" in html
-    assert "component-status" in html
-    assert "component-score" in html
-
-
-def test_dashboard_html_includes_trend_analysis_section(client, monkeypatch):
-    r = client.get("/fleet-dashboard")
-    assert r.status_code == 200
-    html = r.text
-    assert "trend-analysis" in html
-    assert "trend-item" in html
-    assert "trend-metric" in html
-    assert "trend-value" in html
-    assert "trend-change" in html
-
-
-def test_dashboard_html_includes_export_button(client, monkeypatch):
-    r = client.get("/fleet-dashboard")
-    assert r.status_code == 200
-    html = r.text
-    assert "export-data" in html
-    assert "btn-outline" in html
-    assert "EXPORT DATA" in html
-
-
-def test_dashboard_html_includes_quick_actions(client, monkeypatch):
-    r = client.get("/fleet-dashboard")
-    assert r.status_code == 200
-    html = r.text
-    assert "quick-actions-btn" in html
-    assert "⚡ QUICK ACTIONS" in html
-
-
-def test_dashboard_html_includes_health_indicator(client, monkeypatch):
-    r = client.get("/fleet-dashboard")
-    assert r.status_code == 200
-    html = r.text
-    assert "health-indicator" in html
-    assert "health-score" in html
-    assert "critical-alerts" in html
-
-
-def test_dashboard_export_functionality(client, monkeypatch):
-    # This test would require mocking the export endpoint
-    # For now, we'll just verify that the export button exists
-    r = client.get("/fleet-dashboard")
-    assert r.status_code == 200
-    html = r.text
-    assert "export-data" in html
-    assert "btn-outline" in html
-    assert "EXPORT DATA" in html
-
-
-def test_dashboard_component_health_calculation(client, monkeypatch):
-    monkeypatch.setattr(api, "_capacity_task_rows", lambda *a, **kw: [])
-    monkeypatch.setattr(api, "build_capacity_forecast", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "build_allocation_plan", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "diagnose_incident", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "_self_healing", _FakeSelfHealing())
-    monkeypatch.setattr(api, "_benchmark_controller", _FakeBenchCtrl())
-    monkeypatch.setattr(api, "_recovery_control", _FakeRecovery())
-
-    r = client.get("/api/fleet/dashboard")
-    assert r.status_code == 200
-    body = r.json()
-    comp_health = body["component_health"]
-    # Verify that component health scores are calculated correctly
-    for component in comp_health:
-        assert 0 <= component["score"] <= 100
-        assert component["status"] in ["healthy", "warning", "critical", "degraded", "unknown"]
-
-
-def test_dashboard_trend_analysis_calculation(client, monkeypatch):
-    monkeypatch.setattr(api, "_capacity_task_rows", lambda *a, **kw: [])
-    monkeypatch.setattr(api, "build_capacity_forecast", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "build_allocation_plan", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "diagnose_incident", lambda *a, **kw: {})
-    monkeypatch.setattr(api, "_self_healing", _FakeSelfHealing())
-    monkeypatch.setattr(api, "_benchmark_controller", _FakeBenchCtrl())
-    monkeypatch.setattr(api, "_recovery_control", _FakeRecovery())
-
-    r = client.get("/api/fleet/dashboard")
-    assert r.status_code == 200
-    body = r.json()
-    trends = body["trend_data"]
-    # Verify that trend data is calculated correctly
-    for trend in trends:
-        assert "metric" in trend
-        assert "current" in trend
-        assert "trend" in trend
-        assert "severity" in trend
-        assert trend["severity"] in ["critical", "warning", "stable"]
+def test_single_snapshot_has_no_fabricated_delta():
+    assert "change: '+1'" not in FRONTEND
+    assert "trend: 'increasing'" not in FRONTEND
+    assert FRONTEND.count("change: 'snapshot only'") >= 4
+    assert "time-series trend or change is unknown without history" in TEMPLATE
