@@ -1,4 +1,9 @@
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
+import pytest
+
 from assistx.outbox_client import OutboxClient
 
 
@@ -28,12 +33,25 @@ def test_outbox_enforces_pending_depth_cap(tmp_path, monkeypatch):
 
     monkeypatch.setattr(oc, "MAX_PENDING", 5)
     client = oc.OutboxClient(db_path=str(tmp_path / "outbox.sqlite"), api_url="", auto_flush=False)
-    for i in range(10):
-        client.enqueue({"event_id": f"event-cap-{i}"})
+    accepted = [
+        client.enqueue({"event_id": f"event-cap-{i}"}) for i in range(5)
+    ]
+    for i in range(5, 10):
+        with pytest.raises(oc.OutboxCapacityExceeded):
+            client.enqueue({"event_id": f"event-cap-{i}"})
 
     stats = client.get_stats()
     assert stats["pending"] == 5
-    assert stats["dead"] == 5
+    assert stats.get("dead", 0) == 0
+    assert stats["total"] == 5
+    assert [row.event_id for row in client.get_pending()] == [
+        f"event-cap-{i}" for i in range(5)
+    ]
+    assert client.enqueue({"event_id": "event-cap-0"}).outbox_id == accepted[0].outbox_id
+    # Delivering an existing event frees room for another one.
+    client._update_status(accepted[0].outbox_id, "delivered", 1)
+    client.enqueue({"event_id": "event-cap-new"})
+    assert client.get_stats()["pending"] == 5
 
 
 def test_outbox_purges_terminal_rows_older_than_ttl(tmp_path, monkeypatch):
@@ -58,3 +76,52 @@ def test_outbox_purges_terminal_rows_older_than_ttl(tmp_path, monkeypatch):
 
     client._purge_expired()
     assert client.get_stats()["total"] == 0
+
+
+def test_two_independent_outbox_writers_cannot_overfill_sqlite(
+    tmp_path, monkeypatch
+):
+    import assistx.outbox_client as oc
+
+    monkeypatch.setattr(oc, "MAX_PENDING", 1)
+    database = str(tmp_path / "concurrent-outbox.sqlite")
+    first = oc.OutboxClient(db_path=database, api_url="", auto_flush=False)
+    second = oc.OutboxClient(db_path=database, api_url="", auto_flush=False)
+    gate = Barrier(2)
+
+    def attempt(client, event_id):
+        gate.wait(timeout=8)
+        try:
+            return ("accepted", client.enqueue({"event_id": event_id}).event_id)
+        except oc.OutboxCapacityExceeded:
+            return ("rejected_at_capacity", event_id)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        left = pool.submit(attempt, first, "synthetic-first")
+        right = pool.submit(attempt, second, "synthetic-second")
+        outcomes = [left.result(timeout=12), right.result(timeout=12)]
+
+    assert sorted(result[0] for result in outcomes) == [
+        "accepted", "rejected_at_capacity"
+    ]
+    assert first.get_stats().get("pending") == 1
+    assert first.get_stats().get("dead", 0) == 0
+    assert first.get_stats()["total"] == 1
+
+
+def test_duplicate_is_accepted_at_capacity_without_second_insert(
+    tmp_path, monkeypatch
+):
+    import assistx.outbox_client as oc
+
+    monkeypatch.setattr(oc, "MAX_PENDING", 1)
+    client = oc.OutboxClient(
+        db_path=str(tmp_path / "dedupe-at-cap.sqlite"),
+        api_url="",
+        auto_flush=False,
+    )
+    item = client.enqueue({"event_id": "synthetic-same"})
+    replay = client.enqueue({"event_id": "synthetic-same"})
+    assert replay.outbox_id == item.outbox_id
+    assert client.get_stats()["total"] == 1
+    assert client.get_stats()["pending"] == 1
