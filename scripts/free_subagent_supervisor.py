@@ -910,9 +910,9 @@ def emit_projection(
         projection["trace_records_count"] = None
         projection["trace_records_sample"] = []
         projection["trace_provider_summary"] = {}
-        projection["trace_exporter_status"] = (
-            "unavailable" if not trace_exporter_path.exists() else "not_observed"
-        )
+        # A valid exporter file does not prove a source SQLite DB was read.
+        # Until a read succeeds this must remain unavailable, not healthy.
+        projection["trace_exporter_status"] = "unavailable"
     if trace_exporter_path and trace_exporter_path.exists():
         try:
             import importlib.util
