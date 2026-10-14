@@ -4,8 +4,8 @@ import os
 import sqlite3
 import subprocess
 import sys
-from pathlib import Path
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
