@@ -34,7 +34,7 @@ An **entirely disposable same-admin SQLite file backup** was captured before syn
 | File | Git blob (executed + published) | SHA256 |
 | --- | --- | --- |
 | `tests/sqlite_event_effect_lab.py` | `d7a58a1ccff54897f84b423da5521d146eb13d6c` | `be954b4a3ec47aa7a55310b756c5503607490a3ffd826873d5df13ea22ffd194` |
-| `tests/test_sqlite_event_effect_lab.py` | `efdebc31bf59ef1cf865a202dd80e521c2fc5192` | `48d37f57833c5c7f5a3502c828fd9427395c8c09c795a85ff78a54cbc92e8cce` |
+| `tests/test_sqlite_event_effect_lab.py` | `9a1ba06ec724d4e12acbb07418231fab03488246` | `7510d2355d909873692884f4775fdea06e34649030000c49f8840ad0be481401` |
 
 Reproducer from an exact checkout containing these research files:
 ```sh
@@ -54,3 +54,6 @@ For graph effects that **cannot** share one resource transaction with the operat
 - Crypto [#46](https://github.com/scottjoyner/kipnerter-api/issues/46) OPEN; graph RBAC [#21](https://github.com/scottjoyner/kipnerter-api/issues/21) OPEN; production [#31](https://github.com/scottjoyner/kipnerter-api/issues/31) HOLD; hosted Context exact-head CI [#45](https://github.com/scottjoyner/kipnerter-api/issues/45) OPEN.
 - [Auto-assign draft #17](https://github.com/scottjoyner/auto-assign/pull/17) (explicit applied true) and [#18](https://github.com/scottjoyner/auto-assign/pull/18) (409 is not delivery) remain unmerged and do not prove upstream atomic operation ownership.
 - **No merge, deployment, production graph/data, Neo4j grants, credential rotation, network changes, physical NAS/device actions, automatic retries, effect promotion or failover.**
+
+## Hosted CI and process-start hardening
+The first hosted exact-head unit run [38729689492](https://github.com/scottjoyner/auto-assist/actions/runs/38729689492) executed **810 PASS /59 DESELECTED /15 WARNINGS**, with its other handoff run [38729689423](https://github.com/scottjoyner/auto-assist/actions/runs/38729689423) SUCCESS. Six additional warnings arose from Python `fork()` in a multithreaded hosted test runner, not from failed assertions. The disposable process-level tests were then hardened to explicitly request `multiprocessing.get_context('spawn')`, rerun on x1 in published `tests/` layout at **23/23 PASS, Ruff clean**, exact new tested blob `9a1ba06ec724d4e12acbb07418231fab03488246`; the unchanged fixture code blob is `d7a58a1ccff54897f84b423da5521d146eb13d6c`. A fresh exact-head CI run is separately required for the spawned-process revision. Neither state is evidence of physical Neo4j commit semantics.
