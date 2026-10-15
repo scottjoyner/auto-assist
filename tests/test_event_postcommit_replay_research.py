@@ -105,3 +105,43 @@ def test_changed_event_same_key_yields_conflict_not_exact_duplicate(monkeypatch)
         swarm_core.record_event(graph, altered)
     assert graph.creates == 1
     assert graph.conflicts == 1
+
+
+def test_concurrent_same_key_different_event_ids_interleave_without_key_guard(monkeypatch):
+    """Forced fake-session race: two SELECT misses, then two independent CREATEs."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, Lock
+
+    class RaceGraph:
+        def __init__(self):
+            self.barrier = Barrier(2)
+            self.lock = Lock()
+            self.created = []
+
+        @contextmanager
+        def _session(self):
+            yield self
+
+        def run(self, query, args):
+            if "MATCH (e:EventEnvelope)" in query:
+                self.barrier.wait(timeout=5)
+                return Result()
+            if "CREATE (e:SignalEvent:EventEnvelope" in query:
+                with self.lock:
+                    self.created.append((args["event_id"], args["idempotency_key"]))
+                return Result()
+            raise AssertionError("unmodelled concurrent fake graph query")
+
+    graph = RaceGraph()
+    monkeypatch.setattr(swarm_core, "reconcile_event", lambda *_: None)
+    left = envelope()
+    right = dict(envelope(), event_id="evt_synthetic_other")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        submitted = [pool.submit(swarm_core.record_event, graph, event)
+                     for event in (left, right)]
+        results = [item.result(timeout=9) for item in submitted]
+    assert len(graph.created) == 2
+    assert graph.created[0][0] != graph.created[1][0]
+    assert {pair[1] for pair in graph.created} == {"effect-case"}
+    assert all(r["accepted"] and not r["deduped"] for r in results)
+    # This is a deterministic source interleaving, NOT a physical Neo4j race.
