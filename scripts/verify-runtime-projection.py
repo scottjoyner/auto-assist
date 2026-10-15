@@ -170,6 +170,9 @@ def main() -> int:
     # never serializes arbitrary provider, path, error or runtime-ID text.
     evidence = {
         "schema_version": 1,
+        # Nested projection fields are deliberately not the legacy raw
+        # Router objects. Consumers must explicitly recognize this view.
+        "projection_view_schema_version": 2,
         "verified_at_ts": int(time.time() * 1000),
         "status": "pass" if not failures else "blocked",
         "failures": failures,

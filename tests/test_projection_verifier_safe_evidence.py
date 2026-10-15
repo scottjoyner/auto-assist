@@ -75,6 +75,8 @@ def test_allowlisted_success_keeps_digest_not_raw_router_payload(monkeypatch, ca
     assistx, router = sample_documents()
     rc, doc, output = run_fixture(monkeypatch, capsys, tmp_path, assistx, router)
     assert rc == 0 and doc["status"] == "pass"
+    assert doc["schema_version"] == 1
+    assert doc["projection_view_schema_version"] == 2
     assert doc["router_projection"]["generation"] == 7
     assert doc["router_projection"]["checksum"] == SHA
     assert doc["assistx_projection"]["generation"] == 7
