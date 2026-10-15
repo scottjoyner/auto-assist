@@ -35,6 +35,52 @@ def _sha256_json(payload: dict[str, Any]) -> str:
     ).hexdigest()
 
 
+def _safe_uint(value: Any, *, positive: bool = False) -> int | None:
+    """Accept JSON integer scalars only, without bool/string coercion."""
+    if type(value) is not int or not (0 <= value <= (2**63 - 1)):
+        return None
+    return value if (not positive or value > 0) else None
+
+
+def _safe_checksum(value: Any) -> str | None:
+    return (
+        value if isinstance(value, str) and len(value) == 64
+        and all(ch in "0123456789abcdef" for ch in value) else None
+    )
+
+
+def _revision_digest(value: Any) -> str | None:
+    # Revisions can be arbitrary strings (up to 300 chars) in Router's
+    # schema. Never put their raw bytes into operator evidence.
+    if not isinstance(value, str) or not (1 <= len(value) <= 300):
+        return None
+    try:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    except UnicodeEncodeError:
+        return None
+
+
+def _identity(value: Any, *, label: str, failures: list[str]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        failures.append(f"{label}_object_invalid")
+        value = {}
+    generation = _safe_uint(value.get("generation"), positive=True)
+    revision_sha256 = _revision_digest(value.get("revision"))
+    checksum = _safe_checksum(value.get("checksum"))
+    for name, field in (
+        ("generation", generation),
+        ("revision", revision_sha256),
+        ("checksum", checksum),
+    ):
+        if field is None:
+            failures.append(f"{label}_{name}_invalid")
+    return {
+        "generation": generation,
+        "revision_sha256": revision_sha256,
+        "checksum": checksum,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Verify AssistX and auto-router agree on the signed runtime projection."
@@ -73,48 +119,74 @@ def main() -> int:
         print(f"RUNTIME_PROJECTION_GATE: BLOCKED {exc}", file=sys.stderr)
         return 1
 
-    current = router.get("current") if isinstance(router.get("current"), dict) else {}
     failures: list[str] = []
     if assistx.get("source") != "assistx":
-        failures.append("AssistX projection source is not canonical")
-    if not router.get("configured"):
-        failures.append("auto-router has not applied a live runtime projection")
-    if int(assistx.get("generation") or 0) <= 0:
-        failures.append("AssistX projection generation is invalid")
-    if int(current.get("generation") or 0) != int(assistx.get("generation") or 0):
-        failures.append("generation mismatch between AssistX and auto-router")
-    if str(current.get("checksum") or "") != str(assistx.get("checksum") or ""):
-        failures.append("checksum mismatch between AssistX and auto-router")
-    if str(current.get("revision") or "") != str(assistx.get("revision") or ""):
-        failures.append("revision mismatch between AssistX and auto-router")
-    providers = assistx.get("providers") if isinstance(assistx.get("providers"), list) else []
-    if not providers:
-        failures.append("AssistX projection contains no providers")
-    admission = current.get("admission") if isinstance(current.get("admission"), list) else []
-    if not admission:
-        failures.append("auto-router projection generation contains no admission gates")
-    for item in admission:
-        if int(item.get("parallel_slots") or 0) <= 0:
-            failures.append(
-                f"runtime {item.get('runtime_instance_id')} has zero projected capacity"
-            )
+        failures.append("assistx_source_invalid")
+    if router.get("configured") is not True:
+        failures.append("router_projection_unconfigured")
+    source_identity = _identity(assistx, label="assistx", failures=failures)
+    current_raw = router.get("current")
+    target_identity = _identity(current_raw, label="router", failures=failures)
+    current = current_raw if isinstance(current_raw, dict) else {}
+    for key in ("generation", "checksum", "revision_sha256"):
+        left, right = source_identity[key], target_identity[key]
+        if left is not None and right is not None and left != right:
+            failures.append(f"projection_{key}_mismatch")
+    expires = _safe_uint(assistx.get("expires_at_ms"), positive=True)
+    if expires is None:
+        failures.append("assistx_expiry_invalid")
+    providers = assistx.get("providers")
+    if not isinstance(providers, list) or not providers:
+        failures.append("assistx_provider_inventory_missing")
+    provider_count = min(len(providers), 1024) if isinstance(providers, list) else 0
+    if isinstance(providers, list) and len(providers) > 1024:
+        failures.append("assistx_provider_count_excessive")
+    raw_admission = current.get("admission")
+    if not isinstance(raw_admission, list) or not raw_admission:
+        failures.append("router_admission_missing")
+    admission_summary = []
+    if isinstance(raw_admission, list):
+        if len(raw_admission) > 1024:
+            failures.append("router_admission_count_excessive")
+        for item in raw_admission[:1024]:
+            slots = _safe_uint(item.get("parallel_slots"), positive=True) if isinstance(item, dict) else None
+            if slots is None:
+                failures.append("router_admission_capacity_invalid")
+            admission_summary.append({"parallel_slots": slots})
     if router.get("last_error"):
-        failures.append(f"auto-router projection error: {router.get('last_error')}")
+        failures.append("router_projection_reported_error")
+    raw_retired = router.get("retired_generations") or []
+    if not isinstance(raw_retired, list):
+        failures.append("router_retired_list_invalid")
+        raw_retired = []
+    if len(raw_retired) > 16:
+        failures.append("router_retired_count_excessive")
+    retired_summary = [
+        _identity(item, label="retired", failures=failures)
+        for item in raw_retired[:16]
+    ]
 
+    # Evidence intentionally retains its top-level schema and digest, but
+    # never serializes arbitrary provider, path, error or runtime-ID text.
     evidence = {
         "schema_version": 1,
+        # Nested projection fields are deliberately not the legacy raw
+        # Router objects. Consumers must explicitly recognize this view.
+        "projection_view_schema_version": 2,
         "verified_at_ts": int(time.time() * 1000),
         "status": "pass" if not failures else "blocked",
         "failures": failures,
         "assistx_projection": {
-            "generation": assistx.get("generation"),
-            "revision": assistx.get("revision"),
-            "checksum": assistx.get("checksum"),
-            "expires_at_ms": assistx.get("expires_at_ms"),
-            "provider_count": len(providers),
+            **source_identity,
+            "expires_at_ms": expires,
+            "provider_count": provider_count,
         },
-        "router_projection": current,
-        "retired_generations": router.get("retired_generations") or [],
+        "router_projection": {
+            **target_identity,
+            "admission": admission_summary,
+            "admission_count": len(admission_summary),
+        },
+        "retired_generations": retired_summary,
     }
     evidence["evidence_sha256"] = _sha256_json(evidence)
     args.output.parent.mkdir(parents=True, exist_ok=True)
