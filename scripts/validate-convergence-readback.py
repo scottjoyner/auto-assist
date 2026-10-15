@@ -8,10 +8,13 @@ production cutover approval or independent signature verification.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
+import os
 import pathlib
 import re
+import stat
 import sys
 import time
 from typing import Any
@@ -87,6 +90,67 @@ def _manifest_projection(manifest: Any) -> tuple[dict[str, Any] | None, list[str
     return projection, errors
 
 
+def _read_pinned_artifact(root: pathlib.Path, parts: tuple[str, ...]) -> tuple[bytes | None, str | None]:
+    """Read one regular inode, never following artifact-path symlinks.
+
+    An operator-specified trusted root is resolved once. Every subsequent
+    component is opened relative to a pinned directory fd with O_NOFOLLOW;
+    size, type and bytes are checked on the *same* final descriptor. Hashes
+    still prove only consistency, never independent origin authenticity.
+    """
+    if not all(hasattr(os, name) for name in ("O_NOFOLLOW", "O_DIRECTORY", "O_CLOEXEC")):
+        return None, "artifact_safe_open_unsupported"
+    dirs: list[int] = []
+    fd = -1
+    dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+    try:
+        parent = os.open(root, dir_flags)
+        dirs.append(parent)
+        for component in parts[:-1]:
+            parent = os.open(component, dir_flags, dir_fd=parent)
+            dirs.append(parent)
+        fd = os.open(parts[-1], file_flags, dir_fd=parent)
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            return None, "artifact_symlink_or_not_regular"
+        if before.st_size > _MAX_BYTES:
+            return None, "artifact_excessive_size"
+        chunks: list[bytes] = []
+        remaining = _MAX_BYTES + 1
+        while remaining:
+            chunk = os.read(fd, min(remaining, 64 * 1024))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > _MAX_BYTES:
+            return None, "artifact_excessive_size"
+        after = os.fstat(fd)
+        if (
+            before.st_ino != after.st_ino
+            or before.st_dev != after.st_dev
+            or before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or before.st_ctime_ns != after.st_ctime_ns
+            or len(raw) != after.st_size
+        ):
+            return None, "artifact_changed_during_read"
+        return raw, None
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return None, "artifact_missing"
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            return None, "artifact_symlink_or_not_regular"
+        return None, "artifact_unreadable"
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        for directory_fd in reversed(dirs):
+            os.close(directory_fd)
+
+
 def verify(manifest: Any, *, root: pathlib.Path, now_ms: int | None = None) -> list[str]:
     projection, errors = _manifest_projection(manifest)
     if errors or projection is None:
@@ -98,19 +162,10 @@ def verify(manifest: Any, *, root: pathlib.Path, now_ms: int | None = None) -> l
     if relative.is_absolute() or ".." in relative.parts or not relative.parts or relative.parts[0] != "artifacts":
         return ["artifact_path_outside_artifacts"]
     root = root.resolve()
-    path = root.joinpath(*relative.parts).resolve()
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return ["artifact_path_escapes_root"]
-    if not path.is_file():
-        return ["artifact_missing"]
-    if path.stat().st_size > _MAX_BYTES:
-        return ["artifact_excessive_size"]
-    try:
-        raw = path.read_bytes()
-    except OSError:
-        return ["artifact_unreadable"]
+    raw, read_error = _read_pinned_artifact(root, relative.parts)
+    if read_error is not None:
+        return [read_error]
+    assert raw is not None
     if hashlib.sha256(raw).hexdigest() != projection["convergence_evidence_sha256"]:
         return ["artifact_file_digest_mismatch"]
     try:

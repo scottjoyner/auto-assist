@@ -152,7 +152,7 @@ def test_symlink_outside_root_denied(tmp_path):
     path.unlink()
     path.symlink_to(external)
     assert reader.verify(manifest, root=tmp_path, now_ms=1800000000000) == [
-        "artifact_path_escapes_root"
+        "artifact_symlink_or_not_regular"
     ]
 
 
@@ -262,3 +262,99 @@ def test_cli_reads_manifest_and_prints_bounded_result(monkeypatch, capsys, tmp_p
     result = capsys.readouterr()
     assert "BLOCKED artifact_file_digest_mismatch" in result.err
     assert "synthetic" not in result.err
+
+def test_symlink_inside_artifacts_is_rejected_not_followed(tmp_path):
+    manifest, artifact, path = fixture(tmp_path)
+    target = tmp_path / "artifacts" / "source.json"
+    target.write_bytes(path.read_bytes())
+    path.unlink()
+    path.symlink_to(target)
+    assert reader.verify(manifest, root=tmp_path, now_ms=1800000000000) == [
+        "artifact_symlink_or_not_regular"
+    ]
+
+
+def test_symlink_directory_inside_artifacts_is_rejected(tmp_path):
+    manifest, artifact, path = fixture(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    other.joinpath("projection.json").write_bytes(path.read_bytes())
+    path.unlink()
+    path.parent.rmdir()
+    path.parent.symlink_to(other, target_is_directory=True)
+    assert reader.verify(manifest, root=tmp_path, now_ms=1800000000000) == [
+        "artifact_symlink_or_not_regular"
+    ]
+
+
+def test_path_swapped_at_final_open_never_follows_outside_root(monkeypatch, tmp_path):
+    import os
+
+    manifest, artifact, path = fixture(tmp_path)
+    external = tmp_path.parent / (tmp_path.name + "-external-valid-artifact.json")
+    external.write_bytes(path.read_bytes())  # Exact hash match defeats digest-only tests.
+    original_open = os.open
+    intercepted = []
+
+    def swap_when_opening_leaf(file, flags, *args, **kwargs):
+        if file == "projection.json" and not intercepted:
+            intercepted.append(flags)
+            path.unlink()
+            path.symlink_to(external)
+        return original_open(file, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", swap_when_opening_leaf)
+    result = reader.verify(manifest, root=tmp_path, now_ms=1800000000000)
+    assert intercepted, "the verifier must open the leaf using the pinned directory fd"
+    assert intercepted[0] & os.O_NOFOLLOW
+    assert result == ["artifact_symlink_or_not_regular"]
+
+
+def test_hardlink_or_special_file_is_rejected(tmp_path):
+    import os
+
+    manifest, artifact, path = fixture(tmp_path)
+    sibling = path.with_name("also-projection.json")
+    os.link(path, sibling)
+    assert reader.verify(manifest, root=tmp_path, now_ms=1800000000000) == [
+        "artifact_symlink_or_not_regular"
+    ]
+
+def test_oversized_file_rejected_before_full_read(tmp_path):
+    manifest, _, path = fixture(tmp_path)
+    path.write_bytes(b"X" * (reader._MAX_BYTES + 1))
+    assert reader.verify(manifest, root=tmp_path, now_ms=1800000000000) == [
+        "artifact_excessive_size"
+    ]
+
+
+def test_nonregular_fifo_rejected_without_blocking(tmp_path):
+    import os
+
+    manifest, _, path = fixture(tmp_path)
+    path.unlink()
+    os.mkfifo(path)
+    assert reader.verify(manifest, root=tmp_path, now_ms=1800000000000) == [
+        "artifact_symlink_or_not_regular"
+    ]
+
+
+def test_content_mutation_detected_during_open_descriptor_read(monkeypatch, tmp_path):
+    import os
+
+    manifest, _, path = fixture(tmp_path)
+    old_read = os.read
+    mutated = []
+
+    def read_then_mutate(fd, length):
+        chunk = old_read(fd, length)
+        if chunk and not mutated:
+            mutated.append(True)
+            with path.open("ab") as out:
+                out.write(b" ")
+        return chunk
+
+    monkeypatch.setattr(os, "read", read_then_mutate)
+    result = reader.verify(manifest, root=tmp_path, now_ms=1800000000000)
+    assert mutated
+    assert result == ["artifact_changed_during_read"]

@@ -26,6 +26,15 @@ status PASS and empty failures, valid typed projection identities and bounded
 numeric admissions/retirements, unexpired projection, and source/router
 generation/revision digest/checksum matching the manifest.
 
+**Read-once descriptor rule:** On Linux, each artifact path component must be
+a real directory/file (symlinks disallowed), opened relative to the already
+opened root with `O_NOFOLLOW`. Hardlinks and nonregular files are rejected.
+Size and content are bounded and checked using the same final descriptor,
+with file metadata checked before/after reading. The reader fails closed on
+platforms lacking these `open(2)` flags. This blocks pathname-swap and FIFO
+failure modes in disposable tests; it does not guarantee an artifact is
+immutable after closing the descriptor or prove its authoritative origin.
+
 This **does not prove authenticity or authorization**: a party controlling
 both the report and manifest could rehash both. The operator must separately
 establish source identity, independently governed credentials, resource-side
