@@ -1070,6 +1070,11 @@ def _provider_catalog(neo_factory: NeoFactory | None = None) -> dict[str, list[s
             return {}
         url = f"{base_url.rstrip('/')}/admin/providers"
     admin_token = os.getenv("AUTO_ROUTER_ADMIN_TOKEN", "").strip()
+    # Admin diagnostics are not public provider discovery. The legacy router
+    # could return a synthetic-looking 200 anonymously; never accept that as
+    # provider inventory or make a request without explicit admin custody.
+    if not admin_token:
+        return {}
     try:
         data, _ = _http_json(url, "", admin_token=admin_token)
     except Exception:
