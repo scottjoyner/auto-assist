@@ -316,22 +316,71 @@ def test_collect_fleet_nodes_manifest_primary_is_inferred(_fleet_env, monkeypatc
     assert air["opacity"] == "inferred"
 
 
-def test_collect_fleet_nodes_uses_exact_provider_endpoint_override(_fleet_env, monkeypatch) -> None:
-    seen: list[tuple[str, str]] = []
+def test_provider_catalog_missing_admin_token_makes_no_request(monkeypatch) -> None:
+    """No configured privilege must cause zero admin endpoint requests."""
+    monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://synthetic-router.local:8088")
+    monkeypatch.setenv(
+        "AUTO_ROUTER_ADMIN_PROVIDERS_URL",
+        "http://synthetic-router.local:8088/admin/providers",
+    )
+    monkeypatch.delenv("AUTO_ROUTER_ADMIN_TOKEN", raising=False)
 
-    def _fake_http_json(url, path, **_kwargs):
-        seen.append((url, path))
+    calls = []
+
+    def probe_request(*args, **kwargs):
+        calls.append((args, kwargs))
+        # A legacy anonymous 200 must never be accepted as inventory.
+        return {
+            "providers": [{
+                "enabled": True,
+                "node_id": "synthetic-node",
+                "models": [{"alias": "not-admitted-model"}],
+            }]
+        }, 1.0
+
+    monkeypatch.setattr(control_room, "_http_json", probe_request)
+    assert control_room._provider_catalog() == {}
+    assert calls == [], "missing admin token must prevent the HTTP call itself"
+
+
+def test_provider_catalog_wrong_or_denied_credentials_do_not_infer_inventory(monkeypatch) -> None:
+    """Auth errors are lack of evidence, not authorization to use a fallback."""
+    from urllib.error import HTTPError
+
+    monkeypatch.setenv("AUTO_ROUTER_ADMIN_PROVIDERS_URL", "http://synthetic-router.local:8088/admin/providers")
+    monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "synthetic-admin-token")
+    seen = []
+
+    def denied(url, path, *, admin_token):
+        seen.append((url, path, admin_token))
+        raise HTTPError(url, 401, "synthetic denial", None, None)
+
+    monkeypatch.setattr(control_room, "_http_json", denied)
+    assert control_room._provider_catalog() == {}
+    assert seen == [(
+        "http://synthetic-router.local:8088/admin/providers",
+        "",
+        "synthetic-admin-token",
+    )]
+
+
+def test_collect_fleet_nodes_uses_exact_provider_endpoint_override(_fleet_env, monkeypatch) -> None:
+    seen: list[tuple[str, str, str]] = []
+
+    def _fake_http_json(url, path, *, admin_token):
+        seen.append((url, path, admin_token))
         return {"providers": [{"enabled": True, "node_id": "mac-air", "models": [{"provider_model": "ornith-4b"}]}]}, 1.0
 
     monkeypatch.setattr(control_room, "_http_json", _fake_http_json)
     monkeypatch.setattr(control_room, "_live_loaded_models", lambda _f: None)
     monkeypatch.setattr(control_room, "_historical_loaded_models", lambda _f: {})
     monkeypatch.setenv("AUTO_ROUTER_ADMIN_PROVIDERS_URL", "http://router.test:9090/admin/providers")
+    monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "synthetic-admin-token")
     _open_registry(monkeypatch, {"nodes": []})
 
     nodes = control_room.collect_fleet_nodes(lambda: None)
 
-    assert seen == [("http://router.test:9090/admin/providers", "")]
+    assert seen == [("http://router.test:9090/admin/providers", "", "synthetic-admin-token")]
     air = next(node for node in nodes if node["ip"] == "100.64.0.5")
     assert air["available_models"] == ["ornith-4b"]
 
