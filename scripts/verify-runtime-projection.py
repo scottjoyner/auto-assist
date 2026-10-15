@@ -14,10 +14,20 @@ import urllib.request
 from typing import Any
 
 
+class _RejectRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not forward Basic or Router admin credentials to a redirected URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def _get_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
     request = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        # This verifier carries Basic or Router admin credentials. Neither a
+        # redirect nor an inherited environment proxy is an approved peer.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RejectRedirect())
+        with opener.open(request, timeout=15) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
