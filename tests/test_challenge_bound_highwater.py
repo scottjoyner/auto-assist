@@ -211,3 +211,49 @@ def test_effect_changes_after_statement_can_still_invalidate_actual_resource():
 def test_signed_statement_cli_cannot_authorize_releases():
     assert "NO_LIVE_AUTHORITY_OR_RELEASE_ENTRYPOINT" in SOURCE.read_text()
     # No TPM access; no persistence; no authorized resource readback.
+
+
+def test_exact_same_signed_statement_is_repeatable_without_external_spent_state_no_go():
+    """Current stateless verification is observation, not one-shot issuance."""
+    sign, claim, effect, anchor, roots = fixture()
+    fixed = sign(claim)
+    first = check(fixed, effect, anchor, roots)
+    second = check(fixed, effect, anchor, roots)
+    assert first == second == (True, "RESEARCH_SIGNED_STATEMENT_ONLY")
+    # Neither verification consumes the challenge or persists high-water;
+    # a real one-shot protocol must bind to a separate atomic state owner.
+
+
+def test_freshly_signed_challenge_for_already_observed_position_remains_valid_no_go():
+    sign, claim, effect, anchor, roots = fixture()
+    already = {"term": claim["term"], "commit_seq": claim["commit_seq"],
+               "last_nonce": claim["last_nonce"]}
+    refreshed = dict(claim, challenge="e" * 64)
+    assert check(sign(refreshed), effect, already, roots,
+                 challenge="e" * 64) == (True, "RESEARCH_SIGNED_STATEMENT_ONLY")
+    # True == read-only observation; NOT a new resource commit authorization.
+
+
+def test_strict_new_commit_observation_denies_equal_position():
+    sign, claim, effect, anchor, roots = fixture()
+    after = {"term": claim["term"], "commit_seq": claim["commit_seq"],
+             "last_nonce": claim["last_nonce"]}
+    result = mod.evaluate_strict_advance(
+        sign(claim), expected_effect=effect, expected_challenge=CHALLENGE,
+        minimum_highwater=after, pinned_roots=roots, pinned_key_epoch=5,
+        now_ms=NOW,
+    )
+    assert result == (False, "no_strict_highwater_advance")
+
+
+def test_even_strict_advancement_is_repeatable_without_atomic_external_cas_no_go():
+    sign, claim, effect, anchor, roots = fixture()
+    kwargs = dict(
+        expected_effect=effect, expected_challenge=CHALLENGE,
+        minimum_highwater=anchor, pinned_roots=roots, pinned_key_epoch=5,
+        now_ms=NOW,
+    )
+    signed = sign(claim)
+    first = mod.evaluate_strict_advance(signed, **kwargs)
+    second = mod.evaluate_strict_advance(signed, **kwargs)
+    assert first == second == (True, "RESEARCH_ADVANCEMENT_UNCONSUMED_ONLY")

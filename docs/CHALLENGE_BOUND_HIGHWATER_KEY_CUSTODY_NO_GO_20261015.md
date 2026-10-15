@@ -84,3 +84,58 @@ receipts and physical iOS/TestFlight acceptance.
 
 **No production changes, merges, deployments, credential/key/TPM writes,
 network/failover actions, graph effects, model promotions or iOS release.**
+
+
+## 2026-10-15 continuation: replay ≠ observation ≠ advancement
+
+The **original read-only signed statement verifier** will correctly accept
+the same valid envelope multiple times if the caller presents the same
+expected challenge and the same minimum checkpoint. It can also verify a
+*newly signed* challenge for a checkpoint which is already current. These
+are not necessarily flaws in observing an existing state, but they are
+unsafe if an operator interprets `RESEARCH_SIGNED_STATEMENT_ONLY` as a
+one-time commit receipt, consumed challenge or admission authorization.
+
+A separate `evaluate_strict_advance` helper now denies equal
+`(term, commit_seq)` positions and returns the explicitly limited label
+`RESEARCH_ADVANCEMENT_UNCONSUMED_ONLY` for a strictly greater signed
+position. The additional synthetic tests reproduce that **two clients
+given the same old anchor position both pass this pure helper**. There
+is no atomic challenge consumption, durable lease, term ownership or
+independently governed state behind this helper.
+
+### Actual two-database PostgreSQL 17 contention (disposable only)
+
+The pre-existing explicit-opt-in, networkless, tmpfs-only two-cluster
+runner was extended with two additional independent, adverse controls:
+
+1. An authorized anchor writer used `hw.advance` to advance the anchor
+   from seq1 to seq4 while the resource was only at seq3. The update
+   succeeded; the SQL contract checks monotonicity, **not** whether
+   seq4 corresponds to an actual committed resource effect. This
+   actively demonstrates **NO_GO: anchor_writer_can_advance_beyond_uncommitted_resource**.
+2. Two separately authenticated anchor-writer PostgreSQL connections
+   concurrently attempted `hw.advance` from seq4 to seq5, each
+   carrying a different nonce and expected old position. A real
+   PostgreSQL row-level CAS produced **exactly one COMMIT and one
+   rejection**; readback showed seq5. This is evidence of concurrency
+   serialization by PostgreSQL, **not** independent high-water custody,
+   source provenance or a release permission.
+
+A shell EXIT/INT/TERM trap removed both disposable containers and the
+temporary race-results directory. The physical run independently
+confirmed no experimental container or test scratch directory remained.
+No production process, network or credential was modified.
+
+### Smallest unresolved proof
+
+Design an authorized resource-owned COMMIT receipt whose term, sequence
+and effect identity the anchor can verify *independently*, before
+advancing by one CAS, with externally controlled trust roots and
+durable challenge-consumption state. Negative tests must include
+**authorized anchor writer advancing without resource COMMIT**,
+concurrent callers sharing an old checkpoint, restored anchor state,
+forged receipt under source-superuser authority and effect changes
+between witness readback and finalization. The same current Docker
+administrator still controls both PostgreSQL clusters. Preserve
+NO-GO, no automatic retry and all no-merge/no-deploy restrictions.

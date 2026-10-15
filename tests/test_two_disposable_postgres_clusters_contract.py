@@ -106,3 +106,13 @@ def test_physical_runner_never_claims_production_authorization():
     body = LAB.read_text()
     assert "TWO_PG_LABS: PASS_ROLE_ISOLATION_WITH_SHARED_HOST_NO_GO" in body
     assert "production" not in body.lower().split('TWO_PG_LABS: PASS_ROLE_ISOLATION_WITH_SHARED_HOST_NO_GO')[-1]
+
+
+def test_actual_anchor_concurrent_cas_and_source_provenance_no_go_are_in_runner():
+    body = LAB.read_text()
+    assert "NO_GO anchor_writer_can_advance_beyond_uncommitted_resource" in body
+    assert "PASS concurrent_anchor_cas_one_winner_one_denial" in body
+    assert "SELECT hw.advance(1,4,1,5" in body
+    assert "pg_sleep(0.2)" in body
+    assert "concurrent_cas_not_single_winner" in body
+    assert "cas_scratch" in body

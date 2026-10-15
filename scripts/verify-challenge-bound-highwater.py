@@ -171,3 +171,38 @@ def evaluate(
 
 if __name__ == "__main__":
     raise SystemExit("RESEARCH_ONLY_NO_LIVE_AUTHORITY_OR_RELEASE_ENTRYPOINT")
+
+
+def evaluate_strict_advance(
+    envelope: Any,
+    *,
+    expected_effect: Any,
+    expected_challenge: Any,
+    minimum_highwater: Any,
+    pinned_roots: Any,
+    pinned_key_epoch: Any,
+    now_ms: Any,
+) -> tuple[bool, str]:
+    """Require a *newer* signed position without claiming atomic consumption.
+
+    This pure helper is still not a one-shot security decision. Two verifiers
+    given the same external pre-advance checkpoint may both return True.
+    Only an independently governed, durable CAS in the resource/anchor
+    control plane can arbitrate concurrent consumption and restore.
+    """
+    accepted, reason = evaluate(
+        envelope, expected_effect=expected_effect,
+        expected_challenge=expected_challenge,
+        minimum_highwater=minimum_highwater,
+        pinned_roots=pinned_roots, pinned_key_epoch=pinned_key_epoch,
+        now_ms=now_ms,
+    )
+    if not accepted:
+        return False, reason
+    claim = envelope["claim"]
+    if (
+        (claim["term"], claim["commit_seq"])
+        <= (minimum_highwater["term"], minimum_highwater["commit_seq"])
+    ):
+        return False, "no_strict_highwater_advance"
+    return True, "RESEARCH_ADVANCEMENT_UNCONSUMED_ONLY"

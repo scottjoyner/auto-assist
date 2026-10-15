@@ -11,7 +11,9 @@ resource="assistx-resource-research-${$}-${RANDOM}"
 anchor="assistx-anchor-research-${$}-${RANDOM}"
 created_resource=0
 created_anchor=0
+cas_scratch=""
 cleanup() {
+  if [[ -n "$cas_scratch" ]]; then rm -rf -- "$cas_scratch"; fi
   if (( created_anchor )); then docker rm -f "$anchor" >/dev/null 2>&1 || true; fi
   if (( created_resource )); then docker rm -f "$resource" >/dev/null 2>&1 || true; fi
 }
@@ -178,5 +180,34 @@ admin_sql "$resource" -c "BEGIN; UPDATE lab.effect_state SET commit_seq=3,genera
 [[ "$(resource_seq)" == "3" ]] || fail "direct_privileged_fabrication_not_observed"
 [[ "$(user_sql "$resource" lab_observer "$resource_observer" 'SELECT count(*) FROM lab.commit_receipts WHERE commit_seq=3')" == "1" ]] || fail "fabricated_receipt_not_visible"
 echo "NO_GO resource_dba_fabricates_receipt_even_with_separate_anchor"
+
+# The restricted anchor writer can advance high-water *without* any actual
+# resource COMMIT. The SQL CAS enforces order, but not source provenance.
+[[ "$(user_sql "$anchor" hw_writer "$anchor_writer"  "SELECT hw.advance(1,1,1,4,repeat('8',32))")" == "4" ]]   || fail "anchor_writer_advance_without_commit_failed"
+[[ "$(anchor_seq)" == "4" && "$(resource_seq)" == "3" ]]   || fail "unanchored_resource_sequence_not_observed"
+echo "NO_GO anchor_writer_can_advance_beyond_uncommitted_resource"
+
+# Two distinct, concurrent psql connections attempt the identical CAS from
+# seq4 to seq5. One MUST win; the other must fail with stale CAS. Both calls
+# are in the same ephemeral anchor instance; the host admin remains in charge.
+cas_scratch="$(mktemp -d /tmp/convergence-pg-cas.XXXXXXXX)"   || fail "concurrent_test_scratch_unavailable"
+for idx in 1 2; do
+  nonce="$(if [[ "$idx" == 1 ]]; then printf '9%.0s' {1..32};else printf 'a%.0s' {1..32};fi)"
+  (
+    if user_sql "$anchor" hw_writer "$anchor_writer"       "BEGIN; SELECT pg_sleep(0.2); SELECT hw.advance(1,4,1,5,'$nonce'); COMMIT;"       >/dev/null 2>&1; then
+      printf 'PASS\n' > "$cas_scratch/outcome.$idx"
+    else
+      printf 'REJECTED\n' > "$cas_scratch/outcome.$idx"
+    fi
+  ) &
+  if [[ "$idx" == 1 ]]; then pid1=$!; else pid2=$!; fi
+done
+wait "$pid1"
+wait "$pid2"
+[[ -s "$cas_scratch/outcome.1" && -s "$cas_scratch/outcome.2" ]]   || fail "concurrent_cas_result_missing"
+wins="$(grep -hxc 'PASS' "$cas_scratch"/outcome.* | awk -F: '{sum+=$NF} END {print sum+0}')"
+denials="$(grep -hxc 'REJECTED' "$cas_scratch"/outcome.* | awk -F: '{sum+=$NF} END {print sum+0}')"
+[[ "$wins" == "1" && "$denials" == "1" && "$(anchor_seq)" == "5" ]]   || fail "concurrent_cas_not_single_winner"
+echo "PASS concurrent_anchor_cas_one_winner_one_denial"
 
 echo "TWO_PG_LABS: PASS_ROLE_ISOLATION_WITH_SHARED_HOST_NO_GO"
