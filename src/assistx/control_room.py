@@ -10,8 +10,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener, urlopen
 from urllib.request import Request as UrlRequest
-from urllib.request import urlopen
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
@@ -107,6 +107,13 @@ def _json_value(value: Any, default: Any) -> Any:
     return default
 
 
+class _RejectAdminRedirect(HTTPRedirectHandler):
+    """Fail closed instead of forwarding a privileged header to a new origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def _http_json(
     base_url: str,
     path: str,
@@ -120,7 +127,15 @@ def _http_json(
         headers["X-Admin-Token"] = admin_token
     started = time.monotonic()
     request = UrlRequest(url, headers=headers)
-    with urlopen(request, timeout=timeout) as response:  # noqa: S310 - private URLs are operator-configured
+    if admin_token:
+        # The stock urllib redirect handler forwards custom headers across
+        # origins. Neither redirects nor environment HTTP proxies may receive
+        # this administrative credential. Public health probes are unchanged.
+        opener = build_opener(ProxyHandler({}), _RejectAdminRedirect())
+        response_context = opener.open(request, timeout=timeout)
+    else:
+        response_context = urlopen(request, timeout=timeout)  # noqa: S310
+    with response_context as response:
         payload = json.loads(response.read().decode("utf-8"))
     return payload, _elapsed_ms(started)
 
