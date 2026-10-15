@@ -31,36 +31,51 @@ def _consumer() -> Any:
     return module
 
 
-def _committed_readback(resource_path: Path, expected_nonce: Any) -> dict[str, Any] | None:
-    """Fresh read-only connection sees COMMITTED rows, not writer's changes.
+def _read_from_open_transaction(
+    db: sqlite3.Connection, expected_nonce: Any,
+) -> dict[str, Any] | None:
+    """Read from the SAME connection holding BEGIN IMMEDIATE.
 
-    Resource effect and matching receipt must share the exact revision,
-    generation, checksum and sequence. A privileged DBA can forge both.
+    No new path open: inode substitution cannot redirect the cursor.
+    This is still only local SQL convention, NOT a real resource ACL.
     """
+    row = db.execute(
+        """SELECT resource_id,term,commit_seq,generation,
+                  checksum,revision_sha256,committed
+           FROM resource_effect WHERE resource_id=?""", (_RESOURCE,)
+    ).fetchone()
+    if row is None:
+        return None
+    receipt = db.execute(
+        """SELECT term,commit_seq,generation,checksum,revision_sha256,nonce
+           FROM resource_commit_receipts WHERE commit_seq=?""", (row[2],)
+    ).fetchone()
+    expected_claim = (*row[1:6], expected_nonce)
+    if receipt != expected_claim:
+        return None
+    return dict(zip(
+        ("resource_id", "term", "commit_seq", "generation", "checksum",
+         "revision_sha256", "committed"),
+        (*row[:6], row[6] == 1),
+        strict=True,
+    ))
+
+def _committed_readback(resource_path: Path, expected_nonce: Any) -> dict[str, Any] | None:
+    """Independent observer used for post-run tests, never fenced readback."""
     with sqlite3.connect(
         f"{resource_path.resolve().as_uri()}?mode=ro", uri=True, timeout=0.25
     ) as db:
         db.execute("PRAGMA query_only=ON")
-        row = db.execute(
-            """SELECT resource_id,term,commit_seq,generation,
-                      checksum,revision_sha256,committed
-               FROM resource_effect WHERE resource_id=?""", (_RESOURCE,)
-        ).fetchone()
-        if row is None:
-            return None
-        receipt = db.execute(
-            """SELECT term,commit_seq,generation,checksum,revision_sha256,nonce
-               FROM resource_commit_receipts WHERE commit_seq=?""", (row[2],)
-        ).fetchone()
-        expected_claim = (*row[1:6], expected_nonce)
-        if receipt != expected_claim:
-            return None
-        return dict(zip(
-            ("resource_id", "term", "commit_seq", "generation", "checksum",
-             "revision_sha256", "committed"),
-            (*row[:6], row[6] == 1),
-            strict=True,
-        ))
+        return _read_from_open_transaction(db, expected_nonce)
+
+
+def _path_identity(resource_path: Path) -> tuple[int, int] | None:
+    """Best-effort inode change detection; NOT trusted path ownership."""
+    try:
+        st = resource_path.stat()
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
 
 
 def consume_while_source_fenced(
@@ -82,6 +97,9 @@ def consume_while_source_fenced(
     demonstration. It cannot replace source-owned physical effect fencing.
     """
     consumer = _consumer()
+    original_identity = _path_identity(source_db)
+    if original_identity is None:
+        return False, "source_resource_unavailable_no_authority"
     try:
         source = sqlite3.connect(
             f"{source_db.resolve().as_uri()}?mode=rw", uri=True, timeout=0.15
@@ -91,15 +109,19 @@ def consume_while_source_fenced(
     try:
         source.execute("PRAGMA busy_timeout=150")
         source.execute("BEGIN IMMEDIATE")
+        if _path_identity(source_db) != original_identity:
+            return False, "source_path_identity_changed"
         if while_source_locked is not None:
             while_source_locked()
-        # Double resource readback inside the anchor verifier uses a fresh
-        # RO connection, and observes only fully committed resource state.
+        if _path_identity(source_db) != original_identity:
+            return False, "source_path_identity_changed"
+        # Read both observations from the original write-locked connection.
+        # Reopening a path here would admit a replacement SQLite inode.
         claim = envelope.get("receipt") if type(envelope) is dict else None
         expected_nonce = claim.get("nonce") if type(claim) is dict else None
 
         def readback() -> Any:
-            return _committed_readback(source_db, expected_nonce)
+            return _read_from_open_transaction(source, expected_nonce)
 
         if readback() != expected_effect:
             return False, "source_committed_effect_or_receipt_missing"
@@ -111,6 +133,10 @@ def consume_while_source_fenced(
             readback=readback, now_ms=now_ms,
         )
         if result[0]:
+            if _path_identity(source_db) != original_identity:
+                raise consumer.UncertainReceiptCommit(
+                    "SOURCE_PATH_CHANGED_AFTER_ANCHOR_COMMIT_NO_RETRY"
+                )
             if after_anchor_committed is not None:
                 try:
                     after_anchor_committed()
@@ -118,6 +144,10 @@ def consume_while_source_fenced(
                     raise consumer.UncertainReceiptCommit(
                         "SOURCE_FENCE_POST_ANCHOR_OUTCOME_UNCERTAIN_NO_RETRY"
                     ) from exc
+            if _path_identity(source_db) != original_identity:
+                raise consumer.UncertainReceiptCommit(
+                    "SOURCE_PATH_CHANGED_AFTER_ANCHOR_COMMIT_NO_RETRY"
+                )
             return True, "RESEARCH_SOURCE_WRITE_LOCK_AND_ANCHOR_CAS_ONLY"
         return result
     except sqlite3.Error:

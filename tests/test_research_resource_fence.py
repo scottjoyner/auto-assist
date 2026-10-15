@@ -222,7 +222,7 @@ def test_colluding_signer_and_source_dba_can_fabricate_both_rows_no_go(scenario)
     ) == (True, "RESEARCH_SOURCE_WRITE_LOCK_AND_ANCHOR_CAS_ONLY")
 
 
-def test_fenced_connection_does_not_secure_path_against_admin_replacement_no_go(
+def test_fenced_source_connection_rejects_substituted_resource_path(
     scenario, tmp_path,
 ):
     s = scenario
@@ -252,8 +252,8 @@ def test_fenced_connection_does_not_secure_path_against_admin_replacement_no_go(
 
     assert s["invoke"](
         expected=forged, envelope=s["sign"](claim), before=replace_under_lock
-    ) == (True, "RESEARCH_SOURCE_WRITE_LOCK_AND_ANCHOR_CAS_ONLY")
-    assert consumer.read_anchor(s["anchor"])["commit_seq"] == 12
+    ) == (False, "source_path_identity_changed")
+    assert consumer.read_anchor(s["anchor"])["commit_seq"] == 11
     # SQLite locks the old inode; it doesn't authenticate future pathnames.
     assert lab._committed_readback(s["resource"], "e" * 32)["generation"] == 888
 
@@ -263,3 +263,61 @@ def test_research_module_has_no_real_release_path():
     assert "RESEARCH_ONLY_NO_FENCED_RESOURCE_OR_RELEASE_ENTRYPOINT" in source
     assert "BEGIN IMMEDIATE" in source
     assert "mode=rw" in source and "mode=ro" in source
+
+
+def test_even_matching_source_file_replacement_fails_closed(scenario, tmp_path):
+    s = scenario
+    other = tmp_path / "same-content.sqlite"
+    # This substitute has valid contents, but it is not the locked inode.
+    other.write_bytes(s["resource"].read_bytes())
+
+    def swap():
+        os.replace(other, s["resource"])
+
+    assert s["invoke"](before=swap) == (
+        False, "source_path_identity_changed"
+    )
+    assert consumer.read_anchor(s["anchor"])["commit_seq"] == 11
+
+
+def test_path_replaced_after_anchor_commit_returns_uncertain_no_retry(
+    scenario, tmp_path,
+):
+    s = scenario
+    other = tmp_path / "post-cas-copy.sqlite"
+    other.write_bytes(s["resource"].read_bytes())
+
+    def swap_after():
+        os.replace(other, s["resource"])
+
+    with pytest.raises(
+        consumer.UncertainReceiptCommit,
+        match="SOURCE_PATH_CHANGED_AFTER_ANCHOR_COMMIT_NO_RETRY",
+    ):
+        s["invoke"](after=swap_after)
+    # The external checkpoint committed before substitution was detected.
+    assert consumer.read_anchor(s["anchor"])["commit_seq"] == 12
+    assert s["invoke"]() == (False, "stale_or_restored_anchor_cas")
+
+
+def test_swap_and_restore_original_inode_can_escape_sampling_no_go(
+    scenario, tmp_path,
+):
+    s = scenario
+    substitute = tmp_path / "temporary.sqlite"
+    substitute.write_bytes(s["resource"].read_bytes())
+    original_link = tmp_path / "original-linked.sqlite"
+    os.link(s["resource"], original_link)
+    before = s["resource"].stat()
+
+    def swap_and_restore():
+        os.replace(substitute, s["resource"])
+        os.replace(original_link, s["resource"])
+
+    # The same source connection still reads its original committed data.
+    # stat() samples alone cannot prove nobody temporarily replaced the path.
+    assert s["invoke"](before=swap_and_restore) == (
+        True, "RESEARCH_SOURCE_WRITE_LOCK_AND_ANCHOR_CAS_ONLY"
+    )
+    after = s["resource"].stat()
+    assert (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
