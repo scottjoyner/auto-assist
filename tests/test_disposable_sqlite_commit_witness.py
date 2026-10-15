@@ -343,3 +343,135 @@ def test_external_highwater_blocks_signed_replay_after_resource_restore(stores, 
     assert evaluate_signed(resource, anchor) == (
         False, "witness_replay_or_restored_highwater"
     )
+
+
+def test_atomic_finalization_blocks_concurrent_writer_until_commit(stores):
+    """Resource transaction holds the write lock through finalization."""
+    resource, _ = stores
+    applied(resource)
+    before = lab.resource_readback(resource)
+    attempts = []
+
+    def try_writer_while_fenced():
+        with sqlite3.connect(resource, timeout=0.03) as competing:
+            competing.execute("PRAGMA busy_timeout=30")
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                competing.execute(
+                    "UPDATE resource_state SET generation=999 WHERE id=?",
+                    ("auto-router-runtime-projection",),
+                )
+        attempts.append("rejected_with_sqlite_write_lock")
+
+    verdict = lab.finalize_under_resource_lock(
+        resource, expected=before, during_fence=try_writer_while_fenced
+    )
+    assert verdict == "RESEARCH_ATOMIC_SQLITE_SEAL_ONLY"
+    assert attempts == ["rejected_with_sqlite_write_lock"]
+    assert lab.finalization_readback(resource) == {
+        "term": 1, "commit_seq": 2, "generation": 2,
+        "checksum": CHECKSUM, "revision_sha256": REVISION,
+    }
+    assert lab.resource_readback(resource) == before
+
+
+def test_finalization_rejects_malformed_or_stale_expected_resource(stores):
+    resource, _ = stores
+    applied(resource)
+    expected = lab.resource_readback(resource)
+    bad = dict(expected, checksum="9" * 64)
+    with pytest.raises(lab.RejectedCommit, match="not_equal"):
+        lab.finalize_under_resource_lock(resource, expected=bad)
+    assert lab.finalization_readback(resource) is None
+
+    with sqlite3.connect(resource) as db:
+        db.execute("UPDATE resource_state SET generation=999")
+    with pytest.raises(lab.RejectedCommit, match="noncommitted"):
+        lab.finalize_under_resource_lock(resource, expected=expected)
+    assert lab.finalization_readback(resource) is None
+
+
+def test_failed_finalization_rolls_back_and_no_retry_authorized(stores):
+    resource, _ = stores
+    applied(resource)
+    expected = lab.resource_readback(resource)
+
+    def abort_inside_txn():
+        raise lab.UncertainCommit("synthetic_precommit_termination")
+
+    with pytest.raises(lab.UncertainCommit, match="precommit"):
+        lab.finalize_under_resource_lock(
+            resource, expected=expected, during_fence=abort_inside_txn,
+        )
+    assert lab.finalization_readback(resource) is None
+
+
+def test_finalization_ack_loss_does_not_imply_seal_absent(stores):
+    resource, _ = stores
+    applied(resource)
+    expected = lab.resource_readback(resource)
+    with pytest.raises(lab.UncertainCommit, match="ACK_NOT_OBSERVED"):
+        lab.finalize_under_resource_lock(
+            resource, expected=expected, lose_ack_after_commit=True
+        )
+    assert lab.finalization_readback(resource)["commit_seq"] == 2
+    with pytest.raises(lab.RejectedCommit, match="already_sealed"):
+        lab.finalize_under_resource_lock(resource, expected=expected)
+
+
+def test_privileged_sql_can_fabricate_seal_and_mutate_after_lock_no_go(stores):
+    resource, _ = stores
+    applied(resource)
+    expected = lab.resource_readback(resource)
+    assert lab.finalize_under_resource_lock(
+        resource, expected=expected
+    ) == "RESEARCH_ATOMIC_SQLITE_SEAL_ONLY"
+
+    # A writer with direct SQL permission can still mutate the resource after
+    # the transaction commits. An atomic local seal is not an effect lease.
+    with sqlite3.connect(resource) as db:
+        db.execute("UPDATE resource_state SET generation=999")
+    assert lab.resource_readback(resource)["committed"] is False
+    assert lab.finalization_readback(resource)["generation"] == 2
+
+    # Same privileged writer can alter the historical seal itself.
+    with sqlite3.connect(resource) as db:
+        db.execute("UPDATE research_finalization SET generation=999")
+    assert lab.finalization_readback(resource)["generation"] == 999
+
+
+def test_resource_snapshot_restore_preserves_only_untrusted_seal(stores, tmp_path):
+    resource, _ = stores
+    applied(resource)
+    original = tmp_path / "preseal-snapshot.sqlite"
+    shutil.copy2(resource, original)
+    expected = lab.resource_readback(resource)
+    lab.finalize_under_resource_lock(resource, expected=expected)
+    assert lab.finalization_readback(resource) is not None
+    shutil.copy2(original, resource)
+    assert lab.finalization_readback(resource) is None
+    # Resetting a seal and its resource together is not forbidden by SQLite.
+    assert lab.resource_readback(resource)["committed"] is True
+
+
+def test_fabricated_receipt_and_effect_pass_toy_finalization_no_go(stores):
+    resource, _ = stores
+    # This is deliberately a security-failing counterexample. A privileged
+    # actor could bypass commit_effect() and forge state + receipt directly.
+    with sqlite3.connect(resource) as db:
+        db.execute(
+            """UPDATE resource_state SET commit_seq=2, generation=2,
+               checksum=?, revision_sha256=?, nonce=?""",
+            (CHECKSUM, REVISION, NONCE),
+        )
+        db.execute(
+            "INSERT INTO commit_receipts VALUES (?,?,?,?,?,?)",
+            (2, 1, NONCE, 2, CHECKSUM, REVISION),
+        )
+    forged = lab.resource_readback(resource)
+    assert forged["committed"] is True
+    assert lab.finalize_under_resource_lock(
+        resource, expected=forged
+    ) == "RESEARCH_ATOMIC_SQLITE_SEAL_ONLY"
+    assert lab.finalization_readback(resource)["commit_seq"] == 2
+    # Even the atomic lock and seal are impotent against a principal with
+    # direct write authority to the physical resource and receipt ledger.

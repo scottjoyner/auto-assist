@@ -10,6 +10,7 @@ can modify both, including with privileged SQL.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,11 @@ def initialize(resource_db: Path, anchor_db: Path) -> None:
                    (_RESOURCE, 1, 1, 1, _SHA, _REV, _NONCE0))
         db.execute("INSERT INTO commit_receipts VALUES (?,?,?,?,?,?)",
                    (1, 1, _NONCE0, 1, _SHA, _REV))
+        db.execute("""CREATE TABLE research_finalization (
+            resource_id TEXT PRIMARY KEY, term INTEGER NOT NULL,
+            commit_seq INTEGER NOT NULL, generation INTEGER NOT NULL,
+            checksum TEXT NOT NULL, revision_sha256 TEXT NOT NULL
+        )""")
     with _conn(anchor_db) as db:
         db.execute("""CREATE TABLE witness_highwater (
             id TEXT PRIMARY KEY, term INTEGER NOT NULL,
@@ -183,6 +189,105 @@ def automatic_retry_after_uncertain_commit(*_args: Any, **_kwargs: Any) -> None:
     """No-automatic-retry guard; unsure whether the resource effect happened."""
     raise UncertainCommit("UNCERTAIN_COMMIT_REQUIRES_INDEPENDENT_OPERATOR_READBACK")
 
+
+
+
+def finalization_readback(resource_db: Path) -> dict[str, Any] | None:
+    """Return only the toy finalization row using a separate RO connection."""
+    with _conn(resource_db, readonly=True) as db:
+        row = db.execute(
+            """SELECT term, commit_seq, generation, checksum, revision_sha256
+               FROM research_finalization WHERE resource_id=?""", (_RESOURCE,)
+        ).fetchone()
+    if row is None:
+        return None
+    return dict(zip(
+        ("term", "commit_seq", "generation", "checksum", "revision_sha256"),
+        row, strict=True,
+    ))
+
+
+def finalize_under_resource_lock(
+    resource_db: Path, *,
+    expected: dict[str, Any],
+    during_fence: Callable[[], None] | None = None,
+    lose_ack_after_commit: bool = False,
+) -> str:
+    """Toy transactional effect fence; NOT production authority.
+
+    A BEGIN IMMEDIATE write transaction fences compliant concurrent SQLite
+    writers until the immutable *research finalization row* is inserted.
+    Privileged SQL can still forge or mutate all rows immediately afterwards.
+    This experiment neither verifies a signature nor authorizes a real action.
+    """
+    required = {
+        "resource_id", "term", "commit_seq", "generation", "checksum",
+        "revision_sha256", "committed",
+    }
+    if (
+        not isinstance(expected, dict)
+        or set(expected) != required
+        or expected.get("committed") is not True
+        or expected.get("resource_id") != _RESOURCE
+        or any(type(expected[k]) is not int or expected[k] < 1
+               for k in ("term", "commit_seq", "generation"))
+        or any(not isinstance(expected[k], str) or len(expected[k]) != 64
+               for k in ("checksum", "revision_sha256"))
+    ):
+        raise RejectedCommit("finalization_expected_invalid")
+
+    con = _conn(resource_db)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        rows = con.execute(
+            """SELECT term, commit_seq, generation, checksum, revision_sha256, nonce
+               FROM resource_state WHERE id=?""", (_RESOURCE,)
+        ).fetchone()
+        if rows is None:
+            raise RejectedCommit("finalization_missing_resource")
+        term, seq, generation, checksum, revision, nonce = rows
+        receipt = con.execute(
+            """SELECT term, nonce, generation, checksum, revision_sha256
+               FROM commit_receipts WHERE seq=?""", (seq,)
+        ).fetchone()
+        if receipt != (term, nonce, generation, checksum, revision):
+            raise RejectedCommit("finalization_noncommitted_resource")
+        witnessed = {
+            "resource_id": _RESOURCE, "term": term,
+            "commit_seq": seq, "generation": generation,
+            "checksum": checksum, "revision_sha256": revision,
+            "committed": True,
+        }
+        if witnessed != expected:
+            raise RejectedCommit("finalization_not_equal_to_expected")
+        if con.execute(
+            "SELECT 1 FROM research_finalization WHERE resource_id=?",
+            (_RESOURCE,),
+        ).fetchone() is not None:
+            raise RejectedCommit("finalization_already_sealed")
+        if during_fence is not None:
+            during_fence()
+        # The same write transaction remains in force; a trusted concurrent
+        # writer cannot mutate the effect between validation and this insert.
+        if con.execute(
+            """SELECT term, commit_seq, generation, checksum, revision_sha256, nonce
+               FROM resource_state WHERE id=?""", (_RESOURCE,)
+        ).fetchone() != rows:
+            raise RejectedCommit("finalization_resource_changed")
+        con.execute(
+            """INSERT INTO research_finalization VALUES (?,?,?,?,?,?)""",
+            (_RESOURCE, term, seq, generation, checksum, revision),
+        )
+        con.commit()
+    except BaseException:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+    if lose_ack_after_commit:
+        raise UncertainCommit("ACK_NOT_OBSERVED_FINALIZATION_OUTCOME_UNCERTAIN")
+    return "RESEARCH_ATOMIC_SQLITE_SEAL_ONLY"
 
 if __name__ == "__main__":
     raise SystemExit("DISPOSABLE_RESEARCH_ONLY_NO_PRODUCTION_ENTRYPOINT")

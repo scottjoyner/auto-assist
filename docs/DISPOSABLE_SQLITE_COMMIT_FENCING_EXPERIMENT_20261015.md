@@ -70,3 +70,48 @@ Existing HOLDs: Knowledge context-broker crypto #46, production graph #31,
 hosted exact-head CI #45, Auto-Assist security #299 and custody #156,
 Auto-Router native execution provenance, and Kipnerter/Vitrialuminios
 physical iPhone/Apple release acceptance. **No merge or deployment.**
+
+
+## October 15 continuation — resource-owned transactional seal experiment
+
+The local host `x1-370` does **not** have PostgreSQL server tools
+(`postgres`, `initdb`, `pg_ctl`, `psql` absent). Both `unshare -Ur`
+and unprivileged `bwrap` failed with host permission restrictions. No
+Docker service, OS privilege, network, production database, or existing
+credential was changed to bypass these limitations. This means a truly
+**independently governed disposable resource was not established**.
+
+The next safe local slice adds a `research_finalization` table to the
+disposable resource SQLite file. `finalize_under_resource_lock` uses
+`BEGIN IMMEDIATE` to inspect the effect and matching receipt and to insert
+a one-use finalization row before COMMIT, **within the same transaction**.
+A second SQLite writer attempts a concurrent UPDATE during the held lock
+and gets `database is locked`. An invalid/mismatched receipt, stale
+generation/checksum or duplicate seal fails closed. Terminating finalization
+before COMMIT leaves no seal. If the finalization COMMIT happens but its
+ACK is lost, a separate readback can see the seal; automatically repeating
+the finalization is denied. It is still only
+`RESEARCH_ATOMIC_SQLITE_SEAL_ONLY`, not release authorization.
+
+**Remaining, positively reproduced security failures:**
+
+- Once the transaction releases its SQLite write lock, privileged direct SQL
+  can mutate the resource *and even the stored finalization row*. The seal
+  does not create durable independent effect ownership.
+- A privileged SQL actor can fabricate the effect **and** its matching
+  receipt *before* finalization; the correctly implemented atomic seal then
+  accepts the fictional resource state. Local transactional atomicity
+  cannot establish independent source authority or signer custody.
+- Restoring the pre-seal SQLite file erases the seal and reopens a repeated
+  finalization even while the resource receipt remains valid. Restore-resistant
+  external high-water is still missing.
+- The inability to isolate a separate PostgreSQL principal on this host
+  means privileged-SQL denial at the actual resource authority remains
+  untested. Do not equate `query_only`, separate connection, SQLite
+  `BEGIN IMMEDIATE`, or Docker availability with access control.
+- A committed local seal can be rolled back or bypassed by a different
+  privileged process after the COMMIT; no real resource-owned execution
+  transaction or ongoing write fence was established.
+
+The new tests remain entirely under pytest `tmp_path`. Their purpose is
+to **falsify** premature admission, not justify merging/deploying.
