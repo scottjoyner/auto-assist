@@ -23,9 +23,11 @@ production or automated run path. It models:
   automatically in response to a signed claim.
 - Readback via a new `mode=ro` SQLite connection, and a separate local
   Python process in one test, after an actual commit.
-- An ACK-loss simulation **after** `COMMIT`, where the client sees an
-  uncertain result; code rejects automatic retry or duplicate logical
-  commit. Operator readback is needed before any further decision.
+- Two **indistinguishable ACK-loss observations**: one transaction is
+  rolled back before COMMIT; the other commits durably before its ACK is lost.
+  Both yield the same uncertain exception, but only the independent readback
+  identifies which resource state actually exists. Code rejects automatic
+  retries and duplicate logical commits; operator review is necessary.
 - Restoring the precommit resource DB with the high-water intact,
   and restoring the external anchor while leaving the resource committed.
 - Direct privileged SQL that forges both a resource effect and its receipt

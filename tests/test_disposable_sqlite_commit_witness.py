@@ -149,7 +149,7 @@ def test_wrong_fence_and_repeated_nonce_cannot_commit_a_second_effect(stores):
 
 def test_lost_ack_after_real_commit_is_uncertain_without_automatic_retry(stores):
     resource, anchor = stores
-    with pytest.raises(lab.UncertainCommit, match="ACK_LOST"):
+    with pytest.raises(lab.UncertainCommit, match="OUTCOME_UNCERTAIN"):
         applied(resource, lost=True)
     # COMMIT was real and durable inside this SQLite experiment, although
     # caller observed only uncertainty; no second logical effect is allowed.
@@ -301,3 +301,45 @@ def test_anchor_rollback_reenables_signed_replay_no_go(stores, tmp_path):
     assert evaluate_signed(resource, anchor)[0] is False
     shutil.copy2(saved, anchor)
     assert evaluate_signed(resource, anchor) == (True, "RESEARCH_CONSISTENCY_ONLY")
+
+
+def test_same_uncertain_ack_can_mean_no_commit_or_committed_effect(tmp_path):
+    outcomes = []
+    for label, before in (("before", True), ("after", False)):
+        case = tmp_path / label
+        case.mkdir()
+        resource, anchor = case / "resource.sqlite", case / "anchor.sqlite"
+        lab.initialize(resource, anchor)
+        try:
+            lab.commit_effect(
+                resource, expected_term=1, expected_sequence=1,
+                generation=2, checksum=CHECKSUM, revision_sha256=REVISION,
+                nonce=NONCE,
+                lose_ack_before_commit=before,
+                lose_ack_after_commit=not before,
+            )
+        except lab.UncertainCommit as error:
+            outcomes.append((str(error), lab.resource_readback(resource)["commit_seq"]))
+        else:
+            pytest.fail("both simulated lost-ACK outcomes must be uncertain")
+        assert lab.anchor_readback(anchor)["commit_seq"] == 1
+    assert outcomes == [
+        ("ACK_NOT_OBSERVED_COMMIT_OUTCOME_UNCERTAIN", 1),
+        ("ACK_NOT_OBSERVED_COMMIT_OUTCOME_UNCERTAIN", 2),
+    ]
+
+
+def test_external_highwater_blocks_signed_replay_after_resource_restore(stores, tmp_path):
+    resource, anchor = stores
+    old = tmp_path / "resource-precommit.sqlite"
+    shutil.copy2(resource, old)
+    applied(resource)
+    lab.operator_advance_anchor(
+        anchor, expected_term=1, expected_seq=1,
+        new_term=1, new_seq=2, new_nonce=NONCE,
+    )
+    shutil.copy2(old, resource)
+    assert lab.resource_readback(resource)["commit_seq"] == 1
+    assert evaluate_signed(resource, anchor) == (
+        False, "witness_replay_or_restored_highwater"
+    )

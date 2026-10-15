@@ -77,6 +77,7 @@ def commit_effect(
     expected_term: int, expected_sequence: int,
     generation: int, checksum: str, revision_sha256: str, nonce: str,
     lose_ack_after_commit: bool = False,
+    lose_ack_before_commit: bool = False,
 ) -> None:
     """Atomically commit an effect and a receipt, then optionally lose the ACK.
 
@@ -84,6 +85,8 @@ def commit_effect(
     without its expected CAS inputs. A privileged SQL writer can still forge
     both tables, a deliberately reproduced NO-GO below.
     """
+    if lose_ack_after_commit and lose_ack_before_commit:
+        raise ValueError("select only one disposable ACK-loss fault")
     if (
         type(expected_term) is not int or expected_term < 1
         or type(expected_sequence) is not int or expected_sequence < 1
@@ -109,6 +112,10 @@ def commit_effect(
         con.execute("INSERT INTO commit_receipts VALUES (?,?,?,?,?,?)",
                     (next_seq, expected_term, nonce, generation, checksum,
                      revision_sha256))
+        if lose_ack_before_commit:
+            # Same externally observed uncertainty as ACK loss after commit:
+            # this research path rolls back, the other one commits.
+            raise UncertainCommit("ACK_NOT_OBSERVED_COMMIT_OUTCOME_UNCERTAIN")
         con.commit()
     except sqlite3.IntegrityError as exc:
         con.rollback()
@@ -119,7 +126,7 @@ def commit_effect(
     finally:
         con.close()
     if lose_ack_after_commit:
-        raise UncertainCommit("ACK_LOST_AFTER_DURABLE_COMMIT_DO_NOT_RETRY")
+        raise UncertainCommit("ACK_NOT_OBSERVED_COMMIT_OUTCOME_UNCERTAIN")
 
 
 def resource_readback(resource_db: Path) -> dict[str, Any]:
