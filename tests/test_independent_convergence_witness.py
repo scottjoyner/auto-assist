@@ -216,3 +216,18 @@ def test_rollback_of_the_only_highwater_anchor_is_not_cryptographically_detectab
     assert check(signed(claim), roots, expected, resource, restored_anchor) == (
         True, "RESEARCH_CONSISTENCY_ONLY"
     )
+
+
+def test_boolean_schema_version_does_not_pass_strict_unsigned_contract():
+    private, roots, signed, claim, expected, resource, anchor = fixture()
+    claim["schema_version"] = True
+    assert check(signed(claim), roots, expected, resource, anchor) == (
+        False, "witness_claim_invalid"
+    )
+
+
+def test_missing_malformed_root_container_is_bounded_denial_not_exception():
+    private, roots, signed, claim, expected, resource, anchor = fixture()
+    assert check(signed(claim), None, expected, resource, anchor) == (
+        False, "pinned_trust_root_unavailable"
+    )

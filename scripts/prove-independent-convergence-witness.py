@@ -47,7 +47,8 @@ def _valid_claim(claim: Any) -> bool:
     return (
         isinstance(claim, dict)
         and set(claim) == _CLAIM_KEYS
-        and claim.get("schema_version") == 1
+        and type(claim.get("schema_version")) is int
+        and claim["schema_version"] == 1
         and claim.get("audience") == "convergence-evidence-research"
         and claim.get("resource_id") == "auto-router-runtime-projection"
         and all(_positive(claim.get(k)) for k in (
@@ -136,6 +137,8 @@ def evaluate(
     key_id = envelope.get("key_id")
     if not isinstance(key_id, str) or key_id != "independent-resource-v1":
         return False, "witness_key_unrecognized"
+    if not isinstance(trust_roots, Mapping):
+        return False, "pinned_trust_root_unavailable"
     public_bytes = trust_roots.get(key_id)
     if not isinstance(public_bytes, bytes) or len(public_bytes) != 32:
         return False, "pinned_trust_root_unavailable"
