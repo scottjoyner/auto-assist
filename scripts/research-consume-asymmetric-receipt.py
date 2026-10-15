@@ -85,6 +85,7 @@ def consume_once(
     readback: Callable[[], Any] | None,
     now_ms: int,
     lose_ack_after_commit: bool = False,
+    _research_crash_hook: Callable[[str], None] | None = None,
 ) -> tuple[bool, str]:
     """Verify THEN atomically consume only if anchor state is unchanged.
 
@@ -163,6 +164,11 @@ def consume_once(
             "INSERT INTO consumed_receipts VALUES (?,?,?,?)",
             (receipt_digest, challenge, claim["term"], claim["commit_seq"]),
         )
+        # Optional research-only crash checkpoint. SIGKILL is issued only by
+        # the subprocess test fixture against its own PID; this callback
+        # must never be used in production or exposed as a service option.
+        if _research_crash_hook is not None:
+            _research_crash_hook("anchor_after_updates_before_commit")
         # A COMMIT API failure is an unknown outcome. It might have committed
         # and lost its acknowledgment. Returning an ordinary False would
         # invite unsafe retry of an already-applied effect.
@@ -173,6 +179,8 @@ def consume_once(
                 "ANCHOR_COMMIT_ACK_UNCERTAIN_NO_RETRY"
             ) from exc
         did_commit = True
+        if _research_crash_hook is not None:
+            _research_crash_hook("anchor_after_commit_before_ack")
         if lose_ack_after_commit:
             raise UncertainReceiptCommit("ACK_UNOBSERVED_ANCHOR_COMMIT_OUTCOME_UNCERTAIN")
         return True, "RESEARCH_DISPOSABLE_ANCHOR_CAS_ONLY"
