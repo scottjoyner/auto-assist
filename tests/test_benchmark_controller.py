@@ -168,3 +168,28 @@ def test_outcome_publisher_redirect_response_is_not_published(monkeypatch):
         "trust_env": False,
         "has_admin_header": True,
     }
+
+def test_outcome_transport_exception_never_echoes_credentials(monkeypatch):
+    monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://user:synthetic-password@router.invalid:8088")
+    monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "SYNTHETIC_SECRET_NEVER_PRINT")
+
+    class FakeSession:
+        trust_env = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def post(self, *_args, **_kwargs):
+            raise OSError("SYNTHETIC_SECRET_NEVER_PRINT untrusted failed origin URL")
+
+    monkeypatch.setattr(benchmark_controller.requests, "Session", FakeSession)
+    result = publish_benchmark_outcome(
+        {"id": "synthetic", "kind": "adaptive_model_benchmark", "payload": {"benchmark": True}},
+        "synthetic-node", "DONE", {"validation_passed": False},
+    )
+    assert result == {"published": False, "reason": "router_outcome_transport_unverified"}
+    assert "SYNTHETIC_SECRET_NEVER_PRINT" not in str(result)
+    assert "synthetic-password" not in str(result)

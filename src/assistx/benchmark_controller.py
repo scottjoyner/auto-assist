@@ -156,8 +156,11 @@ def publish_benchmark_outcome(task: dict[str, Any], agent_id: str, status: str, 
                 allow_redirects=False,
             )
         return {"published": response.status_code in {200, 201, 409}, "status_code": response.status_code}
-    except Exception as exc:
-        return {"published": False, "reason": str(exc)[:240]}
+    except Exception:
+        # Raw transport exceptions can include URL credentials, token-bearing
+        # headers, or attacker-controlled response text. Do not expose them
+        # through task receipts, status APIs, or operator logs.
+        return {"published": False, "reason": "router_outcome_transport_unverified"}
 
 
 def _payload(task: dict[str, Any]) -> dict[str, Any]:

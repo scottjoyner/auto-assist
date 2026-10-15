@@ -30,12 +30,16 @@ def _get_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
         with opener.open(request, timeout=15) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"GET {url} returned HTTP {exc.code}: {body[:500]}") from exc
-    except Exception as exc:
-        raise RuntimeError(f"GET {url} failed: {type(exc).__name__}: {exc}") from exc
+        # Remote response bodies and configured URLs may contain credentials.
+        # Preserve only the bounded numeric status; never read the body.
+        code = exc.code if type(exc.code) is int else "unknown"
+        raise RuntimeError(f"projection_http_error status={code}") from None
+    except Exception:
+        # Transport/JSON exceptions can echo URL userinfo, Basic auth,
+        # bearer tokens, headers or an attacker-controlled response.
+        raise RuntimeError("projection_transport_or_decode_failure") from None
     if not isinstance(payload, dict):
-        raise RuntimeError(f"GET {url} did not return a JSON object")
+        raise RuntimeError("projection_response_not_json_object")
     return payload
 
 

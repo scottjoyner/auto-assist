@@ -71,3 +71,56 @@ def test_verifier_basic_auth_also_uses_same_restrictions(monkeypatch):
     ) == {"status": "synthetic"}
     assert any(isinstance(h, ProxyHandler) and h.proxies == {} for h in handlers_seen)
     assert any(isinstance(h, HTTPRedirectHandler) for h in handlers_seen)
+
+def test_verifier_http_error_never_reads_or_echoes_body_url_or_headers(monkeypatch):
+    import urllib.error
+
+    verifier = load_verifier()
+    sentinel = "SYNTHETIC_SECRET_NEVER_PRINT"
+    request_url = "http://identity:secret@router.invalid:8088/admin/runtime-projection"
+    body_read = []
+
+    class UntrustedBody(io.BytesIO):
+        def read(self, *args, **kwargs):
+            body_read.append(True)
+            return super().read(*args, **kwargs)
+
+    class FakeOpener:
+        def open(self, request, timeout):
+            raise urllib.error.HTTPError(
+                request.full_url, 403, sentinel, {},
+                UntrustedBody((sentinel * 50).encode()),
+            )
+
+    monkeypatch.setattr(verifier.urllib.request, "build_opener",
+                        lambda *_handlers: FakeOpener())
+    with pytest.raises(RuntimeError) as err:
+        verifier._get_json(request_url, {"X-Admin-Token": sentinel})
+    text = str(err.value)
+    assert "403" in text
+    assert sentinel not in text
+    assert "secret@" not in text
+    assert "router.invalid" not in text
+    assert body_read == [], "never read untrusted error response body"
+    assert err.value.__suppress_context__ is True
+
+
+@pytest.mark.parametrize("error_factory", [
+    lambda secret: OSError("faked request failed: " + secret),
+    lambda secret: ValueError("faked decoder failed: " + secret),
+])
+def test_verifier_other_failure_never_echoes_untrusted_details(monkeypatch, error_factory):
+    verifier = load_verifier()
+    sentinel = "SYNTHETIC_SECRET_NEVER_PRINT"
+
+    class FakeOpener:
+        def open(self, request, timeout):
+            raise error_factory(sentinel)
+
+    monkeypatch.setattr(verifier.urllib.request, "build_opener",
+                        lambda *_handlers: FakeOpener())
+    with pytest.raises(RuntimeError) as err:
+        verifier._get_json("http://router.invalid/hidden", {"Authorization": sentinel})
+    assert sentinel not in str(err.value)
+    assert "router.invalid" not in str(err.value)
+    assert err.value.__suppress_context__ is True
