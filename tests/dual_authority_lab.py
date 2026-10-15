@@ -176,3 +176,4 @@ def reconcile(authority: Authority, resource: Resource, key: str,
     if claim[1] == "OBSERVED":
         return Decision("CONSISTENT_UNATTESTED" if effect else "RESOURCE_ROLLBACK_SUSPECTED")
     return Decision("UNKNOWN_AUTHORITY_STATE")
+
