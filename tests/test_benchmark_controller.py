@@ -1,5 +1,9 @@
+from types import SimpleNamespace
+
+import pytest
+
+from assistx import benchmark_controller, fleet_node_agent
 from assistx.benchmark_controller import BenchmarkController, publish_benchmark_outcome
-from assistx import fleet_node_agent
 
 
 class FakeNeo:
@@ -87,28 +91,105 @@ def test_node_agent_scores_deterministic_benchmark(monkeypatch, tmp_path):
 
 def test_outcome_publisher_is_metadata_only(monkeypatch):
     monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://router")
-    monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "token")
+    monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "synthetic-only")
     captured = {}
 
-    class Response:
-        status_code = 200
+    class FakeSession:
+        trust_env = True
 
-    def fake_post(url, json, headers, timeout):
-        captured.update(json)
-        return Response()
+        def __enter__(self):
+            return self
 
-    monkeypatch.setattr("assistx.benchmark_controller.requests.post", fake_post)
+        def __exit__(self, *_args):
+            pass
+
+        def post(self, url, json, headers, timeout, allow_redirects):
+            captured.update(json)
+            captured["redirects_allowed"] = allow_redirects
+            captured["trust_env"] = self.trust_env
+            captured["admin_header_present"] = bool(headers.get("X-Admin-Token"))
+            return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(benchmark_controller.requests, "Session", FakeSession)
+    monkeypatch.setattr(
+        benchmark_controller.requests, "post",
+        lambda *_args, **_kwargs: pytest.fail("direct requests.post bypasses the safe session"),
+    )
     result = publish_benchmark_outcome(
         {
             "id": "task",
             "kind": "adaptive_model_benchmark",
             "payload_json": '{"benchmark":true,"model":"qwen","task_family":"coding"}',
         },
-        "x1",
-        "DONE",
+        "x1", "DONE",
         {"quality_score": 0.8, "validation_passed": True, "tokens_per_second": 22},
     )
 
     assert result["published"] is True
     assert captured["metadata"]["quality_score"] == 0.8
+    assert captured["redirects_allowed"] is False
+    assert captured["trust_env"] is False
+    assert captured["admin_header_present"] is True
     assert "prompt" not in str(captured).lower()
+
+
+def test_outcome_publisher_redirect_response_is_not_published(monkeypatch):
+    monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://router.invalid:8088")
+    monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "synthetic-only")
+    options = {}
+
+    class FakeSession:
+        trust_env = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def post(self, url, *, json, headers, timeout, allow_redirects):
+            options["redirects_allowed"] = allow_redirects
+            options["trust_env"] = self.trust_env
+            options["has_admin_header"] = bool(headers.get("X-Admin-Token"))
+            return SimpleNamespace(status_code=302)
+
+    monkeypatch.setattr(benchmark_controller.requests, "Session", FakeSession)
+    monkeypatch.setattr(
+        benchmark_controller.requests, "post",
+        lambda *_a, **_k: pytest.fail("legacy redirect-following session must not run"),
+    )
+    result = publish_benchmark_outcome(
+        {"id": "task", "kind": "adaptive_model_benchmark", "payload": {"benchmark": True}},
+        "synthetic-node", "DONE", {"validation_passed": True},
+    )
+    assert result == {"published": False, "status_code": 302}
+    assert options == {
+        "redirects_allowed": False,
+        "trust_env": False,
+        "has_admin_header": True,
+    }
+
+def test_outcome_transport_exception_never_echoes_credentials(monkeypatch):
+    monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://user:synthetic-password@router.invalid:8088")
+    monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "SYNTHETIC_SECRET_NEVER_PRINT")
+
+    class FakeSession:
+        trust_env = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def post(self, *_args, **_kwargs):
+            raise OSError("SYNTHETIC_SECRET_NEVER_PRINT untrusted failed origin URL")
+
+    monkeypatch.setattr(benchmark_controller.requests, "Session", FakeSession)
+    result = publish_benchmark_outcome(
+        {"id": "synthetic", "kind": "adaptive_model_benchmark", "payload": {"benchmark": True}},
+        "synthetic-node", "DONE", {"validation_passed": False},
+    )
+    assert result == {"published": False, "reason": "router_outcome_transport_unverified"}
+    assert "SYNTHETIC_SECRET_NEVER_PRINT" not in str(result)
+    assert "synthetic-password" not in str(result)
