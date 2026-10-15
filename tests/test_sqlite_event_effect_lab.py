@@ -177,8 +177,9 @@ def _separate_process_apply(path: str, key: str, payload_hash: str) -> str:
 
 def test_distinct_os_processes_one_atomic_effect(store):
     from concurrent.futures import ProcessPoolExecutor
+    from multiprocessing import get_context
 
-    with ProcessPoolExecutor(max_workers=4) as pool:
+    with ProcessPoolExecutor(max_workers=4, mp_context=get_context("spawn")) as pool:
         futures = [pool.submit(_separate_process_apply, str(store.path),
                                "op:process-race", digest()) for _ in range(4)]
         statuses = [f.result(timeout=25) for f in futures]
@@ -191,8 +192,9 @@ def test_distinct_os_processes_one_atomic_effect(store):
 
 def test_distinct_os_processes_two_effects_same_key_conflict(store):
     from concurrent.futures import ProcessPoolExecutor
+    from multiprocessing import get_context
 
-    with ProcessPoolExecutor(max_workers=2) as pool:
+    with ProcessPoolExecutor(max_workers=2, mp_context=get_context("spawn")) as pool:
         futures = [pool.submit(_separate_process_apply, str(store.path),
                                "op:process-conflict", digest({"actor": x}))
                    for x in ("actor-A", "actor-B")]
