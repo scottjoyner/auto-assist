@@ -131,6 +131,10 @@ def emit_projection(
         "reserve_only_pools": reserve_only_pools,
         "anonymous_pools_usable": anonymous_pools_usable,
         "kilo_anonymous_base_url": KILO_ANONYMOUS_BASE_URL,
+        # Fail-closed default: the trace database was NOT read. Upstream
+        # commit cb91c47d hardened this so "missing source" can never be
+        # mistaken for "observed, and empty". Ported from origin/main during rebase.
+        "trace_records_status": "source_unavailable",
         "projections_note": (
             "Projection is read-only and advisory. It does not approve, admit, "
             "dispatch, or terminate subagent processes. Scale verdict is suggested, "
@@ -158,6 +162,7 @@ def emit_projection(
             opencode_db_path = pathlib.Path.home() / ".local" / "share" / "opencode" / "opencode.db"
             if opencode_db_path.exists():
                 raw_records = trace_exporter_module.export_sessions(opencode_db_path)
+                projection["trace_records_status"] = "observed"
                 trace_records = [_annotate_trace_session(r) for r in raw_records]
                 projection["trace_records_count"] = len(trace_records)
                 projection["trace_records_sample"] = [
