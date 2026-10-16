@@ -123,4 +123,97 @@ wait "$one";wait "$two"
 race_cleanup
 echo 'PASS real_concurrent_executor_connections_one_effect_winner'
 
-echo 'EFFECT_AUTHORITY_LAB: PASS_RESTRICTED_ROLES_WITH_SUPERUSER_AND_PROVENANCE_NO_GO'
+
+# The revoker has no independently authenticated owner grant. Although its
+# credential cannot write tables, it can *choose* a new owner and un-revoke.
+[[ "$(user_sql fx_revoker "$revoker_secret" "SELECT fx.rotate(4,9,7,12,'arbitrary-owner',false)")" == '12' ]] || fail arbitrary_revoker_regrant_denied
+[[ "$(user_sql fx_executor "$executor_secret" "SELECT fx.execute_effect(7,12,'arbitrary-owner',17,repeat('c',32),repeat('f',64))")" == '17' ]] || fail arbitrary_owner_effect_denied
+echo 'NO_GO restricted_revoker_can_assign_arbitrary_owner_without_signed_grant'
+
+# First ordering: revoker obtains authority row lock and holds it through
+# COMMIT. The already authenticated executor must wait, then see revoked.
+[[ "$(user_sql fx_revoker "$revoker_secret" "SELECT fx.rotate(7,12,9,14,'owner-a',false)")" == '14' ]] || fail race_setup_regrant_failed
+race_scratch="$(mktemp -d /tmp/disposable-fx-revoke.XXXXXXXX)"
+cleanup_race() { rm -rf -- "$race_scratch"; }
+trap 'cleanup_race; cleanup' EXIT INT TERM
+(
+  docker exec --env PGPASSWORD="$revoker_secret" -i "$name"     psql -h 127.0.0.1 -U fx_revoker -d postgres -Atq -v ON_ERROR_STOP=1     > "$race_scratch/revoke-first.log" 2>&1 <<'SQLR'
+BEGIN;
+SELECT fx.rotate(9,14,10,15,'owner-b',true);
+\echo REVOKER_LOCK_HELD
+SELECT pg_sleep(3);
+COMMIT;
+SQLR
+) &
+revoker_pid=$!
+seen=0
+for i in $(seq 1 100);do
+ if grep -q REVOKER_LOCK_HELD "$race_scratch/revoke-first.log" 2>/dev/null;then seen=1;break;fi
+ sleep 0.05
+done
+[[ "$seen" == 1 ]] || fail revoker_lock_stage_unobserved
+(
+  if user_sql fx_executor "$executor_secret" "SELECT fx.execute_effect(9,14,'owner-a',18,repeat('d',32),repeat('f',64))" > "$race_scratch/effect-first.log" 2>&1;then
+    echo EXECUTED > "$race_scratch/executor-first-result"
+  else
+    echo DENIED > "$race_scratch/executor-first-result"
+  fi
+) &
+executor_pid=$!
+# Observe a real PostgreSQL lock wait, not just a shell scheduling delay.
+blocked=0
+for i in $(seq 1 100);do
+ blocked_now="$(admin_sql "SELECT count(*) FROM pg_stat_activity WHERE usename='fx_executor' AND wait_event_type='Lock'" 2>/dev/null || echo 0)"
+ if [[ "$blocked_now" == 1 ]];then blocked=1;break;fi
+ sleep 0.05
+done
+[[ "$blocked" == 1 ]] || fail executor_lock_wait_unobserved
+wait "$revoker_pid";wait "$executor_pid"
+[[ "$(cat "$race_scratch/executor-first-result")" == 'DENIED' ]] || fail stale_executor_won_after_revocation
+[[ "$(user_sql fx_observer "$observer_secret" 'SELECT count(*) FROM fx.applied WHERE commit_seq=18')" == 0 ]] || fail revoked_effect_committed
+echo 'PASS postgres_revocation_wins_row_lock_effect_denied'
+
+# Reverse ordering: executor holds the authority row lock AFTER executing
+# its local function, before transaction COMMIT. Revoker cannot preempt it.
+[[ "$(user_sql fx_revoker "$revoker_secret" "SELECT fx.rotate(10,15,11,16,'owner-a',false)")" == '16' ]] || fail effect_first_regrant_failed
+(
+ docker exec --env PGPASSWORD="$executor_secret" -i "$name"   psql -h 127.0.0.1 -U fx_executor -d postgres -Atq -v ON_ERROR_STOP=1   > "$race_scratch/effect-second.log" 2>&1 <<'SQLE'
+BEGIN;
+SELECT fx.execute_effect(11,16,'owner-a',19,repeat('3',32),repeat('f',64));
+\echo EXECUTOR_LOCK_HELD
+SELECT pg_sleep(3);
+COMMIT;
+SQLE
+) &
+executor_pid=$!
+seen=0
+for i in $(seq 1 100);do
+ if grep -q EXECUTOR_LOCK_HELD "$race_scratch/effect-second.log" 2>/dev/null;then seen=1;break;fi
+ sleep 0.05
+done
+[[ "$seen" == 1 ]] || fail executor_lock_stage_unobserved
+(
+ user_sql fx_revoker "$revoker_secret"   "SELECT fx.rotate(11,16,12,17,'owner-b',true)" > "$race_scratch/revoke-second.log" 2>&1
+) &
+revoker_pid=$!
+blocked=0
+for i in $(seq 1 100);do
+ blocked_now="$(admin_sql "SELECT count(*) FROM pg_stat_activity WHERE usename='fx_revoker' AND wait_event_type='Lock'" 2>/dev/null || echo 0)"
+ if [[ "$blocked_now" == 1 ]];then blocked=1;break;fi
+ sleep 0.05
+done
+[[ "$blocked" == 1 ]] || fail revoker_lock_wait_unobserved
+wait "$executor_pid";wait "$revoker_pid"
+[[ "$(cat "$race_scratch/revoke-second.log")" == 17 ]] || fail revoker_queued_commit
+[[ "$(user_sql fx_observer "$observer_secret" 'SELECT count(*) FROM fx.applied WHERE commit_seq=19')" == 1 ]] || fail permitted_effect_lost_before_revoke
+echo 'PASS postgres_effect_wins_row_lock_revocation_prospective_only'
+
+# Even after successful revocation, the revoker alone can revive the
+# previously revoked owner using a numerically increasing term/epoch.
+[[ "$(user_sql fx_revoker "$revoker_secret" "SELECT fx.rotate(12,17,13,18,'owner-a',false)")" == 18 ]] || fail old_owner_regrant_rejected
+[[ "$(user_sql fx_executor "$executor_secret" "SELECT fx.execute_effect(13,18,'owner-a',20,repeat('2',32),repeat('f',64))")" == 20 ]] || fail old_owner_execution_rejected
+echo 'NO_GO restricted_revoker_monotonic_epoch_can_reauthorize_previously_revoked_owner'
+cleanup_race
+trap cleanup EXIT INT TERM
+
+echo 'EFFECT_AUTHORITY_LAB: PASS_RESTRICTED_ROLES_AND_RACE_ORDER_WITH_CUSTODY_NO_GO'

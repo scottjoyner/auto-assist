@@ -163,7 +163,7 @@ def test_superuser_bypass_positively_exercised_not_hidden(script):
 
 
 def test_runtime_cannot_emit_go_label(script):
-    assert "PASS_RESTRICTED_ROLES_WITH_SUPERUSER_AND_PROVENANCE_NO_GO" in script
+    assert "PASS_RESTRICTED_ROLES_AND_RACE_ORDER_WITH_CUSTODY_NO_GO" in script
     assert "PRODUCTION_GO" not in script
     assert "production_release_authorized" not in script
 
