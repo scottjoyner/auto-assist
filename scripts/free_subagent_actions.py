@@ -143,7 +143,13 @@ def run_supervision_loop(
                         target["error"] = result.get("error")
                     actions_taken.append(target)
     elif verdict == "healthy":
-        models = enumerate_free_models()
+        ids = projection.get("free_model_ids")
+        source = "projection"
+        if isinstance(ids, list) and ids:
+            models = [{"id": mid} for mid in ids]
+        else:
+            models = enumerate_free_models()
+            source = "live_fallback"
         admitted = []
         for m in models[:admit_count]:
             if dry_run:
@@ -157,4 +163,5 @@ def run_supervision_loop(
         "dry_run": dry_run,
         "actions_taken": actions_taken,
         "action_count": len(actions_taken),
+        "model_source": locals().get("source"),
     }
