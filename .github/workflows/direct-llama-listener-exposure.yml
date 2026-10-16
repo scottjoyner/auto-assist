@@ -1,0 +1,78 @@
+name: Direct llama.cpp Listener Security Preflight (Read Only)
+
+on:
+  push:
+    branches:
+      - experiment/direct-llama-listener-exposure-preflight-20261011
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exposed-direct-endpoint-default-deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install source-only linter
+        run: python -m pip install 'ruff>=0.6,<1'
+      - name: Verify synthetic Linux process and socket security gates
+        run: |
+          python -m unittest discover -s tests \
+            -p 'test_direct_llama_listener_exposure.py' -q
+          python -m unittest discover -s tests \
+            -p 'test_direct_llama_cron_persistence.py' -q
+      - name: Strict lint
+        run: |
+          ruff check scripts/audit_direct_llama_listener.py \
+            scripts/audit_direct_llama_startup.py \
+            tests/test_direct_llama_listener_exposure.py \
+            tests/test_direct_llama_cron_persistence.py
+      - name: Audit source remains read-only, default DENY, and without network
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('scripts/audit_direct_llama_listener.py').read_text()
+          for val in (
+              '"can_approve": False',
+              '"can_renew": False',
+              '"can_dispatch": False',
+              '"api_authentication_proven": False',
+              '"signed_source_provenance": False',
+              '"independent_worker_execution_attested": False',
+              'BLOCKED_NON_LOOPBACK_DIRECT_LISTENER',
+              'BLOCKED_NO_TRUSTED_GATEWAY_OR_OWNER',
+              'return 1',
+          ):
+              assert val in src, val
+          for absent in (
+              'subprocess', 'urllib', 'requests', 'socket.connect',
+              'Ed25519PrivateKey', 'GraphDatabase', 'kill(', 'iptables',
+              'ufw ', 'sysctl ', 'docker run',
+          ):
+              assert absent not in src, absent
+          cron=Path('scripts/audit_direct_llama_startup.py').read_text()
+          for val in (
+              '"can_change_cron": False',
+              '"can_change_listener": False',
+              '"can_dispatch": False',
+              '"operator_change_approved": False',
+              '"proven_current_process_origin": False',
+              '"declared_host_loopback_proven": False',
+              '"other_launcher_current_process_proven": False',
+              '"listener_exposure_proven": False',
+              '"can_approve": False',
+              '"can_dispatch": False',
+              'BLOCKED_CRON_PERSISTENCE_CANDIDATE',
+              '["crontab", "-l"]',
+          ):
+              assert val in cron, val
+          for forbidden in ('crontab -e', 'crontab -r', 'systemctl restart',
+                            'systemctl stop', 'os.kill(', 'subprocess.Popen('):
+              assert forbidden not in cron, forbidden
+          print('Read-only direct socket and cron persistence audits only.')
+          PY
