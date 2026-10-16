@@ -1,0 +1,17 @@
+{
+  "actual_router_admin_credentials_copied": false,
+  "actual_router_admin_requests_from_worker": 0,
+  "backend_model_requests": 0,
+  "kind": "ASSISTX_PORTABLE_ROUTER_ADMIN_CLIENT_ACCEPTANCE",
+  "model_loaded_or_provider_health_attested": false,
+  "observed_at_utc": "2026-10-11T06:38:26.703056+00:00",
+  "production_services_changed": false,
+  "provider_parser_sha256": "ace12a5ef0b955cc249f14ac45db2e0f8794d63e5d69f84d55badc63250f82d0",
+  "provider_tests_sha256": "e5f1cf9117dfdb268136d01b9084b6e551e4926642c11aa5dfa5683e80f72aa3",
+  "python_version": "3.12.3",
+  "router_admin_client_sha256": "fb1e9b7ee8dd803553c746538d883304f8e47bcd6f75cef83a0da7d7f1618753",
+  "router_admin_tests_sha256": "56e9698611025b8ce0e616d4cf2ad57ea6a443082421cdfb0d0deb059bc9b953",
+  "schema_version": 1,
+  "stdlib_tests_passed": 16,
+  "worker_node": "lenovo"
+}

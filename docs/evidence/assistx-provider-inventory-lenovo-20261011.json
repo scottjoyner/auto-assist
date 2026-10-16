@@ -1,0 +1,16 @@
+{
+  "kind": "ASSISTX_EFFECTIVE_PROVIDER_PORTABLE_ACCEPTANCE",
+  "live_credentials_copied": false,
+  "live_router_requests_from_worker": false,
+  "node": "lenovo",
+  "observed_at_utc": "2026-10-11T05:52:04.646302+00:00",
+  "parser_sha256": "ace12a5ef0b955cc249f14ac45db2e0f8794d63e5d69f84d55badc63250f82d0",
+  "portable_tests_passed": 10,
+  "production_service_or_network_changes": false,
+  "python_version": "3.12.3",
+  "real_iphone_or_battery_attested": false,
+  "real_model_or_loaded_state_attested": false,
+  "schema_version": 1,
+  "tests_sha256": "e5f1cf9117dfdb268136d01b9084b6e551e4926642c11aa5dfa5683e80f72aa3",
+  "unit_tests_use_only_synthetic_responses": true
+}

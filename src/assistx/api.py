@@ -1285,8 +1285,24 @@ def _fetch_auto_router_fleet_report() -> dict[str, Any]:
         }
 
     source_url = f"{base_url}/admin/ops/summary"
+    admin_token = os.getenv("AUTO_ROUTER_ADMIN_TOKEN", "").strip()
+    if not admin_token:
+        return {
+            "ok": False,
+            "configured": True,
+            "source_url": source_url,
+            "error": "AUTO_ROUTER_ADMIN_TOKEN is missing",
+            "report": {},
+            "summary": {},
+            "loadouts": [],
+            "task_profiles": [],
+        }
     try:
-        summary = _fetch_json(source_url)
+        from .router_admin_client import fetch_router_ops_summary
+
+        summary = fetch_router_ops_summary(
+            base_url=base_url, admin_token=admin_token, request_get=requests.get,
+        )
     except Exception as exc:
         return {
             "ok": False,
