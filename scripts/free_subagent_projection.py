@@ -131,9 +131,16 @@ def emit_projection(
         "reserve_only_pools": reserve_only_pools,
         "anonymous_pools_usable": anonymous_pools_usable,
         "kilo_anonymous_base_url": KILO_ANONYMOUS_BASE_URL,
-        # Fail-closed default: the trace database was NOT read. Upstream
-        # commit cb91c47d hardened this so "missing source" can never be
-        # mistaken for "observed, and empty". Ported from origin/main during rebase.
+        # Fail-closed defaults: the trace database was NOT read. Upstream commit
+        # 7318b832 / cb91c47d added this whole block so a missing source can never
+        # be mistaken for "observed, and empty" -- and so every trace_* key is
+        # always present. Ported wholesale from origin/main during the rebase.
+        "trace_records_count": 0,
+        "trace_records_sample": [],
+        "trace_provider_summary": {},
+        "trace_route_kind_summary": {},
+        "trace_model_attribution_summary": {},
+        "trace_unresolved_router_aliases": [],
         "trace_records_status": "source_unavailable",
         "projections_note": (
             "Projection is read-only and advisory. It does not approve, admit, "
