@@ -906,3 +906,181 @@ def test_projection_surfaces_session_discovery_failure_and_holds(monkeypatch, tm
     assert proj["subagent_records"] == 0
     assert proj["suggested_scale_verdict"] == "hold"
     assert proj["session_discovery_error"] == "RuntimeError: opencode db unavailable"
+
+
+def test_terminate_subagent_does_not_signal_unverified_pid(monkeypatch):
+    import os
+
+    def reject_kill(*args):
+        raise AssertionError("never signal a PID from an untrusted state record")
+
+    monkeypatch.setattr(os, "kill", reject_kill)
+    result = supervisor.terminate_subagent(999999999, "sess-dead")
+    assert result["action"] == "denied_unverified_process_owner"
+    assert result["pid"] == 999999999
+
+
+def test_cleanup_stale_identifies_old_records():
+    from datetime import UTC, datetime
+
+    with tempfile.NamedTemporaryFile("w+", suffix=".jsonl", delete=False) as tf:
+        path = pathlib.Path(tf.name)
+    try:
+        old_ts = datetime.now(UTC).replace(hour=0, minute=0, second=0).strftime("%Y-%m-%dT00:00:00Z")
+        rec = {
+            "title": "stale-test",
+            "objective": "o",
+            "model": "openrouter/anthropic/claude-3.5-sonnet",
+            "worktree": "/tmp/wt-stale",
+            "pid": 4242,
+            "session": "stale-sess",
+            "status": "active",
+            "updated_at": old_ts,
+        }
+        path.write_text(json.dumps(rec, sort_keys=True) + "\n")
+        recs = supervisor.inspect_subagents(path)
+        targets = supervisor.cleanup_stale(recs, max_age_minutes=10)
+        assert len(targets) == 1
+        assert targets[0]["pid"] == 4242
+        assert targets[0]["reason"] == "stale"
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_cleanup_duplicates_identifies_conflicts():
+    with tempfile.NamedTemporaryFile("w+", suffix=".jsonl", delete=False) as tf:
+        path = pathlib.Path(tf.name)
+    try:
+        supervisor.register_subagent({
+            "title": "dup-a", "objective": "o", "model": "openrouter/anthropic/claude-3.5-sonnet",
+            "worktree": "/tmp/wt-dup", "pid": 111, "session": "sess-a", "status": "active",
+        }, path)
+        supervisor.register_subagent({
+            "title": "dup-b", "objective": "o", "model": "openrouter/anthropic/claude-3.5-sonnet",
+            "worktree": "/tmp/wt-dup", "pid": 222, "session": "sess-b", "status": "active",
+        }, path)
+        recs = supervisor.inspect_subagents(path)
+        targets = supervisor.cleanup_duplicates(recs)
+        assert len(targets) == 1
+        assert targets[0]["reason"] == "duplicate_worktree"
+        assert targets[0]["pid"] == 222
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_cleanup_looping_identifies_conflicts():
+    with tempfile.NamedTemporaryFile("w+", suffix=".jsonl", delete=False) as tf:
+        path = pathlib.Path(tf.name)
+    try:
+        supervisor.register_subagent({
+            "title": "loop-a", "objective": "o", "model": "openrouter/anthropic/claude-3.5-sonnet",
+            "worktree": "/tmp/wt-loop", "pid": 111, "session": "loop-sess", "status": "active",
+        }, path)
+        supervisor.register_subagent({
+            "title": "loop-b", "objective": "o", "model": "openrouter/anthropic/claude-3.5-sonnet",
+            "worktree": "/tmp/wt-loop", "pid": 222, "session": "loop-sess", "status": "running",
+        }, path)
+        recs = supervisor.inspect_subagents(path)
+        targets = supervisor.cleanup_looping(recs)
+        assert len(targets) == 1
+        assert targets[0]["reason"] == "looping"
+        assert targets[0]["pid"] == 222
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_admit_subagent_registers_record():
+    with tempfile.NamedTemporaryFile("w+", suffix=".jsonl", delete=False) as tf:
+        path = pathlib.Path(tf.name)
+    try:
+        result = supervisor.admit_subagent({"id": "openrouter/claude-3.5-sonnet"}, path)
+        assert result["admitted"] is True
+        assert result["model"] == "openrouter/claude-3.5-sonnet"
+        assert result["total_records"] == 1
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_supervise_hold_terminates_stale_dry_run():
+    from datetime import UTC, datetime
+
+    with tempfile.NamedTemporaryFile("w+", suffix=".jsonl", delete=False) as tf:
+        path = pathlib.Path(tf.name)
+    try:
+        old_ts = datetime.now(UTC).replace(hour=0, minute=0, second=0).strftime("%Y-%m-%dT00:00:00Z")
+        rec = {
+            "title": "stale-supervise", "objective": "o", "model": "openrouter/anthropic/claude-3.5-sonnet",
+            "worktree": "/tmp/wt-supervise", "pid": 5555, "session": "supervise-stale",
+            "status": "active", "updated_at": old_ts,
+        }
+        path.write_text(json.dumps(rec, sort_keys=True) + "\n")
+        proj = supervisor.emit_projection(
+            free_models=[{"id": "kilo/kilo-auto/free", "provider": "kilo", "base_url": supervisor.KILO_ANONYMOUS_BASE_URL}],
+            state_path=path,
+            discover_fn=lambda query_only=True: [],
+        )
+        assert proj["suggested_scale_verdict"] == "hold"
+        result = supervisor.run_supervision_loop(projection=proj, state_path=path, dry_run=True)
+        assert result["verdict"] == "hold"
+        assert result["dry_run"] is True
+        stale_actions = [a for a in result["actions_taken"] if a["reason"] == "stale"]
+        assert len(stale_actions) == 1
+        assert stale_actions[0]["pid"] == 5555
+        assert stale_actions[0]["action"] == "dry_run"
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_supervise_healthy_admits_subagent_dry_run():
+    with tempfile.NamedTemporaryFile("w+", suffix=".jsonl", delete=False) as tf:
+        path = pathlib.Path(tf.name)
+    try:
+        proj = supervisor.emit_projection(
+            free_models=[{"id": "kilo/kilo-auto/free", "provider": "kilo", "base_url": supervisor.KILO_ANONYMOUS_BASE_URL}],
+            state_path=path,
+            discover_fn=lambda query_only=True: [],
+        )
+        assert proj["suggested_scale_verdict"] == "healthy"
+        result = supervisor.run_supervision_loop(projection=proj, state_path=path, dry_run=True)
+        assert result["verdict"] == "healthy"
+        assert result["dry_run"] is True
+        assert len(result["actions_taken"]) >= 1
+        assert any(a.get("action") == "dry_run" for a in result["actions_taken"])
+    finally:
+        path.unlink(missing_ok=True)
+
+def test_active_supervision_denies_stale_record_process_termination(monkeypatch, tmp_path):
+    def reject(*args, **kwargs):
+        raise AssertionError("active process effects must not be reached")
+
+    monkeypatch.setattr(supervisor, "terminate_subagent", reject)
+    path = tmp_path / "subagents.jsonl"
+    path.write_text('{"pid":1,"session":"forged","status":"active"}\n')
+    previous = path.read_bytes()
+    result = supervisor.run_supervision_loop(
+        projection={"suggested_scale_verdict": "hold", "subagent_records": 1},
+        state_path=path, dry_run=False)
+    assert result["verdict"] == "hold"
+    assert result["blocked"] is True
+    assert result["actions_taken"] == []
+    assert path.read_bytes() == previous
+
+
+def test_active_supervision_denies_unverified_admission(monkeypatch, tmp_path):
+    def reject(*args, **kwargs):
+        raise AssertionError("admission must require resource authority")
+
+    monkeypatch.setattr(supervisor, "admit_subagent", reject)
+    path = tmp_path / "empty.jsonl"
+    result = supervisor.run_supervision_loop(
+        projection={"suggested_scale_verdict": "healthy", "free_model_ids": ["free/example"]},
+        state_path=path, dry_run=False)
+    assert result["verdict"] == "hold"
+    assert result["requested_verdict"] == "healthy"
+    assert result["actions_taken"] == []
+    assert not path.exists()
+
+
+def test_cli_active_supervision_requires_resource_owned_authority(capsys):
+    assert supervisor.main(["--supervise", "--no-dry-run"]) == 3
+    assert "active_supervision_denied_without_resource_owned_authority" in capsys.readouterr().err
