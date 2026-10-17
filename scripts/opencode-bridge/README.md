@@ -10,10 +10,11 @@ Last updated: 2026-07-17.
   AssistX idempotently, then refreshes auto-router. Re-run (or cron) to keep
   AssistX in sync with the configs. This is the "configs dynamically go into
   AssistX" piece.
-    - Run: `ASSISTX_PASS=fuck-you python3 sync_configs_to_assistx.py`
+    - Run: `ASSISTX_PASS=<obtain-from-secret-store> python3 sync_configs_to_assistx.py`
     - `--dry-run` to preview.
 - **B) Router-aware** — `router_pick.py`
-  POSTs to auto-router `/api/routes/request` with a task profile; returns the
+  POSTs to auto-router `/api/routes/request` with a task profile and
+  narrowly scoped `AUTO_ROUTER_ROUTE_DECISION_TOKEN` Bearer credential; returns the
   chosen provider/model. WORKS — but only honors `request.model` when that model
   is actually LOADED on its node (see "Critical finding" below).
 - **C) Dispatch** — `dispatch_assistx_task.py`
@@ -74,3 +75,16 @@ state mid-load during the live swarm test.)
 - scripts/opencode-bridge/router_pick.py               (Hybrid B client)
 - scripts/opencode-bridge/dispatch_assistx_task.py     (Hybrid C)
 - opencode config: ~/.config/opencode/opencode.local-fleet.json (symlinked active)
+
+
+## Route-decision authentication gate (October 17, 2026)
+
+For a candidate Auto-Router that enforces route-decision authentication,
+provision the **separate** `AUTO_ROUTER_ROUTE_DECISION_TOKEN` securely to the
+OpenCode bridge and the router runtime. Do not reuse admin credentials, model
+executor JWTs, or inference/service tokens. The bridge denies missing credentials
+*before* the optional pre-route synchronization, and never prints the token.
+Verify a deliberately invalid token returns HTTP 401 on the isolated canary;
+only activate against a live router after scoped credential custody, old-client
+inventory, approved staged rollout, and rollback validation. The default
+networkless staging canary does not accept any route-decision credentials.
