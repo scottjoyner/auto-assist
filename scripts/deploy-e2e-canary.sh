@@ -20,6 +20,7 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   echo "Copy deploy/canary.env.example and replace every placeholder." >&2
   exit 2
 fi
+python "${ROOT}/scripts/verify-release-build.py"
 command -v docker >/dev/null
 docker compose version >/dev/null
 compose_version="$(docker compose version --short | sed 's/^v//')"

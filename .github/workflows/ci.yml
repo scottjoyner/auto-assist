@@ -20,6 +20,9 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
+      - name: Containerless release build contract
+        run: make release-verify
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip

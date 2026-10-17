@@ -288,3 +288,13 @@ go-live-gate:
 
 go-live-check: go-live-preflight go-live-smoke go-live-gate
 	@echo "Go-live checks passed."
+
+# No Docker daemon or application imports are needed for this source gate.
+PYTHON_BIN ?= python
+.PHONY: release-verify
+release-verify:
+	@$(PYTHON_BIN) scripts/verify-release-build.py
+	@$(PYTHON_BIN) -m unittest discover -s tests/release_build -p 'test_*.py'
+	@$(PYTHON_BIN) -m compileall -q src tests scripts
+	@bash -n scripts/deploy-e2e-canary.sh scripts/rollback-e2e-canary.sh entrypoint.sh
+	@git diff --check
