@@ -10,11 +10,36 @@ shell syntax, whitespace, and seven positive/negative build-contract tests.
 CI runs it before dependency installation. Deployment also invokes the build
 contract before Docker startup.
 
-This is a source gate, not a complete release certification. It does **not** render
-the merged Compose model, resolve dependencies, build an image, verify external
+This is a source gate, not a complete release certification. It does **not**
+resolve dependencies, build an image, verify external
 downloads, exercise API routes, run the application suite, or establish live fleet
 acceptance. Unsupported COPY syntax fails closed until the verifier is extended.
 The existing CI unit and recovery jobs remain independent requirements.
+
+## Real Compose rendering without containers
+
+Run `make release-verify-compose` with Docker Compose 2.24.4+ installed. A standalone
+Compose executable also works: `make release-verify-compose COMPOSE_COMMAND=/path/to/docker-compose`.
+This uses Compose itself to merge all three canary files, including `!override`,
+interpolate a temporary example environment, and produce normalized JSON. No daemon
+is contacted and no containers are started. The renderer clears inherited environment
+variables and prints only validation findings, never resolved configuration values.
+
+CI runs this gate independently. Deployment validates its **actual** resolved JSON
+through the same checker before building or starting any service. It checks service
+identity, network isolation, loopback ports, internal service DNS, unsafe execution
+flags, executor opt-in, and project-scoped volumes. Host binds and external volumes
+are rejected. The canary overlay now removes inherited production source, SSH,
+signing-key, NAS, SSD, and repository mounts. It uses the image's source code and
+isolated durable state instead.
+
+The executor profile is opt-in; the existing explicit `CANARY_START_HERMES=true`
+service selection remains available. Code-improvement and signed executor stages
+still need a separately reviewed contained workspace/key configuration; this gate
+does not authorize adding production mounts. External Neo4j and inference endpoints
+remain explicit configured dependencies, not proven isolated by this check. Runtime
+health, secret validity, image dependency compatibility and actual canary workloads
+still require their own acceptance evidence.
 
 ## Remaining release evidence
 

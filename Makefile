@@ -298,3 +298,9 @@ release-verify:
 	@$(PYTHON_BIN) -m compileall -q src tests scripts
 	@bash -n scripts/deploy-e2e-canary.sh scripts/rollback-e2e-canary.sh entrypoint.sh
 	@git diff --check
+
+# Compose CLI required; Docker daemon is not used.
+COMPOSE_COMMAND ?= docker compose
+.PHONY: release-verify-compose
+release-verify-compose:
+	@$(PYTHON_BIN) scripts/verify-canary-compose.py --compose-command "$(COMPOSE_COMMAND)"
