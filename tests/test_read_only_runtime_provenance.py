@@ -2,13 +2,22 @@
 from __future__ import annotations
 
 import copy
+
+# The installed "scripts" namespace is not necessarily this repository's
+# scripts/ directory in hosted CI. Load the exact checkout file by path.
+import importlib.util
 import json
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from scripts import read_only_runtime_provenance as audit
+MODULE = Path(__file__).resolve().parents[1] / "scripts/read_only_runtime_provenance.py"
+SPEC = importlib.util.spec_from_file_location("read_only_runtime_provenance_under_test", MODULE)
+assert SPEC is not None and SPEC.loader is not None
+audit = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(audit)
 
 SECRET = "not-a-real-secret-for-a-fake-identity"
 
