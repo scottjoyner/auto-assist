@@ -211,6 +211,14 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(proj, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         return 0
 
+    if (args.supervise or args.loop) and not args.dry_run:
+        print(json.dumps({
+            "status": "HOLD",
+            "error": "active_supervision_denied_without_resource_owned_authority",
+            "actions_taken": [],
+        }, sort_keys=True), file=sys.stderr)
+        return 3
+
     if args.supervise or args.loop:
         while True:
             proj = emit_projection(
