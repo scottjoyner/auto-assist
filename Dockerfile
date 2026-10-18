@@ -28,13 +28,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     XDG_CACHE_HOME=/app/.cache \
     TRANSCRIPTIONS_ROOT=/app/transcriptions
 
-# ---- Python deps (assistx first, then hermes-agent on top) ----
+# ---- AssistX dependencies stay in the application interpreter ----
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# ---- Install Hermes CLI (installs side-by-side; hermes pins its own deps) ----
-RUN pip install --no-cache-dir "hermes-agent[all]"
-# Hermes can change shared dependencies; reject an inconsistent final environment.
+# ---- Hermes owns a separate interpreter: its pins conflict with AssistX. ----
+COPY requirements-hermes.txt /app/requirements-hermes.txt
+RUN python -m venv /opt/hermes
+RUN /opt/hermes/bin/python -m pip install --no-cache-dir -r /app/requirements-hermes.txt
+RUN /opt/hermes/bin/python -m pip check
+RUN ln -s /opt/hermes/bin/hermes /usr/local/bin/hermes
+# Check both dependency sets; never add the Hermes venv to application PATH.
 RUN pip check
 RUN which hermes && hermes --version
 

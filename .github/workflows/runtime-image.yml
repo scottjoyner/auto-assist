@@ -1,0 +1,39 @@
+name: runtime-image
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - requirements*.txt
+      - entrypoint.sh
+      - src/**
+      - scripts/verify-runtime-image.py
+      - .github/workflows/runtime-image.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build final runtime image (no push)
+        run: docker build --pull --tag assistx-runtime-check .
+      - name: Check isolated interpreters without network or host mounts
+        run: |
+          docker run --rm --network none --entrypoint python assistx-runtime-check -m pip check
+          docker run --rm --network none --entrypoint /opt/hermes/bin/python assistx-runtime-check -m pip check
+          docker run --rm --network none --entrypoint python -i assistx-runtime-check - < scripts/verify-runtime-image.py
+          docker run --rm --network none --entrypoint hermes assistx-runtime-check --version
+      - name: Record source and image identity
+        run: |
+          mkdir -p runtime-image-evidence
+          git rev-parse HEAD > runtime-image-evidence/source-sha.txt
+          docker image inspect assistx-runtime-check --format '{{.Id}}' > runtime-image-evidence/image-id.txt
+          docker run --rm --network none --entrypoint python assistx-runtime-check -m pip freeze > runtime-image-evidence/assistx-freeze.txt
+          docker run --rm --network none --entrypoint /opt/hermes/bin/python assistx-runtime-check -m pip freeze > runtime-image-evidence/hermes-freeze.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-image-evidence
+          path: runtime-image-evidence/
+          if-no-files-found: error
