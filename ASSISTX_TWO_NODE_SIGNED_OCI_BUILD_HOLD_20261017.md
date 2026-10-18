@@ -118,3 +118,20 @@ operator_trusted_independent_signer_proven=false.
 **No production merge, service restart, image release/push,
 persistent signer key provisioning, live DBMS/credential/network
 change, TPM NV, NAS transfer or automatic fleet failover performed.**
+
+## Initial hosted test collection failure and correction
+
+The first draft PR410 exact-head hosted CI run #39087207319 had real
+runner assignment and executed unit steps but FAILED during test
+collection: an ambient, unrelated installed Python package named
+scripts shadowed the repository source directory. The two new test
+modules initially imported from that ambiguous top-level namespace.
+Recovery-canary and handoff jobs SUCCEEDED independently.
+
+The following corrective commit changes *test imports only* to bind
+them explicitly to the research source files beside the tests, not
+to any installed scripts package. Reproduction on x1-370 using the
+pytest executable with PYTHONPATH UNSET passed all 33 new OCI/lab
+tests and the full 101 focused source suite. Ruff PASS. The
+original first hosted unit failure is not reclassified as PASS;
+a new exact-head hosted CI run must execute successfully.

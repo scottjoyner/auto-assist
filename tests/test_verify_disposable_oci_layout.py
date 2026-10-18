@@ -10,7 +10,15 @@ from pathlib import Path
 
 import pytest
 
-from scripts import verify_disposable_oci_layout as oci
+import importlib.util
+
+SPEC = importlib.util.spec_from_file_location(
+    "disposable_oci_layout_under_test",
+    Path(__file__).resolve().parents[1] / "scripts/verify_disposable_oci_layout.py",
+)
+assert SPEC is not None and SPEC.loader is not None
+oci = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(oci)
 
 SOURCE = b"print('verified source fixture')\n"
 

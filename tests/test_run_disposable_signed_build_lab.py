@@ -7,8 +7,19 @@ import json
 
 import pytest
 
-from scripts import run_disposable_signed_build_lab as lab
-from scripts.verify_signed_image_provenance import ProvenanceHold, verify
+import importlib
+import sys
+from pathlib import Path
+
+# The full repository's pytest environment may install an unrelated
+# top-level "scripts" package. Load exact sibling research files
+# instead of importing that ambient package by name.
+source_dir = str(Path(__file__).resolve().parents[1] / "scripts")
+sys.path.insert(0, source_dir)
+lab = importlib.import_module("run_disposable_signed_build_lab")
+provenance = importlib.import_module("verify_signed_image_provenance")
+ProvenanceHold = provenance.ProvenanceHold
+verify = provenance.verify
 
 
 def config(*, network="none", readonly=True, capdrop=None, opts=None):
@@ -110,7 +121,8 @@ def test_pinned_remote_signer_key_is_ephemeral_and_claim_not_trust():
 def test_attestation_signature_with_forged_builder_denied(monkeypatch):
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from scripts.verify_signed_image_provenance import PAYLOAD_TYPE, pae
+    PAYLOAD_TYPE = provenance.PAYLOAD_TYPE
+    pae = provenance.pae
 
     signer = Ed25519PrivateKey.generate()
     pub = signer.public_key().public_bytes(
