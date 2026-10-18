@@ -44,33 +44,16 @@ SOURCE = Path(__file__).resolve().with_name("verify_signed_image_provenance.py")
 IMAGE_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 CONTAINER_RE = re.compile(r"[0-9a-f]{64}\Z")
 
-REMOTE_SIGNER = r"""
-import base64, hashlib, json, sys
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-payload = sys.stdin.buffer.read(65537)
-if not (0 < len(payload) <= 65536):
-    raise ValueError('invalid bounded payload')
-key = Ed25519PrivateKey.generate()
-pub = key.public_key().public_bytes(
-    encoding=serialization.Encoding.Raw,
-    format=serialization.PublicFormat.Raw,
+# The remote verification program is an exact locally pinned source file.
+# We send its source through SSH, but the remote host checks the OCI archive
+# bytes itself before reconstructing its own signed statement. This is
+# independent execution, NOT independently trusted signer custody.
+REMOTE_SOURCE = Path(__file__).resolve().with_name(
+    "disposable_remote_artifact_attestor.py"
 )
-typ = b'application/vnd.in-toto+json'
-pae = b'DSSEv1 ' + str(len(typ)).encode() + b' ' + typ + b' ' + str(len(payload)).encode() + b' ' + payload
-out = {
-    'envelope': {
-        'payloadType': typ.decode(),
-        'payload': base64.b64encode(payload).decode(),
-        'signatures': [{
-            'keyid': hashlib.sha256(pub).hexdigest(),
-            'sig': base64.b64encode(key.sign(pae)).decode(),
-        }],
-    },
-    'ephemeral_public_key': base64.b64encode(pub).decode(),
-}
-sys.stdout.write(json.dumps(out, sort_keys=True))
-"""
+EXPECTED_REMOTE_SOURCE_BLOB = "23891d62a04347aca19070f35fabba761e8476f2"
+
+
 
 
 class LabHold(RuntimeError):
@@ -155,28 +138,47 @@ def _statement(digest: str) -> bytes:
     return json.dumps(body, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
-def _destroyer_sign(payload: bytes) -> tuple[dict[str, Any], bytes]:
-    # This is a disposable remotely generated key with NO trusted signer
-    # custody or publicly reviewed trust root. It is not an attestation
-    # from the actual build executor on x1-370.
+def _destroyer_sign(oci_archive: bytes) -> tuple[dict[str, Any], bytes, dict[str, str]]:
+    # No attacker-supplied statement is sent to the signer. Destroyer is
+    # given the actual OCI bytes and MUST independently validate every
+    # descriptor, layer diff_id, source blob and sandbox runtime config
+    # before it constructs the DSSE payload and generates a test key.
+    if not isinstance(oci_archive, bytes) or not (
+        0 < len(oci_archive) <= 8 * 1024 * 1024
+    ):
+        raise LabHold("remote signer input artifact exceeds bounded size")
+    code = REMOTE_SOURCE.read_bytes()
+    if git_blob_sha(code) != EXPECTED_REMOTE_SOURCE_BLOB:
+        raise LabHold("remote verifier code not pinned to expected Git blob")
     result = _cmd(
         "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
         "-o", "StrictHostKeyChecking=yes",
-        "destroyer", "python3 -c " + shlex.quote(REMOTE_SIGNER),
-        input=payload, timeout=19,
+        "destroyer", "python3 -c " + shlex.quote(code.decode("utf-8")),
+        input=oci_archive, timeout=38,
     )
     try:
         doc = json.loads(result)
         if not isinstance(doc, dict) or set(doc) != {
             "envelope", "ephemeral_public_key",
+            "remote_observed_manifest_sha256",
+            "remote_verified_source_git_blob",
         }:
-            raise LabHold("unexpected disposable signer output")
+            raise LabHold("unexpected disposable remote attestation response")
         pub = base64.b64decode(doc["ephemeral_public_key"], validate=True)
         if len(pub) != 32:
             raise LabHold("invalid remote ephemeral signing public key")
-        return doc["envelope"], pub
+        observed = {
+            "manifest_sha256": doc["remote_observed_manifest_sha256"],
+            "source_git_blob": doc["remote_verified_source_git_blob"],
+        }
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", observed["manifest_sha256"])
+            or observed["source_git_blob"] != EXPECTED_SOURCE_BLOB
+        ):
+            raise LabHold("remote signed source/image digest was not valid")
+        return doc["envelope"], pub, observed
     except (ValueError, TypeError, KeyError) as exc:
-        raise LabHold("invalid isolated remote signer response") from exc
+        raise LabHold("invalid isolated remote attestor response") from exc
 
 
 def _real_runtime(container_id: str, manifest_id: str) -> dict[str, Any]:
@@ -264,8 +266,17 @@ def run() -> dict[str, Any]:
             if not CONTAINER_RE.fullmatch(container_id):
                 raise LabHold("disposable Docker run returned invalid container ID")
             runtime = _real_runtime(container_id, image_id)
-            payload = _statement(artifact["manifest_sha256"])
-            envelope, remote_key = _destroyer_sign(payload)
+            # Destroyer sees the OCI archive itself, not x1's prewritten
+            # source/manifest claims. This is still research-only: the
+            # verifier source/policy originates from the invoking host.
+            oci_bytes = Path(image_tar).read_bytes()
+            envelope, remote_key, observed = _destroyer_sign(oci_bytes)
+            if (
+                observed["manifest_sha256"] != artifact["manifest_sha256"]
+                or observed["source_git_blob"] != EXPECTED_SOURCE_BLOB
+            ):
+                raise LabHold("x1 builder and Destroyer independent OCI digests disagree")
+
             result = verify(
                 envelope=envelope, public_key=remote_key,
                 expected_key_sha256=hashlib.sha256(remote_key).hexdigest(),
@@ -329,6 +340,8 @@ def run() -> dict[str, Any]:
                 "signature_valid_under_ephemeral_test_root": True,
                 "operator_trusted_independent_signer_proven": False,
                 "runtime_manifest_matches_signed_subject": True,
+                "remote_verified_artifact_before_signing": True,
+                "remote_reconstructed_statement_without_builder_claims": True,
                 "source_git_blob_matches_oci_layer": True,
                 "mutated_signature_denied": True,
                 "substituted_image_denied": True,
