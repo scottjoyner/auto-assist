@@ -671,6 +671,101 @@ class Neo4jClient:
                 )
             return ticket_id
 
+    def create_owned_task(
+        self,
+        *,
+        title: str,
+        task_type: str,
+        status: str,
+        kind: str | None,
+        required_capabilities: list[str] | None,
+        target_agent_id: str | None,
+        priority: str | None,
+        payload: dict[str, Any] | None,
+        idempotency_key: str | None,
+        preemptible: bool,
+        max_migrations: int,
+        owner: dict[str, str],
+    ) -> dict[str, Any]:
+        """Separate owner-scoped, create-only task writer (strict mode only).
+
+        Requires a *previously installed* Neo4j uniqueness constraint; no
+        database migration is attempted by the application. An idempotent
+        retry returns the same Task unchanged; it cannot rewrite another
+        user's stored task or mutate a task after it is claimed.
+        """
+        from .owner_identity import OWNER_CONSTRAINT, scoped_key, canonical_identity
+
+        identity = canonical_identity(owner, origin="verified task owner")
+        key = scoped_key(identity, idempotency_key or uuid.uuid4().hex)
+        creation_nonce = uuid.uuid4().hex
+        task_id = uuid.uuid4().hex
+        props = {
+            "title": title,
+            "ticket_type": task_type,
+            "status": status,
+            "kind": kind or task_type,
+            "required_capabilities": required_capabilities or [],
+            "target_agent_id": target_agent_id,
+            "priority": priority,
+            "payload_json": json.dumps(payload or {}),
+            "preemptible": bool(preemptible),
+            "max_migrations": max(0, min(int(max_migrations), 10)),
+            "owner_issuer": identity["owner_issuer"],
+            "owner_subject": identity["owner_subject"],
+        }
+
+        with self._session() as session:
+            constraint = session.run(
+                """
+                SHOW CONSTRAINTS
+                YIELD name, type, labelsOrTypes, properties
+                WHERE name=$name
+                RETURN name, type, labelsOrTypes, properties
+                LIMIT 1
+                """,
+                {"name": OWNER_CONSTRAINT},
+            ).single()
+            if (not constraint or constraint.get("type") != "UNIQUENESS"
+                or list(constraint.get("labelsOrTypes") or []) != ["Task"]
+                or list(constraint.get("properties") or []) != ["owner_idempotency_key"]):
+                raise ValueError("exact Task owner uniqueness constraint missing: NO_GO")
+
+            def create(tx):
+                row = tx.run(
+                    """
+                    MERGE (t:Task {owner_idempotency_key:$owner_key})
+                    ON CREATE SET t.id=$id, t.creation_nonce=$nonce,
+                        t.created_at=datetime(), t.created_at_ts=timestamp(),
+                        t.updated_at=datetime(), t.updated_at_ts=timestamp(),
+                        t += $props
+                    RETURN t.id AS id,
+                           t.creation_nonce AS creation_nonce,
+                           t.owner_issuer AS owner_issuer,
+                           t.owner_subject AS owner_subject
+                    """,
+                    {"owner_key":key, "id":task_id, "nonce":creation_nonce,
+                     "props":props},
+                ).single()
+                if not row:
+                    raise ValueError("owner task creation not acknowledged")
+                if (row.get("owner_issuer") != identity["owner_issuer"] or
+                    row.get("owner_subject") != identity["owner_subject"]):
+                    raise ValueError("owner idempotency key collision: NO_GO")
+                return {"task_id":row["id"],
+                        "created":row.get("creation_nonce")==creation_nonce,
+                        "dispatch_id":None}
+            result = session.execute_write(create)
+        if result["created"]:
+            notify_task_created(
+                task_id=result["task_id"],
+                correlation_id=(payload or {}).get("correlation_id"),
+                title=title,
+                required_capabilities=required_capabilities,
+                kind=kind,
+            )
+        return result
+
     def create_tasks_batch(self, tasks: list[dict]) -> int:
         """Create many READY tasks in a single session.
 

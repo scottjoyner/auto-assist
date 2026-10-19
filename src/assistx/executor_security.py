@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
+from .owner_identity import TaskOwnerError, task_owner, owner_required
 from pydantic import BaseModel, Field
 
 _INTERNAL_IDENTITY_HEADER = b"x-assistx-executor-identity"
@@ -407,6 +408,12 @@ def build_executor_security_router(neo_factory: Callable[[], Any]) -> APIRouter:
             active, reason = False, "projection_not_approved"
         elif projection_expiry <= now_ms:
             active, reason = False, "projection_expired"
+        try:
+            owner = task_owner(task)
+        except TaskOwnerError:
+            owner = {}
+            if owner_required():
+                active, reason = False, "canonical_task_owner_absent_or_invalid"
         return {
             "active": active,
             "reason": reason,
@@ -416,6 +423,7 @@ def build_executor_security_router(neo_factory: Callable[[], Any]) -> APIRouter:
             "lease_expires_at_ts": lease_expiry,
             "projection_generation": generation,
             "projection_expires_at_ts": projection_expiry,
+            **owner,
         }
 
     @router.post("/claims/{task_id}/token")
@@ -447,6 +455,10 @@ def build_executor_security_router(neo_factory: Callable[[], Any]) -> APIRouter:
         if not row:
             raise HTTPException(status_code=409, detail="task is not actively claimed")
         task = dict(row.get("task") or {})
+        try:
+            owner = task_owner(task)
+        except TaskOwnerError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         stored_claim = str(task.get("claim_id") or task.get("active_claim_id") or "")
         stored_agent = str(task.get("claimed_by") or task.get("agent_id") or "")
         if stored_claim != body.claim_id or stored_agent != body.agent_id:
@@ -510,6 +522,7 @@ def build_executor_security_router(neo_factory: Callable[[], Any]) -> APIRouter:
             "claim_id": body.claim_id,
             "agent_id": body.agent_id,
             "projection_generation": generation,
+            **owner,
             "scopes": ["context", "heartbeat", "complete", "inference"],
             "allowed_model_aliases": sorted(set(model_aliases)),
             "allowed_tools": allowed_tools,

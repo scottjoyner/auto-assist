@@ -4090,7 +4090,7 @@ else:
         raise HTTPException(status_code=503, detail="python-multipart is required for /upload-audio")
 
 @app.post("/api/tasks")
-def api_create_task(body: TaskCreateIn, user: str = Depends(auth)):
+def api_create_task(body: TaskCreateIn, request: Request, user: str = Depends(auth)):
     """Create a READY swarm task for fleet nodes to execute.
 
     Returns the created task_id. If ``task_id`` is supplied and already exists
@@ -4101,6 +4101,28 @@ def api_create_task(body: TaskCreateIn, user: str = Depends(auth)):
         payload = dict(body.payload or {})
         if body.correlation_id:
             payload.setdefault("correlation_id", body.correlation_id)
+        from .owner_identity import TaskOwnerError, authenticated_owner, owner_required
+        if owner_required():
+            try:
+                owner = authenticated_owner(request.scope, user)
+                result = neo.create_owned_task(
+                    title=body.title,
+                    task_type=body.task_type,
+                    status=body.status,
+                    kind=body.kind,
+                    required_capabilities=body.required_capabilities,
+                    target_agent_id=body.target_agent_id,
+                    priority=body.priority,
+                    payload=payload,
+                    idempotency_key=body.idempotency_key,
+                    preemptible=body.preemptible,
+                    max_migrations=body.max_migrations,
+                    owner=owner,
+                )
+            except (TaskOwnerError, ValueError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            return {"task_id":result.get("task_id"),
+                    "dispatch_id":result.get("dispatch_id")}
         result = neo.create_task_with_context(
             title=body.title,
             task_type=body.task_type,
