@@ -639,6 +639,7 @@ def run_hermes(
     provider: Optional[str] = None,
     toolsets: Optional[str] = None,
     cwd: Optional[str] = None,
+    resume_session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     cmd = [
         HERMES_BIN,
@@ -648,6 +649,8 @@ def run_hermes(
         "--pass-session-id",
         "--max-turns", "20",
     ]
+    if resume_session_id:
+        cmd += ["--resume", resume_session_id]
     if model:
         cmd += ["-m", model]
     if provider:
