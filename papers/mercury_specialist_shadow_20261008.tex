@@ -1,0 +1,117 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\title{A Fail-Closed Shadow Contract for Specialist Agent Dispatch Under Shared Free-Provider Constraints}
+\author{Fleet Engineering Research Note}
+\date{8 October 2026}
+\begin{document}
+\maketitle
+\begin{abstract}
+We examine Mercury Bots as specialist execution workers behind a separate provider-quota authority. A Python fixture-only adapter implements three bounded roles, synthetic lease checks, and a locally chained audit journal. Forty offline tests pass. These tests establish only local behavior; they do not establish genuine model output quality, upstream budget safety, multi-host coordination, or immutable custody.
+\end{abstract}
+
+\section{Motivation}
+One physical provider allocation may appear behind multiple free-token aggregators, and alias names cannot prove independent entitlements. The fleet must separate provider authorization from specialization. Mercury Bots support persistent personas, delegated queues and delivery paths \cite{mercury}, but their job leases and local token counters are not a shared upstream quota coordinator.
+
+\section{Predictions and experimental method}
+The fleet's knowledge PR~51 recorded broad acceptability gates before this slice. The detailed unit assertions were refined during implementation and therefore do not constitute separate, independent preregistration. We predict disabled/missing admission rejects dispatch (P1); unknown roles or models reject (P2); revoked leases and provider errors stop simulated events (P3); bounded budgets and finish evidence gate completion (P4); and a failed or modified journal prevents new work (P5). Mock completion must never imply verified useful work or provider credits (P6).
+
+Only \texttt{FixtureWorker} is executable, with provider and model fixed to a synthetic namespace. The mock authority grants/renews leases before each event is consumed, and records terminal release. The journal stores task and objective digests \cite{nist}, state transitions, bounded token usage and a previous/current hash pair. It does not include raw prompts or tool outputs and is not an independent WORM record.
+
+\begin{table}[h]
+\centering
+\caption{Synthetic per-task caps; not estimates of real vendor allowances.}
+\begin{tabular}{lrrr}
+\toprule
+Role & Input tokens & Output tokens & Steps\\
+\midrule
+Repository reviewer & 6000 & 800 & 3\\
+Trace auditor & 3000 & 500 & 3\\
+Documentation analyst & 5000 & 900 & 3\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Results}
+The focused Python suite passed 40 offline tests in 0.32 seconds; syntax compilation and Git whitespace checks also succeeded. There were zero provider-generation calls because no live transport exists in this module. The tests cover mock denial, synthetic provider errors (401, 402, 403, 429, 503), renewal loss, exact model identity, budget checks, duplicate task IDs, chain tampering, and journal read/write denial. HTTP 429 is not proof of paid/free allocation exhaustion \cite{rfc6585}. No independent quality scoring, Mercury runtime invocation, cross-node contention or off-host custody was performed.
+
+\section{Threats and next gate}
+The injected authority is not authenticated, the journal remains locally mutable, and the synthetic worker cannot prove streaming cancellation in a real LLM SDK. Mercury's webhook ingress enqueues without our production upstream lease; no webhook or daemon was activated. The next study must place an authenticated admission gate at the actual provider-call boundary in a pinned Mercury integration, and test lease-loss and storage-custody failures under a no-generation mock transport before any live free-provider authorization.
+
+\section{Reproducibility}
+Source: \texttt{scripts/mercury\_shadow\_specialists.py}; tests: \texttt{tests/test\_mercury\_shadow\_specialists.py}; observations and future gates: \texttt{docs/mercury\_shadow\_specialists\_20261008.md}. Run the focused test module with \texttt{python3 -m pytest -q tests/test\_mercury\_shadow\_specialists.py}. Neither this paper nor those tests grants production authority.
+
+\begin{thebibliography}{9}
+\bibitem{mercury} Cosmic Stack Labs. \emph{Mercury Agent}, revision \texttt{1be98293ace567092b961346d95363284f6e71cf}, 2026. \url{https://github.com/cosmicstack-labs/mercury-agent}.
+\bibitem{rfc6585} M. Nottingham and R. Fielding. \emph{Additional HTTP Status Codes}, RFC 6585, 2012. \url{https://www.rfc-editor.org/rfc/rfc6585}.
+\bibitem{nist} National Institute of Standards and Technology. \emph{Secure Hash Standard}, FIPS 180-4, 2015. \url{https://doi.org/10.6028/NIST.FIPS.180-4}.
+\end{thebibliography}
+
+\section{Follow-on experiment: transactional mock denial acceptance}
+The operator approved continued offline hardening, not hosted inference or any
+production activation. The follow-on hypotheses were recorded in the
+engineering protocol before running the additional focused tests. A
+fixture-only SQLite authority now atomically claims task IDs and reserves the
+per-role worst-case input and output budget for a single synthetic physical
+upstream group. Released reservations are conservatively still charged; a
+successful fixture result cannot mint or restore vendor credits. Exact task,
+attempt, node, role, model, provider group, and epoch bindings are rechecked
+at renewal and in a fake provider-call-site shim.
+
+The extended suite reports 69 passing offline tests in 0.42 seconds
+(including the original 40 tests). New test fixtures exercise eight
+concurrent claimants, parallel same-task adapter submission, restart replay,
+cumulative reservation exhaustion, expired and revoked leases, changed
+identity and epoch, custody acknowledgement loss, and forbidden ingress
+types. No actual Mercury BotManager, provider SDK, router, credential,
+network endpoint, hosted inference call, or production service was used.
+The fake-call counter is explicitly synthetic and must not be reported as
+model-token consumption.
+
+\section{Follow-on limitations and next falsification boundary}
+The proof is restricted to a single-host trusted-local SQLite fixture and
+an in-process simulated witness; it does not establish cross-host authenticated
+quota coordination or independent WORM custody. The actual Mercury
+\texttt{streamText} provider call remains unmodified. A future pinned
+isolated fork must prove every Mercury ingress shares the same pre-call
+admission and that real SDK cancellation cannot emit further tokens after
+revocation; these are blockers, not inferred successes. No free-provider
+testing authorization was granted by this follow-on experiment.
+
+
+\section{Pinned Mercury streaming boundary: an offline falsification}
+The next mock-only research pass pins Mercury to Git revision
+\texttt{1be98293ace567092b961346d95363284f6e71cf}. We patch the actual
+\texttt{bot-turn.ts} callsite in an isolated, non-deployed source checkout,
+replacing the \texttt{streamText} invocation with a fixture-only injected
+stream constructor. A valid external synthetic lease, exact trusted task
+binding, mock coordinator renewal, mock custody acknowledgement, and
+explicit fixture factory must all be present before even fake token events
+may be consumed. Without these inputs, all direct ingress paths deny.
+
+\subsection{Prediction and test method}
+The engineering protocol was recorded before the new tests. We predicted
+zero launched fixtures on missing admission or altered identity/epoch/quota;
+renewal before each emitted stream event and periodically during stalled
+streams; cancellation on authority loss, time expiry and parent abort;
+denial on failed custody acknowledgements; and no direct SDK fallback.
+The standalone harness uses Node's TypeScript stripping and an injected
+\emph{no-network} async iterable. No npm install, provider SDK, credentials,
+or Mercury daemon are required or used.
+
+\subsection{Observed results and limitations}
+Twelve native fixture tests passed; the pre-existing 69 Python mock-boundary
+tests remained green, for 81 focused offline checks across separate harnesses.
+The patch passed \texttt{git apply --check} against the pinned pristine source;
+the modified bot-turn file passed a Node parser check. Five initial native
+tests failed because the first test harness produced async-generator methods
+rather than iterable generator instances; this fixture error was corrected
+before the final twelve passing tests. The measured behavior proves neither
+actual Mercury BotManager invocation nor AI SDK stream cancellation:
+those paths deliberately cannot run through the fixture-only shim.
+No real upstream token budget, independent WORM witness, physical node
+contention, or accepted model output was measured. Any claim of
+production-safe provider dispatch would exceed the evidence.
+
+\end{document}

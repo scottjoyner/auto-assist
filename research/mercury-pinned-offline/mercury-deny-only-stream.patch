@@ -1,0 +1,620 @@
+diff --git a/src/bots/bot-turn.ts b/src/bots/bot-turn.ts
+index c531765..108fc68 100644
+--- a/src/bots/bot-turn.ts
++++ b/src/bots/bot-turn.ts
+@@ -1,4 +1,5 @@
+-import { streamText, stepCountIs } from 'ai';
++import { startOfflineResearchRound, type ResearchPermit, type ResearchAuthority,
++  type ResearchStream, type ResearchExpected } from './research-provider-gate.js';
+ import type { Tool } from 'ai';
+ import type { CapabilityRegistry } from '../capabilities/registry.js';
+ import type { UserMemoryStore } from '../memory/user-memory.js';
+@@ -66,6 +67,12 @@ export interface BotTurnInput {
+   provider: BaseProvider;
+   tokenBudget: TokenBudget;
+   abortSignal: AbortSignal;
++  /** OFFLINE RESEARCH ONLY. Missing any injected member is a hard deny. */
++  researchFixtureEnabled?: boolean;
++  researchPermit?: ResearchPermit;
++  researchAuthority?: ResearchAuthority;
++  researchExpected?: ResearchExpected;
++  researchFixtureStream?: (signal: AbortSignal) => ResearchStream<any>;
+   /** Real-time activity consumer (roster, live regions, web feed). */
+   onActivity?: (ev: BotActivityEvent) => void;
+ }
+@@ -146,47 +153,24 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+       // step-count semantics; the result's final promises preserve the old
+       // result shape exactly (text/finishReason), so all classification below
+       // is unchanged.
+-      const stream = streamText({
+-        model: provider.getModelInstance(),
+-        system,
+-        messages,
+-        tools,
+-        stopWhen: stepCountIs(stepsRemaining),
+-        abortSignal,
+-        experimental_include: { requestBody: false },
+-        experimental_onStepStart: () => {
+-          stepIndex++;
+-          emit({ kind: 'step', stepIndex, label: `step ${stepIndex}` });
+-        },
+-        experimental_onToolCallStart: ({ toolCall }: any) => {
+-          const label = formatToolStep(String(toolCall?.toolName ?? 'tool'), (toolCall?.input ?? {}) as Record<string, any>);
+-          emit({ kind: 'tool', stepIndex, label, status: 'running' });
+-        },
+-        experimental_onToolCallFinish: ({ toolCall, success, error, durationMs }: any) => {
+-          const label = formatToolStep(String(toolCall?.toolName ?? 'tool'), (toolCall?.input ?? {}) as Record<string, any>);
+-          emit({
+-            kind: 'tool',
+-            stepIndex,
+-            label,
+-            detail: error != null ? String(error?.message ?? error).slice(0, 200) : undefined,
+-            status: success ? 'done' : 'error',
+-            elapsedMs: typeof durationMs === 'number' ? durationMs : undefined,
+-          });
+-        },
+-        onStepFinish: ({ usage, toolCalls }) => {
+-          if (abortSignal.aborted) return;
+-          stepsRemaining--;
+-          if (usage) {
+-            tokensIn += usage.inputTokens ?? 0;
+-            tokensOut += usage.outputTokens ?? 0;
+-          }
+-          for (const tc of toolCalls ?? []) {
+-            if (tc?.toolName) toolsUsed.add(String(tc.toolName));
+-          }
+-          const kIn = Math.round(tokensIn / 100) / 10;
+-          emit({ kind: 'step', stepIndex, label: `step ${stepIndex} · ${kIn}k tok in` });
++      // Pinned Mercury research fork: replace the actual SDK callsite with a
++      // deny-by-default synthetic stream gate. No imported streamText exists.
++      // Direct webhooks, cron, DLQ replay or autonomous bot turns have no
++      // injected permit, so they cannot reach even the fixture factory.
++      const round = await startOfflineResearchRound({
++        fixtureEnabled: input.researchFixtureEnabled === true,
++        permit: input.researchPermit,
++        authority: input.researchAuthority,
++        expected: input.researchExpected ?? {
++          taskId: '', nodeId: '', role: '', attemptId: '',
++          modelId: '', upstreamGroupId: '', authorityEpoch: 0,
++          reservedInput: 0, reservedOutput: 0,
+         },
++        parentSignal: abortSignal,
++        fixtureFactory: input.researchFixtureStream,
+       });
++      const stream = round.stream;
++      try {
+ 
+       // Live thinking feedback: consume the full stream, accumulate rolling
+       // tails, emit at most every THINKING_EMIT_INTERVAL_MS (a TUI re-render
+@@ -217,8 +201,11 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+       flushThinking();
+ 
+       const [finalText, finishReason] = await Promise.all([stream.text, stream.finishReason]);
+-      const result = { text: finalText, finishReason };
+-      lastResult = result;
++      lastResult = { text: finalText, finishReason };
++      } finally {
++        await round.close();
++      }
++      const result = lastResult;
+ 
+       const completion = classifyStreamCompletion({
+         finishReason: (result as any)?.finishReason,
+@@ -321,6 +308,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+ 
+ /** Map a provider/tool error to a typed reason code (retry vs permanent). */
+ export function classifyFailure(err: any): string {
++  if (err instanceof Error && 'reasonCode' in err && err.reasonCode === 'research_admission_denied') return 'research_admission_denied';
+   const msg = String(err?.message ?? err ?? '').toLowerCase();
+   if (/rate.?limit|429|too many requests/.test(msg)) return 'provider_rate_limit';
+   // Network blips ARE transient — ECONNRESET (connection dropped mid-read)
+diff --git a/src/bots/research-provider-gate.ts b/src/bots/research-provider-gate.ts
+new file mode 100644
+index 0000000..722f28a
+--- /dev/null
++++ b/src/bots/research-provider-gate.ts
+@@ -0,0 +1,233 @@
++/**
++ * OFFLINE RESEARCH SHIM ONLY, pinned to Mercury upstream 1be98293.
++ * There is deliberately no provider import, network client or SDK fallback.
++ * No permit+renewal+witness+explicit fixture factory -> no stream.
++ */
++export interface ResearchPermit {
++  leaseId: string;
++  taskId: string;
++  nodeId: string;
++  role: string;
++  attemptId: string;
++  modelId: string;
++  upstreamGroupId: string;
++  authorityEpoch: number;
++  reservedInput: number;
++  reservedOutput: number;
++  expiresAt: number; // milliseconds since epoch; fixture clock
++}
++
++export interface ResearchAuthority {
++  renew(permit: ResearchPermit): Promise<ResearchPermit | null>;
++  acknowledge(event: {
++    kind: 'research_fixture_start';
++    taskId: string;
++    leaseId: string;
++    nodeId: string;
++    upstreamGroupId: string;
++  }): Promise<boolean>;
++  release(permit: ResearchPermit): Promise<void>;
++}
++
++export interface ResearchStream<T = { type: string; text?: string }> {
++  fullStream: AsyncIterable<T>;
++  text: Promise<string>;
++  finishReason: Promise<string>;
++}
++
++export type ResearchExpected = Pick<ResearchPermit,
++  'taskId' | 'nodeId' | 'role' | 'attemptId' | 'modelId' |
++  'upstreamGroupId' | 'authorityEpoch' | 'reservedInput' | 'reservedOutput'>;
++
++export class ResearchGateDenied extends Error {
++  readonly reasonCode = 'research_admission_denied';
++  readonly reason: string;
++  constructor(reason: string) {
++    super(reason);
++    this.reason = reason;
++    this.name = 'ResearchGateDenied';
++  }
++}
++
++type StartOptions<T> = {
++  fixtureEnabled: boolean;
++  permit?: ResearchPermit;
++  authority?: ResearchAuthority;
++  expected: ResearchExpected;
++  fixtureFactory?: (signal: AbortSignal) => ResearchStream<T>;
++  parentSignal: AbortSignal;
++  clock?: () => number;
++  renewEveryMs?: number;
++};
++
++function positiveInt(value: unknown): value is number {
++  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
++}
++
++function matches(permit: ResearchPermit | null | undefined,
++                 expected: ResearchExpected, initialLease?: string,
++                 clock: () => number = Date.now): permit is ResearchPermit {
++  if (!permit || !permit.leaseId || typeof permit.leaseId !== 'string' ||
++      (initialLease !== undefined && permit.leaseId !== initialLease) ||
++      !positiveInt(permit.authorityEpoch) ||
++      !positiveInt(permit.reservedInput) || !positiveInt(permit.reservedOutput) ||
++      !Number.isFinite(permit.expiresAt) || permit.expiresAt <= clock()) {
++    return false;
++  }
++  for (const key of Object.keys(expected) as (keyof ResearchExpected)[]) {
++    if (permit[key] !== expected[key]) return false;
++  }
++  return Boolean(expected.taskId && expected.nodeId && expected.role &&
++    expected.attemptId && expected.modelId && expected.upstreamGroupId);
++}
++
++/**
++ * Wrap one *fake* stream. Token authorization is not claimed here:
++ * permit/authority are injected mocks, and the fixture is a caller-provided
++ * no-network async iterator. The future real transport must be independently
++ * reviewed, authenticated, and enforce this check at its true call site.
++ */
++export async function startOfflineResearchRound<T>(opts: StartOptions<T>): Promise<{
++  stream: ResearchStream<T>;
++  close: () => Promise<void>;
++}> {
++  const now = opts.clock ?? Date.now;
++  const { permit, authority } = opts;
++  if (!opts.fixtureEnabled || !permit || !authority || !opts.fixtureFactory) {
++    throw new ResearchGateDenied('fixture_unavailable');
++  }
++  if (opts.renewEveryMs !== undefined && !positiveInt(opts.renewEveryMs)) {
++    throw new ResearchGateDenied('invalid_renew_interval');
++  }
++  if (opts.parentSignal.aborted) throw new ResearchGateDenied('parent_aborted');
++  if (!matches(permit, opts.expected, undefined, now)) {
++    throw new ResearchGateDenied('permit_mismatch');
++  }
++
++  // An unreachable coordinator must not hang admission indefinitely.
++  let startupTimer: ReturnType<typeof setTimeout> | undefined;
++  const timeout = new Promise<null>(resolve => {
++    startupTimer = setTimeout(() => resolve(null), 250);
++  });
++  const first = await Promise.race([
++    authority.renew(permit).catch(() => null), timeout,
++  ]).finally(() => { if (startupTimer) clearTimeout(startupTimer); });
++  if (!matches(first, opts.expected, permit.leaseId, now)) {
++    throw new ResearchGateDenied('initial_renewal_denied');
++  }
++  const acknowledged = await authority.acknowledge({
++    kind: 'research_fixture_start',
++    taskId: permit.taskId, leaseId: permit.leaseId,
++    nodeId: permit.nodeId, upstreamGroupId: permit.upstreamGroupId,
++  }).catch(() => false);
++  if (!acknowledged || opts.parentSignal.aborted) {
++    await authority.release(first).catch(() => {});
++    throw new ResearchGateDenied('fixture_custody_denied');
++  }
++
++  let current = first;
++  let stopped = false;
++  let reason = 'lease_lost';
++  const controller = new AbortController();
++  let rejectCancellation!: (reason: unknown) => void;
++  const cancellation = new Promise<never>((_, reject) => {
++    rejectCancellation = reject;
++  });
++  // Prevent an unhandled rejection if the parent aborts before first next().
++  void cancellation.catch(() => {});
++  const cancel = (cause: string): void => {
++    if (stopped) return;
++    stopped = true;
++    reason = cause;
++    controller.abort(new ResearchGateDenied(cause));
++    rejectCancellation(new ResearchGateDenied(cause));
++  };
++  const parentAbort = (): void => cancel('parent_aborted');
++  opts.parentSignal.addEventListener('abort', parentAbort, { once: true });
++  if (opts.parentSignal.aborted) cancel('parent_aborted');
++
++  let updating: Promise<void> = Promise.resolve();
++  const renew = async (): Promise<void> => {
++    if (stopped) throw new ResearchGateDenied(reason);
++    // Serializes timer renewals with pre-event renewals.
++    const previous = updating;
++    let complete!: () => void;
++    updating = new Promise<void>(resolve => { complete = resolve; });
++    try {
++      await previous;
++      if (stopped) throw new ResearchGateDenied(reason);
++      const candidate = await authority.renew(current).catch(() => null);
++      if (!matches(candidate, opts.expected, permit.leaseId, now)) {
++        cancel('renewal_denied');
++        throw new ResearchGateDenied('renewal_denied');
++      }
++      if (stopped) throw new ResearchGateDenied(reason);
++      current = candidate;
++    } finally {
++      complete();
++    }
++  };
++
++  const interval = setInterval(() => {
++    // Local expiry check remains active even if a coordinator call hangs.
++    if (current.expiresAt <= now()) {
++      cancel('lease_expired');
++      return;
++    }
++    void renew().catch(() => { cancel('renewal_denied'); });
++  }, opts.renewEveryMs ?? 20);
++  interval.unref?.();
++
++  let source: ResearchStream<T>;
++  try {
++    if (stopped) throw new ResearchGateDenied(reason);
++    // This is the only launch site. No 'ai' provider transport is referenced.
++    source = opts.fixtureFactory(controller.signal);
++    if (!source?.fullStream ||
++        typeof source.fullStream[Symbol.asyncIterator] !== 'function' ||
++        !source.text || !source.finishReason) {
++      throw new ResearchGateDenied('invalid_fixture_stream');
++    }
++  } catch {
++    clearInterval(interval);
++    opts.parentSignal.removeEventListener('abort', parentAbort);
++    cancel('fixture_factory_failed');
++    await authority.release(current).catch(() => {});
++    throw new ResearchGateDenied('fixture_factory_failed');
++  }
++
++  const wrap = async function* (): AsyncGenerator<T> {
++    const iterator = source.fullStream[Symbol.asyncIterator]();
++    try {
++      while (true) {
++        await Promise.race([renew(), cancellation]);
++        const next = await Promise.race([iterator.next(), cancellation]);
++        if (stopped) throw new ResearchGateDenied(reason);
++        if (next.done) return;
++        yield next.value;
++      }
++    } finally {
++      if (stopped) {
++        // Signal the fake SDK but do not await an uncooperative iterator.
++        void iterator.return?.().catch(() => {});
++      }
++    }
++  };
++  let closed = false;
++  return {
++    stream: {
++      fullStream: wrap(),
++      get text() { return Promise.race([source.text, cancellation]); },
++      get finishReason() { return Promise.race([source.finishReason, cancellation]); },
++    },
++    async close() {
++      if (closed) return;
++      closed = true;
++      clearInterval(interval);
++      opts.parentSignal.removeEventListener('abort', parentAbort);
++      // Close the renewal path before releasing the reserved mock lease.
++      cancel('round_closed');
++      await authority.release(current).catch(() => {});
++    },
++  };
++}
+diff --git a/test/research-provider-gate.test.ts b/test/research-provider-gate.test.ts
+new file mode 100644
+index 0000000..2ca723f
+--- /dev/null
++++ b/test/research-provider-gate.test.ts
+@@ -0,0 +1,265 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { startOfflineResearchRound, ResearchGateDenied,
++  type ResearchPermit, type ResearchAuthority, type ResearchStream
++} from '../src/bots/research-provider-gate.ts';
++
++const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
++const basic: ResearchPermit = {
++  leaseId: 'fixture-lease-001', taskId: 'task-0001',
++  nodeId: 'synthetic-node-1', role: 'repository-reviewer',
++  attemptId: 'attempt-0001', modelId: 'mercury-fixture/no-generation',
++  upstreamGroupId: 'synthetic-upstream-only', authorityEpoch: 1,
++  reservedInput: 6000, reservedOutput: 800,
++  expiresAt: Date.now() + 120_000,
++};
++const expected = (({
++  taskId, nodeId, role, attemptId, modelId, upstreamGroupId,
++  authorityEpoch, reservedInput, reservedOutput,
++}: ResearchPermit) => ({ taskId, nodeId, role, attemptId, modelId,
++  upstreamGroupId, authorityEpoch, reservedInput, reservedOutput }))(basic);
++
++function fixtureAuthority() {
++  const state = { renewals: 0, released: 0, witnessed: 0,
++    denied: false, witnessDenied: false, hang: false, override: null as ResearchPermit | null };
++  const authority: ResearchAuthority = {
++    async renew(lease) {
++      state.renewals++;
++      if (state.hang) return new Promise<ResearchPermit | null>(() => {});
++      if (state.denied) return null;
++      return state.override ?? lease;
++    },
++    async acknowledge(event) {
++      state.witnessed++;
++      assert.equal(event.taskId, basic.taskId);
++      assert.equal(event.leaseId, basic.leaseId);
++      return !state.witnessDenied;
++    },
++    async release() { state.released++; },
++  };
++  return { state, authority };
++}
++
++function finite(signal: AbortSignal): ResearchStream<any> {
++  return {
++    fullStream: (async function* () {
++      if (signal.aborted) throw Error('aborted');
++      yield { type: 'text-delta', text: 'safe' };
++      if (signal.aborted) throw Error('aborted');
++      yield { type: 'text-delta', text: 'fixture' };
++    })(),
++    text: Promise.resolve('safe fixture'),
++    finishReason: Promise.resolve('stop'),
++  };
++}
++
++function opts(overrides: Record<string, any> = {}) {
++  const { state, authority } = fixtureAuthority();
++  let launched = 0;
++  const parent = new AbortController();
++  const args = {
++    fixtureEnabled: true,
++    permit: { ...basic },
++    authority,
++    expected,
++    fixtureFactory: (signal: AbortSignal) => { launched++; return finite(signal); },
++    parentSignal: parent.signal,
++    renewEveryMs: 2000,
++    ...overrides,
++  };
++  return { state, authority, args, parent, launched: () => launched };
++}
++
++async function denied(make: ReturnType<typeof opts>, reason: string) {
++  await assert.rejects(startOfflineResearchRound(make.args), (err: any) =>
++    err instanceof ResearchGateDenied && err.reason === reason);
++  assert.equal(make.launched(), 0);
++}
++
++test('disabled or missing gate elements deny before factory', async () => {
++  for (const override of [{ fixtureEnabled: false }, { permit: undefined },
++    { authority: undefined }, { fixtureFactory: undefined }]) {
++    await denied(opts(override), 'fixture_unavailable');
++  }
++});
++
++test('wrong task/node/group/model/attempt/epoch/quota/expiration reject before launch', async () => {
++  const fields: Array<keyof ResearchPermit> = [
++    'taskId', 'nodeId', 'role', 'attemptId', 'modelId',
++    'upstreamGroupId', 'authorityEpoch', 'reservedInput', 'reservedOutput',
++  ];
++  for (const field of fields) {
++    const permit = { ...basic, [field]:
++      typeof basic[field] === 'number' ? -1 : 'wrong-scope' };
++    await denied(opts({ permit }), 'permit_mismatch');
++  }
++  await denied(opts({ permit: { ...basic, expiresAt: Date.now() - 1 } }),
++    'permit_mismatch');
++});
++
++test('revoked, superseded and custodian-denied attempts do not create streams', async () => {
++  const revoked = opts();
++  revoked.state.denied = true;
++  await denied(revoked, 'initial_renewal_denied');
++  const superseded = opts();
++  superseded.state.override = { ...basic, leaseId: 'different-lease' };
++  await denied(superseded, 'initial_renewal_denied');
++  const noWitness = opts();
++  noWitness.state.witnessDenied = true;
++  await denied(noWitness, 'fixture_custody_denied');
++  assert.equal(noWitness.state.released, 1);
++});
++
++test('initial coordinator hang expires before factory is created', async () => {
++  const make = opts();
++  make.state.hang = true;
++  await denied(make, 'initial_renewal_denied');
++});
++
++test('valid fake stream yields events, typed witness, and releases once', async () => {
++  const make = opts();
++  const round = await startOfflineResearchRound(make.args);
++  const events = [];
++  try {
++    for await (const event of round.stream.fullStream) events.push(event.text);
++    assert.deepEqual(events, ['safe', 'fixture']);
++    assert.equal(await round.stream.text, 'safe fixture');
++    assert.equal(await round.stream.finishReason, 'stop');
++  } finally { await round.close(); await round.close(); }
++  assert.equal(make.launched(), 1);
++  assert.equal(make.state.witnessed, 1);
++  assert.equal(make.state.released, 1);
++  assert.ok(make.state.renewals >= 3);
++});
++
++test('renewal loss before second event prevents additional output', async () => {
++  const make = opts();
++  let fakeAborted = false;
++  make.args.fixtureFactory = (signal: AbortSignal) => {
++    signal.addEventListener('abort', () => { fakeAborted = true; });
++    return finite(signal);
++  };
++  const round = await startOfflineResearchRound(make.args);
++  const iter = round.stream.fullStream[Symbol.asyncIterator]();
++  try {
++    const first = await iter.next();
++    assert.equal(first.value.text, 'safe');
++    make.state.denied = true;
++    await assert.rejects(iter.next(), /renewal_denied/);
++    assert.equal(fakeAborted, true);
++  } finally { await round.close(); }
++});
++
++test('parent abort stops a blocked uncooperative iterator promptly', async () => {
++  const make = opts({ renewEveryMs: 2000 });
++  let fakeAborted = false;
++  make.args.fixtureFactory = (signal: AbortSignal) => {
++    signal.addEventListener('abort', () => { fakeAborted = true; });
++    return {
++      fullStream: (async function* () {
++        yield { type: 'text-delta', text: 'first' };
++        await new Promise(() => {});
++      })(),
++      text: new Promise<string>(() => {}),
++      finishReason: new Promise<string>(() => {}),
++    };
++  };
++  const round = await startOfflineResearchRound(make.args);
++  const iter = round.stream.fullStream[Symbol.asyncIterator]();
++  try {
++    assert.equal((await iter.next()).value.text, 'first');
++    const pending = iter.next();
++    make.parent.abort();
++    await assert.rejects(pending, /parent_aborted/);
++    assert.equal(fakeAborted, true);
++  } finally { await round.close(); }
++});
++
++test('coordinator denial while stream stalls cancels blocked next', async () => {
++  const make = opts({ renewEveryMs: 5 });
++  let aborted = false;
++  make.args.fixtureFactory = (signal: AbortSignal) => {
++    signal.addEventListener('abort', () => { aborted = true; });
++    return {
++      fullStream: (async function* () {
++        yield { type: 'text-delta', text: 'first' };
++        await new Promise(() => {});
++      })(),
++      text: new Promise<string>(() => {}),
++      finishReason: new Promise<string>(() => {}),
++    };
++  };
++  const round = await startOfflineResearchRound(make.args);
++  const iter = round.stream.fullStream[Symbol.asyncIterator]();
++  try {
++    await iter.next();
++    const pending = iter.next();
++    make.state.denied = true;
++    await assert.rejects(Promise.race([
++      pending, delay(100).then(() => { throw Error('fixture_cancel_timeout'); })
++    ]), /renewal_denied/);
++    assert.equal(aborted, true);
++  } finally { await round.close(); }
++});
++
++test('external expiry during stalled async generation cancels regardless of hung renewal', async () => {
++  let fakeNow = Date.now();
++  const make = opts({ renewEveryMs: 5, clock: () => fakeNow });
++  let aborted = false;
++  make.args.fixtureFactory = (signal: AbortSignal) => {
++    signal.addEventListener('abort', () => { aborted = true; });
++    return {
++      fullStream: (async function* () {
++        yield { type: 'text-delta', text: 'first' };
++        await new Promise(() => {});
++      })(),
++      text: new Promise<string>(() => {}),
++      finishReason: new Promise<string>(() => {}),
++    };
++  };
++  const round = await startOfflineResearchRound(make.args);
++  const iter = round.stream.fullStream[Symbol.asyncIterator]();
++  try {
++    await iter.next();
++    const pending = iter.next();
++    make.state.hang = true;
++    fakeNow = basic.expiresAt + 1;
++    await assert.rejects(Promise.race([
++      pending, delay(100).then(() => { throw Error('fixture_cancel_timeout'); })
++    ]), /lease_expired/);
++    assert.equal(aborted, true);
++  } finally { await round.close(); }
++});
++
++test('source forbids SDK fallback at actual pinned bot-turn callsite', () => {
++  const source = readFileSync(new URL('../src/bots/bot-turn.ts', import.meta.url), 'utf8');
++  assert.equal(source.includes('streamText('), false);
++  assert.equal((source.match(/startOfflineResearchRound\(/g) ?? []).length, 1);
++  assert.match(source, /fixtureFactory: input\.researchFixtureStream/);
++  assert.match(source, /expected: input\.researchExpected/);
++  const guard = readFileSync(new URL('../src/bots/research-provider-gate.ts',
++    import.meta.url), 'utf8');
++  assert.equal(guard.includes("from 'ai'"), false);
++});
++
++
++test('invalid fixture or factory exception fails closed and releases mock lease', async () => {
++  const broken = opts({ fixtureFactory: () => { throw Error('fixture_error'); } });
++  await denied(broken, 'fixture_factory_failed');
++  assert.equal(broken.state.released, 1);
++  const malformed = opts({ fixtureFactory: () => ({
++    fullStream: {} as AsyncIterable<any>,
++    text: Promise.resolve(''),
++    finishReason: Promise.resolve('stop'),
++  }) });
++  await denied(malformed, 'fixture_factory_failed');
++  assert.equal(malformed.state.released, 1);
++});
++
++test('abort before admission stops all mock transport startup', async () => {
++  const make = opts();
++  make.parent.abort();
++  await denied(make, 'parent_aborted');
++  assert.equal(make.state.renewals, 0);
++});
