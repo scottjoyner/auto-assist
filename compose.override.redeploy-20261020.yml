@@ -1,0 +1,15 @@
+# compose.override.redeploy-20261020.yml
+# Addendum to docker-compose.yml + compose.override.yml for the 2026-10-20 redeploy
+# (see knowledge vault: 20-Projects/fleet-report/2026-10-20-ASSISTX-API-REDEPLOY-EXECUTED.md).
+#
+# The running stack this redeploy replaces (start-of-record labels:
+# auto-assist-wt-ab3bb64/{docker-compose.yml,compose.override.yml} — compose files since
+# lost to the wt-ab3bb64 worktree prune) mounted the device-shared FLEET-STATE directory
+# into the worker at /app/fleet-state, and the executor's coordination path
+# (FLEET_COORDINATION_FILE=/app/fleet-state/FLEET-COORDINATION.json, supplied via
+# ASSISTX_ENV_FILE) reads there. Declaring the live contract explicitly instead of
+# letting recreation silently drop it.
+services:
+  worker:
+    volumes:
+      - /media/scott/SSD_4TB/hermes-home/FLEET-STATE:/app/fleet-state
