@@ -20,6 +20,7 @@ Usage:
 Env:
   AUTO_ROUTER_URL  default http://100.64.43.123:8088
   ASSISTX_PASS     used to refresh the swarm before routing (on by default)
+  AUTO_ROUTER_ROUTE_DECISION_TOKEN  mandatory narrow-scoped route-decision token
 """
 from __future__ import annotations
 import argparse
@@ -38,9 +39,13 @@ AUTO_ROUTER_URL = os.environ.get("AUTO_ROUTER_URL", "http://100.64.43.123:8088")
 
 
 def route(req: dict) -> dict:
+    token = os.environ.get("AUTO_ROUTER_ROUTE_DECISION_TOKEN", "").strip()
+    if not token:
+        print("Route-decision token missing; refusing request", file=sys.stderr)
+        sys.exit(2)
     url = f"{AUTO_ROUTER_URL}/api/routes/request"
     data = json.dumps(req).encode()
-    r = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    r = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"}, method="POST")
     try:
         with urllib.request.urlopen(r, timeout=30) as resp:
             return json.loads(resp.read().decode())
@@ -69,6 +74,10 @@ def main():
     ap.add_argument("--no-refresh", action="store_true",
                     help="skip the pre-route swarm sync/refresh (faster; uses last synced state)")
     args = ap.parse_args()
+
+    if not os.environ.get("AUTO_ROUTER_ROUTE_DECISION_TOKEN", "").strip():
+        print("Route-decision token missing; refusing sync and routing", file=sys.stderr)
+        return 2
 
     # On-request refresh: every route decision first syncs the live opencode +
     # Hermes configs into AssistX and refreshes auto-router, so the router always
@@ -128,4 +137,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
