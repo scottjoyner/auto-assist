@@ -593,6 +593,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AssistX API & UI", lifespan=lifespan)
+# Separate P0 identity lane: absent unless independently enabled and fully
+# configured. NEVER derive per-human router identity from HTTP Basic or the
+# legacy trusted-user header; the opt-in verifier validates pinned IdP JWTs.
+if os.getenv("ASSISTX_P0_VERIFIED_HUMAN_GATEWAY_ENABLED", "").lower() in {
+    "1", "true", "yes", "on"
+}:
+    from .p0_oidc_gateway import install_verified_human_gateway
+
+    install_verified_human_gateway(app)
 setup_logging()
 install_logging_middleware(app)
 
