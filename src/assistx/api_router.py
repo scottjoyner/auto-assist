@@ -12,6 +12,7 @@ from .control_room import LEGACY_UI_PATHS, build_control_room_router
 from .control_room_runtime import install_control_room_runtime
 from .executor_claims import install_live_executor_claims
 from .executor_security import install_executor_security
+from .fleet_routing_matrix import build_fleet_routing_matrix_router
 from .mobile_agent_routes import register_mobile_agent_routes
 from .overlay_routes import build_overlay_router
 from .passive_agents import build_passive_agent_router
@@ -101,6 +102,16 @@ register_mobile_agent_routes(_mobile_router, auth)
 app.include_router(_mobile_router)
 
 app.include_router(build_overlay_router())
+
+# The lms fleet-matrix refresh publishes to POST /api/fleet/routing-matrix/import.
+# fleet_routing_matrix.py defines this router but nothing registered it, so the
+# live process answered 404 and the refresh deferred publication ("control-plane
+# deployment drift"). Same defect class as the mobile routes below: building the
+# router without registering it is not a contract. Registration only; the route
+# keeps its own auth dependency.
+app.include_router(
+    build_fleet_routing_matrix_router(_neo, auth_dependency=auth)
+)
 app.include_router(build_passive_agent_router(_neo, auth_dependency=auth))
 app.include_router(build_passive_claim_router(_neo, auth_dependency=auth))
 app.include_router(build_passive_control_router(_neo, auth_dependency=auth))

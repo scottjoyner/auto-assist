@@ -211,3 +211,30 @@ def test_projection_annotation_does_not_create_or_authorize_unmeasured_models(mo
     assert document["providers"][1]["allow_code_execution"] is False
     assert document["providers"][1]["models"][0]["task_family_scores"] == {}
     assert document["providers"][0]["models"][0]["task_family_scores"] == {}
+
+
+def test_production_asgi_exposes_fleet_routing_matrix_contract():
+    """The live api_router:app must mount the fleet matrix routes, not merely
+    define build_fleet_routing_matrix_router. Same failure class as the mobile
+    routes (2026-10-06): defined-never-registered answered 404 in production, so
+    the lms refresh deferred its publication as 'control-plane deployment drift'."""
+    from fastapi.testclient import TestClient
+
+    from assistx.api_router import app
+
+    for path, method in (
+        ("/api/fleet/routing-matrix/import", "POST"),
+        ("/api/fleet/routing-matrix", "GET"),
+    ):
+        matches = [
+            route for route in app.routes
+            if getattr(route, "path", None) == path
+            and method in (getattr(route, "methods", None) or set())
+        ]
+        assert len(matches) == 1, f"fleet routing-matrix route missing or duplicated: {method} {path}"
+
+    # OPTIONS proves path existence without executing the import; a request that
+    # reaches the handler unauthenticated must be refused rather than admitted.
+    client = TestClient(app)
+    assert client.options("/api/fleet/routing-matrix/import").status_code == 405
+    assert client.get("/api/fleet/routing-matrix").status_code in {401, 403}
