@@ -908,9 +908,15 @@ def test_projection_surfaces_session_discovery_failure_and_holds(monkeypatch, tm
     assert proj["session_discovery_error"] == "RuntimeError: opencode db unavailable"
 
 
-def test_terminate_subagent_already_gone():
+def test_terminate_subagent_does_not_signal_unverified_pid(monkeypatch):
+    import os
+
+    def reject_kill(*args):
+        raise AssertionError("never signal a PID from an untrusted state record")
+
+    monkeypatch.setattr(os, "kill", reject_kill)
     result = supervisor.terminate_subagent(999999999, "sess-dead")
-    assert result["action"] == "already_gone"
+    assert result["action"] == "denied_unverified_process_owner"
     assert result["pid"] == 999999999
 
 
@@ -1042,3 +1048,39 @@ def test_supervise_healthy_admits_subagent_dry_run():
         assert any(a.get("action") == "dry_run" for a in result["actions_taken"])
     finally:
         path.unlink(missing_ok=True)
+
+def test_active_supervision_denies_stale_record_process_termination(monkeypatch, tmp_path):
+    def reject(*args, **kwargs):
+        raise AssertionError("active process effects must not be reached")
+
+    monkeypatch.setattr(supervisor, "terminate_subagent", reject)
+    path = tmp_path / "subagents.jsonl"
+    path.write_text('{"pid":1,"session":"forged","status":"active"}\n')
+    previous = path.read_bytes()
+    result = supervisor.run_supervision_loop(
+        projection={"suggested_scale_verdict": "hold", "subagent_records": 1},
+        state_path=path, dry_run=False)
+    assert result["verdict"] == "hold"
+    assert result["blocked"] is True
+    assert result["actions_taken"] == []
+    assert path.read_bytes() == previous
+
+
+def test_active_supervision_denies_unverified_admission(monkeypatch, tmp_path):
+    def reject(*args, **kwargs):
+        raise AssertionError("admission must require resource authority")
+
+    monkeypatch.setattr(supervisor, "admit_subagent", reject)
+    path = tmp_path / "empty.jsonl"
+    result = supervisor.run_supervision_loop(
+        projection={"suggested_scale_verdict": "healthy", "free_model_ids": ["free/example"]},
+        state_path=path, dry_run=False)
+    assert result["verdict"] == "hold"
+    assert result["requested_verdict"] == "healthy"
+    assert result["actions_taken"] == []
+    assert not path.exists()
+
+
+def test_cli_active_supervision_requires_resource_owned_authority(capsys):
+    assert supervisor.main(["--supervise", "--no-dry-run"]) == 3
+    assert "active_supervision_denied_without_resource_owned_authority" in capsys.readouterr().err
