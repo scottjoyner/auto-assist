@@ -4114,7 +4114,12 @@ def api_create_task(body: TaskCreateIn, user: str = Depends(auth)):
             preemptible=body.preemptible,
             max_migrations=body.max_migrations,
         )
-        return {"task_id": result.get("task_id"), "dispatch_id": result.get("dispatch_id")}
+        return {
+            "task_id": result.get("task_id"),
+            "dispatch_id": result.get("dispatch_id"),
+            "auto_assign_notification_queued":
+                result.get("auto_assign_notification_queued") is True,
+        }
     finally:
         neo.close()
 
