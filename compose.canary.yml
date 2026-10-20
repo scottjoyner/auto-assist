@@ -6,9 +6,17 @@ services:
     container_name: assistx-canary-redis
 
   api:
+    volumes: !override
+      - canary_state:/app/state
+      - canary_artifacts:/app/artifacts
+      - canary_cache:/app/.cache
+      - canary_fleet_state:/app/fleet-state
+      - canary_transcriptions:/app/transcriptions
     container_name: assistx-canary-api
     restart: "no"
     environment:
+      - CACHE_PATH=/app/state/cache.sqlite
+      - ASSISTX_OUTBOX_DB=/app/state/outbox.sqlite
       - ASSISTX_RUNTIME_PROFILE=production
       - ASSISTX_DEPENDENCY_MODE=production
       - WORKER_CONCURRENCY=1
@@ -30,9 +38,16 @@ services:
       - default
 
   worker:
+    volumes: !override
+      - canary_state:/app/state
+      - canary_artifacts:/app/artifacts
+      - canary_cache:/app/.cache
+      - canary_transcriptions:/app/transcriptions
     container_name: assistx-canary-worker
     restart: "no"
     environment:
+      - CACHE_PATH=/app/state/cache.sqlite
+      - ASSISTX_OUTBOX_DB=/app/state/outbox.sqlite
       - ASSISTX_RUNTIME_PROFILE=production
       - ASSISTX_DEPENDENCY_MODE=production
       - WORKER_CONCURRENCY=1
@@ -50,9 +65,17 @@ services:
       assistx.source-revision: ${CANARY_SOURCE_REVISION:-unknown}
 
   hermes-adapter:
+    volumes: !override
+      - canary_state:/app/state
+      - canary_artifacts:/app/artifacts
+      - canary_cache:/app/.cache
+      - canary_hermes_home:/app/hermes-home
+    profiles: [canary-executor]
     container_name: assistx-canary-hermes-adapter
     restart: "no"
     environment:
+      - CACHE_PATH=/app/state/cache.sqlite
+      - ASSISTX_OUTBOX_DB=/app/state/outbox.sqlite
       - AUTO_ASSIGN_BASE_URL=
       - HERMES_SELFTASK_ENABLED=false
       - HERMES_MAX_TASKS_PER_LOOP=1
@@ -68,3 +91,12 @@ services:
 networks:
   default:
     name: ${CANARY_NETWORK_NAME:-assistx_canary_default}
+
+# Project-scoped volumes; never bind production repositories or identity files.
+volumes:
+  canary_state: {}
+  canary_artifacts: {}
+  canary_cache: {}
+  canary_fleet_state: {}
+  canary_hermes_home: {}
+  canary_transcriptions: {}

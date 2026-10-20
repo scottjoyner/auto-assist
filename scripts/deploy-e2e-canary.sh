@@ -20,6 +20,7 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   echo "Copy deploy/canary.env.example and replace every placeholder." >&2
   exit 2
 fi
+python "${ROOT}/scripts/verify-release-build.py"
 command -v docker >/dev/null
 docker compose version >/dev/null
 compose_version="$(docker compose version --short | sed 's/^v//')"
@@ -63,7 +64,7 @@ fi
   echo "stages=${CANARY_STAGES:-observe,cache}"
 } > "${EVIDENCE_DIR}/deployment.txt"
 
-"${COMPOSE[@]}" config >/dev/null
+"${COMPOSE[@]}" --profile "*" config --format json | python "${ROOT}/scripts/verify-canary-compose.py" --stdin
 "${COMPOSE[@]}" config --services > "${EVIDENCE_DIR}/compose.services.txt"
 "${COMPOSE[@]}" config --images > "${EVIDENCE_DIR}/compose.images.txt"
 sha256sum \

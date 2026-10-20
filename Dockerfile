@@ -13,7 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- Node.js / npm (for MCP servers) ----
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/nodesource-setup.sh \
+    && bash /tmp/nodesource-setup.sh \
+    && rm /tmp/nodesource-setup.sh \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && node --version && npm --version
@@ -26,12 +28,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     XDG_CACHE_HOME=/app/.cache \
     TRANSCRIPTIONS_ROOT=/app/transcriptions
 
-# ---- Python deps (assistx first, then hermes-agent on top) ----
+# ---- AssistX dependencies stay in the application interpreter ----
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# ---- Install Hermes CLI (installs side-by-side; hermes pins its own deps) ----
-RUN pip install --no-cache-dir "hermes-agent[all]" 2>&1 | tail -5
+# ---- Hermes owns a separate interpreter: its pins conflict with AssistX. ----
+COPY requirements-hermes.txt /app/requirements-hermes.txt
+RUN python -m venv /opt/hermes
+RUN /opt/hermes/bin/python -m pip install --no-cache-dir -r /app/requirements-hermes.txt
+RUN /opt/hermes/bin/python -m pip check
+RUN ln -s /opt/hermes/bin/hermes /usr/local/bin/hermes
+# Check both dependency sets; never add the Hermes venv to application PATH.
+RUN pip check
 RUN which hermes && hermes --version
 
 # ---- Install OpenCode CLI ----
