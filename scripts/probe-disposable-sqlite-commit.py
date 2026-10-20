@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+"""SQLite-only, disposable resource-COMMIT experiment. NO production authority.
+
+This is an import-only, local test instrument. No network, environment secrets,
+database service, release CLI, automatic retry, or background job is used.
+Separate SQLite files model the resource effect and a *simulated* external
+high-water. Separate files are NOT independent governance: the same OS user
+can modify both, including with privileged SQL.
+"""
+from __future__ import annotations
+
+import sqlite3
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+_RESOURCE = "auto-router-runtime-projection"
+_SHA = "a" * 64
+_REV = "b" * 64
+_NONCE0 = "f" * 32
+
+
+class RejectedCommit(Exception):
+    """Failed the resource-owned, compare-and-swap transaction."""
+
+
+class UncertainCommit(Exception):
+    """Commit may have succeeded, but the client did not receive its ACK."""
+
+
+def _conn(path: Path, *, readonly: bool = False) -> sqlite3.Connection:
+    # Only called on disposable temp paths in tests. URI mode=ro ensures a
+    # separate observation connection cannot issue ordinary SQL writes.
+    if readonly:
+        con = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        con.execute("PRAGMA query_only=ON")
+    else:
+        con = sqlite3.connect(path)
+        con.execute("PRAGMA synchronous=FULL")
+    con.execute("PRAGMA busy_timeout=1000")
+    return con
+
+
+def initialize(resource_db: Path, anchor_db: Path) -> None:
+    if resource_db.resolve() == anchor_db.resolve():
+        raise ValueError("resource and high-water must use separate disposable files")
+    for db in (resource_db, anchor_db):
+        if db.exists():
+            raise ValueError("research bootstrap refuses to overwrite any database")
+        if not db.parent.is_dir():
+            raise ValueError("research databases must live under existing test temp dirs")
+    with _conn(resource_db) as db:
+        db.execute("""CREATE TABLE resource_state (
+            id TEXT PRIMARY KEY, term INTEGER NOT NULL, commit_seq INTEGER NOT NULL,
+            generation INTEGER NOT NULL, checksum TEXT NOT NULL,
+            revision_sha256 TEXT NOT NULL, nonce TEXT NOT NULL
+        )""")
+        db.execute("""CREATE TABLE commit_receipts (
+            seq INTEGER PRIMARY KEY, term INTEGER NOT NULL,
+            nonce TEXT NOT NULL UNIQUE, generation INTEGER NOT NULL,
+            checksum TEXT NOT NULL, revision_sha256 TEXT NOT NULL
+        )""")
+        db.execute("INSERT INTO resource_state VALUES (?,?,?,?,?,?,?)",
+                   (_RESOURCE, 1, 1, 1, _SHA, _REV, _NONCE0))
+        db.execute("INSERT INTO commit_receipts VALUES (?,?,?,?,?,?)",
+                   (1, 1, _NONCE0, 1, _SHA, _REV))
+        db.execute("""CREATE TABLE research_finalization (
+            resource_id TEXT PRIMARY KEY, term INTEGER NOT NULL,
+            commit_seq INTEGER NOT NULL, generation INTEGER NOT NULL,
+            checksum TEXT NOT NULL, revision_sha256 TEXT NOT NULL
+        )""")
+    with _conn(anchor_db) as db:
+        db.execute("""CREATE TABLE witness_highwater (
+            id TEXT PRIMARY KEY, term INTEGER NOT NULL,
+            commit_seq INTEGER NOT NULL, last_nonce TEXT NOT NULL
+        )""")
+        db.execute("INSERT INTO witness_highwater VALUES (?,?,?,?)",
+                   (_RESOURCE, 1, 1, _NONCE0))
+
+
+def commit_effect(
+    resource_db: Path, *,
+    expected_term: int, expected_sequence: int,
+    generation: int, checksum: str, revision_sha256: str, nonce: str,
+    lose_ack_after_commit: bool = False,
+    lose_ack_before_commit: bool = False,
+) -> None:
+    """Atomically commit an effect and a receipt, then optionally lose the ACK.
+
+    No caller can *legitimately* advance a term or sequence through this API
+    without its expected CAS inputs. A privileged SQL writer can still forge
+    both tables, a deliberately reproduced NO-GO below.
+    """
+    if lose_ack_after_commit and lose_ack_before_commit:
+        raise ValueError("select only one disposable ACK-loss fault")
+    if (
+        type(expected_term) is not int or expected_term < 1
+        or type(expected_sequence) is not int or expected_sequence < 1
+        or type(generation) is not int or generation < 1
+        or not isinstance(checksum, str) or len(checksum) != 64
+        or not isinstance(revision_sha256, str) or len(revision_sha256) != 64
+        or not isinstance(nonce, str) or len(nonce) != 32
+    ):
+        raise RejectedCommit("invalid_commit_shape")
+    con = _conn(resource_db)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            "SELECT term, commit_seq FROM resource_state WHERE id=?", (_RESOURCE,)
+        ).fetchone()
+        if row != (expected_term, expected_sequence):
+            raise RejectedCommit("stale_term_or_sequence")
+        next_seq = expected_sequence + 1
+        con.execute("""UPDATE resource_state SET term=?, commit_seq=?,
+            generation=?, checksum=?, revision_sha256=?, nonce=? WHERE id=?""",
+            (expected_term, next_seq, generation, checksum, revision_sha256,
+             nonce, _RESOURCE))
+        con.execute("INSERT INTO commit_receipts VALUES (?,?,?,?,?,?)",
+                    (next_seq, expected_term, nonce, generation, checksum,
+                     revision_sha256))
+        if lose_ack_before_commit:
+            # Same externally observed uncertainty as ACK loss after commit:
+            # this research path rolls back, the other one commits.
+            raise UncertainCommit("ACK_NOT_OBSERVED_COMMIT_OUTCOME_UNCERTAIN")
+        con.commit()
+    except sqlite3.IntegrityError as exc:
+        con.rollback()
+        raise RejectedCommit("duplicate_nonce_or_sequence") from exc
+    except BaseException:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+    if lose_ack_after_commit:
+        raise UncertainCommit("ACK_NOT_OBSERVED_COMMIT_OUTCOME_UNCERTAIN")
+
+
+def resource_readback(resource_db: Path) -> dict[str, Any]:
+    """Separate read-only SQL connection; no signer / external state involved."""
+    with _conn(resource_db, readonly=True) as db:
+        state = db.execute("""SELECT term, commit_seq, generation,
+            checksum, revision_sha256, nonce FROM resource_state
+            WHERE id=?""", (_RESOURCE,)).fetchone()
+        if state is None:
+            raise ValueError("missing_resource")
+        term, seq, generation, checksum, revision, nonce = state
+        receipt = db.execute("""SELECT term, nonce, generation, checksum,
+            revision_sha256 FROM commit_receipts WHERE seq=?""", (seq,)).fetchone()
+        committed = receipt == (term, nonce, generation, checksum, revision)
+    return {
+        "resource_id": _RESOURCE, "term": term, "commit_seq": seq,
+        "generation": generation, "checksum": checksum,
+        "revision_sha256": revision, "committed": committed,
+    }
+
+
+def anchor_readback(anchor_db: Path) -> dict[str, Any]:
+    with _conn(anchor_db, readonly=True) as db:
+        row = db.execute(
+            "SELECT term, commit_seq, last_nonce FROM witness_highwater WHERE id=?",
+            (_RESOURCE,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("missing_external_anchor")
+        return dict(zip(("term", "commit_seq", "last_nonce"), row, strict=True))
+
+
+def operator_advance_anchor(
+    anchor_db: Path, *, expected_term: int, expected_seq: int,
+    new_term: int, new_seq: int, new_nonce: str,
+) -> None:
+    """Separate manual research action; NEVER called by witness evaluation."""
+    with _conn(anchor_db) as db:
+        db.execute("BEGIN IMMEDIATE")
+        old = db.execute(
+            "SELECT term, commit_seq FROM witness_highwater WHERE id=?",
+            (_RESOURCE,),
+        ).fetchone()
+        if old != (expected_term, expected_seq) or (
+            new_term, new_seq
+        ) <= (expected_term, expected_seq):
+            raise RejectedCommit("anchor_moved_or_not_monotonic")
+        db.execute("""UPDATE witness_highwater
+            SET term=?, commit_seq=?, last_nonce=? WHERE id=?""",
+            (new_term, new_seq, new_nonce, _RESOURCE))
+
+
+def automatic_retry_after_uncertain_commit(*_args: Any, **_kwargs: Any) -> None:
+    """No-automatic-retry guard; unsure whether the resource effect happened."""
+    raise UncertainCommit("UNCERTAIN_COMMIT_REQUIRES_INDEPENDENT_OPERATOR_READBACK")
+
+
+
+
+def finalization_readback(resource_db: Path) -> dict[str, Any] | None:
+    """Return only the toy finalization row using a separate RO connection."""
+    with _conn(resource_db, readonly=True) as db:
+        row = db.execute(
+            """SELECT term, commit_seq, generation, checksum, revision_sha256
+               FROM research_finalization WHERE resource_id=?""", (_RESOURCE,)
+        ).fetchone()
+    if row is None:
+        return None
+    return dict(zip(
+        ("term", "commit_seq", "generation", "checksum", "revision_sha256"),
+        row, strict=True,
+    ))
+
+
+def finalize_under_resource_lock(
+    resource_db: Path, *,
+    expected: dict[str, Any],
+    during_fence: Callable[[], None] | None = None,
+    lose_ack_after_commit: bool = False,
+) -> str:
+    """Toy transactional effect fence; NOT production authority.
+
+    A BEGIN IMMEDIATE write transaction fences compliant concurrent SQLite
+    writers until the immutable *research finalization row* is inserted.
+    Privileged SQL can still forge or mutate all rows immediately afterwards.
+    This experiment neither verifies a signature nor authorizes a real action.
+    """
+    required = {
+        "resource_id", "term", "commit_seq", "generation", "checksum",
+        "revision_sha256", "committed",
+    }
+    if (
+        not isinstance(expected, dict)
+        or set(expected) != required
+        or expected.get("committed") is not True
+        or expected.get("resource_id") != _RESOURCE
+        or any(type(expected[k]) is not int or expected[k] < 1
+               for k in ("term", "commit_seq", "generation"))
+        or any(not isinstance(expected[k], str) or len(expected[k]) != 64
+               for k in ("checksum", "revision_sha256"))
+    ):
+        raise RejectedCommit("finalization_expected_invalid")
+
+    con = _conn(resource_db)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        rows = con.execute(
+            """SELECT term, commit_seq, generation, checksum, revision_sha256, nonce
+               FROM resource_state WHERE id=?""", (_RESOURCE,)
+        ).fetchone()
+        if rows is None:
+            raise RejectedCommit("finalization_missing_resource")
+        term, seq, generation, checksum, revision, nonce = rows
+        receipt = con.execute(
+            """SELECT term, nonce, generation, checksum, revision_sha256
+               FROM commit_receipts WHERE seq=?""", (seq,)
+        ).fetchone()
+        if receipt != (term, nonce, generation, checksum, revision):
+            raise RejectedCommit("finalization_noncommitted_resource")
+        witnessed = {
+            "resource_id": _RESOURCE, "term": term,
+            "commit_seq": seq, "generation": generation,
+            "checksum": checksum, "revision_sha256": revision,
+            "committed": True,
+        }
+        if witnessed != expected:
+            raise RejectedCommit("finalization_not_equal_to_expected")
+        if con.execute(
+            "SELECT 1 FROM research_finalization WHERE resource_id=?",
+            (_RESOURCE,),
+        ).fetchone() is not None:
+            raise RejectedCommit("finalization_already_sealed")
+        if during_fence is not None:
+            during_fence()
+        # The same write transaction remains in force; a trusted concurrent
+        # writer cannot mutate the effect between validation and this insert.
+        if con.execute(
+            """SELECT term, commit_seq, generation, checksum, revision_sha256, nonce
+               FROM resource_state WHERE id=?""", (_RESOURCE,)
+        ).fetchone() != rows:
+            raise RejectedCommit("finalization_resource_changed")
+        con.execute(
+            """INSERT INTO research_finalization VALUES (?,?,?,?,?,?)""",
+            (_RESOURCE, term, seq, generation, checksum, revision),
+        )
+        con.commit()
+    except BaseException:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+    if lose_ack_after_commit:
+        raise UncertainCommit("ACK_NOT_OBSERVED_FINALIZATION_OUTCOME_UNCERTAIN")
+    return "RESEARCH_ATOMIC_SQLITE_SEAL_ONLY"
+
+if __name__ == "__main__":
+    raise SystemExit("DISPOSABLE_RESEARCH_ONLY_NO_PRODUCTION_ENTRYPOINT")
