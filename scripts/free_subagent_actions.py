@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 import signal
 import sys
@@ -28,17 +27,21 @@ def _log(entry: dict[str, Any]) -> None:
 
 
 def terminate_subagent(pid: int, session: str = "", sig: int = signal.SIGTERM) -> dict[str, Any]:
-    result = None
-    try:
-        os.kill(pid, sig)
-        result = {"pid": pid, "session": session, "action": "terminated", "signal": sig}
-    except ProcessLookupError:
-        result = {"pid": pid, "session": session, "action": "already_gone", "signal": sig}
-    except PermissionError:
-        result = {"pid": pid, "session": session, "action": "permission_denied", "signal": sig}
-    except OSError as exc:
-        result = {"pid": pid, "session": session, "action": "error", "error": str(exc), "signal": sig}
-    _log({"ts": _now_iso(), "event": "terminate", **result})
+    """Deny raw PID signaling until independent process ownership is provable.
+
+    Registry records and supervisor projections are editable observation data,
+    not an authority to signal a host PID. PID reuse, a forged session, or a
+    restored state file would otherwise allow killing unrelated processes.
+    No environment toggle or caller-provided boolean is sufficient custody.
+    """
+    result = {
+        "pid": pid,
+        "session": session,
+        "action": "denied_unverified_process_owner",
+        "signal": sig,
+        "reason": "resource_owned_process_identity_witness_required",
+    }
+    _log({"ts": _now_iso(), "event": "terminate_denied", **result})
     return result
 
 
@@ -123,6 +126,22 @@ def run_supervision_loop(
     actions_taken: list[dict[str, Any]] = []
 
     _log({"ts": _now_iso(), "event": "supervision_cycle", "verdict": verdict, "dry_run": dry_run})
+
+    if not dry_run:
+        # Neither the projection nor the local state file can authorize host
+        # signals or write admission records. Preserve the requested verdict
+        # for diagnostics while refusing all active effects until a separate
+        # resource-owned, non-restorable execution authority is implemented.
+        return {
+            "verdict": "hold",
+            "requested_verdict": verdict,
+            "dry_run": False,
+            "actions_taken": [],
+            "action_count": 0,
+            "blocked": True,
+            "reason": "resource_owned_process_and_admission_authority_required",
+            "model_source": None,
+        }
 
     if verdict == "hold":
         records = projection.get("subagent_records", 0)
