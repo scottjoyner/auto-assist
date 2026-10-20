@@ -12,9 +12,11 @@ import argparse
 import collections
 import hashlib
 import json
+import os
 import pathlib
 import sqlite3
 import subprocess
+import tempfile
 from typing import Any
 
 
@@ -67,6 +69,8 @@ def _git(directory: str) -> dict[str, Any]:
     except Exception:
         return {"is_git": False}
 
+
+MAX_EVENTS_PER_SESSION = 10_000
 
 ROUTE_ALIAS_TOKENS = frozenset({"free", "auto", "router", "any", "best", "default"})
 
@@ -121,8 +125,9 @@ def _objective_digest(con: sqlite3.Connection, session_id: str) -> dict[str, Any
         JOIN message m ON m.id = p.message_id
         WHERE p.session_id = ?
         ORDER BY p.time_created ASC
+        LIMIT ?
         """,
-        (session_id,),
+        (session_id, MAX_EVENTS_PER_SESSION),
     ).fetchall()
     texts: list[str] = []
     for (raw,) in row:
@@ -140,20 +145,40 @@ def _objective_digest(con: sqlite3.Connection, session_id: str) -> dict[str, Any
     }
 
 
-def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
-    uri = f"file:{db_path}?mode=ro"
-    con = sqlite3.connect(uri, uri=True)
+def export_sessions(
+    db_path: pathlib.Path, *, session_id: str | None = None,
+    title_prefix: str | None = None, max_sessions: int = 500
+) -> list[dict[str, Any]]:
+    """Return bounded, source-read-only v1 trace summaries.
+
+    Predicates run inside SQLite before any message/part traversal. This avoids
+    dragging the full OpenCode history into memory for a single-session receipt.
+    """
+    if not 1 <= max_sessions <= 5000:
+        raise ValueError("max_sessions must be between 1 and 5000")
+    con = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
     con.row_factory = sqlite3.Row
-    sessions = con.execute(
-        """
-        SELECT id, parent_id, directory, title, model, cost,
-               tokens_input, tokens_output, tokens_reasoning,
-               tokens_cache_read, tokens_cache_write,
-               time_created, time_updated
-        FROM session
-        ORDER BY time_created ASC
-        """
-    ).fetchall()
+    con.execute("PRAGMA query_only=ON")
+    clauses, parameters = [], []
+    if session_id is not None:
+        clauses.append("id = ?")
+        parameters.append(session_id)
+    if title_prefix is not None:
+        # A prefix is a LITERAL string; '%' and '_' do not become SQL wildcards.
+        # substr is case-sensitive and treats '%'/'_' as literal characters.
+        clauses.append("substr(title, 1, length(?)) = ?")
+        parameters.extend([title_prefix, title_prefix])
+    sql = """SELECT id, parent_id, directory, title, model, cost,
+                tokens_input, tokens_output, tokens_reasoning,
+                tokens_cache_read, tokens_cache_write,
+                time_created, time_updated FROM session"""
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY time_created ASC, id ASC LIMIT ?"
+    sessions = con.execute(sql, (*parameters, max_sessions + 1)).fetchall()
+    if len(sessions) > max_sessions:
+        con.close()
+        raise ValueError("trace scope exceeds max_sessions; filter by --session-id")
 
     records: list[dict[str, Any]] = []
     for session in sessions:
@@ -161,9 +186,11 @@ def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
         model = _json(session["model"])
 
         messages = con.execute(
-            "SELECT data FROM message WHERE session_id = ? ORDER BY time_created",
-            (sid,),
+            "SELECT data FROM message WHERE session_id = ? ORDER BY time_created LIMIT ?",
+            (sid, MAX_EVENTS_PER_SESSION + 1),
         ).fetchall()
+        if len(messages) > MAX_EVENTS_PER_SESSION:
+            raise ValueError("message event limit exceeded for selected session")
         roles: collections.Counter[str] = collections.Counter()
         assistant_errors: list[str] = []
         for (raw,) in messages:
@@ -176,9 +203,11 @@ def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
                 assistant_errors.append(err if isinstance(err, str) else json.dumps(err, sort_keys=True))
 
         parts = con.execute(
-            "SELECT data FROM part WHERE session_id = ? ORDER BY time_created",
-            (sid,),
+            "SELECT data FROM part WHERE session_id = ? ORDER BY time_created LIMIT ?",
+            (sid, MAX_EVENTS_PER_SESSION + 1),
         ).fetchall()
+        if len(parts) > MAX_EVENTS_PER_SESSION:
+            raise ValueError("part event limit exceeded for selected session")
         part_types: collections.Counter[str] = collections.Counter()
         tools: collections.Counter[str] = collections.Counter()
         finish_reasons: list[str] = []
@@ -231,6 +260,7 @@ def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
                 "git": _git(directory),
             }
         )
+    con.close()
     return records
 
 
@@ -239,16 +269,48 @@ def main() -> int:
     parser.add_argument("--db", required=True, type=pathlib.Path)
     parser.add_argument("--out", required=True, type=pathlib.Path)
     parser.add_argument("--title-prefix")
+    parser.add_argument("--session-id", help="exact OpenCode session ID")
+    parser.add_argument("--max-sessions", type=int, default=500)
     args = parser.parse_args()
 
-    records = export_sessions(args.db)
-    if args.title_prefix:
-        records = [r for r in records if str(r.get("title", "")).startswith(args.title_prefix)]
-
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    with args.out.open("w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
+    try:
+        records = export_sessions(
+            args.db, session_id=args.session_id,
+            title_prefix=args.title_prefix, max_sessions=args.max_sessions
+        )
+    except (OSError, ValueError, sqlite3.Error) as error:
+        print(json.dumps({"error": "read_only_trace_export_failed",
+                          "error_type": type(error).__name__}, sort_keys=True))
+        return 1
+    if args.session_id is not None and not records:
+        print(json.dumps({"error": "requested_session_not_found"}))
+        return 1
+    if args.out.is_symlink():
+        print(json.dumps({"error": "symlink_output_refused"}))
+        return 1
+    # The JSONL ledger is private and atomic; a failed write must not leave an
+    # incomplete receipt or truncate a previously accepted export.
+    temp_path = None
+    try:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=args.out.parent,
+            prefix=".opencode-trace-", suffix=".tmp", delete=False
+        ) as handle:
+            temp_path = pathlib.Path(handle.name)
+            for record in records:
+                handle.write(json.dumps(record, sort_keys=True, allow_nan=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, args.out)
+        temp_path = None
+    except (OSError, TypeError, ValueError, OverflowError) as error:
+        print(json.dumps({"error": "private_trace_write_failed",
+                          "error_type": type(error).__name__}, sort_keys=True))
+        return 1
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
     missing_model = [r["session_id"] for r in records if not r.get("provider") or not r.get("model")]
     unresolved = [r["session_id"] for r in records if not r.get("model_identity_complete")]
