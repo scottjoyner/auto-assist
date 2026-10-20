@@ -1,0 +1,41 @@
+name: auth-strict-header-negative
+
+on:
+  pull_request:
+    paths:
+      - "src/assistx/api.py"
+      - "tests/test_auth_strict_basic_fence.py"
+      - ".github/workflows/auth-strict-header-negative.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-auth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout exact source head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install offline test dependencies
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Compile source and synthetic test
+        run: |
+          python -m py_compile src/assistx/api.py tests/test_auth_strict_basic_fence.py
+      - name: Lint new synthetic tests
+        run: |
+          ruff check --ignore I001,E501 tests/test_auth_strict_basic_fence.py
+      - name: Strict forged-header denial
+        env:
+          ASSISTX_REQUIRE_BASIC_AUTH: "0"
+        run: |
+          pytest -q tests/test_auth_strict_basic_fence.py
