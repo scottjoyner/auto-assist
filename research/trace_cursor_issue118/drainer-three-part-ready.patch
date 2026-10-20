@@ -1,0 +1,78 @@
+--- a/trace_drainer_safe.py
++++ b/trace_drainer_safe.py
+@@ -100,6 +100,13 @@
+                 previous.get("bytes")!=st.st_size or
+                 previous.get("manifest_sha256")!=digest(manifest)):
+                 raise RuntimeError("acknowledgement conflicts with retained custody source")
++            # Old v1 ACKs did not record any NAS ready-marker witness.
++            # Never silently promote them to completed three-part custody.
++            ready_proof=previous.get("ready_sha256")
++            if type(ready_proof) is not str or not HEX64.fullmatch(ready_proof):
++                raise RuntimeError("legacy acknowledgement lacks ready custody proof")
++            if ready_proof!=digest(ready):
++                raise RuntimeError("acknowledgement ready marker conflicts with local source")
+             continue
+         rows.append((path,sha,st.st_size))
+     return sorted(rows, key=lambda x: x[0].name)
+@@ -109,8 +116,10 @@
+     marker=path.with_name(path.name+".ack.json")
+     if marker.exists() or marker.is_symlink():
+         raise RuntimeError("acknowledgement marker already present")
++    ready=path.with_name(path.name+".ready")
++    ready_sha=digest(ready)
+     obj={"schema":"safe-trace-nas-ack/v1","sha256":wanted,"bytes":size,
+-         "manifest_sha256":digest(manifest),
++         "manifest_sha256":digest(manifest),"ready_sha256":ready_sha,
+          "beelink_uuid":NAS_BACKEND_UUID,
+          "nas_remote_path":str(INBOX/path.name),
+          "source_release":"BLOCKED",
+@@ -131,6 +140,16 @@
+     final=INBOX/path.name
+     manifest=path.with_name(path.name+".manifest.json")
+     remote_manifest=INBOX/(path.name+".manifest.json")
++    ready=path.with_name(path.name+".ready")
++    remote_ready=INBOX/(path.name+".ready")
++    if ready.is_symlink() or not ready.is_file() or ready.read_text(encoding="utf-8") != wanted+"\n":
++        raise RuntimeError("source ready marker missing or mismatched")
++    ready_digest=digest(ready)
++    def check_remote_ready() -> None:
++        if remote_ready.is_symlink() or not remote_ready.is_file():
++            raise RuntimeError("CUSTODY CONFLICT: NAS ready marker missing or unsafe")
++        if digest(remote_ready)!=ready_digest:
++            raise RuntimeError("CUSTODY CONFLICT: NAS ready marker differs")
+     if final.exists():
+         if digest(final)!=wanted:
+             raise RuntimeError("CUSTODY CONFLICT: existing NAS payload differs")
+@@ -138,6 +157,7 @@
+             raise RuntimeError("CUSTODY CONFLICT: existing NAS manifest missing")
+         if digest(manifest)!=digest(remote_manifest):
+             raise RuntimeError("CUSTODY CONFLICT: existing NAS manifest differs")
++        check_remote_ready()
+         acknowledge_local(path,wanted,size,manifest)
+         return {"state":"already_verified","sha256":wanted,"bytes":size}
+     incoming=INBOX/(".incoming-"+uuid4().hex+"-"+path.name)
+@@ -161,10 +181,22 @@
+     p=call(["mv","-n","--",str(man_stage),str(remote_manifest)],25)
+     if p.returncode or man_stage.exists() or digest(remote_manifest)!=digest(manifest):
+         raise RuntimeError("NAS manifest publish collision or mismatch")
+-    # Recheck the exact manifest bytes at acknowledgement time; a mutable
+-    # manifest must not produce an ACK for a divergent NAS copy.
++    # Publish the ready marker LAST. Its presence is the three-part NAS
++    # receipt boundary. Never acknowledge a payload+manifest-only copy.
++    ready_stage=INBOX/(".incoming-"+uuid4().hex+"-"+ready.name)
++    p=call(["rsync","-t","--no-owner","--no-group","--perms",
++            "--chmod=F600","--",str(ready),str(ready_stage)],30)
++    if p.returncode or digest(ready_stage)!=ready_digest:
++        raise RuntimeError("NAS ready staging failed; source retained")
++    p=call(["mv","-n","--",str(ready_stage),str(remote_ready)],25)
++    if p.returncode or ready_stage.exists():
++        raise RuntimeError("NAS ready publish collision; source retained")
++    check_remote_ready()
++    # Recheck every receipt component at acknowledgement time.
+     if digest(remote_manifest)!=digest(manifest):
+         raise RuntimeError("source/remote manifest changed during publication")
++    if digest(ready)!=ready_digest:
++        raise RuntimeError("local ready marker changed during publication")
+     if path.stat().st_ino!=stat0.st_ino or path.stat().st_size!=size or digest(path)!=wanted:
+         raise RuntimeError("source changed during transfer; do not acknowledge")
+     acknowledge_local(path,wanted,size,manifest)

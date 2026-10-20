@@ -1,0 +1,21 @@
+{
+  "ack_or_source_changes": 0,
+  "complete_custody_attestation": false,
+  "local": {
+    "ack_entries": 173,
+    "legacy_ack_missing_ready_sha256": 173,
+    "local_provenance_structurally_valid": 173
+  },
+  "nas_write_ops": 0,
+  "production_migration_authorized": false,
+  "remote": {
+    "archive_present": 173,
+    "archive_stat_size_match": 173,
+    "checked": 173,
+    "manifest_digest_match": 173,
+    "manifest_present": 173,
+    "ready_absent": 173
+  },
+  "remote_archive_payload_bytes_read": 0,
+  "source_payload_bytes_read": 0
+}
