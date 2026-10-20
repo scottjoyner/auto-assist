@@ -1,0 +1,46 @@
+name: AssistX offline research RC (no provider)
+on:
+  pull_request:
+    paths:
+      - 'scripts/mercury_*'
+      - 'tests/test_mercury_*'
+      - 'static/js/provider_burn_model.js'
+      - 'static/js/traces.js'
+      - 'tests/test_provider_burn_model.cjs'
+      - 'tests/test_trace_investigation_ui.cjs'
+      - 'scripts/verify_offline_release_rc.sh'
+      - '.github/workflows/offline-release-rc.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-fixtures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python -m pip install pytest==8.3.4
+      # Deliberately use --noconftest: this independent fixture suite does not
+      # import AssistX, Docker, Neo4j or runtime providers.
+      - run: bash scripts/verify_offline_release_rc.sh
+  synthetic-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install playwright==1.58.0
+      - run: python -m playwright install --with-deps chromium --only-shell
+      - run: python tests/test_trace_browser_synthetic.py
