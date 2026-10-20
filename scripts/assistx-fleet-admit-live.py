@@ -293,8 +293,23 @@ validation = subprocess.run(
 if validation.returncode != 0 or b"VALID" not in validation.stdout:
     fail("router signature validation failed")
 
-time.sleep(6)
-health = json.loads(urllib.request.urlopen("http://127.0.0.1:8088/health", timeout=4).read())
-if not health.get("ok") or int(health.get("providers_enabled") or 0) < 1:
+# The router rebuilds its provider registry from the freshly approved
+# projection and its circuit breaker flaps open for ~30s during that
+# warm-up, so a single sample races activation (observed 2026-10-20: first
+# sample after approval hit the open window repeatedly). Sample on a
+# bounded retry window instead; fail-closed after the window with the
+# same blocked message — the check's meaning is unchanged, only its
+# timing robustness.
+health = {}
+_admission_activation_deadline = time.time() + 60
+while time.time() < _admission_activation_deadline:
+    time.sleep(6)
+    try:
+        health = json.loads(urllib.request.urlopen("http://127.0.0.1:8088/health", timeout=4).read())
+    except Exception:
+        continue
+    if health.get("ok") and int(health.get("providers_enabled") or 0) >= 1:
+        break
+else:
     fail("router did not activate the renewed projection")
 print(f"FLEET_ADMISSION_REFRESHED generation={next_generation} nodes=1 lease_seconds=900 runtime=x1-lmstudio-1234")
