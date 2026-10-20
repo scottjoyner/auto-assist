@@ -45,3 +45,4 @@ __pycache__/
 # --- coverage artifacts (additive: not covered above) ---
 .coverage
 htmlcov/
+artifacts/runtime/

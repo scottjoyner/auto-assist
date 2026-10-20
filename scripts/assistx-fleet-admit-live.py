@@ -13,7 +13,7 @@ import sys
 import time
 import urllib.request
 
-EXPECTED_APP_VERSION = "0.4.24+1"
+EXPECTED_APP_VERSION = "0.4.26+4"
 EXPECTED_ORNITH_ID = "ornith-1.5-35b-a3b-apex-mtp"
 EXPECTED_ORNITH_INDEX = (
     "mudler/Ornith-1.5-35B-A3B-APEX-MTP-GGUF/"
