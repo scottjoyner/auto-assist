@@ -1,0 +1,815 @@
+diff --git a/src/bots/bot-manager.ts b/src/bots/bot-manager.ts
+index ee4ce82..0542b08 100644
+--- a/src/bots/bot-manager.ts
++++ b/src/bots/bot-manager.ts
+@@ -21,6 +21,7 @@ import { createBotScheduleTool, type BotScheduler } from './tools/bot-schedule.j
+ import { createFleetStatusTool } from './tools/fleet-status.js';
+ import { createBotSpawnTool } from './tools/bot-spawn.js';
+ import { runBotTurn, isTransientFailure, type BotTurnMail, type BotActivityEvent } from './bot-turn.js';
++import type { FleetLeaseAuthority } from './fleet-provider-admission.js';
+ import { parsePersonaAccess, stripPersonaAccessSection } from './persona-access.js';
+ import { mergePathScopes } from './registry-factory.js';
+ import { synthesizeSkill, MIN_TOOLS_FOR_SYNTHESIS } from './skill-synthesis.js';
+@@ -76,6 +77,13 @@ export interface BotManagerDeps {
+   skillsRoot?: string;
+   /** Deliver turn output to the invoking surface (chat/telegram/api). */
+   notify?: (channelType: string, channelId: string, message: string) => Promise<void>;
++  /** Opt-in fleet authority. Without this the upstream Mercury behavior is unchanged. */
++  fleetAdmission?: {
++    authority: FleetLeaseAuthority;
++    resolveUpstreamGroup: (provider: string, model: string) => string | null;
++    maxInputTokens: number;
++    maxOutputTokens: number;
++  };
+ }
+ 
+ const MAX_TRANSIENT_ATTEMPTS = 3;
+@@ -107,6 +115,7 @@ export class BotManager {
+   private readonly config: MercuryConfig;
+   private readonly providers: ProviderRegistry;
+   private readonly tokenBudget: TokenBudget;
++  private readonly fleetAdmission?: BotManagerDeps['fleetAdmission'];
+   private readonly userMemoryFactory?: BotManagerDeps['userMemoryFactory'];
+   private readonly skillsRoot?: BotManagerDeps['skillsRoot'];
+   private notify?: BotManagerDeps['notify'];
+@@ -170,6 +179,7 @@ export class BotManager {
+     this.config = deps.config;
+     this.providers = deps.providers;
+     this.tokenBudget = deps.tokenBudget;
++    this.fleetAdmission = deps.fleetAdmission;
+     this.userMemoryFactory = deps.userMemoryFactory ?? ((botId, manifest) => {
+       // Default: per-bot namespace in the shared second-brain DB.
+       // scope 'none' = stateless bot. SQLite-less devices degrade to a
+@@ -671,6 +681,7 @@ export class BotManager {
+     const pending = this.drainMailbox(botId);
+     mail.push(...pending);
+ 
++    const selectedProvider = resolveProvider(this.providers, manifest);
+     return {
+       input: {
+         manifest,
+@@ -685,7 +696,13 @@ export class BotManager {
+         capabilities: registry,
+         tools,
+         userMemory,
+-        provider: resolveProvider(this.providers, manifest),
++        provider: selectedProvider,
++        fleetAdmission: this.fleetAdmission ? {
++          authority: this.fleetAdmission.authority,
++          upstreamGroup: this.fleetAdmission.resolveUpstreamGroup(selectedProvider.name, selectedProvider.getModel()),
++          maxInputTokens: this.fleetAdmission.maxInputTokens,
++          maxOutputTokens: this.fleetAdmission.maxOutputTokens,
++        } : undefined,
+         tokenBudget: this.tokenBudget,
+         abortSignal: signal,
+       },
+diff --git a/src/bots/bot-turn.test.ts b/src/bots/bot-turn.test.ts
+index 1fd5a9d..a82e3a9 100644
+--- a/src/bots/bot-turn.test.ts
++++ b/src/bots/bot-turn.test.ts
+@@ -14,7 +14,7 @@ vi.mock('ai', async (importOriginal) => {
+ });
+ 
+ import { streamText } from 'ai';
+-import { runBotTurn, classifyFailure, type BotActivityEvent, type BotTurnInput } from './bot-turn.js';
++import { runBotTurn, classifyFailure, isTransientFailure, type BotActivityEvent, type BotTurnInput } from './bot-turn.js';
+ import { MAX_AUTOMATIC_CONTINUATIONS } from '../core/execution-limits.js';
+ 
+ const mockedStreamText = vi.mocked(streamText);
+@@ -245,3 +245,110 @@ describe('runBotTurn live thinking events', () => {
+     expect(secondRound.length).toBeGreaterThan(0);
+   });
+ });
++
++
++describe('fleet-provider scoped BotManager dispatch boundary (offline only)', () => {
++  function authority(overrides: Record<string, unknown> = {}) {
++    return {
++      acquire: vi.fn(async (r: any) => ({ leaseId: 'lease-test-0001', ...r, expiresAtMs: Date.now() + 60_000 })),
++      renew: vi.fn(async (_r: any, l: any) => ({ ...l, expiresAtMs: Date.now() + 60_000 })),
++      release: vi.fn(async () => true),
++      ...overrides,
++    } as any;
++  }
++
++  function scoped(gate: any, overrides: Record<string, unknown> = {}) {
++    return turnInput({
++      jobId: 'job-test-0001',
++      fleetAdmission: {
++        authority: gate, upstreamGroup: 'synthetic-upstream',
++        maxInputTokens: 100, maxOutputTokens: 10,
++      },
++      ...overrides,
++    });
++  }
++
++  it('rejects missing authority before calling the real SDK boundary', async () => {
++    const result = await runBotTurn(scoped(null));
++    expect(result.status).toBe('failed');
++    expect(result.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(mockedStreamText).not.toHaveBeenCalled();
++  });
++
++  it('rejects unknown upstream group with no generation', async () => {
++    const gate = authority();
++    const result = await runBotTurn(scoped(gate, { fleetAdmission: {
++      authority: gate, upstreamGroup: null, maxInputTokens: 100, maxOutputTokens: 10,
++    } }));
++    expect(result.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(gate.acquire).not.toHaveBeenCalled();
++    expect(mockedStreamText).not.toHaveBeenCalled();
++  });
++
++  it('rejects coordinator denial without generation or retries', async () => {
++    const gate = authority({ acquire: vi.fn(async () => null) });
++    const result = await runBotTurn(scoped(gate));
++    expect(result.status).toBe('failed');
++    expect(result.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(mockedStreamText).not.toHaveBeenCalled();
++    expect(isTransientFailure(result.reasonCode!)).toBe(false);
++  });
++
++  it('admits only exact model and group and denies ALL tools for a scoped turn', async () => {
++    const gate = authority();
++    mockedStreamText.mockImplementationOnce(() => streamedResult({ text: 'mock reviewer result', finishReason: 'stop' }));
++    const outcome = await runBotTurn(scoped(gate, { tools: { run_command: { execute: () => 'unsafe' } } as any }));
++    expect(outcome.status).toBe('completed');
++    expect(outcome.output).toBe('mock reviewer result');
++    expect(mockedStreamText).toHaveBeenCalledTimes(1);
++    const opts = mockedStreamText.mock.calls[0][0] as any;
++    expect(opts.tools).toEqual({});
++    expect(opts.maxOutputTokens).toBe(10);
++    expect(gate.acquire).toHaveBeenCalledOnce();
++    expect(gate.renew.mock.calls.length).toBeGreaterThanOrEqual(2);
++    expect(gate.release).toHaveBeenCalledOnce();
++  });
++
++  it('rejects renewal failure before streamText is called', async () => {
++    const gate = authority({ renew: vi.fn(async () => null) });
++    const outcome = await runBotTurn(scoped(gate));
++    expect(outcome.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(mockedStreamText).not.toHaveBeenCalled();
++    expect(gate.release).toHaveBeenCalledOnce();
++  });
++
++  it('rejects a mismatched model identity returned by the authority', async () => {
++    const gate = authority({
++      acquire: vi.fn(async (r: any) => ({leaseId: 'lease-test-0001', ...r,
++        model: 'wrong-model', expiresAtMs: Date.now() + 60_000}))
++    });
++    const outcome = await runBotTurn(scoped(gate));
++    expect(outcome.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(mockedStreamText).not.toHaveBeenCalled();
++  });
++
++  it('a terminal release failure blocks success and is never retried', async () => {
++    const gate = authority({ release: vi.fn(async () => false) });
++    mockedStreamText.mockImplementationOnce(() => streamedResult({ text: 'reply', finishReason: 'stop' }));
++    const outcome = await runBotTurn(scoped(gate));
++    expect(outcome.status).toBe('failed');
++    expect(outcome.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(isTransientFailure(outcome.reasonCode!)).toBe(false);
++    expect(mockedStreamText).toHaveBeenCalledTimes(1);
++  });
++
++  it('provider token overrun aborts the composite streaming signal', async () => {
++    const gate = authority();
++    let wireSignal: AbortSignal | undefined;
++    mockedStreamText.mockImplementationOnce((opts: any) => {
++      wireSignal = opts.abortSignal;
++      opts.onStepFinish?.({ usage: { inputTokens: 500, outputTokens: 20 }, toolCalls: [] });
++      return streamedResult({ text: 'over budget', finishReason: 'stop' });
++    });
++    const outcome = await runBotTurn(scoped(gate));
++    expect(outcome.status).toBe('failed');
++    expect(outcome.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(wireSignal?.aborted).toBe(true);
++    expect(gate.release).toHaveBeenCalledOnce();
++  });
++});
+diff --git a/src/bots/bot-turn.ts b/src/bots/bot-turn.ts
+index c531765..7f4ca20 100644
+--- a/src/bots/bot-turn.ts
++++ b/src/bots/bot-turn.ts
+@@ -10,6 +10,7 @@ import { MAX_AUTOMATIC_CONTINUATIONS } from '../core/execution-limits.js';
+ import { formatToolStep } from '../utils/tool-label.js';
+ import { logger } from '../utils/logger.js';
+ import type { BotManifest, BotTrigger } from './types.js';
++import { FleetAdmissionDenied, FleetTurnAdmission, type FleetLeaseAuthority } from './fleet-provider-admission.js';
+ 
+ /** Mailbox messages injected mid-turn (bot-to-bot or queued user input). */
+ export interface BotTurnMail {
+@@ -66,6 +67,13 @@ export interface BotTurnInput {
+   provider: BaseProvider;
+   tokenBudget: TokenBudget;
+   abortSignal: AbortSignal;
++  /** Injected by a trusted fleet caller; optional for unmodified standalone Mercury. */
++  fleetAdmission?: {
++    authority: FleetLeaseAuthority | null | undefined;
++    upstreamGroup: string | null;
++    maxInputTokens: number;
++    maxOutputTokens: number;
++  };
+   /** Real-time activity consumer (roster, live regions, web feed). */
+   onActivity?: (ev: BotActivityEvent) => void;
+ }
+@@ -120,6 +128,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+   const turnStartedAt = Date.now();
+   const toolsUsed = new Set<string>();
+   const onActivity = input.onActivity;
++  let fleetTurn: FleetTurnAdmission | undefined;
+   const emit = (ev: { kind: BotActivityEvent['kind']; label: string; detail?: string; stepIndex: number; status?: BotActivityEvent['status']; elapsedMs?: number; reasoningTail?: string; textTail?: string }): void => {
+     if (!onActivity) return;
+     try {
+@@ -139,8 +148,22 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+   };
+ 
+   try {
++    if (input.fleetAdmission) {
++      fleetTurn = await FleetTurnAdmission.open(input.fleetAdmission.authority, {
++        taskId: input.jobId ?? '',
++        botId: manifest.id,
++        provider: provider.name,
++        model: provider.getModel(),
++        upstreamGroup: input.fleetAdmission.upstreamGroup ?? '',
++        maxInputTokens: input.fleetAdmission.maxInputTokens,
++        maxOutputTokens: input.fleetAdmission.maxOutputTokens,
++      });
++    }
+     emit({ kind: 'turn-start', stepIndex: 0, label: input.prompt ? input.prompt.slice(0, 80) : 'Checking inbox' });
+     while (stepsRemaining > 0 && !abortSignal.aborted) {
++      // This is the BotManager's actual AI SDK dispatch boundary. Guarded
++      // requests must renew BEFORE invoking streamText, not at enqueue time.
++      if (fleetTurn) await fleetTurn.renewOrRevoke();
+       // streamText, not generateText: the deltas are the real-time feedback
+       // inside the bot's thread (reasoning + reply tails). Same options and
+       // step-count semantics; the result's final promises preserve the old
+@@ -150,9 +173,12 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+         model: provider.getModelInstance(),
+         system,
+         messages,
+-        tools,
++        // Synthetic phase forbids ALL tools during guarded generation.
++        // SDK tool invocations otherwise require their own hard cancellation.
++        tools: fleetTurn ? {} : tools,
+         stopWhen: stepCountIs(stepsRemaining),
+-        abortSignal,
++        maxOutputTokens: fleetTurn ? Math.max(1, fleetTurn.request.maxOutputTokens - tokensOut) : undefined,
++        abortSignal: fleetTurn ? AbortSignal.any([abortSignal, fleetTurn.signal]) : abortSignal,
+         experimental_include: { requestBody: false },
+         experimental_onStepStart: () => {
+           stepIndex++;
+@@ -180,6 +206,11 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+             tokensIn += usage.inputTokens ?? 0;
+             tokensOut += usage.outputTokens ?? 0;
+           }
++          if (fleetTurn && (tokensIn > fleetTurn.request.maxInputTokens
++              || tokensOut > fleetTurn.request.maxOutputTokens)) {
++            fleetTurn.abortNow();
++            throw new FleetAdmissionDenied('observed_token_reservation_exceeded');
++          }
+           for (const tc of toolCalls ?? []) {
+             if (tc?.toolName) toolsUsed.add(String(tc.toolName));
+           }
+@@ -204,6 +235,7 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+         emit({ kind: 'thinking', stepIndex, label: 'thinking', reasoningTail, textTail });
+       };
+       for await (const part of stream.fullStream) {
++        fleetTurn?.assertLive();
+         if (part.type === 'reasoning-delta' && part.text) {
+           reasoningTail = (reasoningTail + part.text).slice(-THINKING_TAIL_CHARS);
+         } else if (part.type === 'text-delta' && part.text) {
+@@ -216,7 +248,9 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+       }
+       flushThinking();
+ 
++      fleetTurn?.assertLive();
+       const [finalText, finishReason] = await Promise.all([stream.text, stream.finishReason]);
++      fleetTurn?.assertLive();
+       const result = { text: finalText, finishReason };
+       lastResult = result;
+ 
+@@ -299,6 +333,8 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+       channelType: 'bot',
+     });
+ 
++    // A failed final renewal or release cannot report a successful run.
++    if (fleetTurn) await fleetTurn.close();
+     emit({ kind: 'turn-end', stepIndex, label: 'completed', status: 'done' });
+     return { status: 'completed', output, tokensIn, tokensOut, toolsUsed: [...toolsUsed] };
+   } catch (err: any) {
+@@ -314,13 +350,16 @@ export async function runBotTurn(input: BotTurnInput): Promise<BotTurnOutput> {
+       tokensOut,
+       toolsUsed: [...toolsUsed],
+       error: err?.message ?? String(err),
+-      reasonCode: classifyFailure(err),
++      reasonCode: fleetTurn?.signal.aborted ? 'fleet_provider_admission_denied' : classifyFailure(err),
+     };
++  } finally {
++    if (fleetTurn) await fleetTurn.dispose();
+   }
+ }
+ 
+ /** Map a provider/tool error to a typed reason code (retry vs permanent). */
+ export function classifyFailure(err: any): string {
++  if (err instanceof FleetAdmissionDenied) return 'fleet_provider_admission_denied';
+   const msg = String(err?.message ?? err ?? '').toLowerCase();
+   if (/rate.?limit|429|too many requests/.test(msg)) return 'provider_rate_limit';
+   // Network blips ARE transient — ECONNRESET (connection dropped mid-read)
+diff --git a/src/bots/fleet-provider-admission.node.check.mjs b/src/bots/fleet-provider-admission.node.check.mjs
+new file mode 100644
+index 0000000..cba45ed
+--- /dev/null
++++ b/src/bots/fleet-provider-admission.node.check.mjs
+@@ -0,0 +1,136 @@
++import { test } from 'node:test';
++import assert from 'node:assert/strict';
++import {
++  FleetTurnAdmission, FleetAdmissionDenied, validLease
++} from './fleet-provider-admission.ts';
++
++const request = {
++  taskId: 'job-fixture-0001', botId: 'reviewer', provider: 'fixture',
++  model: 'fixture-only', upstreamGroup: 'synthetic-upstream',
++  maxInputTokens: 100, maxOutputTokens: 10,
++};
++function fake(extra = {}) {
++  let busy = false;
++  const calls = [];
++  const gate = {
++    calls,
++    async acquire(r) {
++      calls.push('acquire');
++      if (busy) return null;
++      busy = true;
++      return { leaseId: 'lease-fixture-0001', ...r, expiresAtMs: Date.now() + 60000 };
++    },
++    async renew(r, l) {
++      calls.push('renew');
++      return { ...l, expiresAtMs: Date.now() + 60000 };
++    },
++    async release(r, l) {
++      calls.push('release');
++      busy = false;
++      return true;
++    },
++    ...extra
++  };
++  return gate;
++}
++const opts = { watchdogMs: 50 };
++
++test('missing coordinator denies without side effects', async () => {
++  await assert.rejects(FleetTurnAdmission.open(null, request), FleetAdmissionDenied);
++});
++test('unqualified group denies before authority call', async () => {
++  const gate = fake();
++  await assert.rejects(FleetTurnAdmission.open(gate, { ...request, upstreamGroup: 'unknown' }), FleetAdmissionDenied);
++  assert.deepEqual(gate.calls, []);
++});
++test('unknown paid provider not inferable from route: coordinator rejects', async () => {
++  const gate = fake({ acquire: async () => null });
++  await assert.rejects(FleetTurnAdmission.open(gate, { ...request, provider: 'paid-provider' }), FleetAdmissionDenied);
++});
++test('wrong upstream response denies (alias must match)', async () => {
++  const gate = fake({ acquire: async (r) => ({ leaseId: 'lease-fixture-0001', ...r,
++    upstreamGroup: 'untrusted-alias', expiresAtMs: Date.now() + 60000 }) });
++  await assert.rejects(FleetTurnAdmission.open(gate, request), FleetAdmissionDenied);
++});
++test('wrong model response denies (must bind exact dispatch)', async () => {
++  const gate = fake({ acquire: async (r) => ({ leaseId: 'lease-fixture-0001', ...r,
++    model: 'changed-after-admission', expiresAtMs: Date.now() + 60000 }) });
++  await assert.rejects(FleetTurnAdmission.open(gate, request), FleetAdmissionDenied);
++});
++test('acquire backend unavailable denies', async () => {
++  await assert.rejects(FleetTurnAdmission.open(fake({ acquire: async () => {throw Error('down')} }), request), FleetAdmissionDenied);
++});
++test('normal lifecycle acquire renew release with immutable identity', async () => {
++  const gate = fake();
++  const lease = await FleetTurnAdmission.open(gate, request, opts);
++  lease.assertLive();
++  await lease.renewOrRevoke();
++  await lease.close();
++  assert.equal(lease.signal.aborted, true);
++  assert.deepEqual(gate.calls, ['acquire', 'renew', 'renew', 'release']);
++  await lease.dispose();
++  assert.equal(gate.calls.filter(c => c === 'release').length, 1);
++});
++test('two same-upstream concurrent clients: only one can acquire', async () => {
++  const gate = fake();
++  const [a, b] = await Promise.allSettled([
++    FleetTurnAdmission.open(gate, request, opts),
++    FleetTurnAdmission.open(gate, { ...request, taskId: 'job-fixture-0002' }, opts)
++  ]);
++  assert.equal([a,b].filter(x => x.status === 'fulfilled').length, 1);
++  await (a.status === 'fulfilled' ? a.value : b.value).dispose();
++});
++test('renew unavailable aborts existing signal and prevents completion', async () => {
++  const gate = fake({ renew: async () => null });
++  const lease = await FleetTurnAdmission.open(gate, request, opts);
++  await assert.rejects(lease.renewOrRevoke(), FleetAdmissionDenied);
++  assert.equal(lease.signal.aborted, true);
++  await assert.rejects(lease.close(), FleetAdmissionDenied);
++  await lease.dispose();
++});
++test('changed lease ID on renew revokes instead of silently swapping generation', async () => {
++  const gate = fake({ renew: async (r,l) => ({ ...l, leaseId: 'lease-attacker-2' }) });
++  const lease = await FleetTurnAdmission.open(gate, request, opts);
++  await assert.rejects(lease.renewOrRevoke(), FleetAdmissionDenied);
++  assert.equal(lease.signal.aborted, true);
++  await lease.dispose();
++});
++test('timer revokes during quiet streaming gaps without a next chunk', async () => {
++  const gate = fake({ renew: async () => null });
++  const lease = await FleetTurnAdmission.open(gate, request, opts);
++  await new Promise(resolve => setTimeout(resolve, 110));
++  assert.equal(lease.signal.aborted, true);
++  await lease.dispose();
++});
++test('release failure cannot claim success', async () => {
++  const gate = fake({ release: async () => false });
++  const lease = await FleetTurnAdmission.open(gate, request, opts);
++  await assert.rejects(lease.close(), FleetAdmissionDenied);
++  assert.equal(lease.signal.aborted, true);
++  await lease.dispose();
++});
++test('expired fixture lease not accepted', async () => {
++  const gate = fake({ acquire: async r => ({ leaseId: 'lease-fixture-0001', ...r, expiresAtMs: Date.now()-1 }) });
++  await assert.rejects(FleetTurnAdmission.open(gate, request), FleetAdmissionDenied);
++});
++test('suspicious multi-day fake lease TTL denied', async () => {
++  const gate = fake({ acquire: async r => ({ leaseId: 'lease-fixture-0001', ...r, expiresAtMs: Date.now()+7*86400_000 }) });
++  await assert.rejects(FleetTurnAdmission.open(gate, request), FleetAdmissionDenied);
++});
++test('invalid cap / request injection fails before authority', async () => {
++  const gate = fake();
++  await assert.rejects(FleetTurnAdmission.open(gate, {...request, maxInputTokens: 0}), FleetAdmissionDenied);
++  await assert.rejects(FleetTurnAdmission.open(gate, {...request, taskId: '../escape'}), FleetAdmissionDenied);
++  assert.deepEqual(gate.calls, []);
++});
++test('invalid watchdog interval rejects and cleans up slot', async () => {
++  const gate = fake();
++  await assert.rejects(FleetTurnAdmission.open(gate,request,{watchdogMs:5}), FleetAdmissionDenied);
++  assert.deepEqual(gate.calls, ['acquire','release']);
++});
++test('strict identity matching on an otherwise valid lease', () => {
++  const l = {leaseId:'lease-fixture-0001', ...request, expiresAtMs:Date.now()+10000};
++  assert.equal(validLease(l,request,Date.now()),true);
++  assert.equal(validLease({...l,botId:'other'},request,Date.now()),false);
++  assert.equal(validLease({...l,taskId:'other'},request,Date.now()),false);
++});
+diff --git a/src/bots/fleet-provider-admission.ts b/src/bots/fleet-provider-admission.ts
+new file mode 100644
+index 0000000..aa8392f
+--- /dev/null
++++ b/src/bots/fleet-provider-admission.ts
+@@ -0,0 +1,204 @@
++/**
++ * Experimental, opt-in, fail-closed provider-call admission for Mercury bot turns.
++ * NO network transport or credentials live here; an authenticated external
++ * coordinator must implement FleetLeaseAuthority before real deployment.
++ *
++ * Intentional first-slice limits: scoped turns get ZERO tools; a no-tool
++ * generation is the only operation protected by the watchdog. Other Mercury
++ * model invocation paths are NOT gated by this module.
++ */
++export interface FleetLeaseRequest {
++  taskId: string;
++  botId: string;
++  provider: string;
++  model: string;
++  upstreamGroup: string;
++  maxInputTokens: number;
++  maxOutputTokens: number;
++}
++
++export interface FleetLease {
++  leaseId: string;
++  taskId: string;
++  botId: string;
++  provider: string;
++  model: string;
++  upstreamGroup: string;
++  expiresAtMs: number;
++}
++
++export interface FleetLeaseAuthority {
++  acquire(request: FleetLeaseRequest): Promise<FleetLease | null>;
++  renew(request: FleetLeaseRequest, lease: FleetLease): Promise<FleetLease | null>;
++  release(request: FleetLeaseRequest, lease: FleetLease): Promise<boolean>;
++}
++
++export class FleetAdmissionDenied extends Error {
++  readonly reason: string;
++  constructor(reason: string) {
++    super('fleet_provider_admission_denied');
++    this.reason = reason;
++    this.name = 'FleetAdmissionDenied';
++  }
++}
++
++export const MIN_WATCHDOG_MS = 50;
++export const DEFAULT_WATCHDOG_MS = 1_000;
++export const MAX_LEASE_TTL_MS = 120_000;
++
++function nonEmpty(value: unknown, maxLength = 256): value is string {
++  return typeof value === 'string' && value.length > 0
++    && value.length <= maxLength && /^[a-zA-Z0-9_.:/@-]+$/.test(value);
++}
++
++function validRequest(r: FleetLeaseRequest): boolean {
++  return typeof r.taskId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/.test(r.taskId)
++    && typeof r.botId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/.test(r.botId)
++    && nonEmpty(r.provider) && nonEmpty(r.model)
++    && nonEmpty(r.upstreamGroup) && r.upstreamGroup !== 'unknown'
++    && Number.isSafeInteger(r.maxInputTokens) && r.maxInputTokens > 0
++    && Number.isSafeInteger(r.maxOutputTokens) && r.maxOutputTokens > 0;
++}
++
++/** The authority's response MUST bind to the exact physical upstream group. */
++export function validLease(lease: FleetLease | null | undefined,
++                           request: FleetLeaseRequest, nowMs: number): lease is FleetLease {
++  return !!lease && nonEmpty(lease.leaseId)
++    && lease.taskId === request.taskId && lease.botId === request.botId
++    && lease.provider === request.provider && lease.model === request.model
++    && lease.upstreamGroup === request.upstreamGroup
++    && Number.isFinite(lease.expiresAtMs)
++    && lease.expiresAtMs > nowMs
++    && lease.expiresAtMs - nowMs <= MAX_LEASE_TTL_MS;
++}
++
++/**
++ * Per-turn lease lifecycle. No retry or new acquire after revocation.
++ * Timer is active throughout an SDK streaming call (including silent gaps).
++ * A lease-lost error must be treated as PERMANENT by the caller.
++ */
++export class FleetTurnAdmission {
++  private revoked = false;
++  private closed = false;
++  private readonly controller = new AbortController();
++  private ticker?: ReturnType<typeof setInterval>;
++  private renewal?: Promise<void>;
++  private readonly authority: FleetLeaseAuthority;
++  readonly request: FleetLeaseRequest;
++  private lease: FleetLease;
++  private readonly clock: () => number;
++  private constructor(authority: FleetLeaseAuthority, request: FleetLeaseRequest,
++                      lease: FleetLease, clock: () => number) {
++    this.authority = authority;
++    this.request = request;
++    this.lease = lease;
++    this.clock = clock;
++  }
++
++  static async open(
++    authority: FleetLeaseAuthority | null | undefined,
++    request: FleetLeaseRequest,
++    opts: { clock?: () => number; watchdogMs?: number } = {},
++  ): Promise<FleetTurnAdmission> {
++    if (!authority || !validRequest(request)
++        || typeof authority.acquire !== 'function'
++        || typeof authority.renew !== 'function'
++        || typeof authority.release !== 'function') {
++      throw new FleetAdmissionDenied('missing_authority_or_unqualified_group');
++    }
++    const clock = opts.clock ?? Date.now;
++    let response: FleetLease | null;
++    try {
++      response = await authority.acquire(request);
++    } catch {
++      throw new FleetAdmissionDenied('acquire_unavailable');
++    }
++    if (!validLease(response, request, clock())) {
++      // If an unusable lease was issued, best-effort release; never generate.
++      const unusable: unknown = response;
++      if (typeof unusable === 'object' && unusable !== null
++          && 'leaseId' in unusable && typeof unusable.leaseId === 'string') {
++        try { await authority.release(request, unusable as FleetLease); } catch { /* must deny */ }
++      }
++      throw new FleetAdmissionDenied('acquire_rejected_or_mismatched');
++    }
++    const admission = new FleetTurnAdmission(authority, request, response, clock);
++    const watchdogMs = opts.watchdogMs ?? DEFAULT_WATCHDOG_MS;
++    if (!Number.isInteger(watchdogMs) || watchdogMs < MIN_WATCHDOG_MS || watchdogMs > 5_000) {
++      await admission.dispose();
++      throw new FleetAdmissionDenied('invalid_watchdog_interval');
++    }
++    admission.ticker = setInterval(() => {
++      void admission.renewOrRevoke().catch(() => {
++        admission.revoke();
++      });
++    }, watchdogMs);
++    admission.ticker.unref?.();
++    return admission;
++  }
++
++  get signal(): AbortSignal { return this.controller.signal; }
++
++  assertLive(): void {
++    if (this.closed || this.revoked || !validLease(this.lease, this.request, this.clock())) {
++      this.revoke();
++      throw new FleetAdmissionDenied('expired_or_revoked');
++    }
++  }
++
++  /** Terminate the SDK request after observed quota overrun or policy denial. */
++  abortNow(): void { this.revoke(); }
++
++  private revoke(): void {
++    this.revoked = true;
++    if (!this.controller.signal.aborted) this.controller.abort();
++  }
++
++  async renewOrRevoke(): Promise<void> {
++    this.assertLive();
++    if (!this.renewal) {
++      const current = this.lease;
++      this.renewal = (async () => {
++        let fresh: FleetLease | null;
++        try { fresh = await this.authority.renew(this.request, current); }
++        catch { fresh = null; }
++        if (!validLease(fresh, this.request, this.clock()) || fresh.leaseId !== current.leaseId) {
++          this.revoke();
++          throw new FleetAdmissionDenied('renewal_failed_or_mismatched');
++        }
++        if (!this.revoked) this.lease = fresh;
++      })().finally(() => { this.renewal = undefined; });
++    }
++    await this.renewal;
++    this.assertLive();
++  }
++
++  /** Must succeed before the caller reports a successful task. */
++  async close(): Promise<void> {
++    this.assertLive();
++    this.stopTimer();
++    // Do not mark as successful if the final renewal is missing.
++    await this.renewOrRevoke();
++    this.closed = true;
++    let released = false;
++    try { released = await this.authority.release(this.request, this.lease); }
++    catch { /* deny completion */ }
++    this.revoke();
++    if (!released) throw new FleetAdmissionDenied('release_unverified');
++  }
++
++  /** Failure cleanup: never masks the original error, no new generation. */
++  async dispose(): Promise<void> {
++    this.stopTimer();
++    if (this.closed) return;
++    this.closed = true;
++    this.revoke();
++    try { await this.authority.release(this.request, this.lease); }
++    catch { /* failure is recorded by the external authority */ }
++  }
++
++  private stopTimer(): void {
++    if (this.ticker) clearInterval(this.ticker);
++    this.ticker = undefined;
++  }
++}
+diff --git a/src/bots/fleet-provider-stream.integration.test.ts b/src/bots/fleet-provider-stream.integration.test.ts
+new file mode 100644
+index 0000000..dea8d42
+--- /dev/null
++++ b/src/bots/fleet-provider-stream.integration.test.ts
+@@ -0,0 +1,139 @@
++/**
++ * Real ai.streamText + ai/test MockLanguageModelV3. Absolutely no HTTP
++ * inference, credentials, providers, or installed Mercury services.
++ * Do NOT vi.mock('ai') here: this tests the actual SDK stream pipeline.
++ */
++import { describe, it, expect, vi } from 'vitest';
++import { MockLanguageModelV3 } from 'ai/test';
++import { runBotTurn } from './bot-turn.js';
++
++function gate(override: Partial<Record<'acquire' | 'renew' | 'release', any>> = {}) {
++  return {
++    acquire: vi.fn(async (r: any) => ({
++      ...r, leaseId: 'lease-sdk-0001', expiresAtMs: Date.now() + 60_000,
++    })),
++    renew: vi.fn(async (_r: any, l: any) => ({
++      ...l, expiresAtMs: Date.now() + 60_000,
++    })),
++    release: vi.fn(async () => true),
++    ...override,
++  };
++}
++
++function makeInput(model: MockLanguageModelV3, authority: any) {
++  return {
++    manifest: { id: 'audit-bot', name: 'Audit bot', enabled: true,
++      autonomy: { maxSteps: 2 } },
++    trigger: 'api' as const,
++    jobId: 'mock-sdk-task-0001',
++    prompt: 'return bounded fixture result',
++    persona: 'read-only experiment',
++    mail: [],
++    pollMail: () => [],
++    sandbox: { workspace: '/tmp/mock-merc-ws', shared: '/tmp/mock-merc-shared' },
++    capabilities: {} as any,
++    tools: { run_command: { execute: async () => 'unsafe' } as any },
++    userMemory: null,
++    provider: {
++      name: 'fixture',
++      getModel: () => 'fixture-model',
++      getModelInstance: () => model,
++    } as any,
++    tokenBudget: { recordUsage: vi.fn(), getRemaining: () => 99999 } as any,
++    abortSignal: new AbortController().signal,
++    fleetAdmission: {
++      authority, upstreamGroup: 'synthetic-upstream',
++      maxInputTokens: 100, maxOutputTokens: 20,
++    },
++  };
++}
++
++function finish() {
++  return {
++    type: 'finish' as const,
++    finishReason: { unified: 'stop' as const, raw: undefined },
++    usage: {
++      inputTokens: { total: 5, noCache: 5, cacheRead: undefined, cacheWrite: undefined },
++      outputTokens: { total: 2, text: 2, reasoning: undefined },
++    },
++  };
++}
++
++describe('actual SDK-stream transport: mock language model, no network', () => {
++  it('denied admission never invokes the SDK model doStream', async () => {
++    const model = new MockLanguageModelV3({
++      doStream: async () => { throw Error('provider must not start'); },
++    });
++    const authority = gate({ acquire: vi.fn(async () => null) });
++    const output = await runBotTurn(makeInput(model, authority));
++    expect(output.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(model.doStreamCalls).toHaveLength(0);
++  });
++
++  it('real SDK stream completes only with a valid lease and cannot run a tool', async () => {
++    const model = new MockLanguageModelV3({
++      doStream: async () => ({
++        stream: new ReadableStream({
++          start(controller) {
++            controller.enqueue({ type: 'text-start', id: 'txt' });
++            controller.enqueue({ type: 'text-delta', id: 'txt', delta: 'bounded mock' });
++            controller.enqueue({ type: 'text-end', id: 'txt' });
++            controller.enqueue(finish());
++            controller.close();
++          },
++        }),
++      }),
++    });
++    const authority = gate();
++    const opts = makeInput(model, authority);
++    const output = await runBotTurn(opts);
++    expect(output.status).toBe('completed');
++    expect(output.output).toBe('bounded mock');
++    expect(model.doStreamCalls).toHaveLength(1);
++    expect(authority.acquire).toHaveBeenCalledOnce();
++    expect(authority.renew.mock.calls.length).toBeGreaterThanOrEqual(2);
++    expect(authority.release).toHaveBeenCalledOnce();
++    expect(opts.tokenBudget.recordUsage).toHaveBeenCalledOnce();
++  });
++
++  it('quiet SDK stream receives an abort when watchdog renewal is rejected', async () => {
++    let observedAbort = false;
++    let started = false;
++    const model = new MockLanguageModelV3({
++      doStream: async (options) => ({
++        stream: new ReadableStream({
++          start(controller) {
++            started = true;
++            controller.enqueue({ type: 'text-start', id: 'txt' });
++            controller.enqueue({ type: 'text-delta', id: 'txt', delta: 'partial' });
++            options.abortSignal?.addEventListener('abort', () => {
++              observedAbort = true;
++              controller.error(new Error('mock transport aborted'));
++            }, { once: true });
++            // Intentionally never finish. Only the lease watchdog can stop it.
++          },
++        }),
++      }),
++    });
++    const authority = gate({
++      renew: vi.fn()
++        .mockImplementationOnce(async (_r: any, l: any) => ({
++          ...l, expiresAtMs: Date.now() + 60_000,
++        }))
++        .mockImplementationOnce(async (_r: any, l: any) => ({
++          ...l, expiresAtMs: Date.now() + 60_000,
++        }))
++        .mockImplementation(async () => null),
++    });
++    const output = await Promise.race([
++      runBotTurn(makeInput(model, authority)),
++      new Promise<never>((_resolve, reject) =>
++        setTimeout(() => reject(new Error('mock abort exceeded 2500ms')), 2500)),
++    ]);
++    expect(started).toBe(true);
++    expect(observedAbort).toBe(true);
++    expect(output.status).not.toBe('completed');
++    expect(output.reasonCode).toBe('fleet_provider_admission_denied');
++    expect(authority.release).toHaveBeenCalledOnce();
++  });
++});
