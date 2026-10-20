@@ -12,6 +12,7 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 from .executor_security import ExecutorTokenCodec, ExecutorTokenError
+from .owner_identity import TaskOwnerError, task_owner, owner_required
 
 _TASK_TOKEN_PATHS = (
     ("POST", re.compile(r"^/api/brain/context$")),
@@ -77,6 +78,8 @@ def read_claim_state(neo_factory: Callable[[], Any], task_id: str) -> dict[str, 
                        t.claim_id AS claim_id,
                        t.lease_expires_at_ts AS lease_expires_at_ts,
                        t.execution_attempt AS execution_attempt,
+                       t.owner_issuer AS owner_issuer,
+                       t.owner_subject AS owner_subject,
                        s.generation AS projection_generation,
                        s.status AS projection_status,
                        s.expires_at_ts AS projection_expires_at_ts
@@ -108,8 +111,15 @@ def read_claim_state(neo_factory: Callable[[], Any], task_id: str) -> dict[str, 
         and projection_expires > now_ms
     )
     reason = "active" if active else "claim_or_projection_not_active"
+    try:
+        owner = task_owner(result)
+    except TaskOwnerError:
+        owner = {}
+        if owner_required():
+            active, reason = False, "canonical_task_owner_absent_or_invalid"
     return {
         **result,
+        **owner,
         "active": active,
         "reason": reason,
         "task_id": task_id,
@@ -134,6 +144,14 @@ def assert_claim_matches(claims: dict[str, Any], state: dict[str, Any]) -> None:
     }
     if actual != expected:
         raise ExecutorTokenError("executor token no longer matches the active claim generation")
+    if owner_required():
+        try:
+            live_owner = task_owner(state, strict=True)
+            jwt_owner = task_owner(claims, strict=True)
+        except TaskOwnerError as exc:
+            raise ExecutorTokenError(str(exc)) from exc
+        if live_owner != jwt_owner:
+            raise ExecutorTokenError("executor token owner no longer matches authoritative Task")
     token_expiry_ms = int(claims.get("exp") or 0) * 1000
     if token_expiry_ms > int(state.get("lease_expires_at_ts") or 0):
         raise ExecutorTokenError("executor token outlives the active task lease")
