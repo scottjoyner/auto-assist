@@ -1,0 +1,27 @@
+{
+  "schema": "assistx.trace-execution-shadow-paths.v1",
+  "mode": "synthetic-only",
+  "authority": "AssistX/Neo4j (not shadow registry)",
+  "live_dispatch_enabled": false,
+  "transport": "existing Tailscale SSH; StrictHostKeyChecking=yes",
+  "nodes": [
+    {
+      "node_id": "xwing",
+      "platform": "linux",
+      "ssh_target": "xwing",
+      "python": "python3",
+      "release_root": "/home/scott/.local/opt/assistx-trace-shadow/v1",
+      "audit_root": "/home/scott/.local/state/assistx/trace-execution-shadow-xwing",
+      "production_worker_enabled": false
+    },
+    {
+      "node_id": "scotts-macbook-air",
+      "platform": "macos",
+      "ssh_target": "scottjoyner@100.85.64.117",
+      "python": "python3",
+      "release_root": "/Users/scottjoyner/.local/opt/assistx-trace-shadow/v1",
+      "audit_root": "/Users/scottjoyner/.local/state/assistx/trace-execution-shadow-macbook-air",
+      "production_worker_enabled": false
+    }
+  ]
+}

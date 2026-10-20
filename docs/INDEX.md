@@ -27,6 +27,11 @@ operating instructions.
 | [`CURRENT_STATUS.md`](CURRENT_STATUS.md) | Implemented capabilities, verified boundaries, and remaining gaps |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | System components, authority, control loops, and state flows |
 | [`EXECUTION_AUTHORITY.md`](EXECUTION_AUTHORITY.md) | Which actor may claim, execute, recover, approve, and promote |
+| [`TRACE_EXECUTION_CANARY_20261007.md`](TRACE_EXECUTION_CANARY_20261007.md) | Disabled-by-default, synthetic-only trace-first node-adapter canary, durable receipts, negative tests, and rollout hold |
+| [`TRACE_EXECUTION_TWO_NODE_SHADOW_20261008.md`](TRACE_EXECUTION_TWO_NODE_SHADOW_20261008.md) | xwing and MacBook Air separate shadow paths, physical no-op and negative evidence, and next admission gates |
+| [`TRACE_EXECUTION_REMOTE_CUSTODY_20261008.md`](TRACE_EXECUTION_REMOTE_CUSTODY_20261008.md) | Two-node encrypted NAS custody, local signed heads, independent restores, and demonstrated rollback rejection |
+| [`TRACE_SHADOW_SIGNED_GRANTS_20261008.md`](TRACE_SHADOW_SIGNED_GRANTS_20261008.md) | Node-specific Ed25519 synthetic grant tests, replay/expiry/tamper physical rejections, and authentic-claim admission hold |
+| [`TRACE_ASSISTX_READONLY_LEASE_PROOFS_20261008.md`](TRACE_ASSISTX_READONLY_LEASE_PROOFS_20261008.md) | Disabled read-only real-claim lease/status proof API, independent node challenge, and physical verification-only smoke |
 | [`fleet-recovery-rollout.md`](fleet-recovery-rollout.md) | Recovery keys, adapters, controller fencing, migration, canary, and shutdown |
 | [`self-improvement-cycle.md`](self-improvement-cycle.md) | Design and invariants of evidence-gated repository improvement |
 | [`REPOSITORY_SOURCE_BINDING.md`](REPOSITORY_SOURCE_BINDING.md) | Repository source-binding contract, fail-closed verifier states, why stale mirrors are forbidden, and enforcement points |
@@ -86,6 +91,7 @@ Implementation:
 | Checkpoint, preemption, migration | `src/assistx/execution_control.py` |
 | Diagnosis and recovery policy | `src/assistx/diagnosis_engine.py`, `src/assistx/recovery_control.py` |
 | Typed node runbook execution | `src/assistx/recovery_executor.py` |
+| Experimental synthetic-only trace-receipt execution canary | `src/assistx/trace_execution_adapter.py`, `scripts/trace_execution_canary.py` |
 | Improvement contracts and learning | `src/assistx/improvement_cycle.py` |
 | Isolated worktrees and promotion | `src/assistx/improvement_runtime.py` |
 | KV-cache identity, compatibility, and economics | `src/assistx/kv_cache.py` |
