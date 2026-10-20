@@ -175,3 +175,38 @@ jobs:
           BASIC_AUTH_PASS: livelongandprosper
         run: |
           pytest -q tests/test_recovery_canary.py tests/test_recovery_island.py tests/test_recovery_island_hardening.py
+
+  provider-catalog-contract:
+    # Baseline full-unit and recovery-canary remain independent merge gates:
+    # this job never skips, overrides, or suppresses their failures.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run isolated stdlib provider catalog contract
+        # Only the pure implementation and synthetic test are staged. Importing
+        # the full assistx package would execute unrelated runtime installers.
+        # This reproduces Lenovo's verified no-dependency local worker suite.
+        shell: bash
+        run: |
+          set -euo pipefail
+          sandbox="${RUNNER_TEMP}/provider-catalog-contract"
+          mkdir -p "${sandbox}/assistx" "${sandbox}/tests"
+          cp src/assistx/router_provider_inventory.py "${sandbox}/assistx/"
+          cp src/assistx/router_admin_client.py "${sandbox}/assistx/"
+          cp tests/test_router_provider_inventory_portable.py "${sandbox}/tests/"
+          cp tests/test_router_admin_proxy_contract.py "${sandbox}/tests/"
+          cp tests/test_router_effective_cross_repo_fixture.py "${sandbox}/tests/"
+          mkdir -p "${sandbox}/tests/fixtures"
+          cp tests/fixtures/router_effective_snapshot_v1.json "${sandbox}/tests/fixtures/"
+          cd "${sandbox}"
+          python -m unittest discover -s tests -p 'test_router_*.py' -v

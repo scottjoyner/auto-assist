@@ -1,0 +1,84 @@
+name: router-auth-green-ci-composition
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  exact-head-full-suite:
+    if: github.head_ref == 'feat/sanitized-effective-provider-catalog-20261011'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ['unit', 'recovery-canary']
+    env:
+      REPAIR_COMPOSITION_PR: '265'
+      PINNED_REPAIR_COMPOSITION_SHA: '2208903fa029b179f835d749c0f4526684dd936d'
+      BASIC_AUTH_USER: neo4j
+      BASIC_AUTH_PASS: livelongandprosper
+      ASSISTX_RUNTIME_PROFILE: test
+      ASSISTX_DEPENDENCY_MODE: compat
+    steps:
+      - name: Checkout exact client PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          # Compare moving PR heads against older pinned dependencies using the full DAG.
+          # A shallow checkout can lose the common ancestor and falsely fail the merge.
+          fetch-depth: 0
+
+      - name: Compose pinned, existing repair stack without committing
+        shell: bash
+        run: |
+          set -euo pipefail
+          client_sha="$(git rev-parse HEAD)"
+          git fetch --no-tags origin "refs/pull/${REPAIR_COMPOSITION_PR}/head"
+          actual="$(git rev-parse FETCH_HEAD)"
+          if [[ "${actual}" != "${PINNED_REPAIR_COMPOSITION_SHA}" ]]; then
+            echo '::error::PR #265 head drifted; review differences and re-pin before retesting'
+            exit 1
+          fi
+          git -c user.name='CI Composition (Uncommitted)' \
+              -c user.email='ci-composition@invalid.example' \
+              merge --no-commit --no-ff --no-edit FETCH_HEAD
+          if git ls-files -u | grep -q .; then
+            echo '::error::Composition conflicts; not accepting unresolved files'
+            exit 1
+          fi
+          echo "Client PR SHA: ${client_sha}"
+          echo "Repair stack PR SHA: ${actual}"
+          echo 'No merge commit created; no branch is updated.'
+
+      - name: Use same Python runtime as repository CI
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install ordinary project and test dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: Full non-integration unit gate on composed tree
+        if: matrix.suite == 'unit'
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m pytest -q -m 'not integration' --ignore=tests/integration
+
+      - name: Real disposable Neo4j recovery lifecycle canary on composed tree
+        if: matrix.suite == 'recovery-canary'
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m pytest -q \
+            tests/test_recovery_canary.py \
+            tests/test_recovery_island.py \
+            tests/test_recovery_island_hardening.py

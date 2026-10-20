@@ -1,0 +1,13 @@
+{
+  "captured_at_utc": "2026-10-11T06:50:02.482034+00:00",
+  "consumer_source_sha256": "ace12a5ef0b955cc249f14ac45db2e0f8794d63e5d69f84d55badc63250f82d0",
+  "fixture_sha256": "1de37f36e5b9caf0ee6571551039200ddc7eac9384d8a3b9681c5de3838242b3",
+  "kind": "ROUTER_PR41_PRODUCER_TO_ASSISTX_PR288_CONSUMER",
+  "lenovo_tests_passed": 19,
+  "producer_head": "0f5b416701c495edbf5af1a53ebd5186093dc13b",
+  "producer_source_sha256": "d73be6fe8e08aed789dd2c23c4a2741a1ca17f383109dc46242d4657a6074a3d",
+  "production_execution": false,
+  "schema_version": 1,
+  "synthetic_contract": true,
+  "tests_sha256": "e651041f71a5cc7f13c8026c3374c5836881416bad06cc4f2cc9e07fb5f992d5"
+}

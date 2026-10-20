@@ -1,0 +1,22 @@
+{
+  "captured_at_utc": "2026-10-11T13:53:00.455757+00:00",
+  "credentials_or_raw_models_included": false,
+  "full_composite_hosted_ci_validated": false,
+  "kind": "PR265_GREEN_REPAIR_STACK_PLUS_PR288_ROUTER_AUTH_UNCOMMITTED_COMPOSITION",
+  "live_router_mutation": false,
+  "merge_commit_created": false,
+  "merge_conflicts": 0,
+  "nas_mutation": false,
+  "pr265_exact_head_hosted_unit_recovery_passed": true,
+  "production_deployment": false,
+  "pytest_log_sha256": "8a7ca31d76fe69895f402361b2f4b7384afa6816ee014685e8cd24f095459748",
+  "repair_head": "2208903fa029b179f835d749c0f4526684dd936d",
+  "repair_pr": 265,
+  "repair_stack_removes_previous_env_backup_file": true,
+  "router_admin_head": "45ad72b7b908bd701bfe32f6526217dc3a0cb86e",
+  "router_admin_pr": 288,
+  "schema_version": 1,
+  "targeted_local_tests_passed": 176,
+  "targeted_subtests_passed": 38,
+  "test_scope": "11 explicit modules; not integration, with no exclusions"
+}

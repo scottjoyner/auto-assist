@@ -983,6 +983,7 @@ def test_command_center_fleet_proxy_and_page(monkeypatch):
     client = TestClient(app)
     auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
     monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://router.example")
+    monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "synthetic-router-token")
 
     class FakeResponse:
         def __init__(self, payload):
@@ -995,8 +996,10 @@ def test_command_center_fleet_proxy_and_page(monkeypatch):
         def json(self):
             return self._payload
 
-    def fake_get(url, timeout=6.0):
+    def fake_get(url, timeout=6.0, headers=None, allow_redirects=True):
         assert url == "http://router.example/admin/ops/summary"
+        assert headers == {"X-Admin-Token": "synthetic-router-token"}
+        assert allow_redirects is False
         return FakeResponse(
             {
                 "fleet_dispatcher_stats": {"success": 12, "worker_slots": 7, "reviewer_slots": 2},

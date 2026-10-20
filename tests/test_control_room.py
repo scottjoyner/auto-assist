@@ -9,6 +9,79 @@ import pytest
 from assistx import control_room
 
 
+def test_privileged_router_redirect_is_rejected_without_following(monkeypatch) -> None:
+    from urllib.error import HTTPError
+    from urllib.request import HTTPRedirectHandler
+
+    inspected = []
+
+    class FakeOpener:
+        def open(self, request, timeout):
+            inspected.append((request.full_url, request.get_header("X-admin-token"), timeout))
+            redirect_handler = next(h for h in handlers if isinstance(h, HTTPRedirectHandler))
+            redirected = redirect_handler.redirect_request(
+                request, None, 302, "Found", {}, "https://attacker.example/collect"
+            )
+            assert redirected is None
+            raise HTTPError(request.full_url, 302, "redirect blocked", {}, None)
+
+    def fake_build_opener(*args):
+        nonlocal handlers
+        handlers = args
+        return FakeOpener()
+
+    handlers = ()
+    monkeypatch.setattr(control_room, "build_opener", fake_build_opener)
+    with pytest.raises(HTTPError) as exc:
+        control_room._http_json("http://router:8088", "/admin/providers/effective", admin_token="synthetic")
+    assert exc.value.code == 302
+    assert inspected == [("http://router:8088/admin/providers/effective", "synthetic", 2.0)]
+
+
+def test_privileged_router_metadata_read_is_size_bounded(monkeypatch) -> None:
+    """Admin responses fail closed before parsing a large untrusted JSON body."""
+    reads = []
+
+    class BoundedResponse(io.BytesIO):
+        def read(self, size=-1):
+            reads.append(size)
+            return super().read(size)
+
+    class FakeOpener:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def open(self, request, timeout):
+            assert request.get_header("X-admin-token") == "synthetic"
+            assert timeout == 2.0
+            return BoundedResponse(self.payload)
+
+    cap = control_room._MAX_ROUTER_ADMIN_JSON_BYTES
+    monkeypatch.setattr(
+        control_room,
+        "build_opener",
+        lambda *args: FakeOpener(b"X" * (cap + 1)),
+    )
+    with pytest.raises(ValueError, match="bounded metadata limit"):
+        control_room._http_json(
+            "http://router:8088", "/admin/providers/effective", admin_token="synthetic"
+        )
+    assert reads == [cap + 1]
+
+    reads.clear()
+    monkeypatch.setattr(
+        control_room,
+        "build_opener",
+        lambda *args: FakeOpener(b'{"providers": []}'),
+    )
+    result, elapsed_ms = control_room._http_json(
+        "http://router:8088", "/admin/providers/effective", admin_token="synthetic"
+    )
+    assert result == {"providers": []}
+    assert isinstance(elapsed_ms, float)
+    assert reads == [cap + 1]
+
+
 def test_classify_runtime_mode() -> None:
     assert control_room.classify_runtime_mode("LM Studio 0.4") == "LM_STUDIO"
     assert control_room.classify_runtime_mode("llama.cpp server") == "HEADLESS"
@@ -257,7 +330,9 @@ def test_collect_fleet_nodes_live_none_uses_router_and_marks_unknown(_fleet_env,
 
     by_ip = {node["ip"]: node for node in nodes}
     air = by_ip["100.64.0.5"]
-    assert air["loaded_models"] == ["Qwen3-4B-Q8_0"]
+    assert air["loaded_models"] == []
+    assert air["inferred_models"] == ["Qwen3-4B-Q8_0"]
+    assert air["model_evidence"] == "UNVERIFIED_ROUTER_REPORT"
     assert air["model_source"] == "router"
     assert air["instrument"] == "iGPU:M2 GPU"
     joyner = by_ip["100.83.215.83"]
@@ -277,6 +352,7 @@ def test_collect_fleet_nodes_live_empty_overrides_router_fallback(_fleet_env, mo
     air = by_ip["100.64.0.5"]
     assert air["loaded_models"] == []
     assert air["model_source"] == "live-empty"
+    assert air["model_evidence"] == "NO_VERIFIED_LOAD"
     assert air["model_clue"] == "live graph reports no loaded models"
     assert "no live graph data" not in (air["model_clue"] or "")
 
@@ -296,6 +372,7 @@ def test_collect_fleet_nodes_matches_registry_by_ip_not_label(_fleet_env, monkey
     assert len(nodes) == 2
     assert air["canonical_name"] == "scotts-macbook-air"
     assert air["loaded_models"] == ["ornith-4b"]
+    assert air["model_evidence"] == "VERIFIED_LOADED"
     assert air["model_source"] == "live"
 
 
@@ -311,7 +388,9 @@ def test_collect_fleet_nodes_manifest_primary_is_inferred(_fleet_env, monkeypatc
     nodes = control_room.collect_fleet_nodes(lambda: None)
 
     air = next(node for node in nodes if node["ip"] == "100.64.0.5")
-    assert air["loaded_models"] == ["ornith-14b"]
+    assert air["loaded_models"] == []
+    assert air["inferred_models"] == ["ornith-14b"]
+    assert air["model_evidence"] == "INFERRED_MANIFEST"
     assert air["model_source"] == "manifest-primary"
     assert air["opacity"] == "inferred"
 
@@ -326,7 +405,9 @@ def test_collect_fleet_nodes_uses_exact_provider_endpoint_override(_fleet_env, m
     monkeypatch.setattr(control_room, "_http_json", _fake_http_json)
     monkeypatch.setattr(control_room, "_live_loaded_models", lambda _f: None)
     monkeypatch.setattr(control_room, "_historical_loaded_models", lambda _f: {})
+    monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://router.test:9090")
     monkeypatch.setenv("AUTO_ROUTER_ADMIN_PROVIDERS_URL", "http://router.test:9090/admin/providers")
+    monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "synthetic-test-token")
     _open_registry(monkeypatch, {"nodes": []})
 
     nodes = control_room.collect_fleet_nodes(lambda: None)
@@ -345,8 +426,9 @@ def test_live_loaded_models_none_on_neo_failure() -> None:
 
 
 def test_live_loaded_models_ignores_unconfirmed_model_states() -> None:
+    fresh = control_room._now_ms()
     fake = _FakeNeo([
-        {"ms": 111},
+        {"ms": fresh},
         {"node": "mac-air", "states": [
             {"model_id": "ornith-4b", "online": True, "loaded": True, "inventory_authoritative": True},
             {"model_id": "qwen-8b", "online": True, "loaded": False, "inventory_authoritative": False},
@@ -356,9 +438,44 @@ def test_live_loaded_models_ignores_unconfirmed_model_states() -> None:
     result = control_room._live_loaded_models(lambda: fake)
 
     assert result == {
-        "mac-air": {"models": ["ornith-4b"], "online": True, "observed_at": "111", "latencies": {}},
+        "mac-air": {"models": ["ornith-4b"], "online": True, "observed_at": str(fresh), "latencies": {}},
     }
     assert fake.closed
+
+
+def test_live_loaded_models_refuses_stale_snapshot() -> None:
+    fake = _FakeNeo([{"ms": control_room._now_ms() - 120_001}])
+    result = control_room._live_loaded_models(lambda: fake)
+    assert result["__snapshot_warning__"]["kind"] == "STALE_GRAPH_SNAPSHOT"
+    assert result["__snapshot_warning__"]["age_ms"] >= 120_000
+    assert fake._session.run.call_count == 1
+    assert fake.closed
+
+
+def test_live_loaded_models_refuses_future_snapshot() -> None:
+    fake = _FakeNeo([{"ms": control_room._now_ms() + 60_000}])
+    result = control_room._live_loaded_models(lambda: fake)
+    assert result["__snapshot_warning__"]["kind"] == "FUTURE_GRAPH_SNAPSHOT"
+    assert result["__snapshot_warning__"]["age_ms"] < -30_000
+    assert fake._session.run.call_count == 1
+    assert fake.closed
+
+
+def test_collect_fleet_nodes_stale_graph_is_unknown_not_empty(_fleet_env, monkeypatch) -> None:
+    monkeypatch.setattr(control_room, "_live_loaded_models", lambda _f: {
+        "__snapshot_warning__": {"kind": "STALE_GRAPH_SNAPSHOT", "age_ms": 180_000},
+    })
+    monkeypatch.setattr(control_room, "_historical_loaded_models", lambda _f: {})
+    monkeypatch.setattr(control_room, "_provider_catalog", lambda _f=None: {})
+    _open_registry(monkeypatch, _registry_payload())
+
+    nodes = control_room.collect_fleet_nodes(lambda: None)
+    air = next(node for node in nodes if node["ip"] == "100.64.0.5")
+    assert air["loaded_models"] == []
+    assert air["model_evidence"] == "STALE_GRAPH_SNAPSHOT"
+    assert air["model_source"] == "graph-invalid"
+    assert "residency unknown" in air["model_clue"]
+    assert "live graph reports no loaded models" not in air["model_clue"]
 
 
 def test_historical_loaded_models_uses_immutable_observations() -> None:
@@ -382,3 +499,63 @@ def test_historical_loaded_models_empty_on_neo_failure() -> None:
 
     assert control_room._historical_loaded_models(_broken_factory) == {}
 
+
+
+def test_provider_catalog_effective_snapshot_keeps_loaded_proof_out_of_fleet(_fleet_env, monkeypatch):
+    """An in-memory provider model is AVAILABLE, not independently loaded."""
+    from assistx.router_provider_inventory import parse_provider_inventory
+
+    observed = []
+    monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://router.test:8088")
+    monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "synthetic-test-token")
+    monkeypatch.delenv("AUTO_ROUTER_ADMIN_PROVIDERS_URL", raising=False)
+    mock_snapshot = {
+        "schema_version": 1,
+        "kind": "EFFECTIVE_ROUTER_MEMORY_READ_ONLY",
+        "state_source": "LIVE_ASGI_STATE_NOT_BOOTSTRAP_PROVIDER_FILE",
+        "no_probes_or_dispatch": True,
+        "may_prove_model_loaded": False,
+        "may_modify_routes": False,
+        "provider_count": 1,
+        "providers": [{
+            "node_id": "mac-air",
+            "provider_id": "mac-air-ornith",
+            "enabled_in_router_memory": True,
+            "effective_base_url": {"status": "PARSED_NOT_PROBED", "hostname": "100.64.0.5"},
+            "configured_models": [{"provider_model": "Ornith-4B"}],
+            "resident_model_identity_verified": False,
+            "service_reachability_verified": False,
+            "admission_granted": False,
+        }],
+    }
+
+    def fake_http_json(url, path, **kwargs):
+        observed.append((url, path, kwargs.get("admin_token")))
+        return mock_snapshot, 1.0
+
+    monkeypatch.setattr(control_room, "_http_json", fake_http_json)
+    monkeypatch.setattr(control_room, "_live_loaded_models", lambda _f: {})
+    monkeypatch.setattr(control_room, "_historical_loaded_models", lambda _f: {})
+    _open_registry(monkeypatch, {"nodes": []})
+    nodes = control_room.collect_fleet_nodes(lambda: None)
+    air = next(node for node in nodes if node["ip"] == "100.64.0.5")
+
+    assert observed == [(
+        "http://router.test:8088/admin/providers/effective", "", "synthetic-test-token"
+    )]
+    assert air["available_models"] == ["Ornith-4B"]
+    assert air["loaded_models"] == []
+    assert air["model_source"] == "live-empty"
+    assert air["opacity"] == "opaque"
+    assert parse_provider_inventory(mock_snapshot, effective=True)["mac-air"] == ["Ornith-4B"]
+
+
+def test_provider_catalog_without_token_makes_no_admin_requests(monkeypatch):
+    monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://router.test:8088")
+    monkeypatch.delenv("AUTO_ROUTER_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("AUTO_ROUTER_ADMIN_PROVIDERS_URL", raising=False)
+    monkeypatch.setattr(
+        control_room, "_http_json",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("unauthorized admin GET")),
+    )
+    assert control_room._provider_catalog() == {}
