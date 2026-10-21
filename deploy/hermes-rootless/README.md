@@ -304,3 +304,61 @@ limited-scope, separately versioned knowledge export (RO),
 with canonical identity, independent custody, revocation and
 protected Watchdog evidence denial, followed by a cutover
 and rollback test. P0 #414 and fleet-hardware #5 remain OPEN.
+
+
+## Bounded, manifest-pinned SYNTHETIC curated knowledge (2026-10-21)
+
+New opt-in verify_curated_knowledge.py runs with default HOLD and
+no filesystem scanning, Docker access, model invocation, mounts,
+provider calls or NAS reads. It accepts only a tiny disposable
+synthetic fixture under a private 0700 x1 test root named
+og-hermes-knowledge-* in /home/scott/.cache or /tmp.
+A separate mode-0600 synthetic manifest must have the fixture's
+unique basename plus .manifest.json and be a sibling of the fixture
+root. No real NAS directory, legacy /media/scott/NAS5 path, SSH/agent
+repository, or protected Watchdog evidence can be admitted.
+
+Manifest format is schema=1, kind=synthetic-hermes-curated-v1,
+generation=synthetic-<id>, and an exact allowlist of file entries
+(path, size, sha256). It accepts at most 16 files, max 512 KiB per
+file, 2 MiB total, a maximum of six directories and no unlisted
+files or directories. Names are restricted; forbidden tokens
+include watchdog, dashcam, archive, credential, secret, SSH,
+token, password, hidden files and traversal. Files must be
+regular, single-link, owned by the current user, on the same
+device as the private scratch root, and free of symlink escapes.
+The checker opens only eligible synthetic fixture files with
+O_NOFOLLOW, compares file metadata before/after and verifies
+complete SHA-256 hashes against the exact manifest.
+
+Physical Fleet Commander qualification created only two tiny
+synthetic files under a disposable scratch root. Manifest check:
+synthetic_curated_fixture_verified=true, files_verified=2,
+logical_bytes_verified=50, violations=[], decision=HOLD.
+A deliberate synthetic file change was correctly denied;
+default no-source invocation denied without scanning. Afterward
+the fixture and unique manifest were removed. The original
+Hermes adapter remained running unchanged; no real NAS contents,
+indices, protected data or credentials were touched.
+
+The dedicated rootless test suite increased to 88/88 PASS;
+new negative cases cover unsafe source roots, hidden files,
+symlinks, hardlinks, duplicate/extra files/directories, forged
+manifest fields, path traversal, hash drift and size caps.
+
+This is **only a source-structure and integrity rehearsal**:
+the manifest has NO independent signature, cannot authenticate
+an upstream storage owner and has no monotonic generation
+replay protection. Same-user mutations after the check remain
+possible, and no actual stable production knowledge corpus has
+been selected. Result ALWAYS says decision=HOLD,
+independently_signed_corpus_authority=false and
+production_knowledge_mount_authorized=false.
+
+A real release still requires separate independent Beelink/source
+custody, explicit content-level protected-evidence exclusion,
+a scope-limited *immutable* knowledge snapshot and signatures
+held outside the worker's administrative domain, verified
+anti-rollback, and the authenticated task/revocation and
+restart/rollback gates. Do not point this checker at /nas or
+substitute its synthetic PASS for release authority.
