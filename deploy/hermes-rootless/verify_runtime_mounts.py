@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 
 CONTAINER = "assistx-hermes-adapter"
 IMAGE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -26,6 +27,7 @@ VIOLATIONS = (
     "capabilities_present", "privilege_escalation_possible",
     "host_namespace_or_device", "resources_unbounded",
     "unexpected_ports", "mount_scope_violation",
+    "synthetic_source_scope_untrusted",
 )
 
 def _source_ok(value: object) -> bool:
@@ -38,6 +40,45 @@ def _source_ok(value: object) -> bool:
                 and str(p.resolve(strict=True)) == value
                 and not any(x in ("..", ".") for x in p.parts))
     except (OSError, RuntimeError, ValueError):
+        return False
+
+# SYNTHETIC-only: arbitrary "approved" host paths are never accepted merely
+# because a caller passes them as arguments. Curated real knowledge needs a
+# separate signed source-admission review before production.
+PROTECTED_ROOTS = (
+    "/media/scott", "/home/scott/git", "/home/scott/.ssh",
+    "/home/scott/.config", "/home/scott/.gnupg",
+    "/root", "/etc", "/proc", "/sys", "/dev", "/run",
+)
+SYNTHETIC_PREFIXES = ("og-hermes-audit-", "hermes-runtime-test-")
+
+def _synthetic_pair_ok(ro: object, rw: object) -> bool:
+    if not (_source_ok(ro) and _source_ok(rw) and ro != rw):
+        return False
+    try:
+        knowledge, workspace = Path(ro), Path(rw)
+        root = knowledge.parent
+        allowed_parents = (Path(tempfile.gettempdir()).resolve(),
+                           Path("/home/scott/.cache").resolve())
+        if (knowledge.name != "knowledge" or workspace.name != "workspace"
+                or workspace.parent != root or
+                root.parent not in allowed_parents or
+                not root.name.startswith(SYNTHETIC_PREFIXES)):
+            return False
+        paths = (root, knowledge, workspace)
+        if any(p.is_mount() or not p.is_dir() or p.is_symlink()
+               or p.stat().st_uid != os.getuid()
+               or str(p.resolve(strict=True)) != str(p) for p in paths):
+            return False
+        # A private 0700 scratch root limits fixture replacement by peers.
+        if root.stat().st_mode & 0o077:
+            return False
+        for path in paths:
+            if any(path == Path(x) or path.is_relative_to(x)
+                   for x in PROTECTED_ROOTS):
+                return False
+        return True
+    except (OSError, RuntimeError, TypeError, ValueError):
         return False
 
 def audit(record: object, *, readonly_source: str | None = None,
@@ -56,6 +97,8 @@ def audit(record: object, *, readonly_source: str | None = None,
     if not (_source_ok(readonly_source) and _source_ok(private_source)
             and readonly_source != private_source):
         errors.add("missing_approved_sources")
+    if not _synthetic_pair_ok(readonly_source, private_source):
+        errors.add("synthetic_source_scope_untrusted")
     if not isinstance(image_id, str) or not IMAGE.fullmatch(image_id):
         errors.add("missing_pinned_image")
     elif record.get("Image") != image_id:

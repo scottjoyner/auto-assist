@@ -145,5 +145,44 @@ class HermesRuntimeMountPolicyTests(unittest.TestCase):
         a["HostConfig"]["Binds"]=[str(self.ro)+":/research/knowledge:rw"]
         self.assertIn("host_namespace_or_device",self.evaluate(a)["violations"])
 
+    def test_rejects_arbitrary_caller_approved_bind_pairs(self):
+        # The previous verifier trusted arbitrary caller-supplied absolute paths.
+        # Even if its mount metadata matches, it must now deny non-fixtures.
+        with tempfile.TemporaryDirectory(prefix="untrusted-source-") as root:
+            parent=Path(root)
+            ro,rw=parent/"knowledge",parent/"workspace"
+            ro.mkdir()
+            rw.mkdir()
+            rec=copy.deepcopy(self.record)
+            rec["Mounts"][0]["Source"]=str(ro)
+            rec["Mounts"][1]["Source"]=str(rw)
+            got=self.evaluate(rec,ro=str(ro),rw=str(rw))
+            self.assertFalse(got["synthetic_runtime_policy_pass"])
+            self.assertIn("synthetic_source_scope_untrusted",got["violations"])
+
+    def test_rejects_world_readable_fixture_parent(self):
+        self.root.chmod(0o755)
+        self.addCleanup(lambda: self.root.chmod(0o700))
+        got=self.evaluate()
+        self.assertFalse(got["synthetic_runtime_policy_pass"])
+        self.assertIn("synthetic_source_scope_untrusted",got["violations"])
+
+    def test_synthetic_policy_rejects_wrong_names_and_different_roots(self):
+        for ro,rw in [
+            (str(self.ro),str(self.root)),
+            (str(self.rw),str(self.ro)),
+            (str(self.ro),str(self.root/"not-an-existing-directory")),
+        ]:
+            with self.subTest(ro=ro,rw=rw):
+                self.assertFalse(self.evaluate(ro=ro,rw=rw)["synthetic_runtime_policy_pass"])
+
+    def test_protected_anchors_are_explicitly_denylisted(self):
+        for anchor in ("/media/scott/NAS5","/media/scott/SSD_4TB",
+                       "/home/scott/git","/home/scott/.ssh"):
+            self.assertTrue(any(
+                Path(anchor)==Path(root) or Path(anchor).is_relative_to(root)
+                for root in guard.PROTECTED_ROOTS))
+        self.assertEqual(guard.audit(None)["decision"],"HOLD")
+
 if __name__=="__main__":
     unittest.main()

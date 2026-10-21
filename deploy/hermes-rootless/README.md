@@ -204,3 +204,52 @@ It does not establish signed image custody, production protected
 evidence denial, true source-owner admission/revocation,
 normal unbounded agent runtime safety or rollback. The only
 permitted result for production remains HOLD under P0 #414.
+
+
+## Strict synthetic source admission and NAS5 mountpoint gate (2026-10-21)
+
+The read-only runtime mount witness now has an explicit SYNTHETIC source
+boundary. A caller cannot turn any canonical host directory into an
+approved bind merely by passing it as readonly_source/private_source.
+Only a private 0700 ephemeral scratch root under /tmp or
+/home/scott/.cache is eligible, with the controlled
+hermes-runtime-test- or og-hermes-audit- root prefix. It must contain
+two real non-symlink directories named knowledge and workspace, with
+the same parent. The scratch root and children must be owned by the
+current user, canonical, non-mountpoints, and outside protected
+/media/scott, repository, credential and operating-system paths.
+This is a synthetic-only policy; it deliberately CANNOT approve a
+real curated production knowledge directory.
+
+Fleet Commander may use an isolated HOME not equal to /home/scott.
+The authorized x1 scratch parent is pinned explicitly, never derived
+from that process's HOME variable.
+
+Additional metadata-only witness verify_storage_mountpoints.py has
+NO Docker operations and never opens directory contents. Its default
+mode does no physical filesystem operations. Explicit nonroot x1
+--physical-metadata-only compares exact NAS5 and SSD mountpoints and
+their device IDs to the host root filesystem. Its positive case is
+still HOLD (mount topology alone never proves custody).
+
+Physical x1 observation: /media/scott/NAS5 existed as a directory
+but was NOT an exact mountpoint and had the SAME device as the root
+filesystem. /media/scott/SSD_4TB was an exact mountpoint on a distinct
+device. Result: metadata_topology_gate_pass=false; failures
+nas5_not_exact_mountpoint and nas5_on_host_root_filesystem.
+No media contents were read and no mounts were changed. This is a
+release HOLD: do not infer the NAS5 data is missing or start new
+writes to that path; verify the expected NAS mount with its owner.
+
+The strengthened runtime policy returned synthetic_runtime_policy_pass
+true on a freshly created disposable Docker container with two
+approved synthetic mounts, UID 1000, no network, RO rootfs, dropped
+caps, no-new-privileges and resource caps. It returned HOLD and zero
+release authority. The live production container was again REJECTED
+(16 mounts, 9 RW). No original running container was modified.
+
+Total local suite: 57/57 PASS, including synthetic source substitution,
+weak scratch permissions, symlink/traversal and wrong mountpoint
+negative controls. Temporary candidate image, container and scratch
+were cleaned. This work does not authorize protected-evidence access,
+production knowledge ingestion, model dispatch or PR merge.
