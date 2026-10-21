@@ -33,6 +33,34 @@ def _canonical_directory(value: str, *, must_exist: bool) -> Path:
         raise ReadScopeDenied("read_root_not_directory")
     return actual
 
+def _existing_directory_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        metadata = path.stat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ReadScopeDenied("directory_identity_unavailable") from exc
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ReadScopeDenied("root_not_directory")
+    return metadata.st_dev, metadata.st_ino
+
+
+def _directory_identities(path: Path) -> set[tuple[int, int]]:
+    """Record inode/device identity for root and existing non-root ancestors.
+
+    Docker bind mounts can map the SAME host directory to distinct container
+    paths, bypassing lexical and symlink checks. Never approve such aliases.
+    """
+    identities: set[tuple[int, int]] = set()
+    for part in (path, *path.parents):
+        if part == Path("/"):
+            break
+        identity = _existing_directory_identity(part)
+        if identity is not None:
+            identities.add(identity)
+    return identities
+
+
 def validate_separate_roots(read_root: str, write_root: str) -> Path:
     source = _canonical_directory(read_root, must_exist=True)
     destination = _canonical_directory(write_root, must_exist=False)
@@ -41,6 +69,12 @@ def validate_separate_roots(read_root: str, write_root: str) -> Path:
         raise ReadScopeDenied("read_write_overlap")
     if source == Path("/") or destination == Path("/"):
         raise ReadScopeDenied("filesystem_root_denied")
+    source_id = _existing_directory_identity(source)
+    destination_id = _existing_directory_identity(destination)
+    if (source_id in _directory_identities(destination)
+            or (destination_id is not None
+                and destination_id in _directory_identities(source))):
+        raise ReadScopeDenied("read_write_bind_alias")
     return source
 
 def _eligible_file(entry: os.DirEntry, root_device: int) -> bool:

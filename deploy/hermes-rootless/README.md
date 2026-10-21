@@ -456,3 +456,57 @@ The current /nas route is NOT a blanket authorized read source.
 
 Do not merge or deploy. PR #424 DRAFT, P0 #414 OPEN,
 production still has 16 mounts/9 RW. decision=HOLD.
+
+
+## Physical bind-alias rejection and two-launch private workspace persistence (2026-10-21)
+
+The opt-in root separation previously rejected lexical overlap and
+symlink aliases but did NOT compare filesystem identities. Docker can
+mount one host directory under two distinct container paths, defeating
+a string-only read/write path comparison.
+
+`hermes_knowledge_ro.validate_separate_roots` now checks device/inode
+pairs of the read and write roots and their existing non-root
+ancestors. It rejects identical underlying directory objects, even
+when the container paths are distinct, with
+`ReadScopeDenied("read_write_bind_alias")`. Unavailable identity
+metadata also fails closed. A missing private output directory
+is still allowed for first-launch creation when roots are otherwise
+different. This is a containment guard; it cannot establish
+independent host custody or detect all post-check mount mutations.
+
+The local x1 source suite passed 17/17 split-root tests
+(previous 13 plus four alias/identity cases), 104/104 prior rootless
+security tests, and 17/17 related existing adapter tests.
+
+**Physical Docker proof, synthetic only:** A temporary offline
+source-overlay image built from the exact live base image
+`sha256:22191871...` and the updated adapter, bounded RO helper
+and hardened entrypoint. Two fresh disposable nonroot containers
+using network=none, read-only rootfs, dropped capabilities, NNP and
+only two synthetic bind sources verified:
+
+- Each launch read a synthetic document solely from the read-only
+  `/research/knowledge` mount.
+- A private `/workspace/knowledge` marker and model ENV/evaluation
+  data persisted across the two separate launches on the same
+  synthetic writable workspace.
+- The source input remained unchanged.
+
+A third **deliberately unsafe synthetic-only negative container**
+added a third bind of the same synthetic host directory at the private
+write destination. The identity guard rejected the alias under the
+actual Docker filesystem, reporting `PHYSICAL_ALIAS_DENIED`.
+This third negative is NOT a permitted Compose configuration.
+The first attempt at the two-launch script omitted its test
+run-number input and failed an assertion; rerunning the corrected
+harness passed both launches and the negative alias probe.
+No live models, provider connections, AssistX API calls, tasks,
+real NAS, protected Watchdog evidence or host credentials involved.
+
+The container image tags and local scratch directories are removed
+by test cleanup. The real adapter still runs original image with
+16 mounts and nine writable mounts. This does not prove the real
+signed immutable corpus, host-admin mount revocation, independent
+signer custody, source-owner task effects or rollback. **HOLD**;
+PR #424 DRAFT; P0 #414 OPEN; do not cut over.

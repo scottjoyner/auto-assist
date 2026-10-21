@@ -33,6 +33,42 @@ class HermesSplitRootTests(unittest.TestCase):
         self.assertIn("synthetic nested context", text)
         self.assertFalse(any(self.write.iterdir()))
 
+    def test_different_paths_same_bind_inode_denied(self):
+        # Docker can bind the same underlying host directory at two paths.
+        from assistx.agents import hermes_knowledge_ro as roots
+        original=roots._existing_directory_identity
+        source_id=original(self.read)
+        def injected(path):
+            return source_id if path == self.write else original(path)
+        with patch.object(roots,"_existing_directory_identity",side_effect=injected):
+            with self.assertRaisesRegex(ReadScopeDenied, "read_write_bind_alias"):
+                validate_separate_roots(str(self.read),str(self.write))
+
+    def test_aliased_write_ancestor_inode_denied(self):
+        from assistx.agents import hermes_knowledge_ro as roots
+        original=roots._existing_directory_identity
+        source_id=original(self.read)
+        def injected(path):
+            return source_id if path == self.write.parent else original(path)
+        with patch.object(roots,"_existing_directory_identity",side_effect=injected):
+            with self.assertRaisesRegex(ReadScopeDenied, "read_write_bind_alias"):
+                validate_separate_roots(str(self.read),str(self.write))
+
+    def test_nonexistent_distinct_workspace_is_allowed_for_initialization(self):
+        self.write.rmdir()
+        self.assertEqual(validate_separate_roots(str(self.read),str(self.write)),self.read)
+
+    def test_identity_query_failure_denied(self):
+        from assistx.agents import hermes_knowledge_ro as roots
+        original=roots._existing_directory_identity
+        def injected(path):
+            if path == self.write:
+                raise ReadScopeDenied("directory_identity_unavailable")
+            return original(path)
+        with patch.object(roots,"_existing_directory_identity",side_effect=injected):
+            with self.assertRaisesRegex(ReadScopeDenied, "directory_identity_unavailable"):
+                validate_separate_roots(str(self.read),str(self.write))
+
     def test_overlap_or_ancestor_denied(self):
         for dest in (self.read, self.read/"child", self.base):
             with self.subTest(dest=dest), self.assertRaises(ReadScopeDenied):
