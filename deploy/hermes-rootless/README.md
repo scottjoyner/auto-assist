@@ -551,3 +551,48 @@ manifest/custody protects it. An immutable RO curated source, signed
 owner-held manifest, independent high-water checkpoint and protected
 evidence exclusion remain unresolved. `decision=HOLD`;
 PR #424 stays draft, P0 #414 open, production Hermes unchanged.
+
+## Explicit protected Watchdog evidence bind exclusion (2026-10-21)
+
+The P0 #414 evidence path is
+/media/scott/SSD_4TB/knowledge/50-Research/model-evaluation/free-first-monitor.
+The live adapter has two writable bind sources enclosing that tree:
+the broad SSD source and /home/scott/knowledge, whose symlink resolves
+to the SSD knowledge tree. A whole-SSD RO mount would still expose it.
+
+verify_evidence_exclusion.py is a standalone read-only mount witness.
+Default command performs NO Docker inspection and returns HOLD.
+Explicit --audit-live-readonly (nonroot x1) checks only docker inspect
+mount metadata and filesystem path identity. It resolves symlinks,
+rejects any ancestor/descendant overlap of the protected root for
+BOTH RO and RW mounts, fails closed for unknown/unresolved mount
+sources, and emits only counts, violation categories and HOLD.
+It never reads evidence file contents, prints host source paths,
+grants production access or starts/stops a container.
+
+Physical x1 read-only inspection of unchanged production Hermes:
+16 mounts, 2 protected overlaps, both writable. Five mount source
+identities were not fully classifiable as directories; these remain
+untrusted, NOT five additional verified protected overlaps.
+The release decision is HOLD.
+
+Twelve synthetic-only negative tests cover SSD ancestor, symlinked
+knowledge ancestor, nested protected descendant, RO exposure,
+missing sources, malformed and duplicate mounts. The combined
+rootless suite is 116/116 PASS on x1-370.
+
+Physical disposable container checks used docker create ONLY, never
+docker start. The restricted two-scratch-mount synthetic candidate
+had zero protected overlap and passed this narrow check. A second
+disposable container mapped a harmless synthetic stand-in evidence
+tree twice through an SSD-like ancestor and symlinked knowledge
+ancestor and was correctly rejected with two writable overlaps.
+No real protected files were read or modified. All scratch
+containers and fixtures were removed.
+
+This is a narrow *host-path evidence exclusion* check, not a full
+runtime authorization. Combine it with the existing two-mount
+synthetic runtime policy and independently signed source/image
+custody. It cannot detect every privileged host mutation or
+prove independent witness administration. PR #424 remains draft,
+P0 #414 open, and the original production adapter remains unchanged.
