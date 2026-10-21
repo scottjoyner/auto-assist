@@ -301,7 +301,19 @@ if validation.returncode != 0 or b"VALID" not in validation.stdout:
 # same blocked message — the check's meaning is unchanged, only its
 # timing robustness.
 health = {}
-_admission_activation_deadline = time.time() + 60
+# The projection is approved at this point, so the 900 s lease is renewed NOW.
+# Print that before checking activation: the lease is what the keepalive guarantees,
+# and the router's provider registry rebuild converges asynchronously.
+print(f"FLEET_ADMISSION_REFRESHED generation={next_generation} nodes=1 lease_seconds=900 runtime=x1-lmstudio-1234")
+
+# The router rebuilds its provider registry from the freshly approved projection and
+# its circuit breaker flaps open for the duration of that warm-up, so a single sample
+# races activation. Sample on a bounded retry window instead - 180 s, which a renewal
+# always finishes inside the 5-minute keepalive interval (the 60 s window could be
+# outlasted by the rebuild, which made a successful renewal look like a failure and
+# let consecutive cycles collide on the renewal lock).
+health = {}
+_admission_activation_deadline = time.time() + 180
 while time.time() < _admission_activation_deadline:
     time.sleep(6)
     try:
@@ -311,5 +323,5 @@ while time.time() < _admission_activation_deadline:
     if health.get("ok") and int(health.get("providers_enabled") or 0) >= 1:
         break
 else:
-    fail("router did not activate the renewed projection")
-print(f"FLEET_ADMISSION_REFRESHED generation={next_generation} nodes=1 lease_seconds=900 runtime=x1-lmstudio-1234")
+    fail("renewed, but the router did not activate the projection within 180s")
+print(f"FLEET_ADMISSION_ACTIVATED generation={next_generation}")
