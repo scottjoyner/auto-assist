@@ -106,3 +106,47 @@ Still HOLD: real strict-executor entrypoint + isolated mock claim
 service, signed image/source provenance, true owner-bound execution
 and revocation, scoped index provenance, independent evidence custody
 and verified rollback. Do not merge or activate production resources.
+
+
+## Physical rootless strict-executor synthetic lifecycle (2026-10-21)
+
+A second opt-in physical qualification on x1-370 combined the
+hardened normal image ENTRYPOINT with the actual Python
+assistx.strict_executor_main.main() function. The default unbounded
+poll loop was replaced ONLY in a synthetic test fixture with one
+call to its existing run_loop(once=True). Requests, subprocess creation
+and the engine result were mocked. No network interface was enabled.
+The shipped synthetic Compose default remains the benign shell probe.
+
+The fixture is tests/fixtures/hermes_rootless_synthetic_lifecycle.py.
+It is NOT built into any image or executed by default. For a physical
+test, an operator must put the script into an entirely synthetic
+disposable workspace and override the command with
+python3 -B /workspace/synthetic_lifecycle.py, using only synthetic
+strict-executor token strings. Never use real provider or API secrets.
+
+The physically executed rootless disposable Compose instance used the
+exact existing Hermes image as base and the hardened entrypoint.
+Confinement: network=none, rootfs read-only, zero Linux capabilities,
+no-new-privileges, RO synthetic knowledge, private RW test workspace,
+nonroot UID and tightly bounded CPU/memory/PIDs.
+
+The actual strict executor Python code executed mock poll -> claim ->
+claim token -> heartbeat -> context -> heartbeat -> fake engine result ->
+memory -> DONE completion. A second claim lost its lease; its attempted
+completion was denied, and a mismatched claim-token identity was rejected.
+Private synthetic model ENV.md and evaluation registry files appeared
+only under the scratch workspace. Console proof:
+
+    ROOTLESS_HERMES_MAIN_SYNTHETIC_LIFECYCLE_PASS
+
+Five additional source-level contracts ensure the fixture requires a
+bounded one-pass main() loop, synthetic HTTP/process mocks, known token
+strings and lease-loss denial. Total local suite: 35/35 PASS.
+
+This is not live API evidence or real model/CLI execution. Actual
+protected evidence write-denial, independently custodied claims and
+revocation, signed image-source identity, normal restart/rollback
+and scoped memory index are NOT VERIFIED. The running adapter
+retains its original 16 mounts, including nine RW and two aliases to
+protected watchdog evidence. Keep PR in DRAFT and P0 #414 OPEN/HOLD.
