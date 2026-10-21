@@ -69,6 +69,46 @@ class HermesSplitRootTests(unittest.TestCase):
             with self.assertRaisesRegex(ReadScopeDenied, "directory_identity_unavailable"):
                 validate_separate_roots(str(self.read),str(self.write))
 
+    def test_regular_file_swap_after_enumeration_is_rejected(self):
+        # A host writer can atomically substitute same-sized regular files.
+        # File extensions, device identity and O_NOFOLLOW alone miss this.
+        from assistx.agents import hermes_knowledge_ro as roots
+        target = self.read / "source.md"
+        replacement = self.read / "substitution.tmp"
+        replacement.write_bytes(b"UNTRUSTED_SWAP_CONTENT" + b"x" * 2)
+        native_open = roots.os.open
+        def substitute_on_open(path, flags, *args, **kwargs):
+            if path == str(target):
+                os.replace(replacement, target)
+            return native_open(path, flags, *args, **kwargs)
+        with patch.object(roots.os, "open", side_effect=substitute_on_open):
+            with self.assertRaisesRegex(ReadScopeDenied, "source_file_read_failed_closed"):
+                bounded_snapshot(str(self.read), str(self.write))
+        self.assertFalse(any(self.write.iterdir()))
+
+    def test_changed_file_during_read_is_rejected(self):
+        from assistx.agents import hermes_knowledge_ro as roots
+        target = self.read / "source.md"
+        original_read = roots.os.read
+        was_changed = False
+        def mutate_after_read(fd, count):
+            nonlocal was_changed
+            output = original_read(fd, count)
+            if not was_changed:
+                was_changed = True
+                target.write_bytes(b"SYNTHETIC ALTERED AFTER OPEN\n")
+            return output
+        with patch.object(roots.os, "read", side_effect=mutate_after_read):
+            with self.assertRaisesRegex(ReadScopeDenied, "source_file_read_failed_closed"):
+                bounded_snapshot(str(self.read), str(self.write))
+        self.assertTrue(was_changed)
+
+    def test_eligible_file_read_error_is_fail_closed(self):
+        from assistx.agents import hermes_knowledge_ro as roots
+        with patch.object(roots, "_read_pinned_file", side_effect=OSError("simulated")):
+            with self.assertRaisesRegex(ReadScopeDenied, "source_file_read_failed_closed"):
+                bounded_snapshot(str(self.read), str(self.write))
+
     def test_overlap_or_ancestor_denied(self):
         for dest in (self.read, self.read/"child", self.base):
             with self.subTest(dest=dest), self.assertRaises(ReadScopeDenied):

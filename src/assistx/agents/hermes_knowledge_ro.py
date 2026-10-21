@@ -88,7 +88,12 @@ def _eligible_file(entry: os.DirEntry, root_device: int) -> bool:
     return (stat.S_ISREG(metadata.st_mode) and metadata.st_dev == root_device
             and metadata.st_nlink == 1 and metadata.st_size <= MAX_FILE_SIZE)
 
-def _read_pinned_file(path: Path, root_device: int, limit: int) -> str:
+def _file_identity(st: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _read_pinned_file(path: Path, root_device: int, limit: int,
+                      expected_identity: tuple[int, int, int, int, int]) -> str:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_CLOEXEC
     fd = os.open(str(path), flags)
     try:
@@ -96,8 +101,13 @@ def _read_pinned_file(path: Path, root_device: int, limit: int) -> str:
         if (not stat.S_ISREG(initial.st_mode) or initial.st_nlink != 1
                 or initial.st_dev != root_device or initial.st_size > MAX_FILE_SIZE):
             raise ReadScopeDenied("changed_or_unsafe_file")
+        if _file_identity(initial) != expected_identity:
+            raise ReadScopeDenied("source_replaced_after_enumeration")
         chunk = os.read(fd, min(MAX_FILE_SIZE + 1, initial.st_size + 1))
         if len(chunk) != initial.st_size or len(chunk) > MAX_FILE_SIZE:
+            raise ReadScopeDenied("source_changed_during_read")
+        if (_file_identity(os.fstat(fd)) != expected_identity
+                or _file_identity(path.lstat()) != expected_identity):
             raise ReadScopeDenied("source_changed_during_read")
         return chunk.decode("utf-8", errors="ignore")[:limit]
     finally:
@@ -115,7 +125,7 @@ def bounded_snapshot(read_root: str, write_root: str, max_chars: int = 2500) -> 
     if max_chars == 0:
         return ""
     root_device = source.stat().st_dev
-    candidates: list[tuple[float, Path]] = []
+    candidates: list[tuple[float, Path, tuple[int, int, int, int, int]]] = []
     def visit(folder: Path, depth: int) -> None:
         try:
             with os.scandir(folder) as it:
@@ -133,19 +143,21 @@ def bounded_snapshot(read_root: str, write_root: str, max_chars: int = 2500) -> 
                     and not any(k in entry.name.lower() for k in BAD_NAME_PARTS)):
                 visit(Path(entry.path), depth + 1)
             elif _eligible_file(entry, root_device):
-                candidates.append((metadata.st_mtime, Path(entry.path)))
+                candidates.append((metadata.st_mtime, Path(entry.path), _file_identity(metadata)))
                 if len(candidates) > MAX_FILES:
                     raise ReadScopeDenied("too_many_source_files")
     visit(source, 0)
     chunks: list[str] = []
     total = 0
-    for _, path in sorted(candidates, key=lambda item: item[0], reverse=True):
+    for _, path, expected_identity in sorted(
+            candidates, key=lambda item: item[0], reverse=True):
         if total >= max_chars:
             break
         try:
-            piece = _read_pinned_file(path, root_device, min(1500, max_chars - total))
-        except (OSError, ReadScopeDenied):
-            continue
+            piece = _read_pinned_file(
+                path, root_device, min(1500, max_chars - total), expected_identity)
+        except (OSError, ReadScopeDenied) as exc:
+            raise ReadScopeDenied("source_file_read_failed_closed") from exc
         total += len(piece)
         chunks.append(f"# {path.relative_to(source).as_posix()}\n{piece}")
     return "\n\n".join(chunks)[:max_chars]

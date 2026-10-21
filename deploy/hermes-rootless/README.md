@@ -510,3 +510,44 @@ by test cleanup. The real adapter still runs original image with
 signed immutable corpus, host-admin mount revocation, independent
 signer custody, source-owner task effects or rollback. **HOLD**;
 PR #424 DRAFT; P0 #414 OPEN; do not cut over.
+
+## Read-source replacement race denial (2026-10-21)
+
+The opt-in bounded RO source reader now pins the filesystem identity
+`(st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns)` of every eligible
+file DURING directory enumeration. Each `os.open(O_NOFOLLOW)` result
+must match that recorded identity before reading. After reading, both
+the open fd's metadata and the path's lstat metadata must still match.
+A changed, replaced or missing source raises
+`ReadScopeDenied("source_file_read_failed_closed")` for the ENTIRE
+context, rather than silently skipping a failed file. This protects
+against a class of host-side regular-file swaps that cannot be detected
+by symlink checks or a separate read-only container mount alone.
+
+Three new negative tests simulate replacing a regular source file
+with another inode before open, modifying a file during read, and
+an eligible file read error. All three must fail closed. The local
+dedicated suite passed 20/20 split-root tests, 104/104 existing
+rootless-security tests, and 17/17 existing Hermes adapter tests.
+
+Physical x1-370 validation used a disposable offline/no-pull image
+from the exact live Hermes base, with the patched Python reader,
+adapter and hardened rootless entrypoint. A nonroot, networkless,
+read-only-rootfs container with synthetic-only RO knowledge and
+private RW workspace first read benign synthetic content normally.
+A second in-process test replaced the file returned by os.open
+with a distinct but same-content regular inode inside the RO mount;
+the running image rejected that mismatch:
+`ROOTLESS_SOURCE_REPLACEMENT_DENIED` and
+`PHYSICAL_READER_SWAP_DENIAL_PASS`. Synthetic source remained intact.
+No live NAS, Watchdog corpus, credentials, network, provider or task
+was accessed. The disposable image/scratch were deleted afterward.
+
+Important limits: these are bounded race checks, NOT independent
+source authority. A malicious host with Docker privileges can still
+change or substitute a mount outside the verified interval, and a
+malicious reader input can be accepted if no independent signed
+manifest/custody protects it. An immutable RO curated source, signed
+owner-held manifest, independent high-water checkpoint and protected
+evidence exclusion remain unresolved. `decision=HOLD`;
+PR #424 stays draft, P0 #414 open, production Hermes unchanged.
