@@ -362,3 +362,55 @@ held outside the worker's administrative domain, verified
 anti-rollback, and the authenticated task/revocation and
 restart/rollback gates. Do not point this checker at /nas or
 substitute its synthetic PASS for release authority.
+
+## Synthetic two-role Ed25519 signed-curated manifest contract (2026-10-21)
+
+New `verify_signed_curated_knowledge.py` composes the already
+bounded synthetic curated-knowledge verifier with an in-memory,
+two-role Ed25519 signed envelope. No production knowledge is used.
+Default command has **no external inputs** and returns HOLD without
+filesystem, Docker, network, NAS, or signing-key operations.
+
+A synthetically valid envelope contains exactly schema 1, explicit
+non-production domain `assistx.hermes.synthetic-curated-signature.v1`,
+a positive ordered integer sequence, previous_sha256 checkpoint head,
+the existing tiny `synthetic-hermes-curated-v1` manifest, and exactly
+two signature strings for producer and reviewer. All signed payload
+fields are canonical JSON with fixed domain separation. A reviewer
+cannot sign as the producer or vice versa, and using the same public
+key for both roles fails closed. Signature verification is completed
+BEFORE any synthetic corpus read; only then does the source verifier
+check the strictly allowlisted local scratch data.
+
+An explicitly supplied synthetic checkpoint must contain only
+schema, sequence and head_sha256. It requires the candidate sequence
+to advance by exactly one and previous_sha256 to match the supplied
+head. It rejects stale, skipped or forked sequences. The resulting
+synthetic head digest can be used in a next-iteration offline test;
+the verifier **never writes or persists a checkpoint**, never chooses
+trusted keys, and never grants release authorization.
+
+x1-370 ran the complete dedicated suite: **104/104 PASS**, including
+16 new signature-domain, forged-signature, swapped-role, same-key,
+tampering-before-read, stale/replay, wrong checkpoint, changed-file,
+wrong-root, extra-field and two-generation chain tests. Only in-memory
+ephemeral Ed25519 test keys and ephemeral `/tmp` synthetic fixture
+files were used. No private signing keys are saved or exposed.
+
+**Key limitation:** caller-injected public keys and checkpoint provide
+no independent identity, custody, anti-rollback or protection from
+a malicious worker with control of both the fixture and claimed
+checkpoint. A two-role cryptographic proof with worker-controlled
+keys is not independently authorized production evidence. Even a
+successful synthetic verification always says `decision=HOLD`,
+`independent_key_custody_verified=false`,
+`rollback_resistant_external_checkpoint=false`,
+`production_knowledge_mount_authorized=false` and
+`production_deployment_authorized=false`.
+
+Before real knowledge admission, separate authoritative trust roots,
+real independently signed manifests, durable offhost monotonic
+checkpoints, actual protected-data exclusion, immutable curated
+snapshots, source-owner effects authorization and rollback must be
+physically demonstrated. P0 #414 stays OPEN, PR #424 DRAFT, live
+Hermes still unsafe with 16 mounts (9 RW); do not deploy.
