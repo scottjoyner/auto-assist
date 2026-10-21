@@ -47,3 +47,27 @@ Run `python3 -m unittest discover -s tests -p 'test_hermes_rootless_candidate.py
 from the repository root. Tests use only temporary directories and synthetic
 environment values; Docker and production services are not touched.
 This is source-level validation, not an image-runtime acceptance test.
+
+## Hardened writable-path policy
+
+The proposed nonroot startup refuses UID 0 and any ENV_SEED setting.
+HOME must already exist, be writable, absolute and canonical; no
+symlink aliases or dot-dot components are accepted. HERMES_HOME and
+HERMES_CONFIG_HOME must be exactly HOME/hermes-home and HOME/.hermes.
+Existing writable directories must be real directories, not symlinks,
+including the sessions/logs/cache/harvest/memories/profiles/tmp paths.
+The primary config.yaml may not be a symlink, and the separate
+configuration symlink must point to the exact private primary config.
+Unknown existing config files are rejected rather than replaced.
+
+These checks are defense in depth, **not a substitute for a restricted
+mount namespace and private single-owner workspace**. A shell script
+cannot independently prevent filesystem races by other actors sharing
+its writable directory. Never attach legacy wide knowledge or
+untrusted RW directories. Static path checks alone do not authorize
+a release or independent evidence custody.
+
+The additional isolated negative suite is
+`python3 -m unittest discover -s tests -p 'test_hermes_rootless_*.py'`;
+it includes dot-dot, symlink, alternate writable-root, corrupt
+configuration and idempotency probes.
