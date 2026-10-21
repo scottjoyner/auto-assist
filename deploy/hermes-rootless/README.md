@@ -414,3 +414,45 @@ checkpoints, actual protected-data exclusion, immutable curated
 snapshots, source-owner effects authorization and rollback must be
 physically demonstrated. P0 #414 stays OPEN, PR #424 DRAFT, live
 Hermes still unsafe with 16 mounts (9 RW); do not deploy.
+
+## Research-only adapter RO/RW knowledge root split (2026-10-21)
+
+The Agent Harness restart canary discovered a concrete integration defect:
+the adapter used HERMES_KNOWLEDGE_ROOT for BOTH source reads and
+self-task/model ENV writes. A truly read-only corpus mount therefore
+could not safely serve as its self-task input.
+
+New opt-in adapter behavior keeps old behavior unchanged when
+HERMES_KNOWLEDGE_READ_ROOT is ABSENT. When set, startup MUST use:
+- HERMES_KNOWLEDGE_READ_ROOT=/research/knowledge (source read only)
+- HERMES_KNOWLEDGE_ROOT=/workspace/knowledge (private output RW)
+- HERMES_EVAL_PATH=/workspace/registry/model-profiles.json (private RW)
+
+Before ANY fleet startup/task poll, run_loop rejects mismatched root
+paths, overlaps, missing/aliased read root or unapproved eval path.
+The source reader bounds scans to two levels, max 64 entries per
+directory, max 32 small plain .md/.txt files, no symlink/hardlinks,
+no hidden/credential names and max 8192 output characters. Source
+files are opened O_NOFOLLOW; the helper NEVER writes either root.
+Per-model ENV.md and self-task artifacts remain in the private
+writable output tree. The optional swarm-memory vault read path
+is not consulted when this strict opt-in read source is configured,
+preventing unintended alternative source ingestion.
+
+The standalone synthetic Compose candidate now sets exact RO/RW and
+eval environment variables; it is STILL a benign synthetic probe
+and not a live task or provider deployment. The source-only
+adapter tests use temporary synthetic fixtures. No real NAS
+files are read, copied, indexed or used by those tests.
+
+Limitations: root/file stat checks do not themselves prevent
+concurrent untrusted filesystem actors from racing the scan.
+An independent immutable curated snapshot, mounted RO by Docker,
+and independently verified signed source/custody receipt remain
+required. The existing published image overlay only replaces the
+entrypoint; it does NOT bake this updated Python adapter until a
+new source-attested image is built and physically qualified.
+The current /nas route is NOT a blanket authorized read source.
+
+Do not merge or deploy. PR #424 DRAFT, P0 #414 OPEN,
+production still has 16 mounts/9 RW. decision=HOLD.

@@ -20,7 +20,11 @@ VOLUME_SOURCES={
     "/research/knowledge":"${HERMES_SYNTHETIC_KNOWLEDGE:?synthetic read-only knowledge fixture required}",
     "/workspace":"${HERMES_SYNTHETIC_WORKSPACE:?synthetic private workspace required}"}
 ENV={"HOME":"/workspace","HERMES_HOME":"/workspace/hermes-home",
-     "HERMES_CONFIG_HOME":"/workspace/.hermes","PYTHONDONTWRITEBYTECODE":"1"}
+     "HERMES_CONFIG_HOME":"/workspace/.hermes",
+     "HERMES_KNOWLEDGE_READ_ROOT":"/research/knowledge",
+     "HERMES_KNOWLEDGE_ROOT":"/workspace/knowledge",
+     "HERMES_EVAL_PATH":"/workspace/registry/model-profiles.json",
+     "PYTHONDONTWRITEBYTECODE":"1"}
 
 def secure_service(doc):
     if not isinstance(doc,dict) or set(doc)!={"name","services"} or doc.get("name")!="assistx-hermes-synthetic-rootless":

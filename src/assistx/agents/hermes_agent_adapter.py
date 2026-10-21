@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 import yaml
+from assistx.agents.hermes_knowledge_ro import bounded_snapshot, validate_separate_roots, ReadScopeDenied
 from assistx.improvement_cycle import (
     build_work_packet,
     evaluate_completion,
@@ -249,7 +250,7 @@ def ensure_model_env(model: Optional[str] = None) -> Optional[str]:
                     fh.write(f"# Environment for model `{model}`\n\n")
                     fh.write(f"- Tier: {m.get('tier')}\n")
                     fh.write(f"- Nodes: {nodes}\n")
-                    fh.write("- Shared knowledge root: ~/knowledge (abs /media/scott/SSD_4TB/knowledge)\n")
+                    fh.write(f"- Private writable workspace root: {knowledge_root}\n")
                     fh.write("- This directory is the model's scratch/notes space, shared across the swarm.\n")
                     fh.write("- Configured by hermes-agent-adapter bootstrap at first use.\n")
                 m["environment_configured"] = True
@@ -961,6 +962,11 @@ def _build_structured_prompt(instruction: str, target_file: str, sections: List[
 def _gather_knowledge_context(max_chars: int = 2500) -> str:
     """Bounded snapshot of the knowledge vault so small models can summarize
     without needing file/terminal tools (which they misuse and loop on)."""
+    if "HERMES_KNOWLEDGE_READ_ROOT" in os.environ:
+        source = os.environ["HERMES_KNOWLEDGE_READ_ROOT"]
+        if source != "/research/knowledge":
+            raise ReadScopeDenied("read_mount_not_reviewed")
+        return bounded_snapshot(source, KNOWLEDGE_ROOT, max_chars=max_chars)
     chunks: List[str] = []
     total = 0
     if not os.path.isdir(KNOWLEDGE_ROOT):
@@ -1140,7 +1146,7 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
     # Prefer semantic retrieval (relevant chunks) over a blind snapshot; fall back
     # to the bounded snapshot if the embed model is unavailable.
     context = ""
-    if swarm_memory is not None:
+    if swarm_memory is not None and "HERMES_KNOWLEDGE_READ_ROOT" not in os.environ:
         context = swarm_memory.vault_semantic_context(
             _SELFTASK_QUERIES.get(arch, arch), k=4, fallback=""
         )
@@ -1442,6 +1448,14 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
 # Loop
 # ---------------------------------------------------------------------------
 def run_loop(once: bool = False) -> None:
+    # A separately mounted input may NEVER alias a writable workspace.
+    # Fail before fleet background startup, polling, or any task claim.
+    if "HERMES_KNOWLEDGE_READ_ROOT" in os.environ:
+        if (os.environ["HERMES_KNOWLEDGE_READ_ROOT"] != "/research/knowledge"
+                or KNOWLEDGE_ROOT != "/workspace/knowledge"
+                or EVAL_PATH != "/workspace/registry/model-profiles.json"):
+            raise ReadScopeDenied("unsafe_split_knowledge_runtime")
+        validate_separate_roots("/research/knowledge", KNOWLEDGE_ROOT)
     logger.info(
         "Hermes agent adapter starting (agent=%s, capabilities=%s, poll_interval=%ds, bulk_models=%s)",
         AGENT_ID,
