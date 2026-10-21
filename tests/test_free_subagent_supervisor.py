@@ -921,12 +921,12 @@ def test_terminate_subagent_does_not_signal_unverified_pid(monkeypatch):
 
 
 def test_cleanup_stale_identifies_old_records():
-    from datetime import UTC, datetime
+    from datetime import UTC, datetime, timedelta
 
     with tempfile.NamedTemporaryFile("w+", suffix=".jsonl", delete=False) as tf:
         path = pathlib.Path(tf.name)
     try:
-        old_ts = datetime.now(UTC).replace(hour=0, minute=0, second=0).strftime("%Y-%m-%dT00:00:00Z")
+        old_ts = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
         rec = {
             "title": "stale-test",
             "objective": "o",
@@ -1002,12 +1002,12 @@ def test_admit_subagent_registers_record():
 
 
 def test_supervise_hold_terminates_stale_dry_run():
-    from datetime import UTC, datetime
+    from datetime import UTC, datetime, timedelta
 
     with tempfile.NamedTemporaryFile("w+", suffix=".jsonl", delete=False) as tf:
         path = pathlib.Path(tf.name)
     try:
-        old_ts = datetime.now(UTC).replace(hour=0, minute=0, second=0).strftime("%Y-%m-%dT00:00:00Z")
+        old_ts = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
         rec = {
             "title": "stale-supervise", "objective": "o", "model": "openrouter/anthropic/claude-3.5-sonnet",
             "worktree": "/tmp/wt-supervise", "pid": 5555, "session": "supervise-stale",
