@@ -71,3 +71,38 @@ The additional isolated negative suite is
 `python3 -m unittest discover -s tests -p 'test_hermes_rootless_*.py'`;
 it includes dot-dot, symlink, alternate writable-root, corrupt
 configuration and idempotency probes.
+
+
+## Synthetic Compose confinement — physical milestone (2026-10-21)
+
+The separate compose.synthetic.yml is NOT a production Compose override.
+It has exactly one opt-in synthetic-canary service with network=none,
+non-root UID 1000, readonly image root, all capabilities dropped,
+no-new-privileges, resource limits and pull_policy=never.
+There are exactly two required synthetic binds: readonly knowledge
+and the sole writable private workspace. Docker may not automatically
+create either bind source.
+
+The synthetic_smoke.sh command intentionally replaces the real agent
+loop with a bounded storage and startup probe. It uses NO real task,
+provider, signed claim, network, production file or secret.
+
+On x1-370 the Docker Compose JSON render passed. A new disposable
+local entrypoint-overlay image from the exact live image object
+ran this explicit service with docker compose run --rm --no-deps.
+It printed ROOTLESS_COMPOSE_STORAGE_ISOLATION_PASS. It checked denied
+writes to synthetic readonly knowledge and the readonly rootfs,
+private workspace write success, hidden protected host paths,
+NoNewPrivs=1, zero effective Linux capabilities, and initialization
+without a credential .env. Synthetic evidence marker stayed intact.
+Docker-only scratch resources were removed afterward.
+
+Thirty of thirty local rootless tests passed, including mutation
+negatives for host networks, extra mounts, privileges, ports and
+unexpected actual agent execution. This demonstrates the staged
+synthetic container boundary, NOT a safe production cutover.
+
+Still HOLD: real strict-executor entrypoint + isolated mock claim
+service, signed image/source provenance, true owner-bound execution
+and revocation, scoped index provenance, independent evidence custody
+and verified rollback. Do not merge or activate production resources.
