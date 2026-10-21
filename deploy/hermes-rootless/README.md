@@ -253,3 +253,54 @@ weak scratch permissions, symlink/traversal and wrong mountpoint
 negative controls. Temporary candidate image, container and scratch
 were cleaned. This work does not authorize protected-evidence access,
 production knowledge ingestion, model dispatch or PR merge.
+
+
+## x1 NAS5 canonical-route reconciliation (2026-10-21)
+
+Fleet Hardware docs/TOPOLOGY.md records x1-370's NAS endpoint as
+/nas backed by the Beelink SMB share //192.168.1.202/fileserver.
+Read-only findmnt inspection confirmed that /nas currently has a CIFS
+mount at exactly this source, layered above systemd autofs. The unit
+nas.mount is active; /nas has a different filesystem device from
+host root. This confirms a ROUTE MATCH to the documented inventory,
+not independent authentication of the physical Beelink Btrfs pool.
+
+By contrast, /media/scott/NAS5 is currently an ordinary directory
+on the host root filesystem (not a mountpoint). A metadata-only
+Docker inspection confirms that the still-running production Hermes
+container continues to bind that legacy path, RW. The live Hermes
+bind therefore does not reach the verified /nas CIFS route.
+NO symlink, bind mount, service update or automatic fallback to /nas
+was performed. Existing production state is deliberately unchanged.
+
+verify_nas5_route.py is a read-only bounded reconciliation witness:
+- Default invocation does not contact Docker or inspect mounts.
+- Explicit --physical-readonly only on nonroot x1.
+- Calls findmnt on exact /nas and Docker inspect on the existing
+  Hermes container; inspects only Mounts, never Config.Env.
+- Requires a single expected /nas CIFS route, distinct from host
+  root device, rejects an autofs-only placeholder or different
+ /duplicate SMB export; compares the running legacy bind.
+- Emits only booleans and violation categories, not hostnames,
+  share addresses, mount source paths, credentials or content.
+- Every outcome says decision=HOLD with no release authority.
+
+Physical x1 verification:
+canonical_nas_cifs_matches_fleet_inventory=true,
+legacy_nas5_exact_mountpoint=false,
+legacy_nas5_uses_host_root_filesystem=true,
+running_hermes_has_legacy_nas5_bind=true,
+legacy_bind_misses_canonical_cifs=true,
+remote_share_custody_independently_attested=false,
+production_knowledge_mount_authorized=false, decision=HOLD.
+The source-level test suite increased to **68/68 PASS**.
+
+This narrows the topology problem to a LEGACY ROUTE MISMATCH,
+not evidence of all NAS connectivity being down. Do not redirect
+Hermes to /nas wholesale: it could expose the entire NAS to
+agent writes, knowledge loops and cross-host traversal.
+The remaining safe next step is an owner-reviewed curated,
+limited-scope, separately versioned knowledge export (RO),
+with canonical identity, independent custody, revocation and
+protected Watchdog evidence denial, followed by a cutover
+and rollback test. P0 #414 and fleet-hardware #5 remain OPEN.
