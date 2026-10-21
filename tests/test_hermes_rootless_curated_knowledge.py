@@ -22,7 +22,7 @@ SPEC.loader.exec_module(guard)
 class CuratedSyntheticKnowledgeTests(unittest.TestCase):
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory(
-            prefix="og-hermes-knowledge-", dir="/home/scott/.cache")
+            prefix="og-hermes-knowledge-", dir="/tmp")
         self.addCleanup(self.scratch.cleanup)
         self.root = Path(self.scratch.name)
         self.root.chmod(0o700)
@@ -140,7 +140,7 @@ class CuratedSyntheticKnowledgeTests(unittest.TestCase):
 
     def test_wrong_temporary_prefix_denied(self):
         with tempfile.TemporaryDirectory(prefix="arbitrary-host-",
-                                         dir="/home/scott/.cache") as other:
+                                         dir="/tmp") as other:
             self.denied(self.check(root=other), "untrusted_fixture_root")
 
     def test_duplicate_path_denied(self):
