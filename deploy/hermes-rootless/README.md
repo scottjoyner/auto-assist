@@ -150,3 +150,57 @@ revocation, signed image-source identity, normal restart/rollback
 and scoped memory index are NOT VERIFIED. The running adapter
 retains its original 16 mounts, including nine RW and two aliases to
 protected watchdog evidence. Keep PR in DRAFT and P0 #414 OPEN/HOLD.
+
+
+## Read-only Docker runtime mount policy (October 21, 2026)
+
+The new verify_runtime_mounts.py is a fail-closed, non-deploying
+Docker metadata verifier. Its default invocation does NOT contact
+Docker or modify files. For x1-370 only, --audit-live-readonly
+performs one Docker inspect of the existing Hermes container.
+It emits only policy booleans, violation codes, mount counts and HOLD.
+It NEVER prints host source paths, environment values or credentials.
+
+This code checks only the runtime **configuration**, not authentic
+ownership of a Docker daemon or physical protected evidence data.
+The synthetic policy requires a pinned immutable image object ID,
+UID/GID 1000, the hardened image entrypoint, network mode none,
+readonly rootfs, all Linux caps dropped, NNP, no host pid/ipc/devices,
+no published ports, capped resources and **exactly two** approved
+canonical synthetic bind source paths: knowledge RO at
+/research/knowledge and private workspace RW at /workspace.
+Symlink/alias source paths, broad source mounts, extra writable
+mounts, unexpected destinations or privileges fail closed.
+An inherited image EXPOSE declaration is metadata, not an active
+published port; actual port bindings and network access are forbidden.
+
+A physical read-only inspection on x1-370 rejected the ORIGINAL
+running adapter (16 binds, nine RW, root user, writable rootfs and
+broader networking). The witness intentionally lacks any approved
+synthetic sources for that production container. It returned HOLD
+and did not print production host source paths.
+
+For a separate positive physical qualification, a reviewed
+candidate overlay was built offline from the exact local running
+Hermes base, and a disposable Docker container was CREATED (not
+started) with UID 1000, no network, no caps, NNP and exactly two
+temporary synthetic bind sources. The verifier consumed its real
+docker inspect metadata with those sources and its exact image ID.
+Result: synthetic_runtime_policy_pass=true, mount_count_observed=2,
+writable_mount_count=1, violations=[], decision=HOLD. The scratch
+container, temporary image tags and synthetic fixture paths were
+removed. Previous rootless Compose tests separately proved the
+container can actually start and run a bounded synthetic workload.
+
+The new source-only test file tests/test_hermes_rootless_runtime_mounts.py
+contains safety negatives for host networking, root user, privileged
+mode, cap addition, devices, open ports, resource limits, mount
+substitution, source symlinks, extra mounts and policy-output
+redaction. Total staged dedicated tests: **46/46 PASS**.
+
+This check is NOT an authenticated protection against Docker-admin
+access to host storage; Docker-root authority can change mounts.
+It does not establish signed image custody, production protected
+evidence denial, true source-owner admission/revocation,
+normal unbounded agent runtime safety or rollback. The only
+permitted result for production remains HOLD under P0 #414.
