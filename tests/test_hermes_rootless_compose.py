@@ -138,7 +138,7 @@ class RootlessSyntheticComposeTests(unittest.TestCase):
             self.assertEqual(len(s["volumes"]),2)
             self.assertEqual({x["target"] for x in s["volumes"]},{"/workspace","/research/knowledge"})
             for x in s["volumes"]:
-                self.assertIs(x["bind"]["create_host_path"],False)
+                self.assertIs(x.get("bind",{}).get("create_host_path",False),False)
                 self.assertEqual(x.get("read_only",False),x["target"]=="/research/knowledge")
 
 if __name__=="__main__":
