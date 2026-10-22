@@ -39,3 +39,7 @@ Therefore **do not call this independent custody, cryptographic rollback resista
 Provision a separately administered signer/ledger with immutable or external append-only checkpoint publication and acknowledgment, revocation/fencing semantics across partitions, nonshared credentials, signed key rotations, owner-bound grants and test receipts. Run negative multi-host tests after rolling back the **entire** worker and witness SQLite contents. Separately repair Hermes' remaining **16 production binds including nine writable**, two writable protected SSD ancestor aliases, broad NAS-labelled fallback path, mutable Git mounts and private SSH mounts, and qualify narrow approved RO input plus isolated RW output, a signed release image and rollback.
 
 **No production Hermes restart, mount alteration, real-model call, NAS transfer or protected corpus read was performed.** Keep PR #425 draft and P0 #414 OPEN.
+
+## Signed owner-state mutation follow-up
+
+A new opt-in mutation path uses a separately signed grant with exact owner, prior state, generation and one-use nonce. The disposable Lenovo canary now pins the issuer public key at enrollment, proves signer substitution denial and persistent revocation. Production independent issuer custody and whole-database rollback resistance remain unresolved; see [HERMES_SIGNED_OWNER_GRANTS_HOLD_20261022.md](HERMES_SIGNED_OWNER_GRANTS_HOLD_20261022.md).

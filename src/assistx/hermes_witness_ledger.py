@@ -7,6 +7,7 @@ only with a further independent append-only publication witness.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,13 @@ CREATE TABLE IF NOT EXISTS owner_highwater (
   checkpoint_sha256 TEXT NOT NULL,
   manifest_sha256 TEXT NOT NULL,
   revoked INTEGER NOT NULL CHECK(revoked IN (0,1))
+);
+"""
+_GRANTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS applied_owner_grants (
+  nonce TEXT PRIMARY KEY NOT NULL,
+  owner TEXT NOT NULL,
+  payload_sha256 TEXT NOT NULL
 );
 """
 _REQUEST_KEYS = {"schema", "nonce", "owner", "generation",
@@ -94,6 +102,7 @@ class ResearchHighWaterLedger:
             self.db.execute("PRAGMA journal_mode=DELETE")
             self.db.execute("BEGIN IMMEDIATE")
             self.db.execute(_SCHEMA)
+            self.db.execute(_GRANTS_SCHEMA)
             self.db.execute("COMMIT")
             os.chmod(self.path, 0o600)
         except Exception:
@@ -149,6 +158,77 @@ class ResearchHighWaterLedger:
             cursor=self.db.execute(
                 "UPDATE owner_highwater SET revoked=1 WHERE owner=?",(owner,))
             _need(cursor.rowcount==1,"cannot revoke unenrolled owner")
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+
+    def apply_signed_grant(
+        self, *, raw_grant: bytes, authorizer_public_key: bytes,
+        witness_signing_public_key: bytes | None = None,
+    ) -> None:
+        """Atomic, signed owner-scoped mutation; never expose raw publish.
+
+        Signer identity is trusted only when authorizer_public_key has been
+        pinned by a separate administrator outside worker/ledger custody.
+        An explicit prior state blocks concurrent overwrites/equivocation.
+        Nonces are one-shot within this SQLite database. Whole-DB rollback
+        still defeats replay protection without an external anchor.
+        """
+        from assistx.hermes_witness_grants import verify_owner_grant, EMPTY
+        grant = verify_owner_grant(
+            raw_grant, authorizer_public_key, witness_signing_public_key)
+        owner = grant["owner"]
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            old = self._get(owner)
+            if old is None:
+                _need(grant["action"] == "publish",
+                      "cannot revoke unregistered owner")
+                _need(grant["prior_generation"] == 0
+                      and grant["prior_checkpoint_sha256"] == EMPTY
+                      and grant["prior_manifest_sha256"] == EMPTY,
+                      "bootstrap must bind nonexistent prior state")
+            else:
+                _need(not bool(old[3]), "revocation is sticky")
+                _need(grant["prior_generation"] == old[0]
+                      and grant["prior_checkpoint_sha256"] == old[1]
+                      and grant["prior_manifest_sha256"] == old[2],
+                      "signed predecessor does not match durable owner state")
+            cursor = self.db.execute(
+                "SELECT 1 FROM applied_owner_grants WHERE nonce=?",
+                (grant["nonce"],))
+            _need(cursor.fetchone() is None, "signed grant nonce already used")
+            if grant["action"] == "publish":
+                if old is not None:
+                    _need(grant["generation"] > old[0],
+                          "published grant must advance generation")
+                self.db.execute(
+                    "INSERT INTO owner_highwater"
+                    "(owner,generation,checkpoint_sha256,manifest_sha256,revoked)"
+                    " VALUES(?,?,?,?,0) "
+                    "ON CONFLICT(owner) DO UPDATE SET "
+                    "generation=excluded.generation,"
+                    "checkpoint_sha256=excluded.checkpoint_sha256,"
+                    "manifest_sha256=excluded.manifest_sha256",
+                    (owner, grant["generation"],
+                     grant["checkpoint_sha256"],grant["manifest_sha256"]))
+            else:
+                _need(old is not None
+                      and grant["generation"] == old[0]
+                      and grant["checkpoint_sha256"] == old[1]
+                      and grant["manifest_sha256"] == old[2],
+                      "revocation must bind exact currently retained state")
+                updated = self.db.execute(
+                    "UPDATE owner_highwater SET revoked=1 WHERE owner=?",
+                    (owner,))
+                _need(updated.rowcount == 1,
+                      "cannot revoke missing owner")
+            self.db.execute(
+                "INSERT INTO applied_owner_grants(nonce,owner,payload_sha256)"
+                " VALUES(?,?,?)",
+                (grant["nonce"],owner,
+                 hashlib.sha256(raw_grant).hexdigest()))
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")

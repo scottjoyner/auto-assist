@@ -19,13 +19,17 @@ import secrets
 import shlex
 import subprocess
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from assistx.hermes_high_water import verify_receipt, canonical
 
 ROOT=Path(__file__).resolve().parents[1]
 LEDGER=ROOT/"src/assistx/hermes_witness_ledger.py"
 HIGH=ROOT/"src/assistx/hermes_high_water.py"
-EXPECTED_LEDGER="49430eee39381092511bd137b11947b8e93b5e24"
+GRANTS=ROOT/"src/assistx/hermes_witness_grants.py"
+EXPECTED_LEDGER="e923e307e536cbcc4ae0d92b7ed83678d2037c0e"
 EXPECTED_HIGH="ed8992eef765006cb6a12def4553b04d0129ecbe"
+EXPECTED_GRANTS="822daa9f5c742d275bd6b99d87372a73cad19838"
 EXPECTED_IMAGE="sha256:22191871cbf346ebe27c1b1cf433901f4b4ff479d80d2047917fe3966d78e307"
 REMOTE_PREFIX="/tmp/og-hermes-ledger-"
 REMOTE_CODE=r'''
@@ -39,8 +43,14 @@ def load(name,raw):
     exec(compile(base64.b64decode(raw),name,"exec"),module.__dict__)
     return module
 load("assistx.hermes_high_water",sys.argv[1])
+grants=load("assistx.hermes_witness_grants",sys.argv[3])
 ledger=load("assistx.hermes_witness_ledger",sys.argv[2])
-action=sys.argv[3]
+action=sys.argv[4]
+def mutation(encoded,reply_pub):
+    value=json.loads(base64.b64decode(encoded))
+    private_grant=base64.b64decode(value["grant"],validate=True)
+    pub=bytes.fromhex(value["public"])
+    return private_grant,pub,reply_pub
 owner="research-owned-hermes"
 cp2="2"*64;manifest2="b"*64
 if action=="provision":
@@ -53,15 +63,23 @@ if action=="provision":
     with os.fdopen(fd,"wb") as stream:
         stream.write(private);stream.flush();os.fsync(stream.fileno())
     os.chmod(path/"signer.key",0o600)
-    with ledger.ResearchHighWaterLedger(str(path/"ledger.sqlite")) as db:
-        db.publish(owner=owner,generation=2,
-                   checkpoint_sha256=cp2,manifest_sha256=manifest2)
     pub=signer.public_key().public_bytes(
         serialization.Encoding.Raw,serialization.PublicFormat.Raw)
+    signed_grant,operator_pub,reply_pub=mutation(sys.argv[5],pub)
+    if len(operator_pub)!=32 or operator_pub==reply_pub:
+        raise RuntimeError("invalid distinct owner-authorization role")
+    fd=os.open(str(path/"owner-authorizer.pub"),
+               os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+    with os.fdopen(fd,"wb") as stream:
+        stream.write(operator_pub);stream.flush();os.fsync(stream.fileno())
+    with ledger.ResearchHighWaterLedger(str(path/"ledger.sqlite")) as db:
+        db.apply_signed_grant(raw_grant=signed_grant,
+            authorizer_public_key=operator_pub,
+            witness_signing_public_key=reply_pub)
     print(json.dumps({"directory":directory,"public":pub.hex(),
                       "pid":os.getpid(),"generation":2}),flush=True)
 else:
-    directory=sys.argv[4]
+    directory=sys.argv[5]
     if not re.fullmatch(r"/tmp/og-hermes-ledger-[A-Za-z0-9_-]{6,24}",directory):
         raise RuntimeError("untrusted disposable path")
     path=Path(directory)
@@ -76,22 +94,42 @@ else:
         if not stat.S_ISREG(meta.st_mode) or meta.st_mode&0o077 or meta.st_uid!=os.geteuid():
             raise RuntimeError("test key custody violation")
         signer=Ed25519PrivateKey.from_private_bytes((path/"signer.key").read_bytes())
+        keymeta=(path/"owner-authorizer.pub").lstat()
+        if (not stat.S_ISREG(keymeta.st_mode) or keymeta.st_mode&0o077
+                or keymeta.st_uid!=os.geteuid()):
+            raise RuntimeError("untrusted pinned grant authorizer public key")
+        pinned=(path/"owner-authorizer.pub").read_bytes()
+        if len(pinned)!=32:
+            raise RuntimeError("invalid pinned grant authorizer")
         with ledger.ResearchHighWaterLedger(str(path/"ledger.sqlite")) as db:
             if action=="challenge":
-                request=base64.b64decode(sys.argv[5],validate=True)
+                request=base64.b64decode(sys.argv[6],validate=True)
                 response=db.respond(raw_request=request,signer=signer)
                 print(json.dumps({"receipt":response.decode("ascii"),
                                   "pid":os.getpid()}),flush=True)
             elif action=="reject-old-publish":
+                requested,authorizer_pub,reply_pub=mutation(
+                    sys.argv[6],signer.public_key().public_bytes(
+                        serialization.Encoding.Raw,serialization.PublicFormat.Raw))
+                if authorizer_pub!=pinned:
+                    raise RuntimeError("attempted signer substitution")
                 try:
-                    db.publish(owner=owner,generation=1,
-                               checkpoint_sha256="1"*64,manifest_sha256="a"*64)
+                    db.apply_signed_grant(raw_grant=requested,
+                        authorizer_public_key=authorizer_pub,
+                        witness_signing_public_key=reply_pub)
                 except ledger.LedgerDenied:
                     print(json.dumps({"rollback_denied":True,"pid":os.getpid()}),flush=True)
                 else:
-                    raise RuntimeError("rollback was erroneously admitted")
+                    raise RuntimeError("signed rollback was erroneously admitted")
             elif action=="revoke":
-                db.revoke(owner)
+                requested,authorizer_pub,reply_pub=mutation(
+                    sys.argv[6],signer.public_key().public_bytes(
+                        serialization.Encoding.Raw,serialization.PublicFormat.Raw))
+                if authorizer_pub!=pinned:
+                    raise RuntimeError("attempted signer substitution")
+                db.apply_signed_grant(raw_grant=requested,
+                    authorizer_public_key=authorizer_pub,
+                    witness_signing_public_key=reply_pub)
                 print(json.dumps({"revoked":True,"pid":os.getpid()}),flush=True)
             else: raise RuntimeError("unsupported remote action")
 '''
@@ -108,12 +146,14 @@ def shell(cmd,timeout=12):
     return p.stdout.strip()
 
 def remote_payload():
-    for source,expected in ((LEDGER,EXPECTED_LEDGER),(HIGH,EXPECTED_HIGH)):
+    for source,expected in ((LEDGER,EXPECTED_LEDGER),(HIGH,EXPECTED_HIGH),
+                            (GRANTS,EXPECTED_GRANTS)):
         need(subprocess.run(["git","-C",str(ROOT),"hash-object",str(source)],
             capture_output=True,text=True,timeout=6).stdout.strip()==expected,
              "unreviewed off-host witness source")
     return (base64.b64encode(HIGH.read_bytes()).decode(),
-            base64.b64encode(LEDGER.read_bytes()).decode())
+            base64.b64encode(LEDGER.read_bytes()).decode(),
+            base64.b64encode(GRANTS.read_bytes()).decode())
 
 def remote(payload,action,path=None,request=None):
     cmd=["python3","-B","-c",REMOTE_CODE,*payload,action]
@@ -125,6 +165,23 @@ def remote(payload,action,path=None,request=None):
           "-o","StrictHostKeyChecking=yes","-o","ConnectTimeout=4",
           "-o","ConnectionAttempts=1","lenovo",quoted]
     return json.loads(shell(args,18))
+
+def signed_authorization(private, *, action, prior_generation,
+                         generation, checkpoint, manifest):
+    previous_cp=("0" if prior_generation==0 else str(prior_generation))*64
+    previous_manifest=("0" if prior_generation==0 else
+                       ("b" if prior_generation==2 else "a"))*64
+    payload={"schema":1,"action":action,"owner":"research-owned-hermes",
+             "nonce":secrets.token_hex(32),"prior_generation":prior_generation,
+             "prior_checkpoint_sha256":previous_cp,
+             "prior_manifest_sha256":previous_manifest,
+             "generation":generation,"checkpoint_sha256":checkpoint,
+             "manifest_sha256":manifest}
+    signed={**payload,"signature":private.sign(canonical(payload)).hex()}
+    pub=private.public_key().public_bytes(
+        serialization.Encoding.Raw,serialization.PublicFormat.Raw)
+    return {"public":pub.hex(),
+            "grant":base64.b64encode(canonical(signed)).decode()}
 
 def challenge(generation:int):
     return {"schema":1,"nonce":secrets.token_hex(32),
@@ -143,7 +200,10 @@ def physical():
     payload=remote_payload()
     path=None
     try:
-        created=remote(payload,"provision")
+        operator_signer=Ed25519PrivateKey.generate()
+        created=remote(payload,"provision",request=signed_authorization(
+            operator_signer,action="publish",prior_generation=0,
+            generation=2,checkpoint="2"*64,manifest="b"*64))
         path=created["directory"]
         need(path.startswith(REMOTE_PREFIX),"unexpected remote temp path")
         public=bytes.fromhex(created["public"])
@@ -152,7 +212,22 @@ def physical():
         response=remote(payload,"challenge",path,approve)
         verify_receipt(response["receipt"].encode(),public_key=public,request=approve)
         need(response["pid"]!=created["pid"],"ledger was not reopened by new process")
-        rejected=remote(payload,"reject-old-publish",path)
+        # A different owner signer supplies a perfectly well-formed grant
+        # and its own public key. Lenovo must trust only the enrolled key.
+        forged=Ed25519PrivateKey.generate()
+        substituted=False
+        try:
+            remote(payload,"reject-old-publish",path,
+                   signed_authorization(forged,
+                      action="publish",prior_generation=2,
+                      generation=1,checkpoint="1"*64,manifest="a"*64))
+        except UnsafeCanary:
+            substituted=True
+        need(substituted,"replacement owner signing key unexpectedly trusted")
+        rejected=remote(payload,"reject-old-publish",path,
+                        signed_authorization(operator_signer,
+                           action="publish",prior_generation=2,
+                           generation=1,checkpoint="1"*64,manifest="a"*64))
         need(rejected["rollback_denied"],"old publication was accepted")
         stale=challenge(1)
         old_response=remote(payload,"challenge",path,stale)
@@ -161,7 +236,9 @@ def physical():
         try:verify_receipt(old_response["receipt"].encode(),public_key=public,request=stale)
         except ValueError:denied=True
         need(denied and highwater==2,"durable higher generation failed to deny old")
-        revoked=remote(payload,"revoke",path)
+        revoked=remote(payload,"revoke",path,signed_authorization(
+            operator_signer,action="revoke",prior_generation=2,
+            generation=2,checkpoint="2"*64,manifest="b"*64))
         need(revoked["revoked"],"revocation not persisted")
         post=remote(payload,"challenge",path,challenge(2))
         need(json.loads(post["receipt"])["revoked"] is True,
@@ -169,6 +246,10 @@ def physical():
         result={"decision":"HOLD","witness_host":"Lenovo",
                 "separate_remote_processes":True,
                 "test_signer_key_temporarily_persisted_only_on_lenovo":True,
+                "owner_authorization_signing_key_only_on_x1_370":True,
+                "signed_enrollment_and_revocation_verified":True,
+                "lenovo_authorizer_public_key_pinned_at_enrollment":True,
+                "forged_replacement_authorizer_rejected":True,
                 "sqlite_generation_survived_process_restart":True,
                 "old_generation_denied":True,
                 "revocation_survived_process_restart":True,

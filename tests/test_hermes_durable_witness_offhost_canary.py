@@ -47,7 +47,7 @@ def test_remote_path_and_ownership_are_strictly_validated():
     assert 'meta.st_uid!=os.geteuid()' in code
     assert 'meta.st_mode&0o077' in code
     assert 'not stat.S_ISREG(meta.st_mode)' in code
-    assert 'directory=sys.argv[4]' in code
+    assert 'directory=sys.argv[5]' in code
     assert "os.geteuid()==1000" in Path(c.__file__).read_text()
 
 
@@ -83,7 +83,9 @@ def test_generation_2_accepted_then_generation_1_denied():
 
 def test_no_auto_enroll_from_worker_queries():
     code=c.REMOTE_CODE
-    assert code.count("db.publish(")==2
+    assert code.count("db.publish(")==0
+    assert code.count("db.apply_signed_grant(")==3
+    assert "signed_authorization" in Path(c.__file__).read_text()
     assert 'action=="provision"' in code
     assert 'action=="challenge"' in code
     assert 'db.respond(raw_request=request,signer=signer)' in code
@@ -92,7 +94,8 @@ def test_no_auto_enroll_from_worker_queries():
 def test_remote_signer_revocation_and_restart_proof():
     code=c.REMOTE_CODE
     assert 'elif action=="revoke"' in code
-    assert 'db.revoke(owner)' in code
+    assert 'db.revoke(owner)' not in code
+    assert 'db.apply_signed_grant(raw_grant=requested' in code
     source=Path(c.__file__).read_text()
     assert '"revocation_survived_process_restart":True' in source
     assert 'response["pid"]!=created["pid"]' in source
@@ -122,7 +125,8 @@ def test_mocked_remote_error_fails_closed(monkeypatch):
 
 def test_exact_pinned_ledger_blob_and_image():
     assert c.EXPECTED_HIGH=="ed8992eef765006cb6a12def4553b04d0129ecbe"
-    assert len(c.EXPECTED_LEDGER)==40
+    assert c.EXPECTED_LEDGER=="e923e307e536cbcc4ae0d92b7ed83678d2037c0e"
+    assert c.EXPECTED_GRANTS=="822daa9f5c742d275bd6b99d87372a73cad19838"
     assert len(c.EXPECTED_IMAGE)==71
     assert c.LEDGER.is_file() and c.HIGH.is_file()
 
@@ -130,3 +134,12 @@ def test_exact_pinned_ledger_blob_and_image():
 def test_preflight_explicitly_not_independent():
     assert "Shared SSH control" in c.__doc__
     assert "NEVER production custody" in c.__doc__
+
+
+def test_operator_signing_private_key_is_not_sent_to_lenovo():
+    source=Path(c.__file__).read_text()
+    assert 'operator_signer=Ed25519PrivateKey.generate()' in source
+    assert 'private.sign(canonical(payload)).hex()' in source
+    assert '"grant":base64.b64encode(canonical(signed))' in source
+    assert 'db.apply_signed_grant(' in c.REMOTE_CODE
+    assert 'Ed25519PrivateKey.from_private_bytes((path/"signer.key")' in c.REMOTE_CODE
