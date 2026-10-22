@@ -102,3 +102,12 @@ evidence for these new changes.
 
 Do **not** merge or enable this code in the production Hermes service on the
 strength of a synthetic test. **Issue #414 remains open and deployment HOLD.**
+
+## Follow-up qualification (October 22, 2026)
+
+The earlier direct-Python qualification remains true for its original
+source/test point. A later source-identical, restricted Docker Compose
+normal-entrypoint research canary is documented in
+[HERMES_SPLIT_ROOT_NORMAL_COMPOSE_20261022.md](HERMES_SPLIT_ROOT_NORMAL_COMPOSE_20261022.md).
+It has synthetic-only normal strict-executor restart acceptance, not
+production ingestion or owner-authorized runtime acceptance. HOLD remains.
