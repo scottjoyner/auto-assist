@@ -1499,6 +1499,12 @@ class Neo4jClient:
     ) -> dict[str, Any] | None:
         if status and status not in EXECUTABLE_TASK_STATUSES:
             raise ValueError(f"Unsupported task status: {status}")
+        # P0 #428: the pinned Hermes identity must never extend a lease
+        # without a matching claim and session, even for legacy attempt 0.
+        if agent_id == "hermes-local" and (
+            not str(claim_id or "").strip() or not str(session_id or "").strip()
+        ):
+            return None
         props = {
             "heartbeat_by": agent_id,
             "agent_session_id": session_id,
@@ -1508,12 +1514,25 @@ class Neo4jClient:
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
-                WHERE coalesce(t.execution_attempt, 0)=0
-                   OR (
-                     t.claimed_by=$agent_id
-                     AND ($claim_id IS NULL OR t.claim_id=$claim_id)
-                     AND t.status IN ['CLAIMED','RUNNING','PAUSING']
-                   )
+                WHERE (
+                    $agent_id='hermes-local'
+                    AND t.claimed_by=$agent_id
+                    AND t.claim_id=$claim_id
+                    AND t.agent_session_id=$session_id
+                    AND coalesce(t.execution_attempt, 0)>0
+                    AND coalesce(t.lease_expires_at_ts, 0)>timestamp()
+                    AND t.status IN ['CLAIMED','RUNNING','PAUSING']
+                ) OR (
+                    $agent_id<>'hermes-local'
+                    AND (
+                        coalesce(t.execution_attempt, 0)=0
+                        OR (
+                            t.claimed_by=$agent_id
+                            AND ($claim_id IS NULL OR t.claim_id=$claim_id)
+                            AND t.status IN ['CLAIMED','RUNNING','PAUSING']
+                        )
+                    )
+                )
                 SET t += $props,
                     t.status = CASE
                       WHEN t.status='PAUSING' THEN t.status
@@ -1531,6 +1550,7 @@ class Neo4jClient:
                     "task_id": task_id,
                     "agent_id": agent_id,
                     "claim_id": claim_id,
+                    "session_id": session_id,
                     "props": props,
                     "status": status,
                     "lease_seconds": lease_seconds,
@@ -1551,6 +1571,12 @@ class Neo4jClient:
     ) -> dict[str, Any] | None:
         if status not in TERMINAL_TASK_STATUSES:
             raise ValueError(f"Completion status must be one of: {sorted(TERMINAL_TASK_STATUSES)}")
+        # A claimless Hermes completion must not reach ANY mutation path,
+        # including the historical idempotent AgentRun replay update.
+        if agent_id == "hermes-local" and (
+            not str(claim_id or "").strip() or not str(session_id or "").strip()
+        ):
+            return None
         with self._session() as s:
             if idempotency_key:
                 prior = s.run(
@@ -1559,6 +1585,12 @@ class Neo4jClient:
                     {"task_id": task_id, "completion_id": idempotency_key},
                 ).single()
                 if prior:
+                    # A previous AgentRun is not proof of a CURRENT Hermes
+                    # claim. Never replay its terminal-status/result update.
+                    # This intentionally denies Hermes idempotent replays
+                    # until resource-side fenced readback is implemented.
+                    if agent_id == "hermes-local":
+                        return None
                     prior_task = dict(prior["t"])
                     prior_task["run_id"] = prior["run_id"]
                     prior_task["idempotent"] = True
@@ -1591,12 +1623,25 @@ class Neo4jClient:
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
-                WHERE coalesce(t.execution_attempt, 0)=0
-                   OR (
-                     t.claimed_by=$agent_id
-                     AND ($claim_id IS NULL OR t.claim_id=$claim_id)
-                     AND t.status IN ['CLAIMED','RUNNING']
-                   )
+                WHERE (
+                    $agent_id='hermes-local'
+                    AND t.claimed_by=$agent_id
+                    AND t.claim_id=$claim_id
+                    AND t.agent_session_id=$session_id
+                    AND coalesce(t.execution_attempt, 0)>0
+                    AND coalesce(t.lease_expires_at_ts, 0)>timestamp()
+                    AND t.status IN ['CLAIMED','RUNNING']
+                ) OR (
+                    $agent_id<>'hermes-local'
+                    AND (
+                        coalesce(t.execution_attempt, 0)=0
+                        OR (
+                            t.claimed_by=$agent_id
+                            AND ($claim_id IS NULL OR t.claim_id=$claim_id)
+                            AND t.status IN ['CLAIMED','RUNNING']
+                        )
+                    )
+                )
                 SET t.status=$status,
                     t.completed_by=$agent_id,
                     t.agent_session_id=coalesce($session_id, t.agent_session_id),
