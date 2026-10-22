@@ -33,6 +33,8 @@ def test_deployed_owner_flag_absent_means_hold():
     assert result["api_router_entrypoint_verified"] is True
     assert result["claim_routes_registered"] is True
     assert result["owner_binding_enforced"] is False
+    assert result["signed_owner_gateway_enabled"] is False
+    assert result["signed_gateway_must_be_qualified_before_cutover"] is True
     assert result["production_deployment_authorized"] is False
 
 
@@ -40,6 +42,7 @@ def test_owner_flag_qualified_without_exposing_credential_values():
     response=gate.inspect_metadata(sample(
         owner_flag="true",env=["OPENAI_API_KEY=synthetic_should_never_print"]),routes())
     assert response["owner_binding_enforced"] is True
+    assert response["signed_owner_gateway_enabled"] is False
     assert response["production_deployment_authorized"] is False
     assert response["credential_values_exposed"] is False
     assert "synthetic_should_never_print" not in str(response)
@@ -94,3 +97,18 @@ def test_default_is_inert_and_no_mutating_command_exists():
         'method="POST"',
     ):
         assert forbidden not in source
+
+
+
+def test_all_gateway_config_present_is_still_not_production_approval():
+    report=gate.inspect_metadata(sample(owner_flag="true",env=[
+        "ASSISTX_ENABLE_SIGNED_OWNER_GATEWAY=true",
+        "ASSISTX_OWNER_GATEWAY_VERIFY_KEY_FILE=/app/attestation/owner.pub",
+        "ASSISTX_OWNER_GATEWAY_NONCE_DB=/var/lib/assistx/owner-nonces.sqlite",
+    ]),routes())
+    assert report["signed_owner_gateway_enabled"]
+    assert report["signed_gateway_key_path_configured"]
+    assert report["signed_gateway_nonce_path_configured"]
+    assert report["signed_gateway_must_be_qualified_before_cutover"] is False
+    assert report["owner_trust_custody_independent"] is False
+    assert report["production_deployment_authorized"] is False

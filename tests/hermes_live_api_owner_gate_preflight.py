@@ -48,6 +48,9 @@ def inspect_metadata(metadata: dict, routes: set[str]) -> dict:
     app_is_expected=(type(cmd) is list and REQUIRED_APP in cmd
                      and "uvicorn" in cmd)
     owner_mode=(env.get("ASSISTX_REQUIRE_OWNER_BINDING") == "true")
+    signed_gateway=(env.get("ASSISTX_ENABLE_SIGNED_OWNER_GATEWAY") == "true")
+    signed_gateway_key=bool(env.get("ASSISTX_OWNER_GATEWAY_VERIFY_KEY_FILE"))
+    signed_gateway_nonce_db=bool(env.get("ASSISTX_OWNER_GATEWAY_NONCE_DB"))
     route_set=set(REQUIRED_ROUTES).issubset(routes)
     running=(state.get("Running") is True)
     release_authorized=False  # independently administered trust is separate
@@ -58,7 +61,13 @@ def inspect_metadata(metadata: dict, routes: set[str]) -> dict:
         "api_router_entrypoint_verified":app_is_expected,
         "claim_routes_registered":route_set,
         "owner_binding_enforced":owner_mode,
+        "signed_owner_gateway_enabled":signed_gateway,
+        "signed_gateway_key_path_configured":signed_gateway_key,
+        "signed_gateway_nonce_path_configured":signed_gateway_nonce_db,
         "owner_binding_must_be_enabled_before_cutover":not owner_mode,
+        "signed_gateway_must_be_qualified_before_cutover":not (
+            signed_gateway and owner_mode and signed_gateway_key
+            and signed_gateway_nonce_db),
         "owner_trust_custody_independent":False,
         "production_deployment_authorized":release_authorized,
         "task_mutations":0,
