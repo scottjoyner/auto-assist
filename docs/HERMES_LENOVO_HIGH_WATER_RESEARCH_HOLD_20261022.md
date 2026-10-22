@@ -31,3 +31,7 @@ This also does not qualify real protected corpus ingestion, multi-user ownership
 For a production no-go/approval review, require independent signer and ledger administration, owner-bound append-only generation history with protected revocations, a separately reviewed relay, a multi-host full image+corpus+checkpoint rollback test, signed build provenance, narrow RO input and isolated RW scratch mounts, and independently tested rollback/fencing. P0 #414 remains OPEN and PR #425 DRAFT.
 
 **Decision: HOLD. Do not treat this research signer as a production witness or restart Hermes.**
+
+## Durable process-restart research follow-up
+
+The disposable witness now also has a private SQLite ledger and test signer retained across separate Lenovo process invocations, with monotonic rejection and persistent revocation. Same-administrator whole-database rollback remains possible. See [HERMES_LENOVO_DURABLE_WITNESS_HOLD_20261022.md](HERMES_LENOVO_DURABLE_WITNESS_HOLD_20261022.md). Production HOLD unchanged.
