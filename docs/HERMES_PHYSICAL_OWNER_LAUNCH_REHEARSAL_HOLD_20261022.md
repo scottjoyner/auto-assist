@@ -27,3 +27,7 @@ All network calls and process launches were explicitly patched inside this isola
 This research candidate deliberately has no network connectivity and no real model dispatch. Its heartbeat is simulated and not the production API's live owner binding. An independently administered durable, rollback-resistant high-water authority and revocation/key custody remain unqualified. Production still exposes 16 legacy binds (9 RW), including protected storage ancestors and mutable code paths. Real owner-bound execution receipts, live multi-user test, revoke-during-execution and network-partition fencing, approved narrow mount migration, exact signed release build and rollback must be validated separately before deployment.
 
 **Keep PR #425 draft, issue #414 open, and production on HOLD.**
+
+## Additional revocation-at-handoff/output gate
+
+An additional physical candidate check now denies an instantly exited synthetic subprocess if the lease is revoked during Popen or while collecting its finished output. Both normal container starts require the new marker; output and session ID are suppressed after revocation. See [HERMES_LEASE_REVOCATION_RESULT_FENCE_HOLD_20261022.md](HERMES_LEASE_REVOCATION_RESULT_FENCE_HOLD_20261022.md). This still does not qualify live revocation or server-side receipts; HOLD remains.

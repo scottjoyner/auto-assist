@@ -141,3 +141,77 @@ def test_legacy_mode_unchanged(monkeypatch,tmp_path):
     monkeypatch.setattr(ext.subprocess,"Popen",
         lambda cmd,**kw:_ImmediateProcess(cmd,**kw))
     assert a.run_hermes("synthetic")["success"] is True
+
+
+def test_revocation_during_popen_handoff_denies_instant_exit(monkeypatch,tmp_path):
+    a,c,cl,key,path=setup(monkeypatch,tmp_path)
+    monkeypatch.setattr(ext.requests,"request",lambda *_a,**_kw:
+                        Mock(raise_for_status=lambda:None,json=lambda:{"ok":True}))
+    launched=[]
+    def race(command,**kwargs):
+        launched.append(True)
+        c._lease_lost.set()  # revoke before _active_process is registered
+        return _ImmediateProcess(command,**kwargs)
+    monkeypatch.setattr(ext.subprocess,"Popen",race)
+    result=a.run_hermes("revoke-during-spawn")
+    assert launched==[True]
+    assert result["success"] is False
+    assert result["error"]=="executor_lease_lost"
+    assert result["output"]==""
+    assert result["session_id"] is None
+    assert c._active_process is None
+
+
+def test_revocation_after_process_exit_before_stdout_rejected(monkeypatch,tmp_path):
+    a,c,cl,key,path=setup(monkeypatch,tmp_path)
+    monkeypatch.setattr(ext.requests,"request",lambda *_a,**_kw:
+                        Mock(raise_for_status=lambda:None,json=lambda:{"ok":True}))
+    class FinishesAndRevokes(_ImmediateProcess):
+        def communicate(self):
+            c._lease_lost.set()  # a completed process is not a valid receipt
+            return "Session ID: secret-inference\nprivate-result", ""
+    monkeypatch.setattr(ext.subprocess,"Popen",
+                        lambda cmd,**kw: FinishesAndRevokes(cmd,**kw))
+    result=a.run_hermes("revoke-during-output")
+    assert result["success"] is False
+    assert result["error"]=="executor_lease_lost"
+    assert result["output"]==""
+    assert result["session_id"] is None
+
+
+def test_revocation_while_process_is_running_is_fenced(monkeypatch,tmp_path):
+    a,c,cl,key,path=setup(monkeypatch,tmp_path)
+    monkeypatch.setattr(ext.requests,"request",lambda *_a,**_kw:
+                        Mock(raise_for_status=lambda:None,json=lambda:{"ok":True}))
+    events=[]
+    class Running:
+        pid=9999999
+        returncode=None
+        def __init__(self,command,**kwargs): events.append("spawn")
+        def poll(self): return self.returncode
+        def communicate(self): return "Session ID: unauthorized\nprivate", ""
+    def terminate(p,grace_seconds=3):
+        events.append("terminated")
+        p.returncode=-15
+    def lose_lease(timeout):
+        events.append("revoked")
+        c._lease_lost.set()
+        return True
+    monkeypatch.setattr(ext.subprocess,"Popen",Running)
+    monkeypatch.setattr(ext,"_terminate_process",terminate)
+    monkeypatch.setattr(c._lease_lost,"wait",lose_lease)
+    result=a.run_hermes("running-revocation")
+    assert events==["spawn","revoked","terminated"]
+    assert result["error"]=="executor_lease_lost"
+    assert result["output"]==""
+    assert result["session_id"] is None
+    assert c._active_process is None
+
+
+def test_no_authoritative_completion_after_revocation(monkeypatch,tmp_path):
+    a,c,cl,key,path=setup(monkeypatch,tmp_path)
+    c._lease_lost.set()
+    monkeypatch.setattr(ext.requests,"request",lambda *_a,**_kw:
+        (_ for _ in ()).throw(AssertionError("completion after lease revocation")))
+    c.complete_task("t1","s1","COMPLETED",summary="must-not-publish",claim_id="c1")
+    assert c.task_token==""

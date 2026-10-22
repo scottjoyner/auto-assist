@@ -87,6 +87,46 @@ def exercise_signed_owner_launch():
     assert failed["error"]=="owner_bound_launch_denied"
     assert fresh._lease_lost.is_set()
     print("HERMES_SYNTHETIC_SIGNED_OWNER_LAUNCH_PASS",flush=True)
+    # Test the handoff race and completion race in the REAL patched
+    # executor adapter. Neither test creates a model subprocess.
+    def ready_client():
+        runner=adapter.AssistXClient()
+        runner.task_token=fixture["token"]
+        runner.task_claims={k:v for k,v in claim.items() if k!="jti"}
+        runner._active_task_id=claim["task_id"]
+        runner._active_claim_id=claim["claim_id"]
+        runner._active_session_id="synthetic-session"
+        return runner
+    handoff=ready_client()
+    class InstantExit:
+        pid=9999999
+        returncode=0
+        def poll(self): return 0
+        def communicate(self): return ("Session ID: FORBIDDEN\\nSECRET", "")
+    def revoke_during_popen(*args,**kw):
+        handoff._lease_lost.set()
+        return InstantExit()
+    with patch("requests.request",side_effect=only_signed_heartbeat), patch.object(
+            subprocess,"Popen",side_effect=revoke_during_popen):
+        result=adapter.run_hermes("SYNTHETIC_REVOKE_AT_POPEN",
+                                  model="synthetic/model")
+    assert result["error"]=="executor_lease_lost"
+    assert result["output"]=="" and result["session_id"] is None
+    assert handoff._active_process is None
+
+    completing=ready_client()
+    class RevokeOnCommunicate(InstantExit):
+        def communicate(self):
+            completing._lease_lost.set()
+            return ("Session ID: FORBIDDEN\\nSECRET", "")
+    with patch("requests.request",side_effect=only_signed_heartbeat), patch.object(
+            subprocess,"Popen",side_effect=lambda *a,**kw:RevokeOnCommunicate()):
+        result=adapter.run_hermes("SYNTHETIC_REVOKE_DURING_OUTPUT",
+                                  model="synthetic/model")
+    assert result["error"]=="executor_lease_lost"
+    assert result["output"]=="" and result["session_id"] is None
+    assert completing._active_process is None
+    print("HERMES_SYNTHETIC_REVOKED_OUTPUT_FENCED_PASS",flush=True)
 
 def synthetic_dispatch():
     assert os.geteuid() == 1000 and adapter._strict_executor_auth_installed

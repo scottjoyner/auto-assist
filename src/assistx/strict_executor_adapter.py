@@ -412,7 +412,13 @@ def install_strict_executor_adapter(adapter: Any) -> None:
             }
         client._active_process = proc
         error = ""
-        while proc.poll() is None:
+        # A lease may be revoked during Popen itself, before the process
+        # becomes visible through _active_process. Fence that handoff even
+        # if the subprocess exits before its first poll.
+        if client._lease_lost.is_set():
+            error = "executor_lease_lost"
+            _terminate_process(proc)
+        while not error and proc.poll() is None:
             if client._lease_lost.wait(0.25):
                 error = "executor_lease_lost"
                 _terminate_process(proc)
@@ -423,6 +429,13 @@ def install_strict_executor_adapter(adapter: Any) -> None:
                 break
         stdout, stderr = proc.communicate()
         client._active_process = None
+        # Revocation can race the last poll/communicate of an already
+        # finished process. Never publish its output or success as valid
+        # after the lease was lost, even for exit code zero.
+        if client._lease_lost.is_set():
+            error = "executor_lease_lost"
+        if error == "executor_lease_lost":
+            stdout, stderr = "", ""
         elapsed = time.monotonic() - started
         session_id = None
         for line in (stdout or "").splitlines():

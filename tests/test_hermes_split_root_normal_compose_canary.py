@@ -147,11 +147,12 @@ def test_dry_run_reports_hold_and_cannot_call_docker(monkeypatch):
 
 
 def test_every_required_check_and_blocker_declared():
-    assert len(canary.CHECKS) == 13
+    assert len(canary.CHECKS) == 14
     assert "kernel_ro_input_rw_scratch_admission_verified" in canary.CHECKS
     assert "signed_corpus_mutation_denied_at_relaunch" in canary.CHECKS
     assert "older_signed_manifest_replay_denied" in canary.CHECKS
     assert "signed_owner_positive_negative_and_heartbeat_denied_in_image" in canary.CHECKS
+    assert "revocation_during_spawn_and_result_fenced_in_image" in canary.CHECKS
     assert "all_disposable_docker_objects_removed" in canary.CHECKS
     assert "production_hermes_running_unchanged" in canary.CHECKS
     assert "independent_signed_image_and_source_attestation_missing" in canary.BLOCKERS
