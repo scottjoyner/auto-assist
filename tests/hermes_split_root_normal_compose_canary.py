@@ -78,8 +78,12 @@ def read_only_source():
     # Source may be accompanied by this new test commit; the three actual
     # production modules MUST retain their exact reviewed PR #425 blobs.
     expected_blobs = {
+        # PR #430 merges the restricted reader from #424 with the
+        # signed split-root adapter from #425. Pin the merged exact blob.
         "src/assistx/agents/hermes_agent_adapter.py":
-            "ce3a96cee9656bc0818b5ee385aa9d0c44058a21",
+            "e31ef9d16d585cf20a9deea110a2fb399c618667",
+        "src/assistx/agents/hermes_knowledge_ro.py":
+            "20864badf42ce066287313730ba0c6cd0952659e",
         "src/assistx/swarm_memory.py":
             "9b073d1f8e31d98e08820d473523abbf5d716818",
          "src/assistx/knowledge_roots.py":
@@ -206,6 +210,7 @@ def run():
             (SOURCE/"strict_executor_adapter.py",ctx/"strict_executor_adapter.py"),
             (SOURCE/"hermes_launch_gate.py",ctx/"hermes_launch_gate.py"),
             (SOURCE/"agents/hermes_agent_adapter.py",ctx/"hermes_agent_adapter.py"),
+            (SOURCE/"agents/hermes_knowledge_ro.py",ctx/"hermes_knowledge_ro.py"),
             (ENTRY,ctx/"entrypoint.sh")):
             shutil.copyfile(a,b)
             b.chmod(0o644)
@@ -223,6 +228,7 @@ def run():
             "COPY checkpoint.json /app/attestation/checkpoint.json\n"
             "COPY trust.pub /app/attestation/trust.pub\n"
             "COPY hermes_agent_adapter.py /app/src/assistx/agents/hermes_agent_adapter.py\n"
+            "COPY hermes_knowledge_ro.py /app/src/assistx/agents/hermes_knowledge_ro.py\n"
             "COPY entrypoint.sh /entrypoint.sh\n"
             "RUN chmod 0755 /entrypoint.sh\n")
         (ctx/"Dockerfile").write_text(df)

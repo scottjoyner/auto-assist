@@ -1532,9 +1532,15 @@ def run_loop(once: bool = False) -> None:
     # A separately mounted input may NEVER alias a writable workspace.
     # Fail before fleet background startup, polling, or any task claim.
     if "HERMES_KNOWLEDGE_READ_ROOT" in os.environ:
+        # Both reviewed synthetic profiles keep the registry under the
+        # private /workspace bind; neither may point at the read-only corpus.
+        allowed_registry_paths = {
+            "/workspace/registry/model-profiles.json",
+            "/workspace/knowledge/eval.json",
+        }
         if (os.environ["HERMES_KNOWLEDGE_READ_ROOT"] != "/research/knowledge"
                 or KNOWLEDGE_ROOT != "/workspace/knowledge"
-                or EVAL_PATH != "/workspace/registry/model-profiles.json"):
+                or EVAL_PATH not in allowed_registry_paths):
             raise ReadScopeDenied("unsafe_split_knowledge_runtime")
         validate_separate_roots("/research/knowledge", KNOWLEDGE_ROOT)
     logger.info(
