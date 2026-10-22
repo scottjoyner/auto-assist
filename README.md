@@ -2,8 +2,8 @@
 
 <!-- repo-entrypoint-guide:start -->
 > **Start with the control-plane contract:** Read [Reconciliation status](#reconciliation-status), [Live migration](#live-migration-while-the-old-stack-is-running), and [Documentation](#documentation) before changing runtime authority. The README describes architecture and development workflows, not a live production readiness attestation.
-> >
-> > **Deployment safety:** Require independently verified physical runtime identity, admission/fencing, revocation, and recovery evidence before enabling live dispatch. Keep exploratory or dry-run validation separate from production promotion.
+>
+> **Deployment safety:** Require independently verified physical runtime identity, admission/fencing, revocation, and recovery evidence before enabling live dispatch. Keep exploratory or dry-run validation separate from production promotion.
 <!-- repo-entrypoint-guide:end -->
 
 
