@@ -1,5 +1,12 @@
 # AssistX
 
+<!-- repo-entrypoint-guide:start -->
+> **Start with the control-plane contract:** Read [Reconciliation status](#reconciliation-status), [Live migration](#live-migration-while-the-old-stack-is-running), and [Documentation](#documentation) before changing runtime authority. The README describes architecture and development workflows, not a live production readiness attestation.
+> >
+> > **Deployment safety:** Require independently verified physical runtime identity, admission/fencing, revocation, and recovery evidence before enabling live dispatch. Keep exploratory or dry-run validation separate from production promotion.
+<!-- repo-entrypoint-guide:end -->
+
+
 AssistX is the graph-backed control plane for the offline Hermes fleet. It captures work, evaluates node and model capability, allocates tasks, fences execution, coordinates recovery and migration, and turns bounded code changes into signed, operator-reviewed improvement candidates.
 
 Neo4j is the durable source of truth. Direct Hermes workers are the primary execution integration; OpenCode is a lower-priority explicit executor. The offline `auto-router` may be deployed as the OpenAI-compatible gateway, but it does not own assignment, live inventory, model loading, or worker lifecycle. `auto-assign` is retired in the reconciled deployment.
