@@ -8,7 +8,11 @@ IMAGE = "sha256:22191871cbf346ebe27c1b1cf433901f4b4ff479d80d2047917fe3966d78e307
 REQUIRED = {"/app/src", "/root/knowledge", "/media/scott/NAS5",
             "/media/scott/SSD_4TB", "/root/.ssh/id_hermes",
             "/root/.ssh/config", "/root/.ssh/id_hermes.pub",
-            "/home/scott/git/auto-assist", "/home/scott/git/auto-router"}
+            "/home/scott/git/auto-assist", "/home/scott/git/auto-router",
+            "/app/hermes-home", "/root/.hermes/mcp",
+            "/home/scott/git/auto-assign", "/home/scott/git/hermes-agent",
+            "/home/scott/git/lms", "/usr/local/bin/opencode",
+            "/media/scott/SSD_4TB/hermes-home/.hermes/SOUL.md"}
 BLOCKERS = ["live_legacy_mounts_not_replaced", "approved_signed_ro_corpus_missing",
             "approved_isolated_rw_scratch_missing", "independent_witness_custody_missing",
             "owner_bound_receipts_fencing_and_revocation_missing",
@@ -48,7 +52,7 @@ def plan_from_inspect(mounts, image, running):
         targets.add(dst)
         removal.append({"target": dst, "writable": m["RW"],
                         "action": classify(dst)})
-    need(REQUIRED.issubset(targets), "sensitive legacy mount changed")
+    need(targets == REQUIRED, "exact legacy mount inventory changed")
     need(not targets.intersection({"/research/knowledge", "/workspace"}),
          "candidate mount overlaps legacy")
     return {

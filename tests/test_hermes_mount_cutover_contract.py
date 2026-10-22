@@ -102,3 +102,9 @@ def test_no_mutating_docker_command_exists_in_source():
                       '"docker", "restart"', '"docker", "exec"',
                       '"docker", "rm"', '"docker", "compose"'):
         assert forbidden not in s
+
+def test_substituted_unreviewed_legacy_mount_denied():
+    rows=inventory()
+    rows[-1]["Destination"]="/var/run/docker.sock"
+    with pytest.raises(guard.CutoverDenied):
+        plan(rows)
