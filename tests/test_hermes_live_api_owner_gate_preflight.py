@@ -112,3 +112,22 @@ def test_all_gateway_config_present_is_still_not_production_approval():
     assert report["signed_gateway_must_be_qualified_before_cutover"] is False
     assert report["owner_trust_custody_independent"] is False
     assert report["production_deployment_authorized"] is False
+
+
+def test_legacy_trusted_header_remains_a_release_blocker_even_on_loopback():
+    m=sample(env=["TRUSTED_AUTH_HEADER=untrusted-config-test-value"])
+    m["NetworkSettings"]={"Ports":{"8000/tcp":[{"HostIp":"127.0.0.1","HostPort":"8000"}]}}
+    result=gate.inspect_metadata(m,routes())
+    assert result["legacy_trusted_header_configured"] is True
+    assert result["legacy_header_provenance_requires_review"] is True
+    assert result["api_container_published_only_on_loopback"] is True
+    assert "untrusted-config-test-value" not in str(result)
+    assert result["decision"] == "HOLD"
+
+
+def test_nonloopback_publish_preflight_not_silently_treated_as_local():
+    m=sample(env=["TRUSTED_AUTH_HEADER=some-header"])
+    m["NetworkSettings"]={"Ports":{"8000/tcp":[{"HostIp":"0.0.0.0","HostPort":"8000"}]}}
+    result=gate.inspect_metadata(m,routes())
+    assert result["api_container_published_only_on_loopback"] is False
+    assert result["production_deployment_authorized"] is False

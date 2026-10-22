@@ -47,6 +47,14 @@ def inspect_metadata(metadata: dict, routes: set[str]) -> dict:
         env[key]=value
     app_is_expected=(type(cmd) is list and REQUIRED_APP in cmd
                      and "uvicorn" in cmd)
+    # Presence only. Never include the actual header name or credential values.
+    legacy_trusted_header=bool(env.get("TRUSTED_AUTH_HEADER"))
+    published=(metadata.get("NetworkSettings") or {}).get("Ports")
+    local_only=None
+    if type(published) is dict:
+        entries=[bind for group in published.values() for bind in (group or [])]
+        local_only=all(type(bind) is dict and bind.get("HostIp") in
+                       {"127.0.0.1", "::1"} for bind in entries)
     owner_mode=(env.get("ASSISTX_REQUIRE_OWNER_BINDING") == "true")
     signed_gateway=(env.get("ASSISTX_ENABLE_SIGNED_OWNER_GATEWAY") == "true")
     signed_gateway_key=bool(env.get("ASSISTX_OWNER_GATEWAY_VERIFY_KEY_FILE"))
@@ -61,6 +69,9 @@ def inspect_metadata(metadata: dict, routes: set[str]) -> dict:
         "api_router_entrypoint_verified":app_is_expected,
         "claim_routes_registered":route_set,
         "owner_binding_enforced":owner_mode,
+        "legacy_trusted_header_configured":legacy_trusted_header,
+        "legacy_header_provenance_requires_review":legacy_trusted_header,
+        "api_container_published_only_on_loopback":local_only,
         "signed_owner_gateway_enabled":signed_gateway,
         "signed_gateway_key_path_configured":signed_gateway_key,
         "signed_gateway_nonce_path_configured":signed_gateway_nonce_db,
