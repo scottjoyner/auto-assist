@@ -14,6 +14,9 @@ from typing import Iterator
 
 READ_ENV = "HERMES_KNOWLEDGE_READ_ROOT"
 WRITE_ENV = "HERMES_KNOWLEDGE_WRITE_ROOT"
+# Opt-in strict startup contract for restricted container builds.
+MOUNT_GUARD_ENV = "HERMES_REQUIRE_MOUNT_ISOLATION"
+WRITE_MOUNT_ENV = "HERMES_KNOWLEDGE_WRITE_MOUNT"
 
 
 def _strict_path(raw: str, name: str) -> str:
@@ -29,6 +32,71 @@ def _strict_path(raw: str, name: str) -> str:
     return os.path.realpath(raw)
 
 
+def _mount_records(raw: str) -> dict[str, tuple[int, bool]]:
+    """Parse kernel mountinfo only; reject malformed/ambiguous mount evidence.
+
+    Each exact mountpoint maps to (mount-id, is-readonly). This is a
+    containment check, NOT independent provenance of its backing source.
+    """
+    records: dict[str, tuple[int, bool]] = {}
+    if not raw or len(raw) > 1_000_000:
+        raise ValueError("missing or unbounded kernel mount evidence")
+    for line in raw.splitlines():
+        before, sep, after = line.partition(" - ")
+        left = before.split()
+        right = after.split()
+        if not sep or len(left) < 6 or len(right) < 3:
+            raise ValueError("malformed kernel mountinfo")
+        mount_id, mountpoint, opts = left[0], left[4], left[5]
+        if (not mount_id.isdecimal() or not mountpoint.startswith("/")
+                or "\\" in mountpoint or not opts
+                or not any(x in opts.split(",") for x in ("ro", "rw"))):
+            raise ValueError("ambiguous kernel mountinfo record")
+        if mountpoint in records:
+            raise ValueError("duplicate visible mountpoint")
+        flags = opts.split(",")
+        if ("ro" in flags) == ("rw" in flags):
+            raise ValueError("ambiguous mount access")
+        records[mountpoint] = (int(mount_id), "ro" in flags)
+    return records
+
+
+def verify_mount_admission(
+    read_root: str, write_root: str, *, write_mount: str,
+    evidence: str | None = None,
+) -> None:
+    """Require exact RO source bind and distinct RW workspace mount.
+
+    Enabled only by HERMES_REQUIRE_MOUNT_ISOLATION=true. Cannot attest
+    the host-side source, its owner, or a separate administrative signer.
+    """
+    source = _strict_path(read_root, READ_ENV)
+    output = _strict_path(write_root, WRITE_ENV)
+    mount = _strict_path(write_mount, WRITE_MOUNT_ENV)
+    if (source in ("/", "/root", "/home", "/media", "/mnt")
+            or mount in ("/", "/root", "/home", "/media", "/mnt")
+            or source == mount or _within(source, mount)
+            or _within(mount, source) or not _within(mount, output)
+            or mount == output):
+        raise ValueError("knowledge mount boundaries overlap or are unsafe")
+    if not os.path.isdir(source) or not os.path.isdir(mount):
+        raise ValueError("required corpus or scratch mount missing")
+    if evidence is None:
+        with open("/proc/self/mountinfo", "r", encoding="utf-8") as fh:
+            evidence = fh.read(1_000_001)
+    records = _mount_records(evidence)
+    ro = records.get(source)
+    rw = records.get(mount)
+    if ro is None or rw is None or not ro[1] or rw[1] or ro[0] == rw[0]:
+        raise ValueError("kernel does not prove separate RO/RW mount boundaries")
+    # Any nested mount under the source can undermine its RO guarantee.
+    if any(_within(source, name) and name != source for name in records):
+        raise ValueError("nested knowledge input mount not approved")
+    # Likewise no unreviewed nested scratch mounts, even if read-only.
+    if any(_within(mount, name) and name != mount for name in records):
+        raise ValueError("nested scratch mount not approved")
+
+
 def _within(parent: str, child: str) -> bool:
     return os.path.commonpath((parent, child)) == parent
 
@@ -39,6 +107,8 @@ def resolve_knowledge_roots(legacy: str, eval_path: str | None = None) -> tuple[
     if bool(read) != bool(write):
         raise ValueError("both Hermes knowledge split roots are required")
     if not read:
+        if os.getenv(MOUNT_GUARD_ENV, "") not in ("", "false"):
+            raise ValueError("mount isolation requires explicit split roots")
         return legacy, legacy, False
     ro = _strict_path(read, READ_ENV)
     rw = _strict_path(write, WRITE_ENV)
@@ -48,6 +118,12 @@ def resolve_knowledge_roots(legacy: str, eval_path: str | None = None) -> tuple[
         evaluation = _strict_path(eval_path, "HERMES_EVAL_PATH")
         if not _within(rw, evaluation) or evaluation == rw:
             raise ValueError("Hermes eval state must live under the write root")
+    strict = os.getenv(MOUNT_GUARD_ENV, "")
+    if strict not in ("", "false", "true"):
+        raise ValueError("invalid Hermes mount isolation mode")
+    if strict == "true":
+        verify_mount_admission(ro, rw,
+            write_mount=os.environ.get(WRITE_MOUNT_ENV, ""))
     return ro, rw, True
 
 

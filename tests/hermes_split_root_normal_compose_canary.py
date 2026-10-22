@@ -34,6 +34,7 @@ CHECKS = (
     "exact_published_source_and_entrypoint",
     "networkless_offline_overlay_build",
     "restricted_compose_render_verified",
+    "kernel_ro_input_rw_scratch_admission_verified",
     "effective_container_mount_and_security_verified",
     "normal_entrypoint_strict_executor_twice",
     "actual_patched_selftask_read_write_restart",
@@ -78,7 +79,7 @@ def read_only_source():
         "src/assistx/swarm_memory.py":
             "054d5df4d06205a43b6330dab6a5ea747344ecae",
         "src/assistx/knowledge_roots.py":
-            "a01af3135aecf542004ab695e15dd7a18ac998b9",
+            "feb52ca8ae1aa9404333a9125ae741fc1670a1e3",
     }
     for path, exact_blob in expected_blobs.items():
         observed = cmd(["git", "-C", str(ROOT), "hash-object",
@@ -123,6 +124,8 @@ def restricted_render(doc, image, corpus, scratch):
         "HERMES_SELFTASK_BULK_MODELS":"synthetic/model",
         "HERMES_KNOWLEDGE_READ_ROOT":"/research/knowledge",
         "HERMES_KNOWLEDGE_WRITE_ROOT":"/workspace/knowledge",
+        "HERMES_REQUIRE_MOUNT_ISOLATION":"true",
+        "HERMES_KNOWLEDGE_WRITE_MOUNT":"/workspace",
         "HERMES_KNOWLEDGE_ROOT":"/workspace/knowledge",
         "HERMES_EVAL_PATH":"/workspace/knowledge/eval.json",
         "PYTHONDONTWRITEBYTECODE":"1",
@@ -249,6 +252,7 @@ def run():
                      f"normal strict executor restart stage {count} failed: "+
                       (start.stdout+start.stderr)[-850:])
             checks["normal_entrypoint_strict_executor_twice"]=True
+            checks["kernel_ro_input_rw_scratch_admission_verified"]=True
             state=json.loads((work/"stage.json").read_text())
             reg=json.loads((work/"knowledge"/"eval.json").read_text())
             need(state=={"stage":2,"model_calls":0,"provider_calls":0} and

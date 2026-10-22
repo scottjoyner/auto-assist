@@ -32,6 +32,8 @@ def _render():
             "HERMES_SELFTASK_BULK_MODELS": "synthetic/model",
             "HERMES_KNOWLEDGE_READ_ROOT": "/research/knowledge",
             "HERMES_KNOWLEDGE_WRITE_ROOT": "/workspace/knowledge",
+            "HERMES_REQUIRE_MOUNT_ISOLATION": "true",
+            "HERMES_KNOWLEDGE_WRITE_MOUNT": "/workspace",
             "HERMES_KNOWLEDGE_ROOT": "/workspace/knowledge",
             "HERMES_EVAL_PATH": "/workspace/knowledge/eval.json",
             "PYTHONDONTWRITEBYTECODE": "1",
@@ -137,7 +139,8 @@ def test_dry_run_reports_hold_and_cannot_call_docker(monkeypatch):
 
 
 def test_every_required_check_and_blocker_declared():
-    assert len(canary.CHECKS) == 9
+    assert len(canary.CHECKS) == 10
+    assert "kernel_ro_input_rw_scratch_admission_verified" in canary.CHECKS
     assert "all_disposable_docker_objects_removed" in canary.CHECKS
     assert "production_hermes_running_unchanged" in canary.CHECKS
     assert "independent_signed_image_and_source_attestation_missing" in canary.BLOCKERS

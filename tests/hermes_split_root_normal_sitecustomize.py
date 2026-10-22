@@ -31,6 +31,9 @@ def forbidden_child(*args, **kwargs):
 
 def synthetic_dispatch():
     assert os.geteuid() == 1000 and adapter._strict_executor_auth_installed
+    assert adapter.KNOWLEDGE_SPLIT_ENABLED
+    assert os.environ["HERMES_REQUIRE_MOUNT_ISOLATION"] == "true"
+    assert os.environ["HERMES_KNOWLEDGE_WRITE_MOUNT"] == "/workspace"
     assert pathlib.Path("/workspace/hermes-home/config.yaml").is_file()
     assert pathlib.Path("/workspace/.hermes/config.yaml").is_symlink()
     with patch("requests.request", side_effect=fake_http),          patch.object(subprocess, "Popen", side_effect=forbidden_child),          patch.object(adapter, "fleet", None),          patch.object(adapter, "swarm_memory", None),          patch.object(adapter, "SELFTASK_BULK_MODELS", ["synthetic/model"]),          patch.object(adapter, "HERMES_DELEGATE_OPENCODE_TIERS", []):

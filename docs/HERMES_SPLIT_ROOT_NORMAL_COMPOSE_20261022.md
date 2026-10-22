@@ -85,3 +85,7 @@ These commands are not production deployment instructions.
 
 **Decision: HOLD.** Do not merge, restart Hermes, or replace mounts from a
 synthetic qualification alone.
+
+## Strict kernel mount admission follow-up
+
+A newer opt-in guard now verifies exact RO corpus and distinct RW scratch mountpoints from kernel mountinfo at adapter startup, before any synthetic self-task execution. The new proof and limitations are in [HERMES_KERNEL_MOUNT_ADMISSION_HOLD_20261022.md](HERMES_KERNEL_MOUNT_ADMISSION_HOLD_20261022.md). This does not remove independent source custody or grant a production release.
