@@ -322,6 +322,37 @@ def install_strict_executor_adapter(adapter: Any) -> None:
                 "elapsed": 0.0,
             }
 
+        # Optional production-candidate security gate: verify the signed
+        # task JWT, canonical human owner, exact active lease/claim identity,
+        # projection generation and allowed model BEFORE launching a child.
+        # Also demand a fresh server-validated heartbeat on every invocation.
+        # Default remains disabled for the unchanged production Hermes.
+        launch_flag = os.getenv("HERMES_REQUIRE_OWNER_BOUND_LAUNCH", "")
+        if launch_flag not in ("", "false", "true"):
+            return {
+                "success": False, "error": "owner_bound_launch_invalid_mode",
+                "output": "", "session_id": None, "elapsed": 0.0,
+            }
+        if launch_flag == "true":
+            from .hermes_launch_gate import LaunchDenied, verify_owner_bound_launch
+            requested_model = model or getattr(adapter, "HERMES_MODEL", None)
+            try:
+                verify_owner_bound_launch(
+                    client, agent_id=adapter.AGENT_ID, model=requested_model)
+                heartbeat_once(client)
+                if client._lease_lost.is_set():
+                    raise LaunchDenied("lease withdrawn during pre-launch heartbeat")
+                # Re-check signatures after the request, before spawn.
+                verify_owner_bound_launch(
+                    client, agent_id=adapter.AGENT_ID, model=requested_model)
+            except (LaunchDenied, requests.RequestException, RuntimeError) as exc:
+                mark_lease_lost(client, "owner_bound_launch_preflight_failed")
+                logger.error("signed owner-bound Hermes launch denied (%s)", type(exc).__name__)
+                return {
+                    "success": False, "error": "owner_bound_launch_denied",
+                    "output": "", "session_id": None, "elapsed": 0.0,
+                }
+
         effective_timeout = int(timeout or getattr(adapter, "HERMES_TIMEOUT", 300))
         cmd = [
             adapter.HERMES_BIN,

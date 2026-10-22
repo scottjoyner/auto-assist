@@ -30,9 +30,18 @@ except ImportError:  # pragma: no cover
     requests = None  # type: ignore
 
 KNOWLEDGE_ROOT = os.getenv("HERMES_KNOWLEDGE_ROOT", "/root/knowledge")
+from assistx.knowledge_roots import (
+    resolve_knowledge_roots, safe_knowledge_files, safe_read_text, checked_write_path,
+)
+KNOWLEDGE_READ_ROOT, KNOWLEDGE_WRITE_ROOT, KNOWLEDGE_SPLIT_ENABLED = (
+    resolve_knowledge_roots(
+        KNOWLEDGE_ROOT,
+        os.getenv("HERMES_EVAL_PATH", "/root/knowledge/model-profiles.json"),
+    )
+)
 EMBED_MODEL = os.getenv("HERMES_EMBED_MODEL", "text-embedding-nomic-embed-text-v1.5")
 ROUTER_EMBED_URL = os.getenv("HERMES_ROUTER_EMBED_URL", "http://host.docker.internal:8088/v1/embeddings")
-MEMORY_DIR = os.path.join(KNOWLEDGE_ROOT, ".memory")
+MEMORY_DIR = os.path.join(KNOWLEDGE_WRITE_ROOT, ".memory")
 MEMORY_INDEX_PATH = os.path.join(MEMORY_DIR, "index.json")
 
 _TEMPLATE_FILES = {"Home.md", "README.md", "VAULT_INDEX.md", "ENV.md"}
@@ -123,7 +132,11 @@ class MemoryIndex:
         self.load()
 
     def load(self) -> None:
+        if os.getenv("HERMES_REQUIRE_SIGNED_CORPUS", "") == "true":
+            raise ValueError("signed corpus mode forbids unbound persisted semantic index")
         try:
+            if KNOWLEDGE_SPLIT_ENABLED:
+                checked_write_path(KNOWLEDGE_WRITE_ROOT, self.path)
             with open(self.path, "r", errors="ignore") as fh:
                 d = json.load(fh)
             self.items = d.get("items", [])
@@ -132,8 +145,17 @@ class MemoryIndex:
             self.items, self.built_at = [], 0.0
 
     def save(self) -> None:
+        if KNOWLEDGE_SPLIT_ENABLED:
+            checked_write_path(KNOWLEDGE_WRITE_ROOT, self.path)
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        with open(self.path, "w") as fh:
+        if KNOWLEDGE_SPLIT_ENABLED:
+            checked_write_path(KNOWLEDGE_WRITE_ROOT, self.path)
+            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC |
+                         getattr(os, "O_NOFOLLOW", 0), 0o600)
+            stream = os.fdopen(fd, "w")
+        else:
+            stream = open(self.path, "w")
+        with stream as fh:
             json.dump({"built_at": self.built_at, "items": self.items}, fh)
 
     def add(self, text: str, meta: Dict[str, Any]) -> bool:
@@ -152,6 +174,8 @@ class MemoryIndex:
         return [(t, m) for _, t, m in scored[:k]]
 
     def index_vault(self, max_chars: int = 900) -> int:
+        if os.getenv("HERMES_REQUIRE_SIGNED_CORPUS", "") == "true":
+            raise ValueError("signed corpus mode forbids unbound semantic index builds")
         # Accumulate into the existing index rather than wiping it, so an
         # interrupted/re-run build keeps whatever was already embedded.
         global _embed_broken_until
@@ -159,25 +183,14 @@ class MemoryIndex:
         count = 0
         self.load()  # pick up anything a prior (partial) run already persisted
         existing_sources = {it.get("meta", {}).get("source") for it in self.items}
-        if not os.path.isdir(KNOWLEDGE_ROOT):
+        if not os.path.isdir(KNOWLEDGE_READ_ROOT):
             return 0
-        files: List[str] = []
-        for name in os.listdir(KNOWLEDGE_ROOT):
-            fp = os.path.join(KNOWLEDGE_ROOT, name)
-            if os.path.isfile(fp) and name.endswith((".md", ".txt")) and name not in _TEMPLATE_FILES:
-                files.append(fp)
-            elif os.path.isdir(fp):
-                for fn in os.listdir(fp):
-                    sub = os.path.join(fp, fn)
-                    if os.path.isfile(sub) and fn.endswith((".md", ".txt")):
-                        files.append(sub)
-        for fp in files:
+        for fp in safe_knowledge_files(KNOWLEDGE_READ_ROOT, _TEMPLATE_FILES):
             try:
-                with open(fp, "r", errors="ignore") as fh:
-                    text = fh.read()
-            except OSError:
+                text = safe_read_text(fp, 200000)
+            except (OSError, ValueError):
                 continue
-            rel = os.path.relpath(fp, KNOWLEDGE_ROOT)
+            rel = os.path.relpath(fp, KNOWLEDGE_READ_ROOT)
             if rel in existing_sources:
                 continue  # already indexed; skip to avoid re-embedding
             for chunk in _chunk_text(text, max_chars):
@@ -198,6 +211,8 @@ def vault_semantic_context(query: str, k: int = 5, fallback: str = "") -> str:
     build is slow and must run as a scheduled/background job). If the index is
     empty or the embed model is down, callers fall back to the snapshot.
     """
+    if os.getenv("HERMES_REQUIRE_SIGNED_CORPUS", "") == "true":
+        raise ValueError("signed corpus mode forbids stale semantic index reads")
     if time.time() < _embed_broken_until:
         return fallback
     idx = MemoryIndex()
