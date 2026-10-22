@@ -26,3 +26,11 @@ The disposable pinned exact-image research Compose test now includes a separate 
 A fake process and local Event injection are not a live owner revocation, authenticated execution receipt, independent fencing witness or multi-user production API test. Production still has 16 bind mounts, nine writable, and contains protected SSD, mutable source, NAS-labelled local fallback and SSH-related mounts. Approved RO corpus and isolated RW scratch custody, independently administered monotonic high-water and key roots, production image provenance, owner-bound live-task receipts, partition/revocation acceptance and independently approved rollback remain missing.
 
 **Do not merge or deploy PR #425 or close issue #414 based on this synthetic rehearsal.**
+
+## Actual OS process-group revocation follow-up
+
+The disposable networkless container now launches a harmless two-process Python group from the real patched executor and checks that synthetic lease revocation terminates both operating-system processes. The signed-token and fake-heartbeat evidence remains separate. **15/15 physical checks PASS**; see [HERMES_PHYSICAL_PROCESS_GROUP_FENCE_HOLD_20261022.md](HERMES_PHYSICAL_PROCESS_GROUP_FENCE_HOLD_20261022.md). Production HOLD unchanged.
+
+## SIGTERM-resistant descendant qualification
+
+The real child-process canary now waits for a separate descendant to **install SIGTERM ignore**, and the executor termination helper sends group-wide SIGKILL after the parent exits. The networkless physical test proves both parent and resistant descendant are no longer running. See [HERMES_PHYSICAL_PROCESS_GROUP_FENCE_HOLD_20261022.md](HERMES_PHYSICAL_PROCESS_GROUP_FENCE_HOLD_20261022.md). Real live tasks and independent custody remain HOLD.

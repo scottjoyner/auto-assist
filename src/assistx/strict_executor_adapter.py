@@ -21,24 +21,46 @@ def _truthy(name: str, default: str = "false") -> bool:
 
 
 def _terminate_process(proc: subprocess.Popen[str], grace_seconds: float = 3.0) -> None:
-    if proc.poll() is not None:
-        return
-    try:
-        if os.name == "posix":
-            os.killpg(proc.pid, signal.SIGTERM)
-        else:  # pragma: no cover - production executor is Linux
-            proc.terminate()
-        proc.wait(timeout=max(0.1, grace_seconds))
-        return
-    except (ProcessLookupError, subprocess.TimeoutExpired):
-        pass
-    try:
-        if os.name == "posix":
-            os.killpg(proc.pid, signal.SIGKILL)
-        else:  # pragma: no cover
+    """Fence the entire start_new_session process group, including orphans.
+
+    The group ID is the PID of the spawned session leader. Terminating and
+    reaping only that leader is not sufficient: a child ignoring SIGTERM can
+    survive and keep inherited pipes open. Use SIGKILL on the original group
+    even if its leader has already exited. All strict-executor children are
+    spawned with start_new_session=True.
+    """
+    if os.name != "posix":  # pragma: no cover - Linux production runtime
+        if proc.poll() is not None:
+            return
+        proc.terminate()
+        try:
+            proc.wait(timeout=max(0.1, grace_seconds))
+        except subprocess.TimeoutExpired:
             proc.kill()
+        return
+    pgid = proc.pid
+    if type(pgid) is not int or pgid <= 1:
+        raise RuntimeError("cannot fence invalid executor process group")
+    try:
+        os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
         pass
+    try:
+        if proc.poll() is None:
+            proc.wait(timeout=max(0.1, grace_seconds))
+    except subprocess.TimeoutExpired:
+        pass
+    # After the leader finishes, descendants may remain in its process
+    # group. Do not mistake proc.returncode for proof the group is gone.
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            logger.error("Hermes executor child did not exit after SIGKILL")
 
 
 def install_strict_executor_adapter(adapter: Any) -> None:

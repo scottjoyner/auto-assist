@@ -7,9 +7,14 @@ import os
 import pathlib
 import runpy
 import subprocess
+import sys
+import time
+import threading
+import signal
 from unittest.mock import patch
 from assistx.agents import hermes_agent_adapter as adapter
 
+REAL_POPEN = subprocess.Popen
 ORIGINAL = adapter.run_loop
 COUNT = [0]
 
@@ -128,6 +133,114 @@ def exercise_signed_owner_launch():
     assert completing._active_process is None
     print("HERMES_SYNTHETIC_REVOKED_OUTPUT_FENCED_PASS",flush=True)
 
+def exercise_real_process_group_fence():
+    """Actual OS SIGTERM fence of two harmless Python processes inside the
+    disposable networkless container. No Hermes binary, task or model is run.
+    """
+    import json
+    marker=pathlib.Path("/workspace/synthetic-process-group-termination.json")
+    ready_marker=pathlib.Path("/workspace/synthetic-child-installed-sigignore")
+    marker.unlink(missing_ok=True)
+    ready_marker.unlink(missing_ok=True)
+    fixture=json.loads(pathlib.Path("/workspace/owner_launch_fixture.json").read_text())
+    claims=fixture["claims"]
+    client=adapter.AssistXClient()
+    client.task_token=fixture["token"]
+    client.task_claims={k:v for k,v in claims.items() if k!="jti"}
+    client._active_task_id=claims["task_id"]
+    client._active_claim_id=claims["claim_id"]
+    client._active_session_id="synthetic-physical-process-group"
+    child_pid=[]
+    started=threading.Event()
+    exited=threading.Event()
+    program = """
+import json,os,subprocess,sys,time,pathlib
+child_script = ("import signal,time,pathlib,sys;"
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+                "pathlib.Path(sys.argv[1]).write_text('READY');"
+                "time.sleep(30)")
+kid=subprocess.Popen([sys.executable,'-S','-c',child_script,sys.argv[2]],
+                     stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL)
+deadline=time.monotonic()+5
+while time.monotonic()<deadline and not pathlib.Path(sys.argv[2]).is_file():
+    time.sleep(0.02)
+if not pathlib.Path(sys.argv[2]).is_file():
+    raise RuntimeError('synthetic child did not arm SIGTERM ignore')
+pathlib.Path(sys.argv[1]).write_text(
+    json.dumps({'parent':os.getpid(),'child':kid.pid}))
+print('SYNTHETIC_SECRET_OUTPUT_MUST_NEVER_RETURN',flush=True)
+time.sleep(30)
+"""
+    def synthetic_popen(cmd,**kwargs):
+        assert cmd[0]==adapter.HERMES_BIN and "SYNTHETIC_PROCESS_GROUP_ONLY" in cmd
+        assert kwargs.get("start_new_session") is True
+        # Keep test-only signed JWT out of even the synthetic Python children.
+        env=dict(kwargs["env"])
+        for key in ("HERMES_EXECUTOR_TOKEN","OPENAI_API_KEY"):
+            env.pop(key,None)
+        env["PYTHONPATH"]=""
+        env["OPENBLAS_NUM_THREADS"]="1"
+        env["OMP_NUM_THREADS"]="1"
+        # -S disables sitecustomize/autoload for both harmless test children.
+        return REAL_POPEN([sys.executable,"-S","-u","-c",program,str(marker),str(ready_marker)],
+                          **{**kwargs,"env":env})
+    def revoke_after_both_processes_exist():
+        deadline=time.monotonic()+8
+        while time.monotonic()<deadline:
+            if marker.exists():
+                try:
+                    witness=json.loads(marker.read_text())
+                    assert type(witness["parent"]) is int
+                    assert type(witness["child"]) is int
+                    child_pid.extend([witness["parent"],witness["child"]])
+                    started.set()
+                    client._lease_lost.set()
+                    exited.set()
+                    return
+                except (ValueError,KeyError):
+                    pass
+            time.sleep(0.02)
+        exited.set()
+    watcher=threading.Thread(target=revoke_after_both_processes_exist,daemon=True)
+    watcher.start()
+    def heartbeat_ok(method,url,**kwargs):
+        assert method=="POST" and url.endswith("/api/tasks/synthetic-task/heartbeat")
+        return EmptyReply()
+    try:
+        with patch("requests.request",side_effect=heartbeat_ok), patch.object(
+                subprocess,"Popen",side_effect=synthetic_popen):
+            result=adapter.run_hermes(
+                "SYNTHETIC_PROCESS_GROUP_ONLY",model="synthetic/model",timeout=10)
+        watcher.join(timeout=9)
+        assert not watcher.is_alive() and exited.is_set() and started.is_set()
+        assert len(child_pid)==2 and child_pid[0]!=child_pid[1]
+        assert result["error"]=="executor_lease_lost"
+        assert result["output"]=="" and result["session_id"] is None
+        assert client._active_process is None
+        def non_zombie(pid):
+            stat=pathlib.Path(f"/proc/{pid}/stat")
+            if not stat.exists():return False
+            return stat.read_text().split(") ",1)[1][0] != "Z"
+        until=time.monotonic()+3
+        while time.monotonic()<until and any(non_zombie(pid) for pid in child_pid):
+            time.sleep(0.03)
+        assert not any(non_zombie(pid) for pid in child_pid), "descendant survived group termination"
+    finally:
+        watcher.join(timeout=1)
+        # Bound a synthetic test failure: never leave harmless test processes alive.
+        if child_pid:
+            parent=child_pid[0]
+            try:
+                if os.getpgid(parent)==parent:
+                    os.killpg(parent,signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        marker.unlink(missing_ok=True)
+        ready_marker.unlink(missing_ok=True)
+    print("HERMES_SYNTHETIC_REAL_PROCESS_GROUP_FENCED_PASS",flush=True)
+
 def synthetic_dispatch():
     assert os.geteuid() == 1000 and adapter._strict_executor_auth_installed
     assert adapter.KNOWLEDGE_SPLIT_ENABLED
@@ -147,6 +260,7 @@ def synthetic_dispatch():
     with patch("requests.request", side_effect=fake_http),          patch.object(subprocess, "Popen", side_effect=forbidden_child),          patch.object(adapter, "fleet", None),          patch.object(adapter, "swarm_memory", None),          patch.object(adapter, "SELFTASK_BULK_MODELS", ["synthetic/model"]),          patch.object(adapter, "HERMES_DELEGATE_OPENCODE_TIERS", []):
         runpy.run_path("/workspace/smoke.py", run_name="__main__")
         exercise_signed_owner_launch()
+        exercise_real_process_group_fence()
         # The real adapter's background job launcher is intentionally
         # disabled only for the no-task poll after the self-task fixture.
         with patch.object(adapter, "SELFTASK_BULK_MODELS", []):

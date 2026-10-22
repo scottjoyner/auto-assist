@@ -147,12 +147,46 @@ def test_dry_run_reports_hold_and_cannot_call_docker(monkeypatch):
 
 
 def test_every_required_check_and_blocker_declared():
-    assert len(canary.CHECKS) == 14
+    assert len(canary.CHECKS) == 15
     assert "kernel_ro_input_rw_scratch_admission_verified" in canary.CHECKS
     assert "signed_corpus_mutation_denied_at_relaunch" in canary.CHECKS
     assert "older_signed_manifest_replay_denied" in canary.CHECKS
     assert "signed_owner_positive_negative_and_heartbeat_denied_in_image" in canary.CHECKS
     assert "revocation_during_spawn_and_result_fenced_in_image" in canary.CHECKS
+    assert "real_os_parent_and_descendant_process_group_fenced_in_image" in canary.CHECKS
     assert "all_disposable_docker_objects_removed" in canary.CHECKS
     assert "production_hermes_running_unchanged" in canary.CHECKS
     assert "independent_signed_image_and_source_attestation_missing" in canary.BLOCKERS
+
+
+def test_real_process_group_probe_is_bounded_and_synthetic_only():
+    from pathlib import Path
+    src=Path(canary.SITE).read_text()
+    assert "exercise_real_process_group_fence()" in src
+    assert '"HERMES_SYNTHETIC_REAL_PROCESS_GROUP_FENCED_PASS"' in src
+    assert '"-S","-u","-c",program,str(marker)' in src
+    assert '"PYTHONPATH"]=""' in src
+    assert '"OPENBLAS_NUM_THREADS"]="1"' in src
+    assert '"HERMES_EXECUTOR_TOKEN","OPENAI_API_KEY"' in src
+    assert '"SYNTHETIC_PROCESS_GROUP_ONLY"' in src
+    assert '"start_new_session") is True' in src
+    assert "signal.signal(signal.SIGTERM,signal.SIG_IGN)" in src
+    assert "synthetic-child-installed-sigignore" in src
+    assert "synthetic child did not arm SIGTERM ignore" in src
+    assert 'marker.unlink(missing_ok=True)' in src
+    assert 'time.monotonic()+8' in src
+    assert 'os.killpg(parent,signal.SIGKILL)' in src
+
+
+def test_real_process_group_probe_does_not_read_real_corpus_or_use_network():
+    from pathlib import Path
+    src=Path(canary.SITE).read_text()
+    part=src.split('def exercise_real_process_group_fence():',1)[1].split(
+        'def synthetic_dispatch():',1)[0]
+    assert '/workspace/synthetic-process-group-termination.json' in part
+    assert 'only_signed_heartbeat' not in part
+    assert 'heartbeat_ok' in part
+    assert 'REAL_POPEN' in part
+    for forbidden in ('/media/scott/SSD_4TB','/media/scott/NAS5',
+                      'ssh ', 'curl ', 'wget ', 'docker run','docker exec'):
+        assert forbidden not in part
