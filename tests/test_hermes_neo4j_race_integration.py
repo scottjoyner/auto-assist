@@ -3,6 +3,12 @@
 Run only within an isolated Docker internal network, against a unique
 synthetic DB container with no published ports and no production mounts.
 """
+# Ordinary pytest collection must skip this explicitly invoked physical probe.
+# It is not safe to import it without a disposable named database.
+if __name__ != "__main__":
+    import unittest
+    raise unittest.SkipTest("opt-in Docker-internal Neo4j race witness")
+
 import importlib.util
 import json
 import os

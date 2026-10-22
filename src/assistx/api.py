@@ -900,6 +900,12 @@ def _cancel_tasks_for_intent(neo: Neo4jClient, intent_id: str, reason: str) -> i
         rec = s.run(
             """
             MATCH (i:Intent {id:$intent_id})-[:CREATED_TASK]->(t:Task)
+            // Serialize the status check with concurrent completion on t.
+            FOREACH (_ IN CASE WHEN t.status IN ['READY','CLAIMED','RUNNING'] THEN [1] ELSE [] END |
+                SET t.hermes_fence_check_epoch =
+                    coalesce(t.hermes_fence_check_epoch, 0) + 1
+            )
+            WITH t
             WHERE t.status IN ['READY','CLAIMED','RUNNING']
             SET t.status='CANCELLED',
                 t.cancelled_reason=$reason,
@@ -5415,7 +5421,11 @@ def api_workflow_incidents(
 def api_cancel_task(task_id: str, user: str = Depends(auth)):
     neo = _neo()
     try:
-        neo.update_task_status(task_id, "CANCELLED")
+        if not neo.update_task_status(task_id, "CANCELLED"):
+            raise HTTPException(
+                status_code=409,
+                detail="Task cancellation was rejected by current task state",
+            )
         return {"task_id": task_id, "status": "CANCELLED"}
     finally:
         neo.close()
