@@ -776,6 +776,23 @@ def _auth_user_from_credentials(
     if TRUSTED_AUTH_HEADER:
         trusted_user = request.headers.get(TRUSTED_AUTH_HEADER)
         if trusted_user:
+            # In the explicit signed-gateway research mode, a bare
+            # client-supplied proxy header MUST NOT authenticate anyone.
+            # Only a canonical owner validated by signed-request middleware
+            # may authorize task creation through this legacy path.
+            # Other endpoints with only that header fail closed; they
+            # require separate reviewed authentication provenance.
+            if (os.getenv("ASSISTX_ENABLE_SIGNED_OWNER_GATEWAY") == "true"
+                    and os.getenv("ASSISTX_REQUIRE_OWNER_BINDING") == "true"):
+                if (request.method != "POST"
+                        or request.url.path != "/api/tasks"):
+                    return None
+                from .owner_identity import TaskOwnerError, authenticated_owner
+
+                try:
+                    authenticated_owner(request.scope, trusted_user)
+                except TaskOwnerError:
+                    return None
             return trusted_user
     if credentials is None:
         return None
