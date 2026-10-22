@@ -107,10 +107,14 @@ def test_terminate_group_forces_sigkill_after_parent_reaps(monkeypatch):
     import signal
     signals=[]
     class Leader:
-        pid=712346
-        def __init__(self):self.reaped=False
-        def poll(self):return 0 if self.reaped else None
-        def wait(self,timeout):self.reaped=True;return 0
+        pid = 712346
+        def __init__(self):
+            self.reaped = False
+        def poll(self):
+            return 0 if self.reaped else None
+        def wait(self, timeout):
+            self.reaped = True
+            return 0
     monkeypatch.setattr(strict_executor_adapter.os,"killpg",
                         lambda pid,sig: signals.append((pid,sig)))
     strict_executor_adapter._terminate_process(Leader(),grace_seconds=0.1)
