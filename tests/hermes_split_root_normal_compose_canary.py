@@ -83,11 +83,13 @@ def read_only_source():
         "src/assistx/swarm_memory.py":
             "9b073d1f8e31d98e08820d473523abbf5d716818",
          "src/assistx/knowledge_roots.py":
-            "498fae588fd4b7313bb43fe6b03d991615c8994f",
+            "6ecdce980c6a5513014088cd7e3ae57b3f337216",
         "src/assistx/hermes_corpus_custody.py":
             "e504334468ae0962668f2abd37978532483ec29b",
         "src/assistx/hermes_corpus_checkpoint.py":
-            "f393cd9de5ce37542cc7347d80efe1467c1f7045",
+            "ff7091618919b2261b1cbf4df2602627afae8c1f",
+        "src/assistx/hermes_high_water.py":
+            "ed8992eef765006cb6a12def4553b04d0129ecbe",
     }
     for path, exact_blob in expected_blobs.items():
         observed = cmd(["git", "-C", str(ROOT), "hash-object",
@@ -193,6 +195,7 @@ def run():
             (SOURCE/"swarm_memory.py",ctx/"swarm_memory.py"),
             (SOURCE/"hermes_corpus_custody.py",ctx/"hermes_corpus_custody.py"),
             (SOURCE/"hermes_corpus_checkpoint.py",ctx/"hermes_corpus_checkpoint.py"),
+            (SOURCE/"hermes_high_water.py",ctx/"hermes_high_water.py"),
             (SOURCE/"agents/hermes_agent_adapter.py",ctx/"hermes_agent_adapter.py"),
             (ENTRY,ctx/"entrypoint.sh")):
             shutil.copyfile(a,b)
@@ -203,6 +206,7 @@ def run():
             "COPY swarm_memory.py /app/src/assistx/swarm_memory.py\n"
             "COPY hermes_corpus_custody.py /app/src/assistx/hermes_corpus_custody.py\n"
             "COPY hermes_corpus_checkpoint.py /app/src/assistx/hermes_corpus_checkpoint.py\n"
+            "COPY hermes_high_water.py /app/src/assistx/hermes_high_water.py\n"
             "COPY witness.pub /app/attestation/witness.pub\n"
             "COPY checkpoint.json /app/attestation/checkpoint.json\n"
             "COPY trust.pub /app/attestation/trust.pub\n"

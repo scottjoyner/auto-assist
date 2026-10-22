@@ -41,3 +41,7 @@ Do not label this implementation rollback-resistant or independently attested. A
 Production Hermes continues to use its original image `sha256:22191871cbf346ebe27c1b1cf433901f4b4ff479d80d2047917fe3966d78e307`, with **16 mounts, nine writable**, including two aliases enclosing protected SSD evidence and an NAS5-labelled path that resolves to the local filesystem on x1-370. Real corpus custody, independent signing and image provenance, owner-granted ingest/dispatch, fencing/revocation, rollback, and deployment approval are not established.
 
 **DO NOT merge, restart, remount, copy protected data, promote a signed checkpoint, or close P0 #414** solely from this synthetic research proof. Keep PR #425 draft and production deployment on HOLD.
+
+## External nonce-challenged authority follow-up
+
+An opt-in worker-side protocol now requires a fresh signed high-water response bound to nonce, owner, checkpoint and manifest hashes. Same-host research tests prove protocol behavior but not external custody; see [HERMES_EXTERNAL_HIGH_WATER_PROTOCOL_HOLD_20261022.md](HERMES_EXTERNAL_HIGH_WATER_PROTOCOL_HOLD_20261022.md). Production HOLD unchanged.

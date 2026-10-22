@@ -78,6 +78,18 @@ def verify_checkpoint(*, read_root: str, write_root: str,
             bytes.fromhex(signature),
             canonical({k: v for k, v in payload.items() if k != "signature"}),
         )
+        mode = os.getenv("HERMES_REQUIRE_EXTERNAL_HIGH_WATER", "")
+        if mode not in ("", "false", "true"):
+            reject("unrecognized external high-water mode")
+        if mode == "true":
+            from assistx.hermes_high_water import query_live_witness
+            query_live_witness(
+                read_root=read_root, write_root=write_root,
+                corpus_public_key=corpus_public_key,
+                checkpoint_key=key, checkpoint_raw=raw,
+                manifest_raw=signed_manifest,
+                generation=payload["generation"],
+            )
         return payload["generation"]
     except (ValueError, OSError, TypeError, OverflowError,
             json.JSONDecodeError, InvalidSignature, UnicodeError) as err:

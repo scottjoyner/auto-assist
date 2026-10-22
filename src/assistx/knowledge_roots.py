@@ -113,6 +113,8 @@ def resolve_knowledge_roots(legacy: str, eval_path: str | None = None) -> tuple[
             raise ValueError("signed corpus requires strict mounted split roots")
         if os.getenv("HERMES_REQUIRE_CORPUS_CHECKPOINT", "") not in ("", "false"):
             raise ValueError("checkpoint requires strict mounted signed split roots")
+        if os.getenv("HERMES_REQUIRE_EXTERNAL_HIGH_WATER", "") not in ("", "false"):
+            raise ValueError("external high-water requires strict signed checkpoint mode")
         return legacy, legacy, False
     ro = _strict_path(read, READ_ENV)
     rw = _strict_path(write, WRITE_ENV)
@@ -134,6 +136,11 @@ def resolve_knowledge_roots(legacy: str, eval_path: str | None = None) -> tuple[
     watch = os.getenv("HERMES_REQUIRE_CORPUS_CHECKPOINT", "")
     if watch not in ("", "false", "true"):
         raise ValueError("invalid corpus checkpoint admission mode")
+    external = os.getenv("HERMES_REQUIRE_EXTERNAL_HIGH_WATER", "")
+    if external not in ("", "false", "true"):
+        raise ValueError("invalid external high-water mode")
+    if external == "true" and watch != "true":
+        raise ValueError("external high-water requires signed checkpoint")
     if watch == "true" and signed != "true":
         raise ValueError("checkpoint requires signed corpus mode")
     if signed == "true":
