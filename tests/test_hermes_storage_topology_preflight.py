@@ -173,7 +173,13 @@ def test_reject_unapproved_observation_path(tmp_path):
         topology.analyze_path(tmp_path)
 
 
-def test_findmnt_is_readonly_and_no_docker_operations(monkeypatch):
+def test_findmnt_is_readonly_and_no_docker_operations(monkeypatch, tmp_path):
+    # Hosted runners do not have x1-370's /home/scott/.cache directory.
+    # Exercise the identical allowlisted-path contract with a real temporary
+    # directory, while stubbing findmnt; never depend on a machine-specific
+    # host directory or run a real findmnt in a unit test.
+    monkeypatch.setattr(topology, "SCRATCH", tmp_path)
+    monkeypatch.setitem(topology.EXPECTED_NODES, "scratch", tmp_path)
     fake=type("Result",(),{"returncode":0,
                            "stdout":"/ /dev/nvme0n1p6 ext4\n"})()
     calls=[]
