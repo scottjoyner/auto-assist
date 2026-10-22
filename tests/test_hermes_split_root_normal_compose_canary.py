@@ -33,6 +33,8 @@ def _render():
             "HERMES_KNOWLEDGE_READ_ROOT": "/research/knowledge",
             "HERMES_KNOWLEDGE_WRITE_ROOT": "/workspace/knowledge",
             "HERMES_REQUIRE_MOUNT_ISOLATION": "true",
+            "HERMES_REQUIRE_SIGNED_CORPUS": "true",
+            "HERMES_CORPUS_TRUST_KEY_PATH": "/app/attestation/trust.pub",
             "HERMES_KNOWLEDGE_WRITE_MOUNT": "/workspace",
             "HERMES_KNOWLEDGE_ROOT": "/workspace/knowledge",
             "HERMES_EVAL_PATH": "/workspace/knowledge/eval.json",
@@ -139,8 +141,9 @@ def test_dry_run_reports_hold_and_cannot_call_docker(monkeypatch):
 
 
 def test_every_required_check_and_blocker_declared():
-    assert len(canary.CHECKS) == 10
+    assert len(canary.CHECKS) == 11
     assert "kernel_ro_input_rw_scratch_admission_verified" in canary.CHECKS
+    assert "signed_corpus_mutation_denied_at_relaunch" in canary.CHECKS
     assert "all_disposable_docker_objects_removed" in canary.CHECKS
     assert "production_hermes_running_unchanged" in canary.CHECKS
     assert "independent_signed_image_and_source_attestation_missing" in canary.BLOCKERS

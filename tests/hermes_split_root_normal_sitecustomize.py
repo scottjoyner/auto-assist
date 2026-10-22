@@ -33,6 +33,8 @@ def synthetic_dispatch():
     assert os.geteuid() == 1000 and adapter._strict_executor_auth_installed
     assert adapter.KNOWLEDGE_SPLIT_ENABLED
     assert os.environ["HERMES_REQUIRE_MOUNT_ISOLATION"] == "true"
+    assert os.environ["HERMES_REQUIRE_SIGNED_CORPUS"] == "true"
+    assert os.environ["HERMES_CORPUS_TRUST_KEY_PATH"] == "/app/attestation/trust.pub"
     assert os.environ["HERMES_KNOWLEDGE_WRITE_MOUNT"] == "/workspace"
     assert pathlib.Path("/workspace/hermes-home/config.yaml").is_file()
     assert pathlib.Path("/workspace/.hermes/config.yaml").is_symlink()

@@ -109,6 +109,8 @@ def resolve_knowledge_roots(legacy: str, eval_path: str | None = None) -> tuple[
     if not read:
         if os.getenv(MOUNT_GUARD_ENV, "") not in ("", "false"):
             raise ValueError("mount isolation requires explicit split roots")
+        if os.getenv("HERMES_REQUIRE_SIGNED_CORPUS", "") not in ("", "false"):
+            raise ValueError("signed corpus requires strict mounted split roots")
         return legacy, legacy, False
     ro = _strict_path(read, READ_ENV)
     rw = _strict_path(write, WRITE_ENV)
@@ -124,6 +126,15 @@ def resolve_knowledge_roots(legacy: str, eval_path: str | None = None) -> tuple[
     if strict == "true":
         verify_mount_admission(ro, rw,
             write_mount=os.environ.get(WRITE_MOUNT_ENV, ""))
+    signed = os.getenv("HERMES_REQUIRE_SIGNED_CORPUS", "")
+    if signed not in ("", "false", "true"):
+        raise ValueError("invalid signed corpus admission mode")
+    if signed == "true":
+        if strict != "true":
+            raise ValueError("signed corpus requires kernel mount isolation")
+        from assistx.hermes_corpus_custody import verify_signed_corpus
+        verify_signed_corpus(ro, rw,
+            os.environ.get("HERMES_CORPUS_TRUST_KEY_PATH", ""))
     return ro, rw, True
 
 

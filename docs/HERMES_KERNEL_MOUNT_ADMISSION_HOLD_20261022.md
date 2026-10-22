@@ -31,3 +31,7 @@ Negative unit tests inject generated mountinfo records and cover missing input/o
 ## Release decision remains HOLD
 
 Original production Hermes continues running untouched with 16 binds and nine writable mounts, including two paths exposing the protected SSD knowledge evidence. Beelink's three observed storage filesystem mountpoints are not automatically approved Hermes input/output. Any genuine production migration still requires explicit narrow RO corpus selection, independent custody/signatures, separate RW scratch authorization and capacity/rollback, task receipts, revocation and fencing, and independent reviewer approval. Keep P0 #414 open and PR #425 draft.
+
+## Follow-up: signed synthetic corpus
+
+An opt-in Ed25519-signed bounded MD/TXT corpus admission was added for restricted synthetic checks. See [HERMES_ED25519_CORPUS_CUSTODY_HOLD_20261022.md](HERMES_ED25519_CORPUS_CUSTODY_HOLD_20261022.md) for positive/negative physical evidence, signer-custody limitations and replay/TOCTOU blockers. Deployment remains HOLD.

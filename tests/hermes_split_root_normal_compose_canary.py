@@ -7,6 +7,8 @@ Only an inspected synthetic profile and current pinned local image are used.
 from __future__ import annotations
 import argparse
 import hashlib
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import serialization
 import json
 import os
 import pathlib
@@ -35,6 +37,7 @@ CHECKS = (
     "networkless_offline_overlay_build",
     "restricted_compose_render_verified",
     "kernel_ro_input_rw_scratch_admission_verified",
+    "signed_corpus_mutation_denied_at_relaunch",
     "effective_container_mount_and_security_verified",
     "normal_entrypoint_strict_executor_twice",
     "actual_patched_selftask_read_write_restart",
@@ -78,8 +81,10 @@ def read_only_source():
             "c5245a01545c5ccec4cfefcf5aa62d5f5028ae8a",
         "src/assistx/swarm_memory.py":
             "054d5df4d06205a43b6330dab6a5ea747344ecae",
-        "src/assistx/knowledge_roots.py":
-            "feb52ca8ae1aa9404333a9125ae741fc1670a1e3",
+         "src/assistx/knowledge_roots.py":
+            "830f5942202c629f053f7c2ea88e42a5c3e1d099",
+        "src/assistx/hermes_corpus_custody.py":
+            "e61bfed29655879e9bd7723596e8103f15251d90",
     }
     for path, exact_blob in expected_blobs.items():
         observed = cmd(["git", "-C", str(ROOT), "hash-object",
@@ -125,6 +130,8 @@ def restricted_render(doc, image, corpus, scratch):
         "HERMES_KNOWLEDGE_READ_ROOT":"/research/knowledge",
         "HERMES_KNOWLEDGE_WRITE_ROOT":"/workspace/knowledge",
         "HERMES_REQUIRE_MOUNT_ISOLATION":"true",
+        "HERMES_REQUIRE_SIGNED_CORPUS":"true",
+        "HERMES_CORPUS_TRUST_KEY_PATH":"/app/attestation/trust.pub",
         "HERMES_KNOWLEDGE_WRITE_MOUNT":"/workspace",
         "HERMES_KNOWLEDGE_ROOT":"/workspace/knowledge",
         "HERMES_EVAL_PATH":"/workspace/knowledge/eval.json",
@@ -178,6 +185,7 @@ def run():
         for a,b in (
             (SOURCE/"knowledge_roots.py",ctx/"knowledge_roots.py"),
             (SOURCE/"swarm_memory.py",ctx/"swarm_memory.py"),
+            (SOURCE/"hermes_corpus_custody.py",ctx/"hermes_corpus_custody.py"),
             (SOURCE/"agents/hermes_agent_adapter.py",ctx/"hermes_agent_adapter.py"),
             (ENTRY,ctx/"entrypoint.sh")):
             shutil.copyfile(a,b)
@@ -186,6 +194,8 @@ def run():
         df=(f"FROM {base}\n"
             "COPY knowledge_roots.py /app/src/assistx/knowledge_roots.py\n"
             "COPY swarm_memory.py /app/src/assistx/swarm_memory.py\n"
+            "COPY hermes_corpus_custody.py /app/src/assistx/hermes_corpus_custody.py\n"
+            "COPY trust.pub /app/attestation/trust.pub\n"
             "COPY hermes_agent_adapter.py /app/src/assistx/agents/hermes_agent_adapter.py\n"
             "COPY entrypoint.sh /entrypoint.sh\n"
             "RUN chmod 0755 /entrypoint.sh\n")
@@ -196,6 +206,27 @@ def run():
         work.mkdir()
         (corpus/"decision.md").write_text("SYNTHETIC_CONTEXT_42\n")
         (corpus/"decision.md").chmod(0o644)
+        # Synthetic only: generate an ephemeral Ed25519 signer in RAM,
+        # include only the public verification key in the disposable image.
+        from importlib.util import spec_from_file_location, module_from_spec
+        spec=spec_from_file_location("research_custody",
+                SOURCE/"hermes_corpus_custody.py")
+        custody=module_from_spec(spec)
+        spec.loader.exec_module(custody)
+        signer=Ed25519PrivateKey.generate()
+        trusted=signer.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw)
+        (ctx/"trust.pub").write_bytes(trusted)
+        (ctx/"trust.pub").chmod(0o644)
+        raw=(corpus/"decision.md").read_bytes()
+        payload={"schema":1,"root":"/research/knowledge","entries":[
+            {"path":"decision.md","sha256":hashlib.sha256(raw).hexdigest(),
+             "size":len(raw)}]}
+        manifest={**payload,"signature":signer.sign(custody.canonical(payload)).hex()}
+        (corpus/custody.MANIFEST_NAME).write_text(json.dumps(manifest,sort_keys=True))
+        (corpus/custody.MANIFEST_NAME).chmod(0o644)
+        del signer
         shutil.copyfile(SITE,work/"sitecustomize.py")
         (work/"sitecustomize.py").chmod(0o644)
         (work/"smoke.py").write_text(prior.SMOKE)
@@ -262,6 +293,18 @@ def run():
                  and not (corpus/"SUMMARY.md").exists()
                  and not list(work.rglob(".env")),"patch did not preserve scratch/source contract")
             checks["actual_patched_selftask_read_write_restart"]=True
+            # Deliberately modify ONLY the disposable synthetic host corpus.
+            # The container bind remains RO, yet its host backing bytes can
+            # change: the next fresh adapter start MUST fail before dispatch.
+            (corpus/"decision.md").write_text("SYNTHETIC_TAMPERED_BYTES_ONLY\n")
+            denied=cmd(["docker","start","--attach",cid],35)
+            denied_code=cmd(["docker","inspect","-f","{{.State.ExitCode}}",cid],7)
+            need(denied_code.returncode==0 and denied_code.stdout.strip()!="0"
+                 and "HERMES_SPLIT_NORMAL_ENTRYPOINT_PASS" not in denied.stdout
+                 and "HERMES_ACTUAL_SPLIT_ROOT_STAGE_3_PASS" not in denied.stdout
+                 and json.loads((work/"stage.json").read_text())["stage"]==2,
+                 "tampered signed corpus was admitted on third startup")
+            checks["signed_corpus_mutation_denied_at_relaunch"]=True
             checks["zero_real_tasks_and_providers"]=True
         finally:
             # Clean only disposable project owned by this runner.
