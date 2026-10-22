@@ -90,6 +90,10 @@ def read_only_source():
             "ff7091618919b2261b1cbf4df2602627afae8c1f",
         "src/assistx/hermes_high_water.py":
             "ed8992eef765006cb6a12def4553b04d0129ecbe",
+        "src/assistx/strict_executor_adapter.py":
+            "ee224f50ae93c0eb8427e0db496f3a76172f3f05",
+        "src/assistx/hermes_launch_gate.py":
+            "9fe5214ef51efb3aee2e1f08f5150a1a056fed88",
     }
     for path, exact_blob in expected_blobs.items():
         observed = cmd(["git", "-C", str(ROOT), "hash-object",
@@ -129,6 +133,9 @@ def restricted_render(doc, image, corpus, scratch):
         "ASSISTX_URL":"http://127.0.0.1:1",
         "ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN":"SYNTHETIC_BOOTSTRAP_ONLY",
         "ASSISTX_STRICT_EXECUTOR_AUTH":"true",
+        "ASSISTX_REQUIRE_OWNER_BINDING":"true",
+        "HERMES_REQUIRE_OWNER_BOUND_LAUNCH":"true",
+        "ASSISTX_EXECUTOR_VERIFY_KEY_FILE":"/app/attestation/executor.pub",
         "HERMES_AGENT_ID":"hermes-synthetic-canary",
         "HERMES_SELFTASK_ENABLED":"false",
         "HERMES_SELFTASK_BULK_MODELS":"synthetic/model",
@@ -196,6 +203,8 @@ def run():
             (SOURCE/"hermes_corpus_custody.py",ctx/"hermes_corpus_custody.py"),
             (SOURCE/"hermes_corpus_checkpoint.py",ctx/"hermes_corpus_checkpoint.py"),
             (SOURCE/"hermes_high_water.py",ctx/"hermes_high_water.py"),
+            (SOURCE/"strict_executor_adapter.py",ctx/"strict_executor_adapter.py"),
+            (SOURCE/"hermes_launch_gate.py",ctx/"hermes_launch_gate.py"),
             (SOURCE/"agents/hermes_agent_adapter.py",ctx/"hermes_agent_adapter.py"),
             (ENTRY,ctx/"entrypoint.sh")):
             shutil.copyfile(a,b)
@@ -207,6 +216,9 @@ def run():
             "COPY hermes_corpus_custody.py /app/src/assistx/hermes_corpus_custody.py\n"
             "COPY hermes_corpus_checkpoint.py /app/src/assistx/hermes_corpus_checkpoint.py\n"
             "COPY hermes_high_water.py /app/src/assistx/hermes_high_water.py\n"
+            "COPY strict_executor_adapter.py /app/src/assistx/strict_executor_adapter.py\n"
+            "COPY hermes_launch_gate.py /app/src/assistx/hermes_launch_gate.py\n"
+            "COPY executor.pub /app/attestation/executor.pub\n"
             "COPY witness.pub /app/attestation/witness.pub\n"
             "COPY checkpoint.json /app/attestation/checkpoint.json\n"
             "COPY trust.pub /app/attestation/trust.pub\n"
@@ -233,6 +245,14 @@ def run():
             format=serialization.PublicFormat.Raw)
         (ctx/"trust.pub").write_bytes(trusted)
         (ctx/"trust.pub").chmod(0o644)
+        # Fourth distinct synthetic public verifier; private key stays in RAM.
+        executor_signer=Ed25519PrivateKey.generate()
+        executor_pub=executor_signer.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo)
+        (ctx/"executor.pub").write_bytes(executor_pub)
+        (ctx/"executor.pub").chmod(0o644)
+        del executor_signer
         raw=(corpus/"decision.md").read_bytes()
         payload={"schema":1,"root":"/research/knowledge","entries":[
             {"path":"decision.md","sha256":hashlib.sha256(raw).hexdigest(),

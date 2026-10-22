@@ -33,6 +33,10 @@ def synthetic_dispatch():
     assert os.geteuid() == 1000 and adapter._strict_executor_auth_installed
     assert adapter.KNOWLEDGE_SPLIT_ENABLED
     assert os.environ["HERMES_REQUIRE_MOUNT_ISOLATION"] == "true"
+    assert os.environ["HERMES_REQUIRE_OWNER_BOUND_LAUNCH"] == "true"
+    assert os.environ["ASSISTX_REQUIRE_OWNER_BINDING"] == "true"
+    assert os.environ["ASSISTX_EXECUTOR_VERIFY_KEY_FILE"] == "/app/attestation/executor.pub"
+    assert pathlib.Path("/app/attestation/executor.pub").is_file()
     assert os.environ["HERMES_REQUIRE_SIGNED_CORPUS"] == "true"
     assert os.environ["HERMES_REQUIRE_CORPUS_CHECKPOINT"] == "true"
     assert os.environ["HERMES_CORPUS_CHECKPOINT_PATH"] == "/app/attestation/checkpoint.json"
