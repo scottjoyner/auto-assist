@@ -1514,6 +1514,13 @@ class Neo4jClient:
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
+                // Serialize Hermes claim validation with revocation/reissue:
+                // acquire a Task write lock before checking the lease.
+                FOREACH (_ IN CASE WHEN $agent_id='hermes-local' THEN [1] ELSE [] END |
+                    SET t.hermes_fence_check_epoch =
+                        coalesce(t.hermes_fence_check_epoch, 0) + 1
+                )
+                WITH t
                 WHERE (
                     $agent_id='hermes-local'
                     AND t.claimed_by=$agent_id
@@ -1623,6 +1630,13 @@ class Neo4jClient:
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
+                // Serialize Hermes claim validation with revocation/reissue:
+                // acquire a Task write lock before checking the lease.
+                FOREACH (_ IN CASE WHEN $agent_id='hermes-local' THEN [1] ELSE [] END |
+                    SET t.hermes_fence_check_epoch =
+                        coalesce(t.hermes_fence_check_epoch, 0) + 1
+                )
+                WITH t
                 WHERE (
                     $agent_id='hermes-local'
                     AND t.claimed_by=$agent_id
@@ -2304,7 +2318,24 @@ class Neo4jClient:
 
     def update_task_status(self, task_id: str, status: str):
         with self._session() as s:
-            s.run("MATCH (t:Task{id:$id}) SET t.status=$st, t.updated_at_ts = timestamp()", {"id": task_id, "st": status})
+            # Cancellation must acquire the same Task write lock as a
+            # Hermes completion BEFORE checking terminal status.
+            rec = s.run(
+                """
+                MATCH (t:Task {id:$id})
+                FOREACH (_ IN CASE WHEN $st='CANCELLED' THEN [1] ELSE [] END |
+                    SET t.hermes_fence_check_epoch =
+                        coalesce(t.hermes_fence_check_epoch, 0) + 1
+                )
+                WITH t
+                WHERE $st<>'CANCELLED'
+                   OR t.status IN ['READY','CLAIMED','RUNNING','PAUSING']
+                SET t.status=$st, t.updated_at_ts=timestamp()
+                RETURN t.id AS task_id
+                """,
+                {"id": task_id, "st": status},
+            ).single()
+            return rec is not None
 
     def create_run(self, task_id: str, agent: str, model: str, manifest: dict[str, Any]):
         run_id = uuid.uuid4().hex

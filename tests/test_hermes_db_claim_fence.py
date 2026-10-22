@@ -185,5 +185,21 @@ class HermesDbFencingTests(unittest.TestCase):
         self.assertEqual(len(session.queries),1)
 
 
+    def test_cancellation_locks_before_rechecking_terminal_state(self):
+        client,session=self.client([{"task_id":"synthetic"}])
+        self.assertTrue(client.update_task_status("synthetic","CANCELLED"))
+        sql,params=session.queries[0]
+        self.assertIn("FOREACH",sql)
+        self.assertLess(sql.index("hermes_fence_check_epoch"),
+                        sql.index("WHERE $st<>'CANCELLED'"))
+        self.assertIn("t.status IN ['READY','CLAIMED','RUNNING','PAUSING']",sql)
+        self.assertEqual(params,{"id":"synthetic","st":"CANCELLED"})
+
+    def test_cancellation_missing_or_terminal_task_returns_false(self):
+        client,session=self.client([None])
+        self.assertFalse(client.update_task_status("synthetic","CANCELLED"))
+        self.assertEqual(len(session.queries),1)
+
+
 if __name__=="__main__":
     unittest.main()
