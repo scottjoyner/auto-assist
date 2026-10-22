@@ -41,6 +41,7 @@ CHECKS = (
     "older_signed_manifest_replay_denied",
     "effective_container_mount_and_security_verified",
     "normal_entrypoint_strict_executor_twice",
+    "signed_owner_positive_negative_and_heartbeat_denied_in_image",
     "actual_patched_selftask_read_write_restart",
     "zero_real_tasks_and_providers",
     "all_disposable_docker_objects_removed",
@@ -94,6 +95,8 @@ def read_only_source():
             "ee224f50ae93c0eb8427e0db496f3a76172f3f05",
         "src/assistx/hermes_launch_gate.py":
             "9fe5214ef51efb3aee2e1f08f5150a1a056fed88",
+        "src/assistx/owner_identity.py":
+            "392fa5780d5ddd450f798281b711b99512b2e692",
     }
     for path, exact_blob in expected_blobs.items():
         observed = cmd(["git", "-C", str(ROOT), "hash-object",
@@ -205,6 +208,7 @@ def run():
             (SOURCE/"hermes_high_water.py",ctx/"hermes_high_water.py"),
             (SOURCE/"strict_executor_adapter.py",ctx/"strict_executor_adapter.py"),
             (SOURCE/"hermes_launch_gate.py",ctx/"hermes_launch_gate.py"),
+            (SOURCE/"owner_identity.py",ctx/"owner_identity.py"),
             (SOURCE/"agents/hermes_agent_adapter.py",ctx/"hermes_agent_adapter.py"),
             (ENTRY,ctx/"entrypoint.sh")):
             shutil.copyfile(a,b)
@@ -218,6 +222,7 @@ def run():
             "COPY hermes_high_water.py /app/src/assistx/hermes_high_water.py\n"
             "COPY strict_executor_adapter.py /app/src/assistx/strict_executor_adapter.py\n"
             "COPY hermes_launch_gate.py /app/src/assistx/hermes_launch_gate.py\n"
+            "COPY owner_identity.py /app/src/assistx/owner_identity.py\n"
             "COPY executor.pub /app/attestation/executor.pub\n"
             "COPY witness.pub /app/attestation/witness.pub\n"
             "COPY checkpoint.json /app/attestation/checkpoint.json\n"
@@ -252,7 +257,29 @@ def run():
             format=serialization.PublicFormat.SubjectPublicKeyInfo)
         (ctx/"executor.pub").write_bytes(executor_pub)
         (ctx/"executor.pub").chmod(0o644)
-        del executor_signer
+        # Synthetic-only signed executor claim for isolated end-to-end guard.
+        # The ephemeral private signer is NEVER copied or mounted.
+        import time
+        from assistx.executor_security import ExecutorTokenCodec
+        timestamp=int(time.time())
+        launch_claims={
+            "iss":"assistx", "aud":["assistx-executor"],
+            "iat":timestamp,"nbf":timestamp,"exp":timestamp+1200,
+            "jti":"synthetic-physical-owner-launch",
+            "task_id":"synthetic-task", "claim_id":"synthetic-claim",
+            "agent_id":"hermes-synthetic-canary",
+            "owner_issuer":"synthetic-research-idp",
+            "owner_subject":"synthetic-research-owner",
+            "projection_generation":2,
+            "scopes":["heartbeat","inference"],
+            "allowed_model_aliases":["synthetic/model"],
+        }
+        signed_token=ExecutorTokenCodec(private_key=executor_signer).encode(
+            launch_claims)
+        (work/"owner_launch_fixture.json").write_text(
+            json.dumps({"claims":launch_claims,"token":signed_token}))
+        (work/"owner_launch_fixture.json").chmod(0o600)
+        del signed_token,executor_signer
         raw=(corpus/"decision.md").read_bytes()
         payload={"schema":1,"root":"/research/knowledge","entries":[
             {"path":"decision.md","sha256":hashlib.sha256(raw).hexdigest(),
@@ -338,10 +365,12 @@ def run():
                 need(start.returncode==0 and exitinfo.returncode==0 and
                      exitinfo.stdout.strip()=="0" and
                      start.stdout.splitlines().count("HERMES_SPLIT_NORMAL_ENTRYPOINT_PASS")==1 and
+                     start.stdout.splitlines().count("HERMES_SYNTHETIC_SIGNED_OWNER_LAUNCH_PASS")==1 and
                      f"HERMES_ACTUAL_SPLIT_ROOT_STAGE_{count}_PASS" in start.stdout.splitlines(),
                      f"normal strict executor restart stage {count} failed: "+
                       (start.stdout+start.stderr)[-850:])
             checks["normal_entrypoint_strict_executor_twice"]=True
+            checks["signed_owner_positive_negative_and_heartbeat_denied_in_image"]=True
             checks["kernel_ro_input_rw_scratch_admission_verified"]=True
             state=json.loads((work/"stage.json").read_text())
             reg=json.loads((work/"knowledge"/"eval.json").read_text())
