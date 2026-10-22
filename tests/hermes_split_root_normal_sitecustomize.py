@@ -24,6 +24,25 @@ class EmptyReply:
     def json(self):
         return {"items": []}
 
+class TaskHeartbeatReply:
+    def __init__(self, fixture, *, session_id):
+        self.fixture=fixture
+        self.session_id=session_id
+    def raise_for_status(self):
+        pass
+    def json(self):
+        claims=self.fixture["claims"]
+        return {"task":{
+            "id":claims["task_id"],
+            "claim_id":claims["claim_id"],
+            "claimed_by":claims["agent_id"],
+            "agent_session_id":self.session_id,
+            "owner_issuer":claims["owner_issuer"],
+            "owner_subject":claims["owner_subject"],
+            "status":"RUNNING",
+            "lease_expires_at_ts":int(__import__("time").time()*1000)+1_800_000,
+        }}
+
 def fake_http(method, url, **kwargs):
     assert method == "GET" and url.startswith("http://127.0.0.1:1/api/agent/tasks?")
     assert kwargs.get("headers", {}).get("Authorization") == "Bearer SYNTHETIC_BOOTSTRAP_ONLY"
@@ -52,7 +71,7 @@ def exercise_signed_owner_launch():
         assert kwargs["headers"]["Authorization"]=="Bearer "+fixture["token"]
         assert kwargs["json"]["claim_id"]=="synthetic-claim"
         events.append("fresh-lease")
-        return EmptyReply()
+        return TaskHeartbeatReply(fixture,session_id="synthetic-session")
     class SyntheticModelExit:
         returncode=0
         pid=9999999
@@ -91,6 +110,30 @@ def exercise_signed_owner_launch():
             "SYNTHETIC_OFFLINE_MUST_DENY",model="synthetic/model")
     assert failed["error"]=="owner_bound_launch_denied"
     assert fresh._lease_lost.is_set()
+    # Even HTTP 200 must not authorize a Task record for another owner.
+    echoed=adapter.AssistXClient()
+    echoed.task_token=fixture["token"]
+    echoed.task_claims={k:v for k,v in claim.items() if k!="jti"}
+    echoed._active_task_id=claim["task_id"]
+    echoed._active_claim_id=claim["claim_id"]
+    echoed._active_session_id="synthetic-session"
+    def contradictory_200(method,url,**kwargs):
+        assert method=="POST" and url.endswith("/heartbeat")
+        reply=TaskHeartbeatReply(fixture,session_id="synthetic-session").json()
+        reply["task"]["owner_subject"]="forged-revoked-owner"
+        class Contradiction:
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return reply
+        return Contradiction()
+    with patch("requests.request",side_effect=contradictory_200), patch.object(
+            subprocess,"Popen",side_effect=forbidden_child):
+        denied_200=adapter.run_hermes(
+            "SYNTHETIC_HTTP200_WRONG_OWNER_MUST_DENY",model="synthetic/model")
+    assert denied_200["error"]=="owner_bound_launch_denied"
+    assert echoed._lease_lost.is_set()
+    print("HERMES_SYNTHETIC_HTTP200_OWNER_MISMATCH_DENIED_PASS",flush=True)
     print("HERMES_SYNTHETIC_SIGNED_OWNER_LAUNCH_PASS",flush=True)
     # Test the handoff race and completion race in the REAL patched
     # executor adapter. Neither test creates a model subprocess.
@@ -207,7 +250,8 @@ time.sleep(30)
     watcher.start()
     def heartbeat_ok(method,url,**kwargs):
         assert method=="POST" and url.endswith("/api/tasks/synthetic-task/heartbeat")
-        return EmptyReply()
+        return TaskHeartbeatReply(
+            fixture,session_id="synthetic-physical-process-group")
     try:
         with patch("requests.request",side_effect=heartbeat_ok), patch.object(
                 subprocess,"Popen",side_effect=synthetic_popen):

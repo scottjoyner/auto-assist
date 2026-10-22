@@ -42,6 +42,7 @@ CHECKS = (
     "effective_container_mount_and_security_verified",
     "normal_entrypoint_strict_executor_twice",
     "signed_owner_positive_negative_and_heartbeat_denied_in_image",
+    "http200_contradictory_task_owner_denied_in_image",
     "revocation_during_spawn_and_result_fenced_in_image",
     "real_os_parent_and_descendant_process_group_fenced_in_image",
     "actual_patched_selftask_read_write_restart",
@@ -94,9 +95,9 @@ def read_only_source():
         "src/assistx/hermes_high_water.py":
             "ed8992eef765006cb6a12def4553b04d0129ecbe",
         "src/assistx/strict_executor_adapter.py":
-            "4de6dbce5364659ca9c223c93e0e00e0fc8e6c3c",
+            "9c554adee1514085b7948a30d4bf08bca2de2711",
         "src/assistx/hermes_launch_gate.py":
-            "9fe5214ef51efb3aee2e1f08f5150a1a056fed88",
+            "aef4baf09ffca725a2eea0033904672406ecf1bd",
         "src/assistx/owner_identity.py":
             "392fa5780d5ddd450f798281b711b99512b2e692",
     }
@@ -368,6 +369,7 @@ def run():
                      exitinfo.stdout.strip()=="0" and
                      start.stdout.splitlines().count("HERMES_SPLIT_NORMAL_ENTRYPOINT_PASS")==1 and
                      start.stdout.splitlines().count("HERMES_SYNTHETIC_SIGNED_OWNER_LAUNCH_PASS")==1 and
+                     start.stdout.splitlines().count("HERMES_SYNTHETIC_HTTP200_OWNER_MISMATCH_DENIED_PASS")==1 and
                      start.stdout.splitlines().count("HERMES_SYNTHETIC_REVOKED_OUTPUT_FENCED_PASS")==1 and
                      start.stdout.splitlines().count("HERMES_SYNTHETIC_REAL_PROCESS_GROUP_FENCED_PASS")==1 and
                      f"HERMES_ACTUAL_SPLIT_ROOT_STAGE_{count}_PASS" in start.stdout.splitlines(),
@@ -375,6 +377,7 @@ def run():
                       (start.stdout+start.stderr)[-850:])
             checks["normal_entrypoint_strict_executor_twice"]=True
             checks["signed_owner_positive_negative_and_heartbeat_denied_in_image"]=True
+            checks["http200_contradictory_task_owner_denied_in_image"]=True
             checks["revocation_during_spawn_and_result_fenced_in_image"]=True
             checks["real_os_parent_and_descendant_process_group_fenced_in_image"]=True
             checks["kernel_ro_input_rw_scratch_admission_verified"]=True

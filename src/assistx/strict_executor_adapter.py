@@ -129,7 +129,7 @@ def install_strict_executor_adapter(adapter: Any) -> None:
         self._heartbeat_thread = None
 
     def heartbeat_once(self, status: str = "RUNNING") -> None:
-        client_request(
+        response = client_request(
             self,
             "POST",
             f"/api/tasks/{self._active_task_id}/heartbeat",
@@ -142,6 +142,10 @@ def install_strict_executor_adapter(adapter: Any) -> None:
             },
             timeout=15,
         )
+        if os.getenv("HERMES_REQUIRE_OWNER_BOUND_LAUNCH") == "true":
+            from .hermes_launch_gate import verify_heartbeat_ack
+
+            verify_heartbeat_ack(self, response)
 
     def mark_lease_lost(self, reason: str) -> None:
         if self._lease_lost.is_set():
@@ -167,6 +171,11 @@ def install_strict_executor_adapter(adapter: Any) -> None:
                 heartbeat_once(self)
                 self._heartbeat_failures = 0
             except Exception as exc:
+                from .hermes_launch_gate import LaunchDenied
+
+                if isinstance(exc, LaunchDenied):
+                    mark_lease_lost(self, "heartbeat_authoritative_claim_denied")
+                    return
                 self._heartbeat_failures += 1
                 logger.warning(
                     "strict executor heartbeat failed task=%s claim=%s failures=%s: %s",
@@ -187,7 +196,14 @@ def install_strict_executor_adapter(adapter: Any) -> None:
         self._active_task_id = task_id
         self._active_claim_id = claim_id
         self._active_session_id = session_id
-        heartbeat_once(self)
+        try:
+            heartbeat_once(self)
+        except Exception as exc:
+            from .hermes_launch_gate import LaunchDenied
+
+            if isinstance(exc, LaunchDenied):
+                mark_lease_lost(self, "initial_heartbeat_authoritative_claim_denied")
+            raise
         self._heartbeat_thread = threading.Thread(
             target=heartbeat_loop,
             args=(self,),
@@ -281,7 +297,14 @@ def install_strict_executor_adapter(adapter: Any) -> None:
             or session_id != self._active_session_id
         ):
             raise RuntimeError("heartbeat identity does not match active executor claim")
-        heartbeat_once(self, status)
+        try:
+            heartbeat_once(self, status)
+        except Exception as exc:
+            from .hermes_launch_gate import LaunchDenied
+
+            if isinstance(exc, LaunchDenied):
+                mark_lease_lost(self, "explicit_heartbeat_authoritative_claim_denied")
+            raise
 
     def complete_task(
         self,
