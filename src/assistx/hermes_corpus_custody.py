@@ -116,6 +116,17 @@ def verify_signed_corpus(read_root: str, write_root: str,
             fail("invalid Ed25519 signature length")
         payload = {k: v for k, v in document.items() if k != "signature"}
         public.verify(bytes.fromhex(sig), canonical(payload))
+        watch = os.getenv("HERMES_REQUIRE_CORPUS_CHECKPOINT", "")
+        if watch not in ("", "false", "true"):
+            fail("invalid witness checkpoint mode")
+        if watch == "true":
+            from assistx.hermes_corpus_checkpoint import verify_checkpoint
+            verify_checkpoint(
+                read_root=read_root, write_root=write_root,
+                corpus_public_key=trusted, signed_manifest=raw,
+                checkpoint_path=os.getenv("HERMES_CORPUS_CHECKPOINT_PATH", ""),
+                witness_key_path=os.getenv("HERMES_CORPUS_WITNESS_KEY_PATH", ""),
+            )
         expected: dict[str, str] = {}
         accumulated = 0
         for item in payload["entries"]:

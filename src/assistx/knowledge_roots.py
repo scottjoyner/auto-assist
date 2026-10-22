@@ -111,6 +111,8 @@ def resolve_knowledge_roots(legacy: str, eval_path: str | None = None) -> tuple[
             raise ValueError("mount isolation requires explicit split roots")
         if os.getenv("HERMES_REQUIRE_SIGNED_CORPUS", "") not in ("", "false"):
             raise ValueError("signed corpus requires strict mounted split roots")
+        if os.getenv("HERMES_REQUIRE_CORPUS_CHECKPOINT", "") not in ("", "false"):
+            raise ValueError("checkpoint requires strict mounted signed split roots")
         return legacy, legacy, False
     ro = _strict_path(read, READ_ENV)
     rw = _strict_path(write, WRITE_ENV)
@@ -129,6 +131,11 @@ def resolve_knowledge_roots(legacy: str, eval_path: str | None = None) -> tuple[
     signed = os.getenv("HERMES_REQUIRE_SIGNED_CORPUS", "")
     if signed not in ("", "false", "true"):
         raise ValueError("invalid signed corpus admission mode")
+    watch = os.getenv("HERMES_REQUIRE_CORPUS_CHECKPOINT", "")
+    if watch not in ("", "false", "true"):
+        raise ValueError("invalid corpus checkpoint admission mode")
+    if watch == "true" and signed != "true":
+        raise ValueError("checkpoint requires signed corpus mode")
     if signed == "true":
         if strict != "true":
             raise ValueError("signed corpus requires kernel mount isolation")

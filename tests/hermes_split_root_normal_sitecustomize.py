@@ -34,6 +34,9 @@ def synthetic_dispatch():
     assert adapter.KNOWLEDGE_SPLIT_ENABLED
     assert os.environ["HERMES_REQUIRE_MOUNT_ISOLATION"] == "true"
     assert os.environ["HERMES_REQUIRE_SIGNED_CORPUS"] == "true"
+    assert os.environ["HERMES_REQUIRE_CORPUS_CHECKPOINT"] == "true"
+    assert os.environ["HERMES_CORPUS_CHECKPOINT_PATH"] == "/app/attestation/checkpoint.json"
+    assert os.environ["HERMES_CORPUS_WITNESS_KEY_PATH"] == "/app/attestation/witness.pub"
     assert os.environ["HERMES_CORPUS_TRUST_KEY_PATH"] == "/app/attestation/trust.pub"
     assert os.environ["HERMES_KNOWLEDGE_WRITE_MOUNT"] == "/workspace"
     assert pathlib.Path("/workspace/hermes-home/config.yaml").is_file()

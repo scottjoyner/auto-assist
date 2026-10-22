@@ -30,3 +30,7 @@ The exact patched-code research Compose canary also passed **11/11** physical ch
 - **Release:** real owner-bound task receipts, independent revocation/fencing, distributed high-water checkpoints, rollback, exact signed image, and independent reviewer signoff remain open.
 
 Do not merge, enable signed data ingestion, remount NAS5, or restart production Hermes based on this synthetic gate. P0 issue #414 remains open and release **HOLD**.
+
+## Optional image-pinned replay checkpoint follow-up
+
+A second, distinct Ed25519 witness key can pin an exact signed manifest hash to a newer checkpoint in the restricted synthetic candidate. Older signed manifests are denied against the pinned newer checkpoint. **Co-rollback of both the corpus and the witness checkpoint is still accepted**, confirming that independent durable high-water custody is unresolved. See [HERMES_IMAGE_PINNED_CHECKPOINT_REPLAY_HOLD_20261022.md](HERMES_IMAGE_PINNED_CHECKPOINT_REPLAY_HOLD_20261022.md). Production HOLD is unchanged.

@@ -38,6 +38,7 @@ CHECKS = (
     "restricted_compose_render_verified",
     "kernel_ro_input_rw_scratch_admission_verified",
     "signed_corpus_mutation_denied_at_relaunch",
+    "older_signed_manifest_replay_denied",
     "effective_container_mount_and_security_verified",
     "normal_entrypoint_strict_executor_twice",
     "actual_patched_selftask_read_write_restart",
@@ -82,9 +83,11 @@ def read_only_source():
         "src/assistx/swarm_memory.py":
             "9b073d1f8e31d98e08820d473523abbf5d716818",
          "src/assistx/knowledge_roots.py":
-            "830f5942202c629f053f7c2ea88e42a5c3e1d099",
+            "498fae588fd4b7313bb43fe6b03d991615c8994f",
         "src/assistx/hermes_corpus_custody.py":
-            "f8a15e19c6cb8ae53151568c39ec05145436bfd1",
+            "e504334468ae0962668f2abd37978532483ec29b",
+        "src/assistx/hermes_corpus_checkpoint.py":
+            "f393cd9de5ce37542cc7347d80efe1467c1f7045",
     }
     for path, exact_blob in expected_blobs.items():
         observed = cmd(["git", "-C", str(ROOT), "hash-object",
@@ -131,6 +134,9 @@ def restricted_render(doc, image, corpus, scratch):
         "HERMES_KNOWLEDGE_WRITE_ROOT":"/workspace/knowledge",
         "HERMES_REQUIRE_MOUNT_ISOLATION":"true",
         "HERMES_REQUIRE_SIGNED_CORPUS":"true",
+        "HERMES_REQUIRE_CORPUS_CHECKPOINT":"true",
+        "HERMES_CORPUS_CHECKPOINT_PATH":"/app/attestation/checkpoint.json",
+        "HERMES_CORPUS_WITNESS_KEY_PATH":"/app/attestation/witness.pub",
         "HERMES_CORPUS_TRUST_KEY_PATH":"/app/attestation/trust.pub",
         "HERMES_KNOWLEDGE_WRITE_MOUNT":"/workspace",
         "HERMES_KNOWLEDGE_ROOT":"/workspace/knowledge",
@@ -186,6 +192,7 @@ def run():
             (SOURCE/"knowledge_roots.py",ctx/"knowledge_roots.py"),
             (SOURCE/"swarm_memory.py",ctx/"swarm_memory.py"),
             (SOURCE/"hermes_corpus_custody.py",ctx/"hermes_corpus_custody.py"),
+            (SOURCE/"hermes_corpus_checkpoint.py",ctx/"hermes_corpus_checkpoint.py"),
             (SOURCE/"agents/hermes_agent_adapter.py",ctx/"hermes_agent_adapter.py"),
             (ENTRY,ctx/"entrypoint.sh")):
             shutil.copyfile(a,b)
@@ -195,6 +202,9 @@ def run():
             "COPY knowledge_roots.py /app/src/assistx/knowledge_roots.py\n"
             "COPY swarm_memory.py /app/src/assistx/swarm_memory.py\n"
             "COPY hermes_corpus_custody.py /app/src/assistx/hermes_corpus_custody.py\n"
+            "COPY hermes_corpus_checkpoint.py /app/src/assistx/hermes_corpus_checkpoint.py\n"
+            "COPY witness.pub /app/attestation/witness.pub\n"
+            "COPY checkpoint.json /app/attestation/checkpoint.json\n"
             "COPY trust.pub /app/attestation/trust.pub\n"
             "COPY hermes_agent_adapter.py /app/src/assistx/agents/hermes_agent_adapter.py\n"
             "COPY entrypoint.sh /entrypoint.sh\n"
@@ -224,9 +234,34 @@ def run():
             {"path":"decision.md","sha256":hashlib.sha256(raw).hexdigest(),
              "size":len(raw)}]}
         manifest={**payload,"signature":signer.sign(custody.canonical(payload)).hex()}
-        (corpus/custody.MANIFEST_NAME).write_text(json.dumps(manifest,sort_keys=True))
+        # Older epoch is properly signed by the SAME corpus signer, but is
+        # intentionally not approved by the image-pinned newer checkpoint.
+        stale_raw=b"SYNTHETIC_CONTEXT_OLD\n"
+        stale_payload={"schema":1,"root":"/research/knowledge","entries":[
+            {"path":"decision.md","sha256":hashlib.sha256(stale_raw).hexdigest(),
+             "size":len(stale_raw)}]}
+        stale_manifest={**stale_payload,
+            "signature":signer.sign(custody.canonical(stale_payload)).hex()}
+        manifest_raw=json.dumps(manifest,sort_keys=True)
+        stale_manifest_raw=json.dumps(stale_manifest,sort_keys=True)
+        (corpus/custody.MANIFEST_NAME).write_text(manifest_raw)
         (corpus/custody.MANIFEST_NAME).chmod(0o644)
-        del signer
+        witness=Ed25519PrivateKey.generate()
+        witness_pub=witness.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw)
+        need(witness_pub!=trusted,"synthetic witness key must be distinct")
+        (ctx/"witness.pub").write_bytes(witness_pub)
+        (ctx/"witness.pub").chmod(0o644)
+        checkpoint_body={
+            "schema":1,"generation":2,"root":"/research/knowledge",
+            "manifest_sha256":hashlib.sha256(manifest_raw.encode()).hexdigest(),
+            "corpus_key_sha256":hashlib.sha256(trusted).hexdigest()}
+        checkpoint={**checkpoint_body,
+                    "signature":witness.sign(custody.canonical(checkpoint_body)).hex()}
+        (ctx/"checkpoint.json").write_text(json.dumps(checkpoint,sort_keys=True))
+        (ctx/"checkpoint.json").chmod(0o644)
+        del signer, witness
         shutil.copyfile(SITE,work/"sitecustomize.py")
         (work/"sitecustomize.py").chmod(0o644)
         (work/"smoke.py").write_text(prior.SMOKE)
@@ -293,6 +328,20 @@ def run():
                  and not (corpus/"SUMMARY.md").exists()
                  and not list(work.rglob(".env")),"patch did not preserve scratch/source contract")
             checks["actual_patched_selftask_read_write_restart"]=True
+            # Replay OLD fully valid signed manifest AND matching old bytes,
+            # with the newer witness checkpoint baked in the same image.
+            (corpus/"decision.md").write_bytes(stale_raw)
+            (corpus/custody.MANIFEST_NAME).write_text(stale_manifest_raw)
+            replay=cmd(["docker","start","--attach",cid],35)
+            replay_code=cmd(["docker","inspect","-f","{{.State.ExitCode}}",cid],7)
+            need(replay_code.returncode==0 and replay_code.stdout.strip()!="0"
+                 and "HERMES_SPLIT_NORMAL_ENTRYPOINT_PASS" not in replay.stdout
+                 and json.loads((work/"stage.json").read_text())["stage"]==2,
+                 "older validly signed corpus was replayed past newer checkpoint")
+            checks["older_signed_manifest_replay_denied"]=True
+            # Restore the approved signed manifest, then corrupt its bytes.
+            (corpus/"decision.md").write_bytes(raw)
+            (corpus/custody.MANIFEST_NAME).write_text(manifest_raw)
             # Deliberately modify ONLY the disposable synthetic host corpus.
             # The container bind remains RO, yet its host backing bytes can
             # change: the next fresh adapter start MUST fail before dispatch.

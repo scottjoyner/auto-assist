@@ -35,6 +35,9 @@ services:
       HERMES_KNOWLEDGE_WRITE_ROOT: /workspace/knowledge
       HERMES_REQUIRE_MOUNT_ISOLATION: "true"
       HERMES_REQUIRE_SIGNED_CORPUS: "true"
+      HERMES_REQUIRE_CORPUS_CHECKPOINT: "true"
+      HERMES_CORPUS_CHECKPOINT_PATH: /app/attestation/checkpoint.json
+      HERMES_CORPUS_WITNESS_KEY_PATH: /app/attestation/witness.pub
       HERMES_CORPUS_TRUST_KEY_PATH: /app/attestation/trust.pub
       HERMES_KNOWLEDGE_WRITE_MOUNT: /workspace
       HERMES_KNOWLEDGE_ROOT: /workspace/knowledge
