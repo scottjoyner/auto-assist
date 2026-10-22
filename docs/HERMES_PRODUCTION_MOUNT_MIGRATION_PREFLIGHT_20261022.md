@@ -37,3 +37,7 @@ The restricted candidate has exactly two synthetic mounts, with UID 1000, networ
 ## Tests and blockers
 
 The focused offline suite includes ancestor containment, symlink/alias detection, NAS risk, private SSH mount classification, unreviewed RW mounts, and strict negative Compose checks. The audited production configuration is expected to fail release qualification. The migration preflight reports **HOLD** even when the synthetic Compose rendering is compliant. Independent approval of real read-only sources, dedicated scratch, signed image/source, owner-bound task receipts, revocation/fencing, rollback and security review remain open. Do not merge/deploy or close P0 #414 based on this evidence.
+
+## Host topology follow-up
+
+Mount classification is now supplemented by [HERMES_STORAGE_TOPOLOGY_HOLD_20261022.md](HERMES_STORAGE_TOPOLOGY_HOLD_20261022.md). On x1-370 the NAS5-labelled host directory is not an actual mountpoint, and scratch is local-root research storage rather than approved production custody. The transition remains HOLD.
