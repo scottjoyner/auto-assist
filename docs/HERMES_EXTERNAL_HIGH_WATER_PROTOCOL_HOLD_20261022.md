@@ -30,3 +30,7 @@ The existing restricted rootless Compose candidate intentionally leaves external
 An independently administered append-only/rollback-resistant high-water ledger, owner-bound authority signer and key lifecycle, revocation/fencing, hardened UNIX relay, multi-host full-worker co-rollback proof, a signed exact production image, approved narrow RO corpus, controlled isolated RW scratch, removal of broad production mounts, authorized real task receipts, and independently approved rollback/recovery remain outstanding.
 
 **Do not merge or deploy PR #425 or close P0 #414 based on the local synthetic protocol. Production HOLD remains.**
+
+## Cross-host research follow-up
+
+A temporary Lenovo signer was exercised through a local test socket relay from x1-370. It accepted a current synthetic checkpoint and refused an older checkpoint with retained synthetic high-water. Same fleet administrator and no durable state means this does not establish independent custody. See [HERMES_LENOVO_HIGH_WATER_RESEARCH_HOLD_20261022.md](HERMES_LENOVO_HIGH_WATER_RESEARCH_HOLD_20261022.md).
