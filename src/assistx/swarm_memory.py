@@ -132,6 +132,8 @@ class MemoryIndex:
         self.load()
 
     def load(self) -> None:
+        if os.getenv("HERMES_REQUIRE_SIGNED_CORPUS", "") == "true":
+            raise ValueError("signed corpus mode forbids unbound persisted semantic index")
         try:
             if KNOWLEDGE_SPLIT_ENABLED:
                 checked_write_path(KNOWLEDGE_WRITE_ROOT, self.path)
@@ -172,6 +174,8 @@ class MemoryIndex:
         return [(t, m) for _, t, m in scored[:k]]
 
     def index_vault(self, max_chars: int = 900) -> int:
+        if os.getenv("HERMES_REQUIRE_SIGNED_CORPUS", "") == "true":
+            raise ValueError("signed corpus mode forbids unbound semantic index builds")
         # Accumulate into the existing index rather than wiping it, so an
         # interrupted/re-run build keeps whatever was already embedded.
         global _embed_broken_until
@@ -207,6 +211,8 @@ def vault_semantic_context(query: str, k: int = 5, fallback: str = "") -> str:
     build is slow and must run as a scheduled/background job). If the index is
     empty or the embed model is down, callers fall back to the snapshot.
     """
+    if os.getenv("HERMES_REQUIRE_SIGNED_CORPUS", "") == "true":
+        raise ValueError("signed corpus mode forbids stale semantic index reads")
     if time.time() < _embed_broken_until:
         return fallback
     idx = MemoryIndex()

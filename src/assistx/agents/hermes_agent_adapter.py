@@ -1013,6 +1013,23 @@ def _gather_knowledge_context(max_chars: int = 2500) -> str:
     chunks: List[str] = []
     total = 0
     root = KNOWLEDGE_READ_ROOT
+    if os.getenv("HERMES_REQUIRE_SIGNED_CORPUS", "") == "true":
+        from assistx.hermes_corpus_custody import verified_context_texts
+        # Verified bytes are captured before constructing any model context.
+        # No model dispatch on a failed later file or manifest revalidation.
+        files = verified_context_texts(
+            root, KNOWLEDGE_WRITE_ROOT,
+            os.environ.get("HERMES_CORPUS_TRUST_KEY_PATH", ""),
+        )
+        for rel, content in files:
+            if rel.split("/")[-1] in _KNOWLEDGE_TEMPLATE_FILES:
+                continue
+            if total >= max_chars:
+                break
+            chunk = content[:min(1500, max_chars-total)]
+            total += len(chunk)
+            chunks.append(f"# {rel}\n{chunk}")
+        return "\n\n".join(chunks)[:max_chars]
     if not os.path.isdir(root):
         return ""
     files = list(safe_knowledge_files(root, _KNOWLEDGE_TEMPLATE_FILES))
@@ -1185,7 +1202,8 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
     # Prefer semantic retrieval (relevant chunks) over a blind snapshot; fall back
     # to the bounded snapshot if the embed model is unavailable.
     context = ""
-    if swarm_memory is not None:
+    if (os.getenv("HERMES_REQUIRE_SIGNED_CORPUS", "") != "true"
+            and swarm_memory is not None):
         context = swarm_memory.vault_semantic_context(
             _SELFTASK_QUERIES.get(arch, arch), k=4, fallback=""
         )

@@ -158,3 +158,24 @@ def verify_signed_corpus(read_root: str, write_root: str,
     except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError,
             InvalidSignature, TypeError, OverflowError) as exc:
         fail("untrusted or unreadable signed corpus: " + type(exc).__name__)
+
+
+def verified_context_texts(read_root: str, write_root: str,
+                           trust_key_path: str) -> list[tuple[str, str]]:
+    """Return text bytes only after re-verification at consumption time.
+
+    First verify manifest/signature/full allowlist, then read each consumed
+    file *again through a single O_NOFOLLOW FD* and confirm its SHA-256.
+    Never return a partial or unchecked context on a failed later file.
+    This guards reads, not privileged host races after bytes were captured.
+    """
+    expected = verify_signed_corpus(read_root, write_root, trust_key_path)
+    root = os.path.realpath(read_root)
+    result: list[tuple[str, str]] = []
+    for rel, digest in expected.items():
+        full = _safe_relpath(root, rel)
+        raw = _safe_regular(full, MAX_FILE_BYTES)
+        if hashlib.sha256(raw).hexdigest() != digest:
+            fail("signed input changed during consumption")
+        result.append((rel, raw.decode("utf-8", errors="ignore")))
+    return result

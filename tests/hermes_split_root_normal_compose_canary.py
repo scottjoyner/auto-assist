@@ -78,13 +78,13 @@ def read_only_source():
     # production modules MUST retain their exact reviewed PR #425 blobs.
     expected_blobs = {
         "src/assistx/agents/hermes_agent_adapter.py":
-            "c5245a01545c5ccec4cfefcf5aa62d5f5028ae8a",
+            "ce3a96cee9656bc0818b5ee385aa9d0c44058a21",
         "src/assistx/swarm_memory.py":
-            "054d5df4d06205a43b6330dab6a5ea747344ecae",
+            "9b073d1f8e31d98e08820d473523abbf5d716818",
          "src/assistx/knowledge_roots.py":
             "830f5942202c629f053f7c2ea88e42a5c3e1d099",
         "src/assistx/hermes_corpus_custody.py":
-            "e61bfed29655879e9bd7723596e8103f15251d90",
+            "f8a15e19c6cb8ae53151568c39ec05145436bfd1",
     }
     for path, exact_blob in expected_blobs.items():
         observed = cmd(["git", "-C", str(ROOT), "hash-object",

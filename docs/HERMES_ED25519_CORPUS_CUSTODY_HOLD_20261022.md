@@ -33,3 +33,7 @@ The isolated Compose candidate ran as UID 1000, network none, read-only rootfs, 
 - The running production Hermes still has 16 mounts with nine writable, including two writable aliases enclosing the protected SSD knowledge corpus, a NAS5-labelled local-root path, mutable Git/source mounts and private SSH authorization surfaces.
 
 Production **HOLD** remains. Keep draft PR #425 unmerged and P0 #414 open until independent signer/key custody, replay protection, verified source/image, narrow production mount migration, owner-bound grants and revocation/fencing, and tested rollback have all been approved.
+
+## Point-of-use follow-up
+
+Signed context reads now re-verify captured bytes, and the legacy semantic-memory index is blocked in signed mode pending a manifest-bound index. See [HERMES_SIGNED_CONTEXT_CONSUMPTION_HOLD_20261022.md](HERMES_SIGNED_CONTEXT_CONSUMPTION_HOLD_20261022.md). Independent monotonic replay prevention and host custody remain unqualified; deployment HOLD is unchanged.
