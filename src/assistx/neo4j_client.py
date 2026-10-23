@@ -1095,18 +1095,54 @@ class Neo4jClient:
         caps = capabilities or []
         claim_id = idempotency_key or uuid.uuid4().hex
         effective_lease = lease_seconds if lease_seconds is not None else 900
+        # P0 #428: no claim grant, including idempotent retries, without
+        # the pinned Hermes identity's explicit session.
+        if agent_id == "hermes-local" and (
+            not str(session_id or "").strip()
+            or (idempotency_key is not None and not str(idempotency_key).strip())
+        ):
+            return {"claimed": False, "reason": "missing_hermes_claim_identity"}
         with self._session() as s:
             if idempotency_key:
-                prior = s.run(
-                    "MATCH (t:Task {id:$task_id, claim_id:$claim_id}) RETURN t",
-                    {"task_id": task_id, "claim_id": idempotency_key},
-                ).single()
+                if agent_id == "hermes-local":
+                    # Acquire the Task write lock before checking claim and
+                    # lease. Without it, a queued retry may observe a stale
+                    # match while a revocation/reissue owns the write lock.
+                    prior = s.run(
+                        """
+                        MATCH (t:Task {id:$task_id})
+                        SET t.hermes_fence_check_epoch =
+                            coalesce(t.hermes_fence_check_epoch, 0) + 1
+                        WITH t
+                        WHERE t.claim_id=$claim_id
+                          AND t.claimed_by=$agent_id
+                          AND t.agent_session_id=$session_id
+                          AND t.status IN ['CLAIMED','RUNNING','PAUSING']
+                          AND coalesce(t.execution_attempt,0)>0
+                          AND coalesce(t.lease_expires_at_ts,0)>timestamp()
+                        RETURN t
+                        """,
+                        {"task_id": task_id, "claim_id": claim_id,
+                         "agent_id": agent_id, "session_id": session_id},
+                    ).single()
+                else:
+                    prior = s.run(
+                        "MATCH (t:Task {id:$task_id, claim_id:$claim_id}) RETURN t",
+                        {"task_id": task_id, "claim_id": claim_id},
+                    ).single()
                 if prior:
                     return {"claimed": True, "claim_id": claim_id, "idempotent": True, "task": dict(prior["t"])}
 
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
+                // Serialize claim admission with concurrent cancellation,
+                // reclaim, and generation changes BEFORE the READY test.
+                FOREACH (_ IN CASE WHEN $agent_id='hermes-local' THEN [1] ELSE [] END |
+                    SET t.hermes_fence_check_epoch =
+                        coalesce(t.hermes_fence_check_epoch, 0) + 1
+                )
+                WITH t
                 WHERE t.status='READY'
                 OPTIONAL MATCH (t)-[:HAS_ALLOCATION]->(ar:AllocationReservation {status:'ACTIVE'})
                 WHERE ar.expires_at_ts > timestamp()
