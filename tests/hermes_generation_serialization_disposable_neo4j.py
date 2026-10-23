@@ -226,16 +226,14 @@ try:
         """,id=complete_tid,expires=now+120000,
     )["id"]==complete_tid
     def finish(session_obj, *, expected_generation=3, claim="completion-claim",
-               session_id="completion-session", attempt=2, task_id=complete_tid,
-               time_ms=now):
+               session_id="completion-session", attempt=2, task_id=complete_tid):
         return completion.complete_candidate_claim(
             session_obj,expected_generation=expected_generation,
             task_id=task_id,claim_id=claim,session_id=session_id,
-            attempt=attempt,now_ms=time_ms)
+            attempt=attempt)
     for modified in (
         {"claim":"stale-token"}, {"session_id":"wrong-session"},
-        {"attempt":1}, {"time_ms":now+240000},
-        {"task_id":prefix+"_missing"},
+        {"attempt":1}, {"task_id":prefix+"_missing"},
     ):
         with session() as s:
             try:
@@ -243,6 +241,22 @@ try:
             except g.GenerationProtocolError:pass
             else:raise AssertionError("invalid completion mutated generation")
         assert gen()==3 and state(complete_tid)["status"]=="RUNNING"
+    expired_tid=prefix+"_expired_completion"
+    assert call(
+        """
+        CREATE(t:Task{id:$id,status:'RUNNING',claimed_by:'hermes-local',
+               target_agent_id:'hermes-local',claim_id:'completion-claim',
+               agent_session_id:'completion-session',execution_attempt:2,
+               lease_expires_at_ts:$expires})
+        RETURN t.id AS id
+        """,id=expired_tid,expires=now-1000,
+    )["id"]==expired_tid
+    with session() as s:
+        try:finish(s,task_id=expired_tid)
+        except g.GenerationProtocolError:pass
+        else:raise AssertionError("expired lease accepted by database clock")
+    assert gen()==3 and state(expired_tid)["status"]=="RUNNING"
+    print("PASS expired_completion_lease_denied_by_database_time",flush=True)
     print("PASS candidate_completion_wrong_claim_session_attempt_lease_and_task_denied",flush=True)
 
     # Two exact same generation/claim attempts racing for the same Task:
@@ -278,7 +292,7 @@ try:
     with session() as s:
         candidate=g.pinned_candidate_snapshot(s)
     assert candidate["snapshot_generation"]==4
-    assert candidate["candidate_count"]==622
+    assert candidate["candidate_count"]==623
     assert candidate["all_writers_generation_fenced"] is False
     assert candidate["decision"]=="HOLD"
     print("PASS enrolled_completion_changes_pinned_generation_not_authority",flush=True)
