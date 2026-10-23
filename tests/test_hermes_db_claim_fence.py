@@ -185,13 +185,33 @@ class HermesDbFencingTests(unittest.TestCase):
         self.assertEqual(len(session.queries),1)
 
 
+    def test_generic_status_update_is_locked_and_denied_for_hermes_tasks(self):
+        client, session = self.client([None])
+        self.assertFalse(client.update_task_status("synthetic", "DONE"))
+        cypher, params = session.queries[0]
+        self.assertIn("coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'", cypher)
+        self.assertIn("coalesce(t.claimed_by, '') STARTS WITH 'hermes-'", cypher)
+        self.assertLess(cypher.index("hermes_fence_check_epoch"), cypher.index("WHERE ("))
+        self.assertIn("$st<>'CANCELLED'", cypher)
+        self.assertEqual(params["st"], "DONE")
+
+    def test_generic_run_creation_fences_and_denies_protected_task(self):
+        client, session = self.client([None])
+        self.assertIsNone(client.create_run("synthetic", "rogue", "model", {}))
+        cypher, params = session.queries[0]
+        self.assertIn("WITH t WHERE NOT", cypher)
+        self.assertIn("coalesce(t.target_agent_id,'') STARTS WITH 'hermes-'", cypher)
+        self.assertLess(cypher.index("hermes_fence_check_epoch"),
+                        cypher.index("WITH t WHERE NOT"))
+        self.assertEqual(params["agent"], "rogue")
+
     def test_cancellation_locks_before_rechecking_terminal_state(self):
         client,session=self.client([{"task_id":"synthetic"}])
         self.assertTrue(client.update_task_status("synthetic","CANCELLED"))
         sql,params=session.queries[0]
         self.assertIn("FOREACH",sql)
         self.assertLess(sql.index("hermes_fence_check_epoch"),
-                        sql.index("WHERE $st<>'CANCELLED'"))
+                        sql.index("WHERE ("))
         self.assertIn("t.status IN ['READY','CLAIMED','RUNNING','PAUSING']",sql)
         self.assertEqual(params,{"id":"synthetic","st":"CANCELLED"})
 
