@@ -100,7 +100,12 @@ def advance_candidate_generation(
     generation = session.execute_write(_tx)
     return {
         "owner": OWNER, "generation": generation,
-        "participating_write_committed": True,
+        # The ledger increment committed, and the caller ACKed its callback.
+        # Neither proves the callback changed an authorized Task, nor that
+        # downstream resources observed a durable effect/revocation.
+        "candidate_ledger_increment_committed": True,
+        "mutation_callback_acknowledged": True,
+        "source_task_write_independently_verified": False,
         "writer_registry_complete": False,
         "independent_custody_verified": False,
         "resource_effects_verified": False,
