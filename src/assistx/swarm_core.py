@@ -293,6 +293,22 @@ def project_assignment_event(neo: Neo4jClient, event: Dict[str, Any], payload: D
     if not task_id:
         return
 
+    # Generic event projection is not a source-owner-authoritative claim
+    # writer. An event asserting Hermes ownership must not create, release,
+    # heartbeat or complete a Task through this claimless path.
+    actor = event.get("actor")
+    actor = actor if isinstance(actor, dict) else {}
+    identity_fields = (
+        payload.get("worker_id"), payload.get("agent_id"),
+        payload.get("claimed_by"), payload.get("target_agent_id"),
+        event.get("agent_id"), actor.get("agent_id"),
+    )
+    if any(
+        isinstance(value, str) and value.startswith("hermes-")
+        for value in identity_fields
+    ):
+        return
+
     assignment_id = payload.get("assignment_id")
     worker_id = payload.get("worker_id")
     node_id = payload.get("node_id")
@@ -356,6 +372,20 @@ def project_assignment_event(neo: Neo4jClient, event: Dict[str, Any], payload: D
             MATCH (e:SignalEvent:EventEnvelope {event_id:$event_id})
             MERGE (t:Task {id:$task_id})
             ON CREATE SET t.created_at=datetime(), t.created_at_ts=timestamp()
+            // Serialize ownership check with authoritative claim writers.
+            // Missing retained owner lineage is still an unresolved P0.
+            SET t.hermes_fence_check_epoch =
+                coalesce(t.hermes_fence_check_epoch, 0) + 1
+            WITH e, t
+            WHERE NOT (
+                coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+                OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+                OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+                OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+            )
             SET t.updated_at=datetime(),
                 t.updated_at_ts=timestamp(),
                 t.status=$status,
