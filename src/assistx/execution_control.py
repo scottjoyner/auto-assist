@@ -272,7 +272,18 @@ class ExecutionControlPlane:
             timed_out = session.run(
                 """
                 MATCH (t:Task {status:'PAUSING'})
-                WHERE coalesce(t.preemption_requested_at_ts, 0) < $cutoff
+                // Take the Task write lock before checking timeout and owner
+                // so a stale read cannot reset a Hermes claim after reissue.
+                SET t.hermes_fence_check_epoch =
+                    coalesce(t.hermes_fence_check_epoch, 0) + 1
+                WITH t
+                WHERE t.status='PAUSING'
+                  AND coalesce(t.preemption_requested_at_ts, 0) < $cutoff
+                  AND NOT (
+                    coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                  )
                 WITH t, t.claimed_by AS prior_owner
                 SET t.status=CASE
                       WHEN coalesce(t.lease_expires_at_ts, 0) > $now_ms
@@ -311,6 +322,12 @@ class ExecutionControlPlane:
                     MATCH (t:Task {status:'PAUSED'})
                     WHERE t.checkpoint_id IS NOT NULL
                       AND t.migration_target_agent_id IS NOT NULL
+                      AND NOT (
+                        coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+                      )
                     RETURN t.id AS task_id,
                            t.migration_target_agent_id AS target_agent_id
                     ORDER BY t.paused_at_ts
