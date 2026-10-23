@@ -58,7 +58,7 @@ class LegacySwarmClaimlessDenyTests(unittest.TestCase):
     def test_claimless_failure_is_scoped_before_mutation(self):
         q = query_for("fail_task")
         assert_guard_before_write(self, q, "SET t.status=$status")
-        self.assertIn("AND NOT coalesce($agent_id, '') STARTS WITH 'hermes-'", q)
+        self.assertIn("AND NOT (coalesce($agent_id, '') STARTS WITH 'hermes-')", q)
 
     def test_claimless_lease_extension_is_scoped_before_mutation(self):
         q = query_for("set_task_lease")
