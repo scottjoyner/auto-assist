@@ -28,13 +28,15 @@ root=Path(__file__).resolve().parents[1]/"src/assistx"
 pkg=types.ModuleType("assistx")
 pkg.__path__=[str(root)]
 sys.modules["assistx"]=pkg
-for name in ("hermes_claim_census","hermes_source_generation_research"):
+for name in ("hermes_claim_census","hermes_source_generation_research",
+             "hermes_source_completion_research"):
     path=root/(name+".py")
     spec=importlib.util.spec_from_file_location("assistx."+name,path)
     module=importlib.util.module_from_spec(spec)
     sys.modules["assistx."+name]=module
     spec.loader.exec_module(module)
 from assistx import hermes_source_generation_research as g
+from assistx import hermes_source_completion_research as completion
 
 driver=GraphDatabase.driver("bolt://127.0.0.1:7687",auth=None,connection_timeout=5,
                             max_transaction_retry_time=10)
@@ -210,7 +212,78 @@ try:
     assert unsafe["production_dispatch_authorized"] is False
     print("PASS legacy_direct_writer_bypass_detected_as_unqualified",flush=True)
 
-    print("SYNTHETIC_SOURCE_GENERATION_DB_PASS=7",flush=True)
+    # Enroll ONE fixed synthetic Task-completion writer. It must use the
+    # ledger and validate exact claim/session/attempt/lease in the same tx.
+    complete_tid=prefix+"_completion"
+    now=int(time.time()*1000)
+    assert call(
+        """
+        CREATE(t:Task{id:$id,status:'RUNNING',claimed_by:'hermes-local',
+               target_agent_id:'hermes-local',claim_id:'completion-claim',
+               agent_session_id:'completion-session',execution_attempt:2,
+               lease_expires_at_ts:$expires})
+        RETURN t.id AS id
+        """,id=complete_tid,expires=now+120000,
+    )["id"]==complete_tid
+    def finish(session_obj, *, expected_generation=3, claim="completion-claim",
+               session_id="completion-session", attempt=2, task_id=complete_tid,
+               time_ms=now):
+        return completion.complete_candidate_claim(
+            session_obj,expected_generation=expected_generation,
+            task_id=task_id,claim_id=claim,session_id=session_id,
+            attempt=attempt,now_ms=time_ms)
+    for modified in (
+        {"claim":"stale-token"}, {"session_id":"wrong-session"},
+        {"attempt":1}, {"time_ms":now+240000},
+        {"task_id":prefix+"_missing"},
+    ):
+        with session() as s:
+            try:
+                finish(s,**modified)
+            except g.GenerationProtocolError:pass
+            else:raise AssertionError("invalid completion mutated generation")
+        assert gen()==3 and state(complete_tid)["status"]=="RUNNING"
+    print("PASS candidate_completion_wrong_claim_session_attempt_lease_and_task_denied",flush=True)
+
+    # Two exact same generation/claim attempts racing for the same Task:
+    # only one may commit. This exercises both the ledger CAS and Task ack.
+    def concurrent_finish():
+        with session() as s:
+            return finish(s)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a=pool.submit(concurrent_finish)
+        b=pool.submit(concurrent_finish)
+        results=[]
+        failures=0
+        for fut in (a,b):
+            try:results.append(fut.result(timeout=25))
+            except g.GenerationProtocolError:failures+=1
+    assert len(results)==1 and failures==1,(results,failures)
+    assert gen()==4 and state(complete_tid)["status"]=="DONE"
+    assert state(complete_tid)["completed_by"]=="hermes-local"
+    assert results[0]["source_task_row_readback_in_tx"] is True
+    assert results[0]["resource_side_completion_verified"] is False
+    assert results[0]["source_generation_writers_complete"] is False
+    assert results[0]["production_dispatch_authorized"] is False
+    print("PASS enrolled_completion_single_winner_under_race",flush=True)
+
+    with session() as s:
+        try:finish(s,expected_generation=4)
+        except g.GenerationProtocolError:pass
+        else:raise AssertionError("duplicate completion after DONE accepted")
+    assert gen()==4 and state(complete_tid)["status"]=="DONE"
+    print("PASS duplicate_completion_no_second_generation",flush=True)
+
+    # This is still a candidate, never a production release authority.
+    with session() as s:
+        candidate=g.pinned_candidate_snapshot(s)
+    assert candidate["snapshot_generation"]==4
+    assert candidate["candidate_count"]==622
+    assert candidate["all_writers_generation_fenced"] is False
+    assert candidate["decision"]=="HOLD"
+    print("PASS enrolled_completion_changes_pinned_generation_not_authority",flush=True)
+
+    print("SYNTHETIC_SOURCE_GENERATION_DB_PASS=11",flush=True)
     print("PRODUCTION_TASKS_TOUCHED=0;DECISION=HOLD",flush=True)
 finally:
     # Only our synthetic nodes; canary schema exists only in disposable DB.
