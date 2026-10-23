@@ -902,6 +902,21 @@ def fail_task(neo: Neo4jClient, task_id: str, agent_id: str, error_summary: str,
         rec = s.run(
             """
             MATCH (t:Task {id:$task_id})
+            // Serialize with claim, cancellation and reissue writers before
+            // inspecting ownership. Never run the WHERE check on stale
+            // read-committed data while another transaction owns this Task.
+            SET t.hermes_fence_check_epoch =
+                coalesce(t.hermes_fence_check_epoch, 0) + 1
+            WITH t
+            // Generic swarm mutation lacks a current Hermes claim token.
+            // Never requeue/fail or extend a Hermes-associated lease here.
+            // The transactional, claim-bound writer must own that decision.
+            WHERE NOT (
+                coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+            )
+              AND NOT coalesce($agent_id, '') STARTS WITH 'hermes-'
             SET t.status=$status,
                 t.failed_by=$agent_id,
                 t.agent_session_id=coalesce($session_id, t.agent_session_id),
@@ -925,6 +940,20 @@ def set_task_lease(neo: Neo4jClient, task_id: str, lease_seconds: int = 900) -> 
         s.run(
             """
             MATCH (t:Task {id:$task_id})
+            // Serialize with claim, cancellation and reissue writers before
+            // inspecting ownership. Never run the WHERE check on stale
+            // read-committed data while another transaction owns this Task.
+            SET t.hermes_fence_check_epoch =
+                coalesce(t.hermes_fence_check_epoch, 0) + 1
+            WITH t
+            // Generic swarm mutation lacks a current Hermes claim token.
+            // Never requeue/fail or extend a Hermes-associated lease here.
+            // The transactional, claim-bound writer must own that decision.
+            WHERE NOT (
+                coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+            )
             SET t.lease_expires_at_ts=$expires,
                 t.lease_seconds=$lease_seconds,
                 t.updated_at=datetime(),
