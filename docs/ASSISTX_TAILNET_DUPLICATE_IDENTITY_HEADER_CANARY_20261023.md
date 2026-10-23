@@ -1,0 +1,10 @@
+# AssistX sanitizer — duplicate and case-variant identity-header qualification
+**October 23, 2026 | PR #425 | P0 #414 | production HOLD**
+
+The previously validated Caddy release candidate strips six client-supplied identity headers before forwarding to the AssistX API. A new opt-in script, `tests/assistx_tailnet_duplicate_header_canary.py --physical-loopback`, checks a narrower but important wire-level question: can an HTTP client bypass the stripping rules by supplying duplicate instances or alternative capitalization?
+
+The physical canary uses the **SHA-256-pinned release Caddyfile**, rewritten only to random loopback listener/upstream ports by the already reviewed `staged_caddyfile` helper. Its synthetic Python backend inspects `self.headers.get_all(name, [])` to detect *all* received instances, not merely the first one. Raw synthetic HTTP requests include canonical headers, two differently capitalized names for the same header, multiple copies of the exact name, all six supported identity aliases, and mixed-case variants across GET, POST and PUT. Synthetic Basic authorization must survive the proxy. Neither the production API nor any Tailnet destination is contacted, and only synthetic credential strings are used.
+
+**Physical result: 6/6 PASS** — real Caddy configuration validated and five synthetic header scenarios stripped all identity instances, preserving synthetic Basic authentication. **15 new unit tests PASS**; the assembled exact-head sanitizer regression suite passed **138 tests** (one unrelated Starlette deprecation warning); Ruff clean. Temporary loopback listeners and Caddy were cleaned up.
+
+This proves the current checked-in sanitizer behavior for the *tested* request variants. It does not prove every possible HTTP implementation, that production :8000 now uses Caddy, or that the legacy unit cannot return at boot. The live `control-room-ts-proxy.service` remains active, enabled and unsafe. Keep **PR #425 DRAFT / P0 #414 OPEN / production HOLD** until the actual sanitized cutover, startup fencing, authenticated genuine-client checks, and safe Caddy-to-Caddy fallback are completed.
