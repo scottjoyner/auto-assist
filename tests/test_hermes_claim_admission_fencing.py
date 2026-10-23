@@ -102,9 +102,10 @@ class ClaimAdmissionTests(unittest.TestCase):
         out=cli.claim_task("synthetic","hermes-local",session_id="session")
         self.assertTrue(out["claimed"])
         sql,p=db.queries[0]
-        self.assertIn("FOREACH",sql)
-        self.assertIn("hermes_fence_check_epoch",sql)
-        self.assertLess(sql.index("FOREACH"),sql.index("WHERE t.status='READY'"))
+        self.assertIn("SET t.hermes_fence_check_epoch",sql)
+        self.assertIn("WITH t",sql)
+        self.assertLess(sql.index("SET t.hermes_fence_check_epoch"),
+                        sql.index("WHERE t.status='READY'"))
         self.assertEqual(p["agent_id"],"hermes-local")
         self.assertEqual(p["session_id"],"session")
         self.assertTrue(p["claim_id"])
@@ -117,20 +118,29 @@ class ClaimAdmissionTests(unittest.TestCase):
         self.assertFalse(out["claimed"])
         self.assertEqual(out["status"],"CANCELLED")
 
-    def test_legacy_idempotent_unchanged(self):
-        cli,db=self.client([{"t":{"id":"synthetic","status":"DONE"}}])
+    def test_legacy_idempotent_requires_owner_and_nonterminal_claim(self):
+        cli,db=self.client([None,None,{"status":"DONE",
+            "target_agent_id":None,"required_capabilities":[],
+            "capabilities":[],"paperclip_dispatched":False}])
         out=cli.claim_task("synthetic","legacy-worker",
                            session_id=None,idempotency_key="old")
-        self.assertTrue(out["claimed"])
-        self.assertTrue(out["idempotent"])
-        self.assertEqual(db.queries[0][0],
-                         "MATCH (t:Task {id:$task_id, claim_id:$claim_id}) RETURN t")
+        self.assertFalse(out["claimed"])
+        self.assertEqual(out["reason"],"not_ready")
+        sql,params=db.queries[0]
+        self.assertIn("SET t.hermes_fence_check_epoch",sql)
+        self.assertIn("t.claimed_by=$agent_id",sql)
+        self.assertIn("t.status IN ['CLAIMED','RUNNING','PAUSING']",sql)
+        self.assertIn("coalesce(t.completed_by, '') STARTS WITH 'hermes-'",sql)
+        self.assertLess(sql.index("SET t.hermes_fence_check_epoch"),
+                        sql.index("WHERE t.claim_id=$claim_id"))
+        self.assertEqual(params["agent_id"],"legacy-worker")
 
     def test_legacy_claim_admission_does_not_change_status_gate(self):
         cli,db=self.client([{"t":{"id":"synthetic","status":"CLAIMED"}}])
         cli.claim_task("synthetic","legacy-worker",session_id=None)
         sql,_=db.queries[0]
-        self.assertIn("WHEN $agent_id='hermes-local'",sql)
+        self.assertIn("SET t.hermes_fence_check_epoch",sql)
+        self.assertIn("AND NOT (",sql)
         self.assertIn("WHERE t.status='READY'",sql)
 
     def test_claim_idempotent_retains_no_production_authority_claim(self):
