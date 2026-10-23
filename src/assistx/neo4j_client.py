@@ -2325,13 +2325,27 @@ class Neo4jClient:
             rec = s.run(
                 """
                 MATCH (t:Task {id:$id})
-                FOREACH (_ IN CASE WHEN $st='CANCELLED' THEN [1] ELSE [] END |
+                // Lock the Task before applying source-owner restrictions.
+                // Legacy generic updates may not complete/reset Hermes tasks
+                // without a source-authoritative claim/lease transaction.
+                FOREACH (_ IN CASE WHEN $st='CANCELLED'
+                    OR coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                    THEN [1] ELSE [] END |
                     SET t.hermes_fence_check_epoch =
                         coalesce(t.hermes_fence_check_epoch, 0) + 1
                 )
                 WITH t
-                WHERE $st<>'CANCELLED'
-                   OR t.status IN ['READY','CLAIMED','RUNNING','PAUSING']
+                WHERE (
+                    $st='CANCELLED'
+                    AND t.status IN ['READY','CLAIMED','RUNNING','PAUSING']
+                ) OR (
+                    $st<>'CANCELLED'
+                    AND NOT (
+                        coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                    )
+                )
                 SET t.status=$st, t.updated_at_ts=timestamp()
                 RETURN t.id AS task_id
                 """,
@@ -2344,6 +2358,9 @@ class Neo4jClient:
         with self._session() as s:
             rec = s.run(
                 "MATCH (t:Task{id:$tid}) "
+                "SET t.hermes_fence_check_epoch=coalesce(t.hermes_fence_check_epoch,0)+1 "
+                "WITH t WHERE NOT (coalesce(t.claimed_by,'') STARTS WITH 'hermes-' "
+                "OR coalesce(t.target_agent_id,'') STARTS WITH 'hermes-') "
                 "CREATE (r:AgentRun {id:$run_id, task_id:$tid, agent:$agent, model:$model, status:'RUNNING', "
                 " started_at:datetime(), started_at_ts:timestamp(), manifest_json:$manifest, "
                 " created_at:datetime(), created_at_ts:timestamp(), "
@@ -2351,7 +2368,9 @@ class Neo4jClient:
                 "MERGE (t)-[:EXECUTED_BY]->(r) RETURN r.id as id",
                 {"tid": task_id, "run_id": run_id, "agent": agent, "model": model, "manifest": json.dumps(manifest)},
             ).single()
-            return rec["id"]
+            # The generic path is unavailable for Hermes source-owned tasks;
+            # only a claim-fenced completion transaction may create its run.
+            return rec["id"] if rec else None
 
     def complete_run(self, run_id: str, status: str, result_json: dict[str, Any] | None = None):
         with self._session() as s:

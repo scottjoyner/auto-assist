@@ -196,11 +196,30 @@ assert alias_client().complete_task(tid, "rogue-legacy", "DONE",
 assert state(tid)["status"] == "FAILED" and state(tid)["runs"] == 1
 print("PASS cross_agent_idempotent_replay_denied", flush=True)
 
+# Guard generic run/status helpers as well: they carry no claim credential
+# and therefore may only mutate non-Hermes Task records.
+tid = alias_task("generic-status", "hermes-disposable")
+assert alias_client().update_task_status(tid, "DONE") is False
+assert state(tid)["status"] == "CLAIMED"
+print("PASS generic_terminal_status_hermes_denied", flush=True)
+
+tid = alias_task("generic-run", "hermes-disposable")
+assert alias_client().create_run(tid, "rogue-legacy", "synthetic", {}) is None
+assert state(tid)["runs"] == 0
+print("PASS generic_agent_run_hermes_denied", flush=True)
+
+tid = alias_task("legacy-generic", "ordinary-agent", target="ordinary-agent")
+assert alias_client().update_task_status(tid, "DONE") is True
+assert alias_client().create_run(tid, "ordinary-agent", "synthetic", {}) is not None
+assert state(tid)["status"] == "DONE" and state(tid)["runs"] == 1
+print("PASS unrelated_legacy_generic_operations_preserved", flush=True)
+
 print(json.dumps({"schema":1,"mode":"hermes_disposable_neo4j_races",
                   "isolation":"docker_internal_network_only",
                   "forward_revoke_or_reissue_races":8,
                   "reverse_completion_wins":3,
-                  "synthetic_cases_passed":16,
+                  "synthetic_cases_passed":19,
+                  "generic_mutation_fences":3,
                   "hermes_alias_and_cross_agent_denials":5,
                   "live_claims_touched":0,
                   "production_deployment_authorized":False,"decision":"HOLD"},sort_keys=True))
