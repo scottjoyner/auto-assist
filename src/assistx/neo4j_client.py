@@ -1128,6 +1128,9 @@ class Neo4jClient:
                     t.claimed_by=$agent_id,
                     t.agent_session_id=$session_id,
                     t.claim_id=$claim_id,
+                    // Sticky owner provenance survives later lease/session clearing.
+                    t.hermes_claim_scope=CASE WHEN $agent_id='hermes-local'
+                        THEN true ELSE coalesce(t.hermes_claim_scope, false) END,
                     t.claimed_at=datetime(),
                     t.claimed_at_ts=timestamp(),
                     t.execution_attempt=coalesce(t.execution_attempt, 0) + 1,
