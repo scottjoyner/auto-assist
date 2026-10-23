@@ -14,6 +14,7 @@ from .control_room_runtime import install_control_room_runtime
 from .executor_claims import install_live_executor_claims
 from .executor_security import install_executor_security
 from .mobile_agent_routes import register_mobile_agent_routes
+from .owner_gateway_provenance import install_signed_owner_gateway
 from .overlay_routes import build_overlay_router
 from .passive_agents import build_passive_agent_router
 from .passive_claims import build_passive_claim_router
@@ -78,6 +79,7 @@ install_control_room_runtime(control_room_module)
 install_strict_offline_projection(router_integration_module)
 install_executor_security(app, _neo, api_module)
 install_live_executor_claims(app, _neo)
+install_signed_owner_gateway(app)  # defaults disabled; never trust unsigned owner headers
 _remove_superseded_operator_routes()
 _legacy_recovery_execute = _extract_legacy_recovery_execute()
 app.include_router(build_recovery_mode_router(auth))

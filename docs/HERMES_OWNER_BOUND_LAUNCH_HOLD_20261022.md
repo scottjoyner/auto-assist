@@ -26,3 +26,7 @@ New local tests use synthetic signed JWTs to verify owner/claim/model tampering,
 No physical real signed task has been dispatched through production router/API. Token ownership, server-side task lease revocation and fencing across partitions, owner-bound execution receipts, separate signer/key custody and a rollback-resistant independent witness must be demonstrated against live authorized task infrastructure. Original Hermes still runs with **16 legacy mounts, nine writable**, including protected SSD ancestors, broad Git binds, NAS-labelled fallback and SSH mounts. An approved signed RO corpus source, separate authorized RW scratch, removal of every legacy bind, exact-image build/reproducibility, and independent rollback acceptance remain required.
 
 **No production deployment or restart was authorized.**
+
+## Real-image physical owner-gate rehearsal
+
+The separate restricted candidate now exercises the actual signed JWT launch verification, successful mocked fresh heartbeat, changed-owner denial, and mocked heartbeat-outage denial on **both** normal container starts (13/13 physical checks). A missing `owner_identity.py` module was found and supplied as an exact pinned test-image overlay; the production image itself remains unchanged. See [HERMES_PHYSICAL_OWNER_LAUNCH_REHEARSAL_HOLD_20261022.md](HERMES_PHYSICAL_OWNER_LAUNCH_REHEARSAL_HOLD_20261022.md). This does not authorize production rollout.

@@ -8,6 +8,7 @@ owner authority.
 """
 from __future__ import annotations
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -97,3 +98,46 @@ def verify_owner_bound_launch(client: Any, *, agent_id: str, model: str) -> dict
         raise
     except (ValueError, TypeError, AttributeError, KeyError) as exc:
         raise LaunchDenied("signed owner-bound executor launch denied") from exc
+
+def verify_heartbeat_ack(client: Any, response: Any) -> None:
+    """Fail closed on an HTTP-200 heartbeat with stale or contradictory Task.
+
+    This is opt-in with the signed owner-bound launch gate. The API must
+    independently authenticate each task request and revalidate the active
+    claim; a worker cannot trust an HTTP status alone.
+    """
+    try:
+        if type(response) is not dict or type(response.get("task")) is not dict:
+            raise LaunchDenied("heartbeat omitted authoritative Task record")
+        task = response["task"]
+        token = getattr(client, "task_token", "")
+        if not isinstance(token, str) or not token:
+            raise LaunchDenied("heartbeat missing scoped executor token")
+        signed = ExecutorTokenCodec(public_key=_trusted_public_key()).decode(
+            token, audience="assistx-executor")
+        if canonical_identity(task, origin="heartbeat Task owner") != canonical_identity(
+                signed, origin="signed token owner"):
+            raise LaunchDenied("heartbeat task owner changed")
+        required = (
+            ("id", signed.get("task_id"), getattr(client, "_active_task_id", "")),
+            ("claim_id", signed.get("claim_id"), getattr(client, "_active_claim_id", "")),
+            ("claimed_by", signed.get("agent_id"), client.task_claims.get("agent_id")),
+            ("agent_session_id", getattr(client, "_active_session_id", ""),
+             getattr(client, "_active_session_id", "")),
+        )
+        for field, from_token, expected in required:
+            if (type(expected) is not str or not expected
+                    or from_token != expected or task.get(field) != expected):
+                raise LaunchDenied("heartbeat returned contradictory Task claim")
+        if task.get("status") != "RUNNING":
+            raise LaunchDenied("heartbeat Task not actively RUNNING")
+        expiry = task.get("lease_expires_at_ts")
+        token_expiry = signed.get("exp")
+        if (type(expiry) is not int or type(token_expiry) is not int
+                or expiry <= int(time.time() * 1000)
+                or token_expiry * 1000 > expiry):
+            raise LaunchDenied("heartbeat lease missing, expired, or shorter than token")
+    except LaunchDenied:
+        raise
+    except (ValueError, TypeError, AttributeError, KeyError) as exc:
+        raise LaunchDenied("heartbeat Task acknowledgement failed validation") from exc
