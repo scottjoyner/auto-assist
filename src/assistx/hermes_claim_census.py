@@ -19,16 +19,22 @@ VALID_STATES = frozenset({"CLAIMED", "RUNNING", "PAUSING", "READY",
 ACTIVE = frozenset({"CLAIMED", "RUNNING", "PAUSING"})
 IDENTITY = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
-# Include claimless active records assigned to Hermes: silently dropping
-# them would yield a false "complete" claim list. Also include residual
-# claim IDs on terminal tasks so an old claim cannot vanish without notice.
+# Include every currently identifiable Hermes owner and retained history,
+# even when claimed_by/target_agent_id, claim_id, and session were cleared.
+# An ambiguous historical row must invalidate the candidate digest, not be
+# silently absent from both read-committed scans. This does not prove that
+# erased history is complete or substitute for independent generation custody.
 QUERY = """
 MATCH (t:Task)
-WHERE (t.claimed_by=$agent OR t.target_agent_id=$agent
-       OR coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
-       OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-')
-  AND (t.status IN ['CLAIMED','RUNNING','PAUSING']
-       OR t.claim_id IS NOT NULL)
+WHERE coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+   OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+   OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+   OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+   OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+   OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+   OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+   OR coalesce(t.passive_claim_agent_id, '') STARTS WITH 'hermes-'
+   OR coalesce(t.last_passive_claim_agent_id, '') STARTS WITH 'hermes-'
 RETURN t.id AS task_id, t.claimed_by AS claimed_by,
        t.target_agent_id AS target_agent_id,
        t.claim_id AS claim_id, t.agent_session_id AS session_id,
