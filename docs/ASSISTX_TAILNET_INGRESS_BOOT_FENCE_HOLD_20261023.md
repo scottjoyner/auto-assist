@@ -1,5 +1,5 @@
 # AssistX Tailnet ingress boot-persistence guard — release HOLD
-**October 23, 2026 | PR #425 | P0 #414 | NO PRODUCTION CHANGE**
+**October 23, 2026 | PR #425 | ingress P0 #149 | NO PRODUCTION CHANGE**
 
 Fleet Commander read-only inspection confirmed the original `control-room-ts-proxy.service` is both **active** and **enabled at boot**. It runs `/usr/bin/socat`, forwarding the x1-370 Tailnet IPv4 `:8000` to the original AssistX loopback API. Consequently, simply stopping the old unit for a temporary Caddy cutover is not a durable remediation: the unsafe raw forwarder may return on login or reboot unless its startup is retired.
 
@@ -13,4 +13,4 @@ The new `scripts/assistx_tailnet_ingress_persistence_guard.py --physical-readonl
 - Verify actual port ownership, upstream identity stripping, real off-host Basic authentication, denied header-only impersonation, essential OpenCode/mobile traffic, and clean listener/socket closure.
 - Treat unexpected listener identity, stale pins, failed auth, or missing recovery ingress as HOLD. Neither code-level CI nor a no-op boot-state report authorizes a production change.
 
-Production ingress remains unchanged. The wider Hermes mount isolation, signed identity provenance, owner binding, revocation and fencing gates are separate NO-GO items. Keep PR #425 draft and issue #414 open.
+Production ingress remains unchanged. The wider Hermes mount isolation, signed identity provenance, owner binding, revocation and fencing gates are separate NO-GO items. Keep PR #425 draft and ingress issue #149 open; the separate Hermes writable-mount issue #414 also remains open.

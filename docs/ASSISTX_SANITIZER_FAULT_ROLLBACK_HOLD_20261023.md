@@ -1,6 +1,6 @@
 # AssistX Tailnet sanitizer — transient service failure and safe rollback proof
 
-**October 23, 2026 — release decision: HOLD.** This research slice belongs to draft [auto-assist PR #425](https://github.com/scottjoyner/auto-assist/pull/425) and P0 issue #414. It is a test of an actual user-systemd **failed Caddy upgrade** followed by a recovery to a *sanitizing* Caddy process. Nothing ran on the production Tailnet port 8000.
+**October 23, 2026 — release decision: HOLD.** This research slice belongs to draft [auto-assist PR #425](https://github.com/scottjoyner/auto-assist/pull/425) and ingress P0 issue #149. It is a test of an actual user-systemd **failed Caddy upgrade** followed by a recovery to a *sanitizing* Caddy process. Nothing ran on the production Tailnet port 8000.
 
 ## Why this qualification was needed
 

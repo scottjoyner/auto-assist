@@ -1,5 +1,5 @@
 # AssistX Tailnet TCP:8000 sanitizer replacement — physically qualified candidate
-**October 22, 2026 | Draft PR #425 | P0 issue #414 | Deployment HOLD**
+**October 22, 2026 | Draft PR #425 | ingress P0 issue #149 | Deployment HOLD**
 
 ## Verified live exposure and client dependencies
 
@@ -86,7 +86,7 @@ This establishes off-host Tailnet network reachability and sanitized rejection, 
 
 The same-port synthetic `socat` → Caddy → sanitizing Caddy rollback harness now derives **both** Caddy instances by rebinding the exact reviewed `scripts/assistx-tailnet-header-sanitizer.Caddyfile` into *loopback-only* ephemeral endpoints, instead of generating an independent test configuration. The checked-in source bytes are pinned to SHA-256 `2efa50602a821a9dffc6704496eb1cd0c0988e81c2f1fce65c3b9ad249e2a444`; altered source, missing identity-header removal rules, ambiguous reverse-proxy structure, production port reuse and symlinked source are rejected. Only listener/upstream addresses are substituted for the disposable synthetic ports. This removes a test/production configuration-divergence risk without changing the actual release Caddyfile.
 
-**Physical readback (x1-370): 7/7 loopback same-port tests PASS; 33 focused sanitizer unit/static tests PASS; Ruff clean.** Both checked-in OpenCode bridge `_post` request constructors still pass synthetic Basic auth without forwarding forged identity. The running Tailnet :8000 `socat`, API and Hermes remain untouched. This is strengthened **candidate reproducibility**, not a live cutover, off-host authorized client compatibility, or an independently qualified service restart/rollback. P0 #414 stays OPEN and PR #425 stays DRAFT / HOLD.
+**Physical readback (x1-370): 7/7 loopback same-port tests PASS; 33 focused sanitizer unit/static tests PASS; Ruff clean.** Both checked-in OpenCode bridge `_post` request constructors still pass synthetic Basic auth without forwarding forged identity. The running Tailnet :8000 `socat`, API and Hermes remain untouched. This is strengthened **candidate reproducibility**, not a live cutover, off-host authorized client compatibility, or an independently qualified service restart/rollback. Ingress P0 #149 stays OPEN and PR #425 stays DRAFT / HOLD.
 
 
 ### October 23 — reproducible transient user-systemd Basic-auth + sanitized fallback proof
@@ -95,7 +95,7 @@ New opt-in `tests/assistx_tailnet_systemd_auth_canary.py --physical-user-systemd
 
 Each temporary unit is checked against the actual configured AssistX Basic credentials **in local process memory only** and with read-only GET requests: anonymous requests return 401; valid Basic alone returns 200; a forged synthetic identity header alone returns 401; and valid Basic plus that forged header returns 200 after stripping. It stops and verifies release of the isolated listener before bringing up the second sanitized fallback. Transient units use `Restart=no`, `NoNewPrivileges=yes`, and a 45-second runtime limit. Every unit has a generated `assistx-sanitizer-proof-<hex>.service` name, and cleanup is limited to those generated names. No real task/model requests are performed and no protected response bodies or Basic values are logged.
 
-**Physical x1-370 readback: 6/6 checks passed** (release derivative validation, two authenticated/denied phases, two port releases, original runtime state unchanged); **10/10 new unit checks passed**; Ruff clean. No disposable units remained and the live raw `socat` service stayed active. This is a reproducible operator-gated maintenance rehearsal, not an authenticated *off-host* release test or production port-8000 cutover. **The raw Tailnet identity-spoofing risk remains unresolved in production.** Keep PR #425 DRAFT / HOLD, P0 #414 OPEN, and use a pinned sanitizing Caddy fallback rather than unsafe socat rollback.
+**Physical x1-370 readback: 6/6 checks passed** (release derivative validation, two authenticated/denied phases, two port releases, original runtime state unchanged); **10/10 new unit checks passed**; Ruff clean. No disposable units remained and the live raw `socat` service stayed active. This is a reproducible operator-gated maintenance rehearsal, not an authenticated *off-host* release test or production port-8000 cutover. **The raw Tailnet identity-spoofing risk remains unresolved in production.** Keep PR #425 DRAFT / HOLD, ingress P0 #149 OPEN, and use a pinned sanitizing Caddy fallback rather than unsafe socat rollback.
 
 
 ### October 23 — real Basic-authenticated Lenovo network-origin canary

@@ -1,6 +1,6 @@
 # AssistX sanitized ingress — read-only post-cutover attestation
 
-**October 23, 2026 | PR #425 | Security P0 #414 | HOLD**
+**October 23, 2026 | PR #425 | ingress P0 #149 | HOLD**
 
 The old `assistx_tailnet_sanitizer_preflight.py` assumes the original raw `socat` service is still running. It therefore cannot certify the *new* Caddy service even if the live cutover succeeds. The new inert-by-default `scripts/assistx_tailnet_postcutover_attestation.py --physical-readonly` inspects only local metadata after an independently controlled cutover; it never starts, stops, installs or disables systemd units, changes Docker/Tailscale/Serve, reads credentials, or performs API tasks.
 
