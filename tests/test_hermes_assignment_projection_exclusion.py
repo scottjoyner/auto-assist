@@ -104,3 +104,42 @@ def test_unknown_origin_cannot_be_claimed_as_authoritative():
     assert "t.status=$status" in sql
     assert "WHERE NOT (" in sql
     assert "source_generation" not in sql
+
+def test_event_receipt_does_not_claim_projection_on_hermes_denial(monkeypatch):
+    from unittest.mock import MagicMock
+    monkeypatch.setattr(core, "validate_event_envelope", lambda event: None)
+    monkeypatch.setattr(core, "build_event_metadata", lambda event, metadata: {})
+    monkeypatch.setattr(core, "upsert_artifact_refs", lambda neo, refs: [])
+    neo=Neo()
+    neo.session.run.return_value.single.return_value=None
+    event={
+        "event_id":"synthetic-event",
+        "idempotency_key":"synthetic-key",
+        "event_type":"assignment.claimed",
+        "payload":{"task_id":"synthetic-task","worker_id":"hermes-local"},
+        "subject":{"kind":"task","id":"synthetic-task"},
+        "artifact_refs":[],
+        "privacy":{},
+        "source_repo":"test-repo",
+        "source_service":"test-service",
+        "node_id":"test-node",
+        "occurred_at":"2026-10-23T13:00:00Z",
+        "schema_version":"1.0",
+    }
+    receipt=core.record_event(neo,event)
+    assert receipt["accepted"]
+    assert not receipt["deduped"]
+    assert receipt["graph_reconciled"] is False
+    assert neo.session.run.call_count==2
+    assert "MERGE (t:Task" not in str(neo.session.run.call_args_list)
+
+
+def test_projection_reports_false_when_stored_task_owner_denies():
+    neo=Neo()
+    neo.session.run.return_value.single.return_value=None
+    event={"event_id":"synthetic-event","event_type":"assignment.heartbeat"}
+    result=project_assignment_event(neo,event,{
+        "task_id":"synthetic-task","worker_id":"nonhermes-worker"
+    })
+    assert result is False
+    assert neo.session.run.call_count==1
