@@ -131,3 +131,49 @@ def test_nonloopback_publish_preflight_not_silently_treated_as_local():
     result=gate.inspect_metadata(m,routes())
     assert result["api_container_published_only_on_loopback"] is False
     assert result["production_deployment_authorized"] is False
+
+
+def test_tailnet_forward_to_same_api_plus_legacy_header_blocks_release():
+    m=sample(env=["TRUSTED_AUTH_HEADER=synthetic-unknown"])
+    outcome=gate.inspect_metadata(
+        m,routes(),tailnet_forwarded_to_api=True)
+    assert outcome["tailnet_port_8000_verified_to_same_api"] is True
+    assert outcome["legacy_header_tailnet_spoof_risk"] is True
+    assert outcome["legacy_header_emergency_rejection_configured"] is False
+    assert outcome["production_deployment_authorized"] is False
+    assert "synthetic-unknown" not in str(outcome)
+
+
+def test_emergency_reject_flag_blocks_unverified_header_even_on_tailnet():
+    m=sample(env=[
+        "TRUSTED_AUTH_HEADER=synthetic-unknown",
+        "ASSISTX_REJECT_LEGACY_TRUSTED_HEADER=true",
+    ])
+    outcome=gate.inspect_metadata(
+        m,routes(),tailnet_forwarded_to_api=True)
+    assert outcome["legacy_header_emergency_rejection_configured"] is True
+    assert outcome["legacy_header_tailnet_spoof_risk"] is False
+    assert outcome["production_deployment_authorized"] is False
+
+
+def test_missing_tailnet_evidence_is_unknown_not_proof_of_safety():
+    m=sample(env=["TRUSTED_AUTH_HEADER=synthetic-unknown"])
+    outcome=gate.inspect_metadata(m,routes())
+    assert outcome["tailnet_port_8000_verified_to_same_api"] is None
+    assert outcome["legacy_header_tailnet_spoof_risk"] is None
+    assert outcome["decision"]=="HOLD"
+
+
+def test_preflight_never_sends_signed_or_unsigned_authorization_headers():
+    src=Path(gate.__file__).read_text()
+    assert 'method="GET"' in src
+    assert '"--user","show"' in src
+    assert 'control-room-ts-proxy.service' in src
+    assert '"100.64.0.0/10"' in src
+    assert 'hashlib.sha256(raw).hexdigest()==local_openapi_sha256' in src
+    for unsafe in (
+        'method="POST"', 'docker restart', 'docker exec',
+        'systemctl restart', 'systemctl stop', 'Authorization":',
+        '"X-AssistX-Signed-Owner"',
+    ):
+        assert unsafe not in src

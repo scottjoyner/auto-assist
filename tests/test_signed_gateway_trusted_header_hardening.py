@@ -167,3 +167,50 @@ def test_actual_signed_middleware_and_auth_helper_agree_on_owner(signing):
 
     raw=client.get("/api/tasks",headers={HEADER:"person-a"})
     assert raw.status_code==401
+
+
+def test_emergency_header_reject_without_signed_gateway(monkeypatch):
+    monkeypatch.delenv("ASSISTX_ENABLE_SIGNED_OWNER_GATEWAY",raising=False)
+    monkeypatch.delenv("ASSISTX_REQUIRE_OWNER_BINDING",raising=False)
+    monkeypatch.setenv("ASSISTX_REJECT_LEGACY_TRUSTED_HEADER","true")
+    creds=HTTPBasicCredentials(
+        username="synthetic-admin",password="synthetic-password")
+    assert real_auth_helper()(request_with_header(header="person-a"),None) is None
+    assert real_auth_helper()(request_with_header(header="person-a"),creds) is None
+    assert real_auth_helper()(request_with_header(header=None),creds)=="synthetic-admin"
+
+
+def test_emergency_header_reject_in_signed_mode_even_when_owner_matches(signing,monkeypatch):
+    monkeypatch.setenv("ASSISTX_REJECT_LEGACY_TRUSTED_HEADER","true")
+    assert real_auth_helper()(
+        request_with_header(header="person-a",owner="person-a"),None) is None
+
+
+def test_emergency_flag_must_be_exact_lowercase_true(monkeypatch):
+    monkeypatch.delenv("ASSISTX_ENABLE_SIGNED_OWNER_GATEWAY",raising=False)
+    monkeypatch.delenv("ASSISTX_REQUIRE_OWNER_BINDING",raising=False)
+    for flag in ("True","yes","1","false",""):
+        monkeypatch.setenv("ASSISTX_REJECT_LEGACY_TRUSTED_HEADER",flag)
+        assert real_auth_helper()(
+            request_with_header(header="person-a"),None)=="person-a"
+
+
+def test_isolated_asgi_emergency_header_deny_and_basic_retain(monkeypatch):
+    monkeypatch.setenv("ASSISTX_REJECT_LEGACY_TRUSTED_HEADER","true")
+    monkeypatch.delenv("ASSISTX_ENABLE_SIGNED_OWNER_GATEWAY",raising=False)
+    monkeypatch.delenv("ASSISTX_REQUIRE_OWNER_BINDING",raising=False)
+    auth=real_auth_helper()
+    app=FastAPI()
+
+    @app.get("/probe")
+    async def isolated_probe(request:Request):
+        username=auth(request,None)
+        if not username:
+            raise HTTPException(status_code=401)
+        return {"accepted":True}
+
+    client=TestClient(app)
+    assert client.get("/probe",headers={HEADER:"synthetic-username"}).status_code==401
+    # Real Basic compatibility is proven independently of an incoming
+    # untrusted header in the exact auth helper (above).
+    assert client.get("/probe").status_code==401

@@ -8,10 +8,13 @@ Default inert HOLD. An exposed route does NOT prove authenticated acceptance.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import ipaddress
 import json
 import os
 import subprocess
 import urllib.request
+import urllib.error
 
 CONTAINER="assistx-api"
 REQUIRED_ROUTES=(
@@ -26,7 +29,7 @@ REQUIRED_APP="assistx.api_router:app"
 class PreflightDenied(ValueError):
     pass
 
-def inspect_metadata(metadata: dict, routes: set[str]) -> dict:
+def inspect_metadata(metadata: dict, routes: set[str], *, tailnet_forwarded_to_api: bool | None = None) -> dict:
     if type(metadata) is not dict or type(routes) is not set:
         raise PreflightDenied("unrecognized API metadata")
     config=metadata.get("Config")
@@ -49,6 +52,7 @@ def inspect_metadata(metadata: dict, routes: set[str]) -> dict:
                      and "uvicorn" in cmd)
     # Presence only. Never include the actual header name or credential values.
     legacy_trusted_header=bool(env.get("TRUSTED_AUTH_HEADER"))
+    legacy_reject=(env.get("ASSISTX_REJECT_LEGACY_TRUSTED_HEADER")=="true")
     published=(metadata.get("NetworkSettings") or {}).get("Ports")
     local_only=None
     if type(published) is dict:
@@ -71,6 +75,11 @@ def inspect_metadata(metadata: dict, routes: set[str]) -> dict:
         "owner_binding_enforced":owner_mode,
         "legacy_trusted_header_configured":legacy_trusted_header,
         "legacy_header_provenance_requires_review":legacy_trusted_header,
+        "legacy_header_emergency_rejection_configured":legacy_reject,
+        "tailnet_port_8000_verified_to_same_api":tailnet_forwarded_to_api,
+        "legacy_header_tailnet_spoof_risk":
+            (legacy_trusted_header and not legacy_reject
+             if tailnet_forwarded_to_api is True else None),
         "api_container_published_only_on_loopback":local_only,
         "signed_owner_gateway_enabled":signed_gateway,
         "signed_gateway_key_path_configured":signed_gateway_key,
@@ -84,6 +93,55 @@ def inspect_metadata(metadata: dict, routes: set[str]) -> dict:
         "task_mutations":0,
         "credential_values_exposed":False,
     }
+
+def probe_tailnet_ingress(*, local_openapi_sha256: str) -> bool | None:
+    """Require BOTH the active user service chain and matching public API.
+
+    Unknown (None) must NEVER be interpreted as safety. Does not send owner
+    headers, credentials, POSTs or task mutations to the live API.
+    """
+    try:
+        ip_result=subprocess.run(["tailscale","ip","-4"],capture_output=True,
+                                 text=True,timeout=5,check=False)
+        if ip_result.returncode:
+            return None
+        addresses=ip_result.stdout.strip().splitlines()
+        if len(addresses)!=1:
+            return None
+        address=ipaddress.ip_address(addresses[0].strip())
+        if address.version!=4 or address not in ipaddress.ip_network(
+                "100.64.0.0/10"):
+            return None
+        service=subprocess.run(["systemctl","--user","show",
+            "control-room-ts-proxy.service",
+            "--property=ActiveState,ExecStart"],capture_output=True,
+            text=True,timeout=5,check=False)
+        if service.returncode:
+            return None
+        expected="TCP-LISTEN:8000,bind="+str(address)+",fork,reuseaddr"
+        if ("ActiveState=active" not in service.stdout
+                or expected not in service.stdout
+                or "TCP:127.0.0.1:8000" not in service.stdout):
+            return None
+        # Confirm actual matching endpoint; service metadata alone is not
+        # sufficient to prove the route is reachable and terminates AssistX.
+        request=urllib.request.Request(
+            "http://"+str(address)+":8000/openapi.json",method="GET")
+        opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request,timeout=4) as response:
+            if response.status!=200:
+                return None
+            raw=response.read(350_000)
+            if len(raw)>=350_000:
+                return None
+        decoded=json.loads(raw)
+        if type(decoded) is not dict or type(decoded.get("paths")) is not dict:
+            return None
+        return hashlib.sha256(raw).hexdigest()==local_openapi_sha256
+    except (OSError, ValueError, subprocess.TimeoutExpired,
+            TimeoutError, urllib.error.URLError, json.JSONDecodeError):
+        return None
+
 
 def live_readonly() -> dict:
     if os.uname().nodename!="x1-370" or os.geteuid()!=1000:
@@ -107,7 +165,9 @@ def live_readonly() -> dict:
         if type(routes) is not dict:
             raise PreflightDenied("invalid route catalog")
         paths=set(routes)
-    return inspect_metadata(raw,paths)
+    matched=probe_tailnet_ingress(
+        local_openapi_sha256=hashlib.sha256(data).hexdigest())
+    return inspect_metadata(raw,paths,tailnet_forwarded_to_api=matched)
 
 if __name__=="__main__":
     parser=argparse.ArgumentParser(description=__doc__)
