@@ -5,6 +5,8 @@ on:
     paths:
       - "src/assistx/api.py"
       - "src/assistx/neo4j_client.py"
+      - "tests/test_hermes_ticket_allocation_exclusion.py"
+      - "tests/hermes_ticket_allocation_disposable_neo4j.py"
       - "tests/test_hermes_claim_replay_owner_exclusion.py"
       - "tests/hermes_claim_replay_disposable_neo4j.py"
       - "src/assistx/hermes_claim_census.py"
@@ -45,6 +47,10 @@ jobs:
         env:
           HERMES_DISPOSABLE_NEO4J: synthetic-ci-only
         run: python tests/hermes_census_history_disposable_neo4j.py
+      - name: Verify ticket upsert and allocation fencing (synthetic Neo4j)
+        env:
+          HERMES_DISPOSABLE_NEO4J: synthetic-ci-only
+        run: python tests/hermes_ticket_allocation_disposable_neo4j.py
       - name: Verify Hermes claim/replay admission with real disposable Neo4j
         env:
           HERMES_DISPOSABLE_NEO4J: synthetic-ci-only
