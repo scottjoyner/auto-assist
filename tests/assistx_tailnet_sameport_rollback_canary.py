@@ -103,6 +103,45 @@ def exact_opencode_dispatch(port: int) -> bool:
     return True
 
 
+def exact_opencode_config_sync(port: int) -> bool:
+    """Invoke the actual OpenCode config-sync _post twice against echo only.
+
+    No Hermes config scans, model endpoint registration, probes, router
+    refreshes, real credentials or production network targets are run.
+    Only the named checked-in request-construction function is extracted.
+    """
+    source=(Path(__file__).resolve().parents[1]/
+            "scripts/opencode-bridge/sync_configs_to_assistx.py")
+    need(source.is_file() and not source.is_symlink(),
+         "OpenCode config-sync source unavailable")
+    node=ast.parse(source.read_text())
+    fn=next((item for item in node.body
+             if isinstance(item,ast.FunctionDef) and item.name=="_post"),None)
+    need(fn is not None,"exact config-sync POST function missing")
+    env={"json":json,"urllib":urllib,"base64":base64,"sys":sys}
+    exec(compile(ast.fix_missing_locations(
+        ast.Module(body=[fn],type_ignores=[])),str(source),"exec"),env)
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with patch.object(urllib.request,"urlopen",
+                      side_effect=lambda request,timeout=30:
+                          opener.open(request,timeout=3)):
+        responses=[]
+        for route in (
+            "/api/swarm/model-endpoints/register",
+            "/api/swarm/model-endpoints/synthetic/probe",
+        ):
+            responses.append(env["_post"](
+                f"http://127.0.0.1:{port}{route}",
+                {"source":"synthetic-config-sync-contract"},
+                "synthetic-opencode","synthetic-pass"))
+    need(len(responses)==2 and all(type(v) is dict
+         and v.get("method")=="POST"
+         and v.get("basic_auth_forwarded") is True
+         and v.get("forwarded_identity") is False for v in responses),
+         "OpenCode config-sync POST did not preserve Basic and sanitize identity")
+    return True
+
+
 def wait_ready(proc,port,*,expect_identity,timeout=7):
     deadline=time.monotonic()+timeout
     while time.monotonic()<deadline:
@@ -173,6 +212,8 @@ def physical():
             checks["same_port_caddy_preserves_basic_but_strips_identity"]=True
             checks["real_opencode_bridge_dispatch_contract_sanitized"]=(
                 exact_opencode_dispatch(port))
+            checks["real_opencode_config_sync_register_and_probe_sanitized"]=(
+                exact_opencode_config_sync(port))
             stop(current)
             current=None
             # Stage 3: rollback to pinned *sanitizing Caddy*, not raw socat.

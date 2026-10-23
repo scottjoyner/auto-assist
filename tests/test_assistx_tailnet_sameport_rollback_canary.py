@@ -71,3 +71,15 @@ def test_actual_opencode_dispatch_source_is_compiled_without_importing_workflows
     assert 'opener.open(request,timeout=3)' in source
     assert 'checks["real_opencode_bridge_dispatch_contract_sanitized"]' in source
     assert 'result.get("forwarded_identity") is False' in source
+
+def test_real_opencode_config_sync_post_compiled_without_running_fleet_scans():
+    source=Path(canary.__file__).read_text()
+    assert "scripts/opencode-bridge/sync_configs_to_assistx.py" in source
+    assert 'item.name=="_post"' in source
+    assert 'f"http://127.0.0.1:{port}{route}"' in source
+    assert '"synthetic-opencode","synthetic-pass"' in source
+    assert '"synthetic-config-sync-contract"' in source
+    assert '"/api/swarm/model-endpoints/register"' in source
+    assert '"/api/swarm/model-endpoints/synthetic/probe"' in source
+    assert 'checks["real_opencode_config_sync_register_and_probe_sanitized"]' in source
+    assert 'and v.get("forwarded_identity") is False' in source

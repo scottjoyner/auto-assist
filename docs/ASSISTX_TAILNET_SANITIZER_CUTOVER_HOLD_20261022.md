@@ -55,3 +55,10 @@ A fallback to **the original socat** is not a security-safe rollback: it restore
 ### OpenCode bridge compatibility added October 23
 
 The disposable same-port Caddy rehearsal also compiles and invokes the exact checked-in \`_post\` function from \`scripts/opencode-bridge/dispatch_assistx_task.py\` without importing or executing its module-level workflow. It sends only a synthetic task-shaped POST to the isolated loopback HTTP echo backend through the sanitizing Caddy listener, carrying disposable Basic credentials. The backend confirms a POST arrived, Basic Authorization survived, and no client identity header arrived. No real task or model is dispatched. This is positive evidence for one real bridge implementation's request construction, not acceptance of the full live OpenCode workflow or its existing stored credentials.
+
+
+### OpenCode configuration-sync compatibility — October 23
+
+The disposable same-port sanitizer rehearsal invokes the **exact checked-in** `_post` function from `scripts/opencode-bridge/sync_configs_to_assistx.py`, in addition to the previously verified dispatch function. It sends the synthetic model-endpoint registration and probe POST requests only to a disposable loopback HTTP echo backend, with synthetic Basic credentials. The sanitized backend confirms two POSTs, Basic authentication survives, and no `Tailscale-User-Login` identity header arrives. Neither `run_sync` nor live fleet scans, models, router refreshes, or task writes run. The synthetic same-port rehearsal now passes **7/7** checks.
+
+This proves request construction and forwarding, **not** real client login, a live endpoint registration, a complete production cutover, or independent rollback authorization. The live `control-room-ts-proxy.service`, production API, and Hermes runtime remain unchanged; release HOLD remains in effect.
