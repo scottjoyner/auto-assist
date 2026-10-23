@@ -53,7 +53,9 @@ def release_config(tailnet_ip,port):
     cfg=raw.decode("utf-8")
     listener="http://{$ASSISTX_TAILNET_IP}:8000 {"
     proxy="    reverse_proxy http://127.0.0.1:8000 {"
-    must(cfg.count(listener)==1 and cfg.count(proxy)==1
+    pinned_bind="    bind 100.64.43.123"
+    must(cfg.count(pinned_bind)==1 and str(ip)=="100.64.43.123"
+         and cfg.count(listener)==1 and cfg.count(proxy)==1
          and cfg.count("reverse_proxy")==1
          and cfg.endswith("    }\n}\n"),
          "unexpected release structure")
@@ -61,6 +63,7 @@ def release_config(tailnet_ip,port):
         must(cfg.count("header_up -"+name)==1,
              "release missing header removal")
     cfg=cfg.replace(listener,f"http://{ip}:{port} {{",1)
+    cfg=cfg.replace(pinned_bind,f"    bind {ip}",1)
     cfg=cfg.replace(proxy,
         "    @readonly {\n        method GET\n"
         "        path /health /control-room\n    }\n"

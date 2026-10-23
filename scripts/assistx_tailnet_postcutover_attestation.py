@@ -19,7 +19,7 @@ OLD_UNIT="control-room-ts-proxy.service"
 EXPECTED_BIN=Path("/usr/bin/caddy")
 EXPECTED_CONFIG=Path("/home/scott/.config/assistx-tailnet-sanitizer/Caddyfile")
 EXPECTED_BIN_SHA="9681d054b6e5137d53f6d027188b349e0603fd12ea6334bd0d49da6755432f1b"
-EXPECTED_CONFIG_SHA="2efa50602a821a9dffc6704496eb1cd0c0988e81c2f1fce65c3b9ad249e2a444"
+EXPECTED_CONFIG_SHA="c4136364469a45f918c8e9a33ce5268f57dc4ee39b030012af4f66aaf9b186b2"
 
 
 class Unsafe(ValueError):

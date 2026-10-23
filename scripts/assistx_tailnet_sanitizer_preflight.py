@@ -11,9 +11,8 @@ import argparse
 import ipaddress
 import json
 import os
-from pathlib import Path
-import re
 import subprocess
+from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 # Kept source-local for a preflight runnable without external PYTHONPATH.
@@ -45,6 +44,8 @@ def inspect_contract(config:str,*,socat_active:bool,
     must("http://{$ASSISTX_TAILNET_IP}:8000 {" in config
          and "reverse_proxy http://127.0.0.1:8000 {" in config,
          "must bind only Tailnet while forwarding to loopback")
+    must(config.count("    bind 100.64.43.123")==1,
+         "Caddy must bind the exact verified Tailnet interface, not wildcard")
     must("admin off" in config and "auto_https off" in config,
          "disable automatic management and external TLS")
     for name in DROPPED_HEADERS:
@@ -82,8 +83,8 @@ def physical():
     must(ip.returncode==0 and len(ip.stdout.strip().splitlines())==1,
          "Tailnet IPv4 unavailable")
     addr=ipaddress.ip_address(ip.stdout.strip())
-    must(addr.version==4 and addr in ipaddress.ip_network("100.64.0.0/10"),
-         "expected Tailnet address missing")
+    must(addr.version==4 and str(addr)=="100.64.43.123",
+         "pinned Caddy bind differs from current Tailnet IPv4")
     service=call(["systemctl","--user","show","control-room-ts-proxy.service",
                   "--property=ActiveState,ExecStart"])
     must(service.returncode==0 and "ActiveState=active" in service.stdout
@@ -116,6 +117,17 @@ def physical():
                           "--adapter","caddyfile"],
                          capture_output=True,text=True,env=caddy_env,timeout=12)
     must(caddy.returncode==0,"Caddy rejected staged production config")
+    for label,env in (("configured",caddy_env),("unset",{k:v for k,v in os.environ.items() if k!="ASSISTX_TAILNET_IP"})):
+        adapted=subprocess.run(["/usr/bin/caddy","adapt","--config",str(CADDYFILE),
+                                "--adapter","caddyfile"],capture_output=True,
+                               text=True,env=env,timeout=12)
+        must(adapted.returncode==0,"Caddy adaptation failed")
+        config_data=json.loads(adapted.stdout)
+        servers=(config_data.get("apps",{}).get("http",{}).get("servers",{}))
+        listens=[server.get("listen") for server in servers.values()]
+        must(listens==[[f"{addr}:8000"]],
+             f"unsafe {label} Caddy listener, expected Tailnet-only bind")
+    evidence["caddy_explicit_tailnet_only_listener_with_env_set_and_unset"]=True
     evidence["real_caddy_syntax_validated"]=True
     evidence["tailnet_port_8000_replacement_compatible_on_wire"]="not_yet_proven"
     evidence["expected_live_api_pinned"]=True

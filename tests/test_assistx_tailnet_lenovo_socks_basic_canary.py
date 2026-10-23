@@ -22,6 +22,7 @@ def test_inert_default():
 def test_pinned_release_derived_and_get_allowlist():
     config=canary.release_config("100.64.43.123",22391)
     assert "http://100.64.43.123:22391 {" in config
+    assert config.count("bind 100.64.43.123")==1
     assert "reverse_proxy http://127.0.0.1:8000 {" in config
     assert "method GET" in config
     assert "path /health /control-room" in config
@@ -34,7 +35,8 @@ def test_pinned_release_derived_and_get_allowlist():
 
 @pytest.mark.parametrize("ip,port",[
     ("0.0.0.0",22391),("127.0.0.1",22391),("192.168.0.1",22391),
-    ("::1",22391),("100.64.43.123",8000),("100.64.43.123",1),
+    ("::1",22391),("100.64.43.124",22391),
+    ("100.64.43.123",8000),("100.64.43.123",1),
     ("100.64.43.123",65536),
 ])
 def test_unsafe_listener_refused(ip,port):

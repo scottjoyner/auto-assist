@@ -33,7 +33,7 @@ SOCAT="/usr/bin/socat"
 RELEASE_CADDYFILE=(Path(__file__).resolve().parents[1]/
                    "scripts/assistx-tailnet-header-sanitizer.Caddyfile")
 # These bytes are the proposed production config, never the test helper.
-REVIEWED_CADDYFILE_SHA256="2efa50602a821a9dffc6704496eb1cd0c0988e81c2f1fce65c3b9ad249e2a444"
+REVIEWED_CADDYFILE_SHA256="c4136364469a45f918c8e9a33ce5268f57dc4ee39b030012af4f66aaf9b186b2"
 
 class UnsafeRehearsal(ValueError):
     pass
@@ -62,7 +62,9 @@ def staged_caddyfile(upstream_port:int,listen_port:int)->str:
     config=raw.decode("utf-8")
     listener="http://{$ASSISTX_TAILNET_IP}:8000 {"
     backend="reverse_proxy http://127.0.0.1:8000 {"
-    need(config.count(listener)==1 and config.count(backend)==1
+    pinned_bind="    bind 100.64.43.123"
+    need(config.count(pinned_bind)==1 and config.count(listener)==1
+         and config.count(backend)==1
          and config.count("reverse_proxy")==1
          and config.count("admin off")==1
          and config.count("auto_https off")==1,
@@ -72,10 +74,13 @@ def staged_caddyfile(upstream_port:int,listen_port:int)->str:
              "staged release missing identity sanitization")
     patched=config.replace(listener,
                 f"http://127.0.0.1:{listen_port} {{",1)
+    patched=patched.replace(pinned_bind,"    bind 127.0.0.1",1)
     patched=patched.replace(backend,
                 f"reverse_proxy http://127.0.0.1:{upstream_port} {{",1)
     need("{$ASSISTX_TAILNET_IP}" not in patched
-         and "http://127.0.0.1:8000" not in patched,
+         and "http://127.0.0.1:8000" not in patched
+         and pinned_bind not in patched
+         and patched.count("bind 127.0.0.1")==1,
          "disposable config retained production network endpoints")
     return patched
 

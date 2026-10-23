@@ -2,15 +2,16 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
+
 # Hosted CI has tests/, but not scripts/, on its Python import path.
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"scripts"))
-import assistx_tailnet_sanitizer_preflight as preflight  # noqa: E402
 import assistx_tailnet_sanitizer_canary as canary
+import assistx_tailnet_sanitizer_preflight as preflight  # noqa: E402
 
 
 def actual_config():
@@ -39,6 +40,8 @@ def test_config_matches_all_real_caddy_sanitizer_headers():
     lambda s:s.replace("http://{$ASSISTX_TAILNET_IP}:8000",
                         "http://0.0.0.0:8000"),
     lambda s:s.replace("admin off","admin on"),
+    lambda s:s.replace("    bind 100.64.43.123",""),
+    lambda s:s.replace("    bind 100.64.43.123","    bind 0.0.0.0"),
 ])
 def test_corrupt_or_unsafe_config_denied(change):
     with pytest.raises(preflight.Blocked):
@@ -60,6 +63,29 @@ def test_corrupt_or_unsafe_config_denied(change):
 def test_missing_production_preconditions_denied(flags):
     with pytest.raises(preflight.Blocked):
         preflight.inspect_contract(actual_config(),**flags)
+
+
+def test_caddy_adapt_never_wildcard_even_if_tailnet_env_is_unset():
+    """Extra physical assurance on x1-370; static guard runs everywhere."""
+    config=actual_config()
+    assert config.count("    bind 100.64.43.123")==1
+    assert "    bind 0.0.0.0" not in config
+    assert "    bind {$ASSISTX_TAILNET_IP}" not in config
+    assert "Caddy listener" in Path(preflight.__file__).read_text()
+    assert "caddy_explicit_tailnet_only_listener_with_env_set_and_unset" in Path(preflight.__file__).read_text()
+    import os
+    if not Path("/usr/bin/caddy").is_file():
+        pytest.skip("physical Caddy binary unavailable on this CI host")
+    for value in ("100.64.43.123",None):
+        env={k:v for k,v in os.environ.items() if k!="ASSISTX_TAILNET_IP"}
+        if value is not None:
+            env["ASSISTX_TAILNET_IP"]=value
+        adapted=subprocess.run(["/usr/bin/caddy","adapt","--config",
+                                str(preflight.CADDYFILE),"--adapter","caddyfile"],
+                               capture_output=True,text=True,env=env,timeout=10,check=True)
+        j=json.loads(adapted.stdout)
+        listeners=[server.get("listen") for server in j.get("apps",{}).get("http",{}).get("servers",{}).values()]
+        assert listeners==[["100.64.43.123:8000"]]
 
 
 def test_default_cli_is_inert_and_standalone():

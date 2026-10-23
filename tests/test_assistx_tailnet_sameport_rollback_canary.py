@@ -38,6 +38,8 @@ def test_exact_reviewed_release_config_is_used_for_disposable_rehearsal():
     assert "http://{$ASSISTX_TAILNET_IP}:8000" not in candidate
     assert "http://127.0.0.1:8000" not in candidate
     assert candidate.count("reverse_proxy")==1
+    assert candidate.count("bind 127.0.0.1")==1
+    assert "bind 100.64.43.123" not in candidate
     for identity in canary.DROPPED_HEADERS:
         assert candidate.count("header_up -"+identity)==1
 
@@ -78,7 +80,7 @@ def test_no_production_subprocess_or_secrets():
     for forbidden in (
         "docker inspect","docker exec","docker restart","docker stop",
         "systemctl stop","systemctl restart","tailscale serve",
-        "100.64.","--network host","OPENAI_API_KEY","TRUSTED_AUTH_HEADER=",
+        "http://100.64.","--network host","OPENAI_API_KEY","TRUSTED_AUTH_HEADER=",
     ):
         assert forbidden not in src
     assert '"real_credentials_or_tasks_accessed":0' in src
