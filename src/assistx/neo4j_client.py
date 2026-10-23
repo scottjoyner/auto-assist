@@ -1097,14 +1097,14 @@ class Neo4jClient:
         effective_lease = lease_seconds if lease_seconds is not None else 900
         # P0 #428: no claim grant, including idempotent retries, without
         # the pinned Hermes identity's explicit session.
-        if agent_id == "hermes-local" and (
+        if agent_id.startswith("hermes-") and (
             not str(session_id or "").strip()
             or (idempotency_key is not None and not str(idempotency_key).strip())
         ):
             return {"claimed": False, "reason": "missing_hermes_claim_identity"}
         with self._session() as s:
             if idempotency_key:
-                if agent_id == "hermes-local":
+                if agent_id.startswith("hermes-"):
                     # Acquire the Task write lock before checking claim and
                     # lease. Without it, a queued retry may observe a stale
                     # match while a revocation/reissue owns the write lock.
@@ -1126,9 +1126,33 @@ class Neo4jClient:
                          "agent_id": agent_id, "session_id": session_id},
                     ).single()
                 else:
+                    # A claim ID alone does not establish current ownership.
+                    # Legacy retries cannot impersonate a Hermes claim, use a
+                    # stale terminal Task, or race a claim/revocation writer.
                     prior = s.run(
-                        "MATCH (t:Task {id:$task_id, claim_id:$claim_id}) RETURN t",
-                        {"task_id": task_id, "claim_id": claim_id},
+                        """
+                        MATCH (t:Task {id:$task_id})
+                        SET t.hermes_fence_check_epoch =
+                            coalesce(t.hermes_fence_check_epoch, 0) + 1
+                        WITH t
+                        WHERE t.claim_id=$claim_id
+                          AND t.claimed_by=$agent_id
+                          AND ($session_id IS NULL OR t.agent_session_id=$session_id)
+                          AND t.status IN ['CLAIMED','RUNNING','PAUSING']
+                          AND NOT (
+                            coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                            OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                            OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+                            OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+                            OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+                            OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+                            OR coalesce(t.passive_claim_agent_id, '') STARTS WITH 'hermes-'
+                            OR coalesce(t.last_passive_claim_agent_id, '') STARTS WITH 'hermes-'
+                          )
+                        RETURN t
+                        """,
+                        {"task_id": task_id, "claim_id": claim_id,
+                         "agent_id": agent_id, "session_id": session_id},
                     ).single()
                 if prior:
                     return {"claimed": True, "claim_id": claim_id, "idempotent": True, "task": dict(prior["t"])}
@@ -1138,12 +1162,31 @@ class Neo4jClient:
                 MATCH (t:Task {id:$task_id})
                 // Serialize claim admission with concurrent cancellation,
                 // reclaim, and generation changes BEFORE the READY test.
-                FOREACH (_ IN CASE WHEN $agent_id='hermes-local' THEN [1] ELSE [] END |
-                    SET t.hermes_fence_check_epoch =
-                        coalesce(t.hermes_fence_check_epoch, 0) + 1
-                )
+                SET t.hermes_fence_check_epoch =
+                    coalesce(t.hermes_fence_check_epoch, 0) + 1
                 WITH t
                 WHERE t.status='READY'
+                  // Historical Hermes owners must not be reclaimed through
+                  // an unfenced READY transition, including by a legacy caller.
+                  AND NOT (
+                    coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.passive_claim_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.last_passive_claim_agent_id, '') STARTS WITH 'hermes-'
+                  )
+                  AND (
+                    NOT coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                    OR (
+                      $agent_id STARTS WITH 'hermes-'
+                      AND t.target_agent_id=$agent_id
+                      AND coalesce(t.execution_attempt, 0)=0
+                      AND t.claim_id IS NULL
+                    )
+                  )
                 OPTIONAL MATCH (t)-[:HAS_ALLOCATION]->(ar:AllocationReservation {status:'ACTIVE'})
                 WHERE ar.expires_at_ts > timestamp()
                 WITH t, ar
