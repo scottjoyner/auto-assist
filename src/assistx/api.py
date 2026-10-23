@@ -1461,8 +1461,10 @@ def tasks_review(request: Request, limit: int = 50, user: str = Depends(auth)):
 @app.post("/tasks/{task_id}/approve")
 def approve_task(task_id: str, user: str = Depends(auth)):
     neo = _neo()
-    neo.update_task_status(task_id, "READY")
+    allowed = neo.update_task_status(task_id, "READY")
     neo.close()
+    if allowed is not True:
+        raise HTTPException(status_code=409, detail="Task approval denied by source claim fence")
     return RedirectResponse(url="/tasks/review", status_code=303)
 
 @app.get("/tasks/ready", response_class=HTMLResponse)
@@ -1503,10 +1505,16 @@ def execute_task(task_id: str, dry_run: bool = False, user: str = Depends(auth))
             neo.close()
             raise HTTPException(status_code=404, detail="Task not found")
         t = dict(rec[0])
-    neo.update_task_status(task_id, "RUNNING")
+    if neo.update_task_status(task_id, "RUNNING") is not True:
+        neo.close()
+        raise HTTPException(status_code=409, detail="Task launch denied by source claim fence")
     try:
         result = run_task(neo, t, dry_run=dry_run)
-        neo.update_task_status(task_id, "DONE")
+        if neo.update_task_status(task_id, "DONE") is not True:
+            return JSONResponse(
+                {"status": "HOLD", "reason": "task_terminal_commit_unverified",
+                 "task_id": task_id}, status_code=409
+            )
         return JSONResponse({"status": "DONE", "task_id": task_id, "state": result})
     except Exception as e:
         neo.update_task_status(task_id, "FAILED")
