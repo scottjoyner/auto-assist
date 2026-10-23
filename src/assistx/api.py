@@ -5468,9 +5468,33 @@ def api_pause_task(task_id: str, user: str = Depends(auth)):
     neo = _neo()
     try:
         with neo._session() as s:
-            s.run(
-                "MATCH (t:Task {id:$id}) SET t.paused=true, t.paused_at=datetime(), t.paused_at_ts=timestamp()",
+            # Generic pause/resume has no Hermes claim generation or external
+            # effect revocation receipt. Lock before checking owner identity.
+            rec = s.run(
+                """
+                MATCH (t:Task {id:$id})
+                SET t.hermes_fence_check_epoch =
+                    coalesce(t.hermes_fence_check_epoch, 0) + 1
+                WITH t
+                WHERE NOT (
+                    coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+                )
+                SET t.paused=true, t.paused_at=datetime(),
+                    t.paused_at_ts=timestamp()
+                RETURN t.id AS updated_id
+                """,
                 {"id": task_id},
+            ).single()
+        if not rec:
+            raise HTTPException(
+                status_code=409,
+                detail="Task pause rejected by current claim ownership",
             )
         return {"task_id": task_id, "paused": True}
     finally:
@@ -5481,9 +5505,33 @@ def api_resume_task(task_id: str, user: str = Depends(auth)):
     neo = _neo()
     try:
         with neo._session() as s:
-            s.run(
-                "MATCH (t:Task {id:$id}) SET t.paused=false, t.resumed_at=datetime(), t.resumed_at_ts=timestamp()",
+            # Generic pause/resume has no Hermes claim generation or external
+            # effect revocation receipt. Lock before checking owner identity.
+            rec = s.run(
+                """
+                MATCH (t:Task {id:$id})
+                SET t.hermes_fence_check_epoch =
+                    coalesce(t.hermes_fence_check_epoch, 0) + 1
+                WITH t
+                WHERE NOT (
+                    coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+                )
+                SET t.paused=false, t.resumed_at=datetime(),
+                    t.resumed_at_ts=timestamp()
+                RETURN t.id AS updated_id
+                """,
                 {"id": task_id},
+            ).single()
+        if not rec:
+            raise HTTPException(
+                status_code=409,
+                detail="Task resume rejected by current claim ownership",
             )
         return {"task_id": task_id, "paused": False}
     finally:
