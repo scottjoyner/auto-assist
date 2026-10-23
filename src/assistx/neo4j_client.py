@@ -797,13 +797,32 @@ class Neo4jClient:
                 }
                 if ik:
                     rec = s.run(
-                        "MERGE (t:Task {idempotency_key:$ik}) "
-                        "ON CREATE SET t.id=$id, t.created_at=datetime(), t.created_at_ts=timestamp() "
-                        "SET t += $props, "
-                        "    t.status=CASE WHEN t.status IN ['DONE','CANCELLED'] AND $st='READY' "
-                        "                  THEN t.status ELSE $st END, "
-                        "    t.updated_at=datetime(), t.updated_at_ts=timestamp() "
-                        "RETURN t.id AS id",
+                        """
+                        MERGE (t:Task {idempotency_key:$ik})
+                        ON CREATE SET t.id=$id, t.created_at=datetime(),
+                                      t.created_at_ts=timestamp()
+                        // A batch import cannot revive a running/finished
+                        // claim or rewrite a retained Hermes owner.
+                        SET t.hermes_fence_check_epoch =
+                            coalesce(t.hermes_fence_check_epoch, 0) + 1
+                        WITH t
+                        WHERE (t.status IS NULL OR t.status IN ['READY','FAILED'])
+                          AND NOT (
+                            coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                            OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                            OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                            OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+                            OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+                            OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+                            OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+                            OR coalesce(t.passive_claim_agent_id, '') STARTS WITH 'hermes-'
+                            OR coalesce(t.last_passive_claim_agent_id, '') STARTS WITH 'hermes-'
+                          )
+                        SET t += $props, t.status=$st,
+                            t.updated_at=datetime(),
+                            t.updated_at_ts=timestamp()
+                        RETURN t.id AS id
+                        """,
                         {
                             "ik": ik,
                             "id": uuid.uuid4().hex,
