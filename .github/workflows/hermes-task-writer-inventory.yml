@@ -1,0 +1,43 @@
+name: hermes-task-writer-inventory
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-only-inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact PR source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify static writer inventory remains explicitly nonauthoritative
+        run: |
+          python3 - <<'PY'
+          import json
+          import subprocess
+          import sys
+          result=json.loads(subprocess.check_output(
+              [sys.executable,"scripts/hermes_task_writer_inventory.py"],
+              text=True,
+          ))
+          assert result["decision"]=="HOLD"
+          assert result["source_inventory_complete"] is False
+          assert result["all_writers_generation_fenced"] is False
+          assert result["production_dispatch_authorized"] is False
+          assert result["files_scanned"]>0
+          assert result["visible_static_task_writer_count"]>0
+          print("HERMES_STATIC_WRITER_INVENTORY_HOLD=1")
+          print("files_scanned="+str(result["files_scanned"]))
+          print("visible_static_task_writer_count="+str(result["visible_static_task_writer_count"]))
+          print("without_structural_lock="+str(result["writers_without_structural_lock_marker"]))
+          print("unresolved_dynamic_sql_calls="+str(result["unknown_dynamic_query_calls"]))
+          print("PRODUCTION_TASKS_TOUCHED=0;DECISION=HOLD")
+          PY
