@@ -916,7 +916,7 @@ def fail_task(neo: Neo4jClient, task_id: str, agent_id: str, error_summary: str,
                 OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
                 OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
             )
-              AND NOT coalesce($agent_id, '') STARTS WITH 'hermes-'
+              AND NOT (coalesce($agent_id, '') STARTS WITH 'hermes-')
             SET t.status=$status,
                 t.failed_by=$agent_id,
                 t.agent_session_id=coalesce($session_id, t.agent_session_id),
