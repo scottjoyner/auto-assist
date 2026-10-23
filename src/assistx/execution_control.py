@@ -193,7 +193,10 @@ class ExecutionControlPlane:
                 """
                 MATCH (t:Task {id:$task_id, status:'PAUSED'})
                 MATCH (target:SwarmNode {node_id:$target_agent_id})
-                WHERE t.checkpoint_id IS NOT NULL
+                WHERE coalesce(t.claimed_by, '') <> 'hermes-local'
+                  AND coalesce(t.target_agent_id, '') <> 'hermes-local'
+                  AND coalesce(t.hermes_claim_scope, false) = false
+                  AND t.checkpoint_id IS NOT NULL
                   AND coalesce(t.migration_count, 0) <
                       coalesce(t.max_migrations, 2)
                   AND coalesce(t.paused_from_agent_id, '') <> $target_agent_id
@@ -272,7 +275,10 @@ class ExecutionControlPlane:
             timed_out = session.run(
                 """
                 MATCH (t:Task {status:'PAUSING'})
-                WHERE coalesce(t.preemption_requested_at_ts, 0) < $cutoff
+                WHERE coalesce(t.claimed_by, '') <> 'hermes-local'
+                  AND coalesce(t.target_agent_id, '') <> 'hermes-local'
+                  AND coalesce(t.hermes_claim_scope, false) = false
+                  AND coalesce(t.preemption_requested_at_ts, 0) < $cutoff
                 WITH t, t.claimed_by AS prior_owner
                 SET t.status=CASE
                       WHEN coalesce(t.lease_expires_at_ts, 0) > $now_ms
@@ -309,7 +315,10 @@ class ExecutionControlPlane:
                 for row in session.run(
                     """
                     MATCH (t:Task {status:'PAUSED'})
-                    WHERE t.checkpoint_id IS NOT NULL
+                    WHERE coalesce(t.claimed_by, '') <> 'hermes-local'
+                      AND coalesce(t.target_agent_id, '') <> 'hermes-local'
+                      AND coalesce(t.hermes_claim_scope, false) = false
+                      AND t.checkpoint_id IS NOT NULL
                       AND t.migration_target_agent_id IS NOT NULL
                     RETURN t.id AS task_id,
                            t.migration_target_agent_id AS target_agent_id
