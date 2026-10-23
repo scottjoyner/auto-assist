@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from assistx.controller_runtime import DurableController
+from assistx.controller_runtime import DurableController, _safe_background_tick
 
 
 class MemoryStore:
@@ -90,6 +90,26 @@ def runtime(store, instance, clock):
         lease_seconds=30,
         clock=lambda: clock[0],
     )
+
+
+def test_controller_background_failure_is_fail_closed_and_recoverable(caplog):
+    class Unavailable:
+        controller_id = "synthetic-arbiter"
+        attempts = 0
+        def run_tick(self, key, work):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise ValueError("SECRET_OR_CONNECTION_DETAILS")
+            return {"executed": True, "ok": True, "checkpointed": True}
+    stub = Unavailable()
+    first = _safe_background_tick(stub, "one", lambda: {})
+    assert first == {"executed": False, "ok": False,
+                     "checkpointed": False, "reason": "controller_store_unavailable"}
+    assert "SECRET_OR_CONNECTION_DETAILS" not in caplog.text
+    assert "ValueError" in caplog.text
+    second = _safe_background_tick(stub, "two", lambda: {})
+    assert second["ok"] is True
+    assert stub.attempts == 2
 
 
 def test_only_lease_owner_executes_and_replay_is_suppressed():

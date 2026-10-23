@@ -98,7 +98,7 @@ class HermesDbFencingTests(unittest.TestCase):
         self.assertEqual(out["status"], "RUNNING")
         sql, params = session.queries[0]
         for fragment in (
-            "$agent_id='hermes-local'",
+            "$agent_id STARTS WITH 'hermes-'",
             "t.claimed_by=$agent_id",
             "t.claim_id=$claim_id",
             "t.agent_session_id=$session_id",
@@ -119,7 +119,7 @@ class HermesDbFencingTests(unittest.TestCase):
         self.assertEqual(out["run_id"],"r")
         sql, params = session.queries[0]
         for fragment in (
-            "$agent_id='hermes-local'",
+            "$agent_id STARTS WITH 'hermes-'",
             "t.claimed_by=$agent_id",
             "t.claim_id=$claim_id",
             "t.agent_session_id=$session_id",
@@ -159,7 +159,7 @@ class HermesDbFencingTests(unittest.TestCase):
         client,session=self.client([{"t":{"status":"RUNNING"}}])
         client.heartbeat_task("synthetic","unrelated-agent",claim_id=None)
         sql,_=session.queries[0]
-        self.assertIn("$agent_id<>'hermes-local'",sql)
+        self.assertIn("NOT ($agent_id STARTS WITH 'hermes-'",sql)
         self.assertIn("($claim_id IS NULL OR t.claim_id=$claim_id)",sql)
         self.assertIn("coalesce(t.execution_attempt, 0)=0",sql)
 
@@ -168,8 +168,8 @@ class HermesDbFencingTests(unittest.TestCase):
         client.complete_task("synthetic","hermes-local","DONE",
                              claim_id="c", session_id="s")
         sql=session.queries[0][0]
-        strict=sql.split("$agent_id='hermes-local'",1)[1].split(
-            "$agent_id<>'hermes-local'",1)[0]
+        strict=sql.split("$agent_id STARTS WITH 'hermes-'",1)[1].split(
+            "NOT ($agent_id STARTS WITH 'hermes-'",1)[0]
         self.assertNotIn("($claim_id IS NULL",strict)
         self.assertNotIn("execution_attempt, 0)=0",strict)
         self.assertIn("lease_expires_at_ts, 0)>timestamp()",strict)
@@ -199,6 +199,40 @@ class HermesDbFencingTests(unittest.TestCase):
         client,session=self.client([None])
         self.assertFalse(client.update_task_status("synthetic","CANCELLED"))
         self.assertEqual(len(session.queries),1)
+
+
+    def test_prefixed_hermes_identity_is_never_claimless(self):
+        client, session = self.client()
+        for agent_id in ("hermes-worker", "hermes-executor-v2"):
+            self.assertIsNone(client.heartbeat_task("synthetic", agent_id,
+                                                    session_id="session", claim_id=None))
+            self.assertIsNone(client.complete_task("synthetic", agent_id, "DONE",
+                                                   session_id="session", claim_id=None))
+        self.assertEqual(session.queries, [])
+
+    def test_hermes_targeted_task_uses_strict_mutation_not_legacy_path(self):
+        client, session = self.client([{"t": {"status": "RUNNING"}}])
+        client.heartbeat_task("synthetic", "unrelated-agent")
+        cypher, _ = session.queries[0]
+        self.assertIn("coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'", cypher)
+        self.assertIn("coalesce(t.claimed_by, '') STARTS WITH 'hermes-'", cypher)
+        self.assertIn("NOT ($agent_id STARTS WITH 'hermes-'", cypher)
+        self.assertLess(cypher.index("hermes_fence_check_epoch"),
+                        cypher.index("WHERE ("))
+
+    def test_cross_agent_old_completion_cannot_rewrite_hermes_task(self):
+        for label in ("target_agent_id", "claimed_by"):
+            with self.subTest(label=label):
+                client, session = self.client([{
+                    "t": {"status": "FAILED", label: "hermes-worker"},
+                    "run_id": "historical",
+                }])
+                self.assertIsNone(client.complete_task(
+                    "synthetic", "unrelated-agent", "DONE",
+                    idempotency_key="historical-key"
+                ))
+                self.assertEqual(len(session.queries), 1)
+                self.assertNotIn("SET t.status=", session.queries[0][0])
 
 
 if __name__=="__main__":
