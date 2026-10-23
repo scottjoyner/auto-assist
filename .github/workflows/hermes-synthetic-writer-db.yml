@@ -9,6 +9,9 @@ on:
       - "tests/hermes_ticket_allocation_disposable_neo4j.py"
       - "tests/test_hermes_claim_replay_owner_exclusion.py"
       - "tests/hermes_claim_replay_disposable_neo4j.py"
+      - "src/assistx/hermes_source_generation_research.py"
+      - "tests/test_hermes_source_generation_research.py"
+      - "tests/hermes_generation_serialization_disposable_neo4j.py"
       - "src/assistx/hermes_claim_census.py"
       - "tests/test_hermes_claim_census.py"
       - "tests/hermes_census_history_disposable_neo4j.py"
@@ -47,6 +50,10 @@ jobs:
         env:
           HERMES_DISPOSABLE_NEO4J: synthetic-ci-only
         run: python tests/hermes_census_history_disposable_neo4j.py
+      - name: Verify candidate global generation transaction serialization (HOLD)
+        env:
+          HERMES_DISPOSABLE_NEO4J: synthetic-ci-only
+        run: python tests/hermes_generation_serialization_disposable_neo4j.py
       - name: Verify ticket upsert and allocation fencing (synthetic Neo4j)
         env:
           HERMES_DISPOSABLE_NEO4J: synthetic-ci-only
