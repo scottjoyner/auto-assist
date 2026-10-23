@@ -43,3 +43,10 @@ Important: A Caddy ingress can mitigate Tailnet **raw-port** header spoofing wit
 ## Other P0 gates
 
 Production Hermes still has 16 legacy mounts including unsafe writable storage. Independently administered signing/rollback-resistant high-water, real two-human task claims and receipts, partition-time revocation/fencing, narrow signed RO corpus + isolated RW scratch, and signed release/rollback readiness remain unresolved. Keep draft PR #425 and issue #414 open, without production deployment.
+
+
+## October 23: same-port handover and safe rollback rehearsal
+
+The additional `tests/assistx_tailnet_sameport_rollback_canary.py --physical-loopback` runs real Caddy and socat processes sequentially on a random loopback-only port with an in-memory synthetic HTTP backend. It demonstrates three stages: raw socat forwards a fake identity header; sanitizing Caddy removes that header while preserving synthetic Basic authorization; after an orderly stop, a second sanitizing Caddy instance uses the same port and continues to remove that header. The test cleans up every disposable listener. **5/5 physical checks passed.** No actual Tailscale listener, systemd unit, credential, database or production API changed.
+
+A fallback to **the original socat** is not a security-safe rollback: it restores the header spoofing trust path. The correct fallback must instead be a pinned, previously accepted Caddy sanitizer. The experiment does not prove the behavior of all real clients, existing long-running WebSocket sessions, production maintenance-window handover, or real authenticated access; those remain prerequisites. Production authorization stays HOLD.
