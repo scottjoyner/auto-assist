@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - "src/assistx/api.py"
+      - "src/assistx/neo4j_client.py"
+      - "tests/test_hermes_claim_replay_owner_exclusion.py"
+      - "tests/hermes_claim_replay_disposable_neo4j.py"
       - "src/assistx/hermes_claim_census.py"
       - "tests/test_hermes_claim_census.py"
       - "tests/hermes_census_history_disposable_neo4j.py"
@@ -42,6 +45,10 @@ jobs:
         env:
           HERMES_DISPOSABLE_NEO4J: synthetic-ci-only
         run: python tests/hermes_census_history_disposable_neo4j.py
+      - name: Verify Hermes claim/replay admission with real disposable Neo4j
+        env:
+          HERMES_DISPOSABLE_NEO4J: synthetic-ci-only
+        run: python tests/hermes_claim_replay_disposable_neo4j.py
       - name: Verify disposable Task owner guards (no production access)
         env:
           HERMES_DISPOSABLE_NEO4J: synthetic-ci-only
