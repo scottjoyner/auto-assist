@@ -114,6 +114,9 @@ try:
         advanced=g.advance_candidate_generation(
             s,expected_generation=0,mutate=set_state("RUNNING"))
     assert advanced["generation"]==1 and gen()==1
+    assert advanced["candidate_ledger_increment_committed"]
+    assert advanced["mutation_callback_acknowledged"]
+    assert advanced["source_task_write_independently_verified"] is False
     assert state(tid)["status"]=="RUNNING"
     assert advanced["production_dispatch_authorized"] is False
     print("PASS generation_and_task_mutation_commit_together",flush=True)
