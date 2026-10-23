@@ -93,6 +93,11 @@ def test_true_ack_increments_once_but_cannot_authorize_release():
     )
     assert called==[True]
     assert out["generation"]==4
+    assert out["candidate_ledger_increment_committed"]
+    assert out["mutation_callback_acknowledged"]
+    # The fake callback returns True without writing a Task: no proof exists.
+    assert out["source_task_write_independently_verified"] is False
+    assert "participating_write_committed" not in out
     assert not out["writer_registry_complete"]
     assert not out["production_dispatch_authorized"]
     assert out["decision"]=="HOLD"
