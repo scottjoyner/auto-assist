@@ -55,7 +55,8 @@ def test_ticket_retry_requires_unclaimed_and_no_legacy_generation():
     sql=next(x for x in queries("upsert_ticket") if "idempotency_key:$idempotency_key" in x)
     assert "t.claim_id IS NULL" in sql
     assert "coalesce(t.execution_attempt,0)=0" in sql
-    assert "t.status NOT IN ['CLAIMED','CLAIMED_PASSIVE','RUNNING'," in sql
+    assert "NOT (t.status IN ['CLAIMED','CLAIMED_PASSIVE','RUNNING'," in sql
+    assert "'PAUSING','PAUSED','DONE','CANCELLED'])" in sql
     assert "t.hermes_ticket_creation_nonce=$id AS created_now" in sql
 
 
