@@ -11,24 +11,29 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 import json
 import os
-import sys
-from pathlib import Path
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from unittest.mock import patch
 
-from assistx_tailnet_sanitizer_canary import caddyfile, free_port
+from assistx_tailnet_sanitizer_canary import DROPPED_HEADERS, free_port
 
 CADDY="/usr/bin/caddy"
 SOCAT="/usr/bin/socat"
+RELEASE_CADDYFILE=(Path(__file__).resolve().parents[1]/
+                   "scripts/assistx-tailnet-header-sanitizer.Caddyfile")
+# These bytes are the proposed production config, never the test helper.
+REVIEWED_CADDYFILE_SHA256="2efa50602a821a9dffc6704496eb1cd0c0988e81c2f1fce65c3b9ad249e2a444"
 
 class UnsafeRehearsal(ValueError):
     pass
@@ -36,6 +41,44 @@ class UnsafeRehearsal(ValueError):
 def need(truth,reason):
     if not truth:
         raise UnsafeRehearsal(reason)
+
+def staged_caddyfile(upstream_port:int,listen_port:int)->str:
+    """Rebind only the *pinned release config* to disposable loopback ports.
+
+    Never generate an independent simulator of the identity-stripping rules.
+    Every unexpected source change fails closed until separately reviewed.
+    """
+    need(type(upstream_port) is int and type(listen_port) is int
+         and 1025 < upstream_port < 65536
+         and 1025 < listen_port < 65536
+         and upstream_port != listen_port
+         and upstream_port != 8000 and listen_port != 8000,
+         "not two isolated disposable loopback ports")
+    need(RELEASE_CADDYFILE.is_file() and not RELEASE_CADDYFILE.is_symlink(),
+         "pinned production Caddyfile absent or symlinked")
+    raw=RELEASE_CADDYFILE.read_bytes()
+    need(hashlib.sha256(raw).hexdigest()==REVIEWED_CADDYFILE_SHA256,
+         "staged production Caddyfile changed without renewed review")
+    config=raw.decode("utf-8")
+    listener="http://{$ASSISTX_TAILNET_IP}:8000 {"
+    backend="reverse_proxy http://127.0.0.1:8000 {"
+    need(config.count(listener)==1 and config.count(backend)==1
+         and config.count("reverse_proxy")==1
+         and config.count("admin off")==1
+         and config.count("auto_https off")==1,
+         "staged production proxy structure ambiguous")
+    for name in DROPPED_HEADERS:
+        need(config.count("header_up -"+name)==1,
+             "staged release missing identity sanitization")
+    patched=config.replace(listener,
+                f"http://127.0.0.1:{listen_port} {{",1)
+    patched=patched.replace(backend,
+                f"reverse_proxy http://127.0.0.1:{upstream_port} {{",1)
+    need("{$ASSISTX_TAILNET_IP}" not in patched
+         and "http://127.0.0.1:8000" not in patched,
+         "disposable config retained production network endpoints")
+    return patched
+
 
 class Echo(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -187,7 +230,7 @@ def physical():
             folder=Path(work)
             folder.chmod(0o700)
             config=folder/"Caddyfile"
-            config.write_text(caddyfile(backend_port,port))
+            config.write_text(staged_caddyfile(backend_port,port))
             validated=subprocess.run(
                 [CADDY,"validate","--config",str(config),"--adapter","caddyfile"],
                 capture_output=True,text=True,timeout=10)

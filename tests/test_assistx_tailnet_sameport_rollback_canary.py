@@ -1,10 +1,11 @@
 """Unit/static checks: disposable same-port sanitizer rollback rehearsal."""
 from __future__ import annotations
 
+import hashlib
 import json
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import assistx_tailnet_sameport_rollback_canary as canary
 
@@ -24,8 +25,41 @@ def test_dedicated_loopback_ports_and_synthetic_backend():
     assert 'port=free_port()' in src
     assert 'f"TCP-LISTEN:{port},bind=127.0.0.1,fork,reuseaddr"' in src
     assert 'f"TCP:127.0.0.1:{backend_port}"' in src
-    assert 'caddyfile(backend_port,port)' in src
+    assert 'staged_caddyfile(backend_port,port)' in src
     assert 'b"synthetic-user:synthetic-pass"' in src
+
+
+def test_exact_reviewed_release_config_is_used_for_disposable_rehearsal():
+    raw=canary.RELEASE_CADDYFILE.read_bytes()
+    assert hashlib.sha256(raw).hexdigest()==canary.REVIEWED_CADDYFILE_SHA256
+    candidate=canary.staged_caddyfile(18317,18318)
+    assert "http://127.0.0.1:18318 {" in candidate
+    assert "reverse_proxy http://127.0.0.1:18317 {" in candidate
+    assert "http://{$ASSISTX_TAILNET_IP}:8000" not in candidate
+    assert "http://127.0.0.1:8000" not in candidate
+    assert candidate.count("reverse_proxy")==1
+    for identity in canary.DROPPED_HEADERS:
+        assert candidate.count("header_up -"+identity)==1
+
+
+def test_fail_closed_if_release_file_changed(monkeypatch,tmp_path):
+    fake=tmp_path/"release.Caddyfile"
+    fake.write_text(canary.RELEASE_CADDYFILE.read_text()+"\n# unreviewed\n")
+    monkeypatch.setattr(canary,"RELEASE_CADDYFILE",fake)
+    try:
+        canary.staged_caddyfile(18317,18318)
+    except canary.UnsafeRehearsal as exc:
+        assert "changed without renewed review" in str(exc)
+    else:
+        raise AssertionError("altered release config erroneously admitted")
+
+
+def test_staged_config_rejects_live_ports_and_collisions():
+    import pytest
+    for upstream,frontend in ((8000,18318),(18317,8000),
+                              (18317,18317),(1,18318),(18317,65536)):
+        with pytest.raises(canary.UnsafeRehearsal):
+            canary.staged_caddyfile(upstream,frontend)
 
 
 def test_real_rollback_is_to_sanitizer_not_raw_forwarder():
