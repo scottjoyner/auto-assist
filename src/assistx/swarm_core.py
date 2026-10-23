@@ -236,8 +236,9 @@ def record_event(neo: Neo4jClient, event: Dict[str, Any]) -> Dict[str, Any]:
                 """,
                 {"event_id": event_id, "artifact_ids": artifact_ids},
             ).consume()
-    reconcile_event(neo, event)
-    return {"accepted": True, "event_id": event_id, "deduped": False, "graph_reconciled": True}
+    reconciled = reconcile_event(neo, event)
+    return {"accepted": True, "event_id": event_id, "deduped": False,
+            "graph_reconciled": reconciled is not False}
 
 
 def reconcile_event(neo: Neo4jClient, event: Dict[str, Any]) -> None:
@@ -250,7 +251,7 @@ def reconcile_event(neo: Neo4jClient, event: Dict[str, Any]) -> None:
     elif event_type in {"router.route_decision", "route.selected"}:
         record_route_decision_trace(neo, event, payload)
     elif event_type.startswith("assignment."):
-        project_assignment_event(neo, event, payload)
+        return project_assignment_event(neo, event, payload)
     elif event_type == "model.endpoint.discovered":
         upsert_model_endpoint(neo, payload, event.get("node_id"))
     elif event_type == "voice.auth.decision":
@@ -287,11 +288,11 @@ def _coerce_timestamp_ms(value: Any) -> Optional[int]:
     return None
 
 
-def project_assignment_event(neo: Neo4jClient, event: Dict[str, Any], payload: Dict[str, Any]) -> None:
+def project_assignment_event(neo: Neo4jClient, event: Dict[str, Any], payload: Dict[str, Any]) -> bool:
     event_type = str(event.get("event_type") or "")
     task_id = str(payload.get("task_id") or "").strip()
     if not task_id:
-        return
+        return False
 
     # Generic event projection is not a source-owner-authoritative claim
     # writer. An event asserting Hermes ownership must not create, release,
@@ -307,7 +308,7 @@ def project_assignment_event(neo: Neo4jClient, event: Dict[str, Any], payload: D
         isinstance(value, str) and value.startswith("hermes-")
         for value in identity_fields
     ):
-        return
+        return False
 
     assignment_id = payload.get("assignment_id")
     worker_id = payload.get("worker_id")
@@ -367,7 +368,7 @@ def project_assignment_event(neo: Neo4jClient, event: Dict[str, Any], payload: D
         status = status or "CLAIMED"
 
     with neo._session() as s:
-        s.run(
+        projected = s.run(
             """
             MATCH (e:SignalEvent:EventEnvelope {event_id:$event_id})
             MERGE (t:Task {id:$task_id})
@@ -404,6 +405,7 @@ def project_assignment_event(neo: Neo4jClient, event: Dict[str, Any], payload: D
                 t.result_json=coalesce($result_json, t.result_json),
                 t.lease_released_reason=coalesce($lease_released_reason, t.lease_released_reason)
             MERGE (e)-[:ABOUT_TASK]->(t)
+            RETURN t.id AS projected_task_id
             """,
             {
                 "event_id": event.get("event_id"),
@@ -422,7 +424,8 @@ def project_assignment_event(neo: Neo4jClient, event: Dict[str, Any], payload: D
                 "lease_released_reason": release_reason,
                 "clear_claim_fields": clear_claim_fields,
             },
-        ).consume()
+        ).single()
+        return projected is not None
 
 
 def upsert_route_runtime_sample(neo: Neo4jClient, payload: Dict[str, Any], event_type: str) -> Dict[str, Any]:
