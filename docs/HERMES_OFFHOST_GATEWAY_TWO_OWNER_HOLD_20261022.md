@@ -1,0 +1,27 @@
+# Hermes / AssistX gateway two-owner and off-host signing rehearsal — October 22, 2026
+
+**Decision: HOLD / NO-GO.** Draft auto-assist PR #425 and P0 #414 remain open. These tests do not deploy a gateway or change production API configuration, Hermes, source storage, protected corpora, real task records or model runtimes.
+
+## The meaningful new cross-host evidence
+
+Fleet Commander executed a *disposable* Lenovo→x1-370 signing and task-creation rehearsal over existing SSH configured with `BatchMode=yes` and `StrictHostKeyChecking=yes`. Lenovo started a short-lived Python process, generated an ephemeral Ed25519 signing key **in that process's memory**, and signed three tightly bound synthetic POST /api/tasks assertions (principal A, B and a B assertion intentionally submitted with A credentials). It returned only the PEM public verification key and the three signatures. **No private signing key bytes were written to Lenovo disk, shipped to x1-370 or saved in Git.**
+
+x1-370 pinned Lenovo's public test key inside a new private disposable directory and verified all assertions with the real `SignedGatewayOwnerMiddleware` and `owner_gateway_provenance` verifier from this branch. It then executed the **exact source AST** of the checked-in `api_create_task` and `TaskCreateIn` schema from `src/assistx/api.py` inside an otherwise isolated FastAPI app. This technique deliberately avoids importing the production API's full dependency graph (not available in the isolated Fleet Python environment) or starting production background loops. Task creation uses the actual `Neo4jClient.create_owned_task` source against a synthetic in-memory Session/transaction implementation, with notification writes intercepted. It does **not** connect to production Neo4j.
+
+Two distinct mock-authenticated humans submitted the same idempotency key. The returned synthetic task IDs were distinct, while an A credential submitting a correctly signed B identity was denied **409**. Reusing the signed A assertion was denied **401**. Modifying an attested request body was rejected. Exactly two in-memory task creations occurred; **zero production tasks**, real LLMs or protected sources were used. Each test used local synthetic Basic credentials only, not genuine user authentication; the production API's single-user Basic / trusted-header identity path is a separate unresolved gate.
+
+The off-host public key is received over a pinned SSH host-key connection. This verifies two separate physical processes and protects the key from accidental export, but **does not constitute an independently anchored gateway identity, operator-independent administrative control, or rollback-resistant key custody**. Both hosts remain within the same operator's SSH/Tailscale administrative domain. No signing daemon or long-lived private key was provisioned. Local replay nonce storage is ephemeral and not independently rollback-resistant.
+
+The static/nonphysical tests independently enforce inert default behavior, no remote key serialization, strict SSH host-key checking and bounded process lifetime, exact two-owner request bindings, zero production task effects, and cleanup. The isolated HTTP route contract tests verify two independent principals, create-only owner scope, idempotent same-owner retries, rejection of forged headers, changed bodies, bad synthetic Basic password, duplicate signatures and concurrent replay of one assertion.
+
+## Live read-only security topology check
+
+The existing `assistx-api` container on x1-370 runs the expected `assistx.api_router:app`, and publishes the API container's port 8000 only on **127.0.0.1**. All five task/executor claim routes are registered. Its configuration has `TRUSTED_AUTH_HEADER` set, but `ASSISTX_REQUIRE_OWNER_BINDING=true`, `ASSISTX_ENABLE_SIGNED_OWNER_GATEWAY=true`, and their public-key/nonce-store paths are **not enabled**. The read-only preflight reports presence/absence booleans only; **no trusted header value, API credential, production task or protected file content was accessed**.
+
+A different listener exists on x1-370's Tailscale IP:8000. We did not prove which application terminates it or whether it proxies to AssistX; therefore we **must not assume either a publicly accessible header bypass or a proven safe trust boundary**. Before release, prove that all clients entering through any proxy cannot supply the trusted identity header without verified gateway authentication and that headers are stripped/replaced by the authenticated edge. The existing `_auth_user_from_credentials` trusts that configured header when present, before considering Basic credentials: a reachable untrusted direct route would therefore be a security risk. **Do not enable new signed-owner mode by blindly setting flags.**
+
+## Release requirements and limitations
+
+Independent, authenticated multi-user gateway credentials and cryptographic key custody; header ingress stripping / proxy source provenance; rollback-resistant consumed nonce and high-water witness in an independently controlled domain; production real two-human task claims/receipts, revocation under partitions; approved signed RO knowledge and isolated RW scratch to replace 16 legacy binds; exact signed runtime image, rollback and disaster recovery are still open.
+
+**Rehearsal may establish implementation readiness. It does not authorize merging, deployment or closing issue #414. Keep PR #425 draft and production HOLD.**
