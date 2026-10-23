@@ -142,7 +142,43 @@ try:
             if not tx.closed():
                 tx.rollback()
     assert state(reissue)["status"]=="READY"
-    print("SYNTHETIC_CLAIM_REPLAY_DB_PASS=9",flush=True)
+    # A batch update must not reset a CLAIMED / DONE Task to READY or
+    # rewrite an existing Hermes-claimed task's targeting metadata.
+    def idempotent_task(label,status,owner=None):
+        tid=task(label,status=status,claimed_by=owner,
+                 idempotency_key=prefix+"_ik_"+label)
+        return tid
+    def batch(label):
+        return [{
+            "idempotency_key":prefix+"_ik_"+label,
+            "title":"synthetic retry","kind":"task",
+            "target_agent_id":"legacy-batch",
+        }]
+    claimed=idempotent_task("batch_claimed","CLAIMED","hermes-local")
+    assert client().create_tasks_batch(batch("batch_claimed"))==0
+    assert state(claimed)["status"]=="CLAIMED"
+    assert state(claimed)["claimed_by"]=="hermes-local"
+    assert state(claimed).get("target_agent_id") is None
+    print("PASS batch_cannot_reset_claimed_hermes",flush=True)
+
+    terminal=idempotent_task("batch_done","DONE","legacy-worker")
+    assert client().create_tasks_batch(batch("batch_done"))==0
+    assert state(terminal)["status"]=="DONE"
+    print("PASS batch_cannot_reopen_terminal",flush=True)
+
+    historical=idempotent_task("batch_historical","FAILED","legacy-worker")
+    call("MATCH(t:Task{id:$id}) SET t.completed_by='hermes-local'",
+         id=historical)
+    assert client().create_tasks_batch(batch("batch_historical"))==0
+    assert state(historical)["status"]=="FAILED"
+    print("PASS batch_historical_hermes_failed_not_reopened",flush=True)
+
+    retry=idempotent_task("batch_retry","FAILED","legacy-worker")
+    assert client().create_tasks_batch(batch("batch_retry"))==1
+    assert state(retry)["status"]=="READY"
+    print("PASS batch_nonhermes_failed_retry_allowed",flush=True)
+
+    print("SYNTHETIC_CLAIM_REPLAY_DB_PASS=13",flush=True)
     print("PRODUCTION_TASKS_TOUCHED=0;DECISION=HOLD",flush=True)
 finally:
     driver.close()
