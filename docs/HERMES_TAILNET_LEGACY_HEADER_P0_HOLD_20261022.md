@@ -23,3 +23,8 @@ No user authenticating via the legacy header should lose access as an unmeasured
 ## Validation boundaries
 
 Synthetic ASGI tests compile the exact checked-in `_auth_user_from_credentials` source from `api.py` without importing the production application. They verify exact lowercase flag semantics, bare-header rejection, no Basic downgrade with a hostile header, unchanged Basic with no header, unchanged legacy mode when disabled, and interaction with the signed-owner mode. Preflight test fixtures cover confirmed Tailnet ingress, emergency flag on/off and evidence-unavailable results. **This is not proof the unmodified live API rejects a spoofed trusted header.** The live ingress risk persists until a tested operational mitigation is applied.
+
+
+## Image-provenance clarification
+
+A configured emergency-rejection flag alone cannot prove the live container actually contains the new guard. The read-only preflight therefore reports legacy_header_tailnet_spoof_risk = null (UNKNOWN, not safe) when the flag is present but the runtime is unqualified, and legacy_header_runtime_containment_verified = false until an exact-image authenticated acceptance canary is complete. Verified risk is TRUE for the current live forwarder and legacy header with no guard configured. NO-GO remains in both cases.

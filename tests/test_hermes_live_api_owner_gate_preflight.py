@@ -152,7 +152,9 @@ def test_emergency_reject_flag_blocks_unverified_header_even_on_tailnet():
     outcome=gate.inspect_metadata(
         m,routes(),tailnet_forwarded_to_api=True)
     assert outcome["legacy_header_emergency_rejection_configured"] is True
-    assert outcome["legacy_header_tailnet_spoof_risk"] is False
+    # Flag set on old image would not change authentication.
+    assert outcome["legacy_header_tailnet_spoof_risk"] is None
+    assert outcome["legacy_header_runtime_containment_verified"] is False
     assert outcome["production_deployment_authorized"] is False
 
 
@@ -177,3 +179,12 @@ def test_preflight_never_sends_signed_or_unsigned_authorization_headers():
         '"X-AssistX-Signed-Owner"',
     ):
         assert unsafe not in src
+
+
+
+def test_no_trusted_header_is_distinct_from_unverified_mitigation():
+    m=sample()
+    outcome=gate.inspect_metadata(m,routes(),tailnet_forwarded_to_api=True)
+    assert outcome["legacy_header_tailnet_spoof_risk"] is False
+    assert outcome["legacy_header_runtime_containment_verified"] is False
+    assert outcome["production_deployment_authorized"] is False

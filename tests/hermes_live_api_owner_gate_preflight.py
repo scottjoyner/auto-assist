@@ -78,8 +78,14 @@ def inspect_metadata(metadata: dict, routes: set[str], *, tailnet_forwarded_to_a
         "legacy_header_emergency_rejection_configured":legacy_reject,
         "tailnet_port_8000_verified_to_same_api":tailnet_forwarded_to_api,
         "legacy_header_tailnet_spoof_risk":
-            (legacy_trusted_header and not legacy_reject
-             if tailnet_forwarded_to_api is True else None),
+            # Merely setting an env flag is not evidence the running image
+            # has the corresponding patch. Unqualified flag = UNKNOWN.
+            (True if tailnet_forwarded_to_api is True
+                and legacy_trusted_header and not legacy_reject
+             else False if tailnet_forwarded_to_api is True
+                and not legacy_trusted_header
+             else None),
+        "legacy_header_runtime_containment_verified":False,
         "api_container_published_only_on_loopback":local_only,
         "signed_owner_gateway_enabled":signed_gateway,
         "signed_gateway_key_path_configured":signed_gateway_key,
