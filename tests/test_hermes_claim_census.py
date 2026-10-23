@@ -29,7 +29,7 @@ class FakeSession:
     def run(self,query,params):
         self.calls.append((query,params))
         assert "LIMIT $limit" in query
-        assert "t.claimed_by=$agent OR t.target_agent_id=$agent" in query
+        assert "coalesce(t.claimed_by, '') STARTS WITH 'hermes-'" in query
         return iter(self.scans.pop(0)[:params["limit"]])
 
 
@@ -144,6 +144,30 @@ class CensusFixtureTests(unittest.TestCase):
         self.assertFalse(out["bounded_double_scan_stable"])
         self.assertEqual(out["reason"],"incomplete_or_unqualified_source_claim_inventory")
         self.assertNotIn("synthetic connection failure",str(out))
+
+    def test_all_known_hermes_lineage_fields_are_scanned(self):
+        for field in ("claimed_by", "target_agent_id", "completed_by", "heartbeat_by", "failed_by", "paused_from_agent_id", "migration_target_agent_id", "passive_claim_agent_id", "last_passive_claim_agent_id"):
+            with self.subTest(field=field):
+                predicate = f"coalesce(t.{field}, '') STARTS WITH 'hermes-'"
+                self.assertIn(predicate, c.QUERY)
+                self.assertNotIn(predicate, c.QUERY.replace(predicate, "false", 1))
+
+    def test_erased_claim_with_remaining_history_fails_closed(self):
+        # A physical source query now returns these residual records;
+        # candidate validation must refuse to call any of them complete.
+        for field in ("claimed_by", "target_agent_id", "completed_by", "heartbeat_by", "failed_by", "paused_from_agent_id", "migration_target_agent_id", "passive_claim_agent_id", "last_passive_claim_agent_id"):
+            with self.subTest(field=field):
+                row = task(77)
+                row["claimed_by"] = None
+                row["target_agent_id"] = None
+                row["claim_id"] = None
+                row["session_id"] = None
+                row["status"] = "DONE"
+                result, _ = self.get([[row], [row]])
+                self.assertFalse(result["bounded_double_scan_stable"])
+                self.assertEqual(result["reason"],
+                    "incomplete_or_unqualified_source_claim_inventory")
+                self.assertFalse(result["authoritative_complete_census"])
 
     def test_synthetic_rollback_aba_is_not_proven_safe(self):
         row=task(1)
