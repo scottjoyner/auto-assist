@@ -941,6 +941,11 @@ def release_expired_task_leases(neo: Neo4jClient, now_ms: Optional[int] = None) 
             """
             MATCH (t:Task)
             WHERE t.status IN ['CLAIMED','RUNNING'] AND coalesce(t.lease_expires_at_ts, 0) < $now
+                      AND NOT (
+                        coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                      )
             SET t.status='READY',
                 t.claimed_by=null,
                 t.agent_session_id=null,
