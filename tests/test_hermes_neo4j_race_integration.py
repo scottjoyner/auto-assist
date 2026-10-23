@@ -142,11 +142,66 @@ for i in range(3):
     assert row["status"]=="DONE" and row["runs"]==1,row
     print("PASS reverse"+str(i)+" completed_first_revocation_denied",flush=True)
 
+# P0 #428: exact Task-owned Hermes aliases must not return through legacy
+# permissive claim branches, including when a non-Hermes identity calls them.
+def alias_task(tag, owner, target="hermes-disposable"):
+    task_id = "SYNTHETIC_HERMES_ALIAS_" + tag + "_" + uuid.uuid4().hex[:10]
+    once("""CREATE (t:Task {id:$id, status:'CLAIMED',
+        claimed_by:$owner,target_agent_id:$target,claim_id:'alias-claim',
+        agent_session_id:'alias-session',execution_attempt:1,
+        lease_seconds:900,lease_expires_at_ts:timestamp()+120000})
+        RETURN t.id AS id""", id=task_id, owner=owner, target=target)
+    return task_id
+
+def alias_client():
+    c = object.__new__(Neo)
+    c._session = lambda: driver.session(database="neo4j")
+    return c
+
+tid = alias_task("prefixed-missing", "hermes-disposable")
+assert alias_client().heartbeat_task(tid, "hermes-disposable",
+                                     session_id="alias-session", claim_id=None) is None
+assert state(tid)["status"] == "CLAIMED" and state(tid)["runs"] == 0
+print("PASS prefixed_claimless_heartbeat_denied", flush=True)
+
+tid = alias_task("prefixed-valid", "hermes-disposable")
+assert alias_client().heartbeat_task(tid, "hermes-disposable",
+                                     session_id="alias-session",
+                                     claim_id="alias-claim") is not None
+assert alias_client().complete_task(tid, "hermes-disposable", "DONE",
+                                    session_id="alias-session",
+                                    claim_id="alias-claim") is not None
+assert state(tid)["status"] == "DONE" and state(tid)["runs"] == 1
+print("PASS prefixed_valid_claim_completed", flush=True)
+
+tid = alias_task("target-caller", "rogue-legacy")
+assert alias_client().heartbeat_task(tid, "rogue-legacy") is None
+assert alias_client().complete_task(tid, "rogue-legacy", "DONE") is None
+assert state(tid)["status"] == "CLAIMED" and state(tid)["runs"] == 0
+print("PASS target_owned_hermes_legacy_bypass_denied", flush=True)
+
+tid = alias_task("claim-caller", "hermes-disposable", target="other-agent")
+assert alias_client().heartbeat_task(tid, "rogue-legacy") is None
+assert state(tid)["status"] == "CLAIMED" and state(tid)["runs"] == 0
+print("PASS claimed_owner_hermes_legacy_bypass_denied", flush=True)
+
+tid = alias_task("prior-replay", "rogue-legacy")
+once("""MATCH (t:Task {id:$id})
+    SET t.status='FAILED'
+    CREATE (r:AgentRun {id:$run_id,completion_id:'alias-old',status:'FAILED'})
+    MERGE (t)-[:EXECUTED_BY]->(r)
+    RETURN r.id AS id""", id=tid, run_id=uuid.uuid4().hex)
+assert alias_client().complete_task(tid, "rogue-legacy", "DONE",
+                                    idempotency_key="alias-old") is None
+assert state(tid)["status"] == "FAILED" and state(tid)["runs"] == 1
+print("PASS cross_agent_idempotent_replay_denied", flush=True)
+
 print(json.dumps({"schema":1,"mode":"hermes_disposable_neo4j_races",
                   "isolation":"docker_internal_network_only",
                   "forward_revoke_or_reissue_races":8,
                   "reverse_completion_wins":3,
-                  "synthetic_cases_passed":11,
+                  "synthetic_cases_passed":16,
+                  "hermes_alias_and_cross_agent_denials":5,
                   "live_claims_touched":0,
                   "production_deployment_authorized":False,"decision":"HOLD"},sort_keys=True))
 driver.close()

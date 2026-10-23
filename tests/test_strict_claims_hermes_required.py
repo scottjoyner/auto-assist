@@ -72,6 +72,15 @@ class StrictHermesClaimIdsTests(unittest.TestCase):
             self.assertNotIn("renamed-custom-hermes",
                              self.c._MANDATORY_CLAIM_AGENT_IDS)
 
+    def test_prefixed_hermes_agents_are_mandatory_even_when_legacy_exempt(self):
+        with patch.dict("os.environ", {
+                "ASSISTX_REQUIRE_WORKER_CLAIM_ID": "off",
+                "ASSISTX_LEGACY_CLAIMLESS_AGENTS": "hermes-worker,hermes-synthetic",
+        }, clear=True):
+            self.assertTrue(self.c._claim_required("hermes-worker"))
+            self.assertTrue(self.c._claim_required("hermes-synthetic"))
+            self.assertFalse(self.c._claim_required("ordinary-worker"))
+
     def test_no_secrets_or_external_dependencies_in_mandatory_guard(self):
         self.assertEqual(self.c._MANDATORY_CLAIM_AGENT_IDS,
                          frozenset({"hermes-local"}))
