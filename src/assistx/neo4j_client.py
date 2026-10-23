@@ -653,8 +653,8 @@ class Neo4jClient:
                     WHERE (
                         created_now
                         OR (
-                          t.status NOT IN ['CLAIMED','CLAIMED_PASSIVE','RUNNING',
-                                           'PAUSING','PAUSED','DONE','CANCELLED']
+                          NOT (t.status IN ['CLAIMED','CLAIMED_PASSIVE','RUNNING',
+                                            'PAUSING','PAUSED','DONE','CANCELLED'])
                           AND t.claim_id IS NULL
                           AND coalesce(t.execution_attempt,0)=0
                         )
