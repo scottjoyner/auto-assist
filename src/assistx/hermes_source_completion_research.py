@@ -33,7 +33,7 @@ WHERE t.claimed_by=$owner
   AND t.claim_id=$claim_id
   AND t.execution_attempt=$attempt
   AND t.status='RUNNING'
-  AND coalesce(t.lease_expires_at_ts,0) > $now_ms
+  AND coalesce(t.lease_expires_at_ts,0) > timestamp()
   AND (t.target_agent_id IS NULL OR t.target_agent_id=$owner)
   AND t.completed_by IS NULL
   AND t.failed_by IS NULL
@@ -58,7 +58,6 @@ def complete_candidate_claim(
     claim_id: str,
     session_id: str,
     attempt: int,
-    now_ms: int,
 ) -> dict[str, Any]:
     """Update exactly one active Hermes claim as part of a ledger increment.
 
@@ -69,7 +68,7 @@ def complete_candidate_claim(
             or type(claim_id) is not str or not _ID.fullmatch(claim_id)
             or type(session_id) is not str or not _ID.fullmatch(session_id)
             or type(attempt) is not int or attempt < 1
-            or type(now_ms) is not int or now_ms < 0):
+            ):
         raise GenerationProtocolError("invalid_completion_identity")
 
     verified = False
@@ -78,7 +77,7 @@ def complete_candidate_claim(
         row = tx.run(_COMPLETE, {
             "task_id": task_id, "claim_id": claim_id,
             "session_id": session_id, "attempt": attempt,
-            "now_ms": now_ms, "owner": OWNER,
+            "owner": OWNER,
         }).single()
         verified = bool(
             row and row.get("task_id") == task_id
