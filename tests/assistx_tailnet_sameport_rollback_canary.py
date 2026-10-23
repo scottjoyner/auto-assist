@@ -9,10 +9,12 @@ trusted-header bypass in the fallback stage. Always a release HOLD.
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import sys
 from pathlib import Path
 import socket
 import subprocess
@@ -21,6 +23,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from unittest.mock import patch
 
 from assistx_tailnet_sanitizer_canary import caddyfile, free_port
 
@@ -35,11 +38,14 @@ def need(truth,reason):
         raise UnsafeRehearsal(reason)
 
 class Echo(BaseHTTPRequestHandler):
+    def do_POST(self):
+        return self.do_GET()
     def do_GET(self):
         content=json.dumps({
             "forwarded_identity":bool(self.headers.get("Tailscale-User-Login")),
             "basic_auth_forwarded":self.headers.get("Authorization","").startswith("Basic "),
             "path":self.path,
+            "method":self.command,
         },sort_keys=True).encode()
         self.send_response(200)
         self.send_header("Content-Type","application/json")
@@ -62,6 +68,40 @@ def request(port):
     with opener.open(req,timeout=2) as r:
         need(r.status==200,"synthetic backend rejected request")
         return json.loads(r.read(2048))
+
+def exact_opencode_dispatch(port: int) -> bool:
+    """Invoke the checked-in OpenCode bridge _post, never a real endpoint.
+
+    Compile only the named function so module-level dispatch/sync setup
+    cannot run. The one outgoing URL is bounded to our synthetic 127.0.0.1
+    backend via the temporary sanitizer; no real production task is sent.
+    """
+    source=(Path(__file__).resolve().parents[1]/
+            "scripts/opencode-bridge/dispatch_assistx_task.py")
+    need(source.is_file() and not source.is_symlink(),
+         "OpenCode bridge dispatch source unavailable")
+    node=ast.parse(source.read_text())
+    fn=next((item for item in node.body
+             if isinstance(item,ast.FunctionDef) and item.name=="_post"),None)
+    need(fn is not None,"exact OpenCode dispatch function missing")
+    env={"json":json,"urllib":urllib,"base64":base64,"sys":sys}
+    exec(compile(ast.fix_missing_locations(
+        ast.Module(body=[fn],type_ignores=[])),str(source),"exec"),env)
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with patch.object(urllib.request,"urlopen",
+                      side_effect=lambda request,timeout=30:
+                          opener.open(request,timeout=3)):
+        result=env["_post"](
+            f"http://127.0.0.1:{port}/synthetic-opencode-dispatch",
+            {"source":"synthetic-opencode-contract"},
+            "synthetic-opencode","synthetic-pass")
+    need(type(result) is dict
+         and result.get("method")=="POST"
+         and result.get("basic_auth_forwarded") is True
+         and result.get("forwarded_identity") is False,
+         "actual OpenCode bridge Basic request not sanitized")
+    return True
+
 
 def wait_ready(proc,port,*,expect_identity,timeout=7):
     deadline=time.monotonic()+timeout
@@ -131,6 +171,8 @@ def physical():
                 stderr=subprocess.DEVNULL,start_new_session=True)
             wait_ready(current,port,expect_identity=False)
             checks["same_port_caddy_preserves_basic_but_strips_identity"]=True
+            checks["real_opencode_bridge_dispatch_contract_sanitized"]=(
+                exact_opencode_dispatch(port))
             stop(current)
             current=None
             # Stage 3: rollback to pinned *sanitizing Caddy*, not raw socat.

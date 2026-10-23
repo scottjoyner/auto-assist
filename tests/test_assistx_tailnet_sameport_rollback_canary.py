@@ -58,3 +58,16 @@ def test_all_disposable_processes_cleaned():
     assert 'backend.shutdown()' in src
     assert 'backend.server_close()' in src
     assert 'task.join(timeout=3)' in src
+
+
+
+def test_actual_opencode_dispatch_source_is_compiled_without_importing_workflows():
+    source=Path(canary.__file__).read_text()
+    assert "scripts/opencode-bridge/dispatch_assistx_task.py" in source
+    assert 'item.name=="_post"' in source
+    assert 'ast.Module(body=[fn],type_ignores=[])' in source
+    assert 'f"http://127.0.0.1:{port}/synthetic-opencode-dispatch"' in source
+    assert '"synthetic-opencode","synthetic-pass"' in source
+    assert 'opener.open(request,timeout=3)' in source
+    assert 'checks["real_opencode_bridge_dispatch_contract_sanitized"]' in source
+    assert 'result.get("forwarded_identity") is False' in source
