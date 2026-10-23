@@ -639,13 +639,41 @@ class Neo4jClient:
             if idempotency_key:
                 update_props = {key: value for key, value in props.items() if key != "status"}
                 rec = s.run(
-                    "MERGE (t:Task {idempotency_key:$idempotency_key}) "
-                    "ON CREATE SET t.id=$id, t.status=$status, t.created_at=datetime(), t.created_at_ts=timestamp() "
-                    "SET t += $props, "
-                    "    t.status=CASE WHEN t.status IN ['DONE','CANCELLED'] AND $status='READY' "
-                    "                  THEN t.status ELSE $status END, "
-                    "    t.updated_at=datetime(), t.updated_at_ts=timestamp() "
-                    "RETURN t.id AS id",
+                    """
+                    MERGE (t:Task {idempotency_key:$idempotency_key})
+                    ON CREATE SET t.id=$id, t.status=$status,
+                                  t.created_at=datetime(), t.created_at_ts=timestamp(),
+                                  t.hermes_ticket_creation_nonce=$id
+                    // Idempotent retries may only change unclaimed,
+                    // non-terminal Tasks. A claim or protected owner history
+                    // cannot be rewritten by a generic ticket upsert.
+                    SET t.hermes_fence_check_epoch =
+                        coalesce(t.hermes_fence_check_epoch, 0) + 1
+                    WITH t, t.hermes_ticket_creation_nonce=$id AS created_now
+                    WHERE (
+                        created_now
+                        OR (
+                          t.status NOT IN ['CLAIMED','CLAIMED_PASSIVE','RUNNING',
+                                           'PAUSING','PAUSED','DONE','CANCELLED']
+                          AND t.claim_id IS NULL
+                          AND coalesce(t.execution_attempt,0)=0
+                        )
+                    )
+                      AND NOT (
+                        coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.passive_claim_agent_id, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.last_passive_claim_agent_id, '') STARTS WITH 'hermes-'
+                      )
+                    SET t += $props, t.status=$status,
+                        t.updated_at=datetime(), t.updated_at_ts=timestamp()
+                    RETURN t.id AS id
+                    """,
                     {
                         "idempotency_key": idempotency_key,
                         "id": task_id,
@@ -661,6 +689,10 @@ class Neo4jClient:
                     "RETURN t.id AS id",
                     {"id": task_id, "props": props},
                 ).single()
+            if not rec:
+                raise ValueError(
+                    "Task ticket upsert rejected: claimed, terminal or protected owner"
+                )
             ticket_id = rec["id"]
             if parent_id:
                 s.run(
@@ -1297,7 +1329,27 @@ class Neo4jClient:
         with self._session() as session:
             row = session.run(
                 """
-                MATCH (t:Task {id:$task_id, status:'READY'})
+                MATCH (t:Task {id:$task_id})
+                // Lock Task first, then validate current ownership/state.
+                SET t.hermes_fence_check_epoch =
+                    coalesce(t.hermes_fence_check_epoch,0)+1
+                WITH t
+                WHERE t.status='READY'
+                  AND coalesce(t.execution_attempt,0)=0
+                  AND t.claim_id IS NULL
+                  AND NOT (
+                    coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.passive_claim_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.last_passive_claim_agent_id, '') STARTS WITH 'hermes-'
+                  )
+                  AND NOT ($node_id STARTS WITH 'hermes-')
+                  AND NOT ($actor STARTS WITH 'hermes-')
                 MATCH (n:SwarmNode {node_id:$node_id})
                 WHERE coalesce(n.is_blocked,false)=false
                 OPTIONAL MATCH (n)<-[:RESERVED_ON]-(active:AllocationReservation {status:'ACTIVE'})
@@ -1349,6 +1401,25 @@ class Neo4jClient:
                 MATCH (t:Task)-[:HAS_ALLOCATION]->(a:AllocationReservation {
                     id:$reservation_id, status:'ACTIVE'
                 })
+                SET t.hermes_fence_check_epoch =
+                    coalesce(t.hermes_fence_check_epoch,0)+1
+                WITH t,a
+                WHERE t.status='READY'
+                  AND t.allocation_reservation_id=$reservation_id
+                  AND coalesce(t.execution_attempt,0)=0
+                  AND t.claim_id IS NULL
+                  AND NOT ($actor STARTS WITH 'hermes-')
+                  AND NOT (
+                    coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.passive_claim_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.last_passive_claim_agent_id, '') STARTS WITH 'hermes-'
+                  )
                 SET a.status='RELEASED', a.released_by=$actor,
                     a.released_at_ts=timestamp(), a.updated_at_ts=timestamp(),
                     t.target_agent_id=null, t.allocation_reservation_id=null,
