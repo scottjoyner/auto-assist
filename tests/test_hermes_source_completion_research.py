@@ -20,7 +20,7 @@ def test_query_locks_task_and_checks_claim_before_status_change():
         "t.claim_id=$claim_id",
         "t.execution_attempt=$attempt",
         "t.status='RUNNING'",
-        "coalesce(t.lease_expires_at_ts,0) > $now_ms",
+        "coalesce(t.lease_expires_at_ts,0) > timestamp()",
         "t.completed_by IS NULL",
         "SET t.status='DONE'",
     )
@@ -36,7 +36,7 @@ def test_query_locks_task_and_checks_claim_before_status_change():
     "t.claim_id=$claim_id",
     "t.execution_attempt=$attempt",
     "t.status='RUNNING'",
-    "coalesce(t.lease_expires_at_ts,0) > $now_ms",
+    "coalesce(t.lease_expires_at_ts,0) > timestamp()",
     "t.completed_by IS NULL",
     "t.failed_by IS NULL",
     "t.paused_from_agent_id IS NULL",
@@ -52,14 +52,13 @@ def test_every_identity_or_effect_denial_predicate_is_mandatory(field):
     {"claim_id":""}, {"claim_id":"slash/a"},
     {"session_id":""}, {"session_id":"bad session"},
     {"attempt":0}, {"attempt":True},
-    {"now_ms":-1}, {"now_ms":True},
 ])
 def test_invalid_claim_identity_fails_before_ledger_mutation(monkeypatch,override):
     calls=[]
     monkeypatch.setattr(c,"advance_candidate_generation",
                         lambda *a,**k:calls.append(1))
     args=dict(expected_generation=3,task_id="task1",claim_id="claim1",
-              session_id="session1",attempt=1,now_ms=100)
+              session_id="session1",attempt=1)
     args.update(override)
     with pytest.raises(g.GenerationProtocolError,match="invalid_completion"):
         c.complete_candidate_claim(None,**args)
@@ -84,7 +83,7 @@ def test_receipt_does_not_claim_external_effect_or_custody(monkeypatch):
     monkeypatch.setattr(c,"advance_candidate_generation",run)
     out=c.complete_candidate_claim(
         None,expected_generation=3,task_id="task1",claim_id="claim1",
-        session_id="session1",attempt=1,now_ms=100,
+        session_id="session1",attempt=1,
     )
     assert out["candidate_generation"]==4
     assert out["source_task_row_readback_in_tx"] is True
@@ -116,8 +115,15 @@ def test_nonmatching_database_ack_must_not_increment_generation(monkeypatch,wron
     with pytest.raises(g.GenerationProtocolError):
         c.complete_candidate_claim(
             None,expected_generation=3,task_id="task1",claim_id="claim1",
-            session_id="session1",attempt=1,now_ms=100,
+            session_id="session1",attempt=1,
         )
+
+
+def test_lease_checks_neo4j_time_not_caller_clock():
+    assert "coalesce(t.lease_expires_at_ts,0) > timestamp()" in c._COMPLETE
+    assert "$now_ms" not in c._COMPLETE
+    import inspect
+    assert "now_ms" not in inspect.signature(c.complete_candidate_claim).parameters
 
 
 def test_existing_production_code_does_not_import_research_adapter():
