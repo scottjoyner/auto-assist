@@ -7,7 +7,9 @@ import subprocess
 import sys
 
 import pytest
-import assistx_tailnet_sanitizer_preflight as preflight
+# Hosted CI has tests/, but not scripts/, on its Python import path.
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"scripts"))
+import assistx_tailnet_sanitizer_preflight as preflight  # noqa: E402
 import assistx_tailnet_sanitizer_canary as canary
 
 
