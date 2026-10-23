@@ -1,6 +1,7 @@
 """Fail-closed tests for read-only AssistX ingress reboot persistence checks."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -8,7 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from scripts import assistx_tailnet_ingress_persistence_guard as guard
+# CI may already import an unrelated namespace package named `scripts`.
+# Load the exact local file rather than resolving a repository-ambiguous name.
+GUARD_FILE=Path(__file__).resolve().parents[1]/"scripts/assistx_tailnet_ingress_persistence_guard.py"
+GUARD_SPEC=importlib.util.spec_from_file_location("assistx_tailnet_ingress_guard_test",GUARD_FILE)
+assert GUARD_SPEC is not None and GUARD_SPEC.loader is not None
+guard=importlib.util.module_from_spec(GUARD_SPEC)
+GUARD_SPEC.loader.exec_module(guard)
 
 BASE=dict(
     raw_active=False,raw_enabled=False,raw_unit_matches=True,
