@@ -61,6 +61,16 @@ class CensusFixtureTests(unittest.TestCase):
         out,_=self.get([rows,rows])
         self.assertFalse(out["bounded_double_scan_stable"])
 
+    def test_unrecognized_prefixed_hermes_owner_invalidates_exact_owner_census(self):
+        row = task(3)
+        row["claimed_by"] = "hermes-shadow"
+        row["target_agent_id"] = "hermes-shadow"
+        out, session = self.get([[row], [row]])
+        self.assertFalse(out["bounded_double_scan_stable"])
+        self.assertEqual(out["reason"], "incomplete_or_unqualified_source_claim_inventory")
+        self.assertIn("STARTS WITH 'hermes-'", session.calls[0][0])
+        self.assertEqual(out["decision"], "HOLD")
+
     def test_duplicate_task_rejected(self):
         rows=[task(1),task(1)]
         out,_=self.get([rows,rows])

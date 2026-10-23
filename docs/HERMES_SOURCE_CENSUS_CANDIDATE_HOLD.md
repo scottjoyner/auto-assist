@@ -6,7 +6,10 @@ receipt. It is deliberately not wired into a running service.
 
 It scans source Task records associated with hermes-local, including
 active assignments with missing claim IDs, and terminal tasks still
-carrying a claim ID. There is no 500-row general-API cap. It takes
+carrying a claim ID. The conservative query also discovers Hermes-prefixed
+owners/targets outside the pinned hermes-local scope and **denies** the
+candidate rather than silently omitting those records; this is not a
+multi-owner census or a source-authoritative scope migration. There is no 500-row general-API cap. It takes
 two bounded and ordered scans, rejects overflow, duplicate IDs,
 missing claim/session IDs, wrong owners and invalid generations.
 It returns only a count and domain-separated digest, never task data.
