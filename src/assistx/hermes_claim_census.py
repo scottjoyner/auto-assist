@@ -24,7 +24,9 @@ IDENTITY = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 # claim IDs on terminal tasks so an old claim cannot vanish without notice.
 QUERY = """
 MATCH (t:Task)
-WHERE (t.claimed_by=$agent OR t.target_agent_id=$agent)
+WHERE (t.claimed_by=$agent OR t.target_agent_id=$agent
+       OR coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+       OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-')
   AND (t.status IN ['CLAIMED','RUNNING','PAUSING']
        OR t.claim_id IS NOT NULL)
 RETURN t.id AS task_id, t.claimed_by AS claimed_by,

@@ -70,5 +70,16 @@ churn=c.candidate_readonly(ChurnSession)
 assert churn["reason"]=="source_changed_between_read_committed_scans",churn
 print("REAL_NEO4J_CLAIM_CHURN_DENIED",flush=True)
 assert not churn["production_dispatch_authorized"]
+
+run("""CREATE (t:Task {id:'synthetic-hermes-unapproved-owner',
+    claimed_by:'hermes-shadow',target_agent_id:'hermes-shadow',
+    claim_id:'shadow-claim',agent_session_id:'shadow-session',
+    execution_attempt:1,lease_expires_at_ts:timestamp()+120000,
+    status:'CLAIMED'})""")
+shadow = c.candidate_readonly(make_session)
+assert shadow["reason"] == "incomplete_or_unqualified_source_claim_inventory", shadow
+run("MATCH(t:Task {id:'synthetic-hermes-unapproved-owner'}) DETACH DELETE t")
+print("REAL_NEO4J_UNAPPROVED_HERMES_OWNER_DENIED", flush=True)
+
 driver.close()
-print("CENSUS_DISPOSABLE_NEO4J_PASS=4 REAL_CLAIMS_TOUCHED=0 decision=HOLD")
+print("CENSUS_DISPOSABLE_NEO4J_PASS=5 REAL_CLAIMS_TOUCHED=0 decision=HOLD")
