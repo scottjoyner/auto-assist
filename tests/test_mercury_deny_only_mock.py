@@ -17,6 +17,36 @@ class DenyOnlyContract(unittest.TestCase):
         self.assertEqual(result["provider_calls"], 0)
         self.assertEqual(result["production_execution_commands"], 0)
 
+    def test_valid_lease_node_has_no_false_wrong_node_evidence(self):
+        inp = m.good_synthetic_request()
+        result = m.evaluate_mock(inp)
+        self.assertEqual(result["identifiers"]["lease_node_id"], "xwing")
+        self.assertEqual(
+            result["reasons"],
+            ["mock_no_authenticated_quota_or_dispatch_authority"],
+        )
+        self.assertEqual(result["decision"], "DENY")
+        self.assertEqual(result["provider_calls"], 0)
+
+    def test_missing_lease_node_is_redacted_and_refused(self):
+        inp = m.good_synthetic_request()
+        inp.pop("lease_node_id")
+        result = m.evaluate_mock(inp)
+        self.assertIsNone(result["identifiers"]["lease_node_id"])
+        self.assertIn("identity_missing_or_invalid", result["reasons"])
+        self.assertIn("missing_required_field", result["reasons"])
+        self.assertIn("wrong_node", result["reasons"])
+        self.assertFalse(result["dispatch_authorized"])
+
+    def test_invalid_lease_node_is_not_echoed(self):
+        inp = m.good_synthetic_request()
+        inp["lease_node_id"] = "secret bearer invalid spaces"
+        result = m.evaluate_mock(inp)
+        self.assertIsNone(result["identifiers"]["lease_node_id"])
+        self.assertIn("identity_missing_or_invalid", result["reasons"])
+        self.assertNotIn("secret bearer", str(result))
+        self.assertEqual(result["provider_calls"], 0)
+
     def test_wrong_node(self):
         inp = m.good_synthetic_request()
         inp["lease_node_id"] = "beelink"
