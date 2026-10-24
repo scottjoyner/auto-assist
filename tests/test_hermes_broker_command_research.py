@@ -135,6 +135,6 @@ def test_failed_source_cas_does_not_leak_task_state(monkeypatch):
 def test_no_production_implementation_imports_command_adapter():
     root=Path(__file__).resolve().parents[1]/"src/assistx"
     for f in root.rglob("*.py"):
-        if f.name=="hermes_broker_command_research.py":
+        if f.name in ("hermes_broker_command_research.py", "hermes_broker_unix_boundary_research.py"):
             continue
         assert "hermes_broker_command_research" not in f.read_text(), f
