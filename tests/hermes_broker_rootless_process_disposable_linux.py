@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import pwd
 import socket
+import shutil
 import stat
 import subprocess
 import sys
@@ -120,8 +121,31 @@ def main():
         os.chmod(private,0o2710)
         assert stat.S_IMODE(private.stat().st_mode)==0o2710
         sock=private/"broker.sock"
+        # Hosted checkout ancestry can be untraversable to an unrelated
+        # OS UID. Stage only this disposable harness and its seven
+        # pure research modules, not the repository, DB or credentials.
+        stage=basedir/"stage"
+        stage.mkdir(mode=0o755)
+        staged_tests=stage/"tests"
+        staged_src=stage/"src"/"assistx"
+        staged_tests.mkdir(mode=0o755)
+        staged_src.mkdir(parents=True,mode=0o755)
+        for folder in (stage,staged_tests,stage/"src",staged_src):
+            os.chmod(folder,0o755)
+        staged_harness=staged_tests/Path(__file__).name
+        shutil.copyfile(Path(__file__).resolve(),staged_harness)
+        os.chmod(staged_harness,0o644)
+        for name in (
+            "hermes_claim_census","hermes_source_generation_research",
+            "hermes_source_heartbeat_research","hermes_source_completion_research",
+            "hermes_broker_command_research","hermes_broker_unix_boundary_research",
+            "hermes_broker_rootless_research",
+        ):
+            target=staged_src/(name+".py")
+            shutil.copyfile(src/(name+".py"),target)
+            os.chmod(target,0o644)
         args=[
-            sys.executable,str(Path(__file__).resolve()),"--child",
+            sys.executable,str(staged_harness),"--child",
             str(private),str(client.pw_uid),str(client.pw_gid),
         ]
         p=subprocess.Popen(
@@ -132,7 +156,14 @@ def main():
             deadline=time.monotonic()+7
             while not sock.exists() and p.poll() is None and time.monotonic()<deadline:
                 time.sleep(0.02)
-            assert p.poll() is None and sock.exists(),"isolated_rootless_server_failed_to_bind"
+            if p.poll() is not None:
+                _, child_error=p.communicate(timeout=2)
+                # Only report the last exception type/message from an
+                # entirely synthetic, credential-free child process.
+                cause=child_error.decode("utf-8",errors="replace").splitlines()
+                raise AssertionError("isolated_rootless_server_failed_to_bind:"+
+                                     (cause[-1][:220] if cause else "unknown"))
+            assert sock.exists(),"isolated_rootless_server_failed_to_bind"
             status=Path(f"/proc/{p.pid}/status").read_text()
             uid_line=next(x for x in status.splitlines() if x.startswith("Uid:"))
             assert int(uid_line.split()[1])==server.pw_uid
