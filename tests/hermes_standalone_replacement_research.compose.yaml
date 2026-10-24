@@ -1,0 +1,63 @@
+# Standalone research template only. DO NOT combine with production Compose.
+# No production image, corpus source, or RW custody is authorized by rendering.
+name: hermes-standalone-research-only
+services:
+  hermes-replacement-research:
+    profiles: [research-only]
+    image: ${HERMES_REPLACEMENT_RESEARCH_IMAGE:?unapproved exact image digest required for render-only qualification}
+    pull_policy: never
+    entrypoint: ["/entrypoint.sh"]
+    command: ["python3", "-B", "-m", "assistx.strict_executor_main"]
+    restart: "no"
+    init: false
+    user: "1000:1000"
+    read_only: true
+    network_mode: none
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 402653184
+    cpus: 0.5
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16777216
+    environment:
+      HOME: /workspace
+      HERMES_HOME: /workspace/hermes-home
+      HERMES_CONFIG_HOME: /workspace/.hermes
+      PYTHONPATH: /workspace:/app/src
+      ASSISTX_OUTBOX_DB: /workspace/outbox.sqlite
+      ASSISTX_URL: http://127.0.0.1:1
+      ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN: SYNTHETIC_BOOTSTRAP_ONLY
+      ASSISTX_STRICT_EXECUTOR_AUTH: "true"
+      ASSISTX_REQUIRE_OWNER_BINDING: "true"
+      HERMES_REQUIRE_OWNER_BOUND_LAUNCH: "true"
+      ASSISTX_EXECUTOR_VERIFY_KEY_FILE: /app/attestation/executor.pub
+      HERMES_AGENT_ID: hermes-replacement-research-only
+      HERMES_SELFTASK_ENABLED: "false"
+      HERMES_KNOWLEDGE_READ_ROOT: /research/knowledge
+      HERMES_KNOWLEDGE_WRITE_ROOT: /workspace/knowledge
+      HERMES_REQUIRE_MOUNT_ISOLATION: "true"
+      HERMES_REQUIRE_SIGNED_CORPUS: "true"
+      HERMES_REQUIRE_CORPUS_CHECKPOINT: "true"
+      HERMES_CORPUS_CHECKPOINT_PATH: /app/attestation/checkpoint.json
+      HERMES_CORPUS_WITNESS_KEY_PATH: /app/attestation/witness.pub
+      HERMES_CORPUS_TRUST_KEY_PATH: /app/attestation/trust.pub
+      HERMES_KNOWLEDGE_WRITE_MOUNT: /workspace
+      HERMES_EXPECTED_WRITE_FSTYPE: cifs
+      HERMES_EXPECTED_WRITE_SOURCE: ${HERMES_REPLACEMENT_RESEARCH_CIFS_SOURCE:?exact CIFS share for future independent verification required}
+      HERMES_KNOWLEDGE_ROOT: /workspace/knowledge
+      HERMES_EVAL_PATH: /workspace/knowledge/eval.json
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - type: bind
+        source: ${HERMES_REPLACEMENT_RESEARCH_RO_PATH:?unapproved narrow signed corpus path required}
+        target: /research/knowledge
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${HERMES_REPLACEMENT_RESEARCH_RW_PATH:?unapproved isolated RW workspace required}
+        target: /workspace
+        read_only: false
+        bind:
+          create_host_path: false
