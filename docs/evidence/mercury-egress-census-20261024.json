@@ -1,0 +1,175 @@
+{
+  "callsites": [
+    {
+      "expression": "const stream = streamText({",
+      "kind": "ai_sdk_call",
+      "line": 149,
+      "path": "src/bots/bot-turn.ts"
+    },
+    {
+      "expression": "const stream = streamText({",
+      "kind": "ai_sdk_call",
+      "line": 2445,
+      "path": "src/core/agent.ts"
+    },
+    {
+      "expression": "const streamResult = streamText({",
+      "kind": "ai_sdk_call",
+      "line": 3433,
+      "path": "src/core/agent.ts"
+    },
+    {
+      "expression": "Promise.resolve(streamText({",
+      "kind": "ai_sdk_call",
+      "line": 3841,
+      "path": "src/core/agent.ts"
+    },
+    {
+      "expression": "result = await this.withProviderDeadline(generateText({",
+      "kind": "ai_sdk_call",
+      "line": 3890,
+      "path": "src/core/agent.ts"
+    },
+    {
+      "expression": "const guardStream = streamText({",
+      "kind": "ai_sdk_call",
+      "line": 4534,
+      "path": "src/core/agent.ts"
+    },
+    {
+      "expression": "const result = await generateText({",
+      "kind": "ai_sdk_call",
+      "line": 5411,
+      "path": "src/core/agent.ts"
+    },
+    {
+      "expression": "const selfCheckResult = await generateText({",
+      "kind": "ai_sdk_call",
+      "line": 5598,
+      "path": "src/core/agent.ts"
+    },
+    {
+      "expression": "const result = await generateText({",
+      "kind": "ai_sdk_call",
+      "line": 7764,
+      "path": "src/core/agent.ts"
+    },
+    {
+      "expression": "const result = await generateText({",
+      "kind": "ai_sdk_call",
+      "line": 206,
+      "path": "src/core/sub-agent.ts"
+    },
+    {
+      "expression": "const result = await generateText({",
+      "kind": "ai_sdk_call",
+      "line": 24,
+      "path": "src/providers/anthropic.ts"
+    },
+    {
+      "expression": "const result = streamText({",
+      "kind": "ai_sdk_call",
+      "line": 41,
+      "path": "src/providers/anthropic.ts"
+    },
+    {
+      "expression": "const result = await generateText({",
+      "kind": "ai_sdk_call",
+      "line": 68,
+      "path": "src/providers/mercury-cloud.ts"
+    },
+    {
+      "expression": "const result = await generateText({",
+      "kind": "ai_sdk_call",
+      "line": 92,
+      "path": "src/providers/mercury-cloud.ts"
+    },
+    {
+      "expression": "const result = streamText({",
+      "kind": "ai_sdk_call",
+      "line": 115,
+      "path": "src/providers/mercury-cloud.ts"
+    },
+    {
+      "expression": "const result = streamText({",
+      "kind": "ai_sdk_call",
+      "line": 138,
+      "path": "src/providers/mercury-cloud.ts"
+    },
+    {
+      "expression": "const result = await generateText({",
+      "kind": "ai_sdk_call",
+      "line": 52,
+      "path": "src/providers/openai-compat.ts"
+    },
+    {
+      "expression": "const result = streamText({",
+      "kind": "ai_sdk_call",
+      "line": 73,
+      "path": "src/providers/openai-compat.ts"
+    },
+    {
+      "expression": "const result = await generateText({",
+      "kind": "ai_sdk_call",
+      "line": 259,
+      "path": "src/web/api/kanban.ts"
+    },
+    {
+      "expression": "const result = await generateText({",
+      "kind": "ai_sdk_call",
+      "line": 384,
+      "path": "src/web/api/workspace-ide.ts"
+    },
+    {
+      "expression": "const result = await provider.generateText(",
+      "kind": "provider_object_call",
+      "line": 29,
+      "path": "src/bots/fleet-onboarding.ts"
+    },
+    {
+      "expression": "const result = await provider.generateText(",
+      "kind": "provider_object_call",
+      "line": 49,
+      "path": "src/bots/persona-template.ts"
+    },
+    {
+      "expression": "const result = await provider.generateText(",
+      "kind": "provider_object_call",
+      "line": 70,
+      "path": "src/bots/persona-template.ts"
+    },
+    {
+      "expression": "const result = await input.provider.generateText(",
+      "kind": "provider_object_call",
+      "line": 40,
+      "path": "src/bots/skill-synthesis.ts"
+    },
+    {
+      "expression": "const result = await provider.generateText(",
+      "kind": "provider_object_call",
+      "line": 2575,
+      "path": "src/index.ts"
+    },
+    {
+      "expression": "const response = await globalThis.fetch(url, modifiedInit);",
+      "kind": "provider_raw_fetch",
+      "line": 182,
+      "path": "src/providers/chatgpt-web.ts"
+    },
+    {
+      "expression": "return globalThis.fetch(url, {",
+      "kind": "provider_raw_fetch",
+      "line": 114,
+      "path": "src/providers/github-copilot.ts"
+    }
+  ],
+  "classifier": "partial_source_only_census",
+  "counts": {
+    "ai_sdk_call": 20,
+    "provider_object_call": 5,
+    "provider_raw_fetch": 2
+  },
+  "provider_execution_authorized": false,
+  "schema": 1,
+  "upstream_commit": "1be98293ace567092b961346d95363284f6e71cf"
+}
