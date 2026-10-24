@@ -989,16 +989,72 @@ def test_cleanup_looping_identifies_conflicts():
         path.unlink(missing_ok=True)
 
 
-def test_admit_subagent_registers_record():
-    with tempfile.NamedTemporaryFile("w+", suffix=".jsonl", delete=False) as tf:
-        path = pathlib.Path(tf.name)
-    try:
-        result = supervisor.admit_subagent({"id": "openrouter/claude-3.5-sonnet"}, path)
-        assert result["admitted"] is True
-        assert result["model"] == "openrouter/claude-3.5-sonnet"
-        assert result["total_records"] == 1
-    finally:
-        path.unlink(missing_ok=True)
+def test_direct_admit_subagent_denied_without_creating_state(tmp_path, monkeypatch):
+    def no_registration(*args, **kwargs):
+        raise AssertionError("admission cannot call observational registration")
+
+    monkeypatch.setattr(supervisor, "register_subagent", no_registration)
+    state = tmp_path / "never-created.jsonl"
+    result = supervisor.admit_subagent({"id": "openrouter/fixture:free"}, state)
+    assert result["admitted"] is False
+    assert result["blocked"] is True
+    assert result["dispatch_authorized"] is False
+    assert result["provider_calls"] == 0
+    assert result["state_mutated"] is False
+    assert result["reason"] == "resource_owned_process_and_admission_authority_required"
+    assert not state.exists()
+
+
+def test_direct_admit_does_not_rewrite_existing_registry(tmp_path):
+    state = tmp_path / "existing.jsonl"
+    before = b'{"status":"active","model":"fixture/existing","pid":123}\n'
+    state.write_bytes(before)
+    result = supervisor.admit_subagent({"id": "router/free"}, state)
+    assert result["admitted"] is False
+    assert state.read_bytes() == before
+
+
+def test_untrusted_registration_cannot_claim_admitted_status(tmp_path):
+    state = tmp_path / "uncreated.jsonl"
+    import pytest
+    with pytest.raises(ValueError, match="admission_state_requires_resource_owned_authority"):
+        supervisor.register_subagent({
+            "title": "fake", "model": "openrouter/fixture:free",
+            "status": " admitted ", "pid": 0, "session": ""
+        }, state)
+    assert not state.exists()
+
+
+def test_cli_rejects_direct_registered_admission(tmp_path, capsys):
+    state = tmp_path / "never-created.jsonl"
+    requested = json.dumps({"model": "openrouter/fixture:free", "status": "admitted"})
+    code = supervisor.main(["--register-subagent", requested, "--state", str(state)])
+    assert code == 1
+    response = json.loads(capsys.readouterr().out)
+    assert response["registered"] is False
+    assert "admission_state_requires_resource_owned_authority" in response["error"]
+    assert not state.exists()
+
+
+def test_registration_rejects_authority_field_even_if_status_running(tmp_path):
+    state = tmp_path / "never-created.jsonl"
+    import pytest
+    for key in ("admitted", "dispatch_authorized", "execution_authorized", "quota_authorized"):
+        with pytest.raises(ValueError, match="admission_state_requires_resource_owned_authority"):
+            supervisor.register_subagent({
+                "model": "fixture/model", "status": "running", key: True,
+            }, state)
+        assert not state.exists()
+
+
+def test_existing_registry_preserved_on_fake_admission(tmp_path):
+    state = tmp_path / "existing.jsonl"
+    state.write_text('{"status":"running","model":"fixture"}\n')
+    before = state.read_bytes()
+    import pytest
+    with pytest.raises(ValueError, match="admission_state_requires_resource_owned_authority"):
+        supervisor.register_subagent({"model": "fixture", "status": "AdMiTtEd"}, state)
+    assert state.read_bytes() == before
 
 
 def test_supervise_hold_terminates_stale_dry_run():

@@ -57,6 +57,18 @@ def register_subagent(
 ) -> list[dict[str, Any]]:
     from free_subagent_routing import route_kind
 
+    # Observational records are not authority. Never accept a caller-owned
+    # claimed "admitted" status as an authenticated grant; reject before I/O.
+    if not isinstance(record, dict):
+        raise ValueError("invalid_observation_record")
+    # Reject caller-owned authority assertions; observational JSON is never
+    # authenticated issuance, even when the caller chooses a believable model.
+    if str(record.get("status", "")).strip().lower() == "admitted" or any(
+        key in record for key in ("admitted", "dispatch_authorized", "execution_authorized",
+                                 "quota_authorized")
+    ):
+        raise ValueError("admission_state_requires_resource_owned_authority")
+
     records = load_state(state_path)
     record = dict(record)
     for k in ("title", "objective", "model", "worktree", "pid", "session", "status"):
