@@ -1285,26 +1285,14 @@ def _loader_est_model_gb(model_id: str) -> float:
 
 
 def _loader_current_hot(base_url: str) -> List[str]:
-    """Models currently confirmed hot on a node (cheap probe of target set)."""
-    with _loader_lock:
-        targets = list(_loader_target_models)
-    if not targets:
-        return []
-    hot = []
-    for mid in targets:
-        try:
-            r = requests.post(f"{base_url}/chat/completions", json={
-                "model": mid, "messages": [{"role": "user", "content": "hi"}],
-                "max_tokens": 1, "temperature": 0, "stream": False,
-            }, timeout=_COLD_START_TIMEOUT)
-            if r.status_code == 200:
-                body = r.json()
-                if body.get("model") and mid in body.get("model", "") \
-                        and body.get("choices", [{}])[0].get("message", {}).get("content"):
-                    hot.append(mid)
-        except Exception:
-            pass
-    return hot
+    """Never classify a model as inference-ready from an unadmitted probe.
+
+    Previously this sent a generated chat request for EACH targeted model,
+    independently of a resource-owned quota grant. Native loaded-instance
+    GET remains available from _probe_loaded_models for read-only discovery.
+    An empty result is deliberately conservative: loaded != authorized HOT.
+    """
+    return []
 
 
 def _native_models_url(base_url: str) -> str:
@@ -1428,109 +1416,33 @@ def _loader_native_load(base_url: str, model_id: str,
 
 
 def _loader_warmup(base_url: str, model_id: str) -> Dict[str, Any]:
-    """After a model is loaded, do ONE real completion to learn its perf on this
-    node (tps, latency) and record it to the KG so routing can rank it.
+    """Refuse unadmitted, autonomous generation-based speed warmups.
 
-    The warmup also confirms the model actually answers (not just that LM Studio
-    accepted the load request).  Returns the observed metrics."""
-    t0 = time.time()
-    try:
-        r = requests.post(f"{base_url}/chat/completions", json={
-            "model": model_id,
-            "messages": [{"role": "user",
-                          "content": "Reply with exactly: OK."}],
-            "max_tokens": 24, "temperature": 0, "stream": False,
-        }, timeout=_LOADER_LOAD_TIMEOUT_S)
-        latency = time.time() - t0
-        ok = (r.status_code == 200 and r.json().get("choices", [{}])[0]
-              .get("message", {}).get("content", "").strip())
-        # Estimate tokens/sec from usage if available, else fall back to latency.
-        tps = None
-        try:
-            usage = r.json().get("usage", {})
-            comp = usage.get("completion_tokens") or 0
-            if comp and latency > 0:
-                tps = comp / latency
-        except Exception:
-            pass
-        _record_perf(model_id, base_url, tps, latency, bool(ok), tokens=0)
-        return {"ok": bool(ok), "tps": tps, "latency_s": latency}
-    except Exception:
-        _record_perf(model_id, base_url, None, None, False, tokens=0)
-        return {"ok": False, "tps": None, "latency_s": None}
+    This must not manufacture a health/performance receipt or issue HTTP
+    until a separate resource owner can fence model and quota at effect time.
+    """
+    return {"ok": False, "tps": None, "latency_s": None,
+            "reason": "unverified_resource_owned_generation_admission"}
 
 
 def _loader_wait_hot(base_url: str, model_id: str, timeout_s: float) -> bool:
-    """Poll until `model_id` actually answers on `base_url` (it is resident),
-    or until `timeout_s` elapses.  Uses a relaxed probe (no hot-threshold
-    timing requirement) and paces requests so we don't spam the node while it
-    is loading weights.
+    """Deny synthetic model chat probes: physical residency is not authority.
 
-    A *fast* error response (4xx/5xx in well under the connect timeout) means
-    this node cannot serve the model at all — we stop waiting immediately
-    rather than burning the whole timeout.  Only a slow/hanging response (a
-    real cold-load in progress) keeps us polling, since that is LM Studio
-    paging weights into VRAM, which can take minutes."""
-    deadline = time.time() + timeout_s
-    fast_fail = _COLD_START_TIMEOUT * 0.5
-    while time.time() < deadline:
-        t0 = time.time()
-        try:
-            r = requests.post(f"{base_url}/chat/completions", json={
-                "model": model_id,
-                "messages": [{"role": "user", "content": "ping"}],
-                "max_tokens": 1, "temperature": 0, "stream": False,
-            }, timeout=_COLD_START_TIMEOUT)
-            if r.status_code == 200:
-                body = r.json()
-                if body.get("model") and model_id in body.get("model", "") \
-                        and body.get("choices", [{}])[0].get("message", {}).get("content"):
-                    return True
-            # Definitive fast failure: node rejects the model, don't keep waiting.
-            if (time.time() - t0) < fast_fail:
-                return False
-        except Exception:
-            # Timeout/connection slowness => likely still loading; keep polling.
-            pass
-        # Pace the poll + publish progress so the status endpoint shows we are
-        # alive and patiently waiting for weights to page into VRAM.
-        with _loader_lock:
-            _loader_state["last_action"] = (
-                f"waiting for {model_id} on {base_url.replace('http://','').replace(':1234/v1','')} "
-                f"({int(deadline - time.time())}s left)"
-            )
-        time.sleep(_LOADER_POLL_INTERVAL_S)
+    There is no trusted inference admission witness here, so no generated
+    ping or health claim is possible through the autonomous loader.
+    """
     return False
 
 
 def _loader_load(base_url: str, model_id: str,
                  config: Optional[dict] = None) -> bool:
-    """Deliberately load `model_id` on `base_url` via LM Studio's native API,
-    then WAIT for it to actually become resident before returning.
+    """Deny background fleet model loading absent resource-owned authority.
 
-    This is the ONLY place loads are triggered.  We use the native
-    ``/api/v1/models/load`` endpoint (not chat/completions, which only
-    implicitly triggers a load and is unreliable for some model keys).  We never
-    kill a load mid-flight (generous timeout), and we do not move on until the
-    model answers a real probe — so the routing hot-inventory and per-node plan
-    reflect reality.  The returned instance_id is cached (owner == "assistx")
-    so the operator (or a future swap) can unload it later.  `config` carries
-    the LM Studio load config (context length, MTP draft, …) for this node.
-    After it is hot we run a single warmup completion to learn its perf for
-    routing."""
-    iid = _loader_native_load(base_url, model_id, config=config)
-    if not iid:
-        _loader_write_kg(base_url, model_id, False)
-        return False
-    with _loader_lock:
-        _loader_instance_ids[(base_url, model_id)] = iid
-        _loader_owned[(base_url, model_id)] = "assistx"
-    _loader_write_kg(base_url, model_id, True)
-    # Wait for it to be genuinely resident, then warm it up + learn perf.
-    hot = _loader_wait_hot(base_url, model_id, _LOADER_LOAD_TIMEOUT_S)
-    if hot:
-        _loader_warmup(base_url, model_id)
-    return hot
+    Do not create a native load, record a false KG success, or issue a
+    generation-based verification probe. Operator model handling has its
+    separate explicit entrypoints; this is autonomous loader-only.
+    """
+    return False
 
 
 def _loader_write_kg(base_url: str, model_id: str, ok: bool) -> None:
@@ -1557,7 +1469,9 @@ def _loader_write_kg(base_url: str, model_id: str, ok: bool) -> None:
 
 
 def _fleet_loader_loop() -> None:
-    """Background loop: keep the fleet's curated model set hot, stably."""
+    """HOLD: an autonomous background loader cannot obtain quota authority."""
+    return  # no discovery, loading, inference, graph writes or work threads
+
     with _loader_lock:
         _loader_state["running"] = True
     while True:
@@ -1751,7 +1665,10 @@ _loader_wake = threading.Event()
 
 
 def start_fleet_loader() -> None:
-    """Start the autonomous loader thread once (idempotent)."""
+    """HOLD: never start autonomous loader without resource-owned authority."""
+    # Do not treat LLM_LOADER_DISABLE=0, a timer, or config as admission.
+    return
+
     global _loader_thread
     if _loader_thread and _loader_thread.is_alive():
         return
