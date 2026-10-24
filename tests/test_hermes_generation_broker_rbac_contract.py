@@ -37,8 +37,10 @@ class ScopedBrokerWitnessTests(unittest.TestCase):
 
     def test_enrolled_operations_and_explicit_bypass_hard_hold(self):
         content=SRC.read_text()
-        self.assertIn('heartbeat.renew_candidate_lease(',content)
-        self.assertIn('completion.complete_candidate_claim(',content)
+        self.assertIn('broker.dispatch_candidate_command(',content)
+        self.assertIn('"operation":"heartbeat"',content)
+        self.assertIn('"operation":"complete"',content)
+        self.assertIn('command_surface_raw_database_query_denied_before_session',content)
         self.assertIn('source_generation_writers_complete',content)
         self.assertIn('broker_credential_still_bypasses_generation_PROTOCOL_HOLD',content)
         self.assertIn('ALL_WRITERS_GENERATION_FENCED=FALSE',content)
