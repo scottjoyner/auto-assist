@@ -176,7 +176,9 @@ try:
         heartbeat_command, trusted_channel_principal="hermes-local",
         session_factory=candidate_session)
     assert renew["candidate_generation"]==1 and generation()==1
-    assert renew["source_generation_writers_complete"] is False
+    assert renew["all_writers_generation_fenced"] is False
+    assert renew["exclusive_writer_credentials_verified"] is False
+    assert renew["authenticated_transport_qualified"] is False
     assert renew["production_dispatch_authorized"] is False
     print("PASS narrow_broker_heartbeat_and_generation_commit",flush=True)
 
@@ -202,7 +204,8 @@ try:
     assert completed["candidate_generation"]==2 and generation()==2
     assert task_state(task_id)["status"]=="DONE"
     assert task_state(task_id)["completed_by"]=="hermes-local"
-    assert completed["resource_side_completion_verified"] is False
+    assert completed["external_resource_effect_verified"] is False
+    assert completed["independent_revocation_custody_verified"] is False
     print("PASS narrow_broker_completion_and_generation_commit",flush=True)
 
     try:
