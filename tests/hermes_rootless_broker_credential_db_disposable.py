@@ -48,6 +48,7 @@ TASK_ID="SYNTHETIC_ROOTLESS_DB_"+uuid.uuid4().hex[:15]
 MODULES=(
     "hermes_claim_census","hermes_source_generation_research",
     "hermes_source_heartbeat_research","hermes_source_completion_research",
+    "hermes_source_receipt_research",
     "hermes_broker_command_research","hermes_broker_unix_boundary_research",
     "hermes_broker_rootless_research",
 )
@@ -88,9 +89,9 @@ def rootless_child(directory: str,allowed_uid: int,client_gid: int,
         result=listener.serve_rootless_candidate(
             socket_dir=Path(directory),allowed_peer_uid=allowed_uid,
             client_gid=client_gid,session_factory=session_factory,
-            max_connections=4,max_lifetime_seconds=16.0,
+            max_connections=8,max_lifetime_seconds=27.0,
             emit_holding_replies=True)
-        assert result["accepted_candidate_commands"]==2,result
+        assert result["accepted_candidate_commands"]==6,result
         assert result["rejected_connections"]==2,result
         assert result["broker_exclusive_credentials_verified"] is False
         assert result["production_dispatch_authorized"] is False
@@ -139,7 +140,7 @@ s.close()
     reply=json.loads(out.stdout.decode("ascii"))
     assert set(reply).issubset({
         "schema","accepted_source_transaction","candidate_generation",
-        "error","durable_delivery_verified","production_dispatch_authorized",
+        "reconciled","error","durable_delivery_verified","production_dispatch_authorized",
         "decision",
     })
     assert reply["decision"]=="HOLD"
@@ -203,17 +204,28 @@ def main():
     try:
         query("""CREATE CONSTRAINT hermes_source_generation_owner_unique IF NOT EXISTS
                  FOR(g:HermesSourceGeneration) REQUIRE g.owner IS UNIQUE""")
+        query("""CREATE CONSTRAINT hermes_source_receipt_key_unique IF NOT EXISTS
+                 FOR(r:HermesSourceReceipt) REQUIRE r.key IS UNIQUE""")
+        # Create all receipt property-name tokens up-front as admin; the
+        # restricted broker must not CREATE arbitrary new property names.
+        query("""CREATE(r:HermesSourceReceipt {
+            key:'synthetic-seed-only',owner:'hermes-local',
+            operation:'heartbeat',request_digest:'synthetic',
+            source_generation:0,created_at_ts:timestamp()})
+            RETURN r.key AS key""")
+        query("MATCH(r:HermesSourceReceipt{key:'synthetic-seed-only'}) DELETE r")
         query("CREATE(g:HermesSourceGeneration {owner:'hermes-local',generation:0,lock_epoch:0})")
-        query("""
-            CREATE(t:Task{id:$id,status:'RUNNING',claimed_by:'hermes-local',
-                target_agent_id:'hermes-local',claim_id:'synthetic-claim',
-                agent_session_id:'synthetic-session',execution_attempt:1,
-                lease_expires_at_ts:timestamp()+120000,
-                hermes_fence_check_epoch:0,heartbeat_by:'hermes-local',
-                heartbeat_at_ts:0,paused_from_agent_id:null,
-                failed_by:null,migration_target_agent_id:null})
-            RETURN t.id AS id
-        """,id=TASK_ID)
+        for tid in (TASK_ID,TASK_ID+"_receipt"):
+            query("""
+                CREATE(t:Task{id:$id,status:'RUNNING',claimed_by:'hermes-local',
+                    target_agent_id:'hermes-local',claim_id:'synthetic-claim',
+                    agent_session_id:'synthetic-session',execution_attempt:1,
+                    lease_expires_at_ts:timestamp()+120000,
+                    hermes_fence_check_epoch:0,heartbeat_by:'hermes-local',
+                    heartbeat_at_ts:0,paused_from_agent_id:null,
+                    failed_by:null,migration_target_agent_id:null})
+                RETURN t.id AS id
+            """,id=tid)
         # Seed property names without marking current claim completed.
         query("""CREATE(t:Task{id:$id,status:'READY',completed_by:'synthetic',
                  completed_at:datetime(),completed_at_ts:0})
@@ -233,6 +245,11 @@ def main():
                  f"ON GRAPH neo4j NODES Task TO {BROKER_ROLE}")
         sysquery(f"GRANT SET PROPERTY {{lock_epoch,generation}} "
                  f"ON GRAPH neo4j NODES HermesSourceGeneration TO {BROKER_ROLE}")
+        sysquery(f"GRANT CREATE ON GRAPH neo4j NODES HermesSourceReceipt "
+                 f"TO {BROKER_ROLE}")
+        sysquery(f"GRANT SET PROPERTY "
+                 "{key,owner,operation,request_digest,source_generation,created_at_ts} "
+                 f"ON GRAPH neo4j NODES HermesSourceReceipt TO {BROKER_ROLE}")
         sysquery(f"GRANT ROLE {BROKER_ROLE} TO {BROKER_USER}")
         with GraphDatabase.driver(URI,auth=(READER_USER,reader_pass)) as reader:
             with reader.session(database="neo4j") as s:
@@ -341,14 +358,71 @@ def main():
             assert second["accepted_source_transaction"] is True
             assert second["candidate_generation"]==2
             print("PASS socket_receipts_qualified_HOLD_without_secrets",flush=True)
-            stdout,error=broker_proc.communicate(timeout=12)
+
+            # Recorded operations write a minimal receipt in the SAME source
+            # transaction. Reconcile is read-only through the separate UID
+            # and must not bump generation or repeat a Task mutation.
+            receipt_base={**base,"task_id":TASK_ID+"_receipt"}
+            receipt_key_hb=str(uuid.uuid4())
+            receipt_key_complete=str(uuid.uuid4())
+            recorded_hb={
+                "operation":"heartbeat_recorded","expected_generation":2,
+                "receipt_key":receipt_key_hb,**receipt_base,"ttl_ms":30000,
+            }
+            reconcile_hb={**recorded_hb,"operation":"reconcile_heartbeat"}
+            recorded_complete={
+                "operation":"complete_recorded","expected_generation":3,
+                "receipt_key":receipt_key_complete,**receipt_base,
+            }
+            reconcile_complete={**recorded_complete,"operation":"reconcile_complete"}
+            recorded=send_unix(
+                socket_path,recorded_hb,client_uid.pw_uid,client_uid.pw_gid)
+            assert recorded is not None
+            assert recorded["accepted_source_transaction"] is True
+            assert recorded["candidate_generation"]==3
+            assert "reconciled" not in recorded
+            prior=send_unix(
+                socket_path,reconcile_hb,client_uid.pw_uid,client_uid.pw_gid)
+            assert prior is not None
+            assert prior["reconciled"] is True
+            assert prior["candidate_generation"]==3
+            assert prior["durable_delivery_verified"] is False
+            complete_again=send_unix(
+                socket_path,recorded_complete,client_uid.pw_uid,client_uid.pw_gid)
+            assert complete_again is not None
+            assert complete_again["candidate_generation"]==4
+            assert complete_again["accepted_source_transaction"] is True
+            assert "reconciled" not in complete_again
+            prior_done=send_unix(
+                socket_path,reconcile_complete,client_uid.pw_uid,client_uid.pw_gid)
+            assert prior_done is not None
+            assert prior_done["reconciled"] is True
+            assert prior_done["candidate_generation"]==4
+
+            receipt_state=query("""
+                MATCH(t:Task{id:$id}),
+                     (g:HermesSourceGeneration{owner:'hermes-local'})
+                RETURN t.status AS status,g.generation AS generation
+            """,id=TASK_ID+"_receipt")
+            assert receipt_state["status"]=="DONE"
+            assert receipt_state["generation"]==4
+            for key,expect in ((receipt_key_hb,3),(receipt_key_complete,4)):
+                row=query("""MATCH(r:HermesSourceReceipt{key:$key})
+                    RETURN r.source_generation AS generation,
+                           r.request_digest AS digest, r.operation AS operation
+                """,key=key)
+                assert row is not None
+                assert row["generation"]==expect
+                assert len(row["digest"])==64
+            print("PASS rootless_socket_source_receipt_reconciles_without_rewriting",flush=True)
+            stdout,error=broker_proc.communicate(timeout=14)
             assert broker_proc.returncode==0,"rootless_broker_transaction_failed"
             assert b"PASS rootless_private_credential_two_transactions_two_denials" in stdout
             assert get_state()==("DONE",2),"rootless_completion_fence_failed"
             assert not socket_path.exists(),"rootless_socket_not_cleaned"
             print("PASS rootless_nonroot_private_credential_enrolled_heartbeat_completion",flush=True)
             print("PASS stale_generation_rejected_without_ledger_increment",flush=True)
-        print("HERMES_ROOTLESS_PRIVATE_DB_PIPE_CI_PASS=7",flush=True)
+        print("HERMES_ROOTLESS_PRIVATE_DB_PIPE_CI_PASS=8",flush=True)
         print("PRODUCTION_TASKS_TOUCHED=0;PRODUCTION_SERVICES_TOUCHED=0;DECISION=HOLD",
               flush=True)
     finally:
@@ -359,6 +433,8 @@ def main():
             query("MATCH(t:Task) WHERE t.id STARTS WITH $prefix DETACH DELETE t",
                   prefix=TASK_ID)
             query("MATCH(g:HermesSourceGeneration{owner:'hermes-local'}) DETACH DELETE g")
+            query("MATCH(r:HermesSourceReceipt) DETACH DELETE r")
+            query("DROP CONSTRAINT hermes_source_receipt_key_unique IF EXISTS")
             query("DROP CONSTRAINT hermes_source_generation_owner_unique IF EXISTS")
             for name in (BROKER_USER,READER_USER):
                 sysquery(f"DROP USER {name} IF EXISTS")
