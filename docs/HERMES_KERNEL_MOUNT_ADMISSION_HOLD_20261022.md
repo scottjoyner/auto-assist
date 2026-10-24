@@ -35,3 +35,18 @@ Original production Hermes continues running untouched with 16 binds and nine wr
 ## Follow-up: signed synthetic corpus
 
 An opt-in Ed25519-signed bounded MD/TXT corpus admission was added for restricted synthetic checks. See [HERMES_ED25519_CORPUS_CUSTODY_HOLD_20261022.md](HERMES_ED25519_CORPUS_CUSTODY_HOLD_20261022.md) for positive/negative physical evidence, signer-custody limitations and replay/TOCTOU blockers. Deployment remains HOLD.
+
+## October 24: opt-in container-side remote output backing-source check
+
+A remaining failure mode exists even if host read-only preflight confirms a valid `/nas` CIFS mount and both Docker Compose bind sources use `create_host_path:false`: **an already-existing local directory can be mounted** if remote storage disappears between the host check and the Docker bind. The original `verify_mount_admission()` inspected exact read-only input and separate writable output mount points, but did not inspect the *backing filesystem/source* from Linux `/proc/self/mountinfo`.
+
+The existing `src/assistx/knowledge_roots.py` strict isolation gate now supports two **optional, paired** environment labels for a **future** restricted, independently authorized network-backed output profile:
+
+    HERMES_EXPECTED_WRITE_FSTYPE=cifs
+    HERMES_EXPECTED_WRITE_SOURCE=//192.168.1.202/fileserver
+
+These are **an expected identity example, not authorization** to use the share, a directory, a credential, a grant, or a Docker Compose bind. Both variables must be supplied together, and they require `HERMES_REQUIRE_MOUNT_ISOLATION=true` plus explicit split roots. The new check matches the exact configured writable mount's bounded **kernel mountinfo** `fstype` and backing `source`; it rejects any mismatch (such as local ext4, tmpfs, autofs without mounted CIFS, NFS, a different share or server), bad requested CIFS notation, or duplicate/ambiguous/missing mount evidence. The pre-existing RO input/RW output polarity, distinct IDs and nested-mount checks still apply. It never reads output content, opens production evidence, performs a network request, creates paths, or mounts storage. Absence of these two new settings preserves legacy and existing synthetic profile behavior.
+
+The synthetic disposable strict-executor test remains on *local tmpfs* fixtures, so it deliberately does not set a real CIFS expectation or claim a remote filesystem test. Its exact source-blob pin is updated to the new version of `knowledge_roots.py`, preventing future physical canaries from silently executing an older verifier. Offline generated mountinfo records test correct matching and negative local-disk/fake-share/malformed configuration outcomes.
+
+**Limitations remain material:** the expected source labels are caller-supplied and are not independent proof of the share's owner, ACLs, credentials, grant or retention; mountinfo alone does not remove privileged-host races or assure reliable remote writes during a disconnect; Linux may present varied mountinfo sources across namespace/kernel versions. Future approved candidates must physically qualify the actual container mountinfo identity under the exact image and Docker runtime, then prove output integrity after network loss and restart. No current production Compose profile, environment, image or running Hermes container is changed. Issue #414 and PR #425 remain **HOLD**.

@@ -1,9 +1,13 @@
 """Kernel-backed mount isolation contract: synthetic read-only evidence only."""
 from __future__ import annotations
+
 import importlib
 from pathlib import Path
+
 import pytest
+
 from assistx import knowledge_roots as roots
+
 
 def mounted(tmp_path):
     read=tmp_path/"research"/"knowledge"
@@ -63,7 +67,8 @@ def test_crossed_mount_root_or_same_mountpoint_denied(tmp_path):
 
 def test_write_root_must_be_contained_under_declared_rw_mount(tmp_path):
     read,output,mount=mounted(tmp_path)
-    other=tmp_path/"other";other.mkdir()
+    other=tmp_path/"other"
+    other.mkdir()
     with pytest.raises(ValueError):
         roots.verify_mount_admission(str(read),str(output),
             write_mount=str(other),evidence=evidence(read,mount))
@@ -141,3 +146,91 @@ def test_mount_policy_does_not_read_sensitive_paths():
     assert "os.walk" not in source
     assert "docker exec" not in source
     assert "ssh " not in source
+
+
+REMOTE = "//192.168.1.202/fileserver"
+
+
+def remote_mountinfo(read, mount, *, fs="cifs", source=REMOTE):
+    return (line(1,"/") + line(2,str(read),"ro")
+            + f"3 1 0:3 / {mount} rw,relatime - {fs} {source} rw\n")
+
+
+def test_explicit_remote_source_is_correlated_with_kernel_mountinfo(tmp_path):
+    read,output,mount=mounted(tmp_path)
+    assert roots.verify_mount_admission(
+        str(read),str(output),write_mount=str(mount),
+        evidence=remote_mountinfo(read,mount),
+        expected_write_identity=("cifs",REMOTE)) is None
+    # Without the opt-in identity check, the original isolation contract
+    # continues to work with the disposable synthetic tmpfs fixture.
+    assert roots.verify_mount_admission(
+        str(read),str(output),write_mount=str(mount),
+        evidence=evidence(read,mount)) is None
+
+
+@pytest.mark.parametrize("fs,source",[
+    ("ext4","/dev/nvme0n1p6"),
+    ("tmpfs","tmpfs"),
+    ("autofs","systemd-1"),
+    ("nfs4","192.168.1.79:/tank/recovery"),
+    ("cifs","//192.168.1.202/other-share"),
+    ("cifs","//192.168.1.203/fileserver"),
+    ("cifs","//192.168.1.202/fileserver-backup"),
+])
+def test_remote_source_expected_but_wrong_backing_is_denied(tmp_path,fs,source):
+    read,output,mount=mounted(tmp_path)
+    with pytest.raises(ValueError,match="backing source"):
+        roots.verify_mount_admission(
+            str(read),str(output),write_mount=str(mount),
+            evidence=remote_mountinfo(read,mount,fs=fs,source=source),
+            expected_write_identity=("cifs",REMOTE))
+
+
+@pytest.mark.parametrize("wanted",[
+    ("ext4","/dev/nvme0n1p6"),
+    ("cifs","/local/root"),
+    ("cifs","//192.168.1.202/fileserver/extra/path"),
+    ("cifs","//192.168.1.202/a\\040b"),
+    ("nfs4","192.168.1.79:/tank/recovery"),
+    ("",REMOTE),
+    ("cifs", ""),
+])
+def test_malformed_or_unapproved_requested_remote_identity_rejected(tmp_path,wanted):
+    read,output,mount=mounted(tmp_path)
+    with pytest.raises(ValueError,match="remote CIFS"):
+        roots.verify_mount_admission(
+            str(read),str(output),write_mount=str(mount),
+            evidence=remote_mountinfo(read,mount),expected_write_identity=wanted)
+
+
+def test_remote_identity_must_be_fully_configured_with_strict_mount_guard(
+        monkeypatch,tmp_path):
+    read,output,mount=mounted(tmp_path)
+    monkeypatch.setenv(roots.READ_ENV,str(read))
+    monkeypatch.setenv(roots.WRITE_ENV,str(output))
+    monkeypatch.setenv(roots.WRITE_MOUNT_ENV,str(mount))
+    monkeypatch.setenv(roots.EXPECTED_WRITE_FSTYPE_ENV,"cifs")
+    with pytest.raises(ValueError,match="both write filesystem"):
+        roots.resolve_knowledge_roots("/unused")
+    monkeypatch.setenv(roots.EXPECTED_WRITE_SOURCE_ENV,REMOTE)
+    with pytest.raises(ValueError,match="strict kernel mount"):
+        roots.resolve_knowledge_roots("/unused")
+    monkeypatch.setenv(roots.MOUNT_GUARD_ENV,"true")
+    # Real temp directories are not kernel binds: must fail before any use.
+    with pytest.raises(ValueError,match="kernel|mountpoint|mount evidence"):
+        roots.resolve_knowledge_roots("/unused")
+    monkeypatch.delenv(roots.READ_ENV)
+    monkeypatch.delenv(roots.WRITE_ENV)
+    with pytest.raises(ValueError,match="strict split roots"):
+        roots.resolve_knowledge_roots("/unused")
+
+
+def test_remote_source_check_is_readonly_and_cannot_claim_storage_approval():
+    src=Path(roots.__file__).read_text()
+    assert "_require_write_mount_identity(evidence, mount" in src
+    assert '"/proc/self/mountinfo"' in src
+    assert "expected remote CIFS mount identity is invalid" in src
+    for prohibited in ("docker run", "docker exec", "mount -t", "os.system",
+                       "shutil.copytree", "os.listdir"):
+        assert prohibited not in src

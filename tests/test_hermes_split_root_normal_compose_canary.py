@@ -138,6 +138,18 @@ def test_mutated_token_or_evaluation_path_denied():
         assert not canary.restricted_render(x, IMG, RO, RW)
 
 
+def test_new_kernel_remote_mount_guard_is_pinned_in_disposable_source():
+    from assistx import knowledge_roots
+    source=Path(knowledge_roots.__file__)
+    assert source.resolve()==(canary.ROOT/"src/assistx/knowledge_roots.py").resolve()
+    import subprocess
+    result=subprocess.run(["git","-C",str(canary.ROOT),"hash-object",
+                           str(source)],capture_output=True,text=True,check=True)
+    expected=result.stdout.strip()
+    assert expected=="54a6ab6feb239f7e48d4fa9569b6cf4f72fe7819"
+    assert expected in Path(canary.__file__).read_text()
+
+
 def test_real_entrypoint_and_adapter_source_are_pinned():
     script = Path(canary.__file__).read_text()
     assert canary.sha(canary.ENTRY) == canary.EXPECTED_ENTRY_SHA

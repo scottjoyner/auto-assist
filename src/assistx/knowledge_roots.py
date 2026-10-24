@@ -9,14 +9,16 @@ from __future__ import annotations
 import os
 import re
 import stat
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 READ_ENV = "HERMES_KNOWLEDGE_READ_ROOT"
 WRITE_ENV = "HERMES_KNOWLEDGE_WRITE_ROOT"
 # Opt-in strict startup contract for restricted container builds.
 MOUNT_GUARD_ENV = "HERMES_REQUIRE_MOUNT_ISOLATION"
 WRITE_MOUNT_ENV = "HERMES_KNOWLEDGE_WRITE_MOUNT"
+EXPECTED_WRITE_FSTYPE_ENV = "HERMES_EXPECTED_WRITE_FSTYPE"
+EXPECTED_WRITE_SOURCE_ENV = "HERMES_EXPECTED_WRITE_SOURCE"
 
 
 def _strict_path(raw: str, name: str) -> str:
@@ -61,9 +63,35 @@ def _mount_records(raw: str) -> dict[str, tuple[int, bool]]:
     return records
 
 
+def _require_write_mount_identity(raw: str, mount: str, fstype: str,
+                                  source: str) -> None:
+    """Corroborate a future remote write bind from kernel mount metadata.
+
+    Expected labels originate in configuration; matching them is necessary,
+    NOT independent source authorization, custody or race-free mount pinning.
+    """
+    if fstype != "cifs" or not re.fullmatch(
+            r"//[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", source):
+        raise ValueError("expected remote CIFS mount identity is invalid")
+    rows = []
+    for line in raw.splitlines():
+        left, sep, right = line.partition(" - ")
+        if not sep:
+            raise ValueError("malformed backing mount evidence")
+        fields = left.split()
+        backing = right.split()
+        if len(fields) < 6 or len(backing) < 3:
+            raise ValueError("malformed backing mount fields")
+        if fields[4] == mount:
+            rows.append((backing[0], backing[1]))
+    if rows != [(fstype, source)]:
+        raise ValueError("write mount backing source is not the expected remote share")
+
+
 def verify_mount_admission(
     read_root: str, write_root: str, *, write_mount: str,
     evidence: str | None = None,
+    expected_write_identity: tuple[str, str] | None = None,
 ) -> None:
     """Require exact RO source bind and distinct RW workspace mount.
 
@@ -82,7 +110,7 @@ def verify_mount_admission(
     if not os.path.isdir(source) or not os.path.isdir(mount):
         raise ValueError("required corpus or scratch mount missing")
     if evidence is None:
-        with open("/proc/self/mountinfo", "r", encoding="utf-8") as fh:
+        with open("/proc/self/mountinfo", encoding="utf-8") as fh:
             evidence = fh.read(1_000_001)
     records = _mount_records(evidence)
     ro = records.get(source)
@@ -95,6 +123,12 @@ def verify_mount_admission(
     # Likewise no unreviewed nested scratch mounts, even if read-only.
     if any(_within(mount, name) and name != mount for name in records):
         raise ValueError("nested scratch mount not approved")
+    if expected_write_identity is not None:
+        if (not isinstance(expected_write_identity, tuple)
+                or len(expected_write_identity) != 2
+                or not all(isinstance(x, str) for x in expected_write_identity)):
+            raise ValueError("invalid expected write mount identity")
+        _require_write_mount_identity(evidence, mount, *expected_write_identity)
 
 
 def _within(parent: str, child: str) -> bool:
@@ -106,7 +140,13 @@ def resolve_knowledge_roots(legacy: str, eval_path: str | None = None) -> tuple[
     write = os.getenv(WRITE_ENV, "")
     if bool(read) != bool(write):
         raise ValueError("both Hermes knowledge split roots are required")
+    expected_fs = os.getenv(EXPECTED_WRITE_FSTYPE_ENV, "")
+    expected_source = os.getenv(EXPECTED_WRITE_SOURCE_ENV, "")
+    if bool(expected_fs) != bool(expected_source):
+        raise ValueError("both write filesystem identity settings are required")
     if not read:
+        if expected_fs:
+            raise ValueError("remote write identity requires strict split roots")
         if os.getenv(MOUNT_GUARD_ENV, "") not in ("", "false"):
             raise ValueError("mount isolation requires explicit split roots")
         if os.getenv("HERMES_REQUIRE_SIGNED_CORPUS", "") not in ("", "false"):
@@ -127,9 +167,13 @@ def resolve_knowledge_roots(legacy: str, eval_path: str | None = None) -> tuple[
     strict = os.getenv(MOUNT_GUARD_ENV, "")
     if strict not in ("", "false", "true"):
         raise ValueError("invalid Hermes mount isolation mode")
+    if expected_fs and strict != "true":
+        raise ValueError("remote write identity requires strict kernel mount isolation")
     if strict == "true":
         verify_mount_admission(ro, rw,
-            write_mount=os.environ.get(WRITE_MOUNT_ENV, ""))
+            write_mount=os.environ.get(WRITE_MOUNT_ENV, ""),
+            expected_write_identity=(expected_fs, expected_source)
+                if expected_fs else None)
     signed = os.getenv("HERMES_REQUIRE_SIGNED_CORPUS", "")
     if signed not in ("", "false", "true"):
         raise ValueError("invalid signed corpus admission mode")
