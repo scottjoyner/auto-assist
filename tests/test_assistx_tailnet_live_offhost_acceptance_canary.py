@@ -6,13 +6,13 @@ the live AssistX protected read-only control-room endpoint.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 import assistx_tailnet_live_offhost_acceptance_canary as live
+import pytest
 
 
 def test_default_inert_with_no_network_or_credentials():
@@ -65,9 +65,11 @@ def test_live_scope_checks_pin_service_cgroup_and_staged_assets():
     assert 'attest.mobile_serve_paths_exact(' in source
     assert 'BIN_SHA' in source and 'EXPECTED_SHA' in source
     assert 'unit_exec=run([' in source
-    assert '"--property=ExecStart"' in source
+    assert '"--property=ExecStart,FragmentPath,MainPID,ControlGroup"' in source
     assert 'RAW="control-room-ts-proxy.service"' in source
-    assert 'not in ("enabled","enabled-runtime")' in source
+    assert 'raw.get("UnitFileState")=="masked"' in source
+    assert 'raw.get("LoadState")=="masked"' in source
+    assert 'attest.systemd_execution_identity(' in source
     assert 'len(choices)==1' in source
 
 
@@ -86,6 +88,25 @@ def test_auth_credentials_never_leave_x1_and_mutations_are_absent():
         'method="POST"', "password).decode())\n    print",
     ):
         assert forbidden not in source
+
+
+@pytest.mark.parametrize("raw_state",[
+    {"ActiveState":"active","UnitFileState":"masked","LoadState":"masked"},
+    {"ActiveState":"inactive","UnitFileState":"disabled","LoadState":"loaded"},
+    {"ActiveState":"inactive","UnitFileState":"enabled","LoadState":"loaded"},
+    {"ActiveState":"inactive","UnitFileState":"masked","LoadState":"loaded"},
+])
+def test_legacy_unmasked_or_active_denied_before_remote_or_auth(monkeypatch,raw_state):
+    monkeypatch.setattr(live.os,"uname",lambda:SimpleNamespace(nodename="x1-370"))
+    monkeypatch.setattr(live.os,"geteuid",lambda:1000)
+    monkeypatch.setattr(live,"service_state",lambda unit:raw_state)
+    def forbidden(*args,**kwargs):
+        raise AssertionError("No Docker credentials or remote connection should be reached")
+    monkeypatch.setattr(live,"run",forbidden)
+    monkeypatch.setattr(live,"basic_in_memory",forbidden)
+    monkeypatch.setattr(live.offhost,"start_tunnel",forbidden)
+    with pytest.raises(live.Denied,match="inactive and fully masked"):
+        live.trusted_ingress_state()
 
 
 def test_offhost_expected_statuses_fail_closed(monkeypatch):

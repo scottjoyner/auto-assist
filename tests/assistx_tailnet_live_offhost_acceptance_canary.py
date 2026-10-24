@@ -16,17 +16,17 @@ import hashlib
 import ipaddress
 import json
 import os
-from pathlib import Path
 import socket
 import struct
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/"tests"),str(ROOT/"scripts")]
-import assistx_tailnet_postcutover_attestation as attest  # noqa: E402
 import assistx_tailnet_lenovo_socks_basic_canary as offhost  # noqa: E402
+import assistx_tailnet_postcutover_attestation as attest  # noqa: E402
 
 RAW="control-room-ts-proxy.service"
 PRIMARY="assistx-tailnet-sanitizer.service"
@@ -49,7 +49,7 @@ def run(args,timeout=8):
 
 def service_state(unit):
     status=run(["systemctl","--user","show",unit,
-        "--property=ActiveState,UnitFileState,MainPID,ControlGroup"])
+        "--property=ActiveState,UnitFileState,LoadState,MainPID,ControlGroup"])
     require(status.returncode==0,"systemd metadata unavailable")
     return dict(item.split("=",1) for item in status.stdout.splitlines() if "=" in item)
 
@@ -63,8 +63,9 @@ def trusted_ingress_state():
             "non-root x1-370 only")
     raw=service_state(RAW)
     require(raw.get("ActiveState")!="active"
-            and raw.get("UnitFileState") not in ("enabled","enabled-runtime"),
-            "raw socat still active or boot-enabled")
+            and raw.get("UnitFileState")=="masked"
+            and raw.get("LoadState")=="masked",
+            "raw socat must remain inactive and fully masked")
     choices=[]
     for unit,file in ((PRIMARY,"Caddyfile"),
                       (FALLBACK,"fallback.Caddyfile")):
@@ -90,13 +91,24 @@ def trusted_ingress_state():
     # ExecStart, pinned on-disk executable, and later kernel socket cgroup.
     cmdline=tuple((proc/"cmdline").read_bytes().split(b"\0")[:-1])
     comm=(proc/"comm").read_text().strip()
-    unit_exec=run(["systemctl","--user","show",unit,"--property=ExecStart"])
+    unit_exec=run(["systemctl","--user","show",unit,
+                   "--property=ExecStart,FragmentPath,MainPID,ControlGroup"])
     require(unit_exec.returncode==0
             and "path=/usr/bin/caddy" in unit_exec.stdout
             and ("argv[]="+str(expected[0].decode())+" run --config "
                  +str(config)+" --adapter caddyfile") in unit_exec.stdout
             and cmdline==expected and comm=="caddy",
             "running argv or pinned systemd unit not exact Caddy")
+    fields=dict(line.split("=",1) for line in unit_exec.stdout.splitlines()
+                if "=" in line)
+    expected_unit,expected_file,unit_sha=attest.CANDIDATE_UNITS[
+        "fallback" if unit==FALLBACK else "primary"]
+    require(expected_unit==unit and expected_file==config,
+            "candidate file mapped to unexpected unit")
+    unit_pinned,exec_pinned=attest.systemd_execution_identity(
+        unit,config,unit_sha,fields)
+    require(unit_pinned and exec_pinned,
+            "active unit bytes or manager startup contract not pinned")
     result=run(["tailscale","ip","-4"])
     require(result.returncode==0 and len(result.stdout.strip().splitlines())==1,
             "no unique Tailnet address")
