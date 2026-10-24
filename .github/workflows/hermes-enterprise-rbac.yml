@@ -7,6 +7,9 @@ on:
       - "tests/hermes_broker_generation_rbac_disposable_neo4j.py"
       - "src/assistx/hermes_broker_command_research.py"
       - "src/assistx/hermes_broker_unix_boundary_research.py"
+      - "src/assistx/hermes_broker_rootless_research.py"
+      - "tests/test_hermes_broker_rootless_research.py"
+      - "tests/hermes_broker_rootless_process_disposable_linux.py"
       - "tests/test_hermes_broker_unix_boundary_research.py"
       - "tests/hermes_broker_unix_peer_disposable_linux.py"
       - "tests/test_hermes_broker_command_research.py"
@@ -36,6 +39,8 @@ jobs:
           HERMES_PEER_ISOLATION_CI: synthetic-only
           PYTHONPATH: src
         run: sudo -n env HERMES_PEER_ISOLATION_CI=synthetic-only GITHUB_ACTIONS=true PYTHONPATH=src "$(command -v python)" tests/hermes_broker_unix_peer_disposable_linux.py
+      - name: Prove rootless listener and separate-UID socket permissions in ephemeral CI
+        run: sudo -n env HERMES_ROOTLESS_CI=synthetic-only GITHUB_ACTIONS=true "$(command -v python)" tests/hermes_broker_rootless_process_disposable_linux.py
       - name: Launch disposable Enterprise with runner-created credentials
         run: |
           python3 - <<'PY'
