@@ -4,6 +4,11 @@ on:
   pull_request:
     paths:
       - "tests/hermes_task_broker_rbac_disposable_neo4j.py"
+      - "tests/hermes_broker_generation_rbac_disposable_neo4j.py"
+      - "tests/test_hermes_generation_broker_rbac_contract.py"
+      - "src/assistx/hermes_source_generation_research.py"
+      - "src/assistx/hermes_source_completion_research.py"
+      - "src/assistx/hermes_source_heartbeat_research.py"
       - ".github/workflows/hermes-enterprise-rbac.yml"
   workflow_dispatch:
 
@@ -48,6 +53,10 @@ jobs:
         env:
           HERMES_ENTERPRISE_RBAC_CANARY: synthetic-ci-only
         run: python tests/hermes_task_broker_rbac_disposable_neo4j.py
+      - name: Verify enrolled heartbeat and completion under restricted broker role
+        env:
+          HERMES_ENTERPRISE_RBAC_CANARY: synthetic-ci-only
+        run: python tests/hermes_broker_generation_rbac_disposable_neo4j.py
       - name: Remove isolated Enterprise DB
         if: always()
         run: docker rm -f hermes-rbac-disposable >/dev/null 2>&1 || true
