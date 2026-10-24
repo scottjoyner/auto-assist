@@ -74,6 +74,14 @@ class RootlessCredentialCIContract(unittest.TestCase):
             y.index('- name: Remove isolated Enterprise DB')
         )
 
+    def test_staged_rootless_process_includes_receipt_research_dependency(self):
+        source=(ROOT/"tests/hermes_broker_rootless_process_disposable_linux.py").read_text()
+        # Both the explicit module loader and the restricted CI source
+        # staging copy must carry this dependency before the broker commands.
+        self.assertEqual(source.count('"hermes_source_receipt_research"'),2)
+        self.assertEqual(source.count('"hermes_broker_command_research"'),2)
+        assert source.index('"hermes_source_receipt_research"') < source.index('"hermes_broker_command_research"')
+
     def test_no_live_imports_or_deploy_entrypoint(self):
         for p in (ROOT/"src/assistx").rglob("*.py"):
             self.assertNotIn("hermes_rootless_broker_credential_db_disposable",
