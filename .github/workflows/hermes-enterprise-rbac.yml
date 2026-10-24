@@ -26,6 +26,9 @@ jobs:
           python3 - <<'PY'
           import os, pathlib, secrets, subprocess
           value=secrets.token_urlsafe(36)
+          # GitHub Actions must mask the generated token before any step,
+          # environment dump, traceback, or container command can echo it.
+          print("::add-mask::"+value, flush=True)
           with open(os.environ["GITHUB_ENV"],"a",encoding="utf-8") as f:
               f.write("HERMES_RBAC_EPHEMERAL_ADMIN_PASSWORD="+value+"\n")
           subprocess.run([
