@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Pin a synthetic Hermes image-overlay build context without Docker or secrets.
 
-The original running image is only an unapproved base. This script verifies
-allowlisted source bytes, shows what *could* be copied into a candidate image,
-and denies production promotion. No real keys or corpus are staged.
+The production image is specifically FORBIDDEN as a candidate parent.
+The research recipe uses a deliberately nonexistent digest sentinel, to
+prevent the historical base image's inherited code, tools and layers from
+silently becoming the replacement. This script verifies source bytes but
+never builds an image or stages real keys, artifacts or protected corpus.
 """
 from __future__ import annotations
 
@@ -16,7 +18,11 @@ from collections import deque
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# Observed running legacy image: custody/unreviewed inherited layers, NOT a base.
 BASE_IMAGE_ID = 'sha256:22191871cbf346ebe27c1b1cf433901f4b4ff479d80d2047917fe3966d78e307'
+# Deliberately nonexistent image reference; NEVER substitute for a real signed,
+# separately approved runtime base via a CI fallback or unreviewed tag.
+RESEARCH_BASE_IMAGE_ID = 'sha256:' + '0' * 64
 ENTRYPOINT = 'tests/hermes_split_root_candidate_entrypoint.sh'
 ENTRYPOINT_SHA256 = '81add7ecd43ef1b3fccc5d8097b4f51ed196cfb61d5ccd3cd243e51a552ab6f5'
 # Exact static first-party import closure rooted at strict_executor_main,
@@ -212,6 +218,10 @@ def source_inventory(source_root: Path = ROOT) -> dict:
         'candidate_entrypoint_sha256':ENTRYPOINT_SHA256,
         'current_legacy_root_entrypoint_is_not_candidate':True,
         'unreviewed_image_base_digest':BASE_IMAGE_ID,
+        'research_recipe_base_image_id':RESEARCH_BASE_IMAGE_ID,
+        'legacy_running_image_usable_as_replacement_parent':False,
+        'independently_approved_runtime_base_selected':False,
+        'base_os_and_toolchain_supply_chain_verified':False,
         'reproducible_image_binary_proven':False,
         'real_signing_key_or_production_attestations_included':False,
         'image_overlay_built_or_run':False,
@@ -225,8 +235,14 @@ def dockerfile_recipe(*, source_root: Path = ROOT) -> str:
     inventory = source_inventory(source_root)
     need(inventory['reviewed_hardened_source_count']==len(BLOBS),
          'incomplete signed-source candidate context')
-    lines = ['# STATIC RESEARCH RECIPE: no build/pull/run/production release',
-             'FROM '+BASE_IMAGE_ID]
+    need(RESEARCH_BASE_IMAGE_ID == 'sha256:' + '0' * 64 and
+         BASE_IMAGE_ID != RESEARCH_BASE_IMAGE_ID,
+         'production or unapproved runtime base cannot back research recipe')
+    lines = [
+        '# STATIC RESEARCH RECIPE: DO NOT BUILD; base digest is NONEXISTENT',
+        '# No signed runtime base has independent custody approval',
+        'FROM ' + RESEARCH_BASE_IMAGE_ID,
+    ]
     for relative in BLOBS:
         dst = '/app/'+relative.replace('src/','src/')
         lines.append('COPY '+relative+' '+dst)

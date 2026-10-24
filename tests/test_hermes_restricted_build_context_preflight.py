@@ -22,6 +22,11 @@ def test_reviewed_build_context_exact_and_still_hold():
     assert result['current_legacy_root_entrypoint_is_not_candidate']
     assert result['decision']=='HOLD'
     assert not result['image_overlay_built_or_run']
+    assert result['unreviewed_image_base_digest'] == gate.BASE_IMAGE_ID
+    assert result['research_recipe_base_image_id'] == gate.RESEARCH_BASE_IMAGE_ID
+    assert not result['legacy_running_image_usable_as_replacement_parent']
+    assert not result['independently_approved_runtime_base_selected']
+    assert not result['base_os_and_toolchain_supply_chain_verified']
     assert not result['real_signing_key_or_production_attestations_included']
     assert not result['production_release_authorized']
 
@@ -82,13 +87,36 @@ def test_allowlisted_recipe_contains_only_explicit_sources_and_nonroot_entrypoin
     } | {f'COPY {gate.ENTRYPOINT} /entrypoint.sh'}
     assert lines[-1]=='USER 1000:1000'
     assert 'ENTRYPOINT ["/entrypoint.sh"]' in lines
-    assert 'FROM '+gate.BASE_IMAGE_ID in lines
+    assert 'FROM '+gate.RESEARCH_BASE_IMAGE_ID in lines
+    assert gate.BASE_IMAGE_ID not in recipe
+    assert gate.RESEARCH_BASE_IMAGE_ID == 'sha256:' + '0' * 64
+    assert 'DO NOT BUILD' in recipe
     assert recipe.count('RUN ')==1
     assert 'RUN chmod 0755 /entrypoint.sh' in lines
     for forbidden in ('COPY .', 'COPY entrypoint.sh', '/root/.ssh',
                       'curl ', 'apt-get', 'ADD http', 'ARG TOKEN',
                       'ENV_SEED', 'FLEET_ROUTER_BEARER_TOKEN'):
         assert forbidden not in recipe
+
+
+def test_legacy_container_image_and_unreviewed_base_are_never_candidates(monkeypatch):
+    recipe=gate.dockerfile_recipe()
+    assert gate.BASE_IMAGE_ID != gate.RESEARCH_BASE_IMAGE_ID
+    assert gate.BASE_IMAGE_ID not in recipe
+    with pytest.raises(gate.Denied,match='exact allowlist'):
+        gate.validate_recipe(recipe.replace(gate.RESEARCH_BASE_IMAGE_ID,
+                                            gate.BASE_IMAGE_ID))
+    with pytest.raises(gate.Denied,match='exact allowlist'):
+        gate.validate_recipe(recipe.replace(gate.RESEARCH_BASE_IMAGE_ID,
+                                            'python:3.12-slim'))
+    with monkeypatch.context() as scope:
+        scope.setattr(gate, 'RESEARCH_BASE_IMAGE_ID', gate.BASE_IMAGE_ID)
+        with pytest.raises(gate.Denied,match='unapproved runtime base'):
+            gate.dockerfile_recipe()
+    with monkeypatch.context() as scope:
+        scope.setattr(gate, 'RESEARCH_BASE_IMAGE_ID', 'sha256:' + 'f' * 64)
+        with pytest.raises(gate.Denied,match='unapproved runtime base'):
+            gate.dockerfile_recipe()
 
 
 @pytest.mark.parametrize('rewrite',[
@@ -201,6 +229,9 @@ def test_default_cli_inert_and_explicit_readonly_denies_production_claims():
     assert data['decision']=='HOLD'
     assert data['image_overlay_built_or_run'] is False
     assert data['production_release_authorized'] is False
+    assert not data['legacy_running_image_usable_as_replacement_parent']
+    assert not data['independently_approved_runtime_base_selected']
+    assert not data['base_os_and_toolchain_supply_chain_verified']
 
 
 def test_preflight_has_no_build_start_private_key_or_secret_reads():
