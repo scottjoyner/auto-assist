@@ -88,9 +88,19 @@ jobs:
             sudo -n env HERMES_ROOTLESS_DB_CI=synthetic-only GITHUB_ACTIONS=true \
               "$(command -v python)" tests/hermes_rootless_broker_credential_db_disposable.py
       - name: Deny unsafe source receipt requests before DB access
-        env:
-          PYTHONPATH: src
-        run: python -m pytest -q tests/test_hermes_source_receipt_research.py
+        run: |
+          python - <<'PYTEST'
+          import sys, types, pytest
+          from pathlib import Path
+          # Don't import the production assistx package or unrelated API
+          # dependencies in the isolated database-security test job.
+          pkg=types.ModuleType("assistx")
+          pkg.__path__=[str(Path("src/assistx").resolve())]
+          sys.modules["assistx"]=pkg
+          raise SystemExit(pytest.main([
+              "-q", "--noconftest", "tests/test_hermes_source_receipt_research.py"
+          ]))
+          PYTEST
       - name: Verify same-transaction Task generation and source receipt atomicity
         env:
           HERMES_ENTERPRISE_RBAC_CANARY: synthetic-ci-only
