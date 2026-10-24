@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -92,6 +93,74 @@ def analyze_network_nas() -> dict:
     proof["available_bytes_now"] = fs.f_bavail * fs.f_frsize
     proof["available_bytes_is_reservation"] = False
     return proof
+
+
+def check_workspace_candidate(workspace: Path) -> dict:
+    """Read metadata only: candidate on verified remote share, never approval.
+
+    The deployment source must be rechecked during controlled bind creation;
+    this deliberately cannot eliminate a host TOCTOU change or grant custody.
+    """
+    need(isinstance(workspace, Path) and workspace.is_absolute()
+         and os.path.normpath(str(workspace)) == str(workspace),
+         "candidate path must be canonical absolute")
+    parts=workspace.parts
+    root_parts=NETWORK_NAS.parts
+    need(len(parts) >= len(root_parts)+2 and
+         parts[:len(root_parts)] == root_parts,
+         "candidate must be a narrow subdirectory of /nas")
+    need(not any(x in (".","..") for x in parts[len(root_parts):]),
+         "path traversal rejected")
+    witness=analyze_network_nas()
+    need(witness.get("remote_mount_observed") is True
+         and witness.get("filesystem") == "cifs"
+         and witness.get("expected_source") == NETWORK_NAS_SOURCE,
+         "approved-source network mount not verified")
+    root_stat=os.stat(NETWORK_NAS,follow_symlinks=False)
+    need(stat.S_ISDIR(root_stat.st_mode),"network source root not a directory")
+    current=NETWORK_NAS
+    for segment in parts[len(root_parts):]:
+        current=current/segment
+        try:
+            item=os.lstat(current)
+        except OSError as exc:
+            raise UnsafeTopology("candidate path missing or inaccessible") from exc
+        need(stat.S_ISDIR(item.st_mode) and not stat.S_ISLNK(item.st_mode)
+             and item.st_dev == root_stat.st_dev,
+             "candidate contains symlink, mount escape or non-directory")
+        need(item.st_uid in (0,os.geteuid()) and item.st_mode & 0o022 == 0,
+             "candidate has uncontrolled or group/other-writable ancestry")
+    # A nested mount can share the same st_dev as /nas, so the device ID
+    # check above is insufficient on its own. Inspect the actual destination.
+    route = subprocess.run(
+        [READONLY_COMMAND, "--target", str(workspace), "--noheadings",
+         "--output", "TARGET,SOURCE,FSTYPE"],
+        capture_output=True, text=True, timeout=7, check=False,
+    )
+    need(route.returncode == 0,
+         "candidate filesystem mount metadata unavailable")
+    qualify_network_mount_rows(route.stdout)
+    target=os.lstat(workspace)
+    need(target.st_uid == os.geteuid() and target.st_mode & 0o077 == 0,
+         "workspace must be private and owned by the nominated caller")
+    # Root and candidate must remain on same mounted filesystem at readback.
+    need(os.stat(workspace,follow_symlinks=False).st_dev == root_stat.st_dev,
+         "candidate filesystem changed")
+    proof_again=analyze_network_nas()
+    need(proof_again.get("remote_mount_observed") is True
+         and proof_again.get("expected_source") == NETWORK_NAS_SOURCE,
+         "remote mount changed between metadata observations")
+    return {
+        "candidate_source": str(workspace),
+        "prebind_remote_cifs_topology_qualified": True,
+        "symlink_and_nested_mount_escape_rejected": True,
+        "subdirectory_private_and_owned": True,
+        "hermes_output_approved": False,
+        "capacity_reserved": False,
+        "production_bind_or_mount_authorized": False,
+        "independent_custody_verified": False,
+        "requires_recheck_at_docker_bind_and_container_start": True,
+    }
 
 
 def analyze_path(path: Path) -> dict:

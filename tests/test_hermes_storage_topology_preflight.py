@@ -260,3 +260,96 @@ def test_actual_nas_mount_metadata_readonly_without_custody_claim(monkeypatch, t
     assert report["hermes_output_approved"] is False
     assert commands==[["findmnt","--target",str(network),
                        "--noheadings","--output","TARGET,SOURCE,FSTYPE"]]
+
+
+def _narrow_workspace(monkeypatch, tmp_path):
+    network = tmp_path / "nas"
+    network.mkdir(mode=0o700)
+    parent = network / "projects"
+    parent.mkdir(mode=0o700)
+    workspace = parent / "hermes-workspace"
+    workspace.mkdir(mode=0o700)
+    monkeypatch.setattr(topology, "NETWORK_NAS", network)
+    def witness():
+        return {"remote_mount_observed": True, "filesystem":"cifs",
+                "expected_source": topology.NETWORK_NAS_SOURCE}
+    monkeypatch.setattr(topology,"analyze_network_nas",witness)
+    rows=(f"{network} systemd-1 autofs\n"
+          f"{network} //192.168.1.202/fileserver cifs\n")
+    monkeypatch.setattr(topology.subprocess,"run",lambda cmd,**kwargs:
+                        type("Result",(),{"returncode":0,"stdout":rows})())
+    return workspace,network
+
+
+def test_narrow_workspace_metadata_is_not_deployment_approval(monkeypatch,tmp_path):
+    workspace,_network=_narrow_workspace(monkeypatch,tmp_path)
+    observed=topology.check_workspace_candidate(workspace)
+    assert observed["prebind_remote_cifs_topology_qualified"] is True
+    assert observed["hermes_output_approved"] is False
+    assert observed["capacity_reserved"] is False
+    assert observed["production_bind_or_mount_authorized"] is False
+    assert observed["independent_custody_verified"] is False
+    assert observed["requires_recheck_at_docker_bind_and_container_start"]
+
+
+@pytest.mark.parametrize("defect",[
+    "root","too_wide","outside","missing","symlink_parent",
+    "symlink_leaf","wrong_mode","missing_remote","wrong_share",
+    "witness_changes","wrong_caller","writable_parent",
+    "nested_unreviewed_mount",
+])
+def test_workspace_fails_closed_for_unsafe_host_evidence(monkeypatch,tmp_path,defect):
+    workspace,network=_narrow_workspace(monkeypatch,tmp_path)
+    if defect=="root":
+        workspace=network
+    elif defect=="too_wide":
+        workspace=network/"projects"
+    elif defect=="outside":
+        workspace=tmp_path/"outside"
+    elif defect=="missing":
+        workspace=workspace/"does-not-exist"
+    elif defect=="symlink_parent":
+        link=network/"linked"
+        link.symlink_to(network/"projects",target_is_directory=True)
+        workspace=link/"hermes-workspace"
+    elif defect=="symlink_leaf":
+        alias=network/"projects"/"alias"
+        alias.symlink_to(workspace,target_is_directory=True)
+        workspace=alias
+    elif defect=="wrong_mode":
+        workspace.chmod(0o755)
+    elif defect=="missing_remote":
+        monkeypatch.setattr(topology,"analyze_network_nas",
+                            lambda:{"remote_mount_observed":False})
+    elif defect=="wrong_share":
+        monkeypatch.setattr(topology,"analyze_network_nas",
+                            lambda:{"remote_mount_observed":True,
+                                    "filesystem":"cifs",
+                                    "expected_source":"//untrusted/share"})
+    elif defect=="witness_changes":
+        calls=[0]
+        def unreliable():
+            calls[0]+=1
+            return {"remote_mount_observed": calls[0]==1,
+                    "filesystem":"cifs",
+                    "expected_source":topology.NETWORK_NAS_SOURCE}
+        monkeypatch.setattr(topology,"analyze_network_nas",unreliable)
+    elif defect=="wrong_caller":
+        monkeypatch.setattr(topology.os,"geteuid",lambda:99999)
+    elif defect=="writable_parent":
+        (network/"projects").chmod(0o777)
+    elif defect=="nested_unreviewed_mount":
+        rows=(f"{workspace} //192.168.1.202/fileserver cifs\n")
+        monkeypatch.setattr(topology.subprocess,"run",lambda cmd,**kwargs:
+                            type("Result",(),{"returncode":0,"stdout":rows})())
+    with pytest.raises(topology.UnsafeTopology):
+        topology.check_workspace_candidate(workspace)
+
+
+def test_workspace_checker_does_not_list_files_or_access_protected_corpus():
+    import inspect
+    source=inspect.getsource(topology.check_workspace_candidate)
+    assert "os.lstat" in source and "analyze_network_nas()" in source
+    for forbidden in ("os.listdir", "os.scandir", "read_bytes", "read_text",
+                      "docker run", "systemctl", "mkdir(", "mount(", "open("):
+        assert forbidden not in source
