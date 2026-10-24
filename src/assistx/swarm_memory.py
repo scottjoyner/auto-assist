@@ -17,6 +17,8 @@ Usage:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import math
 import os
@@ -54,13 +56,30 @@ def embed(text: str, timeout: int = 30) -> Optional[List[float]]:
     global _embed_broken_until
     if requests is None or time.time() < _embed_broken_until:
         return None
+    # The internal service identity is never quota/claim-scoped. Reject
+    # embedding requests without a specifically scoped executor JWT before
+    # making any HTTP call or changing backoff state. Decoding only checks
+    # shape and expected model; the router MUST authenticate signature,
+    # owner, expiry, spend fence and revocation on the actual request.
+    claim_token = os.getenv("HERMES_EXECUTOR_TOKEN", "").strip()
+    if claim_token.count(".") != 2:
+        return None
+    try:
+        payload = claim_token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(
+            payload + "=" * (-len(payload) % 4)
+        ))
+        allowed = claims.get("allowed_model_aliases")
+        if not isinstance(allowed, list) or EMBED_MODEL not in allowed or not all(
+            isinstance(alias, str) and alias.strip() for alias in allowed
+        ):
+            return None
+    except (ValueError, TypeError, AttributeError, UnicodeError, binascii.Error):
+        return None
+    headers = {"Authorization": f"Bearer {claim_token}"}
     last_err = None
     for attempt in range(3):
         try:
-            headers = {}
-            internal_token = os.getenv("ASSISTX_INTERNAL_SERVICE_TOKEN", "").strip()
-            if internal_token:
-                headers["Authorization"] = f"Bearer {internal_token}"
             resp = requests.post(
                 ROUTER_EMBED_URL,
                 json={"model": EMBED_MODEL, "input": text},
