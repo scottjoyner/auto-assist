@@ -10,7 +10,9 @@ logger = get_logger()
 def execute_ready(neo: Neo4jClient, limit: int = 5, dry_run: bool = False):
     tasks = neo.get_ready_tasks(limit=limit)
     for t in tasks:
-        neo.update_task_status(t["id"], "RUNNING")
+        if neo.update_task_status(t["id"], "RUNNING") is not True:
+            logger.warning("Task launch denied by source claim fence")
+            continue
         state = run_task(neo, dict(t), dry_run=dry_run)
         rid = state.get('run_id')
         result = state.get('result')
@@ -18,5 +20,7 @@ def execute_ready(neo: Neo4jClient, limit: int = 5, dry_run: bool = False):
         final_status = "DONE" if (acc.get('passed') or dry_run) else "FAILED"
         if rid:
             neo.log_tool_call(rid, 'acceptance', {'task_id': t['id'], 'acceptance': t.get('acceptance')}, acc, final_status=='DONE')
-        neo.update_task_status(t["id"], final_status)
+        if neo.update_task_status(t["id"], final_status) is not True:
+            logger.error("Task terminal commit unverified; no success reported")
+            continue
         logger.info(f"Executed {t['id']} -> {final_status}; acceptance: {acc}")

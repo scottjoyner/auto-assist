@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 import threading
@@ -342,6 +343,28 @@ class DurableController:
 
 _threads: dict[str, threading.Thread] = {}
 _threads_lock = threading.Lock()
+logger = logging.getLogger(__name__)
+
+
+def _safe_background_tick(
+    controller: DurableController,
+    tick_key: str,
+    work: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    """Fail closed on transient unavailability without killing supervision.
+
+    The controller must not claim a successful checkpoint if its store cannot
+    initialize. Only the exception type is logged (never credentials/details).
+    """
+    try:
+        return controller.run_tick(tick_key, work)
+    except Exception as exc:
+        logger.warning(
+            "controller %s tick unavailable (%s)",
+            controller.controller_id, type(exc).__name__,
+        )
+        return {"executed": False, "ok": False, "checkpointed": False,
+                "reason": "controller_store_unavailable"}
 
 
 def start_durable_controller_loop(
@@ -359,7 +382,9 @@ def start_durable_controller_loop(
         def loop() -> None:
             while True:
                 bucket = int(controller.clock()) // interval_seconds
-                controller.run_tick(f"{controller.controller_id}:{bucket}", work)
+                _safe_background_tick(
+                    controller, f"{controller.controller_id}:{bucket}", work
+                )
                 time.sleep(interval_seconds)
 
         thread = threading.Thread(

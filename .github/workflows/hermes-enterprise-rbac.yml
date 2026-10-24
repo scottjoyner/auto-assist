@@ -1,0 +1,77 @@
+name: hermes-enterprise-rbac
+
+on:
+  pull_request:
+    paths:
+      - "tests/hermes_task_broker_rbac_disposable_neo4j.py"
+      - "tests/hermes_broker_generation_rbac_disposable_neo4j.py"
+      - "src/assistx/hermes_broker_command_research.py"
+      - "src/assistx/hermes_broker_unix_boundary_research.py"
+      - "src/assistx/hermes_broker_rootless_research.py"
+      - "tests/test_hermes_broker_rootless_research.py"
+      - "tests/hermes_broker_rootless_process_disposable_linux.py"
+      - "tests/test_hermes_broker_unix_boundary_research.py"
+      - "tests/hermes_broker_unix_peer_disposable_linux.py"
+      - "tests/test_hermes_broker_command_research.py"
+      - "tests/test_hermes_generation_broker_rbac_contract.py"
+      - "src/assistx/hermes_source_generation_research.py"
+      - "src/assistx/hermes_source_completion_research.py"
+      - "src/assistx/hermes_source_heartbeat_research.py"
+      - ".github/workflows/hermes-enterprise-rbac.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-enterprise-deny-direct-task-writes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install isolated Neo4j driver
+        run: python -m pip install "neo4j>=5.26,<6"
+      - name: Verify real kernel peer credentials across distinct ephemeral OS UIDs
+        env:
+          HERMES_PEER_ISOLATION_CI: synthetic-only
+          PYTHONPATH: src
+        run: sudo -n env HERMES_PEER_ISOLATION_CI=synthetic-only GITHUB_ACTIONS=true PYTHONPATH=src "$(command -v python)" tests/hermes_broker_unix_peer_disposable_linux.py
+      - name: Prove rootless listener and separate-UID socket permissions in ephemeral CI
+        run: sudo -n env HERMES_ROOTLESS_CI=synthetic-only GITHUB_ACTIONS=true "$(command -v python)" tests/hermes_broker_rootless_process_disposable_linux.py
+      - name: Launch disposable Enterprise with runner-created credentials
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, secrets, subprocess
+          value=secrets.token_urlsafe(36)
+          # GitHub Actions must mask the generated token before any step,
+          # environment dump, traceback, or container command can echo it.
+          print("::add-mask::"+value, flush=True)
+          with open(os.environ["GITHUB_ENV"],"a",encoding="utf-8") as f:
+              f.write("HERMES_RBAC_EPHEMERAL_ADMIN_PASSWORD="+value+"\n")
+          subprocess.run([
+              "docker","run","--rm","-d",
+              "--name","hermes-rbac-disposable",
+              "-p","127.0.0.1:7687:7687",
+              "-e","NEO4J_AUTH=neo4j/"+value,
+              "-e","NEO4J_ACCEPT_LICENSE_AGREEMENT=eval",
+              "-e","NEO4J_server_memory_heap_initial__size=256m",
+              "-e","NEO4J_server_memory_heap_max__size=512m",
+              "-e","NEO4J_server_memory_pagecache_size=256m",
+              "neo4j:5.26-enterprise",
+          ],check=True,stdout=subprocess.DEVNULL)
+          print("DISPOSABLE_ENTERPRISE_STARTED=1")
+          PY
+      - name: Verify legacy identities cannot write Task directly
+        env:
+          HERMES_ENTERPRISE_RBAC_CANARY: synthetic-ci-only
+        run: python tests/hermes_task_broker_rbac_disposable_neo4j.py
+      - name: Verify enrolled heartbeat and completion under restricted broker role
+        env:
+          HERMES_ENTERPRISE_RBAC_CANARY: synthetic-ci-only
+        run: python tests/hermes_broker_generation_rbac_disposable_neo4j.py
+      - name: Remove isolated Enterprise DB
+        if: always()
+        run: docker rm -f hermes-rbac-disposable >/dev/null 2>&1 || true

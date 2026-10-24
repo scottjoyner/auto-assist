@@ -29,6 +29,10 @@ class ExecutionControlPlane:
         estimated_remaining_seconds: int | None,
         pause: bool,
     ) -> dict[str, Any]:
+        # Generic checkpoints lack an authoritative Hermes generation fence.
+        if isinstance(agent_id, str) and agent_id.startswith("hermes-"):
+            return {"checkpointed": False,
+                    "reason": "hermes_source_generation_fence_required"}
         checkpoint_id = f"checkpoint-{uuid.uuid4().hex}"
         now_ms = int(time.time() * 1000)
         checkpoint_json = json.dumps(checkpoint, default=str, sort_keys=True)
@@ -48,9 +52,19 @@ class ExecutionControlPlane:
             row = session.run(
                 """
                 MATCH (t:Task {id:$task_id})
+                SET t.hermes_fence_check_epoch =
+                    coalesce(t.hermes_fence_check_epoch, 0) + 1
+                WITH t
                 WHERE t.claimed_by=$agent_id
                   AND t.claim_id=$claim_id
                   AND t.status IN ['CLAIMED','RUNNING','PAUSING']
+                  AND NOT (
+                    coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+                  )
                 WITH t, coalesce(t.checkpoint_revision, 0) + 1 AS revision
                 CREATE (checkpoint:TaskCheckpoint {
                   id:$checkpoint_id,
@@ -116,13 +130,27 @@ class ExecutionControlPlane:
         reason: str,
         target_agent_id: str | None,
     ) -> dict[str, Any]:
+        if any(isinstance(v, str) and v.startswith("hermes-")
+               for v in (actor, target_agent_id)):
+            return {"requested": False,
+                    "reason": "hermes_source_generation_fence_required"}
         now_ms = int(time.time() * 1000)
         with neo._session() as session:
             row = session.run(
                 """
                 MATCH (t:Task {id:$task_id})
+                SET t.hermes_fence_check_epoch =
+                    coalesce(t.hermes_fence_check_epoch, 0) + 1
+                WITH t
                 WHERE t.status IN ['CLAIMED','RUNNING']
                   AND coalesce(t.preemptible, false)=true
+                  AND NOT (
+                    coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+                  )
                 OPTIONAL MATCH (target:SwarmNode {node_id:$target_agent_id})
                 WITH t, target
                 WHERE (
@@ -187,13 +215,28 @@ class ExecutionControlPlane:
         target_agent_id: str,
         actor: str,
     ) -> dict[str, Any]:
+        if any(isinstance(v, str) and v.startswith("hermes-")
+               for v in (target_agent_id, actor)):
+            return {"migrated": False,
+                    "reason": "hermes_source_generation_fence_required"}
         now_ms = int(time.time() * 1000)
         with neo._session() as session:
             row = session.run(
                 """
                 MATCH (t:Task {id:$task_id, status:'PAUSED'})
+                SET t.hermes_fence_check_epoch =
+                    coalesce(t.hermes_fence_check_epoch, 0) + 1
+                WITH t
                 MATCH (target:SwarmNode {node_id:$target_agent_id})
-                WHERE t.checkpoint_id IS NOT NULL
+                WHERE t.status='PAUSED'
+                  AND NOT (
+                    coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+                  )
+                  AND t.checkpoint_id IS NOT NULL
                   AND coalesce(t.migration_count, 0) <
                       coalesce(t.max_migrations, 2)
                   AND coalesce(t.paused_from_agent_id, '') <> $target_agent_id
@@ -272,7 +315,18 @@ class ExecutionControlPlane:
             timed_out = session.run(
                 """
                 MATCH (t:Task {status:'PAUSING'})
-                WHERE coalesce(t.preemption_requested_at_ts, 0) < $cutoff
+                // Take the Task write lock before checking timeout and owner
+                // so a stale read cannot reset a Hermes claim after reissue.
+                SET t.hermes_fence_check_epoch =
+                    coalesce(t.hermes_fence_check_epoch, 0) + 1
+                WITH t
+                WHERE t.status='PAUSING'
+                  AND coalesce(t.preemption_requested_at_ts, 0) < $cutoff
+                  AND NOT (
+                    coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                  )
                 WITH t, t.claimed_by AS prior_owner
                 SET t.status=CASE
                       WHEN coalesce(t.lease_expires_at_ts, 0) > $now_ms
@@ -311,6 +365,12 @@ class ExecutionControlPlane:
                     MATCH (t:Task {status:'PAUSED'})
                     WHERE t.checkpoint_id IS NOT NULL
                       AND t.migration_target_agent_id IS NOT NULL
+                      AND NOT (
+                        coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+                      )
                     RETURN t.id AS task_id,
                            t.migration_target_agent_id AS target_agent_id
                     ORDER BY t.paused_at_ts

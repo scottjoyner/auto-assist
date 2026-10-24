@@ -1,0 +1,1342 @@
+{
+  "all_writers_generation_fenced": false,
+  "decision": "HOLD",
+  "entries": [
+    {
+      "call_digest": "3eb775fd60e3d4fcf1d7db9d3668f16ad930738003f3524f57abf4072c4da272",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "agents/analyst.py",
+      "scope": "run_user_code",
+      "scope_digest": "dde9369fdc9f845e9fb24854fbf24316d7473be169c4bc04ba200de606d4fd30"
+    },
+    {
+      "call_digest": "34ef92da24e9c496034354eb7e43142e6d0d976a71206578ff8e72e58fc6b158",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "agents/executor.py",
+      "scope": "execute_with_repairs",
+      "scope_digest": "a66f3eaf38c60c288a4a4c436bea4ef9b1e0d7a655ec4eaeedf40c655446b635"
+    },
+    {
+      "call_digest": "3eb775fd60e3d4fcf1d7db9d3668f16ad930738003f3524f57abf4072c4da272",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "agents/hermes_agent_adapter.py",
+      "scope": "run_hermes",
+      "scope_digest": "0887d633fabd9ee448b5361ed2f2bff307dd6954bbae1ea2c71509cc1fb4fe70"
+    },
+    {
+      "call_digest": "96a654519c42c8ddca8560365eea7415f3911b6904323dca3bb6839e4cd2182a",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "api.py",
+      "scope": "_cancel_tasks_for_intent",
+      "scope_digest": "57da9e4e8e5b7f7af149b060c2373a05fa33ba894837d931a0cd26848a347c56"
+    },
+    {
+      "call_digest": "39a7d5c0aa87fd2bb400894b73e9b3e5697277f5a2dff7173442564316780537",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "api.py",
+      "scope": "_maybe_dead_letter_exhausted_task",
+      "scope_digest": "3ce78135d379aa30e6f6b49b061193e721c2f5dad8b8d9ba538a7af92eed70fe"
+    },
+    {
+      "call_digest": "3c8d5a01867e34d291f8294c6572bcc7496ebae155875ffa56ef545e90aa6013",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "api.py",
+      "scope": "api_approve_task_proposal",
+      "scope_digest": "039532b94a2d48b2f0f5d61af110cf725464b666d89a9d87a725c01a10d0e9ac"
+    },
+    {
+      "call_digest": "1f7063031ef7ed3142f9b8a6e7cbbf2397d729e546e23585947c69566985121c",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "api.py",
+      "scope": "api_fleet_tasks",
+      "scope_digest": "599cdfed687d8648bcd601cb3fc1f788002cf4ede599a90ef1b700bfaa0eb6ac"
+    },
+    {
+      "call_digest": "bb010d48343c36786a44777317bc5b3cd5361a072f684f4b03502e65398cfaec",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "api.py",
+      "scope": "api_live_dashboard",
+      "scope_digest": "f7aec6c1ccd9262e0697a2d45f29a52f5f3d8b9dfe7ab8b6dc79a68c0073157e"
+    },
+    {
+      "call_digest": "76216c17b394c034b156558da707e22617c37dc0a9961cd06a4509c9c62ba85c",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "api.py",
+      "scope": "api_pause_task",
+      "scope_digest": "92f90bb12855b10262af8b4db1183c19ca1591cb5da5bd69bb53774a1c8658c8"
+    },
+    {
+      "call_digest": "8344c9126127e86eb7423aef47104f0c067128a23caf223871fc6fa12b15142c",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "api.py",
+      "scope": "api_resume_task",
+      "scope_digest": "4e03ec8bb6986eda46c950c347e1c74d9fd248e0a8dd22391c61ff067debf53b"
+    },
+    {
+      "call_digest": "d2e47d7693f7f7fac34fc368f399342e8580e30e251bdda8759410cad6865743",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "api.py",
+      "scope": "api_sophia_event",
+      "scope_digest": "84a7ebc756d7b1deed249c6bcc299fad0487ee50557abbc5356b5d6575467175"
+    },
+    {
+      "call_digest": "d2e47d7693f7f7fac34fc368f399342e8580e30e251bdda8759410cad6865743",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "api.py",
+      "scope": "api_voice_event",
+      "scope_digest": "9faf1a0d3aa2e2f74f65a58d4924d8935678e513c6b32ce831a50472fedbf5e8"
+    },
+    {
+      "call_digest": "67d6959afd171aed1b13ec1e10c73ca7455b18879d9ba2d70cbdf3ac55d756ca",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "api.py",
+      "scope": "api_workflow_replan",
+      "scope_digest": "63136cfb2568b0d52ee356c3502463f4c8d27fca19205cdd7d576357baf5bf92"
+    },
+    {
+      "call_digest": "f46774a30b44374ed86eef7cbd02822312480f19007c3ac51678623603d334dd",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "cass_session_search.py",
+      "scope": "CassSessionSearch._run_search",
+      "scope_digest": "82f958fde4a655477b9316a813a3cd8c16243173bcdced518e540a47612761f9"
+    },
+    {
+      "call_digest": "5f69b45d9709d4c2b13dd2042642a063ef228b51a9ad49984f5f865f04520b57",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "cass_session_search.py",
+      "scope": "CassSessionSearch.verify_binary",
+      "scope_digest": "9a50c1be40731031d87649455941a9985d7b460bc6b8449ffc1b7a39c2b8cd23"
+    },
+    {
+      "call_digest": "cfc5e0a1b612c470d7f49dbd0eeb55bd2f534078b9bda38e75403a479fc3378e",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "cass_session_search.py",
+      "scope": "CassSessionSearch.verify_binary",
+      "scope_digest": "9a50c1be40731031d87649455941a9985d7b460bc6b8449ffc1b7a39c2b8cd23"
+    },
+    {
+      "call_digest": "d2a9a89c689e7a30d30559b571971a2b0c930036f3b2d0e4ee3d9e1f52f5bf9f",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "contracts/repository_source_verifier.py",
+      "scope": "_git_capture",
+      "scope_digest": "0d835c5e75dc52498dab8ab9d14c6da0196ddac350dec6579194f568406418f3"
+    },
+    {
+      "call_digest": "e9f2b869fecf3880a8f9ffd36ca6efa13e35a5a0fd5ca852fb2729b6a0f03614",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "contracts/repository_source_verifier.py",
+      "scope": "_registered_worktrees",
+      "scope_digest": "7fef49f8a4ce52be9eabd11efb5f3f2a8dbca07c7556ec2bd0c99cb335511c37"
+    },
+    {
+      "call_digest": "1f7063031ef7ed3142f9b8a6e7cbbf2397d729e546e23585947c69566985121c",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "control_room.py",
+      "scope": "_live_loaded_models",
+      "scope_digest": "99cf968856287ef273c5139ce645a34e71d2e8a7b6faa78ca3f21927e8c33031"
+    },
+    {
+      "call_digest": "1f141506ef0f66efed0d95902a475dd5db986f7538fed9ec10cc5d6c107f8012",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "control_room.py",
+      "scope": "_probe_tailnet",
+      "scope_digest": "b01a3d4c28b93362b4fbbf78219a29f9c23c208b09f26d8365bc7e80d8260cc5"
+    },
+    {
+      "call_digest": "1f7063031ef7ed3142f9b8a6e7cbbf2397d729e546e23585947c69566985121c",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "control_room.py",
+      "scope": "_query_rows",
+      "scope_digest": "653b921b3a380871cc0338c3fab80c26eac1e68f13d06d4792319858e4079f86"
+    },
+    {
+      "call_digest": "1f7063031ef7ed3142f9b8a6e7cbbf2397d729e546e23585947c69566985121c",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "control_room_runtime.py",
+      "scope": "_query",
+      "scope_digest": "f700752ba4f36586dc99dc33307bfc93d3bb98446dfc7d463c67b9218c755e6f"
+    },
+    {
+      "call_digest": "b567b02abe0194b850b361a322abe975182d77fc41bb0da892df0fc0f47aae55",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "deployment_canary.py",
+      "scope": "main",
+      "scope_digest": "2a57c63539485b35906be6cb2d65fcd58d3e210165cc92563bdc0bb171ce5bfb"
+    },
+    {
+      "call_digest": "aa2f2165522f65dfd20463beef0a80e2facfde7c048dbd598aac49a72b5a0615",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "execution_control.py",
+      "scope": "ExecutionControlPlane.checkpoint",
+      "scope_digest": "e40ab3e3c567b28e5200464616c0e3c050a588596fbad769439b1cb69a73e084"
+    },
+    {
+      "call_digest": "61091522696a1ce0756e4aee241a35530ef8c702786870b7f27ac64124615b81",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "execution_control.py",
+      "scope": "ExecutionControlPlane.migrate",
+      "scope_digest": "88f831a6ad8b9300b76cb4d89ee2ff6758adea51544abdfab80b89850a17e846"
+    },
+    {
+      "call_digest": "627821cb33f97ea7297b8dafcb88a9412f32013b203cc9f787dd5308b5592ac7",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "execution_control.py",
+      "scope": "ExecutionControlPlane.reconcile",
+      "scope_digest": "9b07ef899a0eb06be53ed777b64c69887a7291a99f77376f4fcc6af50d496404"
+    },
+    {
+      "call_digest": "b2e0b9e276bec9ae630c30d60245917f150a3a20599f322d17f5327d87271088",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "execution_control.py",
+      "scope": "ExecutionControlPlane.request_preemption",
+      "scope_digest": "c6d3d8d53b92db006532a81ecb220287549463a624d8aa605428f317c45a3d23"
+    },
+    {
+      "call_digest": "58f016b36c262b821d8bf1da00bc39802dc52d45a706a6b65bb488f9f366eec5",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "fleet.py",
+      "scope": "wake_node",
+      "scope_digest": "7623c226b15d2967ecc8ce828fa050c06f54b7c68ac0657dec8ea0cfae249820"
+    },
+    {
+      "call_digest": "72112d39e1c5b83ce8183c7766315a33d6cb7b60f832dd83208a74813865f4d0",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "fleet_node_agent.py",
+      "scope": "_detect_capabilities",
+      "scope_digest": "29d249ffe171f68594b256fc6b5b9fab744e47544733128c52216a0473240709"
+    },
+    {
+      "call_digest": "5f6e4afdfa55881819edee7726f6d8ec11535f6b10b22669b814221d1b17e900",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "graphify_adapter.py",
+      "scope": "GraphifyAdapter._git",
+      "scope_digest": "3e020730fb9d02e248310f1d068e62fba293f177cd7c0cd624f245711bbd0198"
+    },
+    {
+      "call_digest": "f46774a30b44374ed86eef7cbd02822312480f19007c3ac51678623603d334dd",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "graphify_adapter.py",
+      "scope": "GraphifyAdapter.extract_code",
+      "scope_digest": "585618e903afeebf0872236b1ddc1fd0d97c637af3691f8acf8c7aa80fab63fb"
+    },
+    {
+      "call_digest": "cfc5e0a1b612c470d7f49dbd0eeb55bd2f534078b9bda38e75403a479fc3378e",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "graphify_adapter.py",
+      "scope": "GraphifyAdapter.verify_binary",
+      "scope_digest": "e9e2f400536b5d956e102bbf09eeda92e7189d77be085450ecbb9a91cab4e9be"
+    },
+    {
+      "call_digest": "88c49677c92c88153cdf229006d02291c3f863755e0d90a68d24da6689268996",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "hermes_claim_census.py",
+      "scope": "_pass",
+      "scope_digest": "552cb7cb731e0b36df0c2ee31f59d10d436aacf40fc571369139c9ce19b72755"
+    },
+    {
+      "call_digest": "63b3e8a6b9d34961ef524161f8609bdd2011f71f22c641bbcc676ae8d3ada14c",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "hermes_source_completion_research.py",
+      "scope": "complete_candidate_claim.mutate",
+      "scope_digest": "7da93a1d15f23e457eeef409b09b749934052d102bac6aa760ceff3d19ab42f9"
+    },
+    {
+      "call_digest": "44dd2b6b79a720b7fc0bd629047397e2dcc1575291c7325e88cd40a9907f6a30",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "hermes_source_heartbeat_research.py",
+      "scope": "renew_candidate_lease.mutate",
+      "scope_digest": "00d04035aca8aab8bca7545a863bb837c61620cf50e347b559fac824e3afdf52"
+    },
+    {
+      "call_digest": "2dbac54a19eaf621457f23fad81d0aca2819effa31201691185db863244e2601",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "improvement_cycle.py",
+      "scope": "ImprovementCycle.record_attempt",
+      "scope_digest": "f48698d4132821dd0cefa3c106286a226dc5a8a1d84d63c2d06340c6f70a6cb2"
+    },
+    {
+      "call_digest": "7db8ad81e90f4e136159639adc9c6f500426f138e0eeff6c775130edef4604b3",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "improvement_runtime.py",
+      "scope": "_run",
+      "scope_digest": "73e89769793d1118f1c698e7f21de8c459c94a20842f9fb1887c9ddb41cfe5bc"
+    },
+    {
+      "call_digest": "f2f11a6d8586bb94c9a6b3241d6c5833569e33e877786e66a9d15e28d3f91a96",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "inference_task_evaluators.py",
+      "scope": "_evaluate_python_function",
+      "scope_digest": "d47d629ef3994c9049d24d2e2249230143f3643ec6a30122b3628a4b216d729e"
+    },
+    {
+      "call_digest": "a7abf8758b3e4223fc79b08109a194a55d18473908c7c3a0ba66c488c8f7969c",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "intent_orchestrator.py",
+      "scope": "_create_complex_deliverable",
+      "scope_digest": "63f246162222804c4e0ebcf9f106837b90285552e8cf536b8cbfb271063f307a"
+    },
+    {
+      "call_digest": "d2e47d7693f7f7fac34fc368f399342e8580e30e251bdda8759410cad6865743",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "intent_orchestrator.py",
+      "scope": "_create_simple_task",
+      "scope_digest": "f75dba0b6d1ff2f0569f78f0794d08671b3f6292971b8fb57ab91132edb99f5b"
+    },
+    {
+      "call_digest": "a84238f9f43902a57fde07d58a65f736ddf84e6c443164607bf246576199bcfb",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "intent_orchestrator.py",
+      "scope": "_handle_cancel",
+      "scope_digest": "6e5e1768b923efb32abe715a5ad0637c2255308bcc9ca45b6254cbf069920a11"
+    },
+    {
+      "call_digest": "d2e47d7693f7f7fac34fc368f399342e8580e30e251bdda8759410cad6865743",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "intent_orchestrator.py",
+      "scope": "_queue_intent_review",
+      "scope_digest": "48f74c6785608da8742adad2d2fa16067a7537a3746f564df078e6348f8a60a3"
+    },
+    {
+      "call_digest": "c8e6e3d9c823a34bea2c27f28d8ce4ad753de29678f7d534b992fac40f217829",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "maintenance.py",
+      "scope": "maintenance_job",
+      "scope_digest": "d4c7f2b3d413bacaf8511c455b3cac51b9e13ff82cfb0cdbfd0eedab573d806b"
+    },
+    {
+      "call_digest": "ce7318b002f7406a6872d48a5ba492e489c40baaf08ada7ff6f126f95a3cb3cd",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_delete",
+      "ordinal": 0,
+      "path": "maintenance.py",
+      "scope": "maintenance_job",
+      "scope_digest": "d4c7f2b3d413bacaf8511c455b3cac51b9e13ff82cfb0cdbfd0eedab573d806b"
+    },
+    {
+      "call_digest": "e15308e102732d46540525a680385b884ff6567ef08cde4fa7baf1275b3d2fc7",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "maintenance.py",
+      "scope": "run_stale_claim_reaper_loop._loop",
+      "scope_digest": "e52ef33dc3e910118b442f805d1d5a5c64262de73f0ada719a93b437dea68b1a"
+    },
+    {
+      "call_digest": "d61c99eabdbba5200ac2ddc2353190d19e6f56b3f952af1008316065c67fa4be",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.add_evidence",
+      "scope_digest": "e2382a1263901c89d6df52d463a8fb5ba56ee370533169f431f453402c7e9769"
+    },
+    {
+      "call_digest": "03228a8ba38b0303688bbc8febc7cc085174b6cbf6d031627e2d6fd5593e3b21",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_node_create_or_merge",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.add_summary_and_tasks",
+      "scope_digest": "1cad2947262bb3f96e0f134a4b081db63e1c14e01a7c1da8e8a2ee46aba7ba6b"
+    },
+    {
+      "call_digest": "d61c99eabdbba5200ac2ddc2353190d19e6f56b3f952af1008316065c67fa4be",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.add_utterances",
+      "scope_digest": "01a188a4c20f19c06b7c55be55eabc5f0c86048e6fd6b64d19a836fbb5c16215"
+    },
+    {
+      "call_digest": "55066f21f86256537035570bc8fda10d500085604dbd3ebb8402ca7718d4d884",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.claim_task",
+      "scope_digest": "8f6fe78b2167c56fcc9f0be2a69fdc923316b95185a69f264c57b67cf8cdc598"
+    },
+    {
+      "call_digest": "865f06fea03721936308c3ec285134e64e42c919752ca43ce623accd9edf3e95",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.claim_task",
+      "scope_digest": "8f6fe78b2167c56fcc9f0be2a69fdc923316b95185a69f264c57b67cf8cdc598"
+    },
+    {
+      "call_digest": "9f9b48f16502e111d9edc293cc7f10c6ef85dad92092cf18a945dbf93b137d14",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.claim_task",
+      "scope_digest": "8f6fe78b2167c56fcc9f0be2a69fdc923316b95185a69f264c57b67cf8cdc598"
+    },
+    {
+      "call_digest": "de143b1da0725cc288bfe56e32fef0065c0700c7f97ef24fcb13a321f33e92c4",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.claim_task",
+      "scope_digest": "8f6fe78b2167c56fcc9f0be2a69fdc923316b95185a69f264c57b67cf8cdc598"
+    },
+    {
+      "call_digest": "78446f797e873c3f22d8ab0384aa02bdf2635260835281ac7a3d01465f6afa60",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.complete_deliverable",
+      "scope_digest": "f3791daa7f114aff706f3171c412e5df8e59dfa75e13a3ba5526d12fcce386a2"
+    },
+    {
+      "call_digest": "ee64eef2b14607adf66ce1b6fb342e627133fbf5b7723af75c06e19186d4591e",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.complete_run",
+      "scope_digest": "891b1120d621320382170d475cc59225acb00503fd444705e92b326c73351146"
+    },
+    {
+      "call_digest": "17e759d2b1d09cbf43082e4e43775c965d551375bbb9da2897f810b2ab231dc2",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.complete_task",
+      "scope_digest": "a9fea9e3766d19455307ca5b9f18800fbec79031baa391eac4ee1520627c5142"
+    },
+    {
+      "call_digest": "b7ebb244249b751df0dde96696e8bdc24b0aabf494d1507a9627752182068787",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.complete_task",
+      "scope_digest": "a9fea9e3766d19455307ca5b9f18800fbec79031baa391eac4ee1520627c5142"
+    },
+    {
+      "call_digest": "b8e756f7f82f16c64a50c237b2b2e3a2a2ba6493be576cc7735bcef779d37718",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.complete_task",
+      "scope_digest": "a9fea9e3766d19455307ca5b9f18800fbec79031baa391eac4ee1520627c5142"
+    },
+    {
+      "call_digest": "d61c99eabdbba5200ac2ddc2353190d19e6f56b3f952af1008316065c67fa4be",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.create_context_packet",
+      "scope_digest": "69ba5cd20d9d1be63b7bd2f73929d77c51a8a0f438a0a3fe5129124ee60e620d"
+    },
+    {
+      "call_digest": "dec093fbd6d8c2e3abdb520b34cc71db4e65796a9e8821dc623b4a5f3abb986a",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.create_context_packet",
+      "scope_digest": "69ba5cd20d9d1be63b7bd2f73929d77c51a8a0f438a0a3fe5129124ee60e620d"
+    },
+    {
+      "call_digest": "92bc15f93d5cf321d03104d112e6f6fedf1610cfcf1bb8f36693f4a1f3bf1fcd",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.create_context_packet",
+      "scope_digest": "69ba5cd20d9d1be63b7bd2f73929d77c51a8a0f438a0a3fe5129124ee60e620d"
+    },
+    {
+      "call_digest": "344d3e2ad5632ef763a67dcb017727a488be684a0dcf5ed03bb2bfb7b9e9dccb",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.create_deliverable_from_ask",
+      "scope_digest": "346536e6831a0b0c55d733b967ac54ff4ccdd358d8236e3463190ab224a68001"
+    },
+    {
+      "call_digest": "96ec155823fe5a1f85c5e610bcf6bbe89135b4b05b6146f6f9160e1e4fc73a4a",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.create_dispatch",
+      "scope_digest": "d7087d08038f3f4b4797ea7908528dae07bcd01a75a1529ece332e80456b3846"
+    },
+    {
+      "call_digest": "47b278cef7f0f9a01701e8d933722444d3aaffc3883eaaf62ba01d42b6a0e69e",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_node_create_or_merge",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.create_owned_task.create",
+      "scope_digest": "ec5b6a617ecc0ba583d8eb633ed0ce5fd4c2b3f84991520cb9300a57eace019e"
+    },
+    {
+      "call_digest": "b80736f6b4560b29189d49e902bc98a84b07a3235f8c6818c0e82c78d93fd383",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.create_run",
+      "scope_digest": "3564668e05e87ee03fdccdb3e8f24b40c1a2f41fb9ed1b6d6a39ccfc71221697"
+    },
+    {
+      "call_digest": "3a7bec71aca52eef4d6bc2d3d221080330874480a0bcf475cc6b802ab6998aff",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_node_create_or_merge",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.create_tasks_batch",
+      "scope_digest": "5466ed6548b666e13a9a6b6998483b30f62cdfa15ad7148a1fca82eb5d390084"
+    },
+    {
+      "call_digest": "f10f7cea933e9086e1953d842f91badb4960b5722077667dc0e7b43a820d22ba",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_node_create_or_merge",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.create_tasks_batch",
+      "scope_digest": "5466ed6548b666e13a9a6b6998483b30f62cdfa15ad7148a1fca82eb5d390084"
+    },
+    {
+      "call_digest": "6be6285406a7fc4709d32325d46e774bdbfcd1d0d0850c0a992e1b0498f5bdd5",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.create_workflow_incident",
+      "scope_digest": "72ef00f9b77419a6664bd6580aada417da617a4038deb469c50d2f9e0b9e2c8e"
+    },
+    {
+      "call_digest": "d61c99eabdbba5200ac2ddc2353190d19e6f56b3f952af1008316065c67fa4be",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.ensure_schema",
+      "scope_digest": "fb0d7112dbb2e4b98c736d36876cadc69f53cad1db1ca8b5797e0c96f392a38d"
+    },
+    {
+      "call_digest": "d61c99eabdbba5200ac2ddc2353190d19e6f56b3f952af1008316065c67fa4be",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.get_ready_tasks",
+      "scope_digest": "680a96b1d45439d1d2db31e96f3e7de11c7eadc4f3ba454df1267a1caf816038"
+    },
+    {
+      "call_digest": "d61c99eabdbba5200ac2ddc2353190d19e6f56b3f952af1008316065c67fa4be",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.get_review_tasks",
+      "scope_digest": "351c0e96a2170ede0a4411aab6e28b32fd1bc8d513c51836a5d3f14e4e3ff502"
+    },
+    {
+      "call_digest": "d61c99eabdbba5200ac2ddc2353190d19e6f56b3f952af1008316065c67fa4be",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.get_unprocessed_intents",
+      "scope_digest": "0be64d083820a99c0a0dceb1736c9bae79b44eb66476e18dc9d6cbfd580bad2f"
+    },
+    {
+      "call_digest": "495dee0c56ff75494b14703a8b96e580edad3144182e9dfeddb01323e0628e76",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.heartbeat_task",
+      "scope_digest": "c39f92983765e88b687273ef2c826c7b6fe02829116058d39e318970727b3bc3"
+    },
+    {
+      "call_digest": "ec397455bfd61b4c80c16b219d8bd3c9d155f55c11c89c1dd5e0181dc57c178c",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_node_create_or_merge",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.ingest_media_capture",
+      "scope_digest": "22498fa04ed7bfca2e34e3ebafc6d792d8f3d20f00533d221cf216d69b188888"
+    },
+    {
+      "call_digest": "63bea9e34d479917fa6d1dd45f2f7d32578f1908aa65b0762b1673a51fb71207",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.ingest_paperclip_event",
+      "scope_digest": "63b223cf909c0ef75ce9a5c73737919d50c533dcc3fffaa557b39fe82e749bba"
+    },
+    {
+      "call_digest": "34ef92da24e9c496034354eb7e43142e6d0d976a71206578ff8e72e58fc6b158",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.ingest_transcription",
+      "scope_digest": "aebd57e64464ed9c0bce154fc8d5c5fe783f83da9ca97c0339649147b8a2d1c8"
+    },
+    {
+      "call_digest": "3ed6518151d8df73c5a3a274742348c2f3163b844645ec3561533e23f4de12ef",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.link_sophia_voice_records",
+      "scope_digest": "079057549a0ec54f4ff6763ce4e12073649dd9a26a608eaf782f82b11eb804ca"
+    },
+    {
+      "call_digest": "e2925d229e5435f100d7853c7ae450b46489b4840a8837858d8a2a368436c692",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.link_sophia_voice_records",
+      "scope_digest": "079057549a0ec54f4ff6763ce4e12073649dd9a26a608eaf782f82b11eb804ca"
+    },
+    {
+      "call_digest": "1f7063031ef7ed3142f9b8a6e7cbbf2397d729e546e23585947c69566985121c",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.list_agent_tasks",
+      "scope_digest": "3a526eb59808d39f3419f4d968396b43a71ac4bc13aaf01b2ffd4e1fa8b31fc9"
+    },
+    {
+      "call_digest": "1f7063031ef7ed3142f9b8a6e7cbbf2397d729e546e23585947c69566985121c",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 1,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.list_agent_tasks",
+      "scope_digest": "3a526eb59808d39f3419f4d968396b43a71ac4bc13aaf01b2ffd4e1fa8b31fc9"
+    },
+    {
+      "call_digest": "d61c99eabdbba5200ac2ddc2353190d19e6f56b3f952af1008316065c67fa4be",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.list_dispatches",
+      "scope_digest": "a429335db6f65ae3fb8597aab9fd50eb38b018774799c344f9bf71fd87a997e0"
+    },
+    {
+      "call_digest": "d61c99eabdbba5200ac2ddc2353190d19e6f56b3f952af1008316065c67fa4be",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.list_evaluation_runs",
+      "scope_digest": "9253378dab5ea7a619415d2ec79f441dcfd83374e89b9b1e669779b1a64da2be"
+    },
+    {
+      "call_digest": "d61c99eabdbba5200ac2ddc2353190d19e6f56b3f952af1008316065c67fa4be",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.list_evaluation_suites",
+      "scope_digest": "ba62fca2f03edd84d4eb8337e901e18be50e4d36fb0979d8097821076b0d109d"
+    },
+    {
+      "call_digest": "1d475e75c3c6601968448e79de4c383bacd2d703121e5f8e7646793caf53d920",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.release_task_allocation",
+      "scope_digest": "9fd3f3776d4fc6db87b0ccf54fd5e45e1b0897869363e17bebbe8fed42c2d9cc"
+    },
+    {
+      "call_digest": "c64e4921e710d04652329730a4688e62bd8e017421b5ac145712445cbfc4d927",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.reserve_task_allocation",
+      "scope_digest": "36c1ee70df8c23ac6e23f260a7193732ed558bae1c7cc36af4b867d44e98df9c"
+    },
+    {
+      "call_digest": "d61c99eabdbba5200ac2ddc2353190d19e6f56b3f952af1008316065c67fa4be",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.select_device_for_task",
+      "scope_digest": "bc15f29e4a352b0884e641e721545e9201987ef399faac41262fb6832b2b8654"
+    },
+    {
+      "call_digest": "04c98b7f6e7e993f87f9c6f64c7329c2f50c2339464ee45c4947649e0089d688",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.update_task_status",
+      "scope_digest": "2d7e38439e167d4ef563a02a0e4b6b69c34fbb4f65b7e0626275aa82e800ab53"
+    },
+    {
+      "call_digest": "d61c99eabdbba5200ac2ddc2353190d19e6f56b3f952af1008316065c67fa4be",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.upsert_conversation",
+      "scope_digest": "e12a70a22b704ae29e7f1a519b5c9218b4cd57cd4268ffda360f5bf8b5f4eaf2"
+    },
+    {
+      "call_digest": "d61c99eabdbba5200ac2ddc2353190d19e6f56b3f952af1008316065c67fa4be",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.upsert_intent",
+      "scope_digest": "2a477d1a11edb576a41701ffcc733d5b09cf9d48dba9bf7c34d46a0a1f32c261"
+    },
+    {
+      "call_digest": "d61c99eabdbba5200ac2ddc2353190d19e6f56b3f952af1008316065c67fa4be",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 1,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.upsert_intent",
+      "scope_digest": "2a477d1a11edb576a41701ffcc733d5b09cf9d48dba9bf7c34d46a0a1f32c261"
+    },
+    {
+      "call_digest": "873db32cdc25f4af3d1df7a58228092e5a4d66a38eb336157f1d96a672c8726b",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.upsert_memory_item",
+      "scope_digest": "c4ba5adadaa933ca30178500516487a6007e7cb190439e21021aa4b6ddb98873"
+    },
+    {
+      "call_digest": "986953bb1901615a2e06ccaf412c34ab473fd246ee8f7fc67ea27c4387b7a366",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.upsert_requirement",
+      "scope_digest": "9cae05d1074bbca0add25ff24b993fc025bcc521d8488ac60eba5cc0cf4c5fef"
+    },
+    {
+      "call_digest": "41dbb500c61263b010ff5c2dae671ba20fb141e0f42560cc7e474a3d04adae33",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.upsert_ticket",
+      "scope_digest": "89fb69bf039679b9b0f8810dceb9dc160802e64856aabd7878cb261ea2f1c7ad"
+    },
+    {
+      "call_digest": "98d0b75dbd414e9572ff3b329a8460aa1e9a68d47600ff963d2a3354ba67a5a0",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_node_create_or_merge",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.upsert_ticket",
+      "scope_digest": "89fb69bf039679b9b0f8810dceb9dc160802e64856aabd7878cb261ea2f1c7ad"
+    },
+    {
+      "call_digest": "a07e3e05eb35c5b71269e04f447b4a30bfa0b79621738967132930312232e245",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_node_create_or_merge",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.upsert_ticket",
+      "scope_digest": "89fb69bf039679b9b0f8810dceb9dc160802e64856aabd7878cb261ea2f1c7ad"
+    },
+    {
+      "call_digest": "5c49f90b15197e7021c97f9fce35d188fa93556ba07e07fb9598ba82ce20b555",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "neo4j_client.py",
+      "scope": "Neo4jClient.upsert_workflow_budget",
+      "scope_digest": "3f5a8a1c7b06f12c4332129b9176c6fd131ea0d3b0e81d56d3792837a302603b"
+    },
+    {
+      "call_digest": "b2a55d50ff114b530b7dc945ee444dd509ccd7a6909a48dd1242dc92ac03af86",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo_schema.py",
+      "scope": "fetch_schema",
+      "scope_digest": "4c77332a54662c2006425f410cec70aceb6fca0169e563e4506f407d8e61aeae"
+    },
+    {
+      "call_digest": "fedb1e10dd57f2918d468d2812a1cbd22102868b141de0dab50e91da9d08decd",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "neo_schema.py",
+      "scope": "fetch_schema",
+      "scope_digest": "4c77332a54662c2006425f410cec70aceb6fca0169e563e4506f407d8e61aeae"
+    },
+    {
+      "call_digest": "8e186fdc1eb07a90d9e962b139f234b4708bfaf1f8d49214713cb616a81a3d56",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "passive_claims.py",
+      "scope": "_rollback_claim",
+      "scope_digest": "295ff43fe60a856d970e3d4a7aa39c44bc0376d62416d8af286720f0e674ece5"
+    },
+    {
+      "call_digest": "aa3e2095a467ece64b3a4d19dd1c399671a2eb6f8c10de010bb7205d2dd84ac0",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "passive_claims.py",
+      "scope": "_tx_claim_passive_task",
+      "scope_digest": "687da1552fb6657cb7101d14754fc7f169bf0804e65c7b47bffd43ccb556b586"
+    },
+    {
+      "call_digest": "6d6d9c95a6078242734a2acf5cfe58fa1df83c7be6557314777b8273525e9bed",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "passive_claims.py",
+      "scope": "_tx_expire_passive_claims",
+      "scope_digest": "ec828102e4f8c84c6e6ac78438e52e7b616219f8d05f64fb298ecabe874e958f"
+    },
+    {
+      "call_digest": "95442404a771416c3d6ec920eb1d6ce8e817e057fff67427f96de3024baf1413",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "passive_claims.py",
+      "scope": "_tx_release_passive_claim",
+      "scope_digest": "e34df7284cc1063d3c81b505d328b4bb9070118c35676ced9d42db19c39c7ec7"
+    },
+    {
+      "call_digest": "a3c2a02f02ffac8f008037e96f1f4de916677e99f86f7166b7dee950b2bb0b52",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "passive_claims.py",
+      "scope": "_tx_renew_passive_claim",
+      "scope_digest": "f201c5225e49dbe633fa09abe60295939aa4c30760abc4c37de87c9c1b6851a3"
+    },
+    {
+      "call_digest": "acc7552200acf754ff48dc92b86b232da2e00f07d9cfe2e6c220b38efa37575a",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "passive_events.py",
+      "scope": "record_passive_event",
+      "scope_digest": "be84de9e792bc11fd8a7f26c31091bab7eef749a72d20d8d50c9f179ea4e6022"
+    },
+    {
+      "call_digest": "1f7063031ef7ed3142f9b8a6e7cbbf2397d729e546e23585947c69566985121c",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "recovery_control.py",
+      "scope": "Neo4jRecoveryStore.reconcile",
+      "scope_digest": "5716896c49ba3573132049d638c59b6075d09f8623da4a4c0ddbcf98997bc8e3"
+    },
+    {
+      "call_digest": "f46774a30b44374ed86eef7cbd02822312480f19007c3ac51678623603d334dd",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "recovery_island_agent.py",
+      "scope": "_subprocess_runner.run",
+      "scope_digest": "0eb45df64a40451a818c09991a677659b55093e78e096c61fed99cec18687d67"
+    },
+    {
+      "call_digest": "160d2baad6ee76ea6e4cc23fdfbea5d0ad649094bdd93e2f950d1a0a743f33db",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_node_create_or_merge",
+      "ordinal": 0,
+      "path": "repo_task_generator.py",
+      "scope": "_persist_tasks",
+      "scope_digest": "8d3a0a823c0e44eda9e99d7fa9a5ca3489643ebb062f12ccca33c3feb82a602a"
+    },
+    {
+      "call_digest": "d2a9a89c689e7a30d30559b571971a2b0c930036f3b2d0e4ee3d9e1f52f5bf9f",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "repo_task_generator.py",
+      "scope": "_run_git",
+      "scope_digest": "e44802e8d468baefbaf2b16e2a3bba473d9825fd159d5e46bbb90e4eefa3b81f"
+    },
+    {
+      "call_digest": "d2a9a89c689e7a30d30559b571971a2b0c930036f3b2d0e4ee3d9e1f52f5bf9f",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "repository_source_verifier.py",
+      "scope": "_git",
+      "scope_digest": "d3e5d8e50bbfb6a3fbe2e5516cc30ac192e2f0d07a741e4db9fa565c8cc6f784"
+    },
+    {
+      "call_digest": "f46774a30b44374ed86eef7cbd02822312480f19007c3ac51678623603d334dd",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "ripwire_adapter.py",
+      "scope": "RipwireAdapter._run",
+      "scope_digest": "7a2f097d9df8b21970b46bc06449a7d829594c73b46efb04a6c026aa3051ef3c"
+    },
+    {
+      "call_digest": "cfc5e0a1b612c470d7f49dbd0eeb55bd2f534078b9bda38e75403a479fc3378e",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "ripwire_adapter.py",
+      "scope": "RipwireAdapter.verify_binary",
+      "scope_digest": "921bacfaa141cf25cfc3454cc0f250a59e949db7a5663eed74902f939233701e"
+    },
+    {
+      "call_digest": "d61c99eabdbba5200ac2ddc2353190d19e6f56b3f952af1008316065c67fa4be",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "routers/memory.py",
+      "scope": "api_list_memory",
+      "scope_digest": "94557ca457e2c79e0a200559aaec5ec22ec2919bcaf3438a70df2e3d51b7dda9"
+    },
+    {
+      "call_digest": "a121e84937d704d8789ed42739fe06d73cb5c45e6ba52af3ec8aa80f4e709f73",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "routers/review.py",
+      "scope": "api_approve_review_task",
+      "scope_digest": "eee9330bb8031cd95b53ace0b27405e3931b5b925c7d2295c8f9c1ef48fd8e8c"
+    },
+    {
+      "call_digest": "d2e47d7693f7f7fac34fc368f399342e8580e30e251bdda8759410cad6865743",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "routers/review.py",
+      "scope": "api_approve_review_task",
+      "scope_digest": "eee9330bb8031cd95b53ace0b27405e3931b5b925c7d2295c8f9c1ef48fd8e8c"
+    },
+    {
+      "call_digest": "6d9897299e4431ffbdbeaf71973d5ab37e812d9880ee4a5ee277530931df6c9a",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "routers/review.py",
+      "scope": "api_review_audit",
+      "scope_digest": "5d76cf400a2b8cd54b90ab916f61e5c947ee90026397939ed421835c70f89040"
+    },
+    {
+      "call_digest": "5fedff795d611fc9bff472686e6871f37cdd911730f572a76b4b7a926bd15ebd",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_node_create_or_merge",
+      "ordinal": 0,
+      "path": "routers/transcriptions.py",
+      "scope": "api_create_task_from_transcription",
+      "scope_digest": "3808ac3b7105a3514b0378e93fb8a1a500503649c8eb01456dca3850a52b40f7"
+    },
+    {
+      "call_digest": "dc5e5c081c32ec45bb7615373e8602b1f7eaf5c1808d029ff7c38add3785599b",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_node_create_or_merge",
+      "ordinal": 0,
+      "path": "routers/transcriptions.py",
+      "scope": "api_embed_transcription",
+      "scope_digest": "157fbd00ad55ef414f15a4d2ede3b092baf539efdda2363b05e2902701119dfc"
+    },
+    {
+      "call_digest": "b27440123337d3639eca1bcaa971258fd1a8dfe2cb9442326cdce3bb73c939c2",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "rtk_adapter.py",
+      "scope": "RTKAdapter.run_command",
+      "scope_digest": "f0ab7ef3c4c114389f20df9924c636247c8df67fef4877aeb0eaf5fe4c385000"
+    },
+    {
+      "call_digest": "f46774a30b44374ed86eef7cbd02822312480f19007c3ac51678623603d334dd",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "rtk_adapter.py",
+      "scope": "RTKAdapter.run_command",
+      "scope_digest": "f0ab7ef3c4c114389f20df9924c636247c8df67fef4877aeb0eaf5fe4c385000"
+    },
+    {
+      "call_digest": "cfc5e0a1b612c470d7f49dbd0eeb55bd2f534078b9bda38e75403a479fc3378e",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "rtk_adapter.py",
+      "scope": "RTKAdapter.verify_binary",
+      "scope_digest": "ddee7b303f7c392006e1c3bd5f0f5a641083631359cd0c1b74e742edb09cd4fc"
+    },
+    {
+      "call_digest": "1f7063031ef7ed3142f9b8a6e7cbbf2397d729e546e23585947c69566985121c",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "runtime_projection.py",
+      "scope": "_query_rows",
+      "scope_digest": "0d13158e0e288b237fd56f6ca02c0367dc76c9c3e68a52346681dacca3cdc849"
+    },
+    {
+      "call_digest": "acc777e4da965841f3859a61d6d764f9dea93192f270a78ebcd98c431dddce36",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "swarm_core.py",
+      "scope": "fail_task",
+      "scope_digest": "6312ab5fd5fc869c0c4cc1dc916aff7f66e3fe0a6c971880085ecfe6d16e108b"
+    },
+    {
+      "call_digest": "4b99efb02053276fa8514a2ca271a6a5f349acfb4e72f966125521f9194dff23",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "swarm_core.py",
+      "scope": "list_model_endpoints",
+      "scope_digest": "9f938041c4f5f0a69acf8673ccd5bdf9678ddca592edcdf8885ded6e77275fdc"
+    },
+    {
+      "call_digest": "73d47fed03e4ac0e933ac10c9dd83384fe004a91adb9a2c1fb9fdef410380769",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "swarm_core.py",
+      "scope": "list_traces",
+      "scope_digest": "77f06fb1a7484a2934d42933b567e2c0714f821aa1e6edd5de08e76950a00813"
+    },
+    {
+      "call_digest": "830aa08079ebb7ded899e9bb8906b3d476d8a5c73df6c360108a1143dbd781e3",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "swarm_core.py",
+      "scope": "list_traces",
+      "scope_digest": "77f06fb1a7484a2934d42933b567e2c0714f821aa1e6edd5de08e76950a00813"
+    },
+    {
+      "call_digest": "685bdc62d83467cbd369a65842c8eea0918023f2e7b42dfed04e6d58485169a1",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "swarm_core.py",
+      "scope": "probe_model_endpoint",
+      "scope_digest": "8bf9bd76f209521b38602df990278e08d2f3f9124459abbbba787755fced6b9b"
+    },
+    {
+      "call_digest": "a8939a487717203749608e615dff19d70553a781783dc04530dc1455a10434b8",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "swarm_core.py",
+      "scope": "probe_model_endpoint",
+      "scope_digest": "8bf9bd76f209521b38602df990278e08d2f3f9124459abbbba787755fced6b9b"
+    },
+    {
+      "call_digest": "6c09cf73f9c00855a49cfee19011396c8827422679475954268c0732f3999c9d",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_node_create_or_merge",
+      "ordinal": 0,
+      "path": "swarm_core.py",
+      "scope": "project_assignment_event",
+      "scope_digest": "9c8641422db60ef53b88760c402bf2851b2519f3acc6cafa2fa726af41b1918f"
+    },
+    {
+      "call_digest": "802b8c1e4419aa82a2988e5bef6c1a095c80a56672906f069c8ced6efff2c8c1",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "swarm_core.py",
+      "scope": "record_trace_event",
+      "scope_digest": "cc546a5aeceabc7ece8466f0745236667a8dd08830c6a7c410afae62d9121442"
+    },
+    {
+      "call_digest": "b34bf4c8a0f0ce2cfd563e7402deafe4618d917eaac0c9852eea5910292052f1",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_node_create_or_merge",
+      "ordinal": 0,
+      "path": "swarm_core.py",
+      "scope": "record_voice_quick_input",
+      "scope_digest": "70541d54f54df3dcc947e08ba5ce92b8fcdaa13a7af305802ed8d14e58dbb704"
+    },
+    {
+      "call_digest": "37734b7e9aa623d646222b3be35910b421dfb1b7529d970bcaf2a8f8704c21fa",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "swarm_core.py",
+      "scope": "release_expired_task_leases",
+      "scope_digest": "28917e09f88f54326c5c714c53d5459f916aa9a81860cee93c3a9e18db3ca903"
+    },
+    {
+      "call_digest": "2ef0876e32017003d518a79df346b78f1272466705c36fc1cbd9b4903d30bbb1",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "swarm_core.py",
+      "scope": "set_task_lease",
+      "scope_digest": "cea7f4e6ff0bbdb27f1056af21cb97488c114b07b5aa48d136f4a1dc7b3668c2"
+    },
+    {
+      "call_digest": "f17f69f10ccbb76c93c5444fd0becf510e11ee1785d156135c6a30fc6154027f",
+      "has_task_structural_lock_marker": true,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_property_mutation",
+      "ordinal": 0,
+      "path": "voice_routes.py",
+      "scope": "_cancel_target_task",
+      "scope_digest": "d777ce529e8c84ba9ef0b84d9ccb998bdf3b2805d2b732cfd086bf87293ae69d"
+    },
+    {
+      "call_digest": "155ff4b8541bc23197c6ea4e4fe834012b039cf9316c2a87fafa1f7f8a829be0",
+      "has_task_structural_lock_marker": false,
+      "kind": "static_task_writer",
+      "mutation_kind": "task_related_graph_mutation",
+      "ordinal": 0,
+      "path": "voice_routes.py",
+      "scope": "_process_voice_event",
+      "scope_digest": "8a17d5c3d93cde9b8b2e31b3b30d1a519386f7a345f6b6bcb9cc6436fba46b42"
+    }
+  ],
+  "mode": "bounded_ast_mutation_surface_drift",
+  "production_dispatch_authorized": false,
+  "schema": 1,
+  "source_inventory_complete": false,
+  "static_task_writer_count": 68,
+  "unresolved_dynamic_query_count": 65
+}

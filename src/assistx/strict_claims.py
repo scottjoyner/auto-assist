@@ -11,6 +11,19 @@ logger = logging.getLogger(__name__)
 
 _INSTALLED = False
 
+# P0 #428: built-in Hermes and all explicitly Hermes-prefixed identities
+# must never use claimless legacy mutations, regardless of global policy
+# toggles or legacy exemptions. Arbitrarily renamed, non-prefixed Hermes
+# identities require explicit independent admission and strict-all policy.
+_MANDATORY_CLAIM_AGENT_IDS = frozenset({"hermes-local"})
+
+
+def _is_protected_hermes_identity(agent_id: str) -> bool:
+    return isinstance(agent_id, str) and (
+        agent_id in _MANDATORY_CLAIM_AGENT_IDS
+        or agent_id.startswith("hermes-")
+    )
+
 
 def _mode() -> str:
     value = os.getenv("ASSISTX_REQUIRE_WORKER_CLAIM_ID", "modern").strip().lower()
@@ -40,6 +53,10 @@ def _legacy_agents() -> set[str]:
 
 
 def _claim_required(agent_id: str) -> bool:
+    # This explicit production-facing identity cannot be made claimless by
+    # either ASSISTX_REQUIRE_WORKER_CLAIM_ID=off or legacy exemptions.
+    if _is_protected_hermes_identity(agent_id):
+        return True
     if agent_id in _legacy_agents():
         return False
     mode = _mode()
