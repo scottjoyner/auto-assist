@@ -16,7 +16,7 @@ mod=importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(mod)
 
 CANDIDATE=dict(
-    legacy_active=False,legacy_boot_enabled=False,
+    legacy_active=False,legacy_boot_enabled=False,legacy_unit_masked=True,
     caddy_active=True,caddy_boot_enabled=True,
     caddy_process_pinned=True,caddy_config_pinned=True,
     caddy_binary_pinned=True,tailnet_listener=True,
@@ -49,6 +49,7 @@ def test_even_static_perfect_and_offhost_auth_never_production_go():
 
 @pytest.mark.parametrize("fault",[
     {"legacy_active":True},{"legacy_boot_enabled":True},
+    {"legacy_unit_masked":False},
     {"caddy_active":False},{"caddy_boot_enabled":False},
     {"caddy_process_pinned":False},{"caddy_config_pinned":False},
     {"caddy_binary_pinned":False},{"tailnet_listener":False},
@@ -138,6 +139,58 @@ def test_current_raw_socket_not_misidentified_as_candidate():
          "cgroup:/user.slice/user-1000.slice/user@1000.service/app.slice/control-room-ts-proxy.service <->")
     new="/user.slice/user-1000.slice/user@1000.service/app.slice/assistx-tailnet-sanitizer.service"
     assert mod.service_owns_listener(raw,"100.64.43.123:8000",new) is False
+
+
+def test_systemd_and_kernel_socket_are_valid_alternative_when_procfs_denied():
+    report=evaluate(caddy_process_pinned=False,
+                    systemd_unit_pinned=True,systemd_execstart_pinned=True)
+    assert report["postcutover_static_gate_met"] is True
+    assert report["pinned_caddy_process_verified"] is False
+    assert report["process_identity_evidence_source"]==(
+        "pinned_systemd_unit_execstart_and_socket_cgroup")
+    assert report["decision"]=="HOLD"
+    assert report["production_release_authorized"] is False
+    for defect in ("systemd_unit_pinned","systemd_execstart_pinned",
+                   "tailnet_socket_owned_by_caddy","legacy_unit_masked"):
+        flags={"caddy_process_pinned":False,
+               "systemd_unit_pinned":True,"systemd_execstart_pinned":True,
+               defect:False}
+        report=evaluate(**flags)
+        assert report["postcutover_static_gate_met"] is False
+        assert report["production_release_authorized"] is False
+
+
+def test_exact_pinned_systemd_unit_and_execstart_source(tmp_path,monkeypatch):
+    import hashlib
+    unit="assistx-tailnet-sanitizer-fallback.service"
+    config=mod.CANDIDATE_UNITS["fallback"][1]
+    monkeypatch.setattr(mod,"USER_UNIT_DIR",tmp_path)
+    unitfile=tmp_path/unit
+    unitfile.write_text("synthetic-caddy-unit")
+    digest=hashlib.sha256(unitfile.read_bytes()).hexdigest()
+    fields={
+        "FragmentPath":str(unitfile),"MainPID":"12345",
+        "ControlGroup":"/user.slice/user-1000.slice/user@1000.service/app.slice/"+unit,
+        "ExecStart":"{ path=/usr/bin/caddy ; argv[]=/usr/bin/caddy run --config "
+            +str(config)+" --adapter caddyfile ; ignore_errors=no ; start_time=[n/a] }",
+    }
+    assert mod.systemd_execution_identity(unit,config,digest,fields)==(True,True)
+    assert mod.systemd_execution_identity(unit,config,"0"*64,fields)==(False,True)
+    for key,bad in (("FragmentPath","/tmp/not-installed"),
+                    ("MainPID","0"),("MainPID",1234),
+                    ("ControlGroup","/system.slice/docker.service"),
+                    ("ExecStart", "{ path=/usr/bin/socat ; argv[]=unsafe ;")):
+        mutated={**fields,key:bad}
+        a,b=mod.systemd_execution_identity(unit,config,digest,mutated)
+        assert not (a and b)
+
+
+def test_fallback_default_remains_inert():
+    output=subprocess.run([sys.executable,str(SCRIPT),"--candidate","fallback"],
+                          capture_output=True,text=True,timeout=8,check=True)
+    report=json.loads(output.stdout)
+    assert report["physical_executed"] is False
+    assert report["decision"]=="HOLD"
 
 
 def test_no_mutating_commands_or_raw_socat_recovery():

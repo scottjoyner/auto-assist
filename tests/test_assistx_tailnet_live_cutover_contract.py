@@ -17,6 +17,8 @@ def test_cutover_is_inert_by_default():
 
 def test_live_switch_requires_exact_checkout_and_fail_closed_fallback():
     source=SCRIPT.read_text()
+    assert "set -euo pipefail" in source
+    assert "set -Eeuo pipefail" not in source
     assert '"--execute-live"' in source
     assert '42132145fb49742142a94cfdaf20f851c1686805' in source
     assert 'cutover_started=0' in source

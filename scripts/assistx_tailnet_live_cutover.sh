@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Explicitly opt-in controlled cutover. Fail CLOSED or fall back to pinned Caddy.
-set -Eeuo pipefail
+set -euo pipefail
 if [[ "${1:-}" != "--execute-live" || $# -ne 1 ]]; then
   echo 'INERT: pass --execute-live only after the reviewed preflight' >&2
   exit 0
