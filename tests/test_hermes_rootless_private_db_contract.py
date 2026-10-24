@@ -38,7 +38,7 @@ class RootlessCredentialCIContract(unittest.TestCase):
         self.assertIn('stat.S_IMODE(meta.st_mode)==0o660',s)
         self.assertIn('socket_path,hb,broker_uid.pw_uid',s)
         self.assertIn('send_unix(socket_path,completion,client_uid.pw_uid',s)
-        self.assertIn('get_state()==("DONE",2)',s)
+        self.assertIn('get_state()==("DONE",4)',s)
         self.assertIn('HERMES_ROOTLESS_PRIVATE_DB_PIPE_CI_PASS=8',s)
         self.assertIn('emit_holding_replies=True',s)
         self.assertIn('PASS socket_receipts_qualified_HOLD_without_secrets',s)
@@ -56,6 +56,7 @@ class RootlessCredentialCIContract(unittest.TestCase):
         self.assertIn('assert prior["reconciled"] is True',s)
         self.assertIn('assert prior_done["reconciled"] is True',s)
         self.assertIn('assert receipt_state["generation"]==4',s)
+        self.assertIn('assert get_state()==("DONE",4)',s)
 
         self.assertIn('PRODUCTION_TASKS_TOUCHED=0',s)
 
