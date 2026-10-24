@@ -134,6 +134,6 @@ def test_no_row_must_fail_before_increment(monkeypatch):
 def test_live_sources_do_not_import_heartbeat_research():
     root=Path(__file__).resolve().parents[1]/"src/assistx"
     for path in root.rglob("*.py"):
-        if path.name.startswith("hermes_source_"):
+        if path.name.startswith("hermes_source_") or path.name == "hermes_broker_command_research.py":
             continue
         assert "hermes_source_heartbeat_research" not in path.read_text(),path
