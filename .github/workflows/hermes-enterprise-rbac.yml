@@ -74,6 +74,8 @@ jobs:
         env:
           HERMES_ENTERPRISE_RBAC_CANARY: synthetic-ci-only
         run: python tests/hermes_broker_generation_rbac_disposable_neo4j.py
+      - name: Guard rootless private credential CI contract against regression
+        run: python -m unittest discover -s tests -p test_hermes_rootless_private_db_contract.py -v
       - name: Verify rootless broker credential is pipe-only and Task writes are generation-fenced
         env:
           HERMES_ROOTLESS_DB_CI: synthetic-only
