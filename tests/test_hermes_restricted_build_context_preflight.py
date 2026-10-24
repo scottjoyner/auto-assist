@@ -13,7 +13,10 @@ import pytest
 
 def test_reviewed_build_context_exact_and_still_hold():
     result=gate.source_inventory()
-    assert result['reviewed_hardened_source_count']==9
+    assert result['reviewed_hardened_source_count']==49
+    assert result['first_party_static_import_closure_complete'] is True
+    assert result['package_initializer_side_effects_pinned'] is True
+    assert result['dynamic_imports_and_inherited_binary_dependencies_verified'] is False
     assert set(result['reviewed_sources'])==set(gate.BLOBS)
     assert result['candidate_entrypoint_sha256']==gate.ENTRYPOINT_SHA256
     assert result['current_legacy_root_entrypoint_is_not_candidate']
@@ -21,6 +24,51 @@ def test_reviewed_build_context_exact_and_still_hold():
     assert not result['image_overlay_built_or_run']
     assert not result['real_signing_key_or_production_attestations_included']
     assert not result['production_release_authorized']
+
+
+def test_strict_entrypoint_full_python_import_closure_is_explicitly_pinned():
+    closure=gate.first_party_import_closure()
+    assert len(closure)==49
+    assert closure==set(gate.BLOBS)
+    for mandatory in (
+        'src/assistx/__init__.py',
+        'src/assistx/contracts/__init__.py',
+        'src/assistx/contracts/schemas/__init__.py',
+        'src/assistx/strict_executor_main.py',
+        'src/assistx/executor_security.py',
+        'src/assistx/improvement_runtime.py',
+        'src/assistx/repository_source_verifier.py',
+        'src/assistx/contracts/repository_source_verifier.py',
+        'src/assistx/agents/hermes_agent_adapter.py',
+    ):
+        assert mandatory in closure
+
+
+def test_inherited_local_module_or_missing_security_dependency_denied(monkeypatch):
+    closure=gate.first_party_import_closure()
+    for missing in ('src/assistx/executor_security.py',
+                    'src/assistx/__init__.py',
+                    'src/assistx/strict_executor_main.py'):
+        without=dict(gate.BLOBS)
+        without.pop(missing)
+        with monkeypatch.context() as scope:
+            scope.setattr(gate, 'BLOBS', without)
+            with pytest.raises(gate.Denied,match='unreviewed inherited'):
+                gate.source_inventory()
+        with pytest.raises(gate.Denied,match='unreviewed inherited'):
+            gate.require_complete_closure(closure, set(gate.BLOBS) - {missing})
+    with pytest.raises(gate.Denied,match='unreviewed inherited'):
+        gate.require_complete_closure(closure | {'src/assistx/new_runtime_import.py'},
+                                      set(gate.BLOBS))
+
+
+def test_only_static_imports_are_covered_not_dynamic_import_or_parent_image():
+    report=gate.source_inventory()
+    assert report['first_party_static_import_closure_complete'] is True
+    assert not report['dynamic_imports_and_inherited_binary_dependencies_verified']
+    assert not report['reproducible_image_binary_proven']
+    assert not report['image_overlay_built_or_run']
+    assert not report['production_release_authorized']
 
 
 def test_allowlisted_recipe_contains_only_explicit_sources_and_nonroot_entrypoint():
@@ -129,6 +177,7 @@ def test_synthetic_inventory_success_not_release(tmp_path,monkeypatch):
     synthetic_root(tmp_path,monkeypatch)
     result=gate.source_inventory(tmp_path)
     assert result['reviewed_hardened_source_count']==2
+    assert result['first_party_static_import_closure_complete'] is False
     assert not result['image_overlay_built_or_run']
     assert result['decision']=='HOLD'
     assert gate.git_blob(b'abc') == 'f2ba8f84ab5c1bce84a7b441cb1959cfc7093b7f'
@@ -145,7 +194,9 @@ def test_default_cli_inert_and_explicit_readonly_denies_production_claims():
     result=subprocess.run([sys.executable,str(tool),'--read-only'],check=True,
                           capture_output=True,text=True,timeout=6)
     data=json.loads(result.stdout)
-    assert data['reviewed_hardened_source_count']==9
+    assert data['reviewed_hardened_source_count']==49
+    assert data['first_party_static_import_closure_complete'] is True
+    assert data['dynamic_imports_and_inherited_binary_dependencies_verified'] is False
     assert len(data['allowlisted_recipe_sha256'])==64
     assert data['decision']=='HOLD'
     assert data['image_overlay_built_or_run'] is False
