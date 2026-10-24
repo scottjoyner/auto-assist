@@ -177,6 +177,9 @@ def serve_one_candidate_connection(
         "schema":1,
         "transport_kernel_peer_uid_matched":True,
         "candidate_generation":receipt["candidate_generation"],
+        # Preserve only this verified boolean across the process boundary;
+        # do not pass Task, receipt UUID, claim or session details.
+        "source_receipt_reconciled":receipt.get("source_receipt_reconciled") is True,
         "transport_fleet_authenticated":False,
         "broker_exclusive_credentials_verified":False,
         "all_writers_generation_fenced":False,
