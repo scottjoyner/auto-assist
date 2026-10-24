@@ -1,0 +1,40 @@
+name: free-provider-mock-contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/free-provider-mock-contract.yml"
+      - "scripts/mock_free_provider_admission.py"
+      - "tests/test_mock_free_provider_admission.py"
+      - "docs/free_provider_mock_acceptance_20261009.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mock-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact PR commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install offline test harness
+        run: python -m pip install "pytest==9.1.1"
+      - name: Show exact source SHA
+        run: |
+          git rev-parse HEAD
+          git status --porcelain
+      - name: Compile deny-only mock adapter
+        run: |
+          python -m py_compile \
+            scripts/mock_free_provider_admission.py \
+            tests/test_mock_free_provider_admission.py
+      - name: Run only zero-provider-call admission contract tests
+        run: python -m pytest --noconftest -q tests/test_mock_free_provider_admission.py
