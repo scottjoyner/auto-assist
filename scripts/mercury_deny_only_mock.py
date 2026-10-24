@@ -29,7 +29,9 @@ def evaluate_mock(request: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(request, Mapping):
         request = {}
     safe_ids = {}
-    for field in REQUIRED[:10]:
+    # Include lease_node_id: it is compared with node_id below, so omitting it
+    # makes even the valid fixture incorrectly report a wrong-node denial.
+    for field in REQUIRED[:11]:
         val = request.get(field)
         safe_ids[field] = val if isinstance(val, str) and SAFE.fullmatch(val) else None
     reasons: list[str] = []
