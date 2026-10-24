@@ -39,7 +39,7 @@ class RootlessCredentialCIContract(unittest.TestCase):
         self.assertIn('socket_path,hb,broker_uid.pw_uid',s)
         self.assertIn('send_unix(socket_path,completion,client_uid.pw_uid',s)
         self.assertIn('get_state()==("DONE",2)',s)
-        self.assertIn('HERMES_ROOTLESS_PRIVATE_DB_PIPE_CI_PASS=7',s)
+        self.assertIn('HERMES_ROOTLESS_PRIVATE_DB_PIPE_CI_PASS=8',s)
         self.assertIn('emit_holding_replies=True',s)
         self.assertIn('PASS socket_receipts_qualified_HOLD_without_secrets',s)
         self.assertIn('PASS unprivileged_socket_client_cannot_read_broker_proc_memory_env',s)
@@ -48,6 +48,15 @@ class RootlessCredentialCIContract(unittest.TestCase):
         self.assertIn('assert first["candidate_generation"]==1',s)
         self.assertIn('assert second["candidate_generation"]==2',s)
         self.assertIn('assert result["unconfirmed_socket_replies"]==0',s)
+        self.assertIn('max_connections=8',s)
+        self.assertIn('GRANT CREATE ON GRAPH neo4j NODES HermesSourceReceipt',s)
+        self.assertIn('operation":"reconcile_heartbeat',s)
+        self.assertIn('operation":"reconcile_complete',s)
+        self.assertIn('rootless_socket_source_receipt_reconciles_without_rewriting',s)
+        self.assertIn('assert prior["reconciled"] is True',s)
+        self.assertIn('assert prior_done["reconciled"] is True',s)
+        self.assertIn('assert receipt_state["generation"]==4',s)
+
         self.assertIn('PRODUCTION_TASKS_TOUCHED=0',s)
 
     def test_isolated_ci_no_live_runner_or_credentials_on_argv(self):
