@@ -878,7 +878,20 @@ def _est_param_scale(model_id: str) -> float:
         return 35.0
     return 7.0
 
+def _require_effect_authority(kind: str, model: str) -> None:
+    """Fail closed until a resource-owned, effect-time quota fence exists.
+
+    Call-site credentials, process environment, configured model identity,
+    fleet residency, and earlier receipts are NOT authoritative. There is no
+    safe local grant or environment override in this implementation.
+    A future replacement must validate the resource-side spend lease and
+    revocation immediately before EACH real effect, including retries.
+    """
+    raise RuntimeError("resource_owned_quota_effect_authority_unverified")
+
+
 def _chat_openai(messages: List[Dict[str, str]], model: str, json_mode: bool, base_url: Optional[str] = None, _timeout_override: Optional[int] = None) -> str:
+    _require_effect_authority("chat", model)
     payload: Dict[str, Any] = {"model": model, "messages": messages, "stream": False}
     if json_mode:
         # LM Studio (OpenAI-compatible) rejects "json_object"; it requires
@@ -916,6 +929,7 @@ def _chat_openai(messages: List[Dict[str, str]], model: str, json_mode: bool, ba
     return msg["content"]
 
 def _chat_ollama(messages: List[Dict[str, str]], model: str, json_mode: bool, base_url: Optional[str] = None, _timeout_override: Optional[int] = None) -> str:
+    _require_effect_authority("chat", model)
     payload: Dict[str, Any] = {"model": model, "messages": messages, "stream": False}
     if json_mode:
         payload["format"] = "json"
@@ -938,6 +952,7 @@ def chat(messages: List[Dict[str, str]], model: Optional[str] = None, json_mode:
         it is suppressed until it succeeds once.  We never hammer-and-blacklist
         a node that was mid cold-load.
     """
+    _require_effect_authority("chat", model or LLM_MODEL)
     last_err: Optional[Exception] = None
     dispatch = _chat_ollama if LLM_BACKEND == "ollama" else _chat_openai
     deadline = time.time() + max(20, TIMEOUT)
@@ -1012,6 +1027,10 @@ def tool_json(messages: List[Dict[str, str]]) -> Dict[str, Any]:
 def embed(text: str) -> Optional[List[float]]:
     if not text:
         return None
+    try:
+        _require_effect_authority("embedding", EMBED_MODEL)
+    except RuntimeError:
+        return None
     if LLM_BACKEND == "ollama":
         payload = {"model": EMBED_MODEL, "prompt": text}
         try:
@@ -1055,6 +1074,11 @@ def stream_chat(
     """Fleet-aware streaming.  Picks a HOT model on the fleet and streams from
     it.  Falls back to the configured model if it happens to be hot; never
     routes to localhost."""
+    try:
+        _require_effect_authority("stream", model or LLM_MODEL)
+    except RuntimeError:
+        yield {"event": "error", "data": {"error": "resource_owned_quota_effect_authority_unverified"}}
+        return
     # Choose a model: explicit if hot, else best-ranked hot model.
     chosen = None
     if model:
@@ -1077,6 +1101,11 @@ def stream_chat(
 def _stream_ollama(
     messages: List[Dict[str, str]], model: str, options: Optional[Dict[str, Any]] = None
 ) -> Generator[Dict[str, Any], None, None]:
+    try:
+        _require_effect_authority("stream", model)
+    except RuntimeError:
+        yield {"event": "error", "data": {"error": "resource_owned_quota_effect_authority_unverified"}}
+        return
     payload: Dict[str, Any] = {"model": model, "messages": messages, "stream": True}
     if options:
         payload["options"] = options
@@ -1113,6 +1142,11 @@ def _stream_ollama(
 def _stream_openai(
     messages: List[Dict[str, str]], model: str, options: Optional[Dict[str, Any]] = None
 ) -> Generator[Dict[str, Any], None, None]:
+    try:
+        _require_effect_authority("stream", model)
+    except RuntimeError:
+        yield {"event": "error", "data": {"error": "resource_owned_quota_effect_authority_unverified"}}
+        return
     payload: Dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -1161,6 +1195,11 @@ def _stream_openai_fleet(
     options: Optional[Dict[str, Any]] = None,
 ) -> Generator[Dict[str, Any], None, None]:
     """Stream from a specific fleet base URL (never localhost)."""
+    try:
+        _require_effect_authority("stream", model)
+    except RuntimeError:
+        yield {"event": "error", "data": {"error": "resource_owned_quota_effect_authority_unverified"}}
+        return
     payload: Dict[str, Any] = {"model": model, "messages": messages, "stream": True}
     if options:
         payload.update(options)
