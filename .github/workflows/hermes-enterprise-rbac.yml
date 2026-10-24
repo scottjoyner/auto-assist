@@ -16,6 +16,7 @@ on:
       - "tests/test_hermes_broker_unix_boundary_research.py"
       - "tests/hermes_broker_unix_peer_disposable_linux.py"
       - "tests/test_hermes_broker_command_research.py"
+      - "tests/test_hermes_broker_receipt_commands_research.py"
       - "tests/test_hermes_generation_broker_rbac_contract.py"
       - "src/assistx/hermes_source_generation_research.py"
       - "src/assistx/hermes_source_completion_research.py"
