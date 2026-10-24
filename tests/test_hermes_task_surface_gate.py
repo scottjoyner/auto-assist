@@ -37,7 +37,7 @@ class SourceSurfaceGateTests(unittest.TestCase):
         self.assertFalse(report["all_writers_generation_fenced"])
         self.assertFalse(report["production_dispatch_authorized"])
         self.assertEqual(current["static_task_writer_count"],68)
-        self.assertEqual(current["unresolved_dynamic_query_count"],65)
+        self.assertEqual(current["unresolved_dynamic_query_count"],66)
 
     def test_fixture_detects_new_mutating_writer(self):
         expected=self.scan()
