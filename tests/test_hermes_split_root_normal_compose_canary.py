@@ -138,23 +138,26 @@ def test_mutated_token_or_evaluation_path_denied():
         assert not canary.restricted_render(x, IMG, RO, RW)
 
 
+def _git_blob_sha_from_bytes(path: Path) -> str:
+    """Hash exact bytes using Git blob framing, not an interceptable git subprocess."""
+    import hashlib
+
+    body = path.read_bytes()
+    return hashlib.sha1(b"blob " + str(len(body)).encode() + b"\x00" + body).hexdigest()
+
+
 def test_new_kernel_remote_mount_guard_is_pinned_in_disposable_source():
     from assistx import knowledge_roots
     source=Path(knowledge_roots.__file__)
     assert source.resolve()==(canary.ROOT/"src/assistx/knowledge_roots.py").resolve()
-    import subprocess
-    result=subprocess.run(["git","-C",str(canary.ROOT),"hash-object",
-                           str(source)],capture_output=True,text=True,check=True)
-    expected=result.stdout.strip()
+    expected=_git_blob_sha_from_bytes(source)
     assert expected=="a7827f936f23a3e85103e26efa73e6c02d3a4124"
     assert expected in Path(canary.__file__).read_text()
 
 
 def test_adapter_source_pin_includes_pre_mutation_mount_checks():
-    import subprocess
     target=canary.ROOT/"src/assistx/agents/hermes_agent_adapter.py"
-    git_blob=subprocess.run(["git","-C",str(canary.ROOT),"hash-object",
-                            str(target)],capture_output=True,text=True,check=True).stdout.strip()
+    git_blob=_git_blob_sha_from_bytes(target)
     assert git_blob=="7c4c03673526b660928aac2bbfebbf16b55c47c3"
     assert git_blob in Path(canary.__file__).read_text()
     source=target.read_text()
@@ -163,6 +166,16 @@ def test_adapter_source_pin_includes_pre_mutation_mount_checks():
     selftask=source.split("def process_self_task(",1)[1].split("def process_task(",1)[0]
     check="checked_write_path(KNOWLEDGE_WRITE_ROOT, target_path)"
     assert selftask.index(check) < selftask.index("os.makedirs(os.path.dirname(target_path)")
+
+
+def test_source_pin_ignores_intercepted_git_subprocess(monkeypatch):
+    import subprocess
+
+    target=canary.ROOT/"src/assistx/agents/hermes_agent_adapter.py"
+    def untrusted_subprocess(*args,**kwargs):
+        raise AssertionError("pin must hash source bytes, not subprocess output")
+    monkeypatch.setattr(subprocess,"run",untrusted_subprocess)
+    assert _git_blob_sha_from_bytes(target)=="7c4c03673526b660928aac2bbfebbf16b55c47c3"
 
 
 def test_real_entrypoint_and_adapter_source_are_pinned():
