@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 import yaml
+from assistx.agents.hermes_knowledge_ro import bounded_snapshot, validate_separate_roots, ReadScopeDenied
 from assistx.improvement_cycle import (
     build_work_packet,
     evaluate_completion,
@@ -71,6 +72,13 @@ HERMES_DELEGATE_OPENCODE_TIERS = [t for t in os.getenv("HERMES_DELEGATE_OPENCODE
 HERMES_DELEGATE_RETURN_FORMAT = os.getenv("HERMES_DELEGATE_RETURN_FORMAT", "verbatim")
 EVAL_PATH = os.getenv("HERMES_EVAL_PATH", "/root/knowledge/model-profiles.json")
 KNOWLEDGE_ROOT = os.getenv("HERMES_KNOWLEDGE_ROOT", os.path.dirname(EVAL_PATH))
+from assistx.knowledge_roots import (
+    resolve_knowledge_roots, safe_model_directory,
+    safe_knowledge_files, safe_read_text, checked_write_path,
+)
+KNOWLEDGE_READ_ROOT, KNOWLEDGE_WRITE_ROOT, KNOWLEDGE_SPLIT_ENABLED = (
+    resolve_knowledge_roots(KNOWLEDGE_ROOT, EVAL_PATH)
+)
 EVAL_LOCK = threading.Lock()
 SELFTASK_BULK_MODELS = [m for m in os.getenv("HERMES_SELFTASK_BULK_MODELS", "").split(",") if m]
 SELFTASK_BULK_TIMEOUT = int(os.getenv("HERMES_SELFTASK_BULK_TIMEOUT", "600"))
@@ -170,7 +178,7 @@ _TIER_TASK = {
 
 _SELFTASK_ARCHETYPES = ["bulk_summarize", "session_compress", "corpus_extract", "triage", "ideation"]
 
-# Artifact filename each self-task archetype writes into KNOWLEDGE_ROOT.
+# Artifact filename each self-task archetype writes into KNOWLEDGE_WRITE_ROOT.
 _SELFTASK_TARGETS = {
     "bulk_summarize": "SUMMARY.md",
     "session_compress": "recap.md",
@@ -200,12 +208,14 @@ def _safe_model_dir(model: Optional[str] = None) -> str:
 def load_eval() -> Dict[str, Any]:
     with EVAL_LOCK:
         try:
+            if KNOWLEDGE_SPLIT_ENABLED:
+                checked_write_path(KNOWLEDGE_WRITE_ROOT, EVAL_PATH)
             with open(EVAL_PATH, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
                 if isinstance(data, dict):
                     data.setdefault("models", {})
                     return data
-        except (FileNotFoundError, json.JSONDecodeError):
+        except (FileNotFoundError, json.JSONDecodeError, ValueError):
             pass
         return {"models": {}}
 
@@ -217,11 +227,31 @@ def save_eval(data: Dict[str, Any]) -> None:
             os.makedirs(directory, exist_ok=True)
         tmp = f"{EVAL_PATH}.tmp"
         try:
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=2)
+            if KNOWLEDGE_SPLIT_ENABLED:
+                checked_write_path(KNOWLEDGE_WRITE_ROOT, EVAL_PATH)
+                checked_write_path(KNOWLEDGE_WRITE_ROOT, tmp)
+                # Do not follow an existing .tmp symlink during migration.
+                import tempfile
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", dir=directory,
+                    prefix=".model-profiles-", suffix=".tmp", delete=False,
+                ) as fh:
+                    tmp = fh.name
+                    json.dump(data, fh, indent=2)
+                checked_write_path(KNOWLEDGE_WRITE_ROOT, tmp)
+            else:
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump(data, fh, indent=2)
             os.replace(tmp, EVAL_PATH)
-        except OSError as e:
+        except (OSError, ValueError) as e:
             logger.warning("Failed to persist eval registry %s: %s", EVAL_PATH, e)
+            if KNOWLEDGE_SPLIT_ENABLED:
+                # Only our randomized temp is eligible for cleanup.
+                if os.path.basename(tmp).startswith(".model-profiles-"):
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
 
 
 def ensure_model_env(model: Optional[str] = None) -> Optional[str]:
@@ -237,20 +267,33 @@ def ensure_model_env(model: Optional[str] = None) -> Optional[str]:
     m = data["models"].setdefault(model, {"environment_configured": False, "tasks": {}})
     m.setdefault("tier", "unknown")
     m.setdefault("nodes", [])
-    knowledge_root = os.getenv("HERMES_KNOWLEDGE_ROOT", "/root/knowledge")
-    ws = os.path.join(knowledge_root, _safe_model_dir(model))
+    knowledge_root = KNOWLEDGE_WRITE_ROOT
+    safe_model = safe_model_directory(model, split=KNOWLEDGE_SPLIT_ENABLED)
+    ws = os.path.join(knowledge_root, safe_model)
     try:
+        if KNOWLEDGE_SPLIT_ENABLED:
+            checked_write_path(knowledge_root, ws)
         os.makedirs(ws, exist_ok=True)
+        if KNOWLEDGE_SPLIT_ENABLED:
+            checked_write_path(knowledge_root, ws)
+            checked_write_path(knowledge_root, os.path.join(ws, "ENV.md"))
         if not m.get("environment_configured"):
             note = os.path.join(ws, "ENV.md")
             nodes = ", ".join(m.get("nodes", [])) or "n/a"
             try:
-                with open(note, "w", encoding="utf-8") as fh:
+                if KNOWLEDGE_SPLIT_ENABLED:
+                    # O_NOFOLLOW rejects an attacker-created ENV.md alias.
+                    fd = os.open(note, os.O_WRONLY | os.O_CREAT | os.O_TRUNC |
+                                 getattr(os, "O_NOFOLLOW", 0), 0o600)
+                    fh = os.fdopen(fd, "w", encoding="utf-8")
+                else:
+                    fh = open(note, "w", encoding="utf-8")
+                with fh:
                     fh.write(f"# Environment for model `{model}`\n\n")
                     fh.write(f"- Tier: {m.get('tier')}\n")
                     fh.write(f"- Nodes: {nodes}\n")
-                    fh.write("- Shared knowledge root: ~/knowledge (abs /media/scott/SSD_4TB/knowledge)\n")
-                    fh.write("- This directory is the model's scratch/notes space, shared across the swarm.\n")
+                    fh.write("- Model scratch root: " + knowledge_root + "\n")
+                    fh.write("- This directory stores model-local notes, not read-only knowledge inputs.\n")
                     fh.write("- Configured by hermes-agent-adapter bootstrap at first use.\n")
                 m["environment_configured"] = True
                 m["workspace"] = ws
@@ -259,9 +302,11 @@ def ensure_model_env(model: Optional[str] = None) -> Optional[str]:
             except OSError as e:
                 logger.warning("Could not write env note for %s: %s", model, e)
         return ws
-    except OSError as e:
+    except (OSError, ValueError) as e:
         logger.warning("Could not create workspace for %s: %s", model, e)
-        return "/root/knowledge"
+        # An unmounted or read-only output root must never cause a
+        # privileged fallback into legacy /root/knowledge in split-root mode.
+        return None if KNOWLEDGE_SPLIT_ENABLED else "/root/knowledge"
 
 
 TRIVIAL_OUTPUT_PATTERNS = [
@@ -874,21 +919,26 @@ def _self_artifact_present(model: Optional[str], since_ts: Optional[float] = Non
     only if a fresh non-template markdown appeared in the vault (or the model's
     own scratch dir grew beyond its ENV.md) since ``since_ts``.
     """
-    model_dir = os.path.join(KNOWLEDGE_ROOT, (model or "unknown").replace("/", "_"))
+    model_dir = os.path.join(KNOWLEDGE_WRITE_ROOT, (model or "unknown").replace("/", "_"))
+    if KNOWLEDGE_SPLIT_ENABLED:
+        try:
+            checked_write_path(KNOWLEDGE_WRITE_ROOT, model_dir)
+        except ValueError:
+            return False, "model scratch alias denied"
     if os.path.isdir(model_dir):
         extras = [f for f in os.listdir(model_dir) if f != "ENV.md"]
         if extras:
-            return True, os.path.relpath(model_dir, KNOWLEDGE_ROOT) + f": {extras[:3]}"
+            return True, os.path.relpath(model_dir, KNOWLEDGE_WRITE_ROOT) + f": {extras[:3]}"
     if since_ts:
         cutoff = since_ts - 5
         # Only count TOP-LEVEL markdown (SUMMARY.md, recap.md, TRIAGE.md, ...).
         # Hermes writes its own session transcripts into subdirs (vault-workspace/
         # tasks), which must NOT count as the self-task's produced artifact.
-        for f in os.listdir(KNOWLEDGE_ROOT):
+        for f in os.listdir(KNOWLEDGE_WRITE_ROOT):
             if not f.endswith(".md") or f in _KNOWLEDGE_TEMPLATE_FILES:
                 continue
-            fp = os.path.join(KNOWLEDGE_ROOT, f)
-            if not os.path.isfile(fp):
+            fp = os.path.join(KNOWLEDGE_WRITE_ROOT, f)
+            if not os.path.isfile(fp) or os.path.islink(fp):
                 continue
             try:
                 mtime = os.path.getmtime(fp)
@@ -961,32 +1011,60 @@ def _build_structured_prompt(instruction: str, target_file: str, sections: List[
 def _gather_knowledge_context(max_chars: int = 2500) -> str:
     """Bounded snapshot of the knowledge vault so small models can summarize
     without needing file/terminal tools (which they misuse and loop on)."""
+    # A runtime override must match the validated import-time source, unless
+    # this is the pinned rootless profile. Never silently read a legacy RW root.
+    requested_root = os.environ.get("HERMES_KNOWLEDGE_READ_ROOT")
+    if (requested_root and requested_root != KNOWLEDGE_READ_ROOT
+            and requested_root != "/research/knowledge"):
+        raise ReadScopeDenied("read_mount_not_reviewed")
+    # The restricted rootless Compose profile uses inode-pinned bounded reads.
+    # Generic isolated split-root configurations use the secure walker below.
+    if (requested_root == "/research/knowledge"
+            and os.environ.get("HERMES_REQUIRE_SIGNED_CORPUS") != "true"):
+        return bounded_snapshot(
+            requested_root,
+            KNOWLEDGE_WRITE_ROOT if KNOWLEDGE_SPLIT_ENABLED else KNOWLEDGE_ROOT,
+            max_chars=max_chars,
+        )
     chunks: List[str] = []
     total = 0
-    if not os.path.isdir(KNOWLEDGE_ROOT):
+    root = KNOWLEDGE_READ_ROOT
+    if os.getenv("HERMES_REQUIRE_SIGNED_CORPUS", "") == "true":
+        from assistx.hermes_corpus_custody import verified_context_texts
+        # Verified bytes are captured before constructing any model context.
+        # No model dispatch on a failed later file or manifest revalidation.
+        files = verified_context_texts(
+            root, KNOWLEDGE_WRITE_ROOT,
+            os.environ.get("HERMES_CORPUS_TRUST_KEY_PATH", ""),
+        )
+        for rel, content in files:
+            if rel.split("/")[-1] in _KNOWLEDGE_TEMPLATE_FILES:
+                continue
+            if total >= max_chars:
+                break
+            chunk = content[:min(1500, max_chars-total)]
+            total += len(chunk)
+            chunks.append(f"# {rel}\n{chunk}")
+        return "\n\n".join(chunks)[:max_chars]
+    if not os.path.isdir(root):
         return ""
-    files: List[str] = []
-    for name in os.listdir(KNOWLEDGE_ROOT):
-        fp = os.path.join(KNOWLEDGE_ROOT, name)
-        if os.path.isfile(fp) and name.endswith((".md", ".txt")) and name not in _KNOWLEDGE_TEMPLATE_FILES:
-            files.append(fp)
-        elif os.path.isdir(fp):
-            for fn in os.listdir(fp):
-                sub = os.path.join(fp, fn)
-                if os.path.isfile(sub) and fn.endswith((".md", ".txt")):
-                    files.append(sub)
-    files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
-    for fp in files:
+    files = list(safe_knowledge_files(root, _KNOWLEDGE_TEMPLATE_FILES))
+    # Stat/read may race disappearance; fail closed and ignore missing inputs.
+    def mtime(path: str) -> float:
+        try:
+            return os.stat(path, follow_symlinks=False).st_mtime
+        except OSError:
+            return 0.0
+    files.sort(key=mtime, reverse=True)
+    for path in files:
         if total >= max_chars:
             break
         try:
-            with open(fp, "r", errors="ignore") as fh:
-                txt = fh.read()
-        except OSError:
+            content = safe_read_text(path, min(1500, max_chars - total))
+        except (OSError, ValueError):
             continue
-        txt = txt[:1500]
-        total += len(txt)
-        chunks.append(f"# {os.path.relpath(fp, KNOWLEDGE_ROOT)}\n{txt}")
+        total += len(content)
+        chunks.append(f"# {os.path.relpath(path, root)}\n{content}")
     return "\n\n".join(chunks)[:max_chars]
 
 
@@ -1140,7 +1218,9 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
     # Prefer semantic retrieval (relevant chunks) over a blind snapshot; fall back
     # to the bounded snapshot if the embed model is unavailable.
     context = ""
-    if swarm_memory is not None:
+    if (swarm_memory is not None and "HERMES_KNOWLEDGE_READ_ROOT" not in os.environ
+            and os.getenv("HERMES_REQUIRE_SIGNED_CORPUS", "") != "true"
+            and not KNOWLEDGE_SPLIT_ENABLED):
         context = swarm_memory.vault_semantic_context(
             _SELFTASK_QUERIES.get(arch, arch), k=4, fallback=""
         )
@@ -1148,7 +1228,7 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
         context = _gather_knowledge_context()
     prompt = _selftask_prompt(arch, context)
     target_rel = _SELFTASK_TARGETS.get(arch, "SELFTASK.md")
-    target_path = os.path.join(KNOWLEDGE_ROOT, target_rel)
+    target_path = os.path.join(KNOWLEDGE_WRITE_ROOT, target_rel)
     run_start = time.time()
     # Direct router call (no Hermes): small/tiny models are slow and Hermes sends
     # no max_tokens cap (unbounded generation -> timeout) and misuses file tools.
@@ -1172,10 +1252,17 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
         with _SELFTASK_WRITE_LOCKS.get(arch, threading.Lock()):
             try:
                 os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                with open(target_path, "w") as fh:
+                if KNOWLEDGE_SPLIT_ENABLED:
+                    checked_write_path(KNOWLEDGE_WRITE_ROOT, target_path)
+                    fd = os.open(target_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC |
+                                 getattr(os, "O_NOFOLLOW", 0), 0o600)
+                    stream = os.fdopen(fd, "w")
+                else:
+                    stream = open(target_path, "w")
+                with stream as fh:
                     fh.write(output + "\n")
                 artifact_present = True
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 logger.error("Self-task %s failed to write %s: %s", arch, target_path, exc)
     actual_success = bool(result["success"]) and artifact_present
     record_task_eval(model, f"self:{arch}", actual_success, result.get("elapsed", 0), error=result.get("error"))
@@ -1442,6 +1529,20 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
 # Loop
 # ---------------------------------------------------------------------------
 def run_loop(once: bool = False) -> None:
+    # A separately mounted input may NEVER alias a writable workspace.
+    # Fail before fleet background startup, polling, or any task claim.
+    if "HERMES_KNOWLEDGE_READ_ROOT" in os.environ:
+        # Both reviewed synthetic profiles keep the registry under the
+        # private /workspace bind; neither may point at the read-only corpus.
+        allowed_registry_paths = {
+            "/workspace/registry/model-profiles.json",
+            "/workspace/knowledge/eval.json",
+        }
+        if (os.environ["HERMES_KNOWLEDGE_READ_ROOT"] != "/research/knowledge"
+                or KNOWLEDGE_ROOT != "/workspace/knowledge"
+                or EVAL_PATH not in allowed_registry_paths):
+            raise ReadScopeDenied("unsafe_split_knowledge_runtime")
+        validate_separate_roots("/research/knowledge", KNOWLEDGE_ROOT)
     logger.info(
         "Hermes agent adapter starting (agent=%s, capabilities=%s, poll_interval=%ds, bulk_models=%s)",
         AGENT_ID,
