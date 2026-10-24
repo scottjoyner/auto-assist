@@ -18,12 +18,25 @@ from typing import Any
 from .hermes_source_generation_research import GenerationProtocolError, OWNER
 from .hermes_source_heartbeat_research import renew_candidate_lease
 from .hermes_source_completion_research import complete_candidate_claim
+from .hermes_source_receipt_research import (
+    _normalized, commit_source_receipt, reconcile_source_receipt,
+)
 
 _BASE=frozenset(("operation","expected_generation","task_id",
                   "claim_id","session_id","attempt"))
 _FIELDS={
     "heartbeat": _BASE | {"ttl_ms"},
     "complete": _BASE,
+    "heartbeat_recorded": _BASE | {"ttl_ms","receipt_key"},
+    "complete_recorded": _BASE | {"receipt_key"},
+    "reconcile_heartbeat": _BASE | {"ttl_ms","receipt_key"},
+    "reconcile_complete": _BASE | {"receipt_key"},
+}
+_RECEIPT_OPERATIONS={
+    "heartbeat_recorded":("heartbeat",False),
+    "complete_recorded":("complete",False),
+    "reconcile_heartbeat":("heartbeat",True),
+    "reconcile_complete":("complete",True),
 }
 
 class CandidateBrokerCommandError(ValueError):
@@ -67,17 +80,32 @@ def dispatch_candidate_command(
                    not all(c.isascii() and (c.isalnum() or c in "-_")
                            for c in values[name])
                    for name in ("task_id","claim_id","session_id"))
-            or (operation=="heartbeat" and
-                (type(values["ttl_ms"]) is not int or
-                 not 1000 <= values["ttl_ms"] <= 60000))):
+            or (operation in ("heartbeat","heartbeat_recorded","reconcile_heartbeat")
+                and (type(values["ttl_ms"]) is not int or
+                     not 1000 <= values["ttl_ms"] <= 60000))):
         raise CandidateBrokerCommandError("invalid_command_identity")
+    recorded=operation in _RECEIPT_OPERATIONS
+    reconciled=False
+    if recorded:
+        source_op,reconciled=_RECEIPT_OPERATIONS[operation]
+        try:
+            # Validate UUIDv4, exact operation/TTL, digest inputs before
+            # invoking session_factory; never permit a raw query argument.
+            _normalized(operation=source_op,**{**values,"ttl_ms":values.get("ttl_ms")})
+        except GenerationProtocolError:
+            raise CandidateBrokerCommandError("invalid_command_identity") from None
     try:
         with session_factory() as session:
-            if operation=="heartbeat":
+            if recorded:
+                source_op,_=_RECEIPT_OPERATIONS[operation]
+                call=(reconcile_source_receipt if reconciled
+                      else commit_source_receipt)
+                result=call(session,operation=source_op,**values)
+            elif operation=="heartbeat":
                 result=renew_candidate_lease(session,**values)
             else:
                 result=complete_candidate_claim(session,**values)
-    except (GenerationProtocolError,ValueError) as exc:
+    except (GenerationProtocolError,ValueError):
         # Keep internal query/state/session details out of responses.
         raise CandidateBrokerCommandError("unqualified_source_claim") from None
     return {
@@ -85,6 +113,8 @@ def dispatch_candidate_command(
         "operation":operation,
         "candidate_generation":result["candidate_generation"],
         "source_transaction_accepted":True,
+        "source_receipt_reconciled":reconciled,
+        "source_receipt_committed":recorded and not reconciled,
         "authenticated_transport_qualified":False,
         "exclusive_writer_credentials_verified":False,
         "all_writers_generation_fenced":False,
