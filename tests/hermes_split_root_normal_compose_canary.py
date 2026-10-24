@@ -5,10 +5,9 @@ Never alters a production Compose project, secrets, networks or mounts.
 Only an inspected synthetic profile and current pinned local image are used.
 """
 from __future__ import annotations
+
 import argparse
 import hashlib
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives import serialization
 import json
 import os
 import pathlib
@@ -19,6 +18,8 @@ import tempfile
 import uuid
 
 import hermes_split_root_container_canary as prior
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src" / "assistx"
@@ -163,8 +164,15 @@ def restricted_render(doc, image, corpus, scratch):
     v = svc.get("volumes")
     if not isinstance(v,list) or len(v)!=2:
         return False
+    # A bare bind can silently create a missing host path on the local root
+    # filesystem. Disallow that even in the synthetic Compose qualification.
+    if any(not isinstance(m,dict) or
+           set(m) - {"type","source","target","read_only","bind"} or
+           m.get("bind") != {"create_host_path":False}
+           for m in v):
+        return False
     mounts = {m.get("target"):(m.get("type"),m.get("source"),
-              m.get("read_only",False)) for m in v if isinstance(m,dict)}
+              m.get("read_only",False)) for m in v}
     return (len(mounts)==2 and mounts=={
         "/research/knowledge":("bind",str(corpus),True),
         "/workspace":("bind",str(scratch),False)})
@@ -242,7 +250,7 @@ def run():
         (corpus/"decision.md").chmod(0o644)
         # Synthetic only: generate an ephemeral Ed25519 signer in RAM,
         # include only the public verification key in the disposable image.
-        from importlib.util import spec_from_file_location, module_from_spec
+        from importlib.util import module_from_spec, spec_from_file_location
         spec=spec_from_file_location("research_custody",
                 SOURCE/"hermes_corpus_custody.py")
         custody=module_from_spec(spec)
@@ -263,6 +271,7 @@ def run():
         # Synthetic-only signed executor claim for isolated end-to-end guard.
         # The ephemeral private signer is NEVER copied or mounted.
         import time
+
         from assistx.executor_security import ExecutorTokenCodec
         timestamp=int(time.time())
         launch_claims={

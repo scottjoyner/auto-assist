@@ -1,9 +1,11 @@
 """Offline deny-only contracts for exact-source Hermes normal Compose canary."""
 from __future__ import annotations
+
 import copy
 from pathlib import Path
-import pytest
+
 import hermes_split_root_normal_compose_canary as canary
+import pytest
 
 IMG = "sha256:" + "a" * 64
 RO = Path("/home/scott/.cache/og-hermes-containment-12345678/knowledge")
@@ -48,9 +50,11 @@ def _render():
         },
         "volumes": [
             {"type": "bind", "source": str(RO),
-             "target": "/research/knowledge", "read_only": True},
+             "target": "/research/knowledge", "read_only": True,
+             "bind":{"create_host_path":False}},
             {"type": "bind", "source": str(RW),
-             "target": "/workspace"},
+             "target": "/workspace",
+             "bind":{"create_host_path":False}},
         ],
     }}}
 
@@ -81,6 +85,25 @@ def test_extra_capabilities_are_denied(field, value):
     x = _render()
     x["services"]["hermes-split-synthetic"][field] = value
     assert not canary.restricted_render(x, IMG, RO, RW)
+
+
+@pytest.mark.parametrize("mount",[0,1])
+def test_missing_source_auto_creation_is_forbidden(mount):
+    x = _render()
+    volumes=x["services"]["hermes-split-synthetic"]["volumes"]
+    volumes[mount]["bind"]["create_host_path"] = True
+    assert not canary.restricted_render(x, IMG, RO, RW)
+    del volumes[mount]["bind"]
+    assert not canary.restricted_render(x, IMG, RO, RW)
+    volumes[mount]["bind"] = {}
+    assert not canary.restricted_render(x, IMG, RO, RW)
+
+
+def test_no_unreviewed_bind_keys_or_aliases():
+    for i in range(2):
+        x=_render()
+        x["services"]["hermes-split-synthetic"]["volumes"][i]["volume"]={}
+        assert not canary.restricted_render(x,IMG,RO,RW)
 
 
 def test_broad_rw_knowledge_denied():
@@ -138,8 +161,8 @@ def test_no_real_model_network_or_shell_in_sitecustomize():
 
 
 def test_dry_run_reports_hold_and_cannot_call_docker(monkeypatch):
-    from subprocess import run
     import sys
+    from subprocess import run
     result = run([sys.executable, str(canary.__file__), "--json"],
                  capture_output=True, text=True, check=True)
     assert '"decision": "HOLD"' in result.stdout

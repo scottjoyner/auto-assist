@@ -51,7 +51,11 @@ services:
         source: ${HERMES_SYNTHETIC_KNOWLEDGE:?synthetic RO fixture required}
         target: /research/knowledge
         read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: ${HERMES_SYNTHETIC_WORKSPACE:?synthetic RW fixture required}
         target: /workspace
         read_only: false
+        bind:
+          create_host_path: false
