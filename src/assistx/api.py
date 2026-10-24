@@ -777,6 +777,31 @@ def _auth_user_from_credentials(
     if TRUSTED_AUTH_HEADER:
         trusted_user = request.headers.get(TRUSTED_AUTH_HEADER)
         if trusted_user:
+            # Emergency fail-closed containment, separately activatable
+            # before a signed multi-user gateway is provisioned. Reject
+            # rather than ignoring the header and falling back to Basic:
+            # a hostile header must never be downgraded into authorization.
+            # This setting is opt-in because existing edge clients may
+            # rely on the legacy header for authenticated requests.
+            if os.getenv("ASSISTX_REJECT_LEGACY_TRUSTED_HEADER") == "true":
+                return None
+            # In the explicit signed-gateway research mode, a bare
+            # client-supplied proxy header MUST NOT authenticate anyone.
+            # Only a canonical owner validated by signed-request middleware
+            # may authorize task creation through this legacy path.
+            # Other endpoints with only that header fail closed; they
+            # require separate reviewed authentication provenance.
+            if (os.getenv("ASSISTX_ENABLE_SIGNED_OWNER_GATEWAY") == "true"
+                    and os.getenv("ASSISTX_REQUIRE_OWNER_BINDING") == "true"):
+                if (request.method != "POST"
+                        or request.url.path != "/api/tasks"):
+                    return None
+                from .owner_identity import TaskOwnerError, authenticated_owner
+
+                try:
+                    authenticated_owner(request.scope, trusted_user)
+                except TaskOwnerError:
+                    return None
             return trusted_user
     if credentials is None:
         return None
@@ -901,6 +926,12 @@ def _cancel_tasks_for_intent(neo: Neo4jClient, intent_id: str, reason: str) -> i
         rec = s.run(
             """
             MATCH (i:Intent {id:$intent_id})-[:CREATED_TASK]->(t:Task)
+            // Serialize the status check with concurrent completion on t.
+            FOREACH (_ IN CASE WHEN t.status IN ['READY','CLAIMED','RUNNING'] THEN [1] ELSE [] END |
+                SET t.hermes_fence_check_epoch =
+                    coalesce(t.hermes_fence_check_epoch, 0) + 1
+            )
+            WITH t
             WHERE t.status IN ['READY','CLAIMED','RUNNING']
             SET t.status='CANCELLED',
                 t.cancelled_reason=$reason,
@@ -1438,8 +1469,10 @@ def tasks_review(request: Request, limit: int = 50, user: str = Depends(auth)):
 @app.post("/tasks/{task_id}/approve")
 def approve_task(task_id: str, user: str = Depends(auth)):
     neo = _neo()
-    neo.update_task_status(task_id, "READY")
+    allowed = neo.update_task_status(task_id, "READY")
     neo.close()
+    if allowed is not True:
+        raise HTTPException(status_code=409, detail="Task approval denied by source claim fence")
     return RedirectResponse(url="/tasks/review", status_code=303)
 
 @app.get("/tasks/ready", response_class=HTMLResponse)
@@ -1480,10 +1513,16 @@ def execute_task(task_id: str, dry_run: bool = False, user: str = Depends(auth))
             neo.close()
             raise HTTPException(status_code=404, detail="Task not found")
         t = dict(rec[0])
-    neo.update_task_status(task_id, "RUNNING")
+    if neo.update_task_status(task_id, "RUNNING") is not True:
+        neo.close()
+        raise HTTPException(status_code=409, detail="Task launch denied by source claim fence")
     try:
         result = run_task(neo, t, dry_run=dry_run)
-        neo.update_task_status(task_id, "DONE")
+        if neo.update_task_status(task_id, "DONE") is not True:
+            return JSONResponse(
+                {"status": "HOLD", "reason": "task_terminal_commit_unverified",
+                 "task_id": task_id}, status_code=409
+            )
         return JSONResponse({"status": "DONE", "task_id": task_id, "state": result})
     except Exception as e:
         neo.update_task_status(task_id, "FAILED")
@@ -5423,7 +5462,11 @@ def api_workflow_incidents(
 def api_cancel_task(task_id: str, user: str = Depends(auth)):
     neo = _neo()
     try:
-        neo.update_task_status(task_id, "CANCELLED")
+        if not neo.update_task_status(task_id, "CANCELLED"):
+            raise HTTPException(
+                status_code=409,
+                detail="Task cancellation was rejected by current task state",
+            )
         return {"task_id": task_id, "status": "CANCELLED"}
     finally:
         neo.close()
@@ -5433,9 +5476,33 @@ def api_pause_task(task_id: str, user: str = Depends(auth)):
     neo = _neo()
     try:
         with neo._session() as s:
-            s.run(
-                "MATCH (t:Task {id:$id}) SET t.paused=true, t.paused_at=datetime(), t.paused_at_ts=timestamp()",
+            # Generic pause/resume has no Hermes claim generation or external
+            # effect revocation receipt. Lock before checking owner identity.
+            rec = s.run(
+                """
+                MATCH (t:Task {id:$id})
+                SET t.hermes_fence_check_epoch =
+                    coalesce(t.hermes_fence_check_epoch, 0) + 1
+                WITH t
+                WHERE NOT (
+                    coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+                )
+                SET t.paused=true, t.paused_at=datetime(),
+                    t.paused_at_ts=timestamp()
+                RETURN t.id AS updated_id
+                """,
                 {"id": task_id},
+            ).single()
+        if not rec:
+            raise HTTPException(
+                status_code=409,
+                detail="Task pause rejected by current claim ownership",
             )
         return {"task_id": task_id, "paused": True}
     finally:
@@ -5446,9 +5513,33 @@ def api_resume_task(task_id: str, user: str = Depends(auth)):
     neo = _neo()
     try:
         with neo._session() as s:
-            s.run(
-                "MATCH (t:Task {id:$id}) SET t.paused=false, t.resumed_at=datetime(), t.resumed_at_ts=timestamp()",
+            # Generic pause/resume has no Hermes claim generation or external
+            # effect revocation receipt. Lock before checking owner identity.
+            rec = s.run(
+                """
+                MATCH (t:Task {id:$id})
+                SET t.hermes_fence_check_epoch =
+                    coalesce(t.hermes_fence_check_epoch, 0) + 1
+                WITH t
+                WHERE NOT (
+                    coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+                )
+                SET t.paused=false, t.resumed_at=datetime(),
+                    t.resumed_at_ts=timestamp()
+                RETURN t.id AS updated_id
+                """,
                 {"id": task_id},
+            ).single()
+        if not rec:
+            raise HTTPException(
+                status_code=409,
+                detail="Task resume rejected by current claim ownership",
             )
         return {"task_id": task_id, "paused": False}
     finally:

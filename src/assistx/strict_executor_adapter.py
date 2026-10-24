@@ -21,24 +21,46 @@ def _truthy(name: str, default: str = "false") -> bool:
 
 
 def _terminate_process(proc: subprocess.Popen[str], grace_seconds: float = 3.0) -> None:
-    if proc.poll() is not None:
-        return
-    try:
-        if os.name == "posix":
-            os.killpg(proc.pid, signal.SIGTERM)
-        else:  # pragma: no cover - production executor is Linux
-            proc.terminate()
-        proc.wait(timeout=max(0.1, grace_seconds))
-        return
-    except (ProcessLookupError, subprocess.TimeoutExpired):
-        pass
-    try:
-        if os.name == "posix":
-            os.killpg(proc.pid, signal.SIGKILL)
-        else:  # pragma: no cover
+    """Fence the entire start_new_session process group, including orphans.
+
+    The group ID is the PID of the spawned session leader. Terminating and
+    reaping only that leader is not sufficient: a child ignoring SIGTERM can
+    survive and keep inherited pipes open. Use SIGKILL on the original group
+    even if its leader has already exited. All strict-executor children are
+    spawned with start_new_session=True.
+    """
+    if os.name != "posix":  # pragma: no cover - Linux production runtime
+        if proc.poll() is not None:
+            return
+        proc.terminate()
+        try:
+            proc.wait(timeout=max(0.1, grace_seconds))
+        except subprocess.TimeoutExpired:
             proc.kill()
+        return
+    pgid = proc.pid
+    if type(pgid) is not int or pgid <= 1:
+        raise RuntimeError("cannot fence invalid executor process group")
+    try:
+        os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
         pass
+    try:
+        if proc.poll() is None:
+            proc.wait(timeout=max(0.1, grace_seconds))
+    except subprocess.TimeoutExpired:
+        pass
+    # After the leader finishes, descendants may remain in its process
+    # group. Do not mistake proc.returncode for proof the group is gone.
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            logger.error("Hermes executor child did not exit after SIGKILL")
 
 
 def install_strict_executor_adapter(adapter: Any) -> None:
@@ -107,7 +129,7 @@ def install_strict_executor_adapter(adapter: Any) -> None:
         self._heartbeat_thread = None
 
     def heartbeat_once(self, status: str = "RUNNING") -> None:
-        client_request(
+        response = client_request(
             self,
             "POST",
             f"/api/tasks/{self._active_task_id}/heartbeat",
@@ -120,6 +142,10 @@ def install_strict_executor_adapter(adapter: Any) -> None:
             },
             timeout=15,
         )
+        if os.getenv("HERMES_REQUIRE_OWNER_BOUND_LAUNCH") == "true":
+            from .hermes_launch_gate import verify_heartbeat_ack
+
+            verify_heartbeat_ack(self, response)
 
     def mark_lease_lost(self, reason: str) -> None:
         if self._lease_lost.is_set():
@@ -145,6 +171,11 @@ def install_strict_executor_adapter(adapter: Any) -> None:
                 heartbeat_once(self)
                 self._heartbeat_failures = 0
             except Exception as exc:
+                from .hermes_launch_gate import LaunchDenied
+
+                if isinstance(exc, LaunchDenied):
+                    mark_lease_lost(self, "heartbeat_authoritative_claim_denied")
+                    return
                 self._heartbeat_failures += 1
                 logger.warning(
                     "strict executor heartbeat failed task=%s claim=%s failures=%s: %s",
@@ -165,7 +196,14 @@ def install_strict_executor_adapter(adapter: Any) -> None:
         self._active_task_id = task_id
         self._active_claim_id = claim_id
         self._active_session_id = session_id
-        heartbeat_once(self)
+        try:
+            heartbeat_once(self)
+        except Exception as exc:
+            from .hermes_launch_gate import LaunchDenied
+
+            if isinstance(exc, LaunchDenied):
+                mark_lease_lost(self, "initial_heartbeat_authoritative_claim_denied")
+            raise
         self._heartbeat_thread = threading.Thread(
             target=heartbeat_loop,
             args=(self,),
@@ -259,7 +297,14 @@ def install_strict_executor_adapter(adapter: Any) -> None:
             or session_id != self._active_session_id
         ):
             raise RuntimeError("heartbeat identity does not match active executor claim")
-        heartbeat_once(self, status)
+        try:
+            heartbeat_once(self, status)
+        except Exception as exc:
+            from .hermes_launch_gate import LaunchDenied
+
+            if isinstance(exc, LaunchDenied):
+                mark_lease_lost(self, "explicit_heartbeat_authoritative_claim_denied")
+            raise
 
     def complete_task(
         self,
@@ -322,6 +367,37 @@ def install_strict_executor_adapter(adapter: Any) -> None:
                 "elapsed": 0.0,
             }
 
+        # Optional production-candidate security gate: verify the signed
+        # task JWT, canonical human owner, exact active lease/claim identity,
+        # projection generation and allowed model BEFORE launching a child.
+        # Also demand a fresh server-validated heartbeat on every invocation.
+        # Default remains disabled for the unchanged production Hermes.
+        launch_flag = os.getenv("HERMES_REQUIRE_OWNER_BOUND_LAUNCH", "")
+        if launch_flag not in ("", "false", "true"):
+            return {
+                "success": False, "error": "owner_bound_launch_invalid_mode",
+                "output": "", "session_id": None, "elapsed": 0.0,
+            }
+        if launch_flag == "true":
+            from .hermes_launch_gate import LaunchDenied, verify_owner_bound_launch
+            requested_model = model or getattr(adapter, "HERMES_MODEL", None)
+            try:
+                verify_owner_bound_launch(
+                    client, agent_id=adapter.AGENT_ID, model=requested_model)
+                heartbeat_once(client)
+                if client._lease_lost.is_set():
+                    raise LaunchDenied("lease withdrawn during pre-launch heartbeat")
+                # Re-check signatures after the request, before spawn.
+                verify_owner_bound_launch(
+                    client, agent_id=adapter.AGENT_ID, model=requested_model)
+            except (LaunchDenied, requests.RequestException, RuntimeError) as exc:
+                mark_lease_lost(client, "owner_bound_launch_preflight_failed")
+                logger.error("signed owner-bound Hermes launch denied (%s)", type(exc).__name__)
+                return {
+                    "success": False, "error": "owner_bound_launch_denied",
+                    "output": "", "session_id": None, "elapsed": 0.0,
+                }
+
         effective_timeout = int(timeout or getattr(adapter, "HERMES_TIMEOUT", 300))
         cmd = [
             adapter.HERMES_BIN,
@@ -381,7 +457,13 @@ def install_strict_executor_adapter(adapter: Any) -> None:
             }
         client._active_process = proc
         error = ""
-        while proc.poll() is None:
+        # A lease may be revoked during Popen itself, before the process
+        # becomes visible through _active_process. Fence that handoff even
+        # if the subprocess exits before its first poll.
+        if client._lease_lost.is_set():
+            error = "executor_lease_lost"
+            _terminate_process(proc)
+        while not error and proc.poll() is None:
             if client._lease_lost.wait(0.25):
                 error = "executor_lease_lost"
                 _terminate_process(proc)
@@ -392,6 +474,13 @@ def install_strict_executor_adapter(adapter: Any) -> None:
                 break
         stdout, stderr = proc.communicate()
         client._active_process = None
+        # Revocation can race the last poll/communicate of an already
+        # finished process. Never publish its output or success as valid
+        # after the lease was lost, even for exit code zero.
+        if client._lease_lost.is_set():
+            error = "executor_lease_lost"
+        if error == "executor_lease_lost":
+            stdout, stderr = "", ""
         elapsed = time.monotonic() - started
         session_id = None
         for line in (stdout or "").splitlines():
