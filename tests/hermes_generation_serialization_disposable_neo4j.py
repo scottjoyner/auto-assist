@@ -29,7 +29,8 @@ pkg=types.ModuleType("assistx")
 pkg.__path__=[str(root)]
 sys.modules["assistx"]=pkg
 for name in ("hermes_claim_census","hermes_source_generation_research",
-             "hermes_source_completion_research"):
+             "hermes_source_completion_research",
+             "hermes_source_heartbeat_research"):
     path=root/(name+".py")
     spec=importlib.util.spec_from_file_location("assistx."+name,path)
     module=importlib.util.module_from_spec(spec)
@@ -37,6 +38,7 @@ for name in ("hermes_claim_census","hermes_source_generation_research",
     spec.loader.exec_module(module)
 from assistx import hermes_source_generation_research as g
 from assistx import hermes_source_completion_research as completion
+from assistx import hermes_source_heartbeat_research as heartbeat
 
 driver=GraphDatabase.driver("bolt://127.0.0.1:7687",auth=None,connection_timeout=5,
                             max_transaction_retry_time=10)
@@ -297,7 +299,116 @@ try:
     assert candidate["decision"]=="HOLD"
     print("PASS enrolled_completion_changes_pinned_generation_not_authority",flush=True)
 
-    print("SYNTHETIC_SOURCE_GENERATION_DB_PASS=11",flush=True)
+    # A second enrolled writer renews a current Task's lease, using the
+    # database clock and the same owner-generation lock as completion.
+    hb_tid=prefix+"_heartbeat"
+    old_exp=int(time.time()*1000)+12000
+    assert call(
+        """
+        CREATE(t:Task{id:$id,status:'RUNNING',claimed_by:'hermes-local',
+               target_agent_id:'hermes-local',claim_id:'heartbeat-claim',
+               agent_session_id:'heartbeat-session',execution_attempt:5,
+               lease_expires_at_ts:$expiry})
+        RETURN t.id AS id
+        """,id=hb_tid,expiry=old_exp,
+    )["id"]==hb_tid
+
+    def renew(*, generation=4, task=hb_tid, claim="heartbeat-claim",
+              identity="heartbeat-session", attempt=5, ttl=45000):
+        with session() as s:
+            return heartbeat.renew_candidate_lease(
+                s,expected_generation=generation,
+                task_id=task,claim_id=claim,session_id=identity,
+                attempt=attempt,ttl_ms=ttl,
+            )
+
+    for changes in ({"claim":"bad-claim"}, {"identity":"bad-session"},
+                    {"attempt":4}, {"ttl":0}, {"ttl":60001}):
+        try:renew(**changes)
+        except g.GenerationProtocolError:pass
+        else:raise AssertionError("heartbeat admitted unqualified input")
+        assert gen()==4
+    assert state(hb_tid).get("heartbeat_by") is None
+    print("PASS heartbeat_bad_claim_session_attempt_ttl_denied",flush=True)
+
+    expired_hb=prefix+"_expired_heartbeat"
+    assert call(
+        """
+        CREATE(t:Task{id:$id,status:'RUNNING',claimed_by:'hermes-local',
+               target_agent_id:'hermes-local',claim_id:'heartbeat-claim',
+               agent_session_id:'heartbeat-session',execution_attempt:5,
+               lease_expires_at_ts:timestamp()-5000})
+        RETURN t.id AS id
+        """,id=expired_hb,
+    )["id"]==expired_hb
+    try:renew(task=expired_hb)
+    except g.GenerationProtocolError:pass
+    else:raise AssertionError("expired heartbeat admitted despite DB clock")
+    assert gen()==4 and state(expired_hb)["status"]=="RUNNING"
+    print("PASS heartbeat_expired_lease_denied_by_database_time",flush=True)
+
+    pausing=prefix+"_pausing_heartbeat"
+    assert call(
+        """
+        CREATE(t:Task{id:$id,status:'PAUSING',claimed_by:'hermes-local',
+               target_agent_id:'hermes-local',claim_id:'heartbeat-claim',
+               agent_session_id:'heartbeat-session',execution_attempt:5,
+               lease_expires_at_ts:timestamp()+60000})
+        RETURN t.id AS id
+        """,id=pausing,
+    )["id"]==pausing
+    try:renew(task=pausing)
+    except g.GenerationProtocolError:pass
+    else:raise AssertionError("PAUSING Task was renewed")
+    assert gen()==4
+    print("PASS heartbeat_pausing_task_denied",flush=True)
+
+    first_renew=renew()
+    assert first_renew["candidate_generation"]==5 and gen()==5
+    assert first_renew["source_task_lease_readback_in_tx"] is True
+    assert first_renew["external_resource_lease_verified"] is False
+    hb_state=state(hb_tid)
+    assert hb_state["status"]=="RUNNING"
+    assert hb_state["heartbeat_by"]=="hermes-local"
+    assert type(hb_state["heartbeat_at_ts"]) is int
+    assert hb_state["lease_expires_at_ts"]>old_exp
+    assert hb_state["lease_expires_at_ts"]>=hb_state["heartbeat_at_ts"]+45000
+    print("PASS heartbeat_renewal_with_server_clock_and_generation",flush=True)
+
+    # A completion and a heartbeat for the *same* claim compete for gen 5.
+    # Exactly one wins; loser must never apply a stale mutation.
+    def finish_hb():
+        with session() as s:
+            return completion.complete_candidate_claim(
+                s,expected_generation=5,task_id=hb_tid,
+                claim_id="heartbeat-claim",session_id="heartbeat-session",
+                attempt=5,
+            )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a=pool.submit(renew,generation=5)
+        b=pool.submit(finish_hb)
+        victories=[]
+        denials=0
+        for f in (a,b):
+            try:victories.append(f.result(timeout=25))
+            except g.GenerationProtocolError:denials+=1
+    assert len(victories)==1 and denials==1,(victories,denials)
+    assert gen()==6
+    assert state(hb_tid)["status"] in ("RUNNING","DONE")
+    assert all(v["production_dispatch_authorized"] is False for v in victories)
+    print("PASS heartbeat_completion_single_winner_same_generation",flush=True)
+
+    # Source readback still cannot claim external writer coverage/custody.
+    with session() as s:
+        hb_snapshot=g.pinned_candidate_snapshot(s)
+    assert hb_snapshot["snapshot_generation"]==6
+    assert hb_snapshot["candidate_count"]==626
+    assert hb_snapshot["all_writers_generation_fenced"] is False
+    assert hb_snapshot["authoritative_complete_census"] is False
+    assert hb_snapshot["decision"]=="HOLD"
+    print("PASS heartbeat_snapshot_generation_not_production_authority",flush=True)
+
+    print("SYNTHETIC_SOURCE_GENERATION_DB_PASS=17",flush=True)
     print("PRODUCTION_TASKS_TOUCHED=0;DECISION=HOLD",flush=True)
 finally:
     # Only our synthetic nodes; canary schema exists only in disposable DB.
