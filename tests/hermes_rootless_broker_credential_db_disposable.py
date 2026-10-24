@@ -88,13 +88,17 @@ def rootless_child(directory: str,allowed_uid: int,client_gid: int,
         result=listener.serve_rootless_candidate(
             socket_dir=Path(directory),allowed_peer_uid=allowed_uid,
             client_gid=client_gid,session_factory=session_factory,
-            max_connections=4,max_lifetime_seconds=16.0)
+            max_connections=4,max_lifetime_seconds=16.0,
+            emit_holding_replies=True)
         assert result["accepted_candidate_commands"]==2,result
         assert result["rejected_connections"]==2,result
         assert result["broker_exclusive_credentials_verified"] is False
         assert result["production_dispatch_authorized"] is False
         assert result["decision"]=="HOLD"
+        assert result["socket_replies_durable"] is False
+        assert result["unconfirmed_socket_replies"]==0
         print("PASS rootless_private_credential_two_transactions_two_denials",flush=True)
+        print("PASS rootless_reply_delivery_with_source_HOLD_not_durable",flush=True)
     finally:
         driver.close()
 
@@ -107,20 +111,68 @@ def drop_to(uid: int,gid: int):
     return inner
 
 
-def send_unix(path: Path,cmd: dict,uid: int,gid: int):
+def send_unix(path: Path,cmd: dict,uid: int,gid: int) -> dict | None:
     packet=json.dumps({"version":1,"command":cmd},
                       separators=(",",":")).encode("utf8")+b"\n"
-    code=("import socket,sys;"
-          "s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);"
-          "s.connect(sys.argv[1]);"
-          "s.sendall(bytes.fromhex(sys.argv[2]));"
-          "s.close()")
+    code="""import socket,sys
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+s.settimeout(5)
+s.connect(sys.argv[1])
+s.sendall(bytes.fromhex(sys.argv[2]))
+s.shutdown(socket.SHUT_WR)
+try:
+    packet=s.recv(512)
+except (ConnectionResetError,BrokenPipeError):
+    packet=b""
+sys.stdout.buffer.write(packet)
+s.close()
+"""
     out=subprocess.run(
         [sys.executable,"-c",code,str(path),packet.hex()],
         preexec_fn=drop_to(uid,gid),
-        stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,stderr=subprocess.PIPE,
         timeout=8,check=False)
     assert out.returncode==0,"synthetic_client_socket_send_failed"
+    if not out.stdout:
+        return None
+    assert len(out.stdout)<=192 and out.stdout.endswith(b"\n")
+    reply=json.loads(out.stdout.decode("ascii"))
+    assert set(reply).issubset({
+        "schema","accepted_source_transaction","candidate_generation",
+        "error","durable_delivery_verified","production_dispatch_authorized",
+        "decision",
+    })
+    assert reply["decision"]=="HOLD"
+    assert reply["durable_delivery_verified"] is False
+    assert reply["production_dispatch_authorized"] is False
+    assert "password" not in str(reply).lower()
+    assert "task_id" not in str(reply).lower()
+    return reply
+
+
+def probe_cross_uid_memory(pid: int,uid: int,gid: int) -> None:
+    """Unprivileged CI client cannot read broker RAM or environment."""
+    code="""import os,sys
+pid=int(sys.argv[1])
+for suffix in ("mem","environ"):
+    try:
+        fd=os.open(f"/proc/{pid}/{suffix}",os.O_RDONLY)
+    except PermissionError:
+        continue
+    else:
+        os.close(fd)
+        raise SystemExit("broker_proc_visibility_violation")
+print("CROSS_UID_PROC_DENIED")
+"""
+    out=subprocess.run(
+        [sys.executable,"-c",code,str(pid)],
+        preexec_fn=drop_to(uid,gid),
+        stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+        timeout=5,check=False)
+    assert out.returncode==0 and out.stdout.strip()==b"CROSS_UID_PROC_DENIED",(
+        "unprivileged_broker_memory_or_environment_readable")
+    print("PASS unprivileged_socket_client_cannot_read_broker_proc_memory_env",
+          flush=True)
 
 
 def main():
@@ -255,14 +307,20 @@ def main():
                 assert secret.encode() not in environ
                 assert secret.encode() not in cmdline
             print("PASS restricted_broker_writer_password_pipe_not_argv_or_env",flush=True)
+            probe_cross_uid_memory(broker_proc.pid,client_uid.pw_uid,client_uid.pw_gid)
 
             base={"task_id":TASK_ID,"claim_id":"synthetic-claim",
                   "session_id":"synthetic-session","attempt":1}
             hb={"operation":"heartbeat","expected_generation":0,**base,"ttl_ms":30000}
             completion={"operation":"complete","expected_generation":1,**base}
             # Caller with broker's UID is not the allowed separate client.
-            send_unix(socket_path,hb,broker_uid.pw_uid,broker_uid.pw_gid)
-            send_unix(socket_path,hb,client_uid.pw_uid,client_uid.pw_gid)
+            unauthorized=send_unix(
+                socket_path,hb,broker_uid.pw_uid,broker_uid.pw_gid)
+            assert unauthorized is None, "same-UID peer saw a reply"
+            first=send_unix(socket_path,hb,client_uid.pw_uid,client_uid.pw_gid)
+            assert first is not None
+            assert first["accepted_source_transaction"] is True
+            assert first["candidate_generation"]==1
             def get_state():
                 r=query("""MATCH(t:Task{id:$id}),
                                   (g:HermesSourceGeneration{owner:'hermes-local'})
@@ -273,8 +331,16 @@ def main():
             while get_state()!=("RUNNING",1) and time.monotonic()<deadline:
                 time.sleep(0.03)
             assert get_state()==("RUNNING",1),"rootless_heartbeat_not_committed"
-            send_unix(socket_path,hb,client_uid.pw_uid,client_uid.pw_gid)
-            send_unix(socket_path,completion,client_uid.pw_uid,client_uid.pw_gid)
+            stale=send_unix(socket_path,hb,client_uid.pw_uid,client_uid.pw_gid)
+            assert stale is not None
+            assert stale["accepted_source_transaction"] is False
+            assert stale["error"]=="request_denied"
+            assert "candidate_generation" not in stale
+            second=send_unix(socket_path,completion,client_uid.pw_uid,client_uid.pw_gid)
+            assert second is not None
+            assert second["accepted_source_transaction"] is True
+            assert second["candidate_generation"]==2
+            print("PASS socket_receipts_qualified_HOLD_without_secrets",flush=True)
             stdout,error=broker_proc.communicate(timeout=12)
             assert broker_proc.returncode==0,"rootless_broker_transaction_failed"
             assert b"PASS rootless_private_credential_two_transactions_two_denials" in stdout
@@ -282,7 +348,7 @@ def main():
             assert not socket_path.exists(),"rootless_socket_not_cleaned"
             print("PASS rootless_nonroot_private_credential_enrolled_heartbeat_completion",flush=True)
             print("PASS stale_generation_rejected_without_ledger_increment",flush=True)
-        print("HERMES_ROOTLESS_PRIVATE_DB_PIPE_CI_PASS=4",flush=True)
+        print("HERMES_ROOTLESS_PRIVATE_DB_PIPE_CI_PASS=7",flush=True)
         print("PRODUCTION_TASKS_TOUCHED=0;PRODUCTION_SERVICES_TOUCHED=0;DECISION=HOLD",
               flush=True)
     finally:
