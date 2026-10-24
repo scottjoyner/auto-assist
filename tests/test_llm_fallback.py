@@ -3,6 +3,14 @@ import pytest
 from assistx.llm import client as llm_client
 
 
+@pytest.fixture(autouse=True)
+def _permit_synthetic_fixture_effects(monkeypatch):
+    """Only for fake HTTP fixtures; production source has no grant bypass."""
+    monkeypatch.setattr(llm_client, "_require_effect_authority",
+                        lambda *_args, **_kwargs: None)
+
+
+
 class _Resp:
     def __init__(self, status_code=200, payload=None):
         self.status_code = status_code

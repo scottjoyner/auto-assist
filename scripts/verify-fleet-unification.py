@@ -20,8 +20,36 @@ from pathlib import Path
 HOME = Path.home()
 KNOWLEDGE = Path(os.environ.get("KNOWLEDGE_DIR", str(HOME / "knowledge"))).expanduser()
 OUT = KNOWLEDGE / "60-Mappings" / "Fleet-Status-Dashboard.md"
-REPORT_ROOT = Path(os.environ.get("FLEET_REPORT_ROOT", "/nas/fileserver/fleet-reports")).expanduser()
+# CLIENT spelling. This script runs on a client, where the share's content root is
+# mounted AT /nas; "/nas/fileserver/..." is the owner-view spelling and lands in a
+# stray nested directory (beelink: /nas/fileserver/fileserver/fleet-reports) that
+# nothing reads. It was the default until 2026-10-20, which is why every daily
+# fleet-status report was written where nobody looked for it.
+REPORT_ROOT = Path(os.environ.get("FLEET_REPORT_ROOT", "/nas/fleet-reports")).expanduser()
+# SSH transport. One config is not enough: the July-era tailscale config
+# authenticates through Tailscale SSH, which needs an interactive check and so
+# fails as a BatchMode probe ("Tailscale SSH requires an additional check"), and
+# the pinned-key config does not cover every target the fleet uses. Trying them
+# in order - and the host's own config last - keeps a stale file from turning
+# every live node into a false SSH_TRANSPORT_FAILURE.
 SSH_CONFIG = Path(os.environ.get("SSH_CONFIG", str(HOME / ".ssh/tailscale-config"))).expanduser()
+SSH_CONFIG_CANDIDATES = []
+_env_cfg = os.environ.get("SSH_CONFIG")
+if _env_cfg:
+    SSH_CONFIG_CANDIDATES.append(Path(_env_cfg).expanduser())
+for _p in (HOME / ".ssh/fleet-dotfiles.conf", HOME / ".ssh/tailscale-config"):
+    if _p.exists() and _p not in SSH_CONFIG_CANDIDATES:
+        SSH_CONFIG_CANDIDATES.append(_p)
+SSH_CONFIG_CANDIDATES.append(None)  # the host's own ssh config, last resort
+
+# Neo4j is published by a container, and the published host ports have moved
+# once already (7474/7687 -> 7475/7688). Hardcoding them made this dashboard
+# report a healthy database as down on every node in the fleet, so the ports
+# are DISCOVERED from the owner instead of assumed.
+NEO4J_OWNER = "x1-370"
+NEO4J_TAILNET_IP = "100.64.43.123"
+NEO4J_FALLBACK_PORTS = {"bolt": 7688, "http": 7475}
+NEO4J_BOLT_PORT = NEO4J_FALLBACK_PORTS["bolt"]
 
 HOSTS = {
     "x1-370": {"ssh": "x1-370", "ip": "100.64.43.123", "os": "linux", "user": "scott", "role": "primary_orchestrator"},
@@ -133,12 +161,50 @@ def run(cmd: list[str] | str, timeout: int = 15) -> tuple[int, str]:
         return 1, f"ERROR: {e}"
 
 
+def discover_neo4j_ports() -> dict:
+    """Ask the owner host which ports neo4j is actually published on.
+
+    The dashboard used to hardcode 7474/7687 - the ports an older deployment
+    published. The running container publishes 7475/7688, so the probe called a
+    healthy service down on every node. A discovered port cannot go stale
+    silently; a hardcoded one can.
+    """
+    ports = dict(NEO4J_FALLBACK_PORTS)
+    ports["source"] = "fallback"
+    code, out = ssh(NEO4J_OWNER, "docker port neo4j 2>/dev/null || true", timeout=15)
+    if code != 0:
+        return ports
+    published = {}
+    for line in (out or "").splitlines():
+        if "->" not in line:
+            continue
+        left, _, right = line.partition("->")
+        container = left.strip().split("/")[0].strip()
+        host_port = right.strip().rsplit(":", 1)[-1].strip()
+        if container.isdigit() and host_port.isdigit():
+            published[container] = int(host_port)
+    if "7687" in published:
+        ports["bolt"] = published["7687"]
+    if "7474" in published:
+        ports["http"] = published["7474"]
+    if published:
+        ports["source"] = "discovered"
+    return ports
+
+
 def ssh(target: str, remote: str, timeout: int = 12) -> tuple[int, str]:
-    base = ["ssh"]
-    if SSH_CONFIG.exists():
-        base += ["-F", str(SSH_CONFIG)]
-    base += ["-o", "BatchMode=yes", "-o", f"ConnectTimeout={min(timeout, 10)}", target, remote]
-    return run(base, timeout=timeout)
+    """Try each known SSH transport in turn; the first one that connects wins."""
+    last = (1, "")
+    for cfg in SSH_CONFIG_CANDIDATES:
+        base = ["ssh"]
+        if cfg is not None:
+            base += ["-F", str(cfg)]
+        base += ["-o", "BatchMode=yes", "-o", f"ConnectTimeout={min(timeout, 10)}", target, remote]
+        code, out = run(base, timeout=timeout)
+        if code == 0:
+            return code, out
+        last = (code, out)
+    return last
 
 
 def tcp_open(host: str, port: int, timeout: float = 2.0) -> bool:
@@ -184,11 +250,13 @@ printf 'mcp_config='; if test -f "$HOME/.hermes/config.yaml" && grep -q "mcp_ser
 printf 'neo4j_tcp='; python3 - <<'PY'
 import socket
 try:
- s=socket.create_connection(('100.64.43.123',7687),2); s.close(); print('ok')
+ s=socket.create_connection(('__NEO4J_IP__',__NEO4J_BOLT_PORT__),2); s.close(); print('ok')
 except Exception as e: print('fail')
 PY
 printf 'mounts='; if uname | grep -qi Darwin; then echo n/a; else findmnt -T /nas >/dev/null 2>&1 && echo nas || echo missing; fi
 '''
+    remote = remote.replace("__NEO4J_IP__", NEO4J_TAILNET_IP)
+    remote = remote.replace("__NEO4J_BOLT_PORT__", str(NEO4J_BOLT_PORT))
     code, out = ssh(target, remote, timeout=18)
     parsed = {"ssh": "ok" if code == 0 else "fail", "raw": out[:1000]}
     for line in out.splitlines():
@@ -208,7 +276,9 @@ printf 'nas_uuid='; findmnt -no UUID /nas 2>/dev/null || true
 printf 'nas_target='; findmnt -no TARGET /nas 2>/dev/null || true
 printf 'nas_dir='; test -d /nas && echo yes || echo no
 printf 'nas_readable='; test -r /nas && echo yes || echo no
-printf 'nas_writable='; test -w /nas && echo yes || echo no
+NAS_SRC=$(findmnt -no SOURCE /nas 2>/dev/null); NAS_PROBE=/nas; case "$NAS_SRC" in /dev/*) [ -d /nas/fileserver ] && NAS_PROBE=/nas/fileserver ;; esac
+printf 'nas_probe_root=%s\n' "$NAS_PROBE"
+printf 'nas_writable='; test -w "$NAS_PROBE" && echo yes || echo no
 printf 'nas_free_bytes='; df -B1 --output=avail /nas 2>/dev/null | tail -1 | tr -d ' ' || true
 '''
     code, out = ssh(info["ssh"], remote, timeout=18)
@@ -330,8 +400,14 @@ def host_blockers(r: dict) -> list[str]:
 
 
 def main() -> int:
+    global NEO4J_BOLT_PORT
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     live_profile = effective_assistx_profile()
+    ports = discover_neo4j_ports()
+    NEO4J_BOLT_PORT = ports["bolt"]
+    SERVICE_CONTRACTS["neo4j-http"]["url"] = f"http://{NEO4J_TAILNET_IP}:{ports['http']}"
+    SERVICE_CONTRACTS["neo4j-http"]["port"] = str(ports["http"])
+    SERVICES["neo4j-http"] = SERVICE_CONTRACTS["neo4j-http"]["url"]
     service_rows = []
     for name, url in SERVICES.items():
         status, body = curl_status(url)
@@ -346,7 +422,7 @@ def main() -> int:
         agent_rows.append((name, info, r))
 
     storage_rows = [(name, info, check_storage_host(name, info)) for name, info in STORAGE_HOSTS.items()]
-    neo4j_bolt = "ok" if tcp_open("100.64.43.123", 7687) else "fail"
+    neo4j_bolt = "ok" if tcp_open(NEO4J_TAILNET_IP, ports["bolt"]) else "fail"
 
     lines = ["# Fleet Status Dashboard", "", f"Generated UTC: {now}", ""]
     lines += [
@@ -374,6 +450,7 @@ def main() -> int:
         "", "## Storage fleet and /nas", "",
         f"- `/nas` health: `{storage_ok}/{len(storage_rows)} MOUNTED+READABLE` (live probe; not inferred from agent membership)",
         "- `/nas` writeability is reported separately; read-only client mounts are not mislabeled as mount failures.",
+        "- Writeability is measured at the SHARE ROOT - the path the share is served from - not at the array root: on the owner that is `/nas/fileserver`, on a client it is `/nas`. Probing the owner's array root reported the live NAS as READ_ONLY while the share it serves was writable.",
         "",
         "| Storage host | SSH | Hostname | /nas health | /nas write | Source | Fstype | UUID | Free bytes |",
         "|---|---|---|---|---|---|---|---|---:|",
@@ -420,7 +497,7 @@ def main() -> int:
 
     lines += [
         "", "## Service/fleet summary", "",
-        f"- Neo4j Bolt transport: `{neo4j_bolt}`",
+        f"- Neo4j Bolt transport: `{neo4j_bolt}` (port {ports['bolt']}, {ports['source']})",
         "- Service transport and application classifications are independent; an HTTP 200 with a degraded body or empty LM Studio model list is not reported ready.",
         "- Response buffers are cleared before every service probe; a failed probe cannot reuse a prior service preview.",
         "", "## Agent operating rules", "",

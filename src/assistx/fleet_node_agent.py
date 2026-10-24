@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from .kv_cache import runtime_capabilities
+from .lm_studio_client_auth import headers_for_request
 from .recovery_runbooks import RecoveryRunbookExecutor
 
 DEFAULT_CAPS = ["script"]
@@ -63,6 +64,9 @@ def _http(
     headers: dict[str, str] | None = None,
     timeout: int = 30,
 ) -> tuple[int, Any]:
+    # Mode remains legacy until an authorized per-node token cutover.
+    # In required mode, missing/unsafe tokens stop before any HTTP request.
+    headers = headers_for_request(url, auth, headers)
     req = urllib.request.Request(url, method=method)
     if auth:
         import base64
@@ -86,6 +90,8 @@ def _http(
             return exc.code, json.loads(exc.read().decode())
         except Exception:
             return exc.code, {"detail": str(exc)}
+        finally:
+            exc.close()
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return 0, {"detail": str(exc)}
 

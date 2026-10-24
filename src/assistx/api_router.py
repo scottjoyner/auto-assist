@@ -9,6 +9,7 @@ from . import control_room as control_room_module
 from . import router_integration as router_integration_module
 from .api import _neo, app, auth, templates
 from .control_room import LEGACY_UI_PATHS, build_control_room_router
+from .control_room_recovery import build_recovery_router
 from .control_room_runtime import install_control_room_runtime
 from .executor_claims import install_live_executor_claims
 from .executor_security import install_executor_security
@@ -90,6 +91,13 @@ app.include_router(
     )
 )
 app.include_router(build_control_room_router(_neo, auth, templates))
+# The recovery-island panel's data source. control_room.py calls
+# island_recovery_snapshot() to render the panel, but the HTTP ingest route that
+# feeds it was never registered, so every island heartbeat 404'd and the panel
+# rendered STALE (beelink: 31,574 consecutive failures since 2026-10-08). The
+# router is defined in control_room_recovery.py; this is registration only —
+# the route is token-gated (X-Island-Token) and size-capped there.
+app.include_router(build_recovery_router(auth))
 app.include_router(build_router_integration_router(_neo))
 app.include_router(build_runtime_projection_router(_neo, auth_dependency=auth))
 

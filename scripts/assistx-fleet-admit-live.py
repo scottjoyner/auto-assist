@@ -41,6 +41,20 @@ if sys.argv[1:] != ["--apply"] or os.environ.get("DRY_RUN"):
     )
     raise SystemExit(2)
 
+# RELEASE HOLD: a historical --apply and a dated chat directive are not a
+# resource-owned, non-replayable admission witness. This script otherwise
+# performs a real model completion and a live runtime projection approval.
+# Do not infer quota, spend, trace custody, or execution authority from argv.
+# Deliberately no env/CLI bypass: adding a release path requires separately
+# verified, fail-closed owner-bound admission at the actual effect boundary.
+print(
+    "FLEET_ADMISSION_BLOCKED: --apply alone cannot authorize live model "
+    "canaries or runtime admission; independent resource-owned approval "
+    "and quota/fencing evidence missing",
+    file=sys.stderr,
+)
+raise SystemExit(2)
+
 STATE.mkdir(parents=True, exist_ok=True)
 
 
