@@ -46,6 +46,41 @@ def test_standalone_offline_shape_is_necessary_but_no_release_grant():
     assert report['real_source_or_output_authorized'] is False
     assert report['real_container_created'] is False
     assert report['real_provider_or_network_access_enabled'] is False
+    assert report['rootless_profile_path_isolated'] is True
+    assert report['attestation_artifacts_independently_provisioned'] is False
+    assert report['legitimate_task_access_physically_verified'] is False
+    assert report['required_attestation_paths'] == sorted([
+        '/app/attestation/executor.pub', '/app/attestation/checkpoint.json',
+        '/app/attestation/witness.pub', '/app/attestation/trust.pub'])
+
+
+def test_profiles_path_must_resolve_into_writable_scratch_not_root():
+    doc=fixture()
+    env=doc['services'][guard.SERVICE]['environment']
+    assert env['HERMES_PROFILES_PATH']=='/workspace/.hermes/profiles.yaml'
+    for altered in ('/root/.hermes/profiles.yaml',
+                    '/research/knowledge/profiles.yaml',
+                    '/workspace/knowledge/profiles.yaml',
+                    '/workspace/hermes-home/profiles.yaml'):
+        bad=fixture()
+        bad['services'][guard.SERVICE]['environment']['HERMES_PROFILES_PATH']=altered
+        with pytest.raises(legacy.Denied):
+            guard.validate_standalone(bad)
+
+
+def test_embedded_attestation_material_remains_unapproved():
+    report=guard.validate_standalone(fixture())
+    assert len(report['required_attestation_paths'])==4
+    assert not report['attestation_artifacts_independently_provisioned']
+    assert not report['production_deployment_authorized']
+    for key in ('ASSISTX_EXECUTOR_VERIFY_KEY_FILE',
+                'HERMES_CORPUS_CHECKPOINT_PATH',
+                'HERMES_CORPUS_WITNESS_KEY_PATH',
+                'HERMES_CORPUS_TRUST_KEY_PATH'):
+        bad=fixture()
+        bad['services'][guard.SERVICE]['environment'][key]='/workspace/untrusted.pub'
+        with pytest.raises(legacy.Denied):
+            guard.validate_standalone(bad)
 
 
 def test_default_does_not_use_docker_or_real_paths():

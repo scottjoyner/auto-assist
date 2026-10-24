@@ -18,7 +18,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent
 FILE = ROOT / 'hermes_standalone_replacement_research.compose.yaml'
-EXPECTED_FILE_SHA256 = '779e934df4b58cbb48bc3203877ed2477aef60aef6a52a56f251b96929331096'
+EXPECTED_FILE_SHA256 = '8bebe71747753d0163969044b32b8ca3c0a5ee355c0540397f2c7843c02dda53'
 IMAGE = 'sha256:'+'a'*64  # Deliberately NONEXISTENT research image sentinel
 CORPUS = '/synthetic/signed-corpus'
 SCRATCH = '/synthetic/authorized/workspace'
@@ -34,6 +34,7 @@ ALLOWED_KEYS = {'image','pull_policy','entrypoint','command','restart','init',
 ENVIRONMENT = {
     'HOME':'/workspace','HERMES_HOME':'/workspace/hermes-home',
     'HERMES_CONFIG_HOME':'/workspace/.hermes',
+    'HERMES_PROFILES_PATH':'/workspace/.hermes/profiles.yaml',
     'PYTHONPATH':'/workspace:/app/src',
     'ASSISTX_OUTBOX_DB':'/workspace/outbox.sqlite',
     'ASSISTX_URL':'http://127.0.0.1:1',
@@ -89,8 +90,28 @@ def validate_standalone(doc: dict) -> dict:
     legacy.require(not any('/nas' in x[0] or '/home/scott' in x[0]
                            for x in actual.values()),
                    'physical host path was introduced')
+    from pathlib import PurePosixPath
+    profiles = PurePosixPath(svc['environment']['HERMES_PROFILES_PATH'])
+    legacy.require(profiles.parent == PurePosixPath('/workspace/.hermes') and
+                   svc['environment']['HERMES_CONFIG_HOME'] == str(profiles.parent),
+                   'profile registry must resolve inside writable isolated home')
+    attestation = {
+        svc['environment'][key] for key in (
+            'ASSISTX_EXECUTOR_VERIFY_KEY_FILE',
+            'HERMES_CORPUS_CHECKPOINT_PATH',
+            'HERMES_CORPUS_WITNESS_KEY_PATH',
+            'HERMES_CORPUS_TRUST_KEY_PATH',
+        )
+    }
+    legacy.require(len(attestation) == 4 and all(
+                   item.startswith('/app/attestation/') for item in attestation),
+                   'independent attestation source layout drifted')
     return {
         'decision':'HOLD', 'standalone_render_qualified':True,
+        'rootless_profile_path_isolated':True,
+        'required_attestation_paths':sorted(attestation),
+        'attestation_artifacts_independently_provisioned':False,
+        'legitimate_task_access_physically_verified':False,
         'effective_service_count':1,
         'effective_mount_count':mounts['effective_mount_count'],
         'production_deployment_authorized':False,

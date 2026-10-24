@@ -24,6 +24,7 @@ services:
       HOME: /workspace
       HERMES_HOME: /workspace/hermes-home
       HERMES_CONFIG_HOME: /workspace/.hermes
+      HERMES_PROFILES_PATH: /workspace/.hermes/profiles.yaml
       PYTHONPATH: /workspace:/app/src
       ASSISTX_OUTBOX_DB: /workspace/outbox.sqlite
       ASSISTX_URL: http://127.0.0.1:1
