@@ -166,7 +166,8 @@ def serve_rootless_candidate(
                             try:
                                 send_holding_reply(
                                     conn,admitted=True,
-                                    candidate_generation=result["candidate_generation"])
+                                    candidate_generation=result["candidate_generation"],
+                                    reconciled=result.get("source_receipt_reconciled") is True)
                             except (CandidateLocalTransportError,KeyError,TypeError):
                                 receipt_unconfirmed+=1
     finally:
