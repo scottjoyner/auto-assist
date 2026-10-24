@@ -15,7 +15,6 @@ from free_subagent_discover import (
     detect_stale_records,
 )
 from free_subagent_routing import classify_free_model, enumerate_free_models
-from free_subagent_state import register_subagent
 
 
 def _now_iso() -> str:
@@ -97,23 +96,25 @@ def admit_subagent(
     model: dict[str, Any],
     state_path: pathlib.Path | None = None,
 ) -> dict[str, Any]:
-    record = {
-        "title": f"admitted-{model.get('id', '').replace('/', '-')}",
-        "objective": "auto-admitted by free_subagent_supervisor",
-        "model": model.get("id", ""),
-        "worktree": f"/tmp/admitted-{model.get('id', '').replace('/', '-')}",
-        "pid": 0,
-        "session": "",
-        "status": "admitted",
-    }
-    try:
-        recs = register_subagent(record, state_path)
-        result = {"admitted": True, "model": model.get("id"), "total_records": len(recs), "record": recs[-1]}
-    except Exception as exc:
-        result = {"admitted": False, "model": model.get("id"), "error": str(exc)}
-    _log({"ts": _now_iso(), "event": "admit", **result})
-    return result
+    """Deny direct admission: writable observer state is not a resource grant.
 
+    This function is exported by free_subagent_supervisor, so active-mode
+    denial in run_supervision_loop is insufficient by itself. In particular,
+    no caller may manufacture an "admitted" registry row through this helper.
+    The state_path argument is retained for compatibility but never opened.
+    """
+    model_id = model.get("id") if isinstance(model, dict) else None
+    result = {
+        "admitted": False,
+        "model": model_id,
+        "blocked": True,
+        "reason": "resource_owned_process_and_admission_authority_required",
+        "dispatch_authorized": False,
+        "provider_calls": 0,
+        "state_mutated": False,
+    }
+    _log({"ts": _now_iso(), "event": "admit_denied", **result})
+    return result
 
 def run_supervision_loop(
     projection: dict[str, Any],

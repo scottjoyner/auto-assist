@@ -36,7 +36,13 @@ def degraded_status() -> dict:
     req = urllib.request.Request(f"{ISLAND_API}/api/degraded/status")
     token = base64.b64encode(f"{AUTH_USER}:{AUTH_PASS}".encode()).decode()
     req.add_header("Authorization", f"Basic {token}")
-    with urllib.request.urlopen(req, timeout=6) as resp:
+    # The island's own status endpoint verifies the whole operational journal and
+    # resolves the runtime projection. Measured on 2026-10-20 with a degraded
+    # island: 40.9 s. The previous 6 s budget timed out on every heartbeat, so the
+    # island reported its own mode as "unreachable (timed out)" even though the
+    # endpoint answers 200 with mode=DEGRADED. The budget has to exceed the
+    # degraded-path cost, and the unit's TimeoutStartSec has to exceed this.
+    with urllib.request.urlopen(req, timeout=45) as resp:
         return json.load(resp)
 
 

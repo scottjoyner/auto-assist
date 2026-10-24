@@ -55,6 +55,7 @@ from .recovery_runbooks import build_runbook, sign_runbook
 from .node_identity import verify_node_token
 from .operations_readiness import build_operations_readiness
 from .self_healing import SelfHealingController
+from .router_admin_transport import RouterAdminReadDenied, fetch_router_admin_ops_summary
 
 CONTENT_TYPE_LATEST, generate_latest = load_prometheus_client()
 redis = load_redis_module()
@@ -1310,14 +1311,21 @@ def _fetch_auto_router_fleet_report() -> dict[str, Any]:
         }
 
     source_url = f"{base_url}/admin/ops/summary"
+    admin_token = os.getenv("AUTO_ROUTER_ADMIN_TOKEN", "").strip()
     try:
-        summary = _fetch_json(source_url)
-    except Exception as exc:
+        summary = fetch_router_admin_ops_summary(base_url, admin_token)
+    except RouterAdminReadDenied as exc:
+        reason = str(exc)
+    except Exception:
+        reason = "router_admin_read_unavailable"
+    else:
+        reason = None
+    if reason is not None:
         return {
             "ok": False,
             "configured": True,
             "source_url": source_url,
-            "error": str(exc)[:500],
+            "error": reason,
             "report": {},
             "summary": {},
             "loadouts": [],

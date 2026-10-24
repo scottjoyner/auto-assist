@@ -27,6 +27,14 @@ from requests.structures import CaseInsensitiveDict
 from requests.utils import get_encoding_from_headers
 
 from assistx.llm import client as llm_client
+
+
+@pytest.fixture(autouse=True)
+def _permit_synthetic_fixture_effects(monkeypatch):
+    """Only for fake HTTP fixtures; production source has no grant bypass."""
+    monkeypatch.setattr(llm_client, "_require_effect_authority",
+                        lambda *_args, **_kwargs: None)
+
 from assistx.llm import output_integrity
 
 # The live prompt that forced multi-byte output on the wire.
