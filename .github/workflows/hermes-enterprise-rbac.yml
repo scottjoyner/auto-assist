@@ -10,6 +10,8 @@ on:
       - "src/assistx/hermes_broker_rootless_research.py"
       - "tests/test_hermes_broker_rootless_research.py"
       - "tests/hermes_broker_rootless_process_disposable_linux.py"
+      - "tests/hermes_rootless_broker_credential_db_disposable.py"
+      - "tests/test_hermes_rootless_private_db_contract.py"
       - "tests/test_hermes_broker_unix_boundary_research.py"
       - "tests/hermes_broker_unix_peer_disposable_linux.py"
       - "tests/test_hermes_broker_command_research.py"
@@ -72,6 +74,13 @@ jobs:
         env:
           HERMES_ENTERPRISE_RBAC_CANARY: synthetic-ci-only
         run: python tests/hermes_broker_generation_rbac_disposable_neo4j.py
+      - name: Verify rootless broker credential is pipe-only and Task writes are generation-fenced
+        env:
+          HERMES_ROOTLESS_DB_CI: synthetic-only
+        run: |
+          printf '%s\n' "$HERMES_RBAC_EPHEMERAL_ADMIN_PASSWORD" |
+            sudo -n env HERMES_ROOTLESS_DB_CI=synthetic-only GITHUB_ACTIONS=true \
+              "$(command -v python)" tests/hermes_rootless_broker_credential_db_disposable.py
       - name: Remove isolated Enterprise DB
         if: always()
         run: docker rm -f hermes-rbac-disposable >/dev/null 2>&1 || true
