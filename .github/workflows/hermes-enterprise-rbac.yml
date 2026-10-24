@@ -27,7 +27,7 @@ jobs:
           import os, pathlib, secrets, subprocess
           value=secrets.token_urlsafe(36)
           with open(os.environ["GITHUB_ENV"],"a",encoding="utf-8") as f:
-              f.write("HERMES_RBAC_EPHEMERAL_ADMIN_PASSWORD="+value+"\\n")
+              f.write("HERMES_RBAC_EPHEMERAL_ADMIN_PASSWORD="+value+"\n")
           subprocess.run([
               "docker","run","--rm","-d",
               "--name","hermes-rbac-disposable",
