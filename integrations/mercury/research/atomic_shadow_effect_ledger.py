@@ -31,7 +31,7 @@ class AtomicShadowEffectLedger:
                 attempt TEXT NOT NULL, epoch INTEGER NOT NULL,
                 committed_ms INTEGER NOT NULL, token_sha256 TEXT NOT NULL,
                 previous_sha256 TEXT NOT NULL, receipt_sha256 TEXT NOT NULL,
-                UNIQUE(grp, effect_id))""")
+                UNIQUE(grp, effect_id), UNIQUE(grp, token_sha256))""")
 
     def record(self, client: Replica, attempt: str, token: str,
                effect_id: str, now_ms: int, *, group: str = GROUP):
@@ -64,13 +64,19 @@ class AtomicShadowEffectLedger:
                            (GROUP, effect_id)).fetchone():
                 con.rollback()
                 return verdict("QUARANTINE", "ambiguous_prior_ack_no_replay")
+            token_hash = hashlib.sha256(token.encode()).hexdigest()
+            if con.execute(
+                "SELECT 1 FROM shadow_effect_ledger WHERE grp=? AND token_sha256=?",
+                (GROUP, token_hash)).fetchone():
+                con.rollback()
+                return verdict("QUARANTINE", "lease_already_consumed_no_extra_effect")
             prev = con.execute(
                 "SELECT receipt_sha256 FROM shadow_effect_ledger ORDER BY seq DESC LIMIT 1"
             ).fetchone()
             prior = prev[0] if prev else "0" * 64
             entry = {"group": GROUP, "effect_id": effect_id, "node": client.node,
                      "attempt": attempt, "epoch": client.epoch, "committed_ms": now_ms,
-                     "token_sha256": hashlib.sha256(token.encode()).hexdigest(),
+                     "token_sha256": token_hash,
                      "previous_sha256": prior}
             con.execute("""INSERT INTO shadow_effect_ledger
                 (grp,effect_id,node,attempt,epoch,committed_ms,token_sha256,
