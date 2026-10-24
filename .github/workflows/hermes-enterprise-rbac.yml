@@ -6,6 +6,9 @@ on:
       - "tests/hermes_task_broker_rbac_disposable_neo4j.py"
       - "tests/hermes_broker_generation_rbac_disposable_neo4j.py"
       - "src/assistx/hermes_broker_command_research.py"
+      - "src/assistx/hermes_broker_unix_boundary_research.py"
+      - "tests/test_hermes_broker_unix_boundary_research.py"
+      - "tests/hermes_broker_unix_peer_disposable_linux.py"
       - "tests/test_hermes_broker_command_research.py"
       - "tests/test_hermes_generation_broker_rbac_contract.py"
       - "src/assistx/hermes_source_generation_research.py"
@@ -28,6 +31,11 @@ jobs:
           python-version: "3.12"
       - name: Install isolated Neo4j driver
         run: python -m pip install "neo4j>=5.26,<6"
+      - name: Verify real kernel peer credentials across distinct ephemeral OS UIDs
+        env:
+          HERMES_PEER_ISOLATION_CI: synthetic-only
+          PYTHONPATH: src
+        run: sudo -n env HERMES_PEER_ISOLATION_CI=synthetic-only GITHUB_ACTIONS=true PYTHONPATH=src "$(command -v python)" tests/hermes_broker_unix_peer_disposable_linux.py
       - name: Launch disposable Enterprise with runner-created credentials
         run: |
           python3 - <<'PY'
