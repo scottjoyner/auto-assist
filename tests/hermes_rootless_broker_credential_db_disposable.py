@@ -418,7 +418,10 @@ def main():
             stdout,error=broker_proc.communicate(timeout=14)
             assert broker_proc.returncode==0,"rootless_broker_transaction_failed"
             assert b"PASS rootless_private_credential_two_transactions_two_denials" in stdout
-            assert get_state()==("DONE",2),"rootless_completion_fence_failed"
+            # Both the original claim and the recorded claim are complete;
+            # the shared source ledger now includes all four accepted
+            # writes (original 0→2, recorded 2→4).
+            assert get_state()==("DONE",4),"rootless_completion_fence_failed"
             assert not socket_path.exists(),"rootless_socket_not_cleaned"
             print("PASS rootless_nonroot_private_credential_enrolled_heartbeat_completion",flush=True)
             print("PASS stale_generation_rejected_without_ledger_increment",flush=True)
