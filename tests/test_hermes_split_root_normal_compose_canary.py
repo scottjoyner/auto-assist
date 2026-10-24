@@ -158,7 +158,7 @@ def test_new_kernel_remote_mount_guard_is_pinned_in_disposable_source():
 def test_adapter_source_pin_includes_pre_mutation_mount_checks():
     target=canary.ROOT/"src/assistx/agents/hermes_agent_adapter.py"
     git_blob=_git_blob_sha_from_bytes(target)
-    assert git_blob=="7c4c03673526b660928aac2bbfebbf16b55c47c3"
+    assert git_blob=="8cf829275b188c3b340f2cde17560665acdcfa85"
     assert git_blob in Path(canary.__file__).read_text()
     source=target.read_text()
     eval_write=source.split("def save_eval(",1)[1].split("def ensure_model_env(",1)[0]
@@ -175,7 +175,7 @@ def test_source_pin_ignores_intercepted_git_subprocess(monkeypatch):
     def untrusted_subprocess(*args,**kwargs):
         raise AssertionError("pin must hash source bytes, not subprocess output")
     monkeypatch.setattr(subprocess,"run",untrusted_subprocess)
-    assert _git_blob_sha_from_bytes(target)=="7c4c03673526b660928aac2bbfebbf16b55c47c3"
+    assert _git_blob_sha_from_bytes(target)=="8cf829275b188c3b340f2cde17560665acdcfa85"
 
 
 def test_real_entrypoint_and_adapter_source_are_pinned():

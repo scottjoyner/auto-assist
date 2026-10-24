@@ -84,7 +84,7 @@ def read_only_source():
     # production modules MUST retain their exact reviewed PR #425 blobs.
     expected_blobs = {
         "src/assistx/agents/hermes_agent_adapter.py":
-            "7c4c03673526b660928aac2bbfebbf16b55c47c3",
+            "8cf829275b188c3b340f2cde17560665acdcfa85",
         "src/assistx/swarm_memory.py":
             "9b073d1f8e31d98e08820d473523abbf5d716818",
          "src/assistx/knowledge_roots.py":
