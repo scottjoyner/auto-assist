@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Any
 
 from .hermes_broker_unix_boundary_research import (
-    CandidateLocalTransportError, serve_one_candidate_connection,
+    CandidateLocalTransportError, _peer_credentials,
+    serve_one_candidate_connection, send_holding_reply,
 )
 
 _DIR_MODE = 0o2710
@@ -72,6 +73,7 @@ def serve_rootless_candidate(
     session_factory: Callable[[], Any],
     max_connections: int=1,
     max_lifetime_seconds: float=5.0,
+    emit_holding_replies: bool=False,
 ) -> dict[str, Any]:
     """One bounded listener lifecycle; local UID boundary, never dispatch GO.
 
@@ -93,6 +95,8 @@ def serve_rootless_candidate(
             or type(max_lifetime_seconds) not in (float,int)
             or not 0.1 <= max_lifetime_seconds <= _MAX_LIFETIME):
         raise CandidateBrokerListenerError("invalid_lifecycle_limits")
+    if type(emit_holding_replies) is not bool:
+        raise CandidateBrokerListenerError("invalid_receipt_configuration")
     if not callable(session_factory):
         raise CandidateBrokerListenerError("missing_internal_session_factory")
     if not isinstance(socket_dir,Path):
@@ -108,6 +112,7 @@ def serve_rootless_candidate(
     dev_inode=None
     good=0
     denied=0
+    receipt_unconfirmed=0
     bound=False
     try:
         with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as listener:
@@ -130,15 +135,40 @@ def serve_rootless_candidate(
                 except socket.timeout:
                     break
                 with conn:
+                    # Independent SO_PEERCRED check gates *all* reply attempts.
+                    # An unqualified peer receives only socket EOF, never a
+                    # protocol response or source-generation information.
+                    reply_allowed=False
+                    if emit_holding_replies:
+                        try:
+                            _,peer_uid,_=_peer_credentials(conn)
+                            reply_allowed=peer_uid==allowed_peer_uid
+                        except CandidateLocalTransportError:
+                            pass
                     try:
                         result=serve_one_candidate_connection(
                             conn,allowed_peer_uid=allowed_peer_uid,
                             session_factory=session_factory)
                         if result.get("decision")!="HOLD":
                             raise CandidateBrokerListenerError("unexpected_authority")
-                        good+=1
                     except CandidateLocalTransportError:
                         denied+=1
+                        if reply_allowed:
+                            try:
+                                send_holding_reply(conn,admitted=False)
+                            except CandidateLocalTransportError:
+                                receipt_unconfirmed+=1
+                    else:
+                        # Do not reinterpret a committed DB transaction as a
+                        # rejected command when socket delivery fails.
+                        good+=1
+                        if reply_allowed:
+                            try:
+                                send_holding_reply(
+                                    conn,admitted=True,
+                                    candidate_generation=result["candidate_generation"])
+                            except (CandidateLocalTransportError,KeyError,TypeError):
+                                receipt_unconfirmed+=1
     finally:
         if bound and dev_inode is not None:
             try:
@@ -152,6 +182,8 @@ def serve_rootless_candidate(
         "schema":1,
         "accepted_candidate_commands":good,
         "rejected_connections":denied,
+        "unconfirmed_socket_replies":receipt_unconfirmed,
+        "socket_replies_durable":False,
         "rootless_broker_uid_checked":True,
         "broker_exclusive_credentials_verified":False,
         "fleet_authentication_verified":False,
