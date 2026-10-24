@@ -130,7 +130,7 @@ def test_existing_production_code_does_not_import_research_adapter():
     root=Path(__file__).resolve().parents[1]/"src/assistx"
     # Excluding research prototype from this negative audit.
     for path in root.rglob("*.py"):
-        if path.name.startswith("hermes_source_"):
+        if path.name.startswith("hermes_source_") or path.name == "hermes_broker_command_research.py":
             continue
         text=path.read_text(encoding="utf-8")
         assert "hermes_source_completion_research" not in text, path
