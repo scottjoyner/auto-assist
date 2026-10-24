@@ -38,6 +38,7 @@ sys.modules["assistx"]=pkg
 for name in (
     "hermes_claim_census","hermes_source_generation_research",
     "hermes_source_heartbeat_research","hermes_source_completion_research",
+    "hermes_source_receipt_research",
     "hermes_broker_command_research","hermes_broker_unix_boundary_research",
     "hermes_broker_rootless_research",
 ):
@@ -138,7 +139,8 @@ def main():
         for name in (
             "hermes_claim_census","hermes_source_generation_research",
             "hermes_source_heartbeat_research","hermes_source_completion_research",
-            "hermes_broker_command_research","hermes_broker_unix_boundary_research",
+            "hermes_source_receipt_research",
+    "hermes_broker_command_research","hermes_broker_unix_boundary_research",
             "hermes_broker_rootless_research",
         ):
             target=staged_src/(name+".py")
