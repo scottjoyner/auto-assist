@@ -791,26 +791,38 @@ def call_self_task_llm(prompt: str, model: str, max_tokens: int = SELFTASK_MAX_T
     router directly lets us bound output length and avoid the tool-use loops
     that plague tiny models. Returns ``{"success", "output", "error", "elapsed"}``.
     """
-    # Constrain the requested model to the claim-scoped executor allowlist:
-    # the router 401s any model outside the token's allowed_model_aliases.
+    # A service-wide internal token is not a claim-scoped execution grant.
+    # Fail *before* preparing an HTTP request or invoking a model when no
+    # executor claim exists. The router must STILL verify JWT signature,
+    # issuer, expiry and lease/resource status for every actual request.
+    claim_token = os.getenv("HERMES_EXECUTOR_TOKEN", "").strip()
+    if claim_token.count(".") != 2:
+        return {
+            "success": False, "output": "", "error": "claim_scoped_executor_token_required",
+            "elapsed": 0.0,
+        }
     try:
         import base64 as _b64
-        _tok = os.getenv("HERMES_EXECUTOR_TOKEN", "")
-        _payload_b64 = _tok.split(".")[1] if _tok.count(".") >= 2 else ""
-        _payload_b64 += "=" * (-len(_payload_b64) % 4)
-        _allowed = json.loads(_b64.urlsafe_b64decode(_payload_b64)).get("allowed_model_aliases") or []
-    except Exception:
-        _allowed = []
-    if _allowed and model not in _allowed:
-        # Prefer the host-local reasoning lane: this adapter runs on x1 and the
-        # signed projection only covers runtimes with fresh access evidence
-        # (remote nodes expire out of the projection).
-        preferred = [a for a in _allowed if a == "local/reasoning-large"]
-        chosen = preferred[0] if preferred else next(
-            (a for a in _allowed if a.startswith(("local/", "lmstudio-x1"))), _allowed[0]
-        )
-        logger.info("self-task model %s outside token scope; using %s", model, chosen)
-        model = chosen
+        import binascii as _binascii
+        _body = claim_token.split(".")[1]
+        _claims = json.loads(_b64.urlsafe_b64decode(
+            _body + "=" * (-len(_body) % 4)
+        ))
+        _allowed = _claims.get("allowed_model_aliases")
+        if not isinstance(_allowed, list) or not _allowed or not all(
+            isinstance(alias, str) and alias.strip() for alias in _allowed
+        ):
+            raise ValueError("missing_claim_scoped_model_allowlist")
+    except (ValueError, TypeError, AttributeError, UnicodeError, _binascii.Error):
+        return {
+            "success": False, "output": "", "error": "invalid_executor_claim_scope",
+            "elapsed": 0.0,
+        }
+    if model not in _allowed:
+        return {
+            "success": False, "output": "", "error": "model_outside_executor_claim_scope",
+            "elapsed": 0.0,
+        }
 
     payload = {
         "model": model,
@@ -823,15 +835,10 @@ def call_self_task_llm(prompt: str, model: str, max_tokens: int = SELFTASK_MAX_T
         # Strict-executor mode: the router validates the claim-scoped JWT on
         # every inference call. Without this header the request is rejected
         # with "executor token must contain three segments".
-        headers: Dict[str, str] = {}
-        claim_token = os.getenv("HERMES_EXECUTOR_TOKEN", "").strip()
-        internal_token = os.getenv("ASSISTX_INTERNAL_SERVICE_TOKEN", "").strip()
-        if claim_token:
-            headers["Authorization"] = f"Bearer {claim_token}"
-        elif internal_token:
-            # Unclaimed background self-tasks authenticate as AssistX internal
-            # services; the router bypasses model-scope for this identity.
-            headers["Authorization"] = f"Bearer {internal_token}"
+        # Only the claim-scoped token is forwarded. It is NOT locally trusted:
+        # the resource-side router must validate its signature, TTL, ownership,
+        # and spend authorization; there is no internal-service fallback.
+        headers: Dict[str, str] = {"Authorization": f"Bearer {claim_token}"}
         resp = requests.post(ROUTER_CHAT_URL, json=payload, timeout=timeout, headers=headers)
         elapsed = time.monotonic() - start
         if resp.status_code != 200:
