@@ -43,6 +43,41 @@ class AtomicTests(unittest.TestCase):
         self.assertEqual(self.ledger.local_check()["count"], 1)
         self.assert_inert(r)
 
+    def test_one_lease_cannot_commit_distinct_effect_ids(self):
+        first = self.call("effect-1")
+        second = self.call("effect-2", now=102)
+        self.assertEqual(first["decision"], "SHADOW_RECORDED_ONLY")
+        self.assertEqual(second["decision"], "QUARANTINE")
+        self.assertEqual(second["reason"], "lease_already_consumed_no_extra_effect")
+        self.assertEqual(self.ledger.local_check()["count"], 1)
+        self.assert_inert(second)
+
+    def test_concurrent_distinct_ids_with_same_token_only_one_effect(self):
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            rows = list(pool.map(
+                lambda i: self.call(f"unique-effect-{i}"), range(12)))
+        self.assertEqual(sum(r["decision"] == "SHADOW_RECORDED_ONLY"
+                             for r in rows), 1)
+        self.assertTrue(all(r["decision"] in ("SHADOW_RECORDED_ONLY", "QUARANTINE")
+                            for r in rows))
+        self.assertEqual(self.ledger.local_check()["count"], 1)
+        for result in rows:
+            self.assert_inert(result)
+
+    def test_new_lease_after_expiry_has_separate_single_effect_budget(self):
+        self.call("effect-1")
+        fresh = self.gate.reserve(self.client, "task-b", "nonce-b", 1100)
+        self.assertEqual(fresh["decision"], "SHADOW_RESERVED_ONLY")
+        token2 = fresh["shadow_token"]
+        self.assertNotEqual(token2, self.token)
+        accepted = self.ledger.record(self.client, "task-b", token2,
+                                      "effect-2", 1101)
+        self.assertEqual(accepted["decision"], "SHADOW_RECORDED_ONLY")
+        denied = self.ledger.record(self.client, "task-b", token2,
+                                    "effect-3", 1102)
+        self.assertEqual(denied["reason"], "lease_already_consumed_no_extra_effect")
+        self.assertEqual(self.ledger.local_check()["count"], 2)
+
     def test_prior_positive_check_does_not_survive_revoke(self):
         self.assertTrue(self.gate.check_effect(self.client, "task-a",
                                                self.token, 101)["shadow_effect_allowed"])
