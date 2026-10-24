@@ -49,6 +49,11 @@ class RBACCanaryContractTests(unittest.TestCase):
         self.assertIn('value+"'+chr(92)+'n"',s)
         self.assertNotIn('value+"'+chr(92)*2+'n"',s)
         self.assertNotIn('synthetic-only-admin-not-a-secret',s)
+        self.assertIn('print("::add-mask::"+value, flush=True)',s)
+        self.assertLess(s.index('print("::add-mask::"+value'),
+                        s.index('with open(os.environ["GITHUB_ENV"]'))
+        self.assertLess(s.index('print("::add-mask::"+value'),
+                        s.index('subprocess.run(['))
         self.assertNotIn("docker compose up",s)
         self.assertNotIn("kubectl",s)
 
