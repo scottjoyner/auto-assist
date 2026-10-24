@@ -5,6 +5,8 @@ on:
     paths:
       - "tests/hermes_task_broker_rbac_disposable_neo4j.py"
       - "tests/hermes_broker_generation_rbac_disposable_neo4j.py"
+      - "src/assistx/hermes_broker_command_research.py"
+      - "tests/test_hermes_broker_command_research.py"
       - "tests/test_hermes_generation_broker_rbac_contract.py"
       - "src/assistx/hermes_source_generation_research.py"
       - "src/assistx/hermes_source_completion_research.py"
