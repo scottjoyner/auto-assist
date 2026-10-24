@@ -139,3 +139,28 @@ def test_rejected_command_cannot_be_marked_reconciled():
             send_holding_reply(a,admitted=False,reconciled=True)
     finally:
         a.close();b.close()
+
+
+def test_unix_handler_preserves_reconciled_marker_without_sensitive_data(monkeypatch):
+    from assistx import hermes_broker_unix_boundary_research as boundary
+    import os
+    a,b=socket.socketpair(socket.AF_UNIX,socket.SOCK_STREAM)
+    try:
+        allowed=os.geteuid()+9876
+        monkeypatch.setattr(boundary,"_peer_credentials",
+                            lambda conn:(os.getpid(),allowed,os.getegid()))
+        def fake_dispatch(command,*,trusted_channel_principal,session_factory):
+            assert command=={"operation":"reconcile_complete"}
+            assert trusted_channel_principal=="hermes-local"
+            return {"candidate_generation":3,"source_receipt_reconciled":True}
+        monkeypatch.setattr(boundary,"dispatch_candidate_command",fake_dispatch)
+        b.sendall(json.dumps({"version":1,"command":{"operation":"reconcile_complete"}}).encode()+b"\n")
+        out=boundary.serve_one_candidate_connection(
+            a,allowed_peer_uid=allowed,session_factory=lambda:None)
+        assert out["source_receipt_reconciled"] is True
+        assert out["candidate_generation"]==3
+        assert out["production_dispatch_authorized"] is False
+        assert "receipt_key" not in out
+        assert "task_id" not in out
+    finally:
+        a.close();b.close()
