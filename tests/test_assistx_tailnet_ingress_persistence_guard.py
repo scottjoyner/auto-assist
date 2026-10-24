@@ -91,3 +91,80 @@ def test_physical_instrumentation_is_inspection_only():
         assert forbidden not in code
     assert '"credential_values_collected":False' in code
     assert '"automatic_cutover_or_rollback_authorized":False' in code
+
+
+BOOT_READY=dict(
+    live_caddy_static_verified=True,raw_service_masked=True,
+    one_boot_enabled_caddy=True,user_manager_linger=True,
+)
+
+
+def test_pinned_fallback_boot_configured_does_not_certify_reboot():
+    outcome=decide(**BOOT_READY)
+    assert outcome["reason"]=="PINNED_SANITIZER_BOOT_CONFIGURED_REBOOT_NOT_WITNESSED"
+    assert outcome["pinned_caddy_live_static_verified"] is True
+    assert outcome["legacy_socat_masked"] is True
+    assert outcome["exactly_one_boot_enabled_caddy"] is True
+    assert outcome["user_systemd_linger_enabled"] is True
+    assert outcome["real_reboot_survival_verified"] is False
+    assert outcome["postcutover_real_client_acceptance"] is False
+    assert outcome["automatic_cutover_or_rollback_authorized"] is False
+    assert outcome["decision"]=="HOLD"
+
+
+@pytest.mark.parametrize("bad",(
+    {"live_caddy_static_verified":False},
+    {"raw_service_masked":False},
+    {"one_boot_enabled_caddy":False},
+    {"caddyfile_pinned":False},
+    {"binary_pinned":False},
+    {"local_listener":False},
+    {"serve_api_proxy_routes":4},
+    {"serve_api_proxy_routes":6},
+))
+def test_missing_runtime_or_boot_evidence_is_not_persistence_attestation(bad):
+    outcome=decide(**{**BOOT_READY,**bad})
+    assert outcome["reason"]!="PINNED_SANITIZER_BOOT_CONFIGURED_REBOOT_NOT_WITNESSED"
+    assert outcome["decision"]=="HOLD"
+    assert outcome["real_reboot_survival_verified"] is False
+
+
+def test_no_user_linger_is_explicit_boot_failure():
+    outcome=decide(**{**BOOT_READY,"user_manager_linger":False})
+    assert outcome["reason"]=="SANITIZER_USER_MANAGER_NOT_PERSISTENT"
+    assert outcome["automatic_cutover_or_rollback_authorized"] is False
+
+
+@pytest.mark.parametrize("bad,expected",(
+    ({"raw_active":True},"RAW_FORWARDER_CURRENTLY_ACTIVE"),
+    ({"raw_enabled":True},"UNSAFE_SOCAT_RESTART_ON_BOOT"),
+    ({"tailnet_listener":False},"FAIL_CLOSED_NO_TAILNET_INGRESS"),
+    ({"unknown_8000_listener":True},"UNKNOWN_EXPOSURE"),
+    ({"backend_loopback_only":False},"UNKNOWN_EXPOSURE"),
+))
+def test_unsafe_live_state_overrides_healthy_boot_configuration(bad,expected):
+    report=decide(**{**BOOT_READY,**bad})
+    assert report["reason"]==expected
+    assert report["decision"]=="HOLD"
+
+
+@pytest.mark.parametrize("flag",tuple(BOOT_READY))
+def test_nonboolean_caddy_attestations_denied(flag):
+    with pytest.raises(guard.ObservationFailed):
+        decide(**{**BOOT_READY,flag:"true"})
+
+
+def test_import_is_pinned_local_file_not_ambiguous_installed_module():
+    source=Path(guard.__file__).read_text()
+    assert 'ROOT/"scripts/assistx_tailnet_postcutover_attestation.py"' in source
+    assert 'importlib.util.spec_from_file_location' in source
+    assert 'postcutover.physical(live[0])' in source
+    assert 'len(live)==len(boot)==1 and live==boot' in source
+    assert '"loginctl","show-user","scott","--property=Linger"' in source
+    assert '"user_systemd_linger_enabled":user_manager_linger' in source
+    for forbidden in (
+        "systemctl --user restart", "systemctl --user stop",
+        "loginctl enable-linger", "tailscale serve --bg",
+        "docker restart", "docker exec", "method=\"POST\"",
+    ):
+        assert forbidden not in source

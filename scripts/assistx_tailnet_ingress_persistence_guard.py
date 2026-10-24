@@ -8,6 +8,7 @@ a real cutover and independently authenticated acceptance are still required.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import hashlib
 import ipaddress
 import json
@@ -15,6 +16,13 @@ import subprocess
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
+# CI test discovery loads this script by exact path, not as a Python package.
+# Read the other exact checked-in script without a PYTHONPATH dependency.
+POSTCUTOVER_PATH=ROOT/"scripts/assistx_tailnet_postcutover_attestation.py"
+SPEC=importlib.util.spec_from_file_location("assistx_pinned_live_postcutover",POSTCUTOVER_PATH)
+assert SPEC is not None and SPEC.loader is not None
+postcutover=importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(postcutover)
 CADDYFILE=ROOT/"scripts/assistx-tailnet-header-sanitizer.Caddyfile"
 EXPECTED_CADDYFILE_SHA="c4136364469a45f918c8e9a33ce5268f57dc4ee39b030012af4f66aaf9b186b2"
 EXPECTED_CADDY_BINARY_SHA="9681d054b6e5137d53f6d027188b349e0603fd12ea6334bd0d49da6755432f1b"
@@ -49,7 +57,17 @@ def listen_endpoints(ss_text):
 def evaluate(*,raw_active,raw_enabled,raw_unit_matches,
              backend_loopback_only,tailnet_listener,local_listener,
              unknown_8000_listener,caddyfile_pinned,binary_pinned,
-             serve_api_proxy_routes):
+             serve_api_proxy_routes,
+             live_caddy_static_verified=False,
+             raw_service_masked=False,
+             one_boot_enabled_caddy=False,
+             user_manager_linger=False):
+    require(all(type(x) is bool for x in (
+        raw_active,raw_enabled,raw_unit_matches,backend_loopback_only,
+        tailnet_listener,local_listener,unknown_8000_listener,
+        caddyfile_pinned,binary_pinned,live_caddy_static_verified,
+        raw_service_masked,one_boot_enabled_caddy,user_manager_linger)),
+        "nonboolean ingress evidence")
     require(type(serve_api_proxy_routes) is int and serve_api_proxy_routes>=0,
             "invalid observed Serve route count")
     if not backend_loopback_only or unknown_8000_listener:
@@ -61,6 +79,11 @@ def evaluate(*,raw_active,raw_enabled,raw_unit_matches,
         issue="UNSAFE_SOCAT_RESTART_ON_BOOT"
     elif not tailnet_listener:
         issue="FAIL_CLOSED_NO_TAILNET_INGRESS"
+    elif live_caddy_static_verified and raw_service_masked             and one_boot_enabled_caddy and user_manager_linger             and caddyfile_pinned and binary_pinned             and local_listener and serve_api_proxy_routes==5:
+        # This is static + user-manager boot configuration, NOT a real reboot.
+        issue="PINNED_SANITIZER_BOOT_CONFIGURED_REBOOT_NOT_WITNESSED"
+    elif live_caddy_static_verified and not user_manager_linger:
+        issue="SANITIZER_USER_MANAGER_NOT_PERSISTENT"
     else:
         issue="CADDY_INGRESS_NOT_YET_AUTHENTICATED"
     return {
@@ -76,6 +99,11 @@ def evaluate(*,raw_active,raw_enabled,raw_unit_matches,
         "reviewed_caddyfile_sha_verified":caddyfile_pinned,
         "pinned_caddy_binary_sha_verified":binary_pinned,
         "separate_tailscale_serve_api_routes":serve_api_proxy_routes,
+        "pinned_caddy_live_static_verified":live_caddy_static_verified,
+        "legacy_socat_masked":raw_service_masked,
+        "exactly_one_boot_enabled_caddy":one_boot_enabled_caddy,
+        "user_systemd_linger_enabled":user_manager_linger,
+        "real_reboot_survival_verified":False,
         "postcutover_real_client_acceptance":False,
         "sanitizing_fallback_independently_qualified":False,
         "automatic_cutover_or_rollback_authorized":False,
@@ -116,7 +144,41 @@ def physical():
     count=sum(1 for web in serving.get("Web",{}).values()
               for handler in web.get("Handlers",{}).values()
               if "127.0.0.1:8000" in (handler.get("Proxy") or ""))
+    # Independently verify the actual pinned running fallback/primary socket
+    # through the existing kernel-UID+inode+cgroup and unit SHA verifier.
+    # This read-only observation is NOT a reboot or actual client auth check.
+    statuses={}
+    for label,(unit,_,_) in postcutover.CANDIDATE_UNITS.items():
+        fields=command(["systemctl","--user","show",unit,
+                        "--property=ActiveState,UnitFileState"],8)
+        statuses[label]=dict(line.split("=",1)
+            for line in fields.stdout.splitlines() if "=" in line)
+    live=[label for label,v in statuses.items()
+          if v.get("ActiveState")=="active"]
+    boot=[label for label,v in statuses.items()
+          if v.get("UnitFileState") in ("enabled","enabled-runtime")]
+    one_caddy=(len(live)==len(boot)==1 and live==boot)
+    static=False
+    if one_caddy and not active and not enabled:
+        try:
+            cert=postcutover.physical(live[0])
+            static=(cert["postcutover_static_gate_met"] is True
+                    and cert["production_release_authorized"] is False)
+        except (OSError,ValueError,subprocess.TimeoutExpired,
+                postcutover.Unsafe):
+            static=False
+    masked=(command(["systemctl","--user","is-enabled",SERVICE],
+                    allow_failure=True).stdout.strip()=="masked"
+            and "LoadState=masked" in command(
+                ["systemctl","--user","show",SERVICE,
+                 "--property=LoadState"]).stdout)
+    linger=command(["loginctl","show-user","scott","--property=Linger"],
+                   allow_failure=True)
+    linger_enabled=(linger.returncode==0 and linger.stdout.strip()=="Linger=yes")
     result=evaluate(
+        live_caddy_static_verified=static,
+        raw_service_masked=masked,one_boot_enabled_caddy=one_caddy,
+        user_manager_linger=linger_enabled,
         raw_active=active,raw_enabled=enabled,raw_unit_matches=signature,
         backend_loopback_only=only_loopback,
         tailnet_listener=f"{ip}:8000" in ports,
