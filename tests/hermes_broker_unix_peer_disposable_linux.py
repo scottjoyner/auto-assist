@@ -12,6 +12,8 @@ if __name__ != "__main__":
     raise unittest.SkipTest("explicit isolated root CI peer credential probe only")
 
 import json
+import importlib.util
+import types
 import os
 from pathlib import Path
 import pwd
@@ -24,6 +26,19 @@ assert os.environ.get("HERMES_PEER_ISOLATION_CI")=="synthetic-only"
 assert os.environ.get("GITHUB_ACTIONS")=="true"
 assert os.geteuid()==0
 
+# Load only the opt-in research modules; do not import assistx runtime
+# __init__ (which imports unrelated API dependencies in the full app).
+root=Path(__file__).resolve().parents[1]/"src/assistx"
+pkg=types.ModuleType("assistx")
+pkg.__path__=[str(root)]
+sys.modules["assistx"]=pkg
+for name in ("hermes_claim_census","hermes_source_generation_research",
+             "hermes_source_heartbeat_research","hermes_source_completion_research",
+             "hermes_broker_command_research","hermes_broker_unix_boundary_research"):
+    spec=importlib.util.spec_from_file_location("assistx."+name,root/(name+".py"))
+    module=importlib.util.module_from_spec(spec)
+    sys.modules["assistx."+name]=module
+    spec.loader.exec_module(module)
 from assistx import hermes_broker_unix_boundary_research as boundary
 
 nobody=pwd.getpwnam("nobody")
