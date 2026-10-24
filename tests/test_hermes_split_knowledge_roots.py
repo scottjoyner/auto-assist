@@ -236,3 +236,40 @@ def test_missing_knowledge_root_alias_and_restricted_paths_fail_closed(monkeypat
                 roots._strict_path(bad, "fixture")
     with pytest.raises(ValueError):
         roots.checked_write_path(str(write), str(read / "victim"))
+
+
+def test_eval_rechecks_mount_before_any_directory_mutation(split, monkeypatch):
+    ad, _mem, _ro, rw, _mp = split
+    touched=[]
+    def mount_unavailable():
+        raise ValueError("synthetic remote source switched to local ext4")
+    def observe_mkdir(*args,**kwargs):
+        touched.append(args)
+        raise AssertionError("directory mutated before verified remote mount")
+    monkeypatch.setattr(roots,"_recheck_remote_mount_before_write",mount_unavailable)
+    monkeypatch.setattr(ad.os,"makedirs",observe_mkdir)
+    ad.save_eval({"models":{"synthetic/model":{"tasks":{}}}})
+    assert touched == []
+    assert not (rw/"eval.json").exists()
+    assert not (rw/"eval.json.tmp").exists()
+
+
+def test_self_task_rechecks_mount_before_any_directory_mutation(split, monkeypatch):
+    ad, _mem, _ro, rw, _mp = split
+    touched=[]
+    def mount_unavailable():
+        raise ValueError("synthetic remote source switched to local ext4")
+    def observe_mkdir(*args,**kwargs):
+        touched.append(args)
+        raise AssertionError("directory mutated before verified remote mount")
+    monkeypatch.setattr(roots,"_recheck_remote_mount_before_write",mount_unavailable)
+    monkeypatch.setattr(ad.os,"makedirs",observe_mkdir)
+    monkeypatch.setattr(ad,"fleet",None)
+    monkeypatch.setattr(ad,"swarm_memory",None)
+    monkeypatch.setattr(ad,"call_self_task_llm",lambda *a,**kw:{
+        "success":True,"output":"Synthetic structured analysis with relevant detail.",
+        "elapsed":0.01})
+    monkeypatch.setattr(ad,"record_task_eval",lambda *a,**kw:None)
+    ad.process_self_task(None,"bulk_summarize")
+    assert touched==[]
+    assert not (rw/"SUMMARY.md").exists()

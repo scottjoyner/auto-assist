@@ -222,13 +222,17 @@ def load_eval() -> Dict[str, Any]:
 def save_eval(data: Dict[str, Any]) -> None:
     with EVAL_LOCK:
         directory = os.path.dirname(EVAL_PATH)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
         tmp = f"{EVAL_PATH}.tmp"
         try:
             if KNOWLEDGE_SPLIT_ENABLED:
+                # Preflight BEFORE any mkdir on a possibly changed backing mount.
                 checked_write_path(KNOWLEDGE_WRITE_ROOT, EVAL_PATH)
                 checked_write_path(KNOWLEDGE_WRITE_ROOT, tmp)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            if KNOWLEDGE_SPLIT_ENABLED:
+                # Recheck immediately before creating a temporary file.
+                checked_write_path(KNOWLEDGE_WRITE_ROOT, EVAL_PATH)
                 # Do not follow an existing .tmp symlink during migration.
                 import tempfile
                 with tempfile.NamedTemporaryFile(
@@ -241,6 +245,8 @@ def save_eval(data: Dict[str, Any]) -> None:
             else:
                 with open(tmp, "w", encoding="utf-8") as fh:
                     json.dump(data, fh, indent=2)
+            if KNOWLEDGE_SPLIT_ENABLED:
+                checked_write_path(KNOWLEDGE_WRITE_ROOT, EVAL_PATH)
             os.replace(tmp, EVAL_PATH)
         except (OSError, ValueError) as e:
             logger.warning("Failed to persist eval registry %s: %s", EVAL_PATH, e)
@@ -1234,6 +1240,9 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
         # archetype can't clobber each other's artifact file.
         with _SELFTASK_WRITE_LOCKS.get(arch, threading.Lock()):
             try:
+                if KNOWLEDGE_SPLIT_ENABLED:
+                    # Do not create even a directory before verifying the mount.
+                    checked_write_path(KNOWLEDGE_WRITE_ROOT, target_path)
                 os.makedirs(os.path.dirname(target_path), exist_ok=True)
                 if KNOWLEDGE_SPLIT_ENABLED:
                     checked_write_path(KNOWLEDGE_WRITE_ROOT, target_path)

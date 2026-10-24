@@ -150,6 +150,21 @@ def test_new_kernel_remote_mount_guard_is_pinned_in_disposable_source():
     assert expected in Path(canary.__file__).read_text()
 
 
+def test_adapter_source_pin_includes_pre_mutation_mount_checks():
+    import subprocess
+    target=canary.ROOT/"src/assistx/agents/hermes_agent_adapter.py"
+    git_blob=subprocess.run(["git","-C",str(canary.ROOT),"hash-object",
+                            str(target)],capture_output=True,text=True,check=True).stdout.strip()
+    assert git_blob=="7c4c03673526b660928aac2bbfebbf16b55c47c3"
+    assert git_blob in Path(canary.__file__).read_text()
+    source=target.read_text()
+    eval_write=source.split("def save_eval(",1)[1].split("def ensure_model_env(",1)[0]
+    assert eval_write.index("checked_write_path(KNOWLEDGE_WRITE_ROOT, EVAL_PATH)") < eval_write.index("os.makedirs(directory")
+    selftask=source.split("def process_self_task(",1)[1].split("def process_task(",1)[0]
+    check="checked_write_path(KNOWLEDGE_WRITE_ROOT, target_path)"
+    assert selftask.index(check) < selftask.index("os.makedirs(os.path.dirname(target_path)")
+
+
 def test_real_entrypoint_and_adapter_source_are_pinned():
     script = Path(canary.__file__).read_text()
     assert canary.sha(canary.ENTRY) == canary.EXPECTED_ENTRY_SHA
