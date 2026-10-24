@@ -353,6 +353,16 @@
       "scope_digest": "00d04035aca8aab8bca7545a863bb837c61620cf50e347b559fac824e3afdf52"
     },
     {
+      "call_digest": "1f7063031ef7ed3142f9b8a6e7cbbf2397d729e546e23585947c69566985121c",
+      "has_task_structural_lock_marker": false,
+      "kind": "dynamic_unknown",
+      "mutation_kind": "unresolved",
+      "ordinal": 0,
+      "path": "hermes_source_receipt_research.py",
+      "scope": "commit_source_receipt.mutate",
+      "scope_digest": "23c84d0b3bbee1a7fc98e6d1e52a45fd6189c3f8bc11f7cfb8a5f2ca1df38d99"
+    },
+    {
       "call_digest": "2dbac54a19eaf621457f23fad81d0aca2819effa31201691185db863244e2601",
       "has_task_structural_lock_marker": false,
       "kind": "static_task_writer",
@@ -1338,5 +1348,5 @@
   "schema": 1,
   "source_inventory_complete": false,
   "static_task_writer_count": 68,
-  "unresolved_dynamic_query_count": 65
+  "unresolved_dynamic_query_count": 66
 }
