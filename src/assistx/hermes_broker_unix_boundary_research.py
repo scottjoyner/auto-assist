@@ -96,6 +96,7 @@ REPLY_TIMEOUT_SECONDS=0.25
 
 def send_holding_reply(
     conn: socket.socket, *, admitted: bool, candidate_generation: int | None=None,
+    reconciled: bool=False,
 ) -> None:
     """Best-effort, sanitized one-line HOLD receipt; never a durable ack.
 
@@ -104,7 +105,9 @@ def send_holding_reply(
     reflected to socket clients. Absence of a reply is ambiguous: source may
     have committed. The caller must check the source generation on retry.
     """
-    if type(admitted) is not bool:
+    if type(admitted) is not bool or type(reconciled) is not bool:
+        raise CandidateLocalTransportError("invalid_receipt")
+    if reconciled and not admitted:
         raise CandidateLocalTransportError("invalid_receipt")
     if admitted:
         if type(candidate_generation) is not int or candidate_generation < 0:
@@ -115,6 +118,10 @@ def send_holding_reply(
             "durable_delivery_verified":False,
             "production_dispatch_authorized":False, "decision":"HOLD",
         }
+        if reconciled:
+            # Read-only proof of a PRIOR committed source receipt, not an
+            # effect acknowledgment or a new mutation.
+            message["reconciled"]=True
     else:
         if candidate_generation is not None:
             raise CandidateLocalTransportError("invalid_receipt")
