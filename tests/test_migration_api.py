@@ -983,21 +983,12 @@ def test_command_center_fleet_proxy_and_page(monkeypatch):
     client = TestClient(app)
     auth = (os.getenv("BASIC_AUTH_USER", "neo4j"), os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
     monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://router.example")
+    monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "synthetic-router-admin-fixture")
 
-    class FakeResponse:
-        def __init__(self, payload):
-            self._payload = payload
-            self.status_code = 200
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return self._payload
-
-    def fake_get(url, timeout=6.0):
-        assert url == "http://router.example/admin/ops/summary"
-        return FakeResponse(
+    def fake_get(base_url, token, timeout=6.0):
+        assert base_url == "http://router.example"
+        assert token == "synthetic-router-admin-fixture"
+        return (
             {
                 "fleet_dispatcher_stats": {"success": 12, "worker_slots": 7, "reviewer_slots": 2},
                 "fleet_loadout_report": {
@@ -1018,7 +1009,7 @@ def test_command_center_fleet_proxy_and_page(monkeypatch):
             }
         )
 
-    monkeypatch.setattr("assistx.api.requests.get", fake_get)
+    monkeypatch.setattr("assistx.api.fetch_router_admin_ops_summary", fake_get)
 
     r = client.get("/api/fleet/loadouts", auth=auth)
     assert r.status_code == 200, r.text
@@ -1664,3 +1655,18 @@ def test_review_queue_actions(seeded_neo4j, monkeypatch):
     assert summary_json["window_hours"] == 24
     assert summary_json["total_decisions"] >= 3
     assert summary_json["by_decision"].get("approved", 0) >= 1
+
+
+def test_fleet_loadouts_refuses_anonymous_router_admin_read(monkeypatch):
+    """No token: return unavailable without making an unauthenticated admin GET."""
+    monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://router.example")
+    monkeypatch.delenv("AUTO_ROUTER_ADMIN_TOKEN", raising=False)
+    client = TestClient(app)
+    auth = (os.getenv("BASIC_AUTH_USER", "neo4j"),
+            os.getenv("BASIC_AUTH_PASS", "redacted-rotate-credentials"))
+    r = client.get("/api/fleet/loadouts", auth=auth)
+    assert r.status_code == 503
+    payload = r.json()
+    assert payload["ok"] is False
+    assert payload["error"] == "router_admin_token_missing"
+    assert payload["loadouts"] == []
