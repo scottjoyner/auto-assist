@@ -46,6 +46,8 @@ class RBACCanaryContractTests(unittest.TestCase):
         self.assertIn('HERMES_ENTERPRISE_RBAC_CANARY: synthetic-ci-only',s)
         self.assertIn('run: python tests/hermes_task_broker_rbac_disposable_neo4j.py',s)
         self.assertIn('secrets.token_urlsafe',s)
+        self.assertIn('value+"'+chr(92)+'n"',s)
+        self.assertNotIn('value+"'+chr(92)*2+'n"',s)
         self.assertNotIn('synthetic-only-admin-not-a-secret',s)
         self.assertNotIn("docker compose up",s)
         self.assertNotIn("kubectl",s)
