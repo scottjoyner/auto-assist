@@ -234,3 +234,63 @@ def test_remote_source_check_is_readonly_and_cannot_claim_storage_approval():
     for prohibited in ("docker run", "docker exec", "mount -t", "os.system",
                        "shutil.copytree", "os.listdir"):
         assert prohibited not in src
+
+
+
+def test_remote_cifs_mount_rechecked_before_each_covered_output(monkeypatch,tmp_path):
+    import builtins
+    import io
+    read,output,mount=mounted(tmp_path)
+    monkeypatch.setenv(roots.READ_ENV,str(read))
+    monkeypatch.setenv(roots.WRITE_ENV,str(output))
+    monkeypatch.setenv(roots.WRITE_MOUNT_ENV,str(mount))
+    monkeypatch.setenv(roots.MOUNT_GUARD_ENV,"true")
+    monkeypatch.setenv(roots.EXPECTED_WRITE_FSTYPE_ENV,"cifs")
+    monkeypatch.setenv(roots.EXPECTED_WRITE_SOURCE_ENV,REMOTE)
+    evidence_now=[remote_mountinfo(read,mount)]
+    attempts=[]
+    original=builtins.open
+    def synthetic_mount_evidence(path,*args,**kwargs):
+        if path=="/proc/self/mountinfo":
+            attempts.append(1)
+            return io.StringIO(evidence_now[0])
+        return original(path,*args,**kwargs)
+    monkeypatch.setattr(builtins,"open",synthetic_mount_evidence)
+    target=output/"notes.md"
+    assert roots.checked_write_path(str(output),str(target))==str(target)
+    assert len(attempts)==1
+    evidence_now[0]=remote_mountinfo(read,mount,fs="ext4",source="/dev/local-root")
+    with pytest.raises(ValueError,match="backing source"):
+        roots.checked_write_path(str(output),str(target))
+    assert len(attempts)==2
+    assert not target.exists()
+    # If mounted again, the independent metadata check is repeated, not cached.
+    evidence_now[0]=remote_mountinfo(read,mount)
+    assert roots.checked_write_path(str(output),str(target))==str(target)
+    assert len(attempts)==3
+
+
+@pytest.mark.parametrize("missing",[
+    roots.READ_ENV,roots.WRITE_ENV,roots.WRITE_MOUNT_ENV,
+    roots.EXPECTED_WRITE_FSTYPE_ENV,roots.EXPECTED_WRITE_SOURCE_ENV,
+])
+def test_recheck_denies_incomplete_remote_configuration(monkeypatch,tmp_path,missing):
+    read,output,mount=mounted(tmp_path)
+    settings={roots.READ_ENV:str(read),roots.WRITE_ENV:str(output),
+              roots.WRITE_MOUNT_ENV:str(mount),roots.MOUNT_GUARD_ENV:"true",
+              roots.EXPECTED_WRITE_FSTYPE_ENV:"cifs",
+              roots.EXPECTED_WRITE_SOURCE_ENV:REMOTE}
+    for key,val in settings.items():
+        monkeypatch.setenv(key,val)
+    monkeypatch.delenv(missing)
+    with pytest.raises(ValueError,match="fully configured"):
+        roots.checked_write_path(str(output),str(output/"notes.md"))
+    assert not (output/"notes.md").exists()
+
+
+def test_legacy_checked_write_path_remains_independent_of_new_guard(monkeypatch,tmp_path):
+    _,output,_=mounted(tmp_path)
+    monkeypatch.delenv(roots.EXPECTED_WRITE_FSTYPE_ENV,raising=False)
+    monkeypatch.delenv(roots.EXPECTED_WRITE_SOURCE_ENV,raising=False)
+    monkeypatch.setenv(roots.MOUNT_GUARD_ENV,"false")
+    assert roots.checked_write_path(str(output),str(output/"notes.md"))==str(output/"notes.md")

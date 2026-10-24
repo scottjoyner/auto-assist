@@ -244,11 +244,35 @@ def safe_read_text(path: str, limit: int) -> str:
             os.close(fd)
 
 
+def _recheck_remote_mount_before_write() -> None:
+    """Opt-in live mount-identity check for covered output paths.
+
+    A successful startup mount witness cannot be reused indefinitely: a host
+    remount/unmount may change the container mount namespace. This re-reads
+    kernel evidence on each checked output path when remote backing is pinned.
+    CIFS disconnection with unchanged mountinfo is NOT detected by this guard.
+    """
+    fs = os.getenv(EXPECTED_WRITE_FSTYPE_ENV, "")
+    source = os.getenv(EXPECTED_WRITE_SOURCE_ENV, "")
+    if not fs and not source:
+        return
+    if (not fs or not source or os.getenv(MOUNT_GUARD_ENV) != "true"
+            or not os.getenv(READ_ENV) or not os.getenv(WRITE_ENV)
+            or not os.getenv(WRITE_MOUNT_ENV)):
+        raise ValueError("live remote write requires fully configured strict mount isolation")
+    verify_mount_admission(
+        os.environ[READ_ENV], os.environ[WRITE_ENV],
+        write_mount=os.environ[WRITE_MOUNT_ENV],
+        expected_write_identity=(fs, source),
+    )
+
+
 def checked_write_path(root: str, path: str) -> str:
     """Deny output-directory or leaf symlink aliases in explicit split mode.
 
     This check cannot remove races with privileged host actors; Docker must
     independently ensure only the intended scratch mount is writable.
+    In opted-in remote mode it also rechecks kernel mount backing identity.
     """
     target = os.path.abspath(path)
     base = os.path.abspath(root)
@@ -256,4 +280,5 @@ def checked_write_path(root: str, path: str) -> str:
         raise ValueError("write path escaped the configured scratch root")
     _strict_path(base, "Hermes write root")
     _strict_path(target, "Hermes output destination")
+    _recheck_remote_mount_before_write()
     return target

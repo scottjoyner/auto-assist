@@ -146,7 +146,7 @@ def test_new_kernel_remote_mount_guard_is_pinned_in_disposable_source():
     result=subprocess.run(["git","-C",str(canary.ROOT),"hash-object",
                            str(source)],capture_output=True,text=True,check=True)
     expected=result.stdout.strip()
-    assert expected=="54a6ab6feb239f7e48d4fa9569b6cf4f72fe7819"
+    assert expected=="a7827f936f23a3e85103e26efa73e6c02d3a4124"
     assert expected in Path(canary.__file__).read_text()
 
 

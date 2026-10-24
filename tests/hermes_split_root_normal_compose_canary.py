@@ -88,7 +88,7 @@ def read_only_source():
         "src/assistx/swarm_memory.py":
             "9b073d1f8e31d98e08820d473523abbf5d716818",
          "src/assistx/knowledge_roots.py":
-            "54a6ab6feb239f7e48d4fa9569b6cf4f72fe7819",
+            "a7827f936f23a3e85103e26efa73e6c02d3a4124",
         "src/assistx/hermes_corpus_custody.py":
             "e504334468ae0962668f2abd37978532483ec29b",
         "src/assistx/hermes_corpus_checkpoint.py":
