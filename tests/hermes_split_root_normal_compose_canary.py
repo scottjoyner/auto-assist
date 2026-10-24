@@ -86,7 +86,7 @@ def read_only_source():
         "src/assistx/agents/hermes_agent_adapter.py":
             "8cf829275b188c3b340f2cde17560665acdcfa85",
         "src/assistx/swarm_memory.py":
-            "9b073d1f8e31d98e08820d473523abbf5d716818",
+            "1ff75acd591c5ddc18844a0378a0a1ca4a427ee9",
          "src/assistx/knowledge_roots.py":
             "a7827f936f23a3e85103e26efa73e6c02d3a4124",
         "src/assistx/hermes_corpus_custody.py":

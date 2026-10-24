@@ -20,7 +20,7 @@ ENTRYPOINT_SHA256 = '81add7ecd43ef1b3fccc5d8097b4f51ed196cfb61d5ccd3cd243e51a552
 # Git blob IDs already reviewed in the strict normal-entrypoint synthetic canary.
 BLOBS = {
     'src/assistx/knowledge_roots.py':'a7827f936f23a3e85103e26efa73e6c02d3a4124',
-    'src/assistx/swarm_memory.py':'9b073d1f8e31d98e08820d473523abbf5d716818',
+    'src/assistx/swarm_memory.py':'1ff75acd591c5ddc18844a0378a0a1ca4a427ee9',
     'src/assistx/hermes_corpus_custody.py':'e504334468ae0962668f2abd37978532483ec29b',
     'src/assistx/hermes_corpus_checkpoint.py':'ff7091618919b2261b1cbf4df2602627afae8c1f',
     'src/assistx/hermes_high_water.py':'ed8992eef765006cb6a12def4553b04d0129ecbe',
