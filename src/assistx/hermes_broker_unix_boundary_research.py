@@ -90,6 +90,51 @@ def _bounded_frame(sock: socket.socket, *, deadline: float) -> dict[str,Any]:
         raise CandidateLocalTransportError("invalid_command_envelope")
     return obj["command"]
 
+MAX_REPLY_BYTES=192
+REPLY_TIMEOUT_SECONDS=0.25
+
+
+def send_holding_reply(
+    conn: socket.socket, *, admitted: bool, candidate_generation: int | None=None,
+) -> None:
+    """Best-effort, sanitized one-line HOLD receipt; never a durable ack.
+
+    All fields are constant except the validated generation integer. No
+    principal, Task, claim, session, query, credential or effect data may be
+    reflected to socket clients. Absence of a reply is ambiguous: source may
+    have committed. The caller must check the source generation on retry.
+    """
+    if type(admitted) is not bool:
+        raise CandidateLocalTransportError("invalid_receipt")
+    if admitted:
+        if type(candidate_generation) is not int or candidate_generation < 0:
+            raise CandidateLocalTransportError("invalid_receipt")
+        message={
+            "schema":1, "accepted_source_transaction":True,
+            "candidate_generation":candidate_generation,
+            "durable_delivery_verified":False,
+            "production_dispatch_authorized":False, "decision":"HOLD",
+        }
+    else:
+        if candidate_generation is not None:
+            raise CandidateLocalTransportError("invalid_receipt")
+        message={
+            "schema":1, "accepted_source_transaction":False,
+            "error":"request_denied",
+            "durable_delivery_verified":False,
+            "production_dispatch_authorized":False, "decision":"HOLD",
+        }
+    data=json.dumps(message,sort_keys=True,separators=(",",":")).encode("ascii")+b"\n"
+    if len(data)>MAX_REPLY_BYTES:
+        raise CandidateLocalTransportError("invalid_receipt")
+    try:
+        conn.settimeout(REPLY_TIMEOUT_SECONDS)
+        conn.sendall(data)
+    except (OSError,TimeoutError):
+        # Caller must report unconfirmed delivery separately from mutation.
+        raise CandidateLocalTransportError("reply_delivery_unconfirmed") from None
+
+
 def serve_one_candidate_connection(
     conn: socket.socket,
     *,
