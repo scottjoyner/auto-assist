@@ -38,7 +38,8 @@ pkg=types.ModuleType("assistx")
 pkg.__path__=[str(src)]
 sys.modules["assistx"]=pkg
 for name in ("hermes_claim_census","hermes_source_generation_research",
-             "hermes_source_heartbeat_research","hermes_source_completion_research"):
+             "hermes_source_heartbeat_research","hermes_source_completion_research",
+             "hermes_broker_command_research"):
     spec=importlib.util.spec_from_file_location("assistx."+name,src/(name+".py"))
     module=importlib.util.module_from_spec(spec)
     sys.modules["assistx."+name]=module
@@ -47,6 +48,7 @@ for name in ("hermes_claim_census","hermes_source_generation_research",
 from assistx import hermes_source_generation_research as ledger
 from assistx import hermes_source_heartbeat_research as heartbeat
 from assistx import hermes_source_completion_research as completion
+from assistx import hermes_broker_command_research as broker
 
 role="synthetic_generation_broker_role"
 writer="synthetic_generation_broker"
@@ -163,50 +165,55 @@ try:
     print("PASS all_legacy_identities_read_and_write_denial",flush=True)
 
     d=new_driver(writer,writer_pw)
-    with d.session(database="neo4j") as s:
-        renew=heartbeat.renew_candidate_lease(
-            s,expected_generation=0,task_id=task_id,
-            claim_id="synthetic-claim",session_id="synthetic-session",
-            attempt=1,ttl_ms=30000)
+    heartbeat_command={
+        "operation":"heartbeat", "expected_generation":0,
+        "task_id":task_id,"claim_id":"synthetic-claim",
+        "session_id":"synthetic-session","attempt":1,"ttl_ms":30000,
+    }
+    def candidate_session():
+        return d.session(database="neo4j")
+    renew=broker.dispatch_candidate_command(
+        heartbeat_command, trusted_channel_principal="hermes-local",
+        session_factory=candidate_session)
     assert renew["candidate_generation"]==1 and generation()==1
     assert renew["source_generation_writers_complete"] is False
     assert renew["production_dispatch_authorized"] is False
     print("PASS narrow_broker_heartbeat_and_generation_commit",flush=True)
 
-    with d.session(database="neo4j") as s:
-        try:
-            heartbeat.renew_candidate_lease(
-                s,expected_generation=0,task_id=task_id,
-                claim_id="synthetic-claim",session_id="synthetic-session",
-                attempt=1,ttl_ms=30000)
-        except ledger.GenerationProtocolError:
-            pass
-        else:
-            raise AssertionError("stale generation renewal unexpectedly accepted")
+    try:
+        broker.dispatch_candidate_command(
+            heartbeat_command, trusted_channel_principal="hermes-local",
+            session_factory=candidate_session)
+    except broker.CandidateBrokerCommandError:
+        pass
+    else:
+        raise AssertionError("stale generation renewal unexpectedly accepted")
     assert generation()==1
     print("PASS narrow_broker_stale_replay_denied",flush=True)
 
-    with d.session(database="neo4j") as s:
-        completed=completion.complete_candidate_claim(
-            s,expected_generation=1,task_id=task_id,
-            claim_id="synthetic-claim",session_id="synthetic-session",
-            attempt=1)
+    completion_command={
+        "operation":"complete","expected_generation":1,
+        "task_id":task_id,"claim_id":"synthetic-claim",
+        "session_id":"synthetic-session","attempt":1,
+    }
+    completed=broker.dispatch_candidate_command(
+        completion_command, trusted_channel_principal="hermes-local",
+        session_factory=candidate_session)
     assert completed["candidate_generation"]==2 and generation()==2
     assert task_state(task_id)["status"]=="DONE"
     assert task_state(task_id)["completed_by"]=="hermes-local"
     assert completed["resource_side_completion_verified"] is False
     print("PASS narrow_broker_completion_and_generation_commit",flush=True)
 
-    with d.session(database="neo4j") as s:
-        try:
-            completion.complete_candidate_claim(
-                s,expected_generation=2,task_id=task_id,
-                claim_id="synthetic-claim",session_id="synthetic-session",
-                attempt=1)
-        except ledger.GenerationProtocolError:
-            pass
-        else:
-            raise AssertionError("duplicate completion accepted")
+    try:
+        broker.dispatch_candidate_command(
+            {**completion_command,"expected_generation":2},
+            trusted_channel_principal="hermes-local",
+            session_factory=candidate_session)
+    except broker.CandidateBrokerCommandError:
+        pass
+    else:
+        raise AssertionError("duplicate completion accepted")
     assert generation()==2
     print("PASS narrow_broker_duplicate_completion_denied",flush=True)
 
@@ -215,6 +222,23 @@ try:
     deny(d,"MATCH(t:Task{id:$id}) DETACH DELETE t",task_id,
          "narrow_broker_Task_delete_denied")
     assert generation()==2 and task_state(task_id)["status"]=="DONE"
+    # The interface must deny an attempted raw-Cypher command before any
+    # privileged driver session is allocated by the broker's session factory.
+    touched=[]
+    def poison():
+        touched.append(True)
+        raise AssertionError("raw-query admission opened DB session")
+    try:
+        broker.dispatch_candidate_command(
+            {"operation":"cypher","query":"synthetic-forbidden"},
+            trusted_channel_principal="hermes-local",
+            session_factory=poison)
+    except broker.CandidateBrokerCommandError:
+        pass
+    else:
+        raise AssertionError("unlisted command accepted")
+    assert not touched
+    print("PASS command_surface_raw_database_query_denied_before_session",flush=True)
 
     # Crucial fail-open witness. The legitimate write credential still has
     # freedom to bypass the application-level ledger. No DB ACL by itself
@@ -226,7 +250,7 @@ try:
     assert generation()==2
     print("PASS broker_credential_still_bypasses_generation_PROTOCOL_HOLD",flush=True)
 
-    print("HERMES_ENTERPRISE_GENERATION_BROKER_RESEARCH_PASS=9",flush=True)
+    print("HERMES_ENTERPRISE_GENERATION_BROKER_RESEARCH_PASS=10",flush=True)
     print("ALL_WRITERS_GENERATION_FENCED=FALSE;PRODUCTION_TASKS_TOUCHED=0;DECISION=HOLD",
           flush=True)
 finally:
