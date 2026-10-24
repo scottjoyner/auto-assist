@@ -20,6 +20,9 @@ on:
       - "src/assistx/hermes_source_generation_research.py"
       - "src/assistx/hermes_source_completion_research.py"
       - "src/assistx/hermes_source_heartbeat_research.py"
+      - "src/assistx/hermes_source_receipt_research.py"
+      - "tests/test_hermes_source_receipt_research.py"
+      - "tests/hermes_source_receipt_disposable_neo4j.py"
       - ".github/workflows/hermes-enterprise-rbac.yml"
   workflow_dispatch:
 
@@ -36,7 +39,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install isolated Neo4j driver
-        run: python -m pip install "neo4j>=5.26,<6"
+        run: python -m pip install "neo4j>=5.26,<6" "pytest>=8,<9"
       - name: Verify real kernel peer credentials across distinct ephemeral OS UIDs
         env:
           HERMES_PEER_ISOLATION_CI: synthetic-only
@@ -84,6 +87,14 @@ jobs:
           printf '%s\n' "$HERMES_RBAC_EPHEMERAL_ADMIN_PASSWORD" |
             sudo -n env HERMES_ROOTLESS_DB_CI=synthetic-only GITHUB_ACTIONS=true \
               "$(command -v python)" tests/hermes_rootless_broker_credential_db_disposable.py
+      - name: Deny unsafe source receipt requests before DB access
+        env:
+          PYTHONPATH: src
+        run: python -m pytest -q tests/test_hermes_source_receipt_research.py
+      - name: Verify same-transaction Task generation and source receipt atomicity
+        env:
+          HERMES_ENTERPRISE_RBAC_CANARY: synthetic-ci-only
+        run: python tests/hermes_source_receipt_disposable_neo4j.py
       - name: Remove isolated Enterprise DB
         if: always()
         run: docker rm -f hermes-rbac-disposable >/dev/null 2>&1 || true
