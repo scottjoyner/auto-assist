@@ -18,7 +18,7 @@ def sample(tmp):
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     subprocess.run(["git", "-C", str(root), "add", "src"], check=True)
     subprocess.run(["git", "-C", str(root), "-c", "user.name=Test",
-                    "-c", "user.email=t@example.invalid", "commit", "-qm", "base"], check=True)
+                    "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "base"], check=True)
     return root, f, m.git(root, "rev-parse", "HEAD")
 
 
@@ -51,7 +51,7 @@ def test_commit_change_denied_even_without_src_diff(tmp_path):
     (root / "README.md").write_text("new commit\n")
     subprocess.run(["git", "-C", str(root), "add", "README.md"], check=True)
     subprocess.run(["git", "-C", str(root), "-c", "user.name=Test",
-                    "-c", "user.email=t@example.invalid", "commit", "-qm", "next"], check=True)
+                    "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "next"], check=True)
     assert m.check(root, expected)["state"] == "SOURCE_MISMATCH_DENY"
 
 
