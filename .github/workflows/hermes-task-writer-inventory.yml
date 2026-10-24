@@ -18,6 +18,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Verify pinned Task mutation and unresolved dynamic query surface
+        run: |
+          python3 -m unittest discover -s tests -p test_hermes_task_surface_gate.py -v
+          python3 scripts/hermes_task_surface_gate.py --check
       - name: Verify static writer inventory remains explicitly nonauthoritative
         run: |
           python3 - <<'PY'
