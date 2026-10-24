@@ -11,6 +11,8 @@ on:
       - "tests/hermes_claim_replay_disposable_neo4j.py"
       - "src/assistx/hermes_source_generation_research.py"
       - "src/assistx/hermes_source_completion_research.py"
+      - "src/assistx/hermes_source_heartbeat_research.py"
+      - "tests/test_hermes_source_heartbeat_research.py"
       - "tests/test_hermes_source_completion_research.py"
       - "tests/test_hermes_source_generation_research.py"
       - "tests/hermes_generation_serialization_disposable_neo4j.py"
