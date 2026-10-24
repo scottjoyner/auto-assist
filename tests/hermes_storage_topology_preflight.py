@@ -5,16 +5,19 @@ This never approves a real corpus mount, keys, or a production deployment.
 It reads directory metadata and findmnt output only, never file content.
 """
 from __future__ import annotations
+
 import argparse
 import json
 import os
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 SCRATCH = Path("/home/scott/.cache")
 SSD = Path("/media/scott/SSD_4TB")
 CORPUS_ALIAS = Path("/home/scott/knowledge")
 NAS_LABEL = Path("/media/scott/NAS5")
+NETWORK_NAS = Path("/nas")
+NETWORK_NAS_SOURCE = "//192.168.1.202/fileserver"
 GIT = Path("/home/scott/git")
 EXPECTED_NODES = {
     "scratch": SCRATCH,
@@ -42,6 +45,54 @@ def need(test, message):
 
 def within(parent: str, child: str) -> bool:
     return os.path.commonpath((parent, child)) == parent
+
+def qualify_network_mount_rows(text: str) -> dict:
+    """Parse findmnt's optional automount layer and exact CIFS backing.
+
+    A directory named /nas or an autofs layer alone NEVER proves a mounted
+    remote filesystem. This confirms topology, NOT write approval or custody.
+    """
+    need(type(text) is str and len(text) <= 4096, "bad network mount report")
+    rows = [r.split() for r in text.splitlines() if r.strip()]
+    need(1 <= len(rows) <= 2 and all(len(r) == 3 for r in rows),
+         "ambiguous network mount layering")
+    entries = {}
+    for target, source, fstype in rows:
+        need(target == str(NETWORK_NAS) and fstype not in entries,
+             "unexpected mount target or duplicate layer")
+        entries[fstype] = source
+    need(entries.get("cifs") == NETWORK_NAS_SOURCE,
+         "real CIFS share unavailable or source changed")
+    need(set(entries).issubset({"cifs", "autofs"})
+         and ("autofs" not in entries or entries["autofs"] == "systemd-1"),
+         "unreviewed NAS filesystem layer")
+    return {
+        "path": str(NETWORK_NAS),
+        "expected_source": NETWORK_NAS_SOURCE,
+        "filesystem": "cifs",
+        "systemd_automount_layer_present": "autofs" in entries,
+        "remote_mount_observed": True,
+        "hermes_output_approved": False,
+        "independent_evidence_custody_verified": False,
+    }
+
+
+def analyze_network_nas() -> dict:
+    """Metadata-only host witness; no directory scan, network writes, mounts."""
+    need(NETWORK_NAS.is_dir() and not NETWORK_NAS.is_symlink()
+         and os.path.ismount(NETWORK_NAS), "remote NAS path not mounted")
+    result = subprocess.run(
+        [READONLY_COMMAND, "--target", str(NETWORK_NAS), "--noheadings",
+         "--output", "TARGET,SOURCE,FSTYPE"],
+        capture_output=True, text=True, timeout=7, check=False,
+    )
+    need(result.returncode == 0, "network mount metadata unavailable")
+    proof = qualify_network_mount_rows(result.stdout)
+    fs = os.statvfs(NETWORK_NAS)
+    proof["available_bytes_now"] = fs.f_bavail * fs.f_frsize
+    proof["available_bytes_is_reservation"] = False
+    return proof
+
 
 def analyze_path(path: Path) -> dict:
     """No traversal into path, inspection of contents or Docker interaction."""
@@ -148,6 +199,17 @@ def physical_readonly():
          "topology witness restricted to x1-370 nonroot user")
     paths = {k: analyze_path(path) for k, path in EXPECTED_NODES.items()}
     report = assess_topology(paths)
+    try:
+        network = analyze_network_nas()
+    except (UnsafeTopology, OSError, subprocess.SubprocessError):
+        network = {
+            "path": str(NETWORK_NAS), "remote_mount_observed": False,
+            "hermes_output_approved": False,
+            "independent_evidence_custody_verified": False,
+        }
+        report["release_blockers"].append("actual_network_nas_unverified")
+    report["network_nas_observation"] = network
+    report["release_blockers"].append("network_nas_write_and_custody_not_approved")
     report.update(host="x1-370",
                   mode="read_only_storage_topology_snapshot",
                   real_files_read=0,

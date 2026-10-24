@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import copy
-from pathlib import Path
 import subprocess
-import pytest
+from pathlib import Path
 
 import hermes_storage_topology_preflight as topology
+import pytest
 
 
 def snapshot():
@@ -208,3 +208,55 @@ def test_unit_path_only_never_opens_protected_files():
     assert "os.listdir" not in src
     assert "docker exec" not in src
     assert "docker run" not in src
+
+
+def test_actual_cifs_and_systemd_automount_layers_are_distinct_from_local_nas_label():
+    rows=("/nas systemd-1 autofs\n"
+          "/nas //192.168.1.202/fileserver cifs\n")
+    proof=topology.qualify_network_mount_rows(rows)
+    assert proof["remote_mount_observed"] is True
+    assert proof["systemd_automount_layer_present"] is True
+    assert proof["hermes_output_approved"] is False
+    assert proof["independent_evidence_custody_verified"] is False
+    assert topology.qualify_network_mount_rows(
+        "/nas //192.168.1.202/fileserver cifs\n"
+    )["systemd_automount_layer_present"] is False
+
+
+@pytest.mark.parametrize("rows", [
+    "",
+    "/nas systemd-1 autofs\n",
+    "/ /dev/nvme0n1p6 ext4\n",
+    "/media/scott/NAS5 //192.168.1.202/fileserver cifs\n",
+    "/nas //192.168.1.202/other-share cifs\n",
+    "/nas //192.168.1.202/fileserver nfs4\n",
+    "/nas other-systemd-unit autofs\n/nas //192.168.1.202/fileserver cifs\n",
+    "/nas //192.168.1.202/fileserver cifs\n/nas //192.168.1.202/fileserver cifs\n",
+    "/nas systemd-1 autofs\n/nas //192.168.1.202/fileserver cifs\n/nas unexpected ext4\n",
+    "\n" * 10000,
+])
+def test_unmounted_wrong_source_and_ambiguous_network_proof_denied(rows):
+    with pytest.raises(topology.UnsafeTopology):
+        topology.qualify_network_mount_rows(rows)
+
+
+def test_actual_nas_mount_metadata_readonly_without_custody_claim(monkeypatch, tmp_path):
+    network=tmp_path/"nas"
+    network.mkdir()
+    monkeypatch.setattr(topology,"NETWORK_NAS",network)
+    monkeypatch.setattr(topology.os.path,"ismount",lambda path: path==network)
+    monkeypatch.setattr(topology,"NETWORK_NAS_SOURCE","//192.168.1.202/fileserver")
+    rows=(f"{network} systemd-1 autofs\n"
+          f"{network} //192.168.1.202/fileserver cifs\n")
+    commands=[]
+    def read(cmd,**kwargs):
+        commands.append(cmd)
+        return type("Result",(),{"returncode":0,"stdout":rows})()
+    monkeypatch.setattr(topology.subprocess,"run",read)
+    report=topology.analyze_network_nas()
+    assert report["remote_mount_observed"]
+    assert not report["available_bytes_is_reservation"]
+    assert report["available_bytes_now"] >= 0
+    assert report["hermes_output_approved"] is False
+    assert commands==[["findmnt","--target",str(network),
+                       "--noheadings","--output","TARGET,SOURCE,FSTYPE"]]
