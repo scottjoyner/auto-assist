@@ -116,6 +116,109 @@ jobs:
           }, sort_keys=True))
           PY
           python -m json.tool runtime-image-evidence/router-admin-compatibility.json >/dev/null
+      # This is the full baked ASGI handler, not just a source/AST or
+      # transport unit test. Disable startup lifespan to prohibit all fleet
+      # schedulers and DB schema writes; Docker network is completely absent.
+      - name: Test baked AssistX API GET against synthetic guarded Router (isolated ASGI)
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-image-evidence
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:rw,nosuid,nodev,size=32m \
+            --tmpfs /app/artifacts:rw,nosuid,nodev,size=16m \
+            --tmpfs /app/transcriptions:rw,nosuid,nodev,size=16m \
+            --tmpfs /app/.cache:rw,nosuid,nodev,size=16m \
+            -e BASIC_AUTH_USER=ci-fleet-user \
+            -e BASIC_AUTH_PASS=synthetic-ci-basic-password \
+            -e AUTO_ROUTER_BASE_URL=http://synthetic-router.invalid:8088 \
+            -e AUTO_ROUTER_ADMIN_TOKEN=synthetic-ci-router-admin \
+            --entrypoint python -i assistx-runtime-check - <<'PY' | tee runtime-image-evidence/router-admin-asgi-canary.json
+          import asyncio
+          import json
+          import os
+          from pathlib import Path
+          import httpx
+
+          # The real production source-bind is the active compatibility bug.
+          # A mount here would mean the CI image's baked code is not being tested.
+          assert not Path("/app/src").is_mount(), "source override present"
+          assert Path("/app/src/assistx/router_admin_transport.py").is_file()
+          from assistx.api_router import app
+          from assistx import router_admin_transport as transport
+
+          class Response:
+              status_code=200
+              def raise_for_status(self):
+                  return None
+              def json(self):
+                  return {"fleet_loadout_report":{"captured_at":"synthetic",
+                      "loadouts":[{"category":"synthetic-only"}]},
+                      "fleet_dispatcher_stats":{"success":0}}
+          sessions=[]
+          class Session:
+              trust_env=True
+              def __enter__(self):
+                  sessions.append(self)
+                  self.calls=0
+                  return self
+              def __exit__(self,*args):
+                  return False
+              def get(self,url,*,headers,allow_redirects,timeout):
+                  assert url=="http://synthetic-router.invalid:8088/admin/ops/summary"
+                  assert headers=={"Accept":"application/json",
+                      "X-Admin-Token":"synthetic-ci-router-admin"}
+                  assert allow_redirects is False
+                  assert self.trust_env is False
+                  assert timeout==6.0
+                  self.calls+=1
+                  return Response()
+          transport.requests.Session=Session
+
+          async def main():
+              # ASGITransport dispatches the actual API route/middleware while
+              # deliberately not entering startup lifespan or opening sockets.
+              async with httpx.AsyncClient(
+                  transport=httpx.ASGITransport(app=app),
+                  base_url="http://ci-app.invalid",
+                  follow_redirects=False,
+                  timeout=6.0,
+              ) as c:
+                  anonymous=await c.get("/api/fleet/loadouts")
+                  assert anonymous.status_code==401
+                  wrong=await c.get("/api/fleet/loadouts",
+                      auth=("ci-fleet-user","incorrect"))
+                  assert wrong.status_code==401
+                  assert not sessions,"unauthenticated clients reached Router"
+                  good=await c.get("/api/fleet/loadouts",
+                      auth=("ci-fleet-user","synthetic-ci-basic-password"))
+                  assert good.status_code==200,good.status_code
+                  body=good.json()
+                  assert body["ok"] is True
+                  assert body["loadouts"]==[{"category":"synthetic-only"}]
+                  assert len(sessions)==1 and sessions[0].calls==1
+                  os.environ.pop("AUTO_ROUTER_ADMIN_TOKEN",None)
+                  missing=await c.get("/api/fleet/loadouts",
+                      auth=("ci-fleet-user","synthetic-ci-basic-password"))
+                  assert missing.status_code==503,missing.status_code
+                  assert missing.json()["error"]=="router_admin_token_missing"
+                  assert len(sessions)==1,"missing token reached transport"
+              print(json.dumps({
+                  "verdict":"BAKED_ASSISTX_REAL_ASGI_ROUTER_CLIENT_PASS",
+                  "real_asgi_route":"/api/fleet/loadouts",
+                  "anonymous_http_denied":True,
+                  "wrong_basic_auth_denied":True,
+                  "valid_basic_auth_and_synthetic_router_read":True,
+                  "missing_router_admin_token_denied_before_session":True,
+                  "baked_source_without_app_src_override":True,
+                  "startup_lifespan_executed":False,
+                  "network":"none","rootfs":"readonly",
+                  "external_model_or_database_requests":0,
+                  "production_services_modified":False,
+                  "physical_cutover_authorized":False
+              },sort_keys=True))
+          asyncio.run(main())
+          PY
+          python -m json.tool runtime-image-evidence/router-admin-asgi-canary.json >/dev/null
       - name: Check isolated interpreters without network or host mounts
         run: |
           docker run --rm --network none --entrypoint python assistx-runtime-check -m pip check
