@@ -39,7 +39,8 @@ class EntryPointPreflight(unittest.TestCase):
         script = str(self.entry) if script is None else script
         return ("[Unit]\nDescription=Fixture\n[Service]\n"
                 "User=" + user + "\nWorkingDirectory=" + root
-                + "\nExecStart=/usr/bin/python3 " + script + "\n")
+                + "\nExecStart=" + str(self.root.parent.parent / "venv/bin/python")
+                + " " + script + "\n")
 
     def check(self):
         return guard.inspect(self.unit, self.root, self.digest)
@@ -113,6 +114,17 @@ class EntryPointPreflight(unittest.TestCase):
 
     def test_exec_points_to_different_file_refused(self):
         self.unit.write_text(self.unit_text(script="/tmp/other-guard.py"))
+        self.denied("unexpected_exec_start")
+
+    def test_wrong_venv_interpreter_refused(self):
+        self.unit.write_text(self.unit_text().replace(
+            str(self.root.parent.parent / "venv/bin/python"),
+            "/tmp/malicious-python",
+        ))
+        self.denied("unexpected_python_interpreter")
+
+    def test_absolute_script_even_in_expected_directory_refused(self):
+        self.unit.write_text(self.unit_text(script=str(self.entry)))
         self.denied("unexpected_exec_start")
 
     def test_duplicate_service_exec_refused(self):
