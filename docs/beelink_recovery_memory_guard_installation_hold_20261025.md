@@ -28,8 +28,12 @@ standalone Python standard-library tool. Its default checks are:
 
 - Inspect the pinned systemd unit path, refusing symlinks, duplicate
   service keys and ambiguous or unexpected `ExecStart`.
-- Require `User=assistx-recovery` and the exact protected working
-  directory and entrypoint location.
+- Require `User=assistx-recovery`, the exact protected working
+  directory, **relative** `ExecStart` script argument
+  `scripts/recovery-memory-guard.py`, and the exact recovery virtual
+  environment Python at `<recovery-root>/venv/bin/python`. This is the
+  live Beelink unit layout; an arbitrary host or temporary Python binary
+  is refused.
 - Open the unit and entrypoint with `O_NOFOLLOW | O_NONBLOCK`; reject
   FIFOs, nonregular files, unsafe group/other write permission, oversize,
   race-changed files and symlinks anywhere along their directory paths.
