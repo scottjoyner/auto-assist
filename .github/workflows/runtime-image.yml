@@ -218,6 +218,106 @@ jobs:
           path: runtime-image-handoff/
           if-no-files-found: error
           retention-days: 3
+      # Artifacts exceeding the connector transfer limit are split for
+      # independent offline verification only. The complete archive's digest
+      # is still the subject of the signed GitHub/Sigstore attestation.
+      - name: Split signed AssistX archive into independently hashed custody parts
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path("runtime-image-handoff")
+          archive=root/"tested-assistx-runtime-image.tar.gz"
+          receipt=json.loads((root/"runtime-image-handoff.json").read_text())
+          assert receipt["source_commit"]==os.environ["GITHUB_SHA"]
+          target=Path("runtime-image-chunks")
+          target.mkdir(exist_ok=True)
+          chunk_size=256*1024*1024
+          parts=[]
+          whole=hashlib.sha256()
+          total=0
+          with archive.open("rb") as stream:
+              for index in range(4):
+                  data=stream.read(chunk_size)
+                  if not data:break
+                  name=f"part-{index:02d}.bin"
+                  (target/name).write_bytes(data)
+                  parts.append({"name":name,"bytes":len(data),"sha256":hashlib.sha256(data).hexdigest()})
+                  whole.update(data)
+                  total+=len(data)
+              assert not stream.read(1),"archive exceeds four-part capacity"
+          assert len(parts)==4
+          assert whole.hexdigest()==receipt["archive_sha256"]
+          assert total==receipt["archive_bytes"]
+          for index,part in enumerate(parts):
+              data=(target/part["name"]).read_bytes()
+              assert len(data)==part["bytes"] and hashlib.sha256(data).hexdigest()==part["sha256"]
+          record={
+              "schema":1,"verdict":"SIGNED_ARCHIVE_PARTS_RECONSTRUCT_FULL_DIGEST",
+              "source_commit":receipt["source_commit"],
+              "image_id":receipt["image_id"],
+              "full_archive_sha256":whole.hexdigest(),
+              "full_archive_bytes":total,
+              "part_size_bytes":chunk_size,
+              "parts":parts,
+              "parent_archive_attested_by_ci":True,
+              "offline_only":True,
+              "production_deployed":False,
+              "operator_release_approved":False
+          }
+          (target/"parts-manifest.json").write_text(json.dumps(record,sort_keys=True)+"\\n")
+          with (target/"parts-manifest.json").open("rb") as input:
+              json.load(input)
+          print(json.dumps({"verdict":record["verdict"],"part_count":len(parts),
+              "image_id":record["image_id"],"sha256":record["full_archive_sha256"],
+              "production_deployed":False},sort_keys=True))
+          PY
+      - name: Upload signed-archive chunk 00 (custody only)
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistx-image-part00-${{ github.sha }}
+          path: runtime-image-chunks/part-00.bin
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+      - name: Upload signed-archive chunk 01 (custody only)
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistx-image-part01-${{ github.sha }}
+          path: runtime-image-chunks/part-01.bin
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+      - name: Upload signed-archive chunk 02 (custody only)
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistx-image-part02-${{ github.sha }}
+          path: runtime-image-chunks/part-02.bin
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+      - name: Upload signed-archive chunk 03 (custody only)
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistx-image-part03-${{ github.sha }}
+          path: runtime-image-chunks/part-03.bin
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+      - name: Upload signed-archive chunk manifest (unpromoted)
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistx-image-parts-manifest-${{ github.sha }}
+          path: runtime-image-chunks/parts-manifest.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload AssistX image Sigstore bundle
         if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/upload-artifact@v4
