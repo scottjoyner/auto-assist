@@ -134,7 +134,7 @@ jobs:
             -e BASIC_AUTH_PASS=synthetic-ci-basic-password \
             -e AUTO_ROUTER_BASE_URL=http://synthetic-router.invalid:8088 \
             -e AUTO_ROUTER_ADMIN_TOKEN=synthetic-ci-router-admin \
-            --entrypoint python -i assistx-runtime-check - <<'PY' | tee runtime-image-evidence/router-admin-asgi-canary.json
+            --entrypoint python -i assistx-runtime-check - <<'PY' | grep -F '"verdict": "BAKED_ASSISTX_REAL_ASGI_ROUTER_CLIENT_PASS"' > runtime-image-evidence/router-admin-asgi-canary.json
           import asyncio
           import json
           import os
