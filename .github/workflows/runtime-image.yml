@@ -19,6 +19,98 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build final runtime image (no push)
         run: docker build --pull --tag assistx-runtime-check .
+      # Release precondition for Router PR #82: prove that *baked* AssistX
+      # code, not only the repository checkout, makes privileged Router reads
+      # with the existing admin header. Never import full API or contact Router.
+      - name: Verify baked Router admin client compatibility (offline)
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-image-evidence
+          docker run --rm --network none --entrypoint python -i assistx-runtime-check - <<'PY' | tee runtime-image-evidence/router-admin-compatibility.json
+          import ast
+          import json
+          from pathlib import Path
+
+          api = Path("/app/src/assistx/api.py")
+          transport_file = Path("/app/src/assistx/router_admin_transport.py")
+          assert api.is_file() and transport_file.is_file()
+          src = api.read_text()
+          ast_tree = ast.parse(src)
+          fn = next(
+              (n for n in ast.walk(ast_tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and n.name == "_fetch_auto_router_fleet_report"),
+              None,
+          )
+          assert fn is not None
+          calls = [
+              n.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+          ]
+          assert "fetch_router_admin_ops_summary" in calls
+          assert "_fetch_json" not in calls
+          assert "from .router_admin_transport import" in src
+
+          from assistx import router_admin_transport as client
+
+          class Response:
+              status_code = 200
+              def raise_for_status(self):
+                  return None
+              def json(self):
+                  return {"fleet_loadout_report": {"loadouts": []}}
+          class Session:
+              trust_env = True
+              def __init__(self):
+                  self.calls = []
+              def __enter__(self):
+                  return self
+              def __exit__(self, *args):
+                  return False
+              def get(self, url, *, headers, allow_redirects, timeout):
+                  assert url == "http://synthetic-router.local:8088/admin/ops/summary"
+                  assert headers == {
+                      "Accept": "application/json",
+                      "X-Admin-Token": "synthetic-ci-admin-token",
+                  }
+                  assert allow_redirects is False
+                  assert self.trust_env is False
+                  assert timeout == 6.0
+                  self.calls.append(1)
+                  return Response()
+
+          made = []
+          def factory():
+              s = Session()
+              made.append(s)
+              return s
+          client.requests.Session = factory
+
+          try:
+              client.fetch_router_admin_ops_summary("http://synthetic-router.local:8088", "")
+              raise AssertionError("missing admin token accepted")
+          except client.RouterAdminReadDenied as exc:
+              assert str(exc) == "router_admin_token_missing"
+          assert not made, "network session allocated on missing token"
+          output = client.fetch_router_admin_ops_summary(
+              "http://synthetic-router.local:8088", "synthetic-ci-admin-token"
+          )
+          assert output["fleet_loadout_report"]["loadouts"] == []
+          assert len(made) == 1 and made[0].calls == [1]
+          print(json.dumps({
+              "verdict": "BAKED_ASSISTX_ROUTER_ADMIN_CLIENT_OFFLINE_PASS",
+              "protected_report_handler_present": True,
+              "legacy_unauthenticated_handler_absent": True,
+              "admin_header_and_redirect_policy_verified": True,
+              "missing_token_fails_before_transport": True,
+              "network": "none",
+              "synthetic_credentials_only": True,
+              "real_model_requests": 0,
+              "production_deployed": False,
+              "router_cutover_authorized": False
+          }, sort_keys=True))
+          PY
+          python -m json.tool runtime-image-evidence/router-admin-compatibility.json >/dev/null
       - name: Check isolated interpreters without network or host mounts
         run: |
           docker run --rm --network none --entrypoint python assistx-runtime-check -m pip check
