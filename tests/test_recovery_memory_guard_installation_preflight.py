@@ -36,7 +36,7 @@ class EntryPointPreflight(unittest.TestCase):
 
     def unit_text(self, *, user="assistx-recovery", script=None, root=None):
         root = str(self.root) if root is None else root
-        script = str(self.entry) if script is None else script
+        script = str(guard.ENTRYPOINT) if script is None else script
         return ("[Unit]\nDescription=Fixture\n[Service]\n"
                 "User=" + user + "\nWorkingDirectory=" + root
                 + "\nExecStart=" + str(self.root.parent.parent / "venv/bin/python")
