@@ -121,9 +121,14 @@ def inspect(unit_path: Path, package_root: Path, expected_sha256: str) -> dict[s
             argv = shlex.split(values["ExecStart"])
         except ValueError:
             raise IdentityHold("invalid_exec_start") from None
-        if (len(argv) != 2 or not Path(argv[0]).is_absolute()
-                or not re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(argv[0]).name)
-                or argv[1] != str(script)):
+        # Live Beelink unit uses the protected recovery venv interpreter
+        # and a relative entrypoint resolved under WorkingDirectory.
+        # Require exact paths: a generic /tmp/python or host /usr/bin/python
+        # basename is not a trustworthy recovery deployment identity.
+        expected_interpreter = package_root.parent.parent / "venv/bin/python"
+        if len(argv) != 2 or argv[0] != str(expected_interpreter):
+            raise IdentityHold("unexpected_python_interpreter")
+        if argv[1] != str(ENTRYPOINT):
             raise IdentityHold("unexpected_exec_start")
         actual = hashlib.sha256(_read_regular(script, MAX_SCRIPT_BYTES)).hexdigest()
         if actual != expected_sha256:
