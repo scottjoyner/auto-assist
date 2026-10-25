@@ -267,7 +267,7 @@ jobs:
               "production_deployed":False,
               "operator_release_approved":False
           }
-          (target/"parts-manifest.json").write_text(json.dumps(record,sort_keys=True)+"\\n")
+          (target/"parts-manifest.json").write_text(json.dumps(record,sort_keys=True)+"\n")
           with (target/"parts-manifest.json").open("rb") as input:
               json.load(input)
           print(json.dumps({"verdict":record["verdict"],"part_count":len(parts),
