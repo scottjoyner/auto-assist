@@ -1,0 +1,22 @@
+# Research-only staged replacement for control-room-ts-proxy.service.
+# Inert unless Caddy is explicitly started. NEVER run alongside the live
+# socat service on the same Tailnet IP:8000. Backend remains 127.0.0.1:8000.
+# The explicit bind pins the independently verified x1-370 Tailscale IPv4.
+# Without this bind, a Caddy site address alone can listen on wildcard :8000.
+# Requalify this file and its hash if the Tailnet IPv4 changes.
+{
+    admin off
+    auto_https off
+}
+
+http://{$ASSISTX_TAILNET_IP}:8000 {
+    bind 100.64.43.123
+    reverse_proxy http://127.0.0.1:8000 {
+        header_up -Tailscale-User-Login
+        header_up -X-Forwarded-User
+        header_up -X-Authenticated-User
+        header_up -X-Remote-User
+        header_up -Remote-User
+        header_up -X-Forwarded-Email
+    }
+}

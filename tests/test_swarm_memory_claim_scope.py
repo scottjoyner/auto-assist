@@ -63,3 +63,18 @@ def test_no_executor_token_does_not_start_retry_sleep(monkeypatch):
     monkeypatch.setattr(memory.requests, "post", lambda *_a, **_kw: pytest.fail("provider network"))
     monkeypatch.setattr(memory.time, "sleep", lambda *_a: pytest.fail("retry sleep"))
     assert memory.embed("fixture") is None
+
+
+def test_new_scoped_embeds_do_not_remove_split_root_or_signed_corpus_checks():
+    """Both inherited mainline scope and branch storage custody must survive."""
+    import inspect
+
+    code=inspect.getsource(memory)
+    assert 'HERMES_EXECUTOR_TOKEN' in code
+    assert 'ASSISTX_INTERNAL_SERVICE_TOKEN' not in code
+    assert 'resolve_knowledge_roots(' in code
+    assert 'safe_knowledge_files(KNOWLEDGE_READ_ROOT' in code
+    assert 'safe_read_text(fp, 200000)' in code
+    assert 'checked_write_path(KNOWLEDGE_WRITE_ROOT, self.path)' in code
+    assert 'signed corpus mode forbids stale semantic index reads' in code
+    assert 'signed corpus mode forbids unbound persisted semantic index' in code
