@@ -14,6 +14,11 @@ permissions:
 jobs:
   build-and-smoke:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -124,6 +129,103 @@ jobs:
           docker image inspect assistx-runtime-check --format '{{.Id}}' > runtime-image-evidence/image-id.txt
           docker run --rm --network none --entrypoint python assistx-runtime-check -m pip freeze > runtime-image-evidence/assistx-freeze.txt
           docker run --rm --network none --entrypoint /opt/hermes/bin/python assistx-runtime-check -m pip freeze > runtime-image-evidence/hermes-freeze.txt
+      # Produce an unpromoted, uniquely pinned runtime image, NOT a registry push.
+      # Only same-repository guarded PRs may issue OCI handoff attestations.
+      - name: Package and independently verify built AssistX image (CI-only)
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-image-handoff
+          docker save assistx-runtime-check | gzip -n -1 > runtime-image-handoff/tested-assistx-runtime-image.tar.gz
+          python - <<'PY'
+          import hashlib, json, os, tarfile
+          from pathlib import Path
+          import subprocess
+          root=Path("runtime-image-handoff")
+          image_archive=root/"tested-assistx-runtime-image.tar.gz"
+          def digest(stream):
+              h=hashlib.sha256()
+              for block in iter(lambda:stream.read(1024*1024),b""):h.update(block)
+              return h.hexdigest()
+          image_id=subprocess.check_output(["docker","image","inspect",
+              "assistx-runtime-check","--format","{{.Id}}"],text=True).strip()
+          assert image_id.startswith("sha256:") and len(image_id)==71
+          source_sha=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()
+          assert source_sha==os.environ["GITHUB_SHA"]
+          assert 0<image_archive.stat().st_size<6_000_000_000
+          with tarfile.open(image_archive,"r:gz") as tf:
+              manifest=json.load(tf.extractfile("manifest.json"))
+              assert isinstance(manifest,list) and len(manifest)==1
+              item=manifest[0]
+              config_bytes=tf.extractfile(item["Config"]).read()
+              assert "sha256:"+hashlib.sha256(config_bytes).hexdigest()==image_id
+              config=json.loads(config_bytes)
+              assert config.get("architecture")=="amd64" and config.get("os")=="linux"
+              assert config["config"]["WorkingDir"]=="/app"
+              layers=item["Layers"]
+              diff_ids=config["rootfs"]["diff_ids"]
+              assert len(layers)==len(diff_ids) and len(layers)>3
+              for layer_name,expected in zip(layers,diff_ids):
+                  with tf.extractfile(layer_name) as layer:
+                      actual="sha256:"+digest(layer)
+                  assert actual==expected,"layer diffID mismatch"
+          with image_archive.open("rb") as stream:
+              archive_sha=digest(stream)
+          rec={
+              "schema":1,"verdict":"CI_BAKED_ASSISTX_IMAGE_CONTENT_VERIFIED",
+              "source_commit":source_sha,"image_id":image_id,
+              "archive_sha256":archive_sha,
+              "archive_bytes":image_archive.stat().st_size,
+              "layer_count":len(layers),
+              "baked_router_admin_client_ci_gate":"PASS",
+              "production_deployed":False,
+              "physical_assistx_api_accepted":False,
+              "physical_router_rollback_accepted":False,
+              "operator_release_approved":False
+          }
+          receipt=root/"runtime-image-handoff.json"
+          receipt.write_text(json.dumps(rec,sort_keys=True)+"\n")
+          check=json.loads(receipt.read_text())
+          assert check==rec
+          print(json.dumps({"verdict":rec["verdict"],"image_id":image_id,
+              "layers":len(layers),"sha256":archive_sha,
+              "production_deployed":False},sort_keys=True))
+          PY
+          python -m json.tool runtime-image-handoff/runtime-image-handoff.json >/dev/null
+      - name: Attest exact AssistX image archive via GitHub Sigstore (unpromoted)
+        id: attest_assistx
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/attest@v4
+        with:
+          subject-path: runtime-image-handoff/tested-assistx-runtime-image.tar.gz
+      - name: Verify AssistX image attestation with trusted roots
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh attestation verify runtime-image-handoff/tested-assistx-runtime-image.tar.gz \
+            --repo "$GITHUB_REPOSITORY" \
+            --source-digest "$GITHUB_SHA" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/runtime-image.yml" \
+            --source-ref "refs/pull/${{ github.event.pull_request.number }}/merge" >/dev/null
+          echo 'CI_SIGSTORE_TRUSTED_ROOT_ASSISTX_IMAGE_PASS_NOT_RELEASE_APPROVAL'
+      - name: Upload unpromoted AssistX image and checksum receipt
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistx-router-client-image-handoff-${{ github.sha }}
+          path: runtime-image-handoff/
+          if-no-files-found: error
+          retention-days: 3
+      - name: Upload AssistX image Sigstore bundle
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistx-router-client-sigstore-${{ github.sha }}
+          path: ${{ steps.attest_assistx.outputs['bundle-path'] }}
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: runtime-image-evidence
