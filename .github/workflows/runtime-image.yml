@@ -221,6 +221,101 @@ jobs:
           asyncio.run(main())
           PY
           python -m json.tool runtime-image-evidence/router-admin-asgi-canary.json >/dev/null
+      # Full ASGI-server startup/shutdown with real localhost HTTP.
+      # Recovery-shadow disables model, agent, replay and worker controllers;
+      # schema authority is a synthetic in-memory stub, not live Neo4j.
+      - name: Test baked recovery-shadow Uvicorn startup without external effects
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-image-evidence
+          docker run --rm --network none --read-only \
+            --memory 1280m --pids-limit 128 --cpus 1 \
+            --tmpfs /tmp:rw,nosuid,nodev,size=32m \
+            --tmpfs /app/artifacts:rw,nosuid,nodev,size=16m \
+            --tmpfs /app/transcriptions:rw,nosuid,nodev,size=16m \
+            --tmpfs /app/.cache:rw,nosuid,nodev,size=16m \
+            -e HOME=/tmp \
+            -e ASSISTX_OUTBOX_DB=/tmp/synthetic-shadow-outbox.db \
+            -e ASSISTX_RECOVERY_SHADOW_MODE=true \
+            -e ASSISTX_RUNTIME_PROFILE=ci-shadow \
+            -e BASIC_AUTH_USER=ci-fleet-user \
+            -e BASIC_AUTH_PASS=synthetic-ci-basic-password \
+            -e AUTO_ROUTER_BASE_URL=http://synthetic-router.invalid:8088 \
+            -e AUTO_ROUTER_ADMIN_TOKEN=synthetic-ci-router-admin \
+            --entrypoint python -i assistx-runtime-check - <<'PY' | grep -F '"verdict": "BAKED_ASSISTX_RECOVERY_SHADOW_LIVE_HTTP_PASS"' > runtime-image-evidence/recovery-shadow-live-http.json
+          import asyncio
+          import json
+          from pathlib import Path
+          import httpx
+          import uvicorn
+          from assistx import api as api_module
+          from assistx.api_router import app
+          from assistx.recovery_mode import recovery_shadow_status
+
+          assert not Path("/app/src").is_mount(), "host source override forbidden"
+          calls=[]
+          class FakeNeo:
+              def __init__(self):
+                  calls.append("created")
+              def ensure_schema(self):
+                  calls.append("schema-check-synthetic")
+              def close(self):
+                  calls.append("closed")
+          api_module.Neo4jClient=FakeNeo
+          shadow=recovery_shadow_status()
+          assert shadow["enabled"] is True
+          assert shadow["mode"]=="recovery_shadow"
+          assert len(shadow["disabled_startup_loops"])>=9
+          assert shadow["execution_promoted"] is False
+
+          async def verify():
+              server=uvicorn.Server(uvicorn.Config(
+                  app=app,host="127.0.0.1",port=18765,
+                  lifespan="on",log_level="error",access_log=False,
+                  timeout_graceful_shutdown=3))
+              task=asyncio.create_task(server.serve())
+              try:
+                  for attempt in range(100):
+                      if server.started: break
+                      if task.done(): raise AssertionError("server terminated before startup")
+                      await asyncio.sleep(0.1)
+                  assert server.started,"shadow server failed to start"
+                  async with httpx.AsyncClient(
+                      base_url="http://127.0.0.1:18765",
+                      trust_env=False,timeout=2.0,follow_redirects=False,
+                  ) as client:
+                      denied=await client.get("/api/fleet/recovery-island/shadow-status")
+                      assert denied.status_code==401
+                      valid=await client.get(
+                          "/api/fleet/recovery-island/shadow-status",
+                          auth=("ci-fleet-user","synthetic-ci-basic-password"))
+                      assert valid.status_code==200,valid.status_code
+                      state=valid.json()
+                      assert state["enabled"] is True
+                      assert state["execution_promoted"] is False
+                      assert "fleet_executor" in state["disabled_startup_loops"]
+                  assert calls==["created","schema-check-synthetic","closed"],calls
+              finally:
+                  server.should_exit=True
+                  await asyncio.wait_for(task,timeout=10)
+          asyncio.run(verify())
+          print(json.dumps({
+              "verdict":"BAKED_ASSISTX_RECOVERY_SHADOW_LIVE_HTTP_PASS",
+              "live_uvicorn_http_start_stop":True,
+              "real_localhost_port":18765,
+              "source_bind_present":False,
+              "shadow_lifespan_verified":True,
+              "controller_startup_disabled":True,
+              "neo4j_schema_stub_only":True,
+              "anonymous_shadow_status_denied":True,
+              "authorized_shadow_status_read":True,
+              "external_network_enabled":False,
+              "production_config_or_credentials_used":False,
+              "physical_rollback_verified":False,
+              "release_approved":False
+          },sort_keys=True))
+          PY
+          python -m json.tool runtime-image-evidence/recovery-shadow-live-http.json >/dev/null
       - name: Check isolated interpreters without network or host mounts
         run: |
           docker run --rm --network none --entrypoint python assistx-runtime-check -m pip check
