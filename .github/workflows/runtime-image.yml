@@ -128,6 +128,8 @@ jobs:
             --tmpfs /app/artifacts:rw,nosuid,nodev,size=16m \
             --tmpfs /app/transcriptions:rw,nosuid,nodev,size=16m \
             --tmpfs /app/.cache:rw,nosuid,nodev,size=16m \
+            -e HOME=/tmp \
+            -e ASSISTX_OUTBOX_DB=/tmp/ci-assistx-outbox.db \
             -e BASIC_AUTH_USER=ci-fleet-user \
             -e BASIC_AUTH_PASS=synthetic-ci-basic-password \
             -e AUTO_ROUTER_BASE_URL=http://synthetic-router.invalid:8088 \
