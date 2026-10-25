@@ -24,7 +24,7 @@ BASE_IMAGE_ID = 'sha256:22191871cbf346ebe27c1b1cf433901f4b4ff479d80d2047917fe396
 # separately approved runtime base via a CI fallback or unreviewed tag.
 RESEARCH_BASE_IMAGE_ID = 'sha256:' + '0' * 64
 ENTRYPOINT = 'tests/hermes_split_root_candidate_entrypoint.sh'
-ENTRYPOINT_SHA256 = '81add7ecd43ef1b3fccc5d8097b4f51ed196cfb61d5ccd3cd243e51a552ab6f5'
+ENTRYPOINT_SHA256 = 'a539208c578eb1cb3d80068207fda4dce09a4c31cc567aca56556ca0745133aa'
 # Exact static first-party import closure rooted at strict_executor_main,
 # including package __init__ side-effects; no unpinned modules from the old
 # image may satisfy these static imports. This is a researched allowlist,

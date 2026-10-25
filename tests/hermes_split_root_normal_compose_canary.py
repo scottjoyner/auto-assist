@@ -27,7 +27,12 @@ FIXTURE = pathlib.Path(__file__).resolve().parent
 COMPOSE = FIXTURE / "hermes_split_root_normal.compose.yaml"
 ENTRY = FIXTURE / "hermes_split_root_candidate_entrypoint.sh"
 SITE = FIXTURE / "hermes_split_root_normal_sitecustomize.py"
-EXPECTED_ENTRY_SHA = "81add7ecd43ef1b3fccc5d8097b4f51ed196cfb61d5ccd3cd243e51a552ab6f5"
+EXPECTED_ENTRY_SHA = "a539208c578eb1cb3d80068207fda4dce09a4c31cc567aca56556ca0745133aa"
+# The physical-canary procedure is now stale: its prior image/runtime test
+# assumed image-inherited default config. New rootless startup forbids this.
+# Retain source-only inspections but refuse any Docker object creation until
+# separately authorized, pre-provisioned config acceptance is designed.
+PHYSICAL_REQUALIFICATION_READY = False
 BRANCH = "fix/hermes-split-knowledge-roots-20261021"
 PINNED_HEAD = "412affd187acffe2147f03088e1e126472f4667e"
 IMAGE = prior.IMAGE_ID
@@ -198,6 +203,9 @@ def inspect_created(cid, image, project, corpus, work):
                  "/workspace":(str(work),True)}, "unexpected bind source or write permission")
 
 def run():
+    need(PHYSICAL_REQUALIFICATION_READY,
+         "HOLD: earlier physical Docker canary cannot be reused after rootless "
+         "preprovisioned-config contract change; independent requalification required")
     before=read_only_source()
     suffix=uuid.uuid4().hex[:16]
     project="oghermessplit"+suffix
