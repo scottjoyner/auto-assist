@@ -50,8 +50,7 @@ jobs:
             -e BASIC_AUTH_PASS=synthetic-fallback-pass \
             -e AUTO_ROUTER_BASE_URL=http://synthetic-router.invalid:8088 \
             -e AUTO_ROUTER_ADMIN_TOKEN=synthetic-fallback-admin \
-            --entrypoint python -i assistx-guarded-fallback:ci - <<'PY' \
-            | grep -F '"verdict": "GUARDED_ASSISTX_FALLBACK_LIVE_HTTP_PASS"' > guarded-fallback-evidence/http-receipt.json
+            --entrypoint python -i assistx-guarded-fallback:ci - <<'PY' | grep -F '"verdict": "GUARDED_ASSISTX_FALLBACK_LIVE_HTTP_PASS"' > guarded-fallback-evidence/http-receipt.json
           import asyncio, ast, json
           from pathlib import Path
           import httpx, uvicorn
