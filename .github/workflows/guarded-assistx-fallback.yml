@@ -1,0 +1,281 @@
+name: guarded-AssistX-fallback-ci
+on:
+  pull_request:
+    paths:
+      - .github/workflows/guarded-assistx-fallback.yml
+      - .github/workflows/runtime-image.yml
+      - src/**
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  pinned-guarded-fallback:
+    if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Check out independently pinned protected fallback source
+        uses: actions/checkout@v4
+        with:
+          ref: 2a470ceb5dbf55b46cf36e31f8a31be8418fb5a3
+          persist-credentials: false
+      - name: Fail closed on source/ref drift
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "2a470ceb5dbf55b46cf36e31f8a31be8418fb5a3"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          test -f src/assistx/router_admin_transport.py
+          test -f src/assistx/recovery_mode.py
+          echo PINNED_PATCHED_FALLBACK_SOURCE_PASS
+      - name: Build patched fallback image without any deployment or push
+        run: docker build --pull --tag assistx-guarded-fallback:ci .
+      - name: Prove fallback has protected Router client and isolated live HTTP startup
+        run: |
+          set -euo pipefail
+          mkdir -p guarded-fallback-evidence
+          docker run --rm --network none --read-only --pids-limit 128 \
+            --tmpfs /tmp:rw,nosuid,nodev,size=32m \
+            --tmpfs /app/artifacts:rw,nosuid,nodev,size=16m \
+            --tmpfs /app/transcriptions:rw,nosuid,nodev,size=16m \
+            --tmpfs /app/.cache:rw,nosuid,nodev,size=16m \
+            -e HOME=/tmp -e ASSISTX_OUTBOX_DB=/tmp/guarded-fallback-ci.db \
+            -e ASSISTX_RECOVERY_SHADOW_MODE=true \
+            -e BASIC_AUTH_USER=ci-fallback-operator \
+            -e BASIC_AUTH_PASS=synthetic-fallback-pass \
+            -e AUTO_ROUTER_BASE_URL=http://synthetic-router.invalid:8088 \
+            -e AUTO_ROUTER_ADMIN_TOKEN=synthetic-fallback-admin \
+            --entrypoint python -i assistx-guarded-fallback:ci - <<'PY' \
+            | grep -F '"verdict": "GUARDED_ASSISTX_FALLBACK_LIVE_HTTP_PASS"' > guarded-fallback-evidence/http-receipt.json
+          import asyncio, ast, json
+          from pathlib import Path
+          import httpx, uvicorn
+          from assistx import api as api_module, router_admin_transport as t
+          from assistx.api_router import app
+          from assistx.recovery_mode import recovery_shadow_status
+
+          assert not Path("/app/src").is_mount()
+          source=Path("/app/src/assistx/api.py").read_text()
+          methods=ast.parse(source)
+          fn=next(x for x in ast.walk(methods)
+                  if isinstance(x,(ast.FunctionDef,ast.AsyncFunctionDef))
+                  and x.name=="_fetch_auto_router_fleet_report")
+          callnames=[x.func.id for x in ast.walk(fn)
+                     if isinstance(x,ast.Call) and isinstance(x.func,ast.Name)]
+          assert "fetch_router_admin_ops_summary" in callnames
+          assert "_fetch_json" not in callnames
+          assert recovery_shadow_status()["execution_promoted"] is False
+
+          class FakeResponse:
+              status_code=200
+              def raise_for_status(self): pass
+              def json(self): return {"fleet_loadout_report":{"loadouts":[]}}
+          class Session:
+              trust_env=True
+              def __enter__(self): return self
+              def __exit__(self,*args):pass
+              def get(self,url,*,headers,allow_redirects,timeout):
+                  assert url=="http://synthetic-router.invalid:8088/admin/ops/summary"
+                  assert headers=={"Accept":"application/json","X-Admin-Token":"synthetic-fallback-admin"}
+                  assert self.trust_env is False and allow_redirects is False and timeout==6.0
+                  return FakeResponse()
+          t.requests.Session=Session
+          try:
+              t.fetch_router_admin_ops_summary("http://synthetic-router.invalid:8088", "")
+              raise AssertionError("missing token accepted")
+          except t.RouterAdminReadDenied as error:
+              assert str(error)=="router_admin_token_missing"
+
+          db_events=[]
+          class FakeNeo:
+              def __init__(self):db_events.append("created")
+              def ensure_schema(self):db_events.append("schema-stub-only")
+              def close(self):db_events.append("closed")
+          api_module.Neo4jClient=FakeNeo
+
+          async def exercise():
+              server=uvicorn.Server(uvicorn.Config(
+                  app=app,host="127.0.0.1",port=18766,log_level="error",
+                  access_log=False,lifespan="on",timeout_graceful_shutdown=3))
+              task=asyncio.create_task(server.serve())
+              try:
+                  for _ in range(100):
+                      if server.started:break
+                      if task.done():raise AssertionError("server stopped before readiness")
+                      await asyncio.sleep(0.1)
+                  assert server.started
+                  async with httpx.AsyncClient(base_url="http://127.0.0.1:18766",
+                      trust_env=False,timeout=2.0,follow_redirects=False) as client:
+                      anon=await client.get("/api/fleet/recovery-island/shadow-status")
+                      assert anon.status_code==401
+                      auth=await client.get("/api/fleet/recovery-island/shadow-status",
+                          auth=("ci-fallback-operator","synthetic-fallback-pass"))
+                      assert auth.status_code==200
+                      assert auth.json()["execution_promoted"] is False
+                  assert db_events==["created","schema-stub-only","closed"]
+              finally:
+                  server.should_exit=True
+                  await asyncio.wait_for(task,timeout=10)
+          asyncio.run(exercise())
+          print(json.dumps({"verdict":"GUARDED_ASSISTX_FALLBACK_LIVE_HTTP_PASS",
+              "pinned_main_source":"2a470ceb5dbf55b46cf36e31f8a31be8418fb5a3",
+              "protected_router_client_present":True,
+              "anonymous_basic_denied":True,
+              "authenticated_shadow_http_accepted":True,
+              "read_only_root":True,
+              "external_network":False,
+              "neo4j_schema_stub_only":True,
+              "real_fleet_model_requests":0,
+              "physical_rollback_verified":False,
+              "operator_release_approved":False},sort_keys=True))
+          PY
+          python3 -m json.tool guarded-fallback-evidence/http-receipt.json >/dev/null
+      - name: Package exactly tested patched image with fail-closed layer custody
+        run: |
+          set -euo pipefail
+          docker save assistx-guarded-fallback:ci | gzip -n -1 > guarded-fallback-image.tar.gz
+          python3 - <<'PY'
+          import hashlib,json,os,tarfile,subprocess
+          from pathlib import Path
+          image=Path("guarded-fallback-image.tar.gz")
+          expected=subprocess.check_output(["docker","image","inspect","--format",
+              "{{.Id}}","assistx-guarded-fallback:ci"],text=True).strip()
+          def digest(stream):
+              h=hashlib.sha256()
+              for chunk in iter(lambda:stream.read(1048576),b""):h.update(chunk)
+              return h.hexdigest()
+          assert expected.startswith("sha256:") and len(expected)==71
+          with tarfile.open(image,mode="r:gz") as tar:
+              manifest=json.load(tar.extractfile("manifest.json"))
+              assert len(manifest)==1
+              entry=manifest[0]
+              config_bytes=tar.extractfile(entry["Config"]).read()
+              assert "sha256:"+hashlib.sha256(config_bytes).hexdigest()==expected
+              config=json.loads(config_bytes)
+              assert config["os"]=="linux" and config["architecture"]=="amd64"
+              layers=entry["Layers"]
+              diffids=config["rootfs"]["diff_ids"]
+              assert len(layers)==len(diffids) and len(layers)>=5
+              for name,sha in zip(layers,diffids):
+                  with tar.extractfile(name) as data:
+                      assert "sha256:"+digest(data)==sha
+          with image.open("rb") as stream:
+              archive_sha=digest(stream)
+          record={"schema":1,"verdict":"PATCHED_ASSISTX_FALLBACK_IMAGE_CUSTODY_PASS",
+              "source_commit":"2a470ceb5dbf55b46cf36e31f8a31be8418fb5a3",
+              "ci_workflow_commit":os.environ["GITHUB_SHA"],
+              "image_id":expected,"archive_sha256":archive_sha,
+              "archive_bytes":image.stat().st_size,"layer_count":len(layers),
+              "physical_rollback_verified":False,
+              "real_neo4j_used":False,"operator_release_approved":False}
+          Path("guarded-fallback-evidence/image-receipt.json").write_text(
+              json.dumps(record,sort_keys=True)+"\n")
+          print(json.dumps({"verdict":record["verdict"],"image_id":expected,
+              "layer_count":len(layers),"physical_rollback_verified":False},sort_keys=True))
+          PY
+          python3 -m json.tool guarded-fallback-evidence/image-receipt.json >/dev/null
+      - name: Attest guarded AssistX fallback as unpromoted GitHub CI archive
+        id: attest_fallback
+        uses: actions/attest@v4
+        with:
+          subject-path: guarded-fallback-image.tar.gz
+      - name: Verify fallback signing roots and precise workflow/ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh attestation verify guarded-fallback-image.tar.gz \
+            --repo "$GITHUB_REPOSITORY" \
+            --source-digest "$GITHUB_SHA" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/guarded-assistx-fallback.yml" \
+            --source-ref "refs/pull/${{ github.event.pull_request.number }}/merge" >/dev/null
+          echo PATCHED_ASSISTX_FALLBACK_SIGSTORE_CI_PASS_NOT_RELEASE
+      - name: Partition exact signed fallback archive for custody without fleet transfer
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path("guarded-fallback-parts")
+          root.mkdir(exist_ok=True)
+          archive=Path("guarded-fallback-image.tar.gz")
+          receipt=json.loads(Path("guarded-fallback-evidence/image-receipt.json").read_text())
+          size=256*1024*1024
+          chunks=[]
+          whole=hashlib.sha256()
+          with archive.open("rb") as stream:
+              for index in range(4):
+                  data=stream.read(size)
+                  if not data:break
+                  name=f"part-{index:02d}.bin"
+                  (root/name).write_bytes(data)
+                  whole.update(data)
+                  chunks.append({"name":name,"size":len(data),
+                                 "sha256":hashlib.sha256(data).hexdigest()})
+              assert not stream.read(1),"fallback archive exceeds 4 chunks"
+          assert 1<=len(chunks)<=4
+          assert whole.hexdigest()==receipt["archive_sha256"]
+          assert sum(c["size"] for c in chunks)==receipt["archive_bytes"]
+          for index in range(len(chunks),4):
+              (root/f"part-{index:02d}.bin").write_bytes(b"")
+          record={"verdict":"PATCHED_FALLBACK_SIGNED_ARCHIVE_PARTS_PASS",
+                  "full_sha256":whole.hexdigest(),"full_bytes":receipt["archive_bytes"],
+                  "image_id":receipt["image_id"],"source_commit":receipt["source_commit"],
+                  "parts":chunks,"physical_rollback_verified":False,
+                  "operator_release_approved":False}
+          (root/"manifest.json").write_text(json.dumps(record,sort_keys=True)+"\n")
+          assert json.loads((root/"manifest.json").read_text())==record
+          PY
+      - name: Upload fallback chunk 0
+        uses: actions/upload-artifact@v4
+        with:
+          name: guarded-fallback-part00
+          path: guarded-fallback-parts/part-00.bin
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+      - name: Upload fallback chunk 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: guarded-fallback-part01
+          path: guarded-fallback-parts/part-01.bin
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+      - name: Upload fallback chunk 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: guarded-fallback-part02
+          path: guarded-fallback-parts/part-02.bin
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+      - name: Upload fallback chunk 3
+        uses: actions/upload-artifact@v4
+        with:
+          name: guarded-fallback-part03
+          path: guarded-fallback-parts/part-03.bin
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+      - name: Upload fallback nonsecret manifest and test receipts
+        uses: actions/upload-artifact@v4
+        with:
+          name: guarded-fallback-test-and-custody-evidence
+          path: |
+            guarded-fallback-evidence/
+            guarded-fallback-parts/manifest.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload CI-only fallback Sigstore certificate bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: guarded-fallback-sigstore
+          path: ${{ steps.attest_fallback.outputs['bundle-path'] }}
+          if-no-files-found: error
+          retention-days: 14
