@@ -14,11 +14,308 @@ permissions:
 jobs:
   build-and-smoke:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Build final runtime image (no push)
         run: docker build --pull --tag assistx-runtime-check .
+      # Release precondition for Router PR #82: prove that *baked* AssistX
+      # code, not only the repository checkout, makes privileged Router reads
+      # with the existing admin header. Never import full API or contact Router.
+      - name: Verify baked Router admin client compatibility (offline)
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-image-evidence
+          docker run --rm --network none --entrypoint python -i assistx-runtime-check - <<'PY' | tee runtime-image-evidence/router-admin-compatibility.json
+          import ast
+          import json
+          from pathlib import Path
+
+          api = Path("/app/src/assistx/api.py")
+          transport_file = Path("/app/src/assistx/router_admin_transport.py")
+          assert api.is_file() and transport_file.is_file()
+          src = api.read_text()
+          ast_tree = ast.parse(src)
+          fn = next(
+              (n for n in ast.walk(ast_tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and n.name == "_fetch_auto_router_fleet_report"),
+              None,
+          )
+          assert fn is not None
+          calls = [
+              n.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+          ]
+          assert "fetch_router_admin_ops_summary" in calls
+          assert "_fetch_json" not in calls
+          assert "from .router_admin_transport import" in src
+
+          from assistx import router_admin_transport as client
+
+          class Response:
+              status_code = 200
+              def raise_for_status(self):
+                  return None
+              def json(self):
+                  return {"fleet_loadout_report": {"loadouts": []}}
+          class Session:
+              trust_env = True
+              def __init__(self):
+                  self.calls = []
+              def __enter__(self):
+                  return self
+              def __exit__(self, *args):
+                  return False
+              def get(self, url, *, headers, allow_redirects, timeout):
+                  assert url == "http://synthetic-router.local:8088/admin/ops/summary"
+                  assert headers == {
+                      "Accept": "application/json",
+                      "X-Admin-Token": "synthetic-ci-admin-token",
+                  }
+                  assert allow_redirects is False
+                  assert self.trust_env is False
+                  assert timeout == 6.0
+                  self.calls.append(1)
+                  return Response()
+
+          made = []
+          def factory():
+              s = Session()
+              made.append(s)
+              return s
+          client.requests.Session = factory
+
+          try:
+              client.fetch_router_admin_ops_summary("http://synthetic-router.local:8088", "")
+              raise AssertionError("missing admin token accepted")
+          except client.RouterAdminReadDenied as exc:
+              assert str(exc) == "router_admin_token_missing"
+          assert not made, "network session allocated on missing token"
+          output = client.fetch_router_admin_ops_summary(
+              "http://synthetic-router.local:8088", "synthetic-ci-admin-token"
+          )
+          assert output["fleet_loadout_report"]["loadouts"] == []
+          assert len(made) == 1 and made[0].calls == [1]
+          print(json.dumps({
+              "verdict": "BAKED_ASSISTX_ROUTER_ADMIN_CLIENT_OFFLINE_PASS",
+              "protected_report_handler_present": True,
+              "legacy_unauthenticated_handler_absent": True,
+              "admin_header_and_redirect_policy_verified": True,
+              "missing_token_fails_before_transport": True,
+              "network": "none",
+              "synthetic_credentials_only": True,
+              "real_model_requests": 0,
+              "production_deployed": False,
+              "router_cutover_authorized": False
+          }, sort_keys=True))
+          PY
+          python -m json.tool runtime-image-evidence/router-admin-compatibility.json >/dev/null
+      # This is the full baked ASGI handler, not just a source/AST or
+      # transport unit test. Disable startup lifespan to prohibit all fleet
+      # schedulers and DB schema writes; Docker network is completely absent.
+      - name: Test baked AssistX API GET against synthetic guarded Router (isolated ASGI)
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-image-evidence
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:rw,nosuid,nodev,size=32m \
+            --tmpfs /app/artifacts:rw,nosuid,nodev,size=16m \
+            --tmpfs /app/transcriptions:rw,nosuid,nodev,size=16m \
+            --tmpfs /app/.cache:rw,nosuid,nodev,size=16m \
+            -e HOME=/tmp \
+            -e ASSISTX_OUTBOX_DB=/tmp/ci-assistx-outbox.db \
+            -e BASIC_AUTH_USER=ci-fleet-user \
+            -e BASIC_AUTH_PASS=synthetic-ci-basic-password \
+            -e AUTO_ROUTER_BASE_URL=http://synthetic-router.invalid:8088 \
+            -e AUTO_ROUTER_ADMIN_TOKEN=synthetic-ci-router-admin \
+            --entrypoint python -i assistx-runtime-check - <<'PY' | grep -F '"verdict": "BAKED_ASSISTX_REAL_ASGI_ROUTER_CLIENT_PASS"' > runtime-image-evidence/router-admin-asgi-canary.json
+          import asyncio
+          import json
+          import os
+          from pathlib import Path
+          import httpx
+
+          # The real production source-bind is the active compatibility bug.
+          # A mount here would mean the CI image's baked code is not being tested.
+          assert not Path("/app/src").is_mount(), "source override present"
+          assert Path("/app/src/assistx/router_admin_transport.py").is_file()
+          from assistx.api_router import app
+          from assistx import router_admin_transport as transport
+
+          class Response:
+              status_code=200
+              def raise_for_status(self):
+                  return None
+              def json(self):
+                  return {"fleet_loadout_report":{"captured_at":"synthetic",
+                      "loadouts":[{"category":"synthetic-only"}]},
+                      "fleet_dispatcher_stats":{"success":0}}
+          sessions=[]
+          class Session:
+              trust_env=True
+              def __enter__(self):
+                  sessions.append(self)
+                  self.calls=0
+                  return self
+              def __exit__(self,*args):
+                  return False
+              def get(self,url,*,headers,allow_redirects,timeout):
+                  assert url=="http://synthetic-router.invalid:8088/admin/ops/summary"
+                  assert headers=={"Accept":"application/json",
+                      "X-Admin-Token":"synthetic-ci-router-admin"}
+                  assert allow_redirects is False
+                  assert self.trust_env is False
+                  assert timeout==6.0
+                  self.calls+=1
+                  return Response()
+          transport.requests.Session=Session
+
+          async def main():
+              # ASGITransport dispatches the actual API route/middleware while
+              # deliberately not entering startup lifespan or opening sockets.
+              async with httpx.AsyncClient(
+                  transport=httpx.ASGITransport(app=app),
+                  base_url="http://ci-app.invalid",
+                  follow_redirects=False,
+                  timeout=6.0,
+              ) as c:
+                  anonymous=await c.get("/api/fleet/loadouts")
+                  assert anonymous.status_code==401
+                  wrong=await c.get("/api/fleet/loadouts",
+                      auth=("ci-fleet-user","incorrect"))
+                  assert wrong.status_code==401
+                  assert not sessions,"unauthenticated clients reached Router"
+                  good=await c.get("/api/fleet/loadouts",
+                      auth=("ci-fleet-user","synthetic-ci-basic-password"))
+                  assert good.status_code==200,good.status_code
+                  body=good.json()
+                  assert body["ok"] is True
+                  assert body["loadouts"]==[{"category":"synthetic-only"}]
+                  assert len(sessions)==1 and sessions[0].calls==1
+                  os.environ.pop("AUTO_ROUTER_ADMIN_TOKEN",None)
+                  missing=await c.get("/api/fleet/loadouts",
+                      auth=("ci-fleet-user","synthetic-ci-basic-password"))
+                  assert missing.status_code==503,missing.status_code
+                  assert missing.json()["error"]=="router_admin_token_missing"
+                  assert len(sessions)==1,"missing token reached transport"
+              print(json.dumps({
+                  "verdict":"BAKED_ASSISTX_REAL_ASGI_ROUTER_CLIENT_PASS",
+                  "real_asgi_route":"/api/fleet/loadouts",
+                  "anonymous_http_denied":True,
+                  "wrong_basic_auth_denied":True,
+                  "valid_basic_auth_and_synthetic_router_read":True,
+                  "missing_router_admin_token_denied_before_session":True,
+                  "baked_source_without_app_src_override":True,
+                  "startup_lifespan_executed":False,
+                  "network":"none","rootfs":"readonly",
+                  "external_model_or_database_requests":0,
+                  "production_services_modified":False,
+                  "physical_cutover_authorized":False
+              },sort_keys=True))
+          asyncio.run(main())
+          PY
+          python -m json.tool runtime-image-evidence/router-admin-asgi-canary.json >/dev/null
+      # Full ASGI-server startup/shutdown with real localhost HTTP.
+      # Recovery-shadow disables model, agent, replay and worker controllers;
+      # schema authority is a synthetic in-memory stub, not live Neo4j.
+      - name: Test baked recovery-shadow Uvicorn startup without external effects
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-image-evidence
+          docker run --rm --network none --read-only \
+            --memory 1280m --pids-limit 128 --cpus 1 \
+            --tmpfs /tmp:rw,nosuid,nodev,size=32m \
+            --tmpfs /app/artifacts:rw,nosuid,nodev,size=16m \
+            --tmpfs /app/transcriptions:rw,nosuid,nodev,size=16m \
+            --tmpfs /app/.cache:rw,nosuid,nodev,size=16m \
+            -e HOME=/tmp \
+            -e ASSISTX_OUTBOX_DB=/tmp/synthetic-shadow-outbox.db \
+            -e ASSISTX_RECOVERY_SHADOW_MODE=true \
+            -e ASSISTX_RUNTIME_PROFILE=ci-shadow \
+            -e BASIC_AUTH_USER=ci-fleet-user \
+            -e BASIC_AUTH_PASS=synthetic-ci-basic-password \
+            -e AUTO_ROUTER_BASE_URL=http://synthetic-router.invalid:8088 \
+            -e AUTO_ROUTER_ADMIN_TOKEN=synthetic-ci-router-admin \
+            --entrypoint python -i assistx-runtime-check - <<'PY' | grep -F '"verdict": "BAKED_ASSISTX_RECOVERY_SHADOW_LIVE_HTTP_PASS"' > runtime-image-evidence/recovery-shadow-live-http.json
+          import asyncio
+          import json
+          from pathlib import Path
+          import httpx
+          import uvicorn
+          from assistx import api as api_module
+          from assistx.api_router import app
+          from assistx.recovery_mode import recovery_shadow_status
+
+          assert not Path("/app/src").is_mount(), "host source override forbidden"
+          calls=[]
+          class FakeNeo:
+              def __init__(self):
+                  calls.append("created")
+              def ensure_schema(self):
+                  calls.append("schema-check-synthetic")
+              def close(self):
+                  calls.append("closed")
+          api_module.Neo4jClient=FakeNeo
+          shadow=recovery_shadow_status()
+          assert shadow["enabled"] is True
+          assert shadow["mode"]=="recovery_shadow"
+          assert len(shadow["disabled_startup_loops"])>=9
+          assert shadow["execution_promoted"] is False
+
+          async def verify():
+              server=uvicorn.Server(uvicorn.Config(
+                  app=app,host="127.0.0.1",port=18765,
+                  lifespan="on",log_level="error",access_log=False,
+                  timeout_graceful_shutdown=3))
+              task=asyncio.create_task(server.serve())
+              try:
+                  for attempt in range(100):
+                      if server.started: break
+                      if task.done(): raise AssertionError("server terminated before startup")
+                      await asyncio.sleep(0.1)
+                  assert server.started,"shadow server failed to start"
+                  async with httpx.AsyncClient(
+                      base_url="http://127.0.0.1:18765",
+                      trust_env=False,timeout=2.0,follow_redirects=False,
+                  ) as client:
+                      denied=await client.get("/api/fleet/recovery-island/shadow-status")
+                      assert denied.status_code==401
+                      valid=await client.get(
+                          "/api/fleet/recovery-island/shadow-status",
+                          auth=("ci-fleet-user","synthetic-ci-basic-password"))
+                      assert valid.status_code==200,valid.status_code
+                      state=valid.json()
+                      assert state["enabled"] is True
+                      assert state["execution_promoted"] is False
+                      assert "fleet_executor" in state["disabled_startup_loops"]
+                  assert calls==["created","schema-check-synthetic","closed"],calls
+              finally:
+                  server.should_exit=True
+                  await asyncio.wait_for(task,timeout=10)
+          asyncio.run(verify())
+          print(json.dumps({
+              "verdict":"BAKED_ASSISTX_RECOVERY_SHADOW_LIVE_HTTP_PASS",
+              "live_uvicorn_http_start_stop":True,
+              "real_localhost_port":18765,
+              "source_bind_present":False,
+              "shadow_lifespan_verified":True,
+              "controller_startup_disabled":True,
+              "neo4j_schema_stub_only":True,
+              "anonymous_shadow_status_denied":True,
+              "authorized_shadow_status_read":True,
+              "external_network_enabled":False,
+              "production_config_or_credentials_used":False,
+              "physical_rollback_verified":False,
+              "release_approved":False
+          },sort_keys=True))
+          PY
+          python -m json.tool runtime-image-evidence/recovery-shadow-live-http.json >/dev/null
       - name: Check isolated interpreters without network or host mounts
         run: |
           docker run --rm --network none --entrypoint python assistx-runtime-check -m pip check
@@ -32,6 +329,203 @@ jobs:
           docker image inspect assistx-runtime-check --format '{{.Id}}' > runtime-image-evidence/image-id.txt
           docker run --rm --network none --entrypoint python assistx-runtime-check -m pip freeze > runtime-image-evidence/assistx-freeze.txt
           docker run --rm --network none --entrypoint /opt/hermes/bin/python assistx-runtime-check -m pip freeze > runtime-image-evidence/hermes-freeze.txt
+      # Produce an unpromoted, uniquely pinned runtime image, NOT a registry push.
+      # Only same-repository guarded PRs may issue OCI handoff attestations.
+      - name: Package and independently verify built AssistX image (CI-only)
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-image-handoff
+          docker save assistx-runtime-check | gzip -n -1 > runtime-image-handoff/tested-assistx-runtime-image.tar.gz
+          python - <<'PY'
+          import hashlib, json, os, tarfile
+          from pathlib import Path
+          import subprocess
+          root=Path("runtime-image-handoff")
+          image_archive=root/"tested-assistx-runtime-image.tar.gz"
+          def digest(stream):
+              h=hashlib.sha256()
+              for block in iter(lambda:stream.read(1024*1024),b""):h.update(block)
+              return h.hexdigest()
+          image_id=subprocess.check_output(["docker","image","inspect",
+              "assistx-runtime-check","--format","{{.Id}}"],text=True).strip()
+          assert image_id.startswith("sha256:") and len(image_id)==71
+          source_sha=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()
+          assert source_sha==os.environ["GITHUB_SHA"]
+          assert 0<image_archive.stat().st_size<6_000_000_000
+          with tarfile.open(image_archive,"r:gz") as tf:
+              manifest=json.load(tf.extractfile("manifest.json"))
+              assert isinstance(manifest,list) and len(manifest)==1
+              item=manifest[0]
+              config_bytes=tf.extractfile(item["Config"]).read()
+              assert "sha256:"+hashlib.sha256(config_bytes).hexdigest()==image_id
+              config=json.loads(config_bytes)
+              assert config.get("architecture")=="amd64" and config.get("os")=="linux"
+              assert config["config"]["WorkingDir"]=="/app"
+              layers=item["Layers"]
+              diff_ids=config["rootfs"]["diff_ids"]
+              assert len(layers)==len(diff_ids) and len(layers)>3
+              for layer_name,expected in zip(layers,diff_ids):
+                  with tf.extractfile(layer_name) as layer:
+                      actual="sha256:"+digest(layer)
+                  assert actual==expected,"layer diffID mismatch"
+          with image_archive.open("rb") as stream:
+              archive_sha=digest(stream)
+          rec={
+              "schema":1,"verdict":"CI_BAKED_ASSISTX_IMAGE_CONTENT_VERIFIED",
+              "source_commit":source_sha,"image_id":image_id,
+              "archive_sha256":archive_sha,
+              "archive_bytes":image_archive.stat().st_size,
+              "layer_count":len(layers),
+              "baked_router_admin_client_ci_gate":"PASS",
+              "production_deployed":False,
+              "physical_assistx_api_accepted":False,
+              "physical_router_rollback_accepted":False,
+              "operator_release_approved":False
+          }
+          receipt=root/"runtime-image-handoff.json"
+          receipt.write_text(json.dumps(rec,sort_keys=True)+"\n")
+          check=json.loads(receipt.read_text())
+          assert check==rec
+          print(json.dumps({"verdict":rec["verdict"],"image_id":image_id,
+              "layers":len(layers),"sha256":archive_sha,
+              "production_deployed":False},sort_keys=True))
+          PY
+          python -m json.tool runtime-image-handoff/runtime-image-handoff.json >/dev/null
+      - name: Attest exact AssistX image archive via GitHub Sigstore (unpromoted)
+        id: attest_assistx
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/attest@v4
+        with:
+          subject-path: runtime-image-handoff/tested-assistx-runtime-image.tar.gz
+      - name: Verify AssistX image attestation with trusted roots
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh attestation verify runtime-image-handoff/tested-assistx-runtime-image.tar.gz \
+            --repo "$GITHUB_REPOSITORY" \
+            --source-digest "$GITHUB_SHA" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/runtime-image.yml" \
+            --source-ref "refs/pull/${{ github.event.pull_request.number }}/merge" >/dev/null
+          echo 'CI_SIGSTORE_TRUSTED_ROOT_ASSISTX_IMAGE_PASS_NOT_RELEASE_APPROVAL'
+      - name: Upload unpromoted AssistX image and checksum receipt
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistx-router-client-image-handoff-${{ github.sha }}
+          path: runtime-image-handoff/
+          if-no-files-found: error
+          retention-days: 3
+      # Artifacts exceeding the connector transfer limit are split for
+      # independent offline verification only. The complete archive's digest
+      # is still the subject of the signed GitHub/Sigstore attestation.
+      - name: Split signed AssistX archive into independently hashed custody parts
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path("runtime-image-handoff")
+          archive=root/"tested-assistx-runtime-image.tar.gz"
+          receipt=json.loads((root/"runtime-image-handoff.json").read_text())
+          assert receipt["source_commit"]==os.environ["GITHUB_SHA"]
+          target=Path("runtime-image-chunks")
+          target.mkdir(exist_ok=True)
+          chunk_size=256*1024*1024
+          parts=[]
+          whole=hashlib.sha256()
+          total=0
+          with archive.open("rb") as stream:
+              for index in range(4):
+                  data=stream.read(chunk_size)
+                  if not data:break
+                  name=f"part-{index:02d}.bin"
+                  (target/name).write_bytes(data)
+                  parts.append({"name":name,"bytes":len(data),"sha256":hashlib.sha256(data).hexdigest()})
+                  whole.update(data)
+                  total+=len(data)
+              assert not stream.read(1),"archive exceeds four-part capacity"
+          assert len(parts)==4
+          assert whole.hexdigest()==receipt["archive_sha256"]
+          assert total==receipt["archive_bytes"]
+          for index,part in enumerate(parts):
+              data=(target/part["name"]).read_bytes()
+              assert len(data)==part["bytes"] and hashlib.sha256(data).hexdigest()==part["sha256"]
+          record={
+              "schema":1,"verdict":"SIGNED_ARCHIVE_PARTS_RECONSTRUCT_FULL_DIGEST",
+              "source_commit":receipt["source_commit"],
+              "image_id":receipt["image_id"],
+              "full_archive_sha256":whole.hexdigest(),
+              "full_archive_bytes":total,
+              "part_size_bytes":chunk_size,
+              "parts":parts,
+              "parent_archive_attested_by_ci":True,
+              "offline_only":True,
+              "production_deployed":False,
+              "operator_release_approved":False
+          }
+          (target/"parts-manifest.json").write_text(json.dumps(record,sort_keys=True)+"\n")
+          with (target/"parts-manifest.json").open("rb") as input:
+              json.load(input)
+          print(json.dumps({"verdict":record["verdict"],"part_count":len(parts),
+              "image_id":record["image_id"],"sha256":record["full_archive_sha256"],
+              "production_deployed":False},sort_keys=True))
+          PY
+      - name: Upload signed-archive chunk 00 (custody only)
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistx-image-part00-${{ github.sha }}
+          path: runtime-image-chunks/part-00.bin
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+      - name: Upload signed-archive chunk 01 (custody only)
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistx-image-part01-${{ github.sha }}
+          path: runtime-image-chunks/part-01.bin
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+      - name: Upload signed-archive chunk 02 (custody only)
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistx-image-part02-${{ github.sha }}
+          path: runtime-image-chunks/part-02.bin
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+      - name: Upload signed-archive chunk 03 (custody only)
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistx-image-part03-${{ github.sha }}
+          path: runtime-image-chunks/part-03.bin
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+      - name: Upload signed-archive chunk manifest (unpromoted)
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistx-image-parts-manifest-${{ github.sha }}
+          path: runtime-image-chunks/parts-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload AssistX image Sigstore bundle
+        if: github.event_name == 'pull_request' && github.head_ref == 'security/assistx-router-admin-image-proof-20261025' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistx-router-client-sigstore-${{ github.sha }}
+          path: ${{ steps.attest_assistx.outputs['bundle-path'] }}
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: runtime-image-evidence
