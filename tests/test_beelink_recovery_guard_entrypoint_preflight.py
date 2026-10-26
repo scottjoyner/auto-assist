@@ -107,6 +107,7 @@ class TestGuard(unittest.TestCase):
         import subprocess,json
         mock=subprocess.CompletedProcess(args=[],returncode=0,stdout=self.show(),stderr="")
         with patch.object(mod.subprocess,"run",return_value=mock) as proc, \
+             patch.object(sys,"argv",["guard-preflight"]) , \
              patch("sys.stdout",new_callable=io.StringIO) as output:
             self.assertEqual(mod.main(),0)
         args=proc.call_args.args[0]
