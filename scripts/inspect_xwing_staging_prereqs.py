@@ -67,7 +67,7 @@ def assess(values: dict[str, object]) -> dict[str, object]:
         problems.append("DOCKER_NOT_REACHABLE")
     if not values["image_matches_pin"]:
         problems.append("SIGNED_IMAGE_NOT_CACHED_AS_EXPECTED")
-    if not values["platform_matches"]:
+    if values["image_matches_pin"] and not values["platform_matches"]:
         problems.append("WRONG_IMAGE_PLATFORM")
     if values["disk_free_bytes"] < MIN_FREE_BYTES:
         problems.append("INSUFFICIENT_DOCKER_SPACE")
