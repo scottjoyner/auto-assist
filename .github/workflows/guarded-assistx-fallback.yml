@@ -48,6 +48,14 @@ jobs:
             -e ASSISTX_RECOVERY_SHADOW_MODE=true \
             -e BASIC_AUTH_USER=ci-fallback-operator \
             -e BASIC_AUTH_PASS=synthetic-fallback-pass \
+            -e REDIS_URL=redis://127.0.0.1:6379/0 \
+            -e NEO4J_URI=bolt://127.0.0.1:7687 \
+            -e NEO4J_USER=ci-synthetic-only \
+            -e NEO4J_PASSWORD=ci-fake-secret-not-live \
+            -e LLM_BACKEND=openai \
+            -e OPENAI_BASE_URL=http://127.0.0.1:1234/v1 \
+            -e LLM_MODEL=ci-synthetic-model \
+            -e EMBED_MODEL=ci-synthetic-embeddings \
             -e AUTO_ROUTER_BASE_URL=http://synthetic-router.invalid:8088 \
             -e AUTO_ROUTER_ADMIN_TOKEN=synthetic-fallback-admin \
             --entrypoint python -i assistx-guarded-fallback:ci - <<'PY' | grep -F '"verdict": "GUARDED_ASSISTX_FALLBACK_LIVE_HTTP_PASS"' > guarded-fallback-evidence/http-receipt.json
