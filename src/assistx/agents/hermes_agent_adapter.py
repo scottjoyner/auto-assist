@@ -1192,33 +1192,134 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
 # ---------------------------------------------------------------------------
 # Real task processing (routed + evaluated)
 # ---------------------------------------------------------------------------
+class ClaimSnapshotError(ValueError):
+    """Refuse execution when a successful claim lacks source-owned task proof."""
+
+
+def _claimed_payload(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse only the authoritative claimed record; never use the poll payload.
+
+    JSON anomalies cannot be downgraded to an empty dictionary before model or
+    repository execution. This is a source-snapshot check, not a substitute for
+    a resource-owned effect fence or independently verified signer.
+    """
+    if "payload_json" in snapshot:
+        raw = snapshot["payload_json"]
+    elif "payload" in snapshot:
+        raw = snapshot["payload"]
+    else:
+        raise ClaimSnapshotError("CLAIMED_PAYLOAD_MISSING")
+
+    def no_duplicates(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate field")
+            result[key] = value
+        return result
+
+    def no_nonfinite(_value):
+        raise ValueError("nonfinite JSON number")
+
+    if isinstance(raw, str):
+        if not raw.strip() or len(raw.encode("utf-8")) > 65536:
+            raise ClaimSnapshotError("CLAIMED_PAYLOAD_INVALID")
+        try:
+            payload = json.loads(
+                raw, object_pairs_hook=no_duplicates, parse_constant=no_nonfinite,
+            )
+        except (ValueError, RecursionError) as exc:
+            raise ClaimSnapshotError("CLAIMED_PAYLOAD_INVALID") from exc
+    elif isinstance(raw, dict):
+        payload = raw
+    else:
+        raise ClaimSnapshotError("CLAIMED_PAYLOAD_INVALID")
+
+    if not isinstance(payload, dict):
+        raise ClaimSnapshotError("CLAIMED_PAYLOAD_INVALID")
+    try:
+        frozen = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        )
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ClaimSnapshotError("CLAIMED_PAYLOAD_INVALID") from exc
+    if len(frozen.encode("utf-8")) > 65536:
+        raise ClaimSnapshotError("CLAIMED_PAYLOAD_INVALID")
+    # This round-trip freezes the nested payload against subsequent source-map
+    # mutations and makes the two legacy payload access paths consistent.
+    payload = json.loads(frozen)
+    if "execution_contract" in payload and not isinstance(
+        payload["execution_contract"], dict,
+    ):
+        raise ClaimSnapshotError("CLAIMED_CONTRACT_INVALID")
+    if "learned_failure_reasons" in payload and not isinstance(
+        payload["learned_failure_reasons"], list,
+    ):
+        raise ClaimSnapshotError("CLAIMED_LESSONS_INVALID")
+    return payload
+
+
+def _authoritative_claimed_task(
+    claim: Dict[str, Any], *, task_id: str, session_id: str,
+) -> tuple[Dict[str, Any], Dict[str, Any], str]:
+    """Require matching current claim identity before any executor-side effect."""
+    if not isinstance(claim, dict) or claim.get("claimed") is not True:
+        raise ClaimSnapshotError("CLAIM_NOT_ACCEPTED")
+    source = claim.get("task")
+    if not isinstance(source, dict) or source.get("id") != task_id:
+        raise ClaimSnapshotError("CLAIM_TASK_ID_MISMATCH")
+    if str(source.get("status") or "").upper() not in {"CLAIMED", "RUNNING"}:
+        raise ClaimSnapshotError("CLAIM_STATUS_INVALID")
+    claim_id = source.get("claim_id")
+    if not isinstance(claim_id, str) or not claim_id.strip():
+        raise ClaimSnapshotError("CLAIM_ID_MISSING")
+    if claim.get("claim_id") is not None and claim["claim_id"] != claim_id:
+        raise ClaimSnapshotError("CLAIM_ID_MISMATCH")
+    if source.get("claimed_by") != AGENT_ID:
+        raise ClaimSnapshotError("CLAIM_AGENT_MISMATCH")
+    if source.get("agent_session_id") != session_id:
+        raise ClaimSnapshotError("CLAIM_SESSION_MISMATCH")
+    lease_until = source.get("lease_expires_at_ts")
+    if (
+        type(lease_until) not in (int, float)
+        or lease_until <= int(time.time() * 1000)
+    ):
+        raise ClaimSnapshotError("CLAIM_LEASE_EXPIRED")
+    attempt = source.get("execution_attempt")
+    if type(attempt) is not int or attempt < 1:
+        raise ClaimSnapshotError("CLAIM_ATTEMPT_INVALID")
+    payload = _claimed_payload(source)
+    claimed = dict(source)
+    claimed["payload"] = payload
+    claimed["payload_json"] = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    )
+    return claimed, payload, claim_id
+
+
 def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
     task_id = task.get("id")
-    title = task.get("title", task.get("kind", f"Task {task_id}"))
-    payload = task.get("payload") or task.get("payload_json") or {}
-    if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except json.JSONDecodeError:
-            payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
+    if not isinstance(task_id, str) or not task_id:
+        raise ClaimSnapshotError("POLL_TASK_ID_INVALID")
+
+    session_id = uuid.uuid4().hex
+    claim = assistx.claim_task(task_id, session_id)
+    if not claim:
+        return
+
+    # Discard the polled task. Every instruction below is derived from the
+    # authoritative claimed snapshot, including repo work and completion.
+    task, payload, claim_id = _authoritative_claimed_task(
+        claim, task_id=task_id, session_id=session_id,
+    )
+    title = task.get("title") or task.get("kind") or f"Task {task_id}"
     description = (
         task.get("description")
         or task.get("text")
         or payload.get("prompt")
         or ""
     )
-
-    session_id = uuid.uuid4().hex
-    logger.info("Processing task %s: %s", task_id, title)
-
-    claim = assistx.claim_task(task_id, session_id)
-    if not claim:
-        return
-    claimed_task = claim.get("task") or {}
-    task.update(claimed_task)
-    claim_id = str(claimed_task.get("claim_id") or claim.get("claim_id") or "")
+    logger.info("Processing claimed task %s", task_id)
 
     context = assistx.get_context(task_id, title)
     context_refs = context.get("references", []) if isinstance(context, dict) else []
@@ -1248,11 +1349,11 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
     tier = (
         str(payload["execution_contract"].get("recommended_tier"))
         if work_packet
-        else classify_model_tier(task)
+        else classify_model_tier(task, payload)
     )
     requested_model = str(payload.get("model") or "").strip()
     model = requested_model or select_tier_model(tier, seed=task_id)
-    category = task_category(task)
+    category = task_category(task, payload)
     ensure_model_env(model)
 
     if work_packet:
