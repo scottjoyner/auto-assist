@@ -31,6 +31,17 @@ def _reject_nonfinite(_constant: str) -> Any:
     raise ClaimBindingError("nonfinite_source_payload")
 
 
+def _require_string_keys(value: Any) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if type(key) is not str:
+                raise ClaimBindingError("source_payload_nonstring_key")
+            _require_string_keys(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _require_string_keys(item)
+
+
 def canonical_claimed_payload(value: Any) -> tuple[dict[str, Any], bytes]:
     """Parse/freeze a JSON object with deterministic, bounded UTF-8 encoding.
 
@@ -55,6 +66,7 @@ def canonical_claimed_payload(value: Any) -> tuple[dict[str, Any], bytes]:
         raise ClaimBindingError("source_payload_not_object")
     if not isinstance(parsed, dict):
         raise ClaimBindingError("source_payload_not_object")
+    _require_string_keys(parsed)
     try:
         frozen = json.dumps(
             parsed, sort_keys=True, separators=(",", ":"),
