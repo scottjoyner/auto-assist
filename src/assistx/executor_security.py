@@ -540,24 +540,40 @@ def build_executor_security_router(neo_factory: Callable[[], Any]) -> APIRouter:
             return {"active": False, "task_id": task_id, "reason": "not_found"}
         task = dict(row.get("task") or {})
         now_ms = int(time.time() * 1000)
-        claim_id = str(task.get("claim_id") or task.get("active_claim_id") or "")
-        agent_id = str(task.get("claimed_by") or task.get("agent_id") or "")
+        # Match the token issuer's canonical Task identity. A legacy fallback
+        # cannot become authority for a new revision-bound inference request.
+        claim_id = task.get("claim_id")
+        agent_id = task.get("claimed_by")
+        session_id = task.get("agent_session_id")
+        attempt = task.get("execution_attempt")
         status = str(task.get("status") or "").upper()
-        lease_expiry = int(
-            task.get("lease_expires_at_ts")
-            or task.get("claim_expires_at_ts")
-            or task.get("lease_until_ts")
-            or 0
-        )
-        generation = int(row.get("projection_generation") or 0)
+
+        def positive_int(value: Any) -> int:
+            return value if type(value) is int and value > 0 else 0
+
+        lease_expiry = positive_int(task.get("lease_expires_at_ts"))
+        generation = positive_int(row.get("projection_generation"))
         projection_status = str(row.get("projection_status") or "").lower()
-        projection_expiry = int(row.get("projection_expires_at_ts") or 0)
+        projection_expiry = positive_int(row.get("projection_expires_at_ts"))
+
+        # Build the same digest that is signed by the claim issuer; malformed
+        # canonical payload is NOT repaired from a legacy field.
+        try:
+            payload, _ = source_task_payload(task)
+            digest = payload_binding_digest(payload)
+        except ClaimBindingError:
+            digest = None
+
         reason = "active"
         active = True
-        if status not in {"CLAIMED", "RUNNING", "PAUSING"}:
+        if status not in {"CLAIMED", "RUNNING"}:
             active, reason = False, "task_not_active"
-        elif not claim_id or not agent_id:
+        elif type(claim_id) is not str or not claim_id or type(agent_id) is not str or not agent_id:
             active, reason = False, "claim_identity_missing"
+        elif type(session_id) is not str or not session_id or type(attempt) is not int or attempt < 1:
+            active, reason = False, "claim_revision_missing"
+        elif not digest:
+            active, reason = False, "canonical_payload_invalid"
         elif lease_expiry <= now_ms:
             active, reason = False, "claim_expired"
         elif projection_status != "approved" or generation <= 0:
@@ -576,6 +592,9 @@ def build_executor_security_router(neo_factory: Callable[[], Any]) -> APIRouter:
             "task_id": task_id,
             "claim_id": claim_id,
             "agent_id": agent_id,
+            "agent_session_id": session_id,
+            "execution_attempt": attempt,
+            "task_payload_digest": digest,
             "lease_expires_at_ts": lease_expiry,
             "projection_generation": generation,
             "projection_expires_at_ts": projection_expiry,
