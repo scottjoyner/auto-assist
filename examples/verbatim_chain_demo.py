@@ -49,7 +49,9 @@ def main() -> int:
         assert "delegation" in (toolsets or ""), "delegation toolset must be enabled"
         return {"success": True, "output": expected, "session_id": "child", "elapsed": 0.5}
 
-    with mock.patch.object(adapter, "run_hermes", fake_run_hermes):
+    with mock.patch.object(adapter, "run_hermes", fake_run_hermes), mock.patch.object(
+        adapter, "ensure_model_env", return_value="/synthetic/verbatim-demo"
+    ):
         assistx = mock.MagicMock()
         assistx.claim_task.return_value = {
             "claimed": True,
