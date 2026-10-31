@@ -189,7 +189,9 @@ class _SyntheticExecutorClaimsDB:
         return None
 
 
-def _issue_synthetic_task_token(monkeypatch, payload, *, task_overrides=None):
+def _issue_synthetic_task_token(
+    monkeypatch, payload, *, task_overrides=None, default_aliases=None,
+):
     """Call the real token route, capture attempted signing without private keys."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -200,6 +202,8 @@ def _issue_synthetic_task_token(monkeypatch, payload, *, task_overrides=None):
     monkeypatch.setenv("ASSISTX_EXECUTOR_ALLOWED_TOOLS", "terminal,file,memory")
     monkeypatch.setenv("ASSISTX_REQUIRE_OWNER_BINDING", "false")
     monkeypatch.delenv("ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES", raising=False)
+    if default_aliases is not None:
+        monkeypatch.setenv("ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES", default_aliases)
 
     now_ms = int(time.time() * 1000)
     task = {
@@ -320,11 +324,20 @@ def test_malformed_list_never_grants_default_tools(monkeypatch):
 
 
 def test_invalid_operator_default_model_alias_denies_token(monkeypatch):
-    # _issue_synthetic_task_token clears this default; provide the override
-    # after it is installed by setting it while the signer is called instead.
-    from assistx.executor_security import _validated_model_alias
-    from fastapi import HTTPException
+    response, signed = _issue_synthetic_task_token(
+        monkeypatch,
+        '{"model":"approved/model"}',
+        default_aliases="../untrusted",
+    )
+    assert response.status_code == 409
+    assert not signed
 
-    with pytest.raises(HTTPException) as err:
-        _validated_model_alias("../untrusted")
-    assert err.value.status_code == 409
+
+def test_missing_canonical_payload_denies_even_with_valid_legacy_fallback(monkeypatch):
+    response, signed = _issue_synthetic_task_token(
+        monkeypatch,
+        None,
+        task_overrides={"payload": '{"model":"approved/model"}'},
+    )
+    assert response.status_code == 409
+    assert not signed
