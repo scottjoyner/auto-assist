@@ -223,3 +223,85 @@ def test_unknown_workspace_failure_does_not_return_parent(workspace, monkeypatch
     assert result is None
     assert result != str(root)
     assert writes == []
+
+
+@pytest.mark.parametrize("model", ["..", "bad//model", "unsafe%2Fmodel"])
+def test_denied_workspace_blocks_worktree_and_provider_before_side_effects(
+    workspace, monkeypatch, model,
+):
+    from unittest.mock import MagicMock
+
+    root, _, _ = workspace
+    client = MagicMock()
+    client.claim_task.return_value = {
+        "claimed": True,
+        "task": {"id": "synthetic-1", "claim_id": "synthetic-claim"},
+    }
+    client.get_context.return_value = {}
+    monkeypatch.setattr(
+        adapter, "build_work_packet",
+        lambda *_a, **_kw: {"synthetic": True},
+    )
+    monkeypatch.setattr(
+        adapter, "prepare_repository",
+        lambda *_a, **_kw: pytest.fail("repository side effect admitted"),
+    )
+    monkeypatch.setattr(
+        adapter, "run_hermes",
+        lambda *_a, **_kw: pytest.fail("model dispatch admitted"),
+    )
+    monkeypatch.setattr(
+        adapter, "run_hermes_delegated",
+        lambda *_a, **_kw: pytest.fail("delegated model dispatch admitted"),
+    )
+
+    polled = {
+        "id": "synthetic-1",
+        "title": "synthetic workspace refusal",
+        "payload": {
+            "model": model,
+            "execution_contract": {"repository": "synthetic"},
+        },
+    }
+    with pytest.raises(
+        adapter.UnsafeModelWorkspace, match="model_workspace_unavailable",
+    ):
+        adapter.process_task(client, polled)
+    client.heartbeat.assert_not_called()
+    client.complete_task.assert_not_called()
+    assert list(root.iterdir()) == []
+
+
+def test_unavailable_root_blocks_valid_model_before_worktree(
+    workspace, monkeypatch,
+):
+    from unittest.mock import MagicMock
+
+    root, _, _ = workspace
+    monkeypatch.setenv("HERMES_KNOWLEDGE_ROOT", str(root / "missing"))
+    monkeypatch.setattr(
+        adapter, "build_work_packet",
+        lambda *_a, **_kw: {"synthetic": True},
+    )
+    monkeypatch.setattr(
+        adapter, "prepare_repository",
+        lambda *_a, **_kw: pytest.fail("repository side effect admitted"),
+    )
+    monkeypatch.setattr(
+        adapter, "run_hermes",
+        lambda *_a, **_kw: pytest.fail("model dispatch admitted"),
+    )
+    client = MagicMock()
+    client.claim_task.return_value = {"claimed": True, "task": {}}
+    client.get_context.return_value = {}
+    task = {
+        "id": "synthetic-1",
+        "payload": {
+            "model": "safe-model",
+            "execution_contract": {"repository": "synthetic"},
+        },
+    }
+    with pytest.raises(adapter.UnsafeModelWorkspace, match="model_workspace_unavailable"):
+        adapter.process_task(client, task)
+    client.complete_task.assert_not_called()
+    assert list(root.iterdir()) == []
