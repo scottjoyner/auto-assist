@@ -7,6 +7,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from assistx.claim_binding import payload_binding_digest
 from assistx.executor_security import (
     ExecutorAuthMiddleware,
     ExecutorTokenCodec,
@@ -26,6 +27,9 @@ def _claims(**overrides):
         "task_id": "task-1",
         "claim_id": "claim-1",
         "agent_id": "hermes-test",
+        "agent_session_id": "synthetic-session",
+        "execution_attempt": 1,
+        "task_payload_digest": payload_binding_digest({"model": "auto/code"}),
         "projection_generation": 7,
         "scopes": ["context", "heartbeat", "complete", "inference"],
         "allowed_model_aliases": ["auto/code"],
@@ -142,7 +146,24 @@ async def test_task_token_is_fenced_to_task_and_scope(monkeypatch):
         await send({"type": "http.response.start", "status": 204, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
-    app = ExecutorAuthMiddleware(downstream)
+    now_ms = int(time.time() * 1000)
+    row = {
+        "task": {
+            "status": "CLAIMED",
+            "claim_id": "claim-1",
+            "claimed_by": "hermes-test",
+            "agent_session_id": "synthetic-session",
+            "execution_attempt": 1,
+            "lease_expires_at_ts": now_ms + 120_000,
+            "payload_json": '{"model":"auto/code"}',
+        },
+        "projection_generation": 7,
+        "projection_status": "approved",
+        "projection_expires_at_ts": now_ms + 120_000,
+    }
+    app = ExecutorAuthMiddleware(
+        downstream, neo_factory=lambda: _SyntheticExecutorClaimsDB(row),
+    )
     headers = [(b"authorization", f"Bearer {token}".encode())]
     ok = await _invoke(
         app,
@@ -210,6 +231,8 @@ def _issue_synthetic_task_token(
         "status": "CLAIMED",
         "claim_id": "claim-1",
         "claimed_by": "hermes-test",
+        "agent_session_id": "synthetic-session",
+        "execution_attempt": 1,
         "lease_expires_at_ts": now_ms + 120_000,
         "payload_json": payload,
     }
