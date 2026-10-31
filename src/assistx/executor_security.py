@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -18,6 +19,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
+from .claim_binding import ClaimBindingError, payload_binding_digest, source_task_payload
 from .owner_identity import TaskOwnerError, task_owner, owner_required
 from pydantic import BaseModel, Field
 
@@ -248,6 +250,74 @@ async def _read_body(receive: Callable[[], Any]) -> tuple[bytes, Callable[[], An
     return bytes(body), replay
 
 
+def _require_current_claim(neo_factory: Callable[[], Any], claims: Mapping[str, Any]) -> None:
+    """Read the current source Task before trusting an API-side bearer.
+
+    This does NOT make the later effect atomic with the read. External effect
+    owners must provide their own independent spend/replay/revocation fences.
+    """
+    task_id = claims.get("task_id")
+    claim_id = claims.get("claim_id")
+    agent_id = claims.get("agent_id")
+    session_id = claims.get("agent_session_id")
+    attempt = claims.get("execution_attempt")
+    projection = claims.get("projection_generation")
+    binding = claims.get("task_payload_digest")
+    if (
+        any(type(v) is not str or not v for v in (task_id, claim_id, agent_id, session_id))
+        or type(attempt) is not int or attempt < 1
+        or type(projection) is not int or projection < 1
+        or type(binding) is not str
+        or not re.fullmatch(r"sha256:[a-f0-9]{64}", binding)
+    ):
+        raise ExecutorTokenError("executor claim binding is incomplete")
+
+    neo = neo_factory()
+    try:
+        with neo._session() as session:
+            row = session.run(
+                """
+                MATCH (t:Task {id:$task_id})
+                OPTIONAL MATCH (s:FleetProjectionState {name:'canonical'})
+                RETURN properties(t) AS task,
+                       s.generation AS projection_generation,
+                       s.status AS projection_status,
+                       s.expires_at_ts AS projection_expires_at_ts
+                LIMIT 1
+                """,
+                {"task_id": task_id},
+            ).single()
+    finally:
+        neo.close()
+    if not row:
+        raise ExecutorTokenError("source task missing")
+    task = dict(row.get("task") or {})
+    now_ms = int(time.time() * 1000)
+    if (
+        str(task.get("status") or "").upper() not in {"CLAIMED", "RUNNING"}
+        or task.get("claim_id") != claim_id
+        or task.get("claimed_by") != agent_id
+        or task.get("agent_session_id") != session_id
+        or type(task.get("execution_attempt")) is not int
+        or task["execution_attempt"] != attempt
+        or type(task.get("lease_expires_at_ts")) is not int
+        or task["lease_expires_at_ts"] <= now_ms
+        or type(row.get("projection_generation")) is not int
+        or row["projection_generation"] != projection
+        or str(row.get("projection_status") or "").lower() != "approved"
+        or type(row.get("projection_expires_at_ts")) is not int
+        or row["projection_expires_at_ts"] <= now_ms
+    ):
+        raise ExecutorTokenError("current claim is no longer authorized")
+    try:
+        payload, _ = source_task_payload(task)
+        current_digest = payload_binding_digest(payload)
+    except ClaimBindingError as exc:
+        raise ExecutorTokenError("current task payload is invalid") from exc
+    if not hmac.compare_digest(current_digest, binding):
+        raise ExecutorTokenError("current task payload changed")
+
+
 class ExecutorAuthMiddleware:
     """Permit executor bearer credentials only on the narrow task API surface.
 
@@ -256,8 +326,9 @@ class ExecutorAuthMiddleware:
     strips it and re-adds it only after a bootstrap or task token is verified.
     """
 
-    def __init__(self, app: Any) -> None:
+    def __init__(self, app: Any, neo_factory: Callable[[], Any] | None = None) -> None:
         self.app = app
+        self.neo_factory = neo_factory
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope.get("type") != "http":
@@ -293,9 +364,16 @@ class ExecutorAuthMiddleware:
                     task_id = str(parsed.get("task_id") or "") if isinstance(parsed, dict) else ""
                 if not task_id or task_id != str(claims.get("task_id")):
                     raise ExecutorTokenError("executor token task does not match request")
+                if self.neo_factory is None:
+                    raise ExecutorTokenError("executor current-claim verifier unavailable")
+                await asyncio.to_thread(_require_current_claim, self.neo_factory, claims)
                 identity = f"executor:{claims['agent_id']}:{claims['claim_id']}"
-            except (ExecutorTokenError, json.JSONDecodeError) as exc:
-                await JSONResponse(status_code=401, content={"detail": str(exc)})(scope, replay, send)
+            except (ExecutorTokenError, json.JSONDecodeError):
+                await JSONResponse(status_code=401, content={"detail": "invalid or stale executor claim"})(scope, replay, send)
+                return
+            except Exception:
+                # A source outage never degrades to trusting an unverified task.
+                await JSONResponse(status_code=503, content={"detail": "claim authorization unavailable"})(scope, replay, send)
                 return
         elif token and path.startswith(("/api/agent/", "/api/tasks/", "/api/brain/context")):
             await JSONResponse(status_code=403, content={"detail": "executor bearer token is not valid for this endpoint"})(scope, receive, send)
@@ -541,6 +619,13 @@ def build_executor_security_router(neo_factory: Callable[[], Any]) -> APIRouter:
         stored_agent = str(task.get("claimed_by") or task.get("agent_id") or "")
         if stored_claim != body.claim_id or stored_agent != body.agent_id:
             raise HTTPException(status_code=409, detail="claim ownership does not match")
+        claim_session = task.get("agent_session_id")
+        attempt = task.get("execution_attempt")
+        if (
+            type(claim_session) is not str or not claim_session
+            or type(attempt) is not int or attempt < 1
+        ):
+            raise HTTPException(status_code=409, detail="claim revision/session is missing")
 
         now_ms = int(time.time() * 1000)
         lease_expiry_ms = int(
@@ -568,6 +653,12 @@ def build_executor_security_router(neo_factory: Callable[[], Any]) -> APIRouter:
             _claimed_payload_mapping(payload["execution_contract"], label="execution contract")
             if "execution_contract" in payload else {}
         )
+        # Bind the exact canonical source payload as it exists at issuance.
+        try:
+            snapshot_payload, _ = source_task_payload(task)
+            source_digest = payload_binding_digest(snapshot_payload)
+        except ClaimBindingError as exc:
+            raise HTTPException(status_code=409, detail="claimed source payload invalid") from exc
 
         if "model" in payload:
             requested_model = _validated_model_alias(payload["model"])
@@ -625,6 +716,9 @@ def build_executor_security_router(neo_factory: Callable[[], Any]) -> APIRouter:
             "task_id": task_id,
             "claim_id": body.claim_id,
             "agent_id": body.agent_id,
+            "agent_session_id": claim_session,
+            "execution_attempt": attempt,
+            "task_payload_digest": source_digest,
             "projection_generation": generation,
             **owner,
             "scopes": ["context", "heartbeat", "complete", "inference"],
@@ -654,6 +748,6 @@ def install_executor_security(app: Any, neo_factory: Callable[[], Any], auth_mod
     # middleware removes caller-supplied values and injects it only after executor
     # authentication succeeds.
     auth_module.TRUSTED_AUTH_HEADER = _INTERNAL_IDENTITY_HEADER.decode("ascii")
-    app.add_middleware(ExecutorAuthMiddleware)
+    app.add_middleware(ExecutorAuthMiddleware, neo_factory=neo_factory)
     app.include_router(build_executor_security_router(neo_factory))
     app.state.executor_security_installed = True
