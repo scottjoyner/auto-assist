@@ -413,6 +413,8 @@ def test_incomplete_claim_snapshot_is_denied_before_use(changed, expected):
     ({"claim_id": ""}, "CLAIM_ID_MISSING"),
     ({"lease_expires_at_ts": 0}, "CLAIM_LEASE_EXPIRED"),
     ({"lease_expires_at_ts": True}, "CLAIM_LEASE_EXPIRED"),
+    ({"lease_expires_at_ts": float("nan")}, "CLAIM_LEASE_EXPIRED"),
+    ({"lease_expires_at_ts": float("inf")}, "CLAIM_LEASE_EXPIRED"),
     ({"execution_attempt": 0}, "CLAIM_ATTEMPT_INVALID"),
     ({"payload_json": '{"model":'}, "CLAIMED_PAYLOAD_INVALID"),
     ({"payload_json": '["not an object"]'}, "CLAIMED_PAYLOAD_INVALID"),
