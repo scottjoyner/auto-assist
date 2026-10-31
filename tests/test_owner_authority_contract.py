@@ -175,7 +175,9 @@ def test_existing_different_authoritative_owner_fails_closed(monkeypatch):
 def active_row(owner=None):
     now=int(time.time()*1000)
     task={"id":"task-1","status":"RUNNING","claimed_by":"agent-a",
-          "claim_id":"claim-1","lease_expires_at_ts":now+120000}
+          "claim_id":"claim-1","agent_session_id":"synthetic-owner-session",
+          "execution_attempt":1,"payload_json":"{}",
+          "lease_expires_at_ts":now+120000}
     task.update(owner or {})
     return {"task":task,"projection_generation":8,
             "projection_status":"approved","projection_expires_at_ts":now+120000}
