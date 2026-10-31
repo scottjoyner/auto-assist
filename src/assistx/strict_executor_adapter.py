@@ -442,6 +442,45 @@ def install_strict_executor_adapter(adapter: Any) -> None:
                 "output": "",
                 "elapsed": 0.0,
             }
+        claims = client.task_claims
+        # An inference attempt must be bound to the same current claim as the
+        # heartbeat owner. Refuse stale/expired response claims even when the
+        # parent still has a syntactically valid token in memory. The resource
+        # router remains responsible for cryptographic and revocation checks.
+        if (
+            not isinstance(claims, dict)
+            or not client._active_task_id
+            or not client._active_claim_id
+            or not client._active_session_id
+            or claims.get("task_id") != client._active_task_id
+            or claims.get("claim_id") != client._active_claim_id
+            or claims.get("agent_id") != adapter.AGENT_ID
+            or type(claims.get("exp")) is not int
+            or claims["exp"] <= int(time.time())
+        ):
+            return {
+                "success": False,
+                "error": "self_task_claim_identity_or_expiry_invalid",
+                "output": "",
+                "elapsed": 0.0,
+            }
+        model = kwargs.get("model", args[1] if len(args) > 1 else None)
+        allowed = claims.get("allowed_model_aliases")
+        if (
+            not isinstance(model, str)
+            or not isinstance(allowed, list)
+            or model not in allowed
+            or not all(isinstance(item, str) and item for item in allowed)
+        ):
+            return {
+                "success": False,
+                "error": "self_task_model_outside_claim_scope",
+                "output": "",
+                "elapsed": 0.0,
+            }
+        # Ignore any token supplied by a caller; use the current client token
+        # exclusively. Never widen to an internal service credential or env.
+        kwargs["executor_token"] = client.task_token
         return original_self_task_call(*args, **kwargs)
 
     with _PATCH_LOCK:
