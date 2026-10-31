@@ -1222,7 +1222,11 @@ def _claimed_payload(snapshot: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("nonfinite JSON number")
 
     if isinstance(raw, str):
-        if not raw.strip() or len(raw.encode("utf-8")) > 65536:
+        try:
+            size = len(raw.encode("utf-8"))
+        except UnicodeError as exc:
+            raise ClaimSnapshotError("CLAIMED_PAYLOAD_INVALID") from exc
+        if not raw.strip() or size > 65536:
             raise ClaimSnapshotError("CLAIMED_PAYLOAD_INVALID")
         try:
             payload = json.loads(
@@ -1280,10 +1284,7 @@ def _authoritative_claimed_task(
     if source.get("agent_session_id") != session_id:
         raise ClaimSnapshotError("CLAIM_SESSION_MISMATCH")
     lease_until = source.get("lease_expires_at_ts")
-    if (
-        type(lease_until) not in (int, float)
-        or lease_until <= int(time.time() * 1000)
-    ):
+    if type(lease_until) is not int or lease_until <= int(time.time() * 1000):
         raise ClaimSnapshotError("CLAIM_LEASE_EXPIRED")
     attempt = source.get("execution_attempt")
     if type(attempt) is not int or attempt < 1:
