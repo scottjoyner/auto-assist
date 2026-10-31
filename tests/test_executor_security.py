@@ -7,6 +7,12 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from assistx.claim_binding import (
+    ClaimBindingError,
+    canonical_claimed_payload,
+    payload_binding_digest,
+    source_task_payload,
+)
 from assistx.executor_security import (
     ExecutorAuthMiddleware,
     ExecutorTokenCodec,
@@ -26,6 +32,9 @@ def _claims(**overrides):
         "task_id": "task-1",
         "claim_id": "claim-1",
         "agent_id": "hermes-test",
+        "agent_session_id": "synthetic-session",
+        "execution_attempt": 1,
+        "task_payload_digest": payload_binding_digest({"model": "auto/code"}),
         "projection_generation": 7,
         "scopes": ["context", "heartbeat", "complete", "inference"],
         "allowed_model_aliases": ["auto/code"],
@@ -142,7 +151,24 @@ async def test_task_token_is_fenced_to_task_and_scope(monkeypatch):
         await send({"type": "http.response.start", "status": 204, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
-    app = ExecutorAuthMiddleware(downstream)
+    now_ms = int(time.time() * 1000)
+    row = {
+        "task": {
+            "status": "CLAIMED",
+            "claim_id": "claim-1",
+            "claimed_by": "hermes-test",
+            "agent_session_id": "synthetic-session",
+            "execution_attempt": 1,
+            "lease_expires_at_ts": now_ms + 120_000,
+            "payload_json": '{"model":"auto/code"}',
+        },
+        "projection_generation": 7,
+        "projection_status": "approved",
+        "projection_expires_at_ts": now_ms + 120_000,
+    }
+    app = ExecutorAuthMiddleware(
+        downstream, neo_factory=lambda: _SyntheticExecutorClaimsDB(row),
+    )
     headers = [(b"authorization", f"Bearer {token}".encode())]
     ok = await _invoke(
         app,
@@ -210,6 +236,8 @@ def _issue_synthetic_task_token(
         "status": "CLAIMED",
         "claim_id": "claim-1",
         "claimed_by": "hermes-test",
+        "agent_session_id": "synthetic-session",
+        "execution_attempt": 1,
         "lease_expires_at_ts": now_ms + 120_000,
         "payload_json": payload,
     }
@@ -341,3 +369,201 @@ def test_missing_canonical_payload_denies_even_with_valid_legacy_fallback(monkey
     )
     assert response.status_code == 409
     assert not signed
+
+
+def test_payload_digest_is_canonical_and_domain_separated():
+    payload, frozen = canonical_claimed_payload('{"z":[1,2],"a":{"x":true}}')
+    assert frozen == b'{"a":{"x":true},"z":[1,2]}'
+    digest = payload_binding_digest(payload)
+    assert digest.startswith("sha256:") and len(digest) == 71
+    assert digest == payload_binding_digest('{"a":{"x":true},"z":[1,2]}')
+    assert digest != payload_binding_digest({"a": {"x": False}, "z": [1, 2]})
+    assert source_task_payload({
+        "payload_json": '{"a":1}',
+        "payload": {"a": 2},
+    })[0] == {"a": 1}
+
+
+@pytest.mark.parametrize("raw", [
+    '{"a":1,"a":2}', '{"x":NaN}', '{"x":Infinity}', '[1,2]',
+    'null', '{"x":', "", {"x": float("nan")}, {1: "not JSON key"},
+])
+def test_canonical_binding_rejects_ambiguous_or_unserializable_source(raw):
+    with pytest.raises(ClaimBindingError):
+        canonical_claimed_payload(raw)
+
+
+def test_issuer_signs_exact_canonical_claim_and_session(monkeypatch):
+    response, signed = _issue_synthetic_task_token(
+        monkeypatch, '{"allowed_tools":[],"model":"approved/model"}',
+    )
+    assert response.status_code == 200
+    claim = signed[0]
+    assert claim["task_payload_digest"] == payload_binding_digest(
+        {"model": "approved/model", "allowed_tools": []},
+    )
+    assert claim["agent_session_id"] == "synthetic-session"
+    assert claim["execution_attempt"] == 1
+    assert claim["projection_generation"] == 7
+
+
+def _source_binding_row():
+    now_ms = int(time.time() * 1000)
+    return {
+        "task": {
+            "status": "CLAIMED",
+            "claim_id": "claim-1",
+            "claimed_by": "hermes-test",
+            "agent_session_id": "synthetic-session",
+            "execution_attempt": 1,
+            "lease_expires_at_ts": now_ms + 120_000,
+            "payload_json": '{"model":"auto/code"}',
+        },
+        "projection_generation": 7,
+        "projection_status": "approved",
+        "projection_expires_at_ts": now_ms + 180_000,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", [
+    ("payload_json", '{"model":"another/model"}'),
+    ("payload_json", '{"model":"a","model":"b"}'),
+    ("payload_json", None),
+    ("status", "CANCELLED"),
+    ("claim_id", "restored-old-claim"),
+    ("claimed_by", "different-worker"),
+    ("agent_session_id", "older-session"),
+    ("execution_attempt", 2),
+    ("lease_expires_at_ts", 0),
+])
+async def test_source_changes_deny_at_api_boundary_before_downstream(
+    monkeypatch, mutation,
+):
+    private, public_pem = _keys()
+    monkeypatch.setenv("ASSISTX_EXECUTOR_VERIFY_KEY_PEM", public_pem)
+    monkeypatch.setenv("ASSISTX_EXECUTOR_KEY_ID", "test-key")
+    token = ExecutorTokenCodec(private_key=private, key_id="test-key").encode(_claims())
+    row = _source_binding_row()
+    row["task"][mutation[0]] = mutation[1]
+    observed = []
+
+    async def downstream(scope, receive, send):
+        observed.append(scope)
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    app = ExecutorAuthMiddleware(
+        downstream, neo_factory=lambda: _SyntheticExecutorClaimsDB(row),
+    )
+    sent = await _invoke(
+        app, method="POST", path="/api/tasks/task-1/heartbeat",
+        headers=[(b"authorization", f"Bearer {token}".encode())],
+        body=b"{}",
+    )
+    assert sent[0]["status"] == 401
+    assert not observed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [
+    ("projection_generation", 6),
+    ("projection_status", "revoked"),
+    ("projection_expires_at_ts", 0),
+])
+async def test_projection_replacement_or_expiry_denied_before_api_effect(
+    monkeypatch, field, value,
+):
+    private, public_pem = _keys()
+    monkeypatch.setenv("ASSISTX_EXECUTOR_VERIFY_KEY_PEM", public_pem)
+    monkeypatch.setenv("ASSISTX_EXECUTOR_KEY_ID", "test-key")
+    token = ExecutorTokenCodec(private_key=private, key_id="test-key").encode(_claims())
+    row = _source_binding_row()
+    row[field] = value
+
+    async def must_not_dispatch(*_args):
+        pytest.fail("resource API effect was admitted")
+
+    app = ExecutorAuthMiddleware(
+        must_not_dispatch, neo_factory=lambda: _SyntheticExecutorClaimsDB(row),
+    )
+    sent = await _invoke(
+        app, method="POST", path="/api/tasks/task-1/complete",
+        headers=[(b"authorization", f"Bearer {token}".encode())],
+        body=b"{}",
+    )
+    assert sent[0]["status"] == 401
+
+
+@pytest.mark.asyncio
+async def test_missing_or_unavailable_resource_verifier_denies_executor_token(monkeypatch):
+    private, public_pem = _keys()
+    monkeypatch.setenv("ASSISTX_EXECUTOR_VERIFY_KEY_PEM", public_pem)
+    monkeypatch.setenv("ASSISTX_EXECUTOR_KEY_ID", "test-key")
+    token = ExecutorTokenCodec(private_key=private, key_id="test-key").encode(_claims())
+
+    async def must_not_dispatch(*_args):
+        pytest.fail("resource API effect was admitted")
+
+    headers = [(b"authorization", f"Bearer {token}".encode())]
+    missing = await _invoke(
+        ExecutorAuthMiddleware(must_not_dispatch),
+        method="POST", path="/api/tasks/task-1/heartbeat", headers=headers,
+    )
+    assert missing[0]["status"] == 401
+
+    def unreachable_db():
+        raise OSError("synthetic DB unavailable")
+
+    unavailable = await _invoke(
+        ExecutorAuthMiddleware(must_not_dispatch, neo_factory=unreachable_db),
+        method="POST", path="/api/tasks/task-1/heartbeat", headers=headers,
+    )
+    assert unavailable[0]["status"] == 503
+
+
+@pytest.mark.asyncio
+async def test_valid_current_source_allows_context_request(monkeypatch):
+    private, public_pem = _keys()
+    monkeypatch.setenv("ASSISTX_EXECUTOR_VERIFY_KEY_PEM", public_pem)
+    monkeypatch.setenv("ASSISTX_EXECUTOR_KEY_ID", "test-key")
+    token = ExecutorTokenCodec(private_key=private, key_id="test-key").encode(_claims())
+    seen = []
+
+    async def downstream(scope, receive, send):
+        seen.append(dict(scope["headers"]))
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    app = ExecutorAuthMiddleware(
+        downstream, neo_factory=lambda: _SyntheticExecutorClaimsDB(_source_binding_row()),
+    )
+    sent = await _invoke(
+        app, method="POST", path="/api/brain/context",
+        headers=[(b"authorization", f"Bearer {token}".encode())],
+        body=b'{"task_id":"task-1"}',
+    )
+    assert sent[0]["status"] == 204
+    assert seen[0][b"x-assistx-executor-identity"] == b"executor:hermes-test:claim-1"
+
+
+@pytest.mark.asyncio
+async def test_signed_claim_with_missing_binding_is_rejected(monkeypatch):
+    private, public_pem = _keys()
+    monkeypatch.setenv("ASSISTX_EXECUTOR_VERIFY_KEY_PEM", public_pem)
+    monkeypatch.setenv("ASSISTX_EXECUTOR_KEY_ID", "test-key")
+    claim = _claims()
+    claim.pop("task_payload_digest")
+    token = ExecutorTokenCodec(private_key=private, key_id="test-key").encode(claim)
+
+    async def forbidden(*_args):
+        pytest.fail("old unbound token admitted")
+
+    sent = await _invoke(
+        ExecutorAuthMiddleware(
+            forbidden, neo_factory=lambda: _SyntheticExecutorClaimsDB(_source_binding_row()),
+        ),
+        method="POST", path="/api/tasks/task-1/heartbeat",
+        headers=[(b"authorization", f"Bearer {token}".encode())],
+    )
+    assert sent[0]["status"] == 401

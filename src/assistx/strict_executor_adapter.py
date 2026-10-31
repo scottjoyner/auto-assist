@@ -10,6 +10,8 @@ from typing import Any
 
 import requests
 
+from .claim_binding import ClaimBindingError, payload_binding_digest, source_task_payload
+
 logger = logging.getLogger(__name__)
 
 _PATCH_LOCK = threading.RLock()
@@ -219,17 +221,32 @@ def install_strict_executor_adapter(adapter: Any) -> None:
                 str(claims.get("task_id") or "") != task_id
                 or str(claims.get("claim_id") or "") != claim_id
                 or str(claims.get("agent_id") or "") != adapter.AGENT_ID
+                or claims.get("agent_session_id") != session_id
+                or type(claims.get("execution_attempt")) is not int
+                or type(claimed_task.get("execution_attempt")) is not int
+                or claims["execution_attempt"] != claimed_task["execution_attempt"]
+                or type(claims.get("task_payload_digest")) is not str
             ):
                 raise RuntimeError("AssistX issued a token for a different claim identity")
+            try:
+                payload, _ = source_task_payload(claimed_task)
+                actual_digest = payload_binding_digest(payload)
+            except ClaimBindingError as exc:
+                raise RuntimeError("AssistX claimed task payload cannot be bound") from exc
+            if claims["task_payload_digest"] != actual_digest:
+                raise RuntimeError("AssistX token payload diverged from claimed task")
             self.task_token = token
             self.task_claims = claims
             start_heartbeat(self, task_id, session_id, claim_id)
             return result
         except requests.HTTPError as exc:
+            clear_task_credential(self)
             if exc.response is not None and exc.response.status_code == 409:
                 logger.info("Task %s already claimed or token issuance was fenced", task_id)
-                clear_task_credential(self)
                 return None
+            raise
+        except Exception:
+            clear_task_credential(self)
             raise
 
     def get_context(self, task_id: str, query: str):
@@ -455,6 +472,10 @@ def install_strict_executor_adapter(adapter: Any) -> None:
             or claims.get("task_id") != client._active_task_id
             or claims.get("claim_id") != client._active_claim_id
             or claims.get("agent_id") != adapter.AGENT_ID
+            or type(claims.get("execution_attempt")) is not int
+            or claims["execution_attempt"] < 1
+            or type(claims.get("task_payload_digest")) is not str
+            or not claims["task_payload_digest"].startswith("sha256:")
             or type(claims.get("exp")) is not int
             or claims["exp"] <= int(time.time())
         ):

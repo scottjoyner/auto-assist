@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from assistx.claim_binding import payload_binding_digest
 from assistx.agents import hermes_agent_adapter as hermes
 
 from assistx import strict_executor_adapter
@@ -122,6 +123,9 @@ def _strict_self_task(monkeypatch, *, enabled=True, model_alias="local/approved"
         "task_id": "task-1",
         "claim_id": "claim-1",
         "agent_id": selected.AGENT_ID,
+        "agent_session_id": "session-1",
+        "execution_attempt": 1,
+        "task_payload_digest": payload_binding_digest({"model": model_alias}),
         "exp": int(time.time()) + 300,
         "allowed_model_aliases": [model_alias],
     }
@@ -230,3 +234,67 @@ def test_strict_selftask_uses_current_model_scope_not_global_model_allowlist(mon
     monkeypatch.setattr(hermes.requests, "post", lambda *_a, **_kw: pytest.fail("outbound request"))
     result = selected.call_self_task_llm("synthetic", "remote/unapproved")
     assert result["error"] == "self_task_model_outside_claim_scope"
+
+
+@pytest.mark.parametrize("mutate", [
+    {"task_payload_digest": "sha256:" + "a" * 64},
+    {"agent_session_id": "other-session"},
+    {"execution_attempt": 2},
+    {"claim_id": "stale-claim"},
+])
+def test_claim_token_snapshot_divergence_blocks_heartbeat_and_child(
+    monkeypatch, mutate,
+):
+    monkeypatch.setenv("ASSISTX_STRICT_EXECUTOR_AUTH", "true")
+    monkeypatch.setenv("ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN", "synthetic-bootstrap")
+    adapter = _adapter()
+    strict_executor_adapter.install_strict_executor_adapter(adapter)
+    client = adapter.AssistXClient()
+    task = {
+        "id": "task-1",
+        "status": "CLAIMED",
+        "claim_id": "claim-1",
+        "claimed_by": adapter.AGENT_ID,
+        "agent_session_id": "session-1",
+        "execution_attempt": 1,
+        "payload_json": '{"model":"local/approved"}',
+        "lease_expires_at_ts": int(time.time() * 1000) + 120_000,
+    }
+    claims = {
+        "task_id": "task-1",
+        "claim_id": "claim-1",
+        "agent_id": adapter.AGENT_ID,
+        "agent_session_id": "session-1",
+        "execution_attempt": 1,
+        "task_payload_digest": payload_binding_digest({"model": "local/approved"}),
+    }
+    claims.update(mutate)
+    attempts = []
+
+    class FakeResponse:
+        def __init__(self, body):
+            self.body = body
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return self.body
+
+    def fake_request(_method, url, **_kwargs):
+        attempts.append(url)
+        if url.endswith("/claim"):
+            return FakeResponse({"claimed": True, "task": task})
+        if url.endswith("/token"):
+            return FakeResponse({"token": "synthetic-not-a-real-JWT", "claims": claims})
+        pytest.fail("heartbeat or another effect started on divergent claim")
+
+    monkeypatch.setattr(strict_executor_adapter.requests, "request", fake_request)
+    monkeypatch.setattr(
+        strict_executor_adapter.subprocess, "Popen",
+        lambda *_a, **_kw: pytest.fail("child started"),
+    )
+    with pytest.raises(RuntimeError, match="different claim identity|payload diverged"):
+        client.claim_task("task-1", "session-1")
+    assert len(attempts) == 2
+    assert client.task_token == ""
+    assert client.task_claims == {}
+    assert client._active_task_id == ""
