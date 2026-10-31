@@ -461,7 +461,8 @@ def test_claimed_payload_is_frozen_and_consistent_across_legacy_accessors():
     assert result["payload"]["model"] == "claimed/model"
     assert json.loads(result["payload_json"]) == result["payload"]
     parsed["model"] = "modified"
-    assert claim["task"]["payload_json"] != result["payload_json"]
+    assert json.loads(result["payload_json"])["model"] == "claimed/model"
+    assert json.loads(claim["task"]["payload_json"])["model"] == "claimed/model"
 
 
 def test_process_task_uses_claimed_snapshot_for_prompt_and_model(monkeypatch):
