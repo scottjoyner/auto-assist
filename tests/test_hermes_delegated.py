@@ -8,6 +8,7 @@ import importlib
 import hashlib
 import json
 import os
+import time
 
 import pytest
 
@@ -53,6 +54,23 @@ def reload_with_delegate_tier(monkeypatch):
     monkeypatch.delenv("HERMES_DELEGATE_OPENCODE_TIERS", raising=False)
     monkeypatch.delenv("HERMES_DELEGATE_RETURN_FORMAT", raising=False)
     importlib.reload(adapter)
+
+
+def _synthetic_claim(task, session_id, claim_id, agent_id):
+    """Return a synthetic source-owned claim, including the payload of this task."""
+    return {
+        "claimed": True,
+        "task": {
+            **task,
+            "status": "CLAIMED",
+            "claim_id": claim_id,
+            "claimed_by": agent_id,
+            "agent_session_id": session_id,
+            "lease_expires_at_ts": int(time.time() * 1000) + 120_000,
+            "execution_attempt": 1,
+            "payload_json": json.dumps(task.get("payload", {})),
+        },
+    }
 
 
 def test_run_hermes_delegated_injects_delegation_toolset_and_directive(monkeypatch):
@@ -166,10 +184,9 @@ def test_process_task_routes_configured_tier_to_delegated(reload_with_delegate_t
     monkeypatch.setattr(ad, "run_hermes", lambda *a, **k: calls.setdefault("raw", True))
 
     assistx = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
-    assistx.claim_task.return_value = {
-        "claimed": True,
-        "task": {"id": "t1", "claim_id": "claim-t1"},
-    }
+    assistx.claim_task.side_effect = lambda _id, sid: _synthetic_claim(
+        task, sid, "claim-t1", ad.AGENT_ID,
+    )
     assistx.get_context.return_value = {}
     # task text triggers the tool-small tier (typo/fix keywords)
     task = {"id": "t1", "title": "fix a typo in the readme", "description": "small edit"}
@@ -249,10 +266,9 @@ def test_bounded_change_uses_restricted_tools_and_structured_evidence(
     )
     monkeypatch.setattr(ad, "cleanup_worktree", lambda _prepared: {"cleaned": True})
     assistx = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
-    assistx.claim_task.return_value = {
-        "claimed": True,
-        "task": {"id": "bounded-1", "claim_id": "claim-bounded"},
-    }
+    assistx.claim_task.side_effect = lambda _id, sid: _synthetic_claim(
+        task, sid, "claim-bounded", ad.AGENT_ID,
+    )
     assistx.get_context.return_value = {}
     task = {
         "id": "bounded-1",
@@ -327,10 +343,9 @@ def test_bounded_task_reports_failed_when_executor_rejects_evidence(
     )
     monkeypatch.setattr(ad, "cleanup_worktree", lambda _prepared: {"cleaned": True})
     assistx = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
-    assistx.claim_task.return_value = {
-        "claimed": True,
-        "task": {"id": "bounded-fail", "claim_id": "claim-fail"},
-    }
+    assistx.claim_task.side_effect = lambda _id, sid: _synthetic_claim(
+        task, sid, "claim-fail", ad.AGENT_ID,
+    )
     assistx.get_context.return_value = {}
     task = {
         "id": "bounded-fail",
