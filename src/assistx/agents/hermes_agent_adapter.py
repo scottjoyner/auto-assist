@@ -189,9 +189,94 @@ _SELFTASK_QUERIES = {
 }
 
 
+_MODEL_WORKSPACE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+@/-]{0,199}\Z")
+_MODEL_WORKSPACE_V2_PREFIX = "assistx-model-v2-"
+
+
+class UnsafeModelWorkspace(ValueError):
+    """Model workspace cannot be proved to be a safe, unique child."""
+
+
 def _safe_model_dir(model: Optional[str] = None) -> str:
-    """Filesystem-safe subdirectory name for a model (handles '/' in ids)."""
-    return (model or "unknown").replace("/", "_")
+    """Preserve safe flat names; hash namespaced IDs instead of flattening '/'.
+
+    Flattening aliases 'provider/model' and 'provider_model' to one directory.
+    Reserve the hashed prefix so raw model IDs cannot impersonate hashed names.
+    """
+    if (
+        type(model) is not str
+        or not _MODEL_WORKSPACE_ID_RE.fullmatch(model)
+        or model.startswith(_MODEL_WORKSPACE_V2_PREFIX)
+        or any(part in ("", ".", "..") for part in model.split("/"))
+    ):
+        raise UnsafeModelWorkspace("invalid_model_workspace_identity")
+    if "/" not in model:
+        return model
+    digest = hashlib.sha256(b"assistx-model-workspace-v2\0" + model.encode("ascii")).hexdigest()
+    return _MODEL_WORKSPACE_V2_PREFIX + digest
+
+
+def _open_knowledge_root_nofollow(path: str) -> int:
+    """Walk all root components from / using dirfds and nofollow opens.
+
+    An existing root must be owned by this process and not group/world-writable.
+    There is deliberately no creation or fallback of a missing knowledge root.
+    """
+    if (
+        os.name != "posix"
+        or not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_DIRECTORY")
+        or type(path) is not str
+        or not path.startswith("/")
+        or any(part in ("", ".", "..") for part in path.split("/")[1:])
+    ):
+        raise UnsafeModelWorkspace("invalid_knowledge_root")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    current = os.open("/", flags)
+    try:
+        for segment in path.split("/")[1:]:
+            following = os.open(segment, flags, dir_fd=current)
+            os.close(current)
+            current = following
+        meta = os.fstat(current)
+        if meta.st_uid != os.geteuid() or meta.st_mode & 0o022:
+            raise UnsafeModelWorkspace("unsafe_knowledge_root_permissions")
+        result = current
+        current = -1
+        return result
+    finally:
+        if current >= 0:
+            os.close(current)
+
+
+def _open_model_workspace_nofollow(root_fd: int, model: str) -> tuple[int, str]:
+    """Open one safe child directory, refusing ambiguous legacy migration."""
+    name = _safe_model_dir(model)
+    if "/" in model:
+        former = model.replace("/", "_")
+        try:
+            os.stat(former, dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise UnsafeModelWorkspace("legacy_workspace_migration_required")
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        os.mkdir(name, 0o700, dir_fd=root_fd)
+    except FileExistsError:
+        pass
+    workspace_fd = os.open(name, flags, dir_fd=root_fd)
+    try:
+        meta = os.fstat(workspace_fd)
+        if meta.st_uid != os.geteuid() or meta.st_mode & 0o022:
+            raise UnsafeModelWorkspace("unsafe_model_workspace_permissions")
+        result = workspace_fd
+        workspace_fd = -1
+        return result, name
+    finally:
+        if workspace_fd >= 0:
+            os.close(workspace_fd)
 
 
 # ---------------------------------------------------------------------------
@@ -225,43 +310,60 @@ def save_eval(data: Dict[str, Any]) -> None:
 
 
 def ensure_model_env(model: Optional[str] = None) -> Optional[str]:
-    """A model's first task: configure its shared workspace under ~/knowledge.
+    """Configure a model workspace only beneath an existing nofollow root.
 
-    Idempotent. Creates ~/knowledge/<model>/ and writes an ENV note recording the
-    model's tier/nodes, then flags the environment as configured so future runs
-    can rely on it. The workspace is shared across the whole swarm.
+    Never auto-migrate flattened legacy namespaced model directories and never
+    return a broader writable path if setup fails.
     """
-    if not model:
+    if model is None:
         return None
-    data = load_eval()
-    m = data["models"].setdefault(model, {"environment_configured": False, "tasks": {}})
-    m.setdefault("tier", "unknown")
-    m.setdefault("nodes", [])
-    knowledge_root = os.getenv("HERMES_KNOWLEDGE_ROOT", "/root/knowledge")
-    ws = os.path.join(knowledge_root, _safe_model_dir(model))
+    root_fd = -1
+    workspace_fd = -1
     try:
-        os.makedirs(ws, exist_ok=True)
+        name = _safe_model_dir(model)  # Validate before reading registry.
+        root = os.getenv("HERMES_KNOWLEDGE_ROOT", "/root/knowledge")
+        root_fd = _open_knowledge_root_nofollow(root)
+        workspace_fd, opened_name = _open_model_workspace_nofollow(root_fd, model)
+        if name != opened_name:
+            raise UnsafeModelWorkspace("workspace_identity_changed")
+        ws = os.path.join(root, name)
+        data = load_eval()
+        m = data["models"].setdefault(
+            model, {"environment_configured": False, "tasks": {}},
+        )
+        m.setdefault("tier", "unknown")
+        m.setdefault("nodes", [])
         if not m.get("environment_configured"):
-            note = os.path.join(ws, "ENV.md")
-            nodes = ", ".join(m.get("nodes", [])) or "n/a"
-            try:
-                with open(note, "w", encoding="utf-8") as fh:
-                    fh.write(f"# Environment for model `{model}`\n\n")
-                    fh.write(f"- Tier: {m.get('tier')}\n")
-                    fh.write(f"- Nodes: {nodes}\n")
-                    fh.write("- Shared knowledge root: ~/knowledge (abs /media/scott/SSD_4TB/knowledge)\n")
-                    fh.write("- This directory is the model's scratch/notes space, shared across the swarm.\n")
-                    fh.write("- Configured by hermes-agent-adapter bootstrap at first use.\n")
-                m["environment_configured"] = True
-                m["workspace"] = ws
-                save_eval(data)
-                logger.info("Configured shared environment for model %s at %s", model, ws)
-            except OSError as e:
-                logger.warning("Could not write env note for %s: %s", model, e)
+            # An existing ENV.md, including a symlink/hardlink, is never
+            # overwritten; the operator must review that workspace first.
+            flags = (
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            note_fd = os.open("ENV.md", flags, 0o600, dir_fd=workspace_fd)
+            with os.fdopen(note_fd, "w", encoding="utf-8") as fh:
+                nodes = ", ".join(m.get("nodes", [])) or "n/a"
+                fh.write(f"# Environment for model {model}\n\n")
+                fh.write(f"- Tier: {m.get('tier')}\n")
+                fh.write(f"- Nodes: {nodes}\n")
+                fh.write("- Workspace is restricted to this model directory.\n")
+                fh.write("- Configured by Hermes adapter at first use.\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.fsync(workspace_fd)
+            m["environment_configured"] = True
+            m["workspace"] = ws
+            save_eval(data)
+            logger.info("Configured restricted model workspace for %s", model)
         return ws
-    except OSError as e:
-        logger.warning("Could not create workspace for %s: %s", model, e)
-        return "/root/knowledge"
+    except (OSError, UnsafeModelWorkspace, TypeError, ValueError) as exc:
+        logger.warning("Model workspace refused for %r: %s", model, type(exc).__name__)
+        return None
+    finally:
+        if workspace_fd >= 0:
+            os.close(workspace_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
 
 
 TRIVIAL_OUTPUT_PATTERNS = [
@@ -1236,6 +1338,19 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
         task,
         learned_lessons=payload.get("learned_failure_reasons") or [],
     )
+    tier = (
+        str(payload["execution_contract"].get("recommended_tier"))
+        if work_packet
+        else classify_model_tier(task)
+    )
+    requested_model = str(payload.get("model") or "").strip()
+    model = requested_model or select_tier_model(tier, seed=task_id)
+    category = task_category(task)
+    # A denied workspace cannot be treated as optional: verify confinement
+    # before worktree creation, model dispatch, or any repository effect.
+    workspace = ensure_model_env(model)
+    if not workspace:
+        raise UnsafeModelWorkspace("model_workspace_unavailable")
     repository_state = (
         prepare_repository(
             payload["execution_contract"],
@@ -1245,15 +1360,6 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
         if work_packet
         else None
     )
-    tier = (
-        str(payload["execution_contract"].get("recommended_tier"))
-        if work_packet
-        else classify_model_tier(task)
-    )
-    requested_model = str(payload.get("model") or "").strip()
-    model = requested_model or select_tier_model(tier, seed=task_id)
-    category = task_category(task)
-    ensure_model_env(model)
 
     if work_packet:
         prompt = (
