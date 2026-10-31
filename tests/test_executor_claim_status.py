@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from assistx.claim_binding import payload_binding_digest
 from assistx.executor_security import build_executor_security_router
 
 
@@ -65,6 +66,9 @@ def active_row(**task_overrides: Any) -> dict[str, Any]:
         "status": "RUNNING",
         "claim_id": "claim-1",
         "claimed_by": "fleet-executor",
+        "agent_session_id": "session-1",
+        "execution_attempt": 1,
+        "payload_json": '{"model":"auto/code"}',
         "lease_expires_at_ts": now_ms + 60_000,
     }
     task.update(task_overrides)
@@ -98,6 +102,9 @@ def test_claim_status_matches_auto_router_contract(monkeypatch) -> None:
         "task_id": "task-1",
         "claim_id": "claim-1",
         "agent_id": "fleet-executor",
+        "agent_session_id": "session-1",
+        "execution_attempt": 1,
+        "task_payload_digest": payload_binding_digest({"model":"auto/code"}),
         "lease_expires_at_ts": response.json()["lease_expires_at_ts"],
         "projection_generation": 12,
         "projection_expires_at_ts": response.json()["projection_expires_at_ts"],
