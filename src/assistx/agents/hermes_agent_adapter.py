@@ -1338,6 +1338,19 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
         task,
         learned_lessons=payload.get("learned_failure_reasons") or [],
     )
+    tier = (
+        str(payload["execution_contract"].get("recommended_tier"))
+        if work_packet
+        else classify_model_tier(task)
+    )
+    requested_model = str(payload.get("model") or "").strip()
+    model = requested_model or select_tier_model(tier, seed=task_id)
+    category = task_category(task)
+    # A denied workspace cannot be treated as optional: verify confinement
+    # before worktree creation, model dispatch, or any repository effect.
+    workspace = ensure_model_env(model)
+    if not workspace:
+        raise UnsafeModelWorkspace("model_workspace_unavailable")
     repository_state = (
         prepare_repository(
             payload["execution_contract"],
@@ -1347,15 +1360,6 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
         if work_packet
         else None
     )
-    tier = (
-        str(payload["execution_contract"].get("recommended_tier"))
-        if work_packet
-        else classify_model_tier(task)
-    )
-    requested_model = str(payload.get("model") or "").strip()
-    model = requested_model or select_tier_model(tier, seed=task_id)
-    category = task_category(task)
-    ensure_model_env(model)
 
     if work_packet:
         prompt = (
