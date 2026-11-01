@@ -66,7 +66,7 @@ ROUTER_BEARER_TOKEN = os.getenv("FLEET_ROUTER_BEARER_TOKEN", "").strip()
 EXECUTOR_AGENT_ID = os.getenv("FLEET_EXECUTOR_AGENT_ID", "fleet-executor").strip()
 BACKGROUND_MAX_FRACTION = min(
     0.9,
-    max(0.0, float(os.getenv("FLEET_BACKGROUND_MAX_FRACTION", "0.5"))),
+    max(0.0, float(os.getenv("FLEET_BACKGROUND_MAX_FRACTION", "0.9"))),
 )
 PROJECTION_TTL_SECONDS = max(
     5, min(300, int(os.getenv("FLEET_EXECUTOR_PROJECTION_TTL_SECONDS", "60")))
@@ -366,7 +366,7 @@ class FleetExecutor:
                 WHERE 'llm' IN coalesce(t.required_capabilities, [])
                   AND coalesce(t.requires_approval, false)=false
                 RETURN t
-                ORDER BY CASE toLower(coalesce(t.priority, 'background'))
+                ORDER BY CASE toLower(toString(coalesce(t.priority, 'background')))
                     WHEN 'critical' THEN 0
                     WHEN 'repo_critical' THEN 1
                     WHEN 'interactive' THEN 2
