@@ -245,3 +245,53 @@ def test_script_lane_is_disabled() -> None:
         "exit_code": 126,
     }
     assert module.FleetExecutor._probe_models("127.0.0.1") is None
+
+
+def test_background_backfills_nine_of_ten_approved_slots(monkeypatch) -> None:
+    """Admitted idle capacity should be used without taking the foreground reserve."""
+    monkeypatch.setattr(module, "MAX_CONCURRENT_LLM", 10)
+    monkeypatch.setattr(module, "BACKGROUND_MAX_FRACTION", 0.9)
+    tasks = [
+        {
+            "id": f"bounded-background-{i}",
+            "priority": "background",
+            "required_capabilities": ["llm"],
+            "payload": {"prompt": f"Analyze bounded sample {i}"},
+        }
+        for i in range(10)
+    ]
+    state = SharedState(tasks)
+
+    def runner(
+        request: dict[str, Any], timeout: int, cancel: threading.Event
+    ) -> dict[str, Any]:
+        return {
+            "status_code": 200,
+            "body": {"choices": [{"message": {"content": "Analysis completed"}}]},
+        }
+
+    executor = module.FleetExecutor(
+        neo_factory=FakeFactory(state),
+        projection_loader=lambda: projection(slots=10),
+        router_runner=runner,
+    )
+    executor._list_ready_llm_tasks = lambda neo, limit: list(tasks)  # type: ignore[method-assign]
+    result = executor.run_once()
+    wait_until_idle(executor)
+    executor.stop()
+
+    assert result["capacity"] == 10
+    assert result["background_limit"] == 9
+    assert result["claimed"] == 9
+    assert len(state.claimed) == 9
+
+
+def test_background_never_bypasses_expired_projection(monkeypatch) -> None:
+    monkeypatch.setattr(module, "BACKGROUND_MAX_FRACTION", 0.9)
+    executor = module.FleetExecutor(
+        projection_loader=lambda: {"generation": 896, "expires_at_ms": 0}
+    )
+    result = executor.run_once()
+    executor.stop()
+    assert result["executed"] is False
+    assert result["reason"] == "projection_unavailable"
