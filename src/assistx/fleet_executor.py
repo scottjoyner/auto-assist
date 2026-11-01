@@ -366,7 +366,7 @@ class FleetExecutor:
                 WHERE 'llm' IN coalesce(t.required_capabilities, [])
                   AND coalesce(t.requires_approval, false)=false
                 RETURN t
-                ORDER BY CASE toLower(coalesce(t.priority, 'background'))
+                ORDER BY CASE toLower(toString(coalesce(t.priority, 'background')))
                     WHEN 'critical' THEN 0
                     WHEN 'repo_critical' THEN 1
                     WHEN 'interactive' THEN 2

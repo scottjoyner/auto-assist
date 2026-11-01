@@ -154,7 +154,11 @@ def compute_work_supply_decision(
     # A shared, configurable reserve lets an interactive request start without
     # waiting behind background work. The normal admission gate still owns
     # per-runtime capacity and controls actual dispatch.
-    reserve = min(INTERACTIVE_RESERVE_SLOTS, total_slots)
+    # A singleton runtime must not be permanently idle simply because the
+    # global reserve equals its entire capacity. The executor already
+    # restricts single-slot background work to one bounded, claim-fenced
+    # task and yields to READY foreground work.
+    reserve = min(INTERACTIVE_RESERVE_SLOTS, max(0, total_slots - 1))
     free_slots = max(0, total_slots - active - reserve)
     target = min(
         MAX_BACKGROUND_BACKLOG,
