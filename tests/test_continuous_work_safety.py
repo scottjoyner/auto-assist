@@ -81,14 +81,28 @@ def test_work_supply_targets_only_free_capacity(monkeypatch) -> None:
 
 
 def test_work_supply_reserves_interactive_capacity(monkeypatch) -> None:
-    monkeypatch.setattr(work_supply, "_projection_capacity", lambda factory: (42, 1))
-    monkeypatch.setattr(work_supply, "_task_pressure", lambda neo: (0, 0, 0))
+    monkeypatch.setattr(work_supply, "_projection_capacity", lambda factory: (42, 2))
+    monkeypatch.setattr(work_supply, "_task_pressure", lambda neo: (1, 0, 0))
 
     decision = work_supply.compute_work_supply_decision(DummyFactory())
 
     assert decision.free_slots == 0
     assert decision.allow_background is False
     assert decision.reason == "interactive_capacity_reserved"
+
+
+def test_work_supply_uses_single_admitted_slot_for_background(monkeypatch) -> None:
+    """A one-slot fleet must not strand its only approved runtime forever."""
+    monkeypatch.setattr(work_supply, "_projection_capacity", lambda factory: (42, 1))
+    monkeypatch.setattr(work_supply, "_task_pressure", lambda neo: (0, 0, 0))
+
+    decision = work_supply.compute_work_supply_decision(DummyFactory())
+
+    assert decision.total_slots == 1
+    assert decision.free_slots == 1
+    assert decision.target_background_ready > 0
+    assert decision.allow_background is True
+    assert decision.reason == "idle_capacity_available"
 
 
 def test_work_supply_task_pressure_failure_fails_closed(monkeypatch) -> None:
