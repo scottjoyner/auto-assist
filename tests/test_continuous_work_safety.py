@@ -62,7 +62,7 @@ def test_work_supply_yields_to_priority_queue(monkeypatch) -> None:
     decision = work_supply.compute_work_supply_decision(DummyFactory())
 
     assert decision.total_slots == 4
-    assert decision.free_slots == 3
+    assert decision.free_slots == 2
     assert decision.allow_background is False
     assert decision.reason == "priority_work_waiting"
 
@@ -74,10 +74,60 @@ def test_work_supply_targets_only_free_capacity(monkeypatch) -> None:
 
     decision = work_supply.compute_work_supply_decision(DummyFactory())
 
-    assert decision.free_slots == 2
-    assert decision.target_background_ready == 6
+    assert decision.free_slots == 1
+    assert decision.target_background_ready == 3
     assert decision.allow_background is True
     assert decision.reason == "idle_capacity_available"
+
+
+def test_work_supply_reserves_interactive_capacity(monkeypatch) -> None:
+    monkeypatch.setattr(work_supply, "_projection_capacity", lambda factory: (42, 1))
+    monkeypatch.setattr(work_supply, "_task_pressure", lambda neo: (0, 0, 0))
+
+    decision = work_supply.compute_work_supply_decision(DummyFactory())
+
+    assert decision.free_slots == 0
+    assert decision.allow_background is False
+    assert decision.reason == "interactive_capacity_reserved"
+
+
+def test_work_supply_task_pressure_failure_fails_closed(monkeypatch) -> None:
+    monkeypatch.setattr(work_supply, "_projection_capacity", lambda factory: (42, 4))
+
+    def unavailable(neo):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(work_supply, "_task_pressure", unavailable)
+    decision = work_supply.compute_work_supply_decision(DummyFactory())
+    assert decision.total_slots == 4
+    assert decision.free_slots == 0
+    assert decision.allow_background is False
+    assert decision.reason == "task_pressure_unavailable:RuntimeError"
+
+
+def test_work_supply_counts_numeric_priority_as_foreground() -> None:
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def run(self, query):
+            assert "toLower(toString(coalesce(t.priority" in query
+            assert "'llm' IN coalesce(t.required_capabilities" in query
+            assert "requires_approval" in query
+            return [
+                {"status": "READY", "priority": "100", "count": 1},
+                {"status": "READY", "priority": "background", "count": 2},
+                {"status": "RUNNING", "priority": "batch", "count": 1},
+            ]
+
+    class FakeNeo:
+        def _session(self):
+            return FakeSession()
+
+    assert work_supply._task_pressure(FakeNeo()) == (1, 1, 2)
 
 
 def test_repository_scan_refreshes_head_and_skips_unchanged_tree(

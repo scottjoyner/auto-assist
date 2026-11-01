@@ -32,7 +32,12 @@ STATE_FRESHNESS_SECONDS = max(
     WORK_SUPPLY_INTERVAL * 3,
     int(os.getenv("ASSISTX_WORK_SUPPLY_STATE_FRESHNESS_SECONDS", "60")),
 )
-_PRIORITY_NAMES = {"critical", "repo_critical", "interactive", "high"}
+# Only explicit background classes are safe to backfill around. Numeric and
+# unrecognized priorities are conservatively treated as foreground work.
+_BACKGROUND_PRIORITIES = {"background", "batch", "low", "unset", ""}
+INTERACTIVE_RESERVE_SLOTS = max(
+    0, min(8, int(os.getenv("ASSISTX_WORK_SUPPLY_INTERACTIVE_RESERVE_SLOTS", "1")))
+)
 _ACTIVE_STATUSES = {"CLAIMED", "RUNNING", "PAUSING"}
 
 _started = False
@@ -81,8 +86,10 @@ def _task_pressure(neo: Any) -> tuple[int, int, int]:
             """
             MATCH (t:Task)
             WHERE t.status IN ['READY','CLAIMED','RUNNING','PAUSING']
+              AND 'llm' IN coalesce(t.required_capabilities, [])
+              AND coalesce(t.requires_approval, false) = false
             RETURN t.status AS status,
-                   toLower(coalesce(t.priority, 'background')) AS priority,
+                   toLower(toString(coalesce(t.priority, 'background'))) AS priority,
                    count(t) AS count
             """
         )
@@ -96,10 +103,11 @@ def _task_pressure(neo: Any) -> tuple[int, int, int]:
             if status in _ACTIVE_STATUSES:
                 active += count
             elif status == "READY":
-                if priority in _PRIORITY_NAMES:
-                    priority_ready += count
-                else:
+                if priority in _BACKGROUND_PRIORITIES:
                     background_ready += count
+                else:
+                    # Unknown and numeric priorities are not safe to preempt.
+                    priority_ready += count
         return active, priority_ready, background_ready
 
 
@@ -123,12 +131,31 @@ def compute_work_supply_decision(
             reason=f"projection_unavailable:{exc}",
         )
 
-    neo = neo_factory()
     try:
-        active, priority_ready, background_ready = _task_pressure(neo)
-    finally:
-        neo.close()
-    free_slots = max(0, total_slots - active)
+        neo = neo_factory()
+        try:
+            active, priority_ready, background_ready = _task_pressure(neo)
+        finally:
+            neo.close()
+    except Exception as exc:
+        logger.warning("work supply: task pressure unavailable: %s", type(exc).__name__)
+        return WorkSupplyDecision(
+            generated_at_ts=now_ms,
+            projection_generation=generation,
+            total_slots=total_slots,
+            active_tasks=0,
+            free_slots=0,
+            priority_ready=0,
+            background_ready=0,
+            target_background_ready=0,
+            allow_background=False,
+            reason=f"task_pressure_unavailable:{type(exc).__name__}",
+        )
+    # A shared, configurable reserve lets an interactive request start without
+    # waiting behind background work. The normal admission gate still owns
+    # per-runtime capacity and controls actual dispatch.
+    reserve = min(INTERACTIVE_RESERVE_SLOTS, total_slots)
+    free_slots = max(0, total_slots - active - reserve)
     target = min(
         MAX_BACKGROUND_BACKLOG,
         free_slots * BACKGROUND_BACKLOG_PER_FREE_SLOT,
@@ -138,7 +165,9 @@ def compute_work_supply_decision(
     elif priority_ready > 0:
         allowed, reason = False, "priority_work_waiting"
     elif free_slots <= 0:
-        allowed, reason = False, "no_free_slots"
+        allowed, reason = False, (
+            "interactive_capacity_reserved" if active < total_slots else "no_free_slots"
+        )
     elif background_ready >= target:
         allowed, reason = False, "background_target_satisfied"
     else:
