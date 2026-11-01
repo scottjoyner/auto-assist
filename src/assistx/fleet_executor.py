@@ -66,7 +66,7 @@ ROUTER_BEARER_TOKEN = os.getenv("FLEET_ROUTER_BEARER_TOKEN", "").strip()
 EXECUTOR_AGENT_ID = os.getenv("FLEET_EXECUTOR_AGENT_ID", "fleet-executor").strip()
 BACKGROUND_MAX_FRACTION = min(
     0.9,
-    max(0.0, float(os.getenv("FLEET_BACKGROUND_MAX_FRACTION", "0.5"))),
+    max(0.0, float(os.getenv("FLEET_BACKGROUND_MAX_FRACTION", "0.9"))),
 )
 PROJECTION_TTL_SECONDS = max(
     5, min(300, int(os.getenv("FLEET_EXECUTOR_PROJECTION_TTL_SECONDS", "60")))
