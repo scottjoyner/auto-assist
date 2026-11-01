@@ -22,8 +22,9 @@ def test_different_code_is_blocked():
     assert result["reason"] == "deployment_source_drift"
 
 def test_modified_after_start_is_blocked():
-    result = module.evaluate("assistx", HASH, {"sha256": HASH, "mtime_ns": 100}, started_ns=20, must_predate_start=True)
-    assert result["status"] == "code_matches"
+    result = module.evaluate("assistx", HASH, {"sha256": HASH, "mtime_ns": 9_000_000_000}, started_ns=2_000_000_000, must_predate_start=True)
+    assert result["status"] == "blocked"
+    assert result["reason"] == "service_started_before_source"
 
 def test_missing_live_evidence_is_blocked():
     result = module.evaluate("router", HASH, None)
