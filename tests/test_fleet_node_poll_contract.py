@@ -196,3 +196,27 @@ def test_valid_claim_fence_flows_into_completion(monkeypatch):
     assert len(completion) == 1
     assert completion[0][2]["data"]["claim_id"] == "claim-fenced-123"
     assert len([r for r in requests if "/v1/chat/completions" in r[1]]) == 1
+
+
+def test_http_422_claim_denial_never_dispatches(monkeypatch):
+    requests = []
+
+    def fake_http(method, url, **kwargs):
+        requests.append((method, url))
+        if method == "GET" and "/api/agent/tasks?" in url:
+            return 200, {"items": [{
+                "id": "malformed", "required_capabilities": ["llm"],
+                "task_type": "llm"}]}
+        if method == "POST" and url.endswith("/api/tasks/malformed/claim"):
+            return 422, {"detail": "invalid claim"}
+        raise AssertionError("No model request, heartbeat or completion allowed")
+
+    monkeypatch.setattr(agent, "_http", fake_http)
+    status = []
+    worked = agent._poll_once(
+        assistx_url="http://assistx", router_url="http://router",
+        auth=("operator", "test"), node_id="node-a", caps=["llm"],
+        lmstudio_url="http://local", observed_status=status)
+    assert worked is False
+    assert status == [200]
+    assert len(requests) == 2
