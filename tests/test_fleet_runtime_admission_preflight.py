@@ -72,3 +72,50 @@ def test_missing_port_rejected():
 def test_redirect_handler_cannot_follow_public_location():
     with pytest.raises(preflight.UnsafeEndpoint, match="redirects"):
         preflight.NoRedirect().redirect_request(None, None, 302, "", {}, "http://8.8.8.8")
+
+
+
+def test_observer_reports_actual_model_id_but_never_admits(monkeypatch):
+    monkeypatch.setattr(
+        preflight, "get_json",
+        lambda url, timeout: {"data": [{"id": "recursivesi/flint"}]},
+    )
+    report = preflight.build_report([target()])
+    assert report["blocked_count"] == 1
+    assert report["admission_applied"] is False
+    assert report["not_an_approval"] is True
+    node = report["nodes"][0]
+    assert node["operator_approved"] is False
+    assert node["physical_attestation"] is False
+    assert node["paths"]["lan"]["advertised_model_count"] == 1
+    assert node["paths"]["lan"]["advertised_model_ids"] == ["recursivesi/flint"]
+    assert node["paths"]["tailscale"]["advertised_model_ids"] == ["recursivesi/flint"]
+
+
+def test_observed_ids_bounded_and_match_uses_entire_list(monkeypatch):
+    ids = [f"model-{i:02}" for i in range(20)]
+    ids += ["k2-horizon-0.9b", "control\nsequence", "x" * 200]
+    monkeypatch.setattr(
+        preflight, "get_json",
+        lambda url, timeout: {"data": [{"id": item} for item in ids]},
+    )
+    report = preflight.build_report([target()])
+    assert report["api_visible_count"] == 1
+    entry = report["nodes"][0]["paths"]["lan"]
+    assert entry["model_advertised"] is True
+    assert entry["advertised_model_count"] == len(ids)
+    assert len(entry["advertised_model_ids"]) == 8
+    assert entry["advertised_model_ids_truncated"] is True
+    assert all(len(value) <= 160 and "\n" not in value
+               for value in entry["advertised_model_ids"])
+
+
+def test_malformed_model_list_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        preflight, "get_json",
+        lambda url, timeout: {"data": "not-an-array"},
+    )
+    report = preflight.build_report([target()])
+    assert report["blocked_count"] == 1
+    assert report["nodes"][0]["paths"]["lan"]["reachable"] is False
+    assert report["nodes"][0]["operator_approved"] is False

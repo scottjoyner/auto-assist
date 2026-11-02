@@ -104,9 +104,27 @@ def probe_target(row: dict, *, timeout: float = 4) -> dict:
         entry = {"reachable": False, "model_advertised": False}
         try:
             data = get_json(url + "/models", timeout)
-            models = {x.get("id") for x in data.get("data", []) if isinstance(x, dict)}
+            items = data.get("data", [])
+            if not isinstance(items, list):
+                raise ValueError("model inventory data must be a list")
+            models = {
+                item["id"] for item in items
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            }
             entry["reachable"] = True
             entry["model_advertised"] = expected in models
+            # Useful operator diagnostics without turning an arbitrary model
+            # listing into a signed claim. Bound content from untrusted APIs.
+            # The full inventory (not this capped display) decides exact match.
+            entry["advertised_model_count"] = len(models)
+            entry["advertised_model_ids"] = sorted(
+                model for model in models
+                if 0 < len(model) <= 160
+                and all(32 <= ord(char) < 127 for char in model)
+            )[:8]
+            entry["advertised_model_ids_truncated"] = (
+                len(models) > len(entry["advertised_model_ids"])
+            )
             if not entry["model_advertised"]:
                 result["reasons"].append(f"{transport}: exact model ID not advertised")
         except Exception as exc:
