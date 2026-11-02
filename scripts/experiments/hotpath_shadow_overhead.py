@@ -156,10 +156,10 @@ def run(cargo: Path, samples: int, allow_downloads: bool) -> dict:
         name = "fleet_hotpath_synthetic_pilot"
         binary = root / "target" / "release" / name
         profiled = root / "profiled"
-        shutil.copyfile(binary, profiled)
+        shutil.copy2(binary, profiled)
         invoke(["build", "--locked", "--release", "--quiet"], 100, offline=True)
         plain = root / "plain"
-        shutil.copyfile(binary, plain)
+        shutil.copy2(binary, plain)
         durations = {"plain": [], "profiled": []}
         checksums = set()
         have_report = False
