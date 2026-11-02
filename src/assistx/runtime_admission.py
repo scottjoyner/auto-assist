@@ -11,6 +11,13 @@ class RuntimeAdmissionContractError(ValueError):
     """Raised when a desired-state profile or live proof cannot be admitted."""
 
 
+# A live process/model/path snapshot is not an indefinite lease credential.
+# Keep this conservative until a signed, source-attested runtime witness is
+# integrated. Lowering these limits does not itself establish authenticity.
+MAX_LIVE_PROOF_AGE_MS = 5 * 60 * 1000
+MAX_LIVE_PROOF_LIFETIME_MS = 15 * 60 * 1000
+
+
 _UNKNOWN = {"", "unknown", "unresolved", "none", "null", "replace-me"}
 _ALLOWED_TRANSPORTS = {
     "loopback",
@@ -328,6 +335,14 @@ def _verify_live(
         raise RuntimeAdmissionContractError(
             "live proof expiry must be after observation"
         )
+    if now_ms - observed_at_ms > MAX_LIVE_PROOF_AGE_MS:
+        raise RuntimeAdmissionContractError(
+            "live proof observation exceeds maximum age"
+        )
+    if expires_at_ms - observed_at_ms > MAX_LIVE_PROOF_LIFETIME_MS:
+        raise RuntimeAdmissionContractError(
+            "live proof expiry exceeds maximum observation lifetime"
+        )
 
     for field in (
         "node_id",
@@ -618,6 +633,7 @@ def build_runtime_admission_candidate(
     lease_expires_at_ms = min(
         now + ttl * 1000,
         verified_live["expires_at_ms"],
+        verified_live["observed_at_ms"] + MAX_LIVE_PROOF_AGE_MS,
     )
     projection_ttl = max(1, (lease_expires_at_ms - now) // 1000)
     if projection_ttl < 30:
@@ -758,6 +774,33 @@ def validate_runtime_admission_candidate(
     if lease.get("candidate_fingerprint") != received:
         raise RuntimeAdmissionContractError(
             "candidate lease fingerprint mismatch"
+        )
+    # Revalidate freshness when a candidate is consumed, not only when
+    # originally built. A still-unexpired lease must not revive stale host
+    # evidence, even if its creator had access to valid model API metadata.
+    evidence = _mapping(candidate.get("evidence"), "candidate.evidence")
+    observed_at_ms = _positive_int(
+        evidence.get("live_proof_observed_at_ms"),
+        "candidate.evidence.live_proof_observed_at_ms",
+    )
+    proof_expires_at_ms = _positive_int(
+        evidence.get("live_proof_expires_at_ms"),
+        "candidate.evidence.live_proof_expires_at_ms",
+    )
+    if observed_at_ms > now or now - observed_at_ms > MAX_LIVE_PROOF_AGE_MS:
+        raise RuntimeAdmissionContractError("candidate live proof observation is stale")
+    if (proof_expires_at_ms <= now
+            or proof_expires_at_ms - observed_at_ms > MAX_LIVE_PROOF_LIFETIME_MS):
+        raise RuntimeAdmissionContractError("candidate live proof expiry is invalid")
+    lease_expiry_ms = _positive_int(
+        lease.get("expires_at_ms"), "candidate.lease.expires_at_ms"
+    )
+    if lease_expiry_ms > min(
+        proof_expires_at_ms,
+        observed_at_ms + MAX_LIVE_PROOF_AGE_MS,
+    ):
+        raise RuntimeAdmissionContractError(
+            "candidate lease exceeds live proof freshness bound"
         )
     manifest = _mapping(
         candidate.get("projection_manifest"),

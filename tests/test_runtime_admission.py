@@ -137,7 +137,7 @@ def test_builds_expiring_non_self_authorizing_candidate():
 
     assert candidate["profile"]["admission_enabled"] is False
     assert candidate["lease"]["state"] == "ACTIVE"
-    assert candidate["lease"]["expires_at_ms"] == 1_400_000
+    assert candidate["lease"]["expires_at_ms"] == 1_300_000
     assert candidate["projection_manifest"]["generation"] == 7
     assert candidate["runtime"]["access_paths"][0]["transport"] == "lan"
     assert validate_runtime_admission_candidate(
