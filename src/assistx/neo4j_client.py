@@ -1503,9 +1503,12 @@ class Neo4jClient:
             raise ValueError(f"Unsupported task status: {status}")
         props = {
             "heartbeat_by": agent_id,
-            "agent_session_id": session_id,
             "heartbeat_metadata_json": json.dumps(metadata or {}),
         }
+        # Omitted session_id must not erase the claimed owner's session.
+        # This preserves compatibility without relaxing claim/lease checks.
+        if session_id is not None:
+            props["agent_session_id"] = session_id
         with self._session() as s:
             rec = s.run(
                 """
