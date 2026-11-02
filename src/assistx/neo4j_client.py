@@ -1159,7 +1159,9 @@ class Neo4jClient:
                         "WITH a MATCH (t:Task {id:$task_id}) MERGE (a)-[:CLAIMED]->(t)",
                         {"sid": session_id, "agent_id": agent_id, "task_id": task_id},
                     )
-                return {"claimed": True, "task": task}
+                # Match the idempotent-claim response shape so all callers
+                # can carry the authoritative claim fence through execution.
+                return {"claimed": True, "claim_id": claim_id, "task": task}
 
             existing = s.run(
                 "MATCH (t:Task {id:$task_id}) "
