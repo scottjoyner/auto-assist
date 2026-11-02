@@ -600,20 +600,28 @@ def _claim_and_run(
 
     # AssistX exposes a single completion endpoint; failures are reported via
     # POST /complete with status=FAILED (no separate /fail route exists).
-    _http(
+    requested_terminal = "DONE" if success else "FAILED"
+    completion_status, completion = _http(
         "POST",
         f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/complete",
         auth=auth,
         data={
             "node_id": node_id,
             "agent_id": node_id,
-            "status": "DONE" if success else "FAILED",
+            "status": requested_terminal,
             "summary": str(result.get("error") or result.get("summary") or "")[:500],
             "result": result,
             "session_id": session_id,
             "claim_id": claim_id,
         },
     )
+    acknowledged_task = completion.get("task") if isinstance(completion, dict) else None
+    if (completion_status != 200 or not isinstance(acknowledged_task, dict)
+            or acknowledged_task.get("id") != task_id
+            or acknowledged_task.get("status") != requested_terminal):
+        # A generated answer is not a committed task. Never claim success
+        # without the authoritative terminal receipt or blindly replay work.
+        return False
 
 
 def _poll_once(
