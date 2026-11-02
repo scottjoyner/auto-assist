@@ -139,3 +139,60 @@ def test_real_claim_http_409_never_executes_or_reports_completion(monkeypatch):
     assert worked is False and observed == [200]
     assert len(events) == 2
     assert events[1][1].endswith("/api/tasks/unclaimable/claim")
+
+
+@pytest.mark.parametrize("claim", [
+    {"claimed": True, "task": {"id": "claimable", "claimed_by": "node-a", "status": "CLAIMED"}},
+    {"claimed": True, "claim_id": "mismatch",
+     "task": {"id": "claimable", "claimed_by": "node-a", "status": "CLAIMED", "claim_id": "real"}},
+    {"claimed": True, "task": {"id": "other", "claimed_by": "node-a", "status": "CLAIMED", "claim_id": "real"}},
+    {"claimed": True, "task": {"id": "claimable", "claimed_by": "other", "status": "CLAIMED", "claim_id": "real"}},
+    {"claimed": True, "task": {"id": "claimable", "claimed_by": "node-a", "status": "READY", "claim_id": "real"}},
+    {"claimed": False, "task": {"id": "claimable", "claimed_by": "node-a", "status": "CLAIMED", "claim_id": "real"}},
+])
+def test_malformed_successful_claim_never_runs_or_heartbeats(monkeypatch, claim):
+    calls = []
+
+    def fake_http(method, url, **kwargs):
+        calls.append((method, url))
+        if url.endswith("/claim"):
+            return 200, claim
+        raise AssertionError("Unexpected inference, heartbeat, or completion")
+
+    monkeypatch.setattr(agent, "_http", fake_http)
+    result = agent._claim_and_run(
+        assistx_url="http://assistx", router_url="http://router",
+        auth=("operator", "test"), node_id="node-a",
+        caps=["llm"], task={"id": "claimable", "required_capabilities": ["llm"]},
+        lmstudio_url="http://local")
+    assert result is False and len(calls) == 1
+
+
+def test_valid_claim_fence_flows_into_completion(monkeypatch):
+    requests = []
+
+    def fake_http(method, url, **kwargs):
+        requests.append((method, url, kwargs))
+        if url.endswith("/claim"):
+            return 200, {"claimed": True, "task": {
+                "id": "claimable", "claimed_by": "node-a", "status": "CLAIMED",
+                "claim_id": "claim-fenced-123",
+                "agent_session_id": kwargs["data"]["session_id"]}}
+        if url.endswith("/v1/chat/completions"):
+            return 200, {"choices": [{"message": {"content": "review successful"}}]}
+        if url.endswith("/complete"):
+            return 200, {"task": {"status": "DONE"}}
+        raise AssertionError(f"Unexpected route: {url}")
+
+    monkeypatch.setattr(agent, "_http", fake_http)
+    outcome = agent._claim_and_run(
+        assistx_url="http://assistx", router_url="http://router",
+        auth=("operator", "test"), node_id="node-a", caps=["llm"],
+        task={"id": "claimable", "task_type": "llm",
+              "payload": {"prompt": "review", "model": "m1"}},
+        lmstudio_url="http://local")
+    assert outcome is None
+    completion = [r for r in requests if r[1].endswith("/complete")]
+    assert len(completion) == 1
+    assert completion[0][2]["data"]["claim_id"] == "claim-fenced-123"
+    assert len([r for r in requests if "/v1/chat/completions" in r[1]]) == 1
