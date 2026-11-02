@@ -27,7 +27,8 @@ def test_docker_args_strict_network_none():
     mounts=[args[i+1] for i,x in enumerate(args) if x=="--mount"]
     assert len(mounts)==3
     assert all("readonly" in x for x in mounts)
-    assert "python:3.12-slim-bookworm" in args
+    assert module.IMAGE_ID in args
+    assert module.IMAGE not in args
 
 
 def test_guard_block_never_launches():
@@ -118,3 +119,16 @@ def test_cleanup_failure_is_nonpassing_even_after_success():
         result=module.run_experiment()
     assert result["status"]=="HOLD_CLEANUP_UNVERIFIED"
     assert not result["cleanup"]
+
+
+def test_runtime_pin_material_is_sha256_and_immutable():
+    for digest in (module.SHA256,module.SERVER_SHA256,
+                   module.SERVER_IMPL_SHA256,module.LLAMA_LIB_SHA256,
+                   module.CPU_LIB_SHA256):
+        assert len(digest)==64 and all(c in "0123456789abcdef" for c in digest)
+    assert module.IMAGE_ID.startswith("sha256:")
+    assert len(module.IMAGE_ID)==71
+    # Docker image is selected by content-addressed ID, not mutable tag.
+    argv=module.docker_args("k2-cpu-repro-pinned")
+    assert module.IMAGE_ID in argv
+    assert module.IMAGE not in argv

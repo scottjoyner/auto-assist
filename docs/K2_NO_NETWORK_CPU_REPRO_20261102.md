@@ -20,6 +20,12 @@ binary needs a newer glibc than the existing image provides.
   no-new-privileges, UID/GID 1000:1000, PID limit 64.
 - CPU cap 3 cores, memory/swap hard cap 6 GiB total, tmpfs 96 MiB.
 - Local existing image only; never pull or download.
+- Image identity pinned to sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337.
+  A mismatch blocks running the experiment; Docker starts by exact image ID.
+- Local llama-server, server implementation, llama core and ggml CPU
+  shared library SHA-256 fingerprints checked before creating the container.
+  Remaining host glibc runtime is mounted read-only but not independently
+  content-addressed; equivalence on a different host requires further review.
 - GGUF SHA-256 pinned to
   371010db1807bb07b62e738422ee0de26c1e15a347f31108ed2c6e219095a8b8.
 - Serving address 127.0.0.1:18721 INSIDE the container namespace.
@@ -59,6 +65,32 @@ Docker inspect verified network mode none, zero host port bindings,
 read-only root, unprivileged mode and dropped capabilities. The server
 became healthy and the container was removed. No leftover test
 container was observed.
+
+## Content-pinned independent repeat
+
+The tightened harness pinned the complete local Docker image ID and four
+CPU-runtime binary SHA-256 fingerprints, in addition to the model SHA-256.
+It then ran the same four requests again at 2026-11-02 22:42:09 UTC.
+
+Second run evidence:
+ k2-no-network-cpu-pinned-20261102T224209Z.json
+
+Second run evidence SHA-256:
+ 2654baec129fdb6bc73791838930d6c3ef704e73d915ee32f5fa280ce17e034a
+
+Results were **identical in token counts, response visibility and finish
+reasons** for all four cases: (16,48,length), (24,40,stop),
+(23,48,length), (16,48,length), where pairs are prompt/output tokens.
+Request wall times changed slightly to 1.615, 1.384, 1.801 and 1.801
+seconds. The second run independently verified network-none isolation,
+clean container removal and no residual K2 process in LM Studio.
+
+Across these two completely synthetic runs: 158 measured prompt tokens
+and 368 measured output tokens. Neither figure is production usage,
+and two repeats do not prove long-running service reliability.
+Host glibc shared libraries remain read-only inputs rather than a
+fully content-addressed portable runtime; independent-host
+reproducibility is not yet proven.
 
 These measurements are synthetic CPU experiment counts and must
 not be added to production fleet 24-hour usage totals.
