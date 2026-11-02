@@ -783,7 +783,7 @@ def run_hermes_delegated(
 
 
 def call_self_task_llm(prompt: str, model: str, max_tokens: int = SELFTASK_MAX_TOKENS,
-                       timeout: int = 450) -> Dict[str, Any]:
+                       timeout: int = 450, *, executor_token: Optional[str] = None) -> Dict[str, Any]:
     """Direct router chat call for background self-tasks.
 
     Hermes is not used here: small/tiny models are slow and Hermes sends no
@@ -795,7 +795,14 @@ def call_self_task_llm(prompt: str, model: str, max_tokens: int = SELFTASK_MAX_T
     # Fail *before* preparing an HTTP request or invoking a model when no
     # executor claim exists. The router must STILL verify JWT signature,
     # issuer, expiry and lease/resource status for every actual request.
-    claim_token = os.getenv("HERMES_EXECUTOR_TOKEN", "").strip()
+    # The strict parent's claim stays on its client, never in os.environ.
+    # Explicit (including empty) token input cannot fall back to a global
+    # credential; the environment path is retained only for a spawned child.
+    claim_token = (
+        executor_token.strip() if isinstance(executor_token, str)
+        else os.getenv("HERMES_EXECUTOR_TOKEN", "").strip()
+        if executor_token is None else ""
+    )
     if claim_token.count(".") != 2:
         return {
             "success": False, "output": "", "error": "claim_scoped_executor_token_required",
