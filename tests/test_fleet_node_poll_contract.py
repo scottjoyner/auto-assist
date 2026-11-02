@@ -176,7 +176,8 @@ def test_valid_claim_fence_flows_into_completion(monkeypatch):
         if url.endswith("/claim"):
             return 200, {"claimed": True, "task": {
                 "id": "claimable", "claimed_by": "node-a", "status": "CLAIMED",
-                "claim_id": "claim-fenced-123",
+                "claim_id": "claim-fenced-123", "task_type": "llm",
+                "payload_json": '{"prompt":"review","model":"m1"}',
                 "agent_session_id": kwargs["data"]["session_id"]}}
         if url.endswith("/v1/chat/completions"):
             return 200, {"choices": [{"message": {"content": "review successful"}}]}
@@ -220,3 +221,34 @@ def test_http_422_claim_denial_never_dispatches(monkeypatch):
     assert worked is False
     assert status == [200]
     assert len(requests) == 2
+
+def test_execution_uses_authoritative_claimed_payload_not_stale_ready_entry(monkeypatch):
+    emitted = []
+
+    def fake_http(method, url, **kwargs):
+        if url.endswith("/claim"):
+            return 200, {"claimed": True, "task": {
+                "id": "claimable", "claimed_by": "node-a", "status": "CLAIMED",
+                "agent_session_id": kwargs["data"]["session_id"],
+                "claim_id": "fence-123", "task_type": "llm",
+                "payload_json": '{"prompt":"CURRENT AUTHORIZED REVIEW","model":"model-a"}'}}
+        if url.endswith("/v1/chat/completions"):
+            emitted.append(kwargs["data"])
+            return 200, {"choices": [{"message": {"content": "done"}}]}
+        if url.endswith("/complete"):
+            return 200, {"task": {"status": "DONE"}}
+        raise AssertionError("Unexpected endpoint")
+
+    monkeypatch.setattr(agent, "_http", fake_http)
+    outcome = agent._claim_and_run(
+        assistx_url="http://assistx", router_url="http://router",
+        auth=("operator", "test"), node_id="node-a", caps=["llm"],
+        task={"id": "claimable", "task_type": "llm",
+              "payload": {"prompt": "STALE UNAUTHORIZED REQUEST", "model": "old"}},
+        lmstudio_url="http://local")
+    assert outcome is None
+    assert emitted == [{
+        "model": "model-a",
+        "messages": [{"role": "user", "content": "CURRENT AUTHORIZED REVIEW"}],
+        "stream": False,
+    }]
