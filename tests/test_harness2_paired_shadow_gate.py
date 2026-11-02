@@ -157,7 +157,8 @@ class TestHarnessGate(unittest.TestCase):
         d = fixture()
         d["observations"][1]["completed"] = False
         d["observations"][1]["judge_score"] = 0
-        self.assertEqual(gate.evaluate(d)["signal"], "insufficient_or_unfavorable_evidence")
+        with self.assertRaises(gate.Rejected):
+            gate.evaluate(d)
 
     def test_token_inflation_not_promoted(self):
         d = fixture()
