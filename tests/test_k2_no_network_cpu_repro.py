@@ -132,3 +132,21 @@ def test_runtime_pin_material_is_sha256_and_immutable():
     argv=module.docker_args("k2-cpu-repro-pinned")
     assert module.IMAGE_ID in argv
     assert module.IMAGE not in argv
+
+
+def test_container_start_timeout_always_attempts_cleanup():
+    calls=[]
+    def executor(argv,timeout=20):
+        calls.append(argv)
+        if argv[1]=="run":
+            raise module.subprocess.TimeoutExpired(cmd=argv,timeout=20)
+        if argv[1]=="rm":
+            return SimpleNamespace(returncode=0,stdout="",stderr="")
+        raise AssertionError(argv)
+    with patch.object(module,"guard",return_value=[]),patch.object(module,"run",side_effect=executor):
+        outcome=module.run_experiment()
+    assert outcome["status"]=="HOLD"
+    assert outcome["reason"]=="exception_TimeoutExpired"
+    assert outcome["cleanup"]
+    assert any(args[1]=="rm" and args[2]=="-f" for args in calls)
+    assert not outcome["can_dispatch"]
