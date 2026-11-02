@@ -114,3 +114,28 @@ def test_rejected_claim_yields_instead_of_hot_loop(monkeypatch):
         auth=("operator", "test"), node_id="node-a",
         caps=["llm"], lmstudio_url="http://local", observed_status=statuses)
     assert statuses == [200] and not worked and len(attempted) == 1
+
+
+def test_real_claim_http_409_never_executes_or_reports_completion(monkeypatch):
+    events = []
+
+    def fake_http(method, url, **kwargs):
+        events.append((method, url))
+        if method == "GET" and "/api/agent/tasks?" in url:
+            return 200, {"items": [
+                {"id": "unclaimable", "task_type": "llm",
+                 "required_capabilities": ["llm"]},
+            ]}
+        if method == "POST" and url.endswith("/api/tasks/unclaimable/claim"):
+            return 409, {"claimed": False}
+        raise AssertionError("No heartbeat, model call, or completion after 409")
+
+    monkeypatch.setattr(agent, "_http", fake_http)
+    observed = []
+    worked = agent._poll_once(
+        assistx_url="http://assistx", router_url="http://router",
+        auth=("operator", "test"), node_id="node-a", caps=["llm"],
+        lmstudio_url="http://local", observed_status=observed)
+    assert worked is False and observed == [200]
+    assert len(events) == 2
+    assert events[1][1].endswith("/api/tasks/unclaimable/claim")
