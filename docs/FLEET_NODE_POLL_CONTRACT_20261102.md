@@ -44,3 +44,20 @@ Release remains HOLD: do not remove the server's legacy claimless
 compatibility in production without a documented client census, genuine
 Neo4j transactional stale-owner/lease negative tests, and owner-approved
 service cutover. No live router/AssistX or task graph was changed.
+
+
+## Heartbeat session retention (follow-up)
+
+The legacy fleet worker omitted `session_id` in task heartbeat JSON, while
+the graph heartbeat function constructed `props={"agent_session_id": None}`
+and wrote it with `SET t += $props`. That could erase the session ID
+already stored by the authoritative claim. The worker now forwards the
+original exact session ID with `claim_id` on every heartbeat. For other
+legacy callers, `Neo4jClient.heartbeat_task` leaves `agent_session_id`
+untouched when the optional parameter is absent; it still updates the
+field when explicitly provided.
+
+An isolated fake-session regression proves omitted session IDs never
+remove the original binding. The expanded source-only suite reports
+**31 passing tests** and one existing Pydantic warning. Full server-side
+lease/claim fencing and old-client reconciliation remain P0 release holds.
