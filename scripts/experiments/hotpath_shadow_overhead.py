@@ -123,7 +123,7 @@ def run(cargo: Path, samples: int, allow_downloads: bool) -> dict:
         (root / "cargo-home").mkdir()
         (root / "Cargo.toml").write_text(MANIFEST, encoding="utf-8")
         (root / "src" / "main.rs").write_text(SOURCE, encoding="utf-8")
-        rustup_home = cargo.parent.parent / ".rustup"
+        rustup_home = cargo.parents[2] / ".rustup"  # sibling of ~/.cargo, not under ~/.cargo
         env = {
             "PATH": f"{cargo.parent}:/usr/bin:/bin",
             "HOME": str(root),
