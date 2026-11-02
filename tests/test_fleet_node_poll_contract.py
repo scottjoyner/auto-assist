@@ -252,3 +252,44 @@ def test_execution_uses_authoritative_claimed_payload_not_stale_ready_entry(monk
         "messages": [{"role": "user", "content": "CURRENT AUTHORIZED REVIEW"}],
         "stream": False,
     }]
+
+
+@pytest.mark.parametrize("body", [
+    {},
+    {"choices": []},
+    {"choices": [{}]},
+    {"choices": [{"message": {}}]},
+    {"choices": [{"message": {"content": ""}}]},
+    {"choices": [{"message": {"content": "  \n"}}]},
+    {"choices": [{"message": {"content": None}}]},
+    {"choices": [{"message": {"content": []}}]},
+])
+def test_http_200_without_generated_answer_must_not_complete_done(monkeypatch, body):
+    calls = []
+
+    def fake_http(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        if url.endswith("/claim"):
+            return 200, {"claimed": True, "task": {
+                "id": "claimable", "claimed_by": "node-a", "status": "CLAIMED",
+                "agent_session_id": kwargs["data"]["session_id"],
+                "claim_id": "fence-123", "task_type": "llm",
+                "payload_json": '{"prompt":"Review a PR","model":"m1"}'}}
+        if url.endswith("/v1/chat/completions"):
+            return 200, body
+        if url.endswith("/complete"):
+            return 200, {"task": {"status": "FAILED"}}
+        raise AssertionError("Unexpected route")
+
+    monkeypatch.setattr(agent, "_http", fake_http)
+    outcome = agent._claim_and_run(
+        assistx_url="http://assistx", router_url="http://router",
+        auth=("operator", "test"), node_id="node-a", caps=["llm"],
+        task={"id": "claimable", "required_capabilities": ["llm"]},
+        lmstudio_url="http://local")
+    assert outcome is None
+    completions = [entry[2]["data"] for entry in calls if entry[1].endswith("/complete")]
+    assert len(completions) == 1
+    assert completions[0]["status"] == "FAILED"
+    assert completions[0]["result"]["error"] == "empty_or_invalid_model_generation"
+    assert completions[0]["claim_id"] == "fence-123"
