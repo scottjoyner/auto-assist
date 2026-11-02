@@ -150,9 +150,15 @@ def _detect_capabilities(lmstudio_url: str | None) -> tuple[list[str], list[str]
     if lmstudio_url:
         status, body = _http("GET", f"{lmstudio_url.rstrip('/')}/v1/models", timeout=5)
         if status == 200 and isinstance(body, dict):
-            caps.add("llm")
-            caps.add("lmstudio")
-            models = [item.get("id", "") for item in body.get("data", []) if item.get("id")]
+            rows = body.get("data")
+            if isinstance(rows, list):
+                models = [str(item["id"]) for item in rows
+                          if isinstance(item, dict) and isinstance(item.get("id"), str)
+                          and item["id"].strip()]
+            # An API listener with zero advertised models is NOT an
+            # inference-capable node (observed on x1-370 Nov 2).
+            if models:
+                caps.update(("llm", "lmstudio"))
 
     # Lightweight vision/tooling detection without importing heavyweight libs.
     for command in ("ffmpeg", "python3"):
@@ -625,16 +631,28 @@ def _poll_once(
     caps: list[str],
     lmstudio_url: str | None,
     on_auth_denial: Callable[[int], None] | None = None,
+    observed_status: list[int] | None = None,
 ) -> bool:
     if _machine_task_legacy_hold():
         # No machine identity grants old Basic-backed Task or Router effects.
         return False
+    # Use backend's status, agent_id and repeated capabilities contract.
+    # This worker lacks token-fenced recovery claim/heartbeat/completion;
+    # recovery tasks must remain unavailable in this legacy worker.
+    advertised_caps = sorted({cap for cap in caps
+                              if isinstance(cap, str) and cap and cap != "recovery"})
+    query = urllib.parse.urlencode([
+        ("status", "READY"), ("limit", "20"), ("agent_id", node_id),
+        *(("capabilities", cap) for cap in advertised_caps),
+    ])
     status, body = _http(
         "GET",
-        f"{assistx_url.rstrip('/')}/api/agent/tasks?state=READY&limit=20",
+        f"{assistx_url.rstrip('/')}/api/agent/tasks?{query}",
         auth=auth,
         timeout=15,
     )
+    if observed_status is not None:
+        observed_status.append(status)
     if status in {401, 403} and on_auth_denial is not None:
         on_auth_denial(status)
     if status != 200 or not isinstance(body, dict):
@@ -646,8 +664,17 @@ def _poll_once(
     for task in tasks:
         if not isinstance(task, dict):
             continue
-        required = set(task.get("required_capabilities") or [])
-        if required.issubset(set(caps)):
+        if task.get("target_agent_id") not in (None, node_id):
+            continue
+        required_field = task.get("required_capabilities") or []
+        if not isinstance(required_field, list) or any(
+            not isinstance(cap, str) for cap in required_field
+        ):
+            continue
+        required = set(required_field)
+        if "recovery" in required:
+            continue  # No token-bound recovery identity in this worker.
+        if required.issubset(set(advertised_caps)):
             _claim_and_run(
                 assistx_url=assistx_url,
                 router_url=router_url,
@@ -690,6 +717,7 @@ def run(
             timeout=10,
         )
         denied_statuses: list[int] = []
+        observed_status: list[int] = []
         worked = _poll_once(
             assistx_url=assistx_url,
             router_url=router_url,
@@ -698,8 +726,12 @@ def run(
             caps=caps,
             lmstudio_url=lmstudio_url,
             on_auth_denial=denied_statuses.append,
+            observed_status=observed_status,
         )
-        if denied_statuses:
+        status = observed_status[-1] if observed_status else 0
+        if denied_statuses or status in (401, 403):
+            # Auth rejection is not an empty queue. Never guess or disclose
+            # credentials; reduce repeated unauthorized requests instead.
             auth_denials = min(auth_denials + 1, 9)  # bounded saturation
             base = min(300.0, max(1.0, poll_interval))
             time.sleep(min(300.0, base * (2 ** min(auth_denials - 1, 8))))
