@@ -289,7 +289,7 @@ def test_bounded_task_reports_failed_when_executor_rejects_evidence(
 ):
     ad = reload_with_delegate_tier
     monkeypatch.setattr(ad, "select_tier_model", lambda *_args, **_kwargs: "model")
-    monkeypatch.setattr(ad, "ensure_model_env", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ad, "ensure_model_env", lambda *_args, **_kwargs: "/tmp")
     monkeypatch.setattr(ad, "fleet", None)
     monkeypatch.setattr(ad, "record_task_eval", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
