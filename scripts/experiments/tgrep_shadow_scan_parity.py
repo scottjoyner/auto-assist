@@ -34,7 +34,9 @@ def verify_executable(binary: Path, sha256: str) -> None:
         raise ProbeRejected("binary must be a regular absolute file")
     if binary.stat().st_size > MAX_BIN_BYTES:
         raise ProbeRejected("binary too large")
-    if hashlib.file_digest(binary.open("rb"), "sha256").hexdigest() != sha256.lower():
+    with binary.open("rb") as stream:
+        found = hashlib.file_digest(stream, "sha256").hexdigest()
+    if found != sha256.lower():
         raise ProbeRejected("binary hash mismatch")
 
 
