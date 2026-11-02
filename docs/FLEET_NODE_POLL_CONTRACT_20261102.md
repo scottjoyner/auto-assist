@@ -14,3 +14,33 @@ On x1-370, the deployed AssistX API logs contain repeated unauthenticated/unauth
 Local tests ran against the patched source over an intact independent package copy: **18 passed, 1 dependency warning**, including original recovery and KV-cache worker tests. A corrupt Git worktree necessitated publication through the GitHub connector; the original production service was not modified.
 
 **HOLD:** does not sign AssistX runtime projection, enable any local model, requeue historical FAILED tasks, provide node recovery tokens, or make delivered outbox events into finished work. Hosted checks and reviewed deployment are required. Preserve security and release gates.
+
+
+## Claim-fenced execution follow-up (same draft)
+
+The canonical Neo4j claim response returned on a fresh claim is
+`{"claimed": true, "task": {"claim_id": "<opaque>", ...}}`, whereas the
+legacy fleet worker looked only for `claim.claim_id`, resulting in null
+heartbeat/completion claim IDs. The database currently permits
+`($claim_id IS NULL OR t.claim_id=$claim_id)` on claimed tasks; this is a
+separate P0 server gate tracked by [issue #428](https://github.com/scottjoyner/auto-assist/issues/428).
+
+The worker now requires a nonempty nested claim ID, consistent optional
+top-level ID, matching task ID, claiming agent, agent session and CLAIMED
+state before inference or side effects. Crucially, it executes the
+**authoritative Task returned by POST /claim**, never the potentially stale
+GET READY payload. The fresh claim response now also exposes the same
+top-level claim ID that idempotent claims already expose, preserving
+older callers.
+
+Deterministic tests cover malformed/missing IDs and task identity,
+claim denial (including HTTP 422), stale READY prompt suppression,
+exact claim-to-completion fencing, and the fresh response shape. The
+isolated complete-package overlay reported **30 passed** across these
+and the existing recovery, shell and KV-cache tests. These are source
+tests, not signed or production task completions.
+
+Release remains HOLD: do not remove the server's legacy claimless
+compatibility in production without a documented client census, genuine
+Neo4j transactional stale-owner/lease negative tests, and owner-approved
+service cutover. No live router/AssistX or task graph was changed.
