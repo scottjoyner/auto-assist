@@ -43,15 +43,42 @@ _TEMPLATE_FILES = {"Home.md", "README.md", "VAULT_INDEX.md", "ENV.md"}
 # burn a full timeout on every chunk of every self-task.
 _embed_broken_until: float = 0.0
 _EMBED_COOLDOWN_S = 300.0
+_PROJECTION_BLOCK_MESSAGES = (
+    "signed assistx runtime projection is not configured",
+    "signed assistx runtime projection generation",
+    "canonical projection approval evidence is expired",
+    "runtime projection approval evidence is expired",
+)
+
+
+def _projection_admission_blocked(response: Any) -> bool:
+    if response.status_code not in (500, 503):
+        return False
+    try:
+        body = response.json()
+        if not isinstance(body, dict):
+            return False
+        detail = body.get("detail")
+        error = body.get("error")
+        if isinstance(detail, dict):
+            detail = detail.get("message")
+        if not isinstance(detail, str):
+            detail = ""
+        if isinstance(error, dict) and isinstance(error.get("message"), str):
+            detail += " " + error["message"]
+        detail = detail[:1000].lower()
+        return any(message in detail for message in _PROJECTION_BLOCK_MESSAGES)
+    except (ValueError, TypeError, AttributeError):
+        return False
 
 
 def embed(text: str, timeout: int = 30) -> Optional[List[float]]:
     """Return the embedding vector for ``text`` or ``None`` on any failure.
 
     The embed model is slow (~5s) and occasionally exceeds a short timeout under
-    load. Retries briefly on transient failures (429 / timeout). Only a hard
-    connection failure disables embeddings fleet-wide (cooldown) — timeouts and
-    429s are transient and must not kill a bulk build.
+    load. Retries briefly on transient failures (429 / timeout). A hard
+    connection failure or explicitly missing/expired signed runtime projection
+    triggers a bounded cooldown. Other 5xx responses remain transient.
     """
     global _embed_broken_until
     if requests is None or time.time() < _embed_broken_until:
@@ -89,6 +116,9 @@ def embed(text: str, timeout: int = 30) -> Optional[List[float]]:
             if resp.status_code == 200:
                 return resp.json().get("data", [{}])[0].get("embedding")
             last_err = resp.status_code
+            if _projection_admission_blocked(resp):
+                _embed_broken_until = time.time() + _EMBED_COOLDOWN_S
+                return None
             if resp.status_code == 429:
                 time.sleep(2.0 * (attempt + 1))
                 continue
@@ -173,8 +203,9 @@ class MemoryIndex:
     def index_vault(self, max_chars: int = 900) -> int:
         # Accumulate into the existing index rather than wiping it, so an
         # interrupted/re-run build keeps whatever was already embedded.
-        global _embed_broken_until
-        _embed_broken_until = 0.0  # a build run should never be blocked by cooldown
+        # Bulk indexing must not bypass a fresh fail-closed admission cooldown.
+        if time.time() < _embed_broken_until:
+            return 0
         count = 0
         self.load()  # pick up anything a prior (partial) run already persisted
         existing_sources = {it.get("meta", {}).get("source") for it in self.items}
@@ -200,6 +231,9 @@ class MemoryIndex:
             if rel in existing_sources:
                 continue  # already indexed; skip to avoid re-embedding
             for chunk in _chunk_text(text, max_chars):
+                if time.time() < _embed_broken_until:
+                    self.save()
+                    return count  # Interrupted, not a completed indexed snapshot.
                 if self.add(chunk, {"source": rel}):
                     count += 1
                     if count % 15 == 0:
