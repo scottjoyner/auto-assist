@@ -466,11 +466,24 @@ def _claim_and_run(
             "lease_seconds": 900,
         },
     )
-    if status != 200 or not isinstance(claim, dict):
-        # 404/409/etc: task gone, drained, or claimed elsewhere. Report no-work
-        # so the caller sleeps instead of hot-looping on the same task.
+    if status != 200 or not isinstance(claim, dict) or claim.get("claimed") is not True:
+        # HTTP 200 with missing/false claimed is not an authorized claim.
         return False
-    claim_id = claim.get("claim_id")
+    claimed_task = claim.get("task")
+    if not isinstance(claimed_task, dict):
+        return False
+    claim_id = claimed_task.get("claim_id")
+    # The Neo4j claim response carries claim_id inside the Task, not
+    # top-level. Never send None and silently bypass a stale claim fence.
+    if not isinstance(claim_id, str) or not claim_id.strip():
+        return False
+    if claim.get("claim_id") is not None and claim.get("claim_id") != claim_id:
+        return False
+    if (claimed_task.get("id") != task_id
+            or claimed_task.get("claimed_by") != node_id
+            or claimed_task.get("status") != "CLAIMED"
+            or claimed_task.get("agent_session_id") != session_id):
+        return False
 
     stop_heartbeat = threading.Event()
 
