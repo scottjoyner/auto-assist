@@ -37,10 +37,8 @@ def test_mixed_priority_ready_tasks_sort_safely_without_promotion(monkeypatch):
 
     monkeypatch.setattr(client, "_session", fake_session)
     result = client.list_agent_tasks(status="READY",limit=20)
-    assert [t["id"] for t in result] == [
-        "critical", "low", "legacy-numeric", "float", "blank"
-    ]
-    assert result[2]["priority"] == 100  # No silent data migration.
+    assert [t["id"] for t in result] == ["critical", "low", "blank"]
+    assert tasks[0]["priority"] == 100  # No silent data migration.
     assert len(s.queries) == 1
     assert s.queries[0][1]["status"] == "READY"
 
@@ -65,7 +63,7 @@ def test_agent_scoped_feed_preserves_target_and_capability_filter(monkeypatch):
 
     monkeypatch.setattr(client, "_session", fake_session)
     result = client.list_agent_tasks(status="READY",agent_id="worker-a",capabilities=["code"])
-    assert {t["id"] for t in result} == {"numeric-mine", "no-priority"}
+    assert {t["id"] for t in result} == {"no-priority"}
     assert s.queries[0][1]["caps"] == ["code"]
 
 
@@ -106,7 +104,21 @@ def test_ready_agent_http_endpoint_survives_numeric_priority(monkeypatch):
             client.close()
         assert response.status_code == 200, response.text[:200]
         body = response.json()
-        assert body["count"] == 2
-        assert [t["id"] for t in body["items"]] == ["high-live", "numeric-live"]
+        assert body["count"] == 1
+        assert [t["id"] for t in body["items"]] == ["high-live"]
     finally:
         api.app.dependency_overrides.pop(api.auth, None)
+
+
+def test_only_malformed_ready_task_returns_empty_not_crash_or_claimable(monkeypatch):
+    s = _QuerySession([{"id": "old", "status": "READY", "priority": 100,
+                       "required_capabilities": [], "created_at_ts": 0}])
+    client = Neo4jClient.__new__(Neo4jClient)
+
+    @contextmanager
+    def fake_session():
+        yield s
+
+    monkeypatch.setattr(client, "_session", fake_session)
+    assert client.list_agent_tasks(status="READY", limit=1) == []
+    assert s.tasks[0]["priority"] == 100  # Never mutates graph-side record.

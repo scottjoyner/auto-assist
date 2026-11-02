@@ -1066,6 +1066,12 @@ class Neo4jClient:
                 target_agent = item.get("target_agent_id")
                 if item.get("paperclip_dispatched"):
                     continue
+                # Historical Task priority may be an integer. The READY agent
+                # feed must neither 500 nor accidentally make a malformed task
+                # claimable. Leave it intact for authenticated operator review.
+                priority = item.get("priority")
+                if priority is not None and not isinstance(priority, str):
+                    continue
                 if caps and required and not all(cap in caps for cap in required):
                     continue
                 if agent_id is None and target_agent is not None:
