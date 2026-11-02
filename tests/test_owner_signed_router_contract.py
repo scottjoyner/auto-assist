@@ -53,6 +53,9 @@ def task(owner:dict[str,str] | None,*,claim="claim-alpha"):
         "id":"task-1","status":"RUNNING",
         "claim_id":claim,"claimed_by":"agent-1",
         "lease_expires_at_ts":now+60000,
+        # The synthetic Task must contain an explicit valid stored payload.
+        # Missing canonical data is now correctly refused by token issuance.
+        "payload_json":"{}",
     }
     if owner:data.update(owner)
     return data

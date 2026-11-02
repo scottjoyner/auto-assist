@@ -189,9 +189,94 @@ _SELFTASK_QUERIES = {
 }
 
 
+_MODEL_WORKSPACE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+@/-]{0,199}\Z")
+_MODEL_WORKSPACE_V2_PREFIX = "assistx-model-v2-"
+
+
+class UnsafeModelWorkspace(ValueError):
+    """Model workspace cannot be proved to be a safe, unique child."""
+
+
 def _safe_model_dir(model: Optional[str] = None) -> str:
-    """Filesystem-safe subdirectory name for a model (handles '/' in ids)."""
-    return (model or "unknown").replace("/", "_")
+    """Preserve safe flat names; hash namespaced IDs instead of flattening '/'.
+
+    Flattening aliases 'provider/model' and 'provider_model' to one directory.
+    Reserve the hashed prefix so raw model IDs cannot impersonate hashed names.
+    """
+    if (
+        type(model) is not str
+        or not _MODEL_WORKSPACE_ID_RE.fullmatch(model)
+        or model.startswith(_MODEL_WORKSPACE_V2_PREFIX)
+        or any(part in ("", ".", "..") for part in model.split("/"))
+    ):
+        raise UnsafeModelWorkspace("invalid_model_workspace_identity")
+    if "/" not in model:
+        return model
+    digest = hashlib.sha256(b"assistx-model-workspace-v2\0" + model.encode("ascii")).hexdigest()
+    return _MODEL_WORKSPACE_V2_PREFIX + digest
+
+
+def _open_knowledge_root_nofollow(path: str) -> int:
+    """Walk all root components from / using dirfds and nofollow opens.
+
+    An existing root must be owned by this process and not group/world-writable.
+    There is deliberately no creation or fallback of a missing knowledge root.
+    """
+    if (
+        os.name != "posix"
+        or not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_DIRECTORY")
+        or type(path) is not str
+        or not path.startswith("/")
+        or any(part in ("", ".", "..") for part in path.split("/")[1:])
+    ):
+        raise UnsafeModelWorkspace("invalid_knowledge_root")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    current = os.open("/", flags)
+    try:
+        for segment in path.split("/")[1:]:
+            following = os.open(segment, flags, dir_fd=current)
+            os.close(current)
+            current = following
+        meta = os.fstat(current)
+        if meta.st_uid != os.geteuid() or meta.st_mode & 0o022:
+            raise UnsafeModelWorkspace("unsafe_knowledge_root_permissions")
+        result = current
+        current = -1
+        return result
+    finally:
+        if current >= 0:
+            os.close(current)
+
+
+def _open_model_workspace_nofollow(root_fd: int, model: str) -> tuple[int, str]:
+    """Open one safe child directory, refusing ambiguous legacy migration."""
+    name = _safe_model_dir(model)
+    if "/" in model:
+        former = model.replace("/", "_")
+        try:
+            os.stat(former, dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise UnsafeModelWorkspace("legacy_workspace_migration_required")
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        os.mkdir(name, 0o700, dir_fd=root_fd)
+    except FileExistsError:
+        pass
+    workspace_fd = os.open(name, flags, dir_fd=root_fd)
+    try:
+        meta = os.fstat(workspace_fd)
+        if meta.st_uid != os.geteuid() or meta.st_mode & 0o022:
+            raise UnsafeModelWorkspace("unsafe_model_workspace_permissions")
+        result = workspace_fd
+        workspace_fd = -1
+        return result, name
+    finally:
+        if workspace_fd >= 0:
+            os.close(workspace_fd)
 
 
 # ---------------------------------------------------------------------------
@@ -225,43 +310,60 @@ def save_eval(data: Dict[str, Any]) -> None:
 
 
 def ensure_model_env(model: Optional[str] = None) -> Optional[str]:
-    """A model's first task: configure its shared workspace under ~/knowledge.
+    """Configure a model workspace only beneath an existing nofollow root.
 
-    Idempotent. Creates ~/knowledge/<model>/ and writes an ENV note recording the
-    model's tier/nodes, then flags the environment as configured so future runs
-    can rely on it. The workspace is shared across the whole swarm.
+    Never auto-migrate flattened legacy namespaced model directories and never
+    return a broader writable path if setup fails.
     """
-    if not model:
+    if model is None:
         return None
-    data = load_eval()
-    m = data["models"].setdefault(model, {"environment_configured": False, "tasks": {}})
-    m.setdefault("tier", "unknown")
-    m.setdefault("nodes", [])
-    knowledge_root = os.getenv("HERMES_KNOWLEDGE_ROOT", "/root/knowledge")
-    ws = os.path.join(knowledge_root, _safe_model_dir(model))
+    root_fd = -1
+    workspace_fd = -1
     try:
-        os.makedirs(ws, exist_ok=True)
+        name = _safe_model_dir(model)  # Validate before reading registry.
+        root = os.getenv("HERMES_KNOWLEDGE_ROOT", "/root/knowledge")
+        root_fd = _open_knowledge_root_nofollow(root)
+        workspace_fd, opened_name = _open_model_workspace_nofollow(root_fd, model)
+        if name != opened_name:
+            raise UnsafeModelWorkspace("workspace_identity_changed")
+        ws = os.path.join(root, name)
+        data = load_eval()
+        m = data["models"].setdefault(
+            model, {"environment_configured": False, "tasks": {}},
+        )
+        m.setdefault("tier", "unknown")
+        m.setdefault("nodes", [])
         if not m.get("environment_configured"):
-            note = os.path.join(ws, "ENV.md")
-            nodes = ", ".join(m.get("nodes", [])) or "n/a"
-            try:
-                with open(note, "w", encoding="utf-8") as fh:
-                    fh.write(f"# Environment for model `{model}`\n\n")
-                    fh.write(f"- Tier: {m.get('tier')}\n")
-                    fh.write(f"- Nodes: {nodes}\n")
-                    fh.write("- Shared knowledge root: ~/knowledge (abs /media/scott/SSD_4TB/knowledge)\n")
-                    fh.write("- This directory is the model's scratch/notes space, shared across the swarm.\n")
-                    fh.write("- Configured by hermes-agent-adapter bootstrap at first use.\n")
-                m["environment_configured"] = True
-                m["workspace"] = ws
-                save_eval(data)
-                logger.info("Configured shared environment for model %s at %s", model, ws)
-            except OSError as e:
-                logger.warning("Could not write env note for %s: %s", model, e)
+            # An existing ENV.md, including a symlink/hardlink, is never
+            # overwritten; the operator must review that workspace first.
+            flags = (
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            note_fd = os.open("ENV.md", flags, 0o600, dir_fd=workspace_fd)
+            with os.fdopen(note_fd, "w", encoding="utf-8") as fh:
+                nodes = ", ".join(m.get("nodes", [])) or "n/a"
+                fh.write(f"# Environment for model {model}\n\n")
+                fh.write(f"- Tier: {m.get('tier')}\n")
+                fh.write(f"- Nodes: {nodes}\n")
+                fh.write("- Workspace is restricted to this model directory.\n")
+                fh.write("- Configured by Hermes adapter at first use.\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.fsync(workspace_fd)
+            m["environment_configured"] = True
+            m["workspace"] = ws
+            save_eval(data)
+            logger.info("Configured restricted model workspace for %s", model)
         return ws
-    except OSError as e:
-        logger.warning("Could not create workspace for %s: %s", model, e)
-        return "/root/knowledge"
+    except (OSError, UnsafeModelWorkspace, TypeError, ValueError) as exc:
+        logger.warning("Model workspace refused for %r: %s", model, type(exc).__name__)
+        return None
+    finally:
+        if workspace_fd >= 0:
+            os.close(workspace_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
 
 
 TRIVIAL_OUTPUT_PATTERNS = [
@@ -783,7 +885,7 @@ def run_hermes_delegated(
 
 
 def call_self_task_llm(prompt: str, model: str, max_tokens: int = SELFTASK_MAX_TOKENS,
-                       timeout: int = 450) -> Dict[str, Any]:
+                       timeout: int = 450, *, executor_token: Optional[str] = None) -> Dict[str, Any]:
     """Direct router chat call for background self-tasks.
 
     Hermes is not used here: small/tiny models are slow and Hermes sends no
@@ -795,7 +897,14 @@ def call_self_task_llm(prompt: str, model: str, max_tokens: int = SELFTASK_MAX_T
     # Fail *before* preparing an HTTP request or invoking a model when no
     # executor claim exists. The router must STILL verify JWT signature,
     # issuer, expiry and lease/resource status for every actual request.
-    claim_token = os.getenv("HERMES_EXECUTOR_TOKEN", "").strip()
+    # The strict parent's claim stays on its client, never in os.environ.
+    # Explicit (including empty) token input cannot fall back to a global
+    # credential; the environment path is retained only for a spawned child.
+    claim_token = (
+        executor_token.strip() if isinstance(executor_token, str)
+        else os.getenv("HERMES_EXECUTOR_TOKEN", "").strip()
+        if executor_token is None else ""
+    )
     if claim_token.count(".") != 2:
         return {
             "success": False, "output": "", "error": "claim_scoped_executor_token_required",
@@ -1192,33 +1301,135 @@ def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -
 # ---------------------------------------------------------------------------
 # Real task processing (routed + evaluated)
 # ---------------------------------------------------------------------------
+class ClaimSnapshotError(ValueError):
+    """Refuse execution when a successful claim lacks source-owned task proof."""
+
+
+def _claimed_payload(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse only the authoritative claimed record; never use the poll payload.
+
+    JSON anomalies cannot be downgraded to an empty dictionary before model or
+    repository execution. This is a source-snapshot check, not a substitute for
+    a resource-owned effect fence or independently verified signer.
+    """
+    if "payload_json" in snapshot:
+        raw = snapshot["payload_json"]
+    elif "payload" in snapshot:
+        raw = snapshot["payload"]
+    else:
+        raise ClaimSnapshotError("CLAIMED_PAYLOAD_MISSING")
+
+    def no_duplicates(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate field")
+            result[key] = value
+        return result
+
+    def no_nonfinite(_value):
+        raise ValueError("nonfinite JSON number")
+
+    if isinstance(raw, str):
+        try:
+            size = len(raw.encode("utf-8"))
+        except UnicodeError as exc:
+            raise ClaimSnapshotError("CLAIMED_PAYLOAD_INVALID") from exc
+        if not raw.strip() or size > 65536:
+            raise ClaimSnapshotError("CLAIMED_PAYLOAD_INVALID")
+        try:
+            payload = json.loads(
+                raw, object_pairs_hook=no_duplicates, parse_constant=no_nonfinite,
+            )
+        except (ValueError, RecursionError) as exc:
+            raise ClaimSnapshotError("CLAIMED_PAYLOAD_INVALID") from exc
+    elif isinstance(raw, dict):
+        payload = raw
+    else:
+        raise ClaimSnapshotError("CLAIMED_PAYLOAD_INVALID")
+
+    if not isinstance(payload, dict):
+        raise ClaimSnapshotError("CLAIMED_PAYLOAD_INVALID")
+    try:
+        frozen = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        )
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ClaimSnapshotError("CLAIMED_PAYLOAD_INVALID") from exc
+    if len(frozen.encode("utf-8")) > 65536:
+        raise ClaimSnapshotError("CLAIMED_PAYLOAD_INVALID")
+    # This round-trip freezes the nested payload against subsequent source-map
+    # mutations and makes the two legacy payload access paths consistent.
+    payload = json.loads(frozen)
+    if "execution_contract" in payload and not isinstance(
+        payload["execution_contract"], dict,
+    ):
+        raise ClaimSnapshotError("CLAIMED_CONTRACT_INVALID")
+    if "learned_failure_reasons" in payload and not isinstance(
+        payload["learned_failure_reasons"], list,
+    ):
+        raise ClaimSnapshotError("CLAIMED_LESSONS_INVALID")
+    return payload
+
+
+def _authoritative_claimed_task(
+    claim: Dict[str, Any], *, task_id: str, session_id: str,
+) -> tuple[Dict[str, Any], Dict[str, Any], str]:
+    """Require matching current claim identity before any executor-side effect."""
+    if not isinstance(claim, dict) or claim.get("claimed") is not True:
+        raise ClaimSnapshotError("CLAIM_NOT_ACCEPTED")
+    source = claim.get("task")
+    if not isinstance(source, dict) or source.get("id") != task_id:
+        raise ClaimSnapshotError("CLAIM_TASK_ID_MISMATCH")
+    if str(source.get("status") or "").upper() not in {"CLAIMED", "RUNNING"}:
+        raise ClaimSnapshotError("CLAIM_STATUS_INVALID")
+    claim_id = source.get("claim_id")
+    if not isinstance(claim_id, str) or not claim_id.strip():
+        raise ClaimSnapshotError("CLAIM_ID_MISSING")
+    if claim.get("claim_id") is not None and claim["claim_id"] != claim_id:
+        raise ClaimSnapshotError("CLAIM_ID_MISMATCH")
+    if source.get("claimed_by") != AGENT_ID:
+        raise ClaimSnapshotError("CLAIM_AGENT_MISMATCH")
+    if source.get("agent_session_id") != session_id:
+        raise ClaimSnapshotError("CLAIM_SESSION_MISMATCH")
+    lease_until = source.get("lease_expires_at_ts")
+    if type(lease_until) is not int or lease_until <= int(time.time() * 1000):
+        raise ClaimSnapshotError("CLAIM_LEASE_EXPIRED")
+    attempt = source.get("execution_attempt")
+    if type(attempt) is not int or attempt < 1:
+        raise ClaimSnapshotError("CLAIM_ATTEMPT_INVALID")
+    payload = _claimed_payload(source)
+    claimed = dict(source)
+    claimed["payload"] = payload
+    claimed["payload_json"] = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    )
+    return claimed, payload, claim_id
+
+
 def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
     task_id = task.get("id")
-    title = task.get("title", task.get("kind", f"Task {task_id}"))
-    payload = task.get("payload") or task.get("payload_json") or {}
-    if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except json.JSONDecodeError:
-            payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
+    if not isinstance(task_id, str) or not task_id:
+        raise ClaimSnapshotError("POLL_TASK_ID_INVALID")
+
+    session_id = uuid.uuid4().hex
+    claim = assistx.claim_task(task_id, session_id)
+    if not claim:
+        return
+
+    # Discard the polled task. Every instruction below is derived from the
+    # authoritative claimed snapshot, including repo work and completion.
+    task, payload, claim_id = _authoritative_claimed_task(
+        claim, task_id=task_id, session_id=session_id,
+    )
+    title = task.get("title") or task.get("kind") or f"Task {task_id}"
     description = (
         task.get("description")
         or task.get("text")
         or payload.get("prompt")
         or ""
     )
-
-    session_id = uuid.uuid4().hex
-    logger.info("Processing task %s: %s", task_id, title)
-
-    claim = assistx.claim_task(task_id, session_id)
-    if not claim:
-        return
-    claimed_task = claim.get("task") or {}
-    task.update(claimed_task)
-    claim_id = str(claimed_task.get("claim_id") or claim.get("claim_id") or "")
+    logger.info("Processing claimed task %s", task_id)
 
     context = assistx.get_context(task_id, title)
     context_refs = context.get("references", []) if isinstance(context, dict) else []
@@ -1236,6 +1447,19 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
         task,
         learned_lessons=payload.get("learned_failure_reasons") or [],
     )
+    tier = (
+        str(payload["execution_contract"].get("recommended_tier"))
+        if work_packet
+        else classify_model_tier(task, payload)
+    )
+    requested_model = str(payload.get("model") or "").strip()
+    model = requested_model or select_tier_model(tier, seed=task_id)
+    category = task_category(task, payload)
+    # A denied workspace cannot be treated as optional: verify confinement
+    # before worktree creation, model dispatch, or any repository effect.
+    workspace = ensure_model_env(model)
+    if not workspace:
+        raise UnsafeModelWorkspace("model_workspace_unavailable")
     repository_state = (
         prepare_repository(
             payload["execution_contract"],
@@ -1245,15 +1469,6 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
         if work_packet
         else None
     )
-    tier = (
-        str(payload["execution_contract"].get("recommended_tier"))
-        if work_packet
-        else classify_model_tier(task)
-    )
-    requested_model = str(payload.get("model") or "").strip()
-    model = requested_model or select_tier_model(tier, seed=task_id)
-    category = task_category(task)
-    ensure_model_env(model)
 
     if work_packet:
         prompt = (
