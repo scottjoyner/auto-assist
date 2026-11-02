@@ -636,7 +636,9 @@ def _poll_once(
         if "recovery" in required:
             continue  # No token-bound recovery identity in this worker.
         if required.issubset(set(advertised_caps)):
-            _claim_and_run(
+            if not (task.get("task_id") or task.get("id")):
+                continue
+            attempted = _claim_and_run(
                 assistx_url=assistx_url,
                 router_url=router_url,
                 auth=auth,
@@ -645,7 +647,9 @@ def _poll_once(
                 task=task,
                 lmstudio_url=lmstudio_url,
             )
-            return True
+            # A rejected claim must yield; never hot-loop on the same task.
+            # Successful legacy _claim_and_run returns None after execution.
+            return attempted is not False
     return False
 
 
