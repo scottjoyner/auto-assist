@@ -496,7 +496,8 @@ def _claim_and_run(
                 "POST",
                 f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/heartbeat",
                 auth=auth,
-                data={"node_id": node_id, "agent_id": node_id, "claim_id": claim_id},
+                data={"node_id": node_id, "agent_id": node_id,
+                      "claim_id": claim_id, "session_id": session_id},
                 timeout=10,
             )
 
