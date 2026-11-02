@@ -1078,7 +1078,16 @@ class Neo4jClient:
                     break
             _PRIO_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3,
                           "BACKGROUND": 4, "BATCH": 5, "UNSET": 9}
-            items.sort(key=lambda t: (_PRIO_RANK.get((t.get("priority") or "UNSET").upper(), 9),
+
+            def _rank_priority(value: Any) -> int:
+                # Historical Task nodes may have numeric priority values.
+                # Never call .upper() on non-text, coerce 99 into HIGH, or
+                # mutate persisted owner task data. Unknown => lowest rank.
+                if not isinstance(value, str):
+                    return _PRIO_RANK["UNSET"]
+                return _PRIO_RANK.get(value.strip().upper(), _PRIO_RANK["UNSET"])
+
+            items.sort(key=lambda t: (_rank_priority(t.get("priority")),
                                       t.get("created_at_ts", 0) or 0))
             return items
 
