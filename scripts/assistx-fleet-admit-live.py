@@ -55,6 +55,16 @@ print(
 )
 raise SystemExit(2)
 
+# Legacy x1-only keepalive has no independently reviewed multi-node roster.
+# Its former one-runtime manifest would retire other nodes. Explicitly retire
+# this executable before it creates evidence or opens the admission database.
+print(
+    "FLEET_ADMISSION_BLOCKED: retired single-node keepalive; "
+    "full fleet roster and independent operator approval required",
+    file=sys.stderr,
+)
+raise SystemExit(2)
+
 STATE.mkdir(parents=True, exist_ok=True)
 
 
