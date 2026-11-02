@@ -44,6 +44,14 @@ class TestTgrepShadow(unittest.TestCase):
         self.assertFalse(r["harness_change_allowed"])
         self.assertEqual(r["production_gate"], "HOLD")
 
+    def test_missing_trusted_rg_still_refused(self):
+        # CI portability of synthetic tests must never loosen the real guard.
+        with patch.object(mod, "verify_executable", return_value=None), patch.object(
+            mod.Path, "is_file", return_value=False
+        ):
+            with self.assertRaises(mod.ProbeRejected):
+                mod.compare(self.repo, self.index, "TOKEN", self.bin, self.pin)
+
     def test_stale_index_is_detected(self):
         r = self.check([{"a.py"}, set(), {"a.py"}])
         self.assertTrue(r["stale_or_divergent_index"])
