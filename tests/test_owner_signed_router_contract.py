@@ -53,6 +53,7 @@ def task(owner:dict[str,str] | None,*,claim="claim-alpha"):
         "id":"task-1","status":"RUNNING",
         "claim_id":claim,"claimed_by":"agent-1",
         "lease_expires_at_ts":now+60000,
+        "payload_json":'{"model":"auto/code","allowed_tools":["file"]}',
     }
     if owner:data.update(owner)
     return data
