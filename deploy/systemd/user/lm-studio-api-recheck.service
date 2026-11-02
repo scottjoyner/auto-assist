@@ -1,0 +1,11 @@
+[Unit]
+Description=Bounded LM Studio API availability check (no model loading)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -B /home/scott/.local/bin/lmstudio-api-recheck.py
+TimeoutStartSec=45
+NoNewPrivileges=true
+UMask=0077
