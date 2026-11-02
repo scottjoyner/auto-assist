@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 import pathlib
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -64,6 +65,70 @@ def _private_url(value: Any) -> bool:
         or address in _TAILSCALE
     )
 
+
+# The roster is an independently supplied *coverage guard*, NOT authorization.
+# Operator identity, physical evidence and signed admission are checked elsewhere.
+def load_required_node_roster(path: pathlib.Path | None) -> dict[str, Any]:
+    if path is None:
+        raise ValueError("explicit --required-nodes-file is mandatory for apply")
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("required-node roster must be a regular non-symlinked file")
+    mode = path.stat().st_mode
+    if mode & 0o022:
+        raise ValueError("required-node roster must not be group/world writable")
+    if path.stat().st_size > 16384:
+        raise ValueError("required-node roster exceeds 16 KiB")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError("invalid required-node roster JSON") from exc
+    if not isinstance(payload, dict) or set(payload) != {
+        "schema_version", "generation", "expected_current_generation",
+        "approval_id", "node_ids"
+    }:
+        raise ValueError("required-node roster schema is invalid")
+    if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
+        raise ValueError("required-node roster schema_version must be 1")
+    for field in ("generation", "expected_current_generation"):
+        value = payload[field]
+        if type(value) is not int or value < 0 or value >= 2**63:
+            raise ValueError(f"required-node roster {field} is invalid")
+    if payload["generation"] != payload["expected_current_generation"] + 1:
+        raise ValueError("required-node roster generation must advance by one")
+    if not isinstance(payload["approval_id"], str) or not _known(payload["approval_id"]):
+        raise ValueError("required-node roster approval_id is invalid")
+    nodes = payload["node_ids"]
+    if not isinstance(nodes, list) or not 2 <= len(nodes) <= 64:
+        raise ValueError("required-node roster must cover 2-64 distinct nodes")
+    if any(not isinstance(node, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", node
+    ) for node in nodes) or len(set(nodes)) != len(nodes):
+        raise ValueError("required-node roster has invalid or duplicate node IDs")
+    return payload
+
+
+def validate_required_node_coverage(
+    manifest: dict[str, Any], roster: dict[str, Any] | None
+) -> None:
+    """Fail BEFORE any graph writes if a manifest omits an independently listed node."""
+    if not isinstance(roster, dict):
+        raise ValueError("missing independent required-node roster")
+    if manifest.get("generation") != roster.get("generation") or (
+        manifest.get("expected_current_generation")
+        != roster.get("expected_current_generation")
+    ) or manifest.get("approval_id") != roster.get("approval_id"):
+        raise ValueError("required-node roster and manifest identity differ")
+    runtimes = manifest.get("runtimes")
+    if not isinstance(runtimes, list):
+        raise ValueError("manifest runtime list missing")
+    ids = [r.get("node_id") for r in runtimes if isinstance(r, dict)]
+    expected = roster.get("node_ids")
+    if len(ids) != len(runtimes) or any(not isinstance(x, str) for x in ids) or (
+        not isinstance(expected, list) or not 2 <= len(expected) <= 64
+    ) or any(not isinstance(x, str) for x in expected) or (
+        len(ids) != len(set(ids))
+    ) or set(ids) != set(expected):
+        raise ValueError("manifest does not exactly cover independent required-node roster")
 
 def _canonical(payload: dict[str, Any]) -> bytes:
     return json.dumps(
@@ -238,8 +303,12 @@ def validate_manifest(payload: dict[str, Any]) -> ValidatedManifest:
     )
 
 
-def _apply_transaction(tx: Any, manifest: ValidatedManifest, now_ms: int) -> dict[str, Any]:
+def _apply_transaction(
+    tx: Any, manifest: ValidatedManifest, now_ms: int,
+    required_roster: dict[str, Any],
+) -> dict[str, Any]:
     payload = manifest.payload
+    validate_required_node_coverage(payload, required_roster)
     generation = int(payload["generation"])
     expected = int(payload["expected_current_generation"])
     expires_at_ts = now_ms + int(payload["ttl_seconds"]) * 1000
@@ -481,6 +550,7 @@ def main() -> int:
     )
     parser.add_argument("manifest", type=pathlib.Path)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--required-nodes-file", type=pathlib.Path)
     parser.add_argument("--evidence-output", type=pathlib.Path)
     args = parser.parse_args()
 
@@ -489,6 +559,10 @@ def main() -> int:
         if not isinstance(payload, dict):
             raise ValueError("manifest root must be a mapping")
         manifest = validate_manifest(payload)
+        required_roster = None
+        if args.apply or args.required_nodes_file is not None:
+            required_roster = load_required_node_roster(args.required_nodes_file)
+            validate_required_node_coverage(manifest.payload, required_roster)
     except (OSError, yaml.YAMLError, ValueError) as exc:
         print(f"RUNTIME_PROJECTION_APPROVAL: BLOCKED {exc}", file=sys.stderr)
         return 2
@@ -520,6 +594,7 @@ def main() -> int:
                     _apply_transaction,
                     manifest,
                     int(time.time() * 1000),
+                    required_roster,
                 )
         except Exception as exc:
             print(
