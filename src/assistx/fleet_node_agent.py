@@ -578,8 +578,18 @@ def _claim_and_run(
                         data=request,
                         timeout=300,
                     )
-                    success = llm_status == 200
+                    # HTTP 200 proves transport success, not a generated answer.
+                    # Do not count an empty choice as useful completed work.
+                    choices = body.get("choices") if isinstance(body, dict) else None
+                    first = choices[0] if isinstance(choices, list) and choices else None
+                    message = first.get("message") if isinstance(first, dict) else None
+                    generated = message.get("content") if isinstance(message, dict) else None
+                    success = (llm_status == 200 and isinstance(generated, str)
+                               and bool(generated.strip()))
                     result = body if isinstance(body, dict) else {"result": body}
+                    if llm_status == 200 and not success:
+                        # Retain the provider envelope but record failed work.
+                        result = {**result, "error": "empty_or_invalid_model_generation"}
         else:
             result = {"error": f"unsupported task_type={task_type}"}
     except Exception as exc:  # pragma: no cover - defensive worker boundary
