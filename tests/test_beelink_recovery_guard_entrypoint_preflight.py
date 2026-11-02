@@ -93,6 +93,41 @@ class TestGuard(unittest.TestCase):
     def test_oversize_unit(self):
         self.hold("invalid_unit_properties","x"*(mod.MAX_UNIT_BYTES+1))
 
+    def test_valid_script_without_unbuffered_flag_is_still_metadata_only(self):
+        data = self.show().replace(" -u ./recovery-memory-guard.py", " ./recovery-memory-guard.py")
+        self.assertEqual(self.verdict(data)["verdict"], "ENTRYPOINT_METADATA_ONLY")
+
+    def test_inline_python_code_cannot_masquerade_as_guard(self):
+        self.hold(
+            "unexpected_argv_shape",
+            self.show(arg="-c 'print(1)' ./recovery-memory-guard.py"),
+        )
+
+    def test_python_module_flag_cannot_masquerade_as_guard(self):
+        self.hold("unexpected_argv_shape", self.show(arg="-m fake ./recovery-memory-guard.py"))
+
+    def test_extra_interpreter_options_fail_closed(self):
+        self.hold("unexpected_argv_shape", self.show(arg="-I ./recovery-memory-guard.py"))
+
+    def test_launcher_argv_must_match_systemd_path(self):
+        data = self.show().replace("path=/usr/bin/python3", "path=/tmp/python3", 1)
+        self.hold("launcher_path_mismatch", data)
+
+    def test_nonabsolute_launcher_is_ambiguous(self):
+        self.hold("invalid_launcher_path", self.show(exe="python3"))
+
+    def test_absolute_script_outside_service_cwd_is_refused(self):
+        self.hold(
+            "entrypoint_outside_working_directory",
+            self.show(arg="/tmp/recovery-memory-guard.py"),
+        )
+
+    def test_no_extra_interpreter_arguments_even_with_valid_script(self):
+        self.hold(
+            "unexpected_argv_shape",
+            self.show(arg="./recovery-memory-guard.py --unexpected-arg"),
+        )
+
     def test_missing_script_reason_without_full_path(self):
         self.path.unlink()
         x=self.verdict()

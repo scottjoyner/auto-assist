@@ -53,18 +53,34 @@ def _entrypoint(properties: dict[str, str]) -> Path:
         argv = shlex.split(match.group(1))
     except ValueError:
         raise Hold("malformed_argv") from None
-    if not 2 <= len(argv) <= 32:
-        raise Hold("unexpected_argv_shape")
-    executable = Path(argv[0]).name
+    # A Python executable can run -c/-m or another program while listing
+    # a plausible .py operand. Treat ambiguous ExecStart metadata as HOLD.
+    launcher = Path(argv[0]) if argv else Path("")
+    if not launcher.is_absolute() or ".." in launcher.parts:
+        raise Hold("invalid_launcher_path")
+    path_match = re.search(r"(?:^|[;\s])path=([^;}\s]+)", raw)
+    if path_match is None or path_match.group(1) != argv[0]:
+        raise Hold("launcher_path_mismatch")
+    executable = launcher.name
     if executable not in ("python", "python3", "python3.11", "python3.12", "python3.13"):
         raise Hold("unexpected_launcher")
-    scripts = [arg for arg in argv[1:] if arg.endswith(".py")]
-    if len(scripts) != 1 or Path(scripts[0]).name != SCRIPT:
+    if len(argv) == 2:
+        script_arg = argv[1]
+    elif len(argv) == 3 and argv[1] == "-u":
+        script_arg = argv[2]
+    else:
+        raise Hold("unexpected_argv_shape")
+    script = Path(script_arg)
+    if script.name != SCRIPT:
         raise Hold("unexpected_script_identity")
-    script = Path(scripts[0])
     if ".." in script.parts:
         raise Hold("parent_traversal_refused")
-    if not script.is_absolute():
+    if script.is_absolute():
+        try:
+            script.relative_to(Path(cwd))
+        except ValueError:
+            raise Hold("entrypoint_outside_working_directory") from None
+    else:
         script = Path(cwd) / script
     return script
 
