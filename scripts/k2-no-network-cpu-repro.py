@@ -20,6 +20,11 @@ MODEL = Path("/home/scott/.lmstudio/models/IFM/K2-Horizon-0.9B-GGUF/K2-Horizon-1
 BIN_DIR = Path("/home/scott/git/esp32-lfm3-lab-20261028/.cache/llama-cpu-build/bin")
 LIB_DIR = Path("/lib/x86_64-linux-gnu")
 IMAGE = "python:3.12-slim-bookworm"
+IMAGE_ID = "sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337"
+SERVER_SHA256 = "c55245a646cff688acb7093f33a697def1a2838057ec3eab1ab727411fa3f3cd"
+SERVER_IMPL_SHA256 = "69ff01e98c50ca4d5bd740aba410badeb20c48365bc27a956b52602f7d60e341"
+LLAMA_LIB_SHA256 = "10d2d52e159880233eef51ed3aea15822ac8d964cbb68c4855a58eed70699000"
+CPU_LIB_SHA256 = "512aa00bed9c4cd8de24ea0a5f193987a12ce46aef8f8ed24e11a7fad0f52894"
 SHA256 = "371010db1807bb07b62e738422ee0de26c1e15a347f31108ed2c6e219095a8b8"
 STATE = Path("/home/scott/.local/state/assistx-admission-preflight")
 CLIENT = r'''
@@ -83,7 +88,17 @@ def guard() -> list[str]:
         if sha256_file(MODEL)!=SHA256: errors.append("model_sha256_mismatch")
     except OSError:
         errors.append("model_unavailable")
-    if not (BIN_DIR / "llama-server").is_file(): errors.append("cpu_runtime_unavailable")
+    for filename, expected in (
+        ("llama-server", SERVER_SHA256),
+        ("libllama-server-impl.so", SERVER_IMPL_SHA256),
+        ("libllama.so.0.8.0", LLAMA_LIB_SHA256),
+        ("libggml-cpu.so.0.28.0", CPU_LIB_SHA256),
+    ):
+        try:
+            if sha256_file(BIN_DIR / filename) != expected:
+                errors.append("cpu_binary_fingerprint_mismatch_" + filename)
+        except OSError:
+            errors.append("cpu_binary_unavailable_" + filename)
     if not LIB_DIR.is_dir(): errors.append("host_dynamic_library_path_unavailable")
     try:
         stat=os.statvfs("/")
@@ -96,7 +111,10 @@ def guard() -> list[str]:
         errors.append("resource_evidence_missing")
     try:
         inspect=run(["docker","image","inspect",IMAGE,"--format","{{.Id}}"],timeout=8)
-        if inspect.returncode!=0: errors.append("pinned_local_container_image_missing")
+        if inspect.returncode!=0:
+            errors.append("pinned_local_container_image_missing")
+        elif inspect.stdout.strip() != IMAGE_ID:
+            errors.append("pinned_local_container_image_identity_mismatch")
     except (OSError,subprocess.TimeoutExpired):
         errors.append("docker_image_unavailable")
     return errors
@@ -112,7 +130,7 @@ def docker_args(name: str) -> list[str]:
         "--mount",f"type=bind,src={BIN_DIR},dst=/llama,readonly",
         "--mount",f"type=bind,src={LIB_DIR},dst=/hostlib,readonly",
         "--mount",f"type=bind,src={MODEL},dst=/models/k2.gguf,readonly",
-        IMAGE, "/hostlib/ld-linux-x86-64.so.2","--library-path","/hostlib:/llama",
+        IMAGE_ID, "/hostlib/ld-linux-x86-64.so.2","--library-path","/hostlib:/llama",
         "/llama/llama-server","--model","/models/k2.gguf",
         "--alias","k2-cpu-repro","--host","127.0.0.1",
         "--port","18721","--ctx-size","4096","--parallel","2",
@@ -124,6 +142,11 @@ def run_experiment() -> dict:
     report={"kind":"k2-cpu-network-none-repro-v1","source":"synthetic_only",
             "backend":"llama.cpp CPU-only, NOT LM Studio",
             "model_sha256_expected":SHA256,
+            "docker_image_id_expected":IMAGE_ID,
+            "llama_server_sha256_expected":SERVER_SHA256,
+            "llama_impl_sha256_expected":SERVER_IMPL_SHA256,
+            "llama_lib_sha256_expected":LLAMA_LIB_SHA256,
+            "ggml_cpu_sha256_expected":CPU_LIB_SHA256,
             "context_tokens":4096,"parallel_slots":2,
             "production_traffic":0,"model_approvals":0,
             "can_dispatch":False,"live_trace_use":False,
