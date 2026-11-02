@@ -155,7 +155,7 @@ def run_experiment() -> dict:
     if blocks:
         report["reasons"]=blocks
         return report
-    name="k2-cpu-repro-"+uuid.uuid4().hex[:10]
+    name="k2-cpu-repro-"+uuid.uuid4().hex
     launched=False
     try:
         started=run(docker_args(name),timeout=20)
@@ -212,12 +212,19 @@ def run_experiment() -> dict:
         report["reason"]="exception_"+type(exc).__name__
         return report
     finally:
-        if launched:
+        # Always attempt cleanup, including when docker run times out after
+        # creating the container but before returning its container ID.
+        # The unique full UUID prevents reuse of a pre-existing workload name.
+        try:
             stopped=run(["docker","rm","-f",name],timeout=15)
-            report["cleanup"]=stopped.returncode==0 or "No such container" in stopped.stderr
-            # Even if model served correctly, cleanup uncertainty is a HOLD.
-            if not report["cleanup"]:
-                report["status"]="HOLD_CLEANUP_UNVERIFIED"
+            report["cleanup"]=(
+                stopped.returncode==0 or "No such container" in stopped.stderr
+            )
+        except (OSError,subprocess.TimeoutExpired):
+            report["cleanup"]=False
+        # Even successful decode is a HOLD if removal cannot be verified.
+        if not report["cleanup"]:
+            report["status"]="HOLD_CLEANUP_UNVERIFIED"
 
 
 def main() -> int:
