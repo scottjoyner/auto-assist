@@ -29,9 +29,11 @@ class TestTgrepShadow(unittest.TestCase):
         self.pin = hashlib.sha256(self.bin.read_bytes()).hexdigest()
 
     def check(self, sets):
+        # Tests must not depend on the host runner installing rg at /usr/bin.
+        # The real implementation still refuses an untrusted or missing rg.
         with patch.object(mod, "call_search", side_effect=[(x, 2.0) for x in sets]), patch.object(
             mod, "verify_executable", return_value=None
-        ):
+        ), patch.object(mod.Path, "is_file", return_value=True):
             return mod.compare(self.repo, self.index, "TOKEN", self.bin, self.pin)
 
     def test_equal_results_never_authorize(self):
