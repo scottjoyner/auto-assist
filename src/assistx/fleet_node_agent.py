@@ -484,6 +484,9 @@ def _claim_and_run(
             or claimed_task.get("status") != "CLAIMED"
             or claimed_task.get("agent_session_id") != session_id):
         return False
+    # READY-list task contents may be stale. Execute the authoritative task
+    # returned by the claim, bound to the exact server-assigned claim fence.
+    task = claimed_task
 
     stop_heartbeat = threading.Event()
 
