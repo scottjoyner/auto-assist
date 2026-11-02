@@ -100,3 +100,17 @@ def test_unauthorized_backoff_resets_on_non_auth_response(monkeypatch):
         agent.run(assistx_url="http://assistx", router_url="http://router",
                   poll_interval=5, concurrency=1, lmstudio_url="http://local")
     assert sleeps == [10.0, 20.0, 5.0, 10.0]
+
+
+def test_rejected_claim_yields_instead_of_hot_loop(monkeypatch):
+    attempted = []
+    monkeypatch.setattr(agent, "_http", lambda *a, **kw: (200, {"items": [
+        {"id": "still-ready", "required_capabilities": ["llm"]}]}))
+    monkeypatch.setattr(agent, "_claim_and_run",
+                        lambda **kw: (attempted.append(kw) or False))
+    statuses = []
+    worked = agent._poll_once(
+        assistx_url="http://assistx", router_url="http://router",
+        auth=("operator", "test"), node_id="node-a",
+        caps=["llm"], lmstudio_url="http://local", observed_status=statuses)
+    assert statuses == [200] and not worked and len(attempted) == 1
