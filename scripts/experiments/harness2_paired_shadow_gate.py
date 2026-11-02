@@ -96,9 +96,10 @@ def evaluate(document: dict) -> dict:
         p = _metric(row.get("prompt_tokens"), integer=True)
         c = _metric(row.get("completion_tokens"), integer=True)
         ms = _metric(row.get("duration_ms"), integer=True, positive=True)
-        # A partial or unscored task is not silently converted into a zero score.
-        if row["completed"] is False and score != 0:
-            raise Rejected("inconsistent incomplete task score")
+        # Incomplete/unscored tasks must be retried or explicitly accounted for
+        # outside the quality comparison; never reinterpret unscored as zero.
+        if row["completed"] is False:
+            raise Rejected("incomplete or unscored task has no comparable judgment")
         bucket = by_task.setdefault(task, {})
         if variant in bucket:
             raise Rejected("duplicate task/variant")
