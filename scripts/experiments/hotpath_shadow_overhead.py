@@ -115,7 +115,7 @@ def run(cargo: Path, samples: int, allow_downloads: bool) -> dict:
         raise Inconclusive("explicit dependency-download authorization required")
     if not 3 <= samples <= 10:
         raise Inconclusive("samples outside bound")
-    if not cargo.is_absolute() or not cargo.is_file() or cargo.is_symlink():
+    if not cargo.is_absolute() or not cargo.is_file() or not os.access(cargo, os.X_OK):
         raise Inconclusive("missing trusted absolute cargo executable")
     with tempfile.TemporaryDirectory(prefix="hotpath-shadow-", dir="/tmp") as w:
         root = Path(w)
