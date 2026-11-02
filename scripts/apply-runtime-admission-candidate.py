@@ -284,11 +284,13 @@ def _apply_transaction(
     approver: Any,
     candidate: dict[str, Any],
     now_ms: int,
+    required_roster: dict[str, Any],
 ) -> dict[str, Any]:
     validated_manifest = approver.validate_manifest(
         candidate["projection_manifest"]
     )
-    result = approver._apply_transaction(tx, validated_manifest, now_ms)
+    approver.validate_required_node_coverage(validated_manifest.payload, required_roster)
+    result = approver._apply_transaction(tx, validated_manifest, now_ms, required_roster)
     _persist_contract(tx, candidate, now_ms)
     return {
         **dict(result or {}),
@@ -324,6 +326,7 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("NEO4J_DATABASE", "neo4j"),
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--required-nodes-file", type=pathlib.Path)
     return parser.parse_args()
 
 
@@ -335,7 +338,11 @@ def main() -> int:
             _load_candidate(path)
         )
         approver = _load_projection_approver()
-        approver.validate_manifest(candidate["projection_manifest"])
+        validated = approver.validate_manifest(candidate["projection_manifest"])
+        required_roster = None
+        if not args.dry_run or args.required_nodes_file is not None:
+            required_roster = approver.load_required_node_roster(args.required_nodes_file)
+            approver.validate_required_node_coverage(validated.payload, required_roster)
     except (OSError, ValueError, RuntimeAdmissionContractError) as exc:
         print(f"runtime admission candidate rejected: {exc}", file=sys.stderr)
         return 2
@@ -388,6 +395,7 @@ def main() -> int:
                 approver,
                 candidate,
                 now_ms,
+                required_roster,
             )
     except Exception as exc:
         print(f"runtime admission apply failed: {exc}", file=sys.stderr)
