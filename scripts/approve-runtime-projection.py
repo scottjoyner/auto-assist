@@ -123,7 +123,9 @@ def validate_required_node_coverage(
         raise ValueError("manifest runtime list missing")
     ids = [r.get("node_id") for r in runtimes if isinstance(r, dict)]
     expected = roster.get("node_ids")
-    if len(ids) != len(runtimes) or not isinstance(expected, list) or (
+    if len(ids) != len(runtimes) or any(not isinstance(x, str) for x in ids) or (
+        not isinstance(expected, list) or not 2 <= len(expected) <= 64
+    ) or any(not isinstance(x, str) for x in expected) or (
         len(ids) != len(set(ids))
     ) or set(ids) != set(expected):
         raise ValueError("manifest does not exactly cover independent required-node roster")
