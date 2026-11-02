@@ -97,8 +97,13 @@ def test_ready_agent_http_endpoint_survives_numeric_priority(monkeypatch):
     })
     api.app.dependency_overrides[api.auth] = lambda: "test-readonly-user"
     try:
-        with TestClient(api.app) as client:
+        # Do not invoke application lifespan/start production controllers in
+        # this isolated read-only route regression. The mocked route is enough.
+        client = TestClient(api.app)
+        try:
             response = client.get("/api/agent/tasks?status=READY&limit=20")
+        finally:
+            client.close()
         assert response.status_code == 200, response.text[:200]
         body = response.json()
         assert body["count"] == 2
