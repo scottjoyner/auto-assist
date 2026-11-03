@@ -1,0 +1,45 @@
+name: Backend completion replay must not mutate a later claim
+on:
+  pull_request:
+    branches:
+      - main
+      - fix/fleet-worker-exact-target-ack-20261103
+    paths:
+      - src/assistx/neo4j_client.py
+      - tests/test_backend_completion_replay_cas.py
+      - .github/workflows/backend-completion-replay-cas.yml
+  push:
+    branches:
+      - fix/backend-completion-replay-cas-20261103
+    paths:
+      - src/assistx/neo4j_client.py
+      - tests/test_backend_completion_replay_cas.py
+      - .github/workflows/backend-completion-replay-cas.yml
+  workflow_dispatch:
+
+jobs:
+  completion-replay-serializability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated requirements
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Compile backend source and integration tests
+        run: |
+          python -m py_compile src/assistx/neo4j_client.py tests/test_backend_completion_replay_cas.py
+          ruff check --ignore I001,E501,UP012,UP018,UP035,UP037,UP045 \
+            src/assistx/neo4j_client.py tests/test_backend_completion_replay_cas.py
+      - name: Actual disposable Neo4j replay, stale-owner and concurrent claims
+        env:
+          TEST_NEO4J_IMAGE: neo4j:5-enterprise
+        run: |
+          pytest -q tests/test_backend_completion_replay_cas.py \
+            tests/test_recovery_canary.py tests/test_swarm_phase2.py \
+            tests/test_continuous_work_safety.py tests/test_fleet_node_poll_contract.py \
+            tests/test_safe_fleet_executor.py
