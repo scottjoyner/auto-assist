@@ -255,6 +255,9 @@ def observe(*, proc_root: Path = PROC, read_model_sha: bool = True) -> dict:
         "reasons": [],
         "process": {},
         "paths": {},
+        "model_id_expected": MODEL_ID,
+        "model_artifact_sha256_observed": None,
+        "model_artifact_bytes_observed": None,
     }
     try:
         report["app_version"] = str(json.loads(PACKAGE.read_text()).get("version") or "")
@@ -265,12 +268,19 @@ def observe(*, proc_root: Path = PROC, read_model_sha: bool = True) -> dict:
         report["reasons"].append("app_version_not_reviewed")
     if read_model_sha:
         try:
-            report["model_artifact_sha256_match"] = (
-                MODEL.is_file()
-                and not MODEL.is_symlink()
-                and MODEL.stat().st_size == EXPECTED_MODEL_BYTES
-                and digest_file(MODEL) == EXPECTED_MODEL_SHA
-            )
+            if MODEL.is_file() and not MODEL.is_symlink():
+                measured_size = MODEL.stat().st_size
+                report["model_artifact_bytes_observed"] = measured_size
+                if measured_size == EXPECTED_MODEL_BYTES:
+                    observed_hash = digest_file(MODEL)
+                    report["model_artifact_sha256_observed"] = observed_hash
+                    report["model_artifact_sha256_match"] = (
+                        observed_hash == EXPECTED_MODEL_SHA
+                    )
+                else:
+                    report["model_artifact_sha256_match"] = False
+            else:
+                report["model_artifact_sha256_match"] = False
         except (OSError, ValueError):
             report["model_artifact_sha256_match"] = False
     else:
