@@ -584,12 +584,17 @@ def _claim_and_run(
                     first = choices[0] if isinstance(choices, list) and choices else None
                     message = first.get("message") if isinstance(first, dict) else None
                     generated = message.get("content") if isinstance(message, dict) else None
+                    finish_reason = first.get("finish_reason") if isinstance(first, dict) else None
+                    incomplete = (isinstance(finish_reason, str)
+                                  and finish_reason in {"length", "content_filter"})
                     success = (llm_status == 200 and isinstance(generated, str)
-                               and bool(generated.strip()))
+                               and bool(generated.strip()) and not incomplete)
                     result = body if isinstance(body, dict) else {"result": body}
                     if llm_status == 200 and not success:
-                        # Retain the provider envelope but record failed work.
-                        result = {**result, "error": "empty_or_invalid_model_generation"}
+                        # A truncated/filtered response is not completed work.
+                        error = ("incomplete_or_filtered_model_generation" if incomplete
+                                 else "empty_or_invalid_model_generation")
+                        result = {**result, "error": error}
         else:
             result = {"error": f"unsupported task_type={task_type}"}
     except Exception as exc:  # pragma: no cover - defensive worker boundary
