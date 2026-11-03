@@ -126,7 +126,10 @@ def _native_loaded_chat_models(lmstudio_url: str | None) -> list[str]:
         instances = model.get("loaded_instances")
         if (isinstance(name, str) and name.strip()
                 and isinstance(instances, list)
-                and any(isinstance(instance, dict) for instance in instances)):
+                and any(isinstance(instance, dict)
+                        and isinstance(instance.get("id"), str)
+                        and instance["id"].strip()
+                        for instance in instances)):
             loaded.add(name)
     return sorted(loaded)
 
