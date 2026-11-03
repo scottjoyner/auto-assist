@@ -34,6 +34,24 @@ The embedded observation must be no more than 120 seconds old and must
 precede signature issuance. Reusing the same operator challenge could
 allow replay: a separate durable challenge registry remains required.
 
+The source observer now includes the *measured* GGUF SHA-256 and file
+byte count, in addition to its boolean hash check; the verifier requires
+the exact pinned K2 model ID, SHA-256 and 2,159,424,896-byte size.
+It also requires the SHA-256 of the running LM Studio executable and
+the actual running socat binary for each private transport to equal
+separately approved exact binary fingerprints.
+
+The executable trust pins are **intentionally EMPTY** in repository
+source. They cannot be supplied by an untrusted receipt or CLI flag:
+
+    APPROVED_RUNTIME_EXECUTABLE_SHA256 = ""
+    APPROVED_PROXY_EXECUTABLE_SHA256 = ""
+
+Even a signed receipt with every boolean set to true cannot pass
+until independent code-review and source measurements establish those
+exact executable digests. Test-only fixtures inject synthetic binary
+hashes into the verifier process; that does not grant host custody.
+
 Any observation claiming the wrong reviewed application version, or
 simultaneously reporting successful identity with an unresolved physical
 collection error, is rejected even if its external envelope is signed.
@@ -93,7 +111,12 @@ return HOLD and can_dispatch=false. A second integrated case verifies
 that an authentic observer output with the model absent is refused
 even when placed inside a valid synthetic signature envelope.
 
-Total local combined suite: 44 tests passed, including 13 physical
+The digest-hardening follow-up adds negative tests for validly signed
+but wrong GGUF digest/size/model ID, validly signed wrong runtime
+or socat executable fingerprints, both missing production binary pins,
+and original observer-side byte/hash emission.
+
+Total local combined suite: 56 tests passed, including 13 physical
 observer tests and 31 signer/verifier tests. The scoped hosted workflow
 runs the entire combined suite and checks that the real trust-root pin
 remains empty. All evidence is synthetic and non-admitting.
