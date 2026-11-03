@@ -1,0 +1,53 @@
+name: Scoped machine observer authority (research only)
+
+on:
+  pull_request:
+    paths:
+      - src/assistx/scoped_machine_poll.py
+      - tests/test_scoped_machine_poll.py
+      - tests/test_scoped_machine_poll_neo4j.py
+      - .github/workflows/scoped-machine-observer-authority-research.yml
+  push:
+    branches:
+      - research/scoped-machine-observer-authority-20261103
+    paths:
+      - src/assistx/scoped_machine_poll.py
+      - tests/test_scoped_machine_poll.py
+      - tests/test_scoped_machine_poll_neo4j.py
+      - .github/workflows/scoped-machine-observer-authority-research.yml
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-source-and-disposable-neo4j:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install project test requirements
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Compile and lint exact source
+        run: |
+          python -m py_compile src/assistx/scoped_machine_poll.py \
+            tests/test_scoped_machine_poll.py \
+            tests/test_scoped_machine_poll_neo4j.py
+          ruff check --select F,I \
+            src/assistx/scoped_machine_poll.py \
+            tests/test_scoped_machine_poll.py \
+            tests/test_scoped_machine_poll_neo4j.py
+      - name: Source auth/claim/execution regression
+        run: |
+          pytest -q \
+            tests/test_scoped_machine_poll.py \
+            tests/test_scoped_machine_claim.py \
+            tests/test_scoped_machine_execution.py \
+            tests/test_node_identity.py \
+            tests/test_machine_operator_isolation.py
+      - name: Real disposable graph admission and revocation cases
+        env:
+          TEST_NEO4J_IMAGE: neo4j:5-enterprise
+        run: pytest -q tests/test_scoped_machine_poll_neo4j.py
