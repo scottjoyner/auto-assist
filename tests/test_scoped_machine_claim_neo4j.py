@@ -208,3 +208,61 @@ def test_parallel_positive_claims_use_both_explicitly_approved_slots(
         assert len(rows)==2
         seq=s.run("MATCH (w:WorkSupplyState {name:'canonical'}) RETURN w.scoped_claim_serial AS serial").single()
         assert seq['serial']==2
+
+
+def test_combined_observer_then_claim_shared_graph_contract(isolated_driver, monkeypatch):
+    """One disposable graph: observer hints are only strict, transient metadata.
+
+    The final observer read requires explicit native chat capability evidence,
+    whereas the claim CAS also requires independently authenticated machine
+    principal, exact Task authorization and fenced runtime/claim evidence.
+    No code in this test is registered as a production API route.
+    """
+    from assistx import scoped_machine_poll as observer
+
+    monkeypatch.setenv('ASSISTX_ENABLE_SCOPED_NODE_CLAIMS', '1')
+    seed(isolated_driver, task_ids=('cross-stack-task',), supply=1)
+
+    def factory():
+        return IsolatedNeo(isolated_driver)
+
+    def observe():
+        return observer.candidate_tasks(
+            'xwing', neo_factory=factory, limit=10,
+            expected_generation=17, expected_artifact=FINGERPRINT,
+        )
+
+    # The synthetic claim fixture's Boolean chat flag is not enough for
+    # observer metadata: the admitted model role must be explicitly recorded.
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as blocked:
+        observe()
+    assert blocked.value.status_code == 503
+    assert blocked.value.detail == 'node_chat_model_unavailable'
+
+    with isolated_driver.session() as session:
+        session.run(
+            """MATCH (m:LoadedModelInstance {model_instance_id:'test-model'})
+               SET m.capabilities_json=$roles""",
+            {'roles': '["chat","local_only"]'},
+        ).consume()
+
+    eligible = observe()
+    assert eligible['items'] == [
+        {'id': 'cross-stack-task', 'requires_capability': 'llm'}
+    ]
+    assert eligible['authorizes_claim'] is False
+    assert eligible['authorizes_dispatch'] is False
+
+    claim_result = c.scoped_claim_task(
+        request(task_id='cross-stack-task'),
+        neo_factory=factory,
+        token_authenticated=True,
+        approved_policy=policy(),
+    )
+    assert claim_result['claimed'] is True
+
+    claimed = observe()
+    assert claimed['items'] == []
+    assert claimed['authorizes_claim'] is False
+    assert claimed['authorizes_dispatch'] is False
