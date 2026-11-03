@@ -29,6 +29,6 @@ jobs:
           python -m py_compile scripts/audit_task_writer_sites.py tests/test_task_writer_census.py
           ruff check --ignore I001,E501,UP012,UP018,UP035,UP037,UP045 scripts/audit_task_writer_sites.py tests/test_task_writer_census.py
       - name: Verify conservative classification and HOLD semantics
-        run: python -m pytest -q tests/test_task_writer_census.py
+        run: python -m pytest --noconftest -q tests/test_task_writer_census.py
       - name: Emit nonauthoritative summary
         run: python scripts/audit_task_writer_sites.py --summary-only
