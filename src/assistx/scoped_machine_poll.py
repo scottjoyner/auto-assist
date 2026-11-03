@@ -18,7 +18,6 @@ from fastapi import APIRouter, Header, HTTPException, Path, Query, Response
 from .node_identity import verify_node_token
 from .runtime_projection import RuntimeProjectionBlocked, _projection_state
 
-
 _TASK_AUDIENCE = 'targeted-llm-observer'
 _NODE_RE = re.compile(r'[A-Za-z0-9_.-]{1,128}\Z')
 _FINGERPRINT_RE = re.compile(r'[0-9a-f]{64}\Z')
@@ -39,6 +38,8 @@ def _node_policy(registry: dict[str, Any], node_id: str) -> dict[str, Any] | Non
             and entry.get('allowed_capabilities') == ['llm']
             and type(entry.get('projection_generation')) is int
             and entry['projection_generation'] > 0
+            and type(entry.get('token_epoch')) is int
+            and entry['token_epoch'] > 0
             and isinstance(fingerprint, str)
             and _FINGERPRINT_RE.fullmatch(fingerprint)):
         return entry
@@ -70,6 +71,7 @@ def candidate_tasks(
     limit: int,
     expected_generation: int,
     expected_artifact: str,
+    expected_token_epoch: int,
     now_ms: int | None = None,
 ) -> dict[str, Any]:
     """No Task payload or claim authority; read-only exact-target hints only.
@@ -106,6 +108,12 @@ def candidate_tasks(
                 raise HTTPException(status_code=503, detail='runtime_capacity_unavailable')
             witness = session.run(
                 """
+                MATCH (auth:MachinePrincipalAdmission {node_id:$node_id,status:'approved'})
+                WHERE auth.projection_generation=$generation
+                  AND auth.token_epoch=$token_epoch
+                  AND auth.artifact_fingerprint=$artifact
+                  AND auth.approved_by IS NOT NULL AND auth.approval_id IS NOT NULL
+                  AND auth.expires_at_ts>$now
                 MATCH (r:RuntimeInstance {node_id:$node_id})
                 WHERE coalesce(r.admitted,false)=true
                   AND toLower(coalesce(r.status,'unknown')) IN ['online','healthy','ready']
@@ -125,12 +133,16 @@ def candidate_tasks(
                   AND m.artifact_fingerprint = $artifact
                   AND m.model_instance_id IS NOT NULL
                 RETURN count(DISTINCT r) AS admitted_runtimes,
+                       count(DISTINCT auth) AS admitted_machine_principals,
                        collect(DISTINCT m.capabilities_json) AS model_capabilities
                 """,
-                {'node_id': node_id, 'now': now, 'artifact': expected_artifact},
+                {'node_id': node_id, 'now': now, 'artifact': expected_artifact,
+                 'generation': generation, 'token_epoch': expected_token_epoch},
             ).single()
             if not witness or int(witness['admitted_runtimes'] or 0) < 1:
                 raise HTTPException(status_code=503, detail='node_runtime_unavailable')
+            if int(witness.get('admitted_machine_principals') or 0) != 1:
+                raise HTTPException(status_code=503, detail='node_principal_unavailable')
             # A loaded embedding-only model is not evidence of usable chat.
             if not _has_chat_role(witness.get('model_capabilities')):
                 raise HTTPException(status_code=503, detail='node_chat_model_unavailable')
@@ -151,6 +163,15 @@ def candidate_tasks(
                   AND s.allow_background=true
                   AND coalesce(s.total_slots,0)>0
                   AND coalesce(s.free_slots,0)>0
+                MATCH (auth:MachinePrincipalAdmission {node_id:$node_id,status:'approved'})
+                WHERE auth.projection_generation=$generation
+                  AND auth.token_epoch=$token_epoch
+                  AND auth.artifact_fingerprint=$artifact
+                  AND auth.approved_by IS NOT NULL AND auth.approval_id IS NOT NULL
+                  AND auth.expires_at_ts>timestamp()
+                WITH p,s,collect(DISTINCT auth) AS principals
+                WHERE size(principals)=1
+                WITH p,s,principals[0] AS auth
                 MATCH (r:RuntimeInstance {node_id:$node_id})
                 WHERE coalesce(r.admitted,false)=true
                   AND toLower(coalesce(r.status,'unknown')) IN ['online','healthy','ready']
@@ -159,6 +180,7 @@ def candidate_tasks(
                 WHERE coalesce(m.admitted,false)=true
                   AND coalesce(m.expires_at_ts,0)>timestamp()
                   AND m.artifact_fingerprint=$artifact
+                  AND m.machine_chat_eligible=true
                   AND m.model_instance_id IS NOT NULL
                 MATCH (a:AccessPath {runtime_instance_id:r.runtime_instance_id})
                 WHERE coalesce(a.approved,false)=true
@@ -173,6 +195,17 @@ def candidate_tasks(
                 WHERE t.requires_approval = false
                   AND t.paperclip_dispatched = false
                   AND t.required_capabilities=['llm']
+                  AND t.machine_authorized=true
+                  AND t.machine_authorization_generation=$generation
+                  AND t.machine_authorization_approval_id=auth.approval_id
+                  AND t.owner_id IS NOT NULL
+                  AND t.claim_id IS NULL AND t.claimed_by IS NULL
+                  AND t.agent_session_id IS NULL AND t.lease_expires_at_ts IS NULL
+                  AND coalesce(t.execution_attempt,0)=0
+                  AND NOT EXISTS {
+                    MATCH (t)-[:DISPATCHED_AS]->(d:Dispatch)
+                    WHERE d.paperclip_issue_id IS NOT NULL
+                  }
                 RETURN t.id AS id,
                        collect(DISTINCT m.capabilities_json) AS model_capabilities,
                        coalesce(t.created_at_ts,0) AS created_at_ts
@@ -180,7 +213,7 @@ def candidate_tasks(
                 LIMIT $limit
                 """,
                 {'node_id': node_id, 'limit': limit, 'generation': generation,
-                 'artifact': expected_artifact, 'max_age_ms': _MAX_STATE_AGE_MS},
+                 'artifact': expected_artifact, 'max_age_ms': _MAX_STATE_AGE_MS, 'token_epoch': expected_token_epoch},
             )
             hints = []
             for record in records:
@@ -231,6 +264,7 @@ def build_scoped_machine_router(
             node_id, neo_factory=neo_factory, limit=limit,
             expected_generation=policy['projection_generation'],
             expected_artifact=policy['artifact_fingerprint'],
+            expected_token_epoch=policy['token_epoch'],
         )
 
     return router

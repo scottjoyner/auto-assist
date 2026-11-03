@@ -26,13 +26,18 @@ class Result:
 class FakeNeo:
     def __init__(self, *, supply=2, runtime=1, ready=True,
                  capabilities='["chat","local_only"]', revoke_before_task=False,
-                 revoke_physical_before_task=None):
+                 revoke_physical_before_task=None, principal=1,
+                 revoke_principal_before_task=False,
+                 machine_task_approved=True):
         self.supply = supply
         self.runtime = runtime
         self.ready = ready
         self.capabilities = capabilities
         self.revoke_before_task = revoke_before_task
         self.revoke_physical_before_task = revoke_physical_before_task
+        self.principal = principal
+        self.revoke_principal_before_task = revoke_principal_before_task
+        self.machine_task_approved = machine_task_approved
         self.calls = []
         self.close_calls = 0
 
@@ -57,7 +62,22 @@ class FakeNeo:
             assert parameters['limit'] <= 20
             assert parameters['generation'] == 17
             assert parameters['artifact'] == 'a' * 64
+            assert parameters['token_epoch'] == 3
             assert parameters['max_age_ms'] == 90_000
+            assert "MATCH (auth:MachinePrincipalAdmission {node_id:$node_id,status:'approved'})" in query
+            assert "auth.projection_generation=$generation" in query
+            assert "auth.token_epoch=$token_epoch" in query
+            assert "auth.artifact_fingerprint=$artifact" in query
+            assert "auth.expires_at_ts>timestamp()" in query
+            assert "size(principals)=1" in query
+            assert "t.machine_authorized=true" in query
+            assert "t.machine_authorization_generation=$generation" in query
+            assert "t.machine_authorization_approval_id=auth.approval_id" in query
+            assert "t.owner_id IS NOT NULL" in query
+            assert "t.claim_id IS NULL" in query
+            assert "t.claimed_by IS NULL" in query
+            assert "coalesce(t.execution_attempt,0)=0" in query
+            assert "m.machine_chat_eligible=true" in query
             assert "MATCH (p:FleetProjectionState {name:'canonical',status:'approved'})" in query
             assert "MATCH (s:WorkSupplyState" in query
             assert "MATCH (r:RuntimeInstance {node_id:$node_id})" in query
@@ -76,7 +96,9 @@ class FakeNeo:
             assert 'coalesce(t.requires_approval,false)' not in query
             assert 'coalesce(t.paperclip_dispatched,false)' not in query
             assert 't.payload_json' not in query and 'RETURN t ' not in query
-            if self.revoke_before_task:
+            if self.revoke_before_task or self.revoke_principal_before_task:
+                return Result([])
+            if not self.machine_task_approved:
                 return Result([])
             if self.revoke_physical_before_task in ('runtime','model','access','capacity'):
                 # Fake the *final* read of a revoked witness. No Task metadata
@@ -92,10 +114,16 @@ class FakeNeo:
         if 'RuntimeInstance' in query:
             assert parameters['node_id'] == 'xwing'
             assert parameters['artifact'] == 'a' * 64
+            assert parameters['generation'] == 17
+            assert parameters['token_epoch'] == 3
+            assert "MATCH (auth:MachinePrincipalAdmission {node_id:$node_id,status:'approved'})" in query
+            assert "auth.token_epoch=$token_epoch" in query
+            assert "auth.expires_at_ts>$now" in query
             assert 'm.artifact_fingerprint = $artifact' in query
             assert 'LoadedModelInstance' in query and 'AccessPath' in query
             assert 'CapacityObservation' in query
             return Result([{'admitted_runtimes': self.runtime,
+                            'admitted_machine_principals': self.principal,
                             'model_capabilities': [self.capabilities]}])
         raise AssertionError('unexpected query: ' + query)
 
@@ -104,12 +132,17 @@ def app_factory(monkeypatch, *, enabled=True, policy=True, token='secret-x',
                 supply=2, runtime=1, approved=True, ready=True,
                 capabilities='["chat","local_only"]', policy_generation=17,
                 artifact='a' * 64, revoke_before_task=False,
-                revoke_physical_before_task=None):
+                revoke_physical_before_task=None, token_epoch=3,
+                principal=1, revoke_principal_before_task=False,
+                machine_task_approved=True):
     monkeypatch.setenv('ASSISTX_ENABLE_SCOPED_NODE_OBSERVATION', '1' if enabled else '0')
     db = FakeNeo(supply=supply, runtime=runtime, ready=ready,
                  capabilities=capabilities,
                  revoke_before_task=revoke_before_task,
-                 revoke_physical_before_task=revoke_physical_before_task)
+                 revoke_physical_before_task=revoke_physical_before_task,
+                 principal=principal,
+                 revoke_principal_before_task=revoke_principal_before_task,
+                 machine_task_approved=machine_task_approved)
     calls = []
 
     def projection(_factory, now):
@@ -122,7 +155,8 @@ def app_factory(monkeypatch, *, enabled=True, policy=True, token='secret-x',
     policies = {'xwing': {'enabled': True, 'audience': 'targeted-llm-observer',
                            'allowed_capabilities': ['llm'],
                            'projection_generation': policy_generation,
-                           'artifact_fingerprint': artifact}} if policy else {}
+                           'artifact_fingerprint': artifact,
+                           'token_epoch': token_epoch}} if policy else {}
     app = FastAPI()
     app.include_router(scoped.build_scoped_machine_router(
         lambda: db, lambda: {'xwing': token, 'other': 'secret-other'},
@@ -294,3 +328,56 @@ def test_final_witness_rejects_non_chat_evidence(monkeypatch, roles):
     assert response.status_code == 200
     assert response.json()['items'] == []
     assert response.json()['authorizes_claim'] is False
+
+
+@pytest.mark.parametrize('epoch', [None, 0, -1, True, '3', 3.0])
+def test_machine_observer_requires_positive_pinned_token_epoch(monkeypatch, epoch):
+    """A token alone must not supply an unspecified or malformed epoch."""
+    client, db, calls = app_factory(monkeypatch, token_epoch=epoch)
+    result = client.get(
+        '/api/fleet/nodes/xwing/assigned-task-hints',
+        headers={'X-Fleet-Node-Token': 'secret-x'},
+    )
+    assert result.status_code == 403
+    assert 'assigned-llm-1' not in result.text
+    assert db.calls == [] and calls == []
+
+
+@pytest.mark.parametrize('principal_count', [0, 2])
+def test_missing_or_ambiguous_graph_machine_principal_is_hard_hold(
+    monkeypatch, principal_count,
+):
+    client, db, calls = app_factory(monkeypatch, principal=principal_count)
+    result = client.get(
+        '/api/fleet/nodes/xwing/assigned-task-hints',
+        headers={'X-Fleet-Node-Token': 'secret-x'},
+    )
+    assert result.status_code == 503
+    assert 'assigned-llm-1' not in result.text
+    assert not any("MATCH (t:Task" in query for query, _ in db.calls)
+
+
+def test_machine_principal_revoked_after_initial_witness_returns_no_hints(monkeypatch):
+    client, db, _ = app_factory(monkeypatch, revoke_principal_before_task=True)
+    result = client.get(
+        '/api/fleet/nodes/xwing/assigned-task-hints',
+        headers={'X-Fleet-Node-Token': 'secret-x'},
+    )
+    assert result.status_code == 200
+    assert result.json()['items'] == []
+    assert result.json()['authorizes_claim'] is False
+    assert result.json()['authorizes_dispatch'] is False
+    assert len(db.calls) == 3
+
+
+def test_legacy_targeted_task_without_explicit_machine_approval_is_not_a_hint(monkeypatch):
+    """Even an exact-target READY Task cannot be advertised without approval."""
+    client, db, _ = app_factory(monkeypatch, machine_task_approved=False)
+    result = client.get(
+        '/api/fleet/nodes/xwing/assigned-task-hints',
+        headers={'X-Fleet-Node-Token': 'secret-x'},
+    )
+    assert result.status_code == 200
+    assert result.json()['items'] == []
+    assert 'assigned-llm-1' not in result.text
+    assert result.json()['authorizes_claim'] is False
