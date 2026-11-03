@@ -23,8 +23,8 @@ catalog and a single bounded localhost POST for 73 embeddings.
 Real first batch: 73 embeddings, 768 dimensions, 1.165 s.
 Real second batch, after tightening lexical filters:
 73 embeddings, 768 dimensions, 0.538 s.
-The second run produced 14 cross-repository HUMAN_REVIEW_ONLY
-suggestions with cosine >=0.58 and >=1 shared nontrivial title token.
+The second run produced 20 cross-repository HUMAN_REVIEW_ONLY
+suggestions with cosine >=0.58 and >=1 shared nontrivial title token.\nThe first 14 were displayed during initial inspection; the complete\noutput contains 20. Six leading relationships were independently\nchecked against linked issue descriptions.
 These are review suggestions, NEVER confirmed duplicates or current
 production dependencies. Live GitHub status can change later.
 
