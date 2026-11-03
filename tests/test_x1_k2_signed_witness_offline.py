@@ -299,3 +299,37 @@ def test_signed_process_error_label_denied(monkeypatch):
     with pytest.raises(module.WitnessHold, match="process_evidence_contains_unverified_collection"):
         module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE,
                       now_ms=NOW)
+
+
+def test_actual_two_tier_observer_fixture_matches_signed_verifier(monkeypatch, tmp_path):
+    # This imports the previous stacked PR's real observer code and runs
+    # its isolated filesystem/socket fixture. No live /proc or API is touched.
+    from test_x1_k2_physical_witness import _observe_fixture
+
+    real_observer_output = _observe_fixture(tmp_path)
+    assert real_observer_output["physical_process_socket_chain_verified"]
+    assert real_observer_output["model_loaded_physically_verified"]
+    assert real_observer_output["gate"] == "HOLD"
+    real_observer_output["collected_at_utc"] = datetime.fromtimestamp(
+        (NOW - 12_000) / 1000, UTC).isoformat()
+    doc = signed(monkeypatch, real_observer_output)
+    result = module.verify(module.canonical(doc),
+                           expected_challenge_hex=CHALLENGE, now_ms=NOW)
+    assert result["signature_valid"]
+    assert result["observation_claims_complete"]
+    assert result["independent_host_custody_verified"] is False
+    assert result["can_dispatch"] is False
+    assert result["decision"] == "HOLD"
+
+
+def test_actual_two_tier_observer_denied_when_model_absent(monkeypatch, tmp_path):
+    from test_x1_k2_physical_witness import _observe_fixture
+
+    report = _observe_fixture(tmp_path, loaded=False)
+    assert report["model_loaded_physically_verified"] is False
+    report["collected_at_utc"] = datetime.fromtimestamp(
+        (NOW - 12_000) / 1000, UTC).isoformat()
+    doc = signed(monkeypatch, report)
+    with pytest.raises(module.WitnessHold, match="internally_contradictory_physical_observation"):
+        module.verify(module.canonical(doc),
+                      expected_challenge_hex=CHALLENGE, now_ms=NOW)
