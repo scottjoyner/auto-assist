@@ -21,6 +21,13 @@ NOW = 1_800_000_000_000
 CHALLENGE = "a1" * 32
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_binary_approval_pins(monkeypatch):
+    # Deliberately absent from installed production verifier.
+    monkeypatch.setattr(module, "APPROVED_RUNTIME_EXECUTABLE_SHA256", "e" * 64)
+    monkeypatch.setattr(module, "APPROVED_PROXY_EXECUTABLE_SHA256", "c" * 64)
+
+
 def observation():
     return {
         "kind": module.OBSERVATION_KIND,
@@ -29,6 +36,9 @@ def observation():
         "gate": "HOLD",
         "reasons": ["independent_signed_witness_and_approval_missing"],
         "app_version": "0.4.26+4",
+        "model_id_expected": module.EXPECTED_MODEL_ID,
+        "model_artifact_sha256_observed": module.EXPECTED_MODEL_SHA256,
+        "model_artifact_bytes_observed": module.EXPECTED_MODEL_BYTES,
         "can_dispatch": False,
         "operator_approval_verified": False,
         "cryptographic_witness_signature_present": False,
@@ -40,6 +50,7 @@ def observation():
             "pid": 3525,
             "start_ticks": 1761,
             "boot_id_sha256": "b" * 64,
+            "running_executable_sha256": "e" * 64,
             "executable_target_verified": True,
             "installed_executable_sha256_match": True,
             "model_file_mapped_in_process_tree": True,
@@ -307,6 +318,21 @@ def test_actual_two_tier_observer_fixture_matches_signed_verifier(monkeypatch, t
     from test_x1_k2_physical_witness import _observe_fixture
 
     real_observer_output = _observe_fixture(tmp_path)
+    # The upstream fixture runs a tiny synthetic binary/model. Supply only
+    # that fixture's measured hashes as TEST-ONLY policy pins, while the
+    # production source keeps every executable approval pin empty.
+    monkeypatch.setattr(
+        module, "EXPECTED_MODEL_BYTES",
+        real_observer_output["model_artifact_bytes_observed"],
+    )
+    monkeypatch.setattr(
+        module, "APPROVED_RUNTIME_EXECUTABLE_SHA256",
+        real_observer_output["process"]["running_executable_sha256"],
+    )
+    monkeypatch.setattr(
+        module, "APPROVED_PROXY_EXECUTABLE_SHA256",
+        real_observer_output["process"]["proxies"]["lan"]["running_executable_sha256"],
+    )
     assert real_observer_output["physical_process_socket_chain_verified"]
     assert real_observer_output["model_loaded_physically_verified"]
     assert real_observer_output["gate"] == "HOLD"
@@ -331,5 +357,58 @@ def test_actual_two_tier_observer_denied_when_model_absent(monkeypatch, tmp_path
         (NOW - 12_000) / 1000, UTC).isoformat()
     doc = signed(monkeypatch, report)
     with pytest.raises(module.WitnessHold, match="internally_contradictory_physical_observation"):
+        module.verify(module.canonical(doc),
+                      expected_challenge_hex=CHALLENGE, now_ms=NOW)
+
+
+
+def test_production_binary_approval_pins_are_empty_in_source():
+    source = SOURCE.read_text()
+    assert 'APPROVED_RUNTIME_EXECUTABLE_SHA256 = ""' in source
+    assert 'APPROVED_PROXY_EXECUTABLE_SHA256 = ""' in source
+
+
+def test_missing_approved_binary_fingerprints_denies_even_valid_signature(monkeypatch):
+    doc = signed(monkeypatch)
+    monkeypatch.setattr(module, "APPROVED_RUNTIME_EXECUTABLE_SHA256", "")
+    with pytest.raises(module.WitnessHold, match="independently_approved_binary_fingerprints_missing"):
+        module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
+
+
+@pytest.mark.parametrize("bad_fields", [
+    {"model_artifact_sha256_observed": "f" * 64},
+    {"model_artifact_bytes_observed": 2_159_424_895},
+    {"model_id_expected": "lookalike-model"},
+    {"model_artifact_sha256_observed": None},
+    {"model_artifact_bytes_observed": True},
+])
+def test_signed_true_boolean_with_wrong_measured_model_identity_denied(monkeypatch, bad_fields):
+    obs = observation()
+    obs.update(bad_fields)
+    doc = signed(monkeypatch, obs)
+    with pytest.raises(module.WitnessHold, match="model_artifact_identity_not_independently_bound"):
+        module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
+
+
+def test_signed_true_boolean_wrong_running_binary_sha_denied(monkeypatch):
+    obs = observation()
+    obs["process"]["running_executable_sha256"] = "a" * 64
+    doc = signed(monkeypatch, obs)
+    with pytest.raises(module.WitnessHold, match="runtime_executable_fingerprint_not_approved"):
+        module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
+
+
+def test_signed_true_boolean_wrong_socat_binary_sha_denied(monkeypatch):
+    obs = observation()
+    obs["process"]["proxies"]["tailscale"]["running_executable_sha256"] = "f" * 64
+    doc = signed(monkeypatch, obs)
+    with pytest.raises(module.WitnessHold, match="transport_proxy_fingerprint_not_approved"):
+        module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
+
+
+def test_missing_independent_proxy_binary_pin_denied(monkeypatch):
+    doc = signed(monkeypatch)
+    monkeypatch.setattr(module, "APPROVED_PROXY_EXECUTABLE_SHA256", "")
+    with pytest.raises(module.WitnessHold, match="independently_approved_binary_fingerprints_missing"):
         module.verify(module.canonical(doc),
                       expected_challenge_hex=CHALLENGE, now_ms=NOW)
