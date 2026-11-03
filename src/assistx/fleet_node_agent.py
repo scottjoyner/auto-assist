@@ -176,7 +176,7 @@ def _auth_from_env() -> tuple[str, str] | None:
 def _default_model(lmstudio_url: str | None) -> str:
     models = _native_loaded_chat_models(lmstudio_url)
     # Do not silently substitute the first downloaded model or a fabricated ID.
-    return models[0] if models else ""
+    return models[0] if len(models) == 1 else ""
 
 
 def execute_task(
@@ -378,6 +378,12 @@ def _run_llm_task(
             "progress": 0.0,
             "checkpoint": {"handler": "llm", "phase": "before_inference"},
         }
+    selected_model = payload.get("model") or _default_model(lmstudio_url)
+    if not isinstance(selected_model, str) or not selected_model.strip():
+        return {
+            "status": "FAILED", "summary": "resident model selection unavailable",
+            "result": {"reason": "no_unique_native_resident_chat_model"},
+        }
     cache_request = (
         payload.get("kv_cache") if isinstance(payload.get("kv_cache"), dict) else {}
     )
@@ -390,7 +396,7 @@ def _run_llm_task(
             data={
                 "schema_version": 1,
                 "node_id": node_id,
-                "model_id": payload.get("model") or _default_model(lmstudio_url),
+                "model_id": selected_model,
                 "prefix_id": cache_request.get("prefix_id"),
                 "compatibility_fingerprint": cache_request.get("compatibility_fingerprint"),
                 "privacy_scope": cache_request.get("privacy_scope", "private"),
@@ -416,7 +422,7 @@ def _run_llm_task(
         "POST",
         f"{(lmstudio_url or '').rstrip('/')}/v1/chat/completions",
         data={
-            "model": payload.get("model") or _default_model(lmstudio_url),
+            "model": selected_model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 1024,
             **request_fields,
