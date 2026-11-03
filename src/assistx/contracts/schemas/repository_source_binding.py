@@ -65,7 +65,7 @@ from enum import Enum
 from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 HEAD_SHA_PATTERN = r"^[0-9a-f]{40}$"
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -89,6 +89,8 @@ def _validate_canonical_path(value: str, *, field: str) -> str:
         raise ValueError(f"{field} must be a resolved realpath, not a ~ path")
     if not text.startswith("/"):
         raise ValueError(f"{field} must be an absolute path, not {text!r}")
+    if text == "/":
+        raise ValueError(f"{field} must not be the filesystem root")
     if ".." in PurePosixPath(text).parts:
         raise ValueError(f"{field} must not contain '..' traversal segments")
     if text != os.path.normpath(text):
@@ -99,7 +101,8 @@ def _validate_canonical_path(value: str, *, field: str) -> str:
         home = ""
     # $HOME is never a legitimate repository or worktree root. Treating it as
     # one is the specific silent-fallback failure this contract exists to stop.
-    if home and os.path.normpath(text) == home:
+    raw_home = os.path.normpath(os.path.expanduser("~"))
+    if os.path.normpath(text) in (raw_home, home):
         raise ValueError(f"{field} must not be the home directory")
     return text
 
@@ -116,6 +119,7 @@ class DirtyStateExpectation(str, Enum):
     CLEAN_REQUIRED = "clean_required"
     DIRTY = "dirty"
     ANY = "any"
+    DIRTY_ALLOWED = "dirty_allowed"
 
 
 class SourceBindingState(str, Enum):
@@ -126,6 +130,8 @@ class SourceBindingState(str, Enum):
     """
 
     MATCH = "MATCH"
+    UNBOUND = "UNBOUND"
+    BRANCH_MISMATCH = "BRANCH_MISMATCH"
     REPOSITORY_MISMATCH = "REPOSITORY_MISMATCH"
     WORKTREE_MISMATCH = "WORKTREE_MISMATCH"
     HEAD_MISMATCH = "HEAD_MISMATCH"
@@ -140,7 +146,7 @@ class RepositorySourceBinding(BaseModel):
     about who may execute. See ``docs/swarm_contracts/repository_source_binding.md``.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
     authority_source: str = Field(
         default=BINDING_AUTHORITY_SOURCE,
@@ -153,18 +159,24 @@ class RepositorySourceBinding(BaseModel):
     repository: str = Field(..., description="Configured repository identity alias.")
     repo_realpath: str = Field(
         ...,
+        validation_alias=AliasChoices("repo_realpath", "repository_realpath"),
+        serialization_alias="repository_realpath",
         description="Canonical realpath of the repository the worktree belongs to.",
     )
     worktree_realpath: str = Field(
         ...,
         description="Canonical realpath of the exact worktree to be examined.",
     )
-    branch: str = Field(..., min_length=1, max_length=512)
+    branch: str | None = Field(default=None, min_length=1, max_length=512)
     head_sha: str = Field(..., pattern=HEAD_SHA_PATTERN)
-    expected_dirty: DirtyStateExpectation = DirtyStateExpectation.CLEAN
-    task_id: str = Field(..., min_length=1, max_length=256)
-    work_id: str = Field(
-        ...,
+    expected_dirty: DirtyStateExpectation = Field(
+        default=DirtyStateExpectation.CLEAN_REQUIRED,
+        validation_alias=AliasChoices("expected_dirty", "dirty_expectation"),
+        serialization_alias="dirty_expectation",
+    )
+    task_id: str | None = Field(default=None, min_length=1, max_length=256)
+    work_id: str | None = Field(
+        default=None,
         min_length=1,
         max_length=256,
         description="Attempt/execution identifier the binding is scoped to.",
@@ -209,10 +221,34 @@ class RepositorySourceBinding(BaseModel):
             raise ValueError("task_id/work_id must not contain control characters")
         return value
 
+    @property
+    def repository_realpath(self) -> str:
+        """Legacy verifier spelling, preserving the same canonical realpath."""
+        return self.repo_realpath
+
+    @property
+    def dirty_expectation(self) -> DirtyStateExpectation:
+        """Legacy verifier spelling, no relaxation of the configured policy."""
+        return self.expected_dirty
+
+    @classmethod
+    def from_contract_payload(cls, payload: object) -> RepositorySourceBinding | None:
+        """None/empty optional payload stays unbound; malformed present data DENIES."""
+        if payload is None or payload == {}:
+            return None
+        if isinstance(payload, cls):
+            return payload
+        if not isinstance(payload, dict):
+            raise ValueError("repository source binding must be an object")
+        return cls.model_validate(payload)
+
+    def to_contract_payload(self) -> dict[str, object]:
+        """Canonical legacy wire names; no unknown fields or fallback candidates."""
+        return self.model_dump(mode="json", by_alias=True)
+
     def provenance(self) -> dict[str, object]:
         """Compact payload safe to embed in a task or result."""
-
-        return self.model_dump(mode="json")
+        return self.to_contract_payload()
 
 
 class ObservedSourceState(BaseModel):
