@@ -11,7 +11,6 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
-import shutil
 import stat
 import subprocess
 import sys
@@ -115,11 +114,17 @@ def stage_source_only(root: Path, target: Path) -> dict:
                     dest = target / source.relative_to(root)
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     with os.fdopen(fd, "rb", closefd=False) as src:
-                        with dest.open("wb") as dst:
-                            shutil.copyfileobj(src, dst, FILE_MAX_BYTES + 1)
-                    if dest.stat().st_size != st.st_size:
-                        dest.unlink(missing_ok=True)
+                        payload = src.read(FILE_MAX_BYTES + 1)
+                    now = os.fstat(fd)
+                    if (
+                        len(payload) != st.st_size
+                        or now.st_size != st.st_size
+                        or now.st_ino != st.st_ino
+                        or now.st_mtime_ns != st.st_mtime_ns
+                    ):
                         raise ContextShadowError("source changed during snapshot")
+                    with dest.open("wb") as dst:
+                        dst.write(payload)
                     os.chmod(dest, 0o644)
                     count += 1
                     total += st.st_size
