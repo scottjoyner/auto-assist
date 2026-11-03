@@ -46,7 +46,7 @@ def test_worker_rejects_wrong_target_bad_caps_and_unfenced_recovery(monkeypatch)
         {"id": "recovery", "required_capabilities": ["recovery"]},
         {"id": "malformed", "required_capabilities": "llm"},
         {"id": "gpu", "required_capabilities": ["gpu"]},
-        {"id": "good", "required_capabilities": ["llm"]},
+        {"id": "good", "target_agent_id": "node-a", "required_capabilities": ["llm"]},
     ]
     worked, requests, claims, _ = poll(monkeypatch, (200, {"items": tasks}),
                                        caps=["llm", "recovery"])
@@ -105,7 +105,8 @@ def test_unauthorized_backoff_resets_on_non_auth_response(monkeypatch):
 def test_rejected_claim_yields_instead_of_hot_loop(monkeypatch):
     attempted = []
     monkeypatch.setattr(agent, "_http", lambda *a, **kw: (200, {"items": [
-        {"id": "still-ready", "required_capabilities": ["llm"]}]}))
+        {"id": "still-ready", "target_agent_id": "node-a",
+         "required_capabilities": ["llm"]}]}))
     monkeypatch.setattr(agent, "_claim_and_run",
                         lambda **kw: (attempted.append(kw) or False))
     statuses = []
@@ -123,7 +124,7 @@ def test_real_claim_http_409_never_executes_or_reports_completion(monkeypatch):
         events.append((method, url))
         if method == "GET" and "/api/agent/tasks?" in url:
             return 200, {"items": [
-                {"id": "unclaimable", "task_type": "llm",
+                {"id": "unclaimable", "task_type": "llm", "target_agent_id": "node-a",
                  "required_capabilities": ["llm"]},
             ]}
         if method == "POST" and url.endswith("/api/tasks/unclaimable/claim"):
@@ -176,13 +177,18 @@ def test_valid_claim_fence_flows_into_completion(monkeypatch):
         if url.endswith("/claim"):
             return 200, {"claimed": True, "task": {
                 "id": "claimable", "claimed_by": "node-a", "status": "CLAIMED",
+                "target_agent_id": "node-a", "required_capabilities": ["llm"],
+                "execution_attempt": 1,
                 "claim_id": "claim-fenced-123", "task_type": "llm",
                 "payload_json": '{"prompt":"review","model":"m1"}',
                 "agent_session_id": kwargs["data"]["session_id"]}}
         if url.endswith("/v1/chat/completions"):
             return 200, {"choices": [{"message": {"content": "review successful"}}]}
         if url.endswith("/complete"):
-            return 200, {"task": {"id": "claimable", "status": "DONE"}}
+            return 200, {"task": {"id": "claimable", "status": "DONE",
+                "claimed_by": "node-a", "claim_id": kwargs["data"]["claim_id"],
+                "agent_session_id": kwargs["data"]["session_id"],
+                "execution_attempt": 1}}
         raise AssertionError(f"Unexpected route: {url}")
 
     monkeypatch.setattr(agent, "_http", fake_http)
@@ -206,7 +212,7 @@ def test_http_422_claim_denial_never_dispatches(monkeypatch):
         requests.append((method, url))
         if method == "GET" and "/api/agent/tasks?" in url:
             return 200, {"items": [{
-                "id": "malformed", "required_capabilities": ["llm"],
+                "id": "malformed", "target_agent_id": "node-a", "required_capabilities": ["llm"],
                 "task_type": "llm"}]}
         if method == "POST" and url.endswith("/api/tasks/malformed/claim"):
             return 422, {"detail": "invalid claim"}
@@ -229,6 +235,8 @@ def test_execution_uses_authoritative_claimed_payload_not_stale_ready_entry(monk
         if url.endswith("/claim"):
             return 200, {"claimed": True, "task": {
                 "id": "claimable", "claimed_by": "node-a", "status": "CLAIMED",
+                "target_agent_id": "node-a", "required_capabilities": ["llm"],
+                "execution_attempt": 1,
                 "agent_session_id": kwargs["data"]["session_id"],
                 "claim_id": "fence-123", "task_type": "llm",
                 "payload_json": '{"prompt":"CURRENT AUTHORIZED REVIEW","model":"model-a"}'}}
@@ -236,7 +244,10 @@ def test_execution_uses_authoritative_claimed_payload_not_stale_ready_entry(monk
             emitted.append(kwargs["data"])
             return 200, {"choices": [{"message": {"content": "done"}}]}
         if url.endswith("/complete"):
-            return 200, {"task": {"id": "claimable", "status": "DONE"}}
+            return 200, {"task": {"id": "claimable", "status": "DONE",
+                "claimed_by": "node-a", "claim_id": kwargs["data"]["claim_id"],
+                "agent_session_id": kwargs["data"]["session_id"],
+                "execution_attempt": 1}}
         raise AssertionError("Unexpected endpoint")
 
     monkeypatch.setattr(agent, "_http", fake_http)
@@ -272,13 +283,18 @@ def test_http_200_without_generated_answer_must_not_complete_done(monkeypatch, b
         if url.endswith("/claim"):
             return 200, {"claimed": True, "task": {
                 "id": "claimable", "claimed_by": "node-a", "status": "CLAIMED",
+                "target_agent_id": "node-a", "required_capabilities": ["llm"],
+                "execution_attempt": 1,
                 "agent_session_id": kwargs["data"]["session_id"],
                 "claim_id": "fence-123", "task_type": "llm",
                 "payload_json": '{"prompt":"Review a PR","model":"m1"}'}}
         if url.endswith("/v1/chat/completions"):
             return 200, body
         if url.endswith("/complete"):
-            return 200, {"task": {"id": "claimable", "status": "FAILED"}}
+            return 200, {"task": {"id": "claimable", "status": "FAILED",
+                "claimed_by": "node-a", "claim_id": kwargs["data"]["claim_id"],
+                "agent_session_id": kwargs["data"]["session_id"],
+                "execution_attempt": 1}}
         raise AssertionError("Unexpected route")
 
     monkeypatch.setattr(agent, "_http", fake_http)
@@ -309,6 +325,8 @@ def test_unacknowledged_completion_does_not_count_as_work(monkeypatch, code, ack
         if url.endswith("/claim"):
             return 200, {"claimed": True, "task": {
                 "id": "claimable", "claimed_by": "node-a", "status": "CLAIMED",
+                "target_agent_id": "node-a", "required_capabilities": ["llm"],
+                "execution_attempt": 1,
                 "agent_session_id": kwargs["data"]["session_id"],
                 "claim_id": "fence-1", "task_type": "llm",
                 "payload_json": '{"prompt":"Audit work supply","model":"m1"}'}}
@@ -336,6 +354,8 @@ def test_truncated_or_filtered_text_is_not_a_completed_task(monkeypatch, finish_
         if url.endswith("/claim"):
             return 200, {"claimed": True, "task": {
                 "id": "claimable", "claimed_by": "node-a", "status": "CLAIMED",
+                "target_agent_id": "node-a", "required_capabilities": ["llm"],
+                "execution_attempt": 1,
                 "agent_session_id": kwargs["data"]["session_id"],
                 "claim_id": "fence-123", "task_type": "llm",
                 "payload_json": '{"prompt":"Review plan","model":"m1"}'}}
@@ -345,7 +365,10 @@ def test_truncated_or_filtered_text_is_not_a_completed_task(monkeypatch, finish_
                 "finish_reason": finish_reason}]}
         if url.endswith("/complete"):
             terminal.append(kwargs["data"])
-            return 200, {"task": {"id": "claimable", "status": "FAILED"}}
+            return 200, {"task": {"id": "claimable", "status": "FAILED",
+                "claimed_by": "node-a", "claim_id": kwargs["data"]["claim_id"],
+                "agent_session_id": kwargs["data"]["session_id"],
+                "execution_attempt": 1}}
         raise AssertionError("Unexpected request")
 
     monkeypatch.setattr(agent, "_http", fake_http)
@@ -356,3 +379,120 @@ def test_truncated_or_filtered_text_is_not_a_completed_task(monkeypatch, finish_
     assert outcome is None and len(terminal) == 1
     assert terminal[0]["status"] == "FAILED"
     assert terminal[0]["result"]["error"] == "incomplete_or_filtered_model_generation"
+
+
+@pytest.mark.parametrize("task", [
+    {"id": "untargeted", "target_agent_id": None, "required_capabilities": ["llm"]},
+    {"id": "no-target", "required_capabilities": ["llm"]},
+    {"id": "other-node", "target_agent_id": "node-b", "required_capabilities": ["llm"]},
+    {"id": "no-capabilities", "target_agent_id": "node-a"},
+    {"id": "empty-capabilities", "target_agent_id": "node-a", "required_capabilities": []},
+    {"id": "broad-capabilities", "target_agent_id": "node-a",
+     "required_capabilities": ["llm", "script"]},
+    {"id": "wrong-capabilities", "target_agent_id": "node-a",
+     "required_capabilities": ["gpu"]},
+    {"id": "str-capabilities", "target_agent_id": "node-a",
+     "required_capabilities": "llm"},
+    {"id": "script-masked-as-llm", "target_agent_id": "node-a",
+     "required_capabilities": ["llm"], "task_type": "script"},
+    {"id": "unknown-task-type", "target_agent_id": "node-a",
+     "required_capabilities": ["llm"], "task_type": "shell"},
+])
+def test_untrusted_ready_entry_never_reaches_a_claim(monkeypatch, task):
+    worked, requests, claims, statuses = poll(monkeypatch, (200, {"items": [task]}),
+                                               caps=["llm", "script", "gpu"])
+    assert not worked and claims == [] and statuses == [200]
+    assert len(requests) == 1 and requests[0][0] == "GET"
+
+
+@pytest.mark.parametrize("modifications", [
+    {"target_agent_id": None},
+    {"target_agent_id": "other-node"},
+    {"required_capabilities": []},
+    {"required_capabilities": ["llm", "script"]},
+    {"required_capabilities": ["script"]},
+    {"execution_attempt": None},
+    {"execution_attempt": 0},
+    {"execution_attempt": True},
+    {"task_type": "script"},
+    {"task_type": "shell"},
+])
+def test_authoritative_claim_cannot_expand_task_or_tool_scope(monkeypatch, modifications):
+    calls = []
+
+    def fake_http(method, url, **kwargs):
+        calls.append((method, url))
+        if url.endswith("/claim"):
+            claimed_task = {
+                "id": "claimable", "status": "CLAIMED",
+                "claimed_by": "node-a", "claim_id": "testclaim123",
+                "agent_session_id": kwargs["data"]["session_id"],
+                "target_agent_id": "node-a", "required_capabilities": ["llm"],
+                "execution_attempt": 1,
+                "task_type": "llm",
+                "payload_json": '{"prompt":"useful code review","model":"m1"}',
+            }
+            claimed_task.update(modifications)
+            return 200, {"claimed": True, "claim_id": "testclaim123", "task": claimed_task}
+        raise AssertionError("No inference, heartbeat, or completion after stale authority")
+
+    monkeypatch.setattr(agent, "_http", fake_http)
+    result = agent._claim_and_run(
+        assistx_url="http://assistx", router_url="http://router",
+        auth=("operator", "test"), node_id="node-a", caps=["llm"],
+        task={"id": "claimable", "target_agent_id": "node-a",
+              "required_capabilities": ["llm"]}, lmstudio_url="http://local")
+    assert result is False and len(calls) == 1
+    assert calls[0][1].endswith("/claim")
+
+
+@pytest.mark.parametrize("changes", [
+    {"claim_id": "another-claim"},
+    {"claim_id": None},
+    {"agent_session_id": "other-session"},
+    {"agent_session_id": None},
+    {"claimed_by": "other-node"},
+    {"claimed_by": None},
+    {"execution_attempt": 0},
+    {"execution_attempt": 2},
+    {"execution_attempt": True},
+    {"execution_attempt": None},
+])
+def test_http_200_matching_id_status_but_wrong_claim_receipt_is_not_work(
+    monkeypatch, changes,
+):
+    events = []
+
+    def fake_http(method, url, **kwargs):
+        events.append((method, url, kwargs))
+        if url.endswith("/claim"):
+            return 200, {"claimed": True, "task": {
+                "id": "claimable", "status": "CLAIMED",
+                "claimed_by": "node-a", "claim_id": "fenced-claim",
+                "agent_session_id": kwargs["data"]["session_id"],
+                "target_agent_id": "node-a", "required_capabilities": ["llm"],
+                "execution_attempt": 1, "task_type": "llm",
+                "payload_json": '{"prompt":"code review","model":"m1"}',
+            }}
+        if url.endswith("/v1/chat/completions"):
+            return 200, {"choices": [{"message": {"content": "Good review"}}]}
+        if url.endswith("/complete"):
+            reply = {
+                "id": "claimable", "status": "DONE", "claimed_by": "node-a",
+                "claim_id": kwargs["data"]["claim_id"],
+                "agent_session_id": kwargs["data"]["session_id"],
+                "execution_attempt": 1,
+            }
+            reply.update(changes)
+            return 200, {"task": reply}
+        raise AssertionError("Unexpected endpoint")
+
+    monkeypatch.setattr(agent, "_http", fake_http)
+    worked = agent._claim_and_run(
+        assistx_url="http://assistx", router_url="http://router",
+        auth=("operator", "test"), node_id="node-a", caps=["llm"],
+        task={"id": "claimable", "target_agent_id": "node-a",
+              "required_capabilities": ["llm"]}, lmstudio_url="http://local")
+    assert worked is False
+    assert [url.split("/")[-1] for _, url, _ in events] == ["claim", "completions", "complete"]
+    assert len([x for x in events if x[1].endswith("/complete")]) == 1

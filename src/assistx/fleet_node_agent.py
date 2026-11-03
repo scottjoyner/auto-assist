@@ -1,19 +1,18 @@
-"""Fleet node-agent: turns any idle machine into a fleet worker.
+"""Legacy fleet worker; strict machine Task scope pending node-token migration.
 
-Design goals (per fleet unification plan):
-- **Zero pip dependencies** — stdlib only, so it runs on weak Linux boxes and
-  Apple-Silicon Macs that struggle to even load a 1.2b model.
-- **Capability-aware** — auto-detects what the node can do (local LM Studio
-  endpoint, yolo/vision, shell-script execution) and only pulls tasks whose
-  ``required_capabilities`` it satisfies. Weak nodes run ``script`` jobs;
-  Macs with vision tooling run ``yolo``/``vision`` jobs; anything with an LM
-  Studio endpoint runs ``llm`` jobs.
-- **Self-joining** — reports its capabilities + health to the auto-router
-  ``/api/fleet/node-report`` endpoint so the router's context model stays
-  current, and polls AssistX ``/api/agent/tasks`` for work.
-- **Crash-safe** — claims with a lease, heartbeats, and reports DONE/FAILED.
-  A node that dies mid-task leaves the lease to expire so another node can
-  retry.
+Current narrow execution authority: exact-target single-capability LLM Tasks
+only. Untrusted untargeted, generic shared-pool, script/recovery and broader
+tool-capability Tasks must not be claimed by this Basic-auth legacy worker.
+A current signed admission and per-node token cutover are still prerequisites
+for production automatic Task execution. No code here grants those approvals.
+
+- **Zero extra pip dependencies** — stdlib-only worker transport.
+- **Capability-aware** — auto-detects local LM Studio models but advertises
+  no LLM capability when no model is loaded.
+- **Self-reporting** — reports health to Auto-Router; polls AssistX only for
+  explicitly targeted LLM work.
+- **Claim-bound execution** — uses server-assigned claim/session/attempt fences
+  and requires a matching authoritative terminal acknowledgement.
 
 Run:
     python -m assistx.fleet_node_agent \
@@ -45,7 +44,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .kv_cache import runtime_capabilities
 from .lm_studio_client_auth import headers_for_request
 from .recovery_runbooks import RecoveryRunbookExecutor
 
@@ -479,10 +477,19 @@ def _claim_and_run(
         return False
     if claim.get("claim_id") is not None and claim.get("claim_id") != claim_id:
         return False
+    claim_attempt = claimed_task.get("execution_attempt")
     if (claimed_task.get("id") != task_id
             or claimed_task.get("claimed_by") != node_id
             or claimed_task.get("status") != "CLAIMED"
-            or claimed_task.get("agent_session_id") != session_id):
+            or claimed_task.get("agent_session_id") != session_id
+            or claimed_task.get("target_agent_id") != node_id
+            or claimed_task.get("required_capabilities") != ["llm"]
+            or "llm" not in caps
+            or str(claimed_task.get("task_type") or "").lower() not in {"", "llm"}
+            or type(claim_attempt) is not int or claim_attempt < 1):
+        # Even a 200 claim response is not machine authority if the server
+        # returned an untargeted task, a broader tool capability, or an
+        # unbound attempt. Avoid executing an old/shared-pool Task.
         return False
     # READY-list task contents may be stale. Execute the authoritative task
     # returned by the claim, bound to the exact server-assigned claim fence.
@@ -623,7 +630,12 @@ def _claim_and_run(
     acknowledged_task = completion.get("task") if isinstance(completion, dict) else None
     if (completion_status != 200 or not isinstance(acknowledged_task, dict)
             or acknowledged_task.get("id") != task_id
-            or acknowledged_task.get("status") != requested_terminal):
+            or acknowledged_task.get("status") != requested_terminal
+            or acknowledged_task.get("claimed_by") != node_id
+            or acknowledged_task.get("claim_id") != claim_id
+            or acknowledged_task.get("agent_session_id") != session_id
+            or type(acknowledged_task.get("execution_attempt")) is not int
+            or acknowledged_task["execution_attempt"] != claim_attempt):
         # A generated answer is not a committed task. Never claim success
         # without the authoritative terminal receipt or blindly replay work.
         return False
@@ -665,16 +677,17 @@ def _poll_once(
     for task in tasks:
         if not isinstance(task, dict):
             continue
-        if task.get("target_agent_id") not in (None, node_id):
+        # The generic backend claim path still permits NULL target and
+        # empty capability wildcards. Treat those as missing authority,
+        # not as shared-pool permission for a machine worker.
+        if task.get("target_agent_id") != node_id:
             continue
-        required_field = task.get("required_capabilities") or []
-        if not isinstance(required_field, list) or any(
-            not isinstance(cap, str) for cap in required_field
-        ):
+        required_field = task.get("required_capabilities")
+        if required_field != ["llm"] or "llm" not in advertised_caps:
             continue
-        required = set(required_field)
-        if "recovery" in required:
-            continue  # No token-bound recovery identity in this worker.
+        if str(task.get("task_type") or "").lower() not in {"", "llm"}:
+            continue  # Tool/recovery jobs need a separate token-fenced path.
+        required = {"llm"}
         if required.issubset(set(advertised_caps)):
             if not (task.get("task_id") or task.get("id")):
                 continue
