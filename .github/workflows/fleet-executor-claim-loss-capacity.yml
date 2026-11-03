@@ -1,0 +1,46 @@
+name: Fleet executor claim-loss capacity fence
+on:
+  pull_request:
+    branches:
+      - main
+      - feat/fleet-admission-preflight-20261101
+    paths:
+      - src/assistx/fleet_executor.py
+      - tests/test_safe_fleet_executor.py
+      - .github/workflows/fleet-executor-claim-loss-capacity.yml
+  push:
+    branches:
+      - fix/executor-claim-loss-capacity-20261103
+    paths:
+      - src/assistx/fleet_executor.py
+      - tests/test_safe_fleet_executor.py
+      - .github/workflows/fleet-executor-claim-loss-capacity.yml
+  workflow_dispatch:
+
+jobs:
+  claim-loss-regression:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install project testing dependencies
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Compile exact source
+        run: |
+          python -m py_compile src/assistx/fleet_executor.py tests/test_safe_fleet_executor.py
+      - name: Block unsafe correctness lint
+        # Legacy type-annotation rewrites are out of scope; semantic lint blocks.
+        run: |
+          ruff check --ignore I001,E501,F401,B023,UP012,UP018,UP035,UP037,UP045 \
+            src/assistx/fleet_executor.py tests/test_safe_fleet_executor.py
+      - name: Claim-loss capacity, concurrency and routing regressions
+        run: |
+          pytest -q tests/test_safe_fleet_executor.py \
+            tests/test_fleet_executor_concurrency.py \
+            tests/test_task_family_routing.py \
+            tests/test_fleet_ui_freshness.py

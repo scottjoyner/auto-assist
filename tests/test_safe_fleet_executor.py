@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import threading
 import time
+
+import pytest
 from typing import Any
 
 from assistx import fleet_executor as module
@@ -245,3 +247,173 @@ def test_script_lane_is_disabled() -> None:
         "exit_code": 126,
     }
     assert module.FleetExecutor._probe_models("127.0.0.1") is None
+
+
+def test_claim_loss_holds_capacity_until_noncooperative_inference_exits(monkeypatch) -> None:
+    """A stale claim cannot release a slot with an orphan invocation running."""
+    monkeypatch.setattr(module, 'HEARTBEAT_INTERVAL', 0.01)
+    monkeypatch.setattr(module, 'CLAIM_LOST_CANCEL_GRACE_SECONDS', 0.02)
+    start = threading.Event()
+    lost = threading.Event()
+    stop = threading.Event()
+    task = {'id':'task-hold', 'priority':'interactive',
+            'required_capabilities':['llm'],
+            'payload':{'prompt':'Perform an independently bounded review',
+                       'model':'local/small-3b'}}
+    state = SharedState([task])
+
+    class LosingNeo(FakeNeo):
+        def heartbeat_task(self, task_id, agent_id, **kwargs):
+            lost.set()
+            return None
+
+    def runner(request, timeout, cancel):
+        start.set()
+        assert stop.wait(timeout=2.0), 'test runner was not released'
+        return {'status_code':200,
+                'body':{'choices':[{'message':{'content':'late work'}}]}}
+
+    executor = module.FleetExecutor(
+        neo_factory=lambda:LosingNeo(state),
+        projection_loader=lambda:projection(slots=1),
+        router_runner=runner,
+    )
+    executor._list_ready_llm_tasks = lambda neo, limit: list(state.tasks)
+    try:
+        first = executor.run_once()
+        assert first['claimed'] == 1
+        assert start.wait(1.0)
+        assert lost.wait(1.0)
+        time.sleep(0.08)  # cancellation grace elapsed; runner still executing
+        assert executor.status()['active_count'] == 1
+        retry = executor.run_once()
+        assert retry['claimed'] == 0
+        assert retry['capacity'] == 1
+        assert len(state.claimed) == 1
+        assert state.completed == []  # Never commit a result after claim loss.
+    finally:
+        stop.set()
+        wait_until_idle(executor)
+        executor.stop()
+    assert state.completed == []
+
+
+def test_supervised_router_process_never_frees_slot_while_child_alive() -> None:
+    """Even terminate + kill timeout cannot prove a process exited."""
+    class ResistantProcess:
+        alive = True
+        calls: list[Any]
+        def __init__(self):
+            self.calls = []
+        def is_alive(self):
+            return self.alive
+        def terminate(self):
+            self.calls.append('terminate')
+        def kill(self):
+            self.calls.append('kill')
+        def join(self, timeout=None):
+            self.calls.append(('join', timeout))
+            if timeout is None:
+                self.alive = False  # No false release prior to confirmed exit.
+
+    process = ResistantProcess()
+    module.FleetExecutor._terminate_router_process(process)
+    assert process.alive is False
+    assert process.calls == ['terminate',('join',5),'kill',('join',5),('join',None)]
+
+
+def test_heartbeat_exception_cannot_release_slot_while_router_invocation_runs(monkeypatch) -> None:
+    monkeypatch.setattr(module, 'HEARTBEAT_INTERVAL', 0.01)
+    monkeypatch.setattr(module, 'CLAIM_LOST_CANCEL_GRACE_SECONDS', 0.02)
+    started = threading.Event()
+    heartbeat_failed = threading.Event()
+    release = threading.Event()
+    task = {'id':'task-io-error', 'priority':'interactive',
+            'required_capabilities':['llm'],
+            'payload':{'prompt':'Diagnose a current service regression',
+                       'model':'local/small-3b'}}
+    state = SharedState([task])
+
+    class BrokenHeartbeats(FakeNeo):
+        def heartbeat_task(self, task_id, agent_id, **kwargs):
+            heartbeat_failed.set()
+            raise OSError('synthetic heartbeat partition')
+
+    def runner(request, timeout, cancel):
+        started.set()
+        assert release.wait(timeout=2.0)
+        return {'status_code':200,
+                'body':{'choices':[{'message':{'content':'late outcome'}}]}}
+
+    executor = module.FleetExecutor(
+        neo_factory=lambda: BrokenHeartbeats(state),
+        projection_loader=lambda: projection(slots=1),
+        router_runner=runner,
+    )
+    executor._list_ready_llm_tasks = lambda neo, limit: list(state.tasks)
+    try:
+        assert executor.run_once()['claimed']==1
+        assert started.wait(1.0)
+        assert heartbeat_failed.wait(1.0)
+        time.sleep(0.07)
+        assert executor.status()['active_count']==1
+        assert executor.run_once()['claimed']==0
+        assert len(state.claimed)==1
+        assert state.completed==[]  # No FAILED mutation before inference exits.
+    finally:
+        release.set()
+        wait_until_idle(executor)
+        executor.stop()
+    assert state.completed[0]['status']=='FAILED'
+    assert all(row['status']!='DONE' for row in state.completed)
+
+
+@pytest.mark.parametrize('content', [None,'','   ',[],['not-generated-text'],
+                                      {'text':'not-generated-text'},123])
+def test_non_text_or_empty_http_200_is_not_productive_completion(content):
+    outcome = module.FleetExecutor._result_from_router({
+        'status_code':200,
+        'body':{'choices':[{'finish_reason':'stop','message':{'content':content}}],
+                'model':'local/valid'},
+    })
+    status, result = outcome
+    assert status=='FAILED'
+    assert result['error']=='empty_or_invalid_model_generation'
+    assert 'router_response' not in result
+
+
+@pytest.mark.parametrize('finish_reason',['length','content_filter','tool_calls'])
+def test_http_200_truncated_or_filtered_response_is_not_done(finish_reason):
+    status,result = module.FleetExecutor._result_from_router({
+        'status_code':200,
+        'body':{'choices':[{'finish_reason':finish_reason,
+                            'message':{'content':'Partial, not an accepted review'}}]},
+    })
+    assert status=='FAILED'
+    assert result['error']=='incomplete_or_filtered_model_generation'
+    assert result['finish_reason']==finish_reason
+    assert 'content' not in result
+
+
+def test_complete_text_remains_done_without_separate_task_receipt():
+    status,result = module.FleetExecutor._result_from_router({
+        'status_code':200,
+        'body':{'model':'local/only-chat',
+                'usage':{'completion_tokens':3},
+                'choices':[{'finish_reason':'stop',
+                            'message':{'content':'Evidence verified'}}]},
+    })
+    assert status=='DONE' and result['content']=='Evidence verified'
+    assert result['usage']['completion_tokens']==3
+    # This pure response parser is NOT independent Neo4j task acceptance.
+    assert 'claim_id' not in result
+
+
+@pytest.mark.parametrize('finish_reason',[[],{},7])
+def test_malformed_finish_reason_fails_without_unhandled_exception(finish_reason):
+    status,result=module.FleetExecutor._result_from_router({
+        'status_code':200,
+        'body':{'choices':[{'finish_reason':finish_reason,
+                            'message':{'content':'Apparently valid text'}}]}})
+    assert status=='FAILED'
+    assert result['error']=='invalid_model_finish_reason'

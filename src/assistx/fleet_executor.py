@@ -51,6 +51,7 @@ TASK_LEASE_SECONDS = max(
     60,
     int(os.getenv("FLEET_TASK_LEASE_SECONDS", str(TASK_WALL_TIMEOUT + 120))),
 )
+CLAIM_LOST_CANCEL_GRACE_SECONDS = 10
 HEARTBEAT_INTERVAL = max(
     5,
     min(
@@ -456,6 +457,27 @@ class FleetExecutor:
             "metadata": metadata,
         }
 
+    @staticmethod
+    def _terminate_router_process(process: Any) -> None:
+        """Keep the capacity occupied until the child is *actually* gone.
+
+        A timeout or lost claim cannot make an unkillable inference process
+        disappear from the accounting merely because the kill grace expired.
+        """
+        if not process.is_alive():
+            return
+        process.terminate()
+        process.join(timeout=5)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
+        if process.is_alive():
+            logger.critical(
+                "fleet executor: router child resisted terminate/kill; "
+                "holding slot until process exit is proven"
+            )
+            process.join()  # Fail closed; never release a still-running child.
+
     def _run_router_supervised(
         self,
         request_payload: dict[str, Any],
@@ -482,11 +504,7 @@ class FleetExecutor:
             while process.is_alive():
                 remaining = deadline - self.clock()
                 if cancel_event.is_set() or remaining <= 0:
-                    process.terminate()
-                    process.join(timeout=5)
-                    if process.is_alive():
-                        process.kill()
-                        process.join(timeout=5)
+                    self._terminate_router_process(process)
                     return {
                         "status_code": 0,
                         "body": {
@@ -504,10 +522,13 @@ class FleetExecutor:
                     "body": {"error": "router_worker_exited_without_result"},
                 }
         finally:
-            if process.is_alive():
-                process.terminate()
-                process.join(timeout=5)
-            result_queue.close()
+            # The child can still exist after an exceptional path or an
+            # interrupted bounded kill. Never report a released capacity slot
+            # while that process continues inference.
+            try:
+                self._terminate_router_process(process)
+            finally:
+                result_queue.close()
 
     @staticmethod
     def _result_from_router(response: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -521,18 +542,32 @@ class FleetExecutor:
                 "status_code": status_code,
                 "error": body,
             }
-        choices = body.get("choices") or []
-        content = ""
-        if choices and isinstance(choices[0], dict):
-            message = choices[0].get("message") or {}
-            if isinstance(message, dict):
-                content = str(message.get("content") or "")
-        if not content.strip():
+        choices = body.get("choices")
+        first = (choices[0] if isinstance(choices, list) and choices
+                 and isinstance(choices[0], dict) else {})
+        message = first.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        finish_reason = first.get("finish_reason")
+        if finish_reason is not None and not isinstance(finish_reason, str):
             return "FAILED", {
                 "exit_code": 1,
                 "status_code": status_code,
-                "error": "empty_response",
-                "router_response": body,
+                "error": "invalid_model_finish_reason",
+            }
+        if finish_reason in {"length", "content_filter", "tool_calls"}:
+            # A partial/filtered/tool-call response is not completed prose.
+            # Never persist its untrusted/possibly sensitive body as a Task result.
+            return "FAILED", {
+                "exit_code": 1,
+                "status_code": status_code,
+                "error": "incomplete_or_filtered_model_generation",
+                "finish_reason": finish_reason,
+            }
+        if not isinstance(content, str) or not content.strip():
+            return "FAILED", {
+                "exit_code": 1,
+                "status_code": status_code,
+                "error": "empty_or_invalid_model_generation",
             }
         return "DONE", {
             "exit_code": 0,
@@ -550,6 +585,22 @@ class FleetExecutor:
     ) -> None:
         task_id = str(task.get("id") or "")
         cancel_event = threading.Event()
+        invocation: threading.Thread | None = None
+
+        def ensure_invocation_stopped() -> None:
+            # Every uncertain outcome must stop model execution *before*
+            # attempting terminal mutation and before freeing this slot.
+            cancel_event.set()
+            if invocation is not None and invocation.is_alive():
+                invocation.join(timeout=CLAIM_LOST_CANCEL_GRACE_SECONDS)
+                if invocation.is_alive():
+                    logger.error(
+                        "fleet executor: task %s invocation survived "
+                        "cancellation grace; holding slot until exit",
+                        task_id,
+                    )
+                    invocation.join()
+
         neo = self.neo_factory()
         try:
             request_payload = self._request_payload(task, claim_id, projection)
@@ -589,8 +640,7 @@ class FleetExecutor:
                         "fleet executor: claim lost while task %s was running",
                         task_id,
                     )
-                    cancel_event.set()
-                    invocation.join(timeout=10)
+                    ensure_invocation_stopped()
                     return
 
             response = holder.get(
@@ -623,6 +673,7 @@ class FleetExecutor:
                 )
         except Exception as exc:
             logger.exception("fleet executor: task %s failed: %s", task_id, exc)
+            ensure_invocation_stopped()
             try:
                 neo.complete_task(
                     task_id,
@@ -638,12 +689,18 @@ class FleetExecutor:
                     "fleet executor: could not persist failure for task %s", task_id
                 )
         finally:
+            # Heartbeat loss, router failure and any unexpected exception are
+            # all uncertain until the local invocation has actually exited.
+            # No active-capacity slot is released before that point.
             try:
-                neo.close()
+                ensure_invocation_stopped()
             finally:
-                with self._lock:
-                    self._active.pop(task_id, None)
-                    self._futures.pop(task_id, None)
+                try:
+                    neo.close()
+                finally:
+                    with self._lock:
+                        self._active.pop(task_id, None)
+                        self._futures.pop(task_id, None)
 
     def _claim(
         self,
