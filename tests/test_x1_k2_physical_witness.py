@@ -285,3 +285,40 @@ def test_missing_expected_transport_forwarder_is_hold(tmp_path):
     assert "process_identity_or_socket_unverified" in report["reasons"]
     assert report["physical_process_socket_chain_verified"] is False
     assert report["can_dispatch"] is False
+
+
+def test_observer_emits_exact_measured_artifact_bytes_and_digest(tmp_path):
+    report = _observe_fixture(tmp_path)
+    assert report["model_id_expected"] == module.MODEL_ID
+    assert report["model_artifact_sha256_observed"] == module.EXPECTED_MODEL_SHA
+    assert report["model_artifact_bytes_observed"] == (
+        tmp_path / "k2.gguf"
+    ).stat().st_size
+    assert report["model_artifact_sha256_match"] is True
+    assert report["process"]["running_executable_sha256"] == module.digest_file(
+        tmp_path / "lm-studio"
+    )
+    for proxy in report["process"]["proxies"].values():
+        assert proxy["running_executable_sha256"] == module.digest_file(
+            tmp_path / "socat"
+        )
+
+
+def test_observer_size_mismatch_rejects_without_hashing_wrong_file(tmp_path):
+    root, exe, model, pkg = _create_fixture(tmp_path)
+    with patch.object(module, "EXECUTABLE", exe), \
+         patch.object(module, "PROXY_EXECUTABLE", tmp_path / "socat"), \
+         patch.object(module, "MODEL", model), \
+         patch.object(module, "PACKAGE", pkg), \
+         patch.object(module, "EXPECTED_MODEL_BYTES", model.stat().st_size + 1), \
+         patch.object(module, "digest_file", wraps=module.digest_file) as hashed, \
+         patch.object(module, "catalog", return_value={
+             "reachable": True, "loaded_count": 1,
+             "expected_model_present": True,
+         }):
+        report = module.observe(proc_root=root)
+    assert report["model_artifact_bytes_observed"] == model.stat().st_size
+    assert report["model_artifact_sha256_observed"] is None
+    assert report["model_artifact_sha256_match"] is False
+    assert not any(call.args[0] == model for call in hashed.call_args_list)
+    assert report["can_dispatch"] is False
