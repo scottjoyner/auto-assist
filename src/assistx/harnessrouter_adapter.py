@@ -60,6 +60,44 @@ class HarnessRouterAdapter:
             "models": models,
         }
 
+    def discover_protocol(self) -> dict[str, Any]:
+        """Read-only UHP discovery. Advertised capabilities are NOT conformance proof."""
+        payload = self._request_fn("GET", "/v1/uhp", None)
+        if not isinstance(payload, dict) or payload.get("object") != "uhp.discovery" or payload.get("protocol") != "uhp":
+            raise ValueError("UHP discovery identity mismatch")
+        versions = payload.get("versions")
+        default = payload.get("default_version")
+        if (not isinstance(versions, list) or not versions
+                or any(not isinstance(v, str) or re.fullmatch(r"20[0-9]{2}-[01][0-9]-[0-3][0-9]", v) is None for v in versions)
+                or len(set(versions)) != len(versions)
+                or not isinstance(default, str) or default not in versions):
+            raise ValueError("UHP version negotiation is malformed")
+        claimed = payload.get("conformance_class")
+        if claimed not in ("core", "extended", "full"):
+            raise ValueError("UHP conformance class declaration is invalid")
+        capabilities = payload.get("capabilities")
+        if not isinstance(capabilities, dict) or any(
+            not isinstance(k, str) or type(v) is not bool
+            for k, v in capabilities.items()
+        ):
+            raise ValueError("UHP capabilities must be named booleans")
+        if claimed in ("extended", "full") and not all(
+            capabilities.get(k) is True for k in ("files_input", "files_output", "session_listing")
+        ):
+            raise ValueError("UHP claimed class contradicts capability discovery")
+        return {
+            "protocol": "uhp",
+            "default_version": default,
+            "versions": versions,
+            "claimed_class": claimed,
+            "capabilities": capabilities,
+            "tested_contract_version": "2026-10-19",
+            "matches_tested_contract": "2026-10-19" in versions,
+            "conformance_independently_verified": False,
+            "authority": "discovery-only",
+            "canary_enabled": self.config.canary_enabled,
+        }
+
     def submit_canary(
         self,
         prompt: str,
@@ -91,6 +129,10 @@ class HarnessRouterAdapter:
                     and isinstance(metadata.get("model_fallback_reason"), str)
                     and metadata["model_fallback_reason"].strip()):
                 raise ValueError("HarnessRouter substituted a model without a complete fallback receipt")
+        if receipt.response_id in self._owned_responses:
+            # An id returned by different submissions must never silently
+            # rebind the cancellation authority to a different harness.
+            raise ValueError("HarnessRouter reused an already owned response id")
         self._owned_responses[receipt.response_id] = harness_id
         return receipt
 
@@ -148,7 +190,7 @@ class HarnessRouterAdapter:
         if not isinstance(response_id, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", response_id) is None:
             raise ValueError("HarnessRouter response id must be a canonical identifier")
         status = payload.get("status")
-        if status not in {"in_progress", "completed", "failed", "incomplete", "cancelled"}:
+        if not isinstance(status, str) or status not in {"in_progress", "completed", "failed", "incomplete", "cancelled"}:
             raise ValueError("HarnessRouter returned an unknown lifecycle status")
         if status == "failed" and payload.get("error") is None:
             raise ValueError("a failed HarnessRouter task requires an error")
