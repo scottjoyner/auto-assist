@@ -287,6 +287,9 @@ def observe(*, proc_root: Path = PROC, read_model_sha: bool = True) -> dict:
         report["model_artifact_sha256_match"] = None
     if report["model_artifact_sha256_match"] is not True:
         report["reasons"].append("model_artifact_sha256_unverified")
+    # Public, bounded step labels identify the first failed collection
+    # boundary without ever exposing /proc paths, command lines or file IDs.
+    collection_stage = "runtime_process_inventory"
     try:
         inventory = process_tree(proc_root)
         pid = inventory["root_pid"]
@@ -294,7 +297,9 @@ def observe(*, proc_root: Path = PROC, read_model_sha: bool = True) -> dict:
         report["process"]["start_ticks"] = inventory["start_ticks"]
         report["process"]["descendants_count"] = len(inventory["descendants"])
         report["process"]["proxy_processes_observed_unverified"] = inventory["proxies"]
+        collection_stage = "boot_identity"
         report["process"]["boot_id_sha256"] = boot_digest(proc_root)
+        collection_stage = "runtime_executable_link"
         proc_exe = proc_root / str(pid) / "exe"
         # The /proc/PID/exe descriptor refers to the actual running
         # executable, not to a mutable pathname on disk.
@@ -304,13 +309,17 @@ def observe(*, proc_root: Path = PROC, read_model_sha: bool = True) -> dict:
         )
         if not report["process"]["executable_target_verified"]:
             raise ValueError("running_executable_path_mismatch")
+        collection_stage = "runtime_executable_hash"
         report["process"]["running_executable_sha256"] = digest_file(proc_exe)
+        collection_stage = "installed_executable_hash"
         report["process"]["installed_executable_sha256_match"] = (
             digest_file(EXECUTABLE) == report["process"]["running_executable_sha256"])
         if not report["process"]["installed_executable_sha256_match"]:
             raise ValueError("running_executable_image_differs_from_installed")
+        collection_stage = "listener_inventory"
         all_listeners = listener_inodes(proc_root)
         pids = inventory["descendants"]
+        collection_stage = "runtime_listener_ownership"
         lmstudio_owned = process_socket_inodes(proc_root, pids)
         ownership = {
             "loopback": bool(lmstudio_owned & all_listeners.get("127.0.0.1", set())),
@@ -322,12 +331,15 @@ def observe(*, proc_root: Path = PROC, read_model_sha: bool = True) -> dict:
             # The forwarding command is checked against an exact literal
             # in process_tree; require the actual running socat executable
             # and socket FD, not a configured systemd service alone.
+            collection_stage = f"proxy_{kind}_executable_link"
             proxy_exe = proc_root / str(proxy_pid) / "exe"
             if os.readlink(proxy_exe) != str(PROXY_EXECUTABLE):
                 raise ValueError("transport_proxy_running_executable_mismatch")
+            collection_stage = f"proxy_{kind}_executable_hash"
             proxy_exe_sha = digest_file(proxy_exe)
             if proxy_exe_sha != digest_file(PROXY_EXECUTABLE):
                 raise ValueError("transport_proxy_executable_fingerprint_mismatch")
+            collection_stage = f"proxy_{kind}_listener_ownership"
             proxy_owned = process_socket_inodes(proc_root, [proxy_pid])
             ownership[kind] = bool(proxy_owned & all_listeners.get(bind_ip, set()))
             report["process"]["proxies"][kind] = {
@@ -341,6 +353,7 @@ def observe(*, proc_root: Path = PROC, read_model_sha: bool = True) -> dict:
         report["physical_process_socket_chain_verified"] = all(ownership.values())
         if not report["physical_process_socket_chain_verified"]:
             report["reasons"].append("socket_inode_owner_unverified")
+        collection_stage = "mapped_model_inventory"
         report["process"]["model_file_mapped_in_process_tree"] = (
             mapped_model_in_process(proc_root, pids, MODEL)
         )
@@ -351,6 +364,7 @@ def observe(*, proc_root: Path = PROC, read_model_sha: bool = True) -> dict:
         # private /proc values or a raw exception path.
         report["reasons"].append("process_identity_or_socket_unverified")
         report["process"]["collection_error_kind"] = type(exc).__name__
+        report["process"]["collection_error_stage"] = collection_stage
     for kind, url in PATHS.items():
         try:
             report["paths"][kind] = catalog(url)

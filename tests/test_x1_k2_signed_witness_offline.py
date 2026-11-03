@@ -327,6 +327,20 @@ def test_signed_process_error_label_denied(monkeypatch):
                       now_ms=NOW)
 
 
+def test_signed_success_claim_with_collection_stage_alone_denied(monkeypatch):
+    obs = observation()
+    # A claimed successful physical chain must not smuggle a collection
+    # failure marker without also specifying the old error-kind field.
+    obs["process"]["collection_error_stage"] = "runtime_executable_link"
+    doc = signed(monkeypatch, obs)
+    with pytest.raises(
+        module.WitnessHold, match="process_evidence_contains_unverified_collection"
+    ):
+        module.verify(
+            module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW
+        )
+
+
 def test_actual_two_tier_observer_fixture_matches_signed_verifier(monkeypatch, tmp_path):
     # This imports the previous stacked PR's real observer code and runs
     # its isolated filesystem/socket fixture. No live /proc or API is touched.

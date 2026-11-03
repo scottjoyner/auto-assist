@@ -203,6 +203,7 @@ def test_process_executable_unreadable_is_hold(tmp_path):
     assert report["gate"] == "HOLD"
     assert report["can_dispatch"] is False
     assert report["process"]["collection_error_kind"] == "PermissionError"
+    assert report["process"]["collection_error_stage"] == "runtime_executable_link"
 
 
 def test_redirects_never_follow_foreign_hosts():
@@ -321,4 +322,68 @@ def test_observer_size_mismatch_rejects_without_hashing_wrong_file(tmp_path):
     assert report["model_artifact_sha256_observed"] is None
     assert report["model_artifact_sha256_match"] is False
     assert not any(call.args[0] == model for call in hashed.call_args_list)
+    assert report["can_dispatch"] is False
+
+@pytest.mark.parametrize(("stage", "target"), [
+    ("runtime_listener_ownership", "runtime_socket"),
+    ("proxy_lan_executable_link", "proxy_lan_link"),
+    ("proxy_tailscale_executable_link", "proxy_tailscale_link"),
+    ("mapped_model_inventory", "mapped_model"),
+])
+def test_sanitized_collection_failure_stage_reports_first_blocker(
+    tmp_path, stage, target
+):
+    root, exe, model, pkg = _create_fixture(tmp_path)
+    real_readlink = module.os.readlink
+    real_sockets = module.process_socket_inodes
+    real_maps = module.mapped_model_in_process
+
+    def readlink(path):
+        if (target == "proxy_lan_link" and str(path).endswith("/125/exe")
+                or target == "proxy_tailscale_link"
+                and str(path).endswith("/126/exe")):
+            raise PermissionError("private /proc path: DO NOT ECHO")
+        return real_readlink(path)
+
+    def sockets(proc_root, pids):
+        if target == "runtime_socket" and pids == [123, 124]:
+            raise PermissionError("private proc socket context: DO NOT ECHO")
+        return real_sockets(proc_root, pids)
+
+    def mapped(proc_root, pids, model_path):
+        if target == "mapped_model":
+            raise PermissionError("private proc maps context: DO NOT ECHO")
+        return real_maps(proc_root, pids, model_path)
+
+    with patch.object(module, "EXECUTABLE", exe), \
+         patch.object(module, "PROXY_EXECUTABLE", tmp_path / "socat"), \
+         patch.object(module, "MODEL", model), \
+         patch.object(module, "PACKAGE", pkg), \
+         patch.object(module.os, "readlink", side_effect=readlink), \
+         patch.object(module, "process_socket_inodes", side_effect=sockets), \
+         patch.object(module, "mapped_model_in_process", side_effect=mapped), \
+         patch.object(module, "catalog", return_value={
+             "reachable": True, "expected_model_present": True,
+             "loaded_count": 1,
+         }):
+        report = module.observe(proc_root=root, read_model_sha=False)
+
+    assert report["process"]["collection_error_stage"] == stage
+    assert report["process"]["collection_error_kind"] in {"PermissionError"}
+    assert "private" not in json.dumps(report)
+    # Socket ownership can be proven BEFORE an unrelated memory-map
+    # read fails; preserve that useful independent signal without ever
+    # asserting a model is physically loaded or dispatch is admitted.
+    assert report["physical_process_socket_chain_verified"] is (
+        target == "mapped_model"
+    )
+    assert report["model_loaded_physically_verified"] is False
+    assert report["gate"] == "HOLD" and report["can_dispatch"] is False
+
+
+def test_successful_synthetic_observation_does_not_emit_error_stage(tmp_path):
+    report = _observe_fixture(tmp_path)
+    assert "collection_error_stage" not in report["process"]
+    assert "collection_error_kind" not in report["process"]
+    assert report["physical_process_socket_chain_verified"]
     assert report["can_dispatch"] is False

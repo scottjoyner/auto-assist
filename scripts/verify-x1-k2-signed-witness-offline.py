@@ -149,7 +149,8 @@ def validate_observation(obs: Any, *, now_ms: int, issued_ms: int) -> None:
     process = obs.get("process")
     if not isinstance(process, dict):
         reject("process_evidence_missing")
-    if "collection_error_kind" in process:
+    if ("collection_error_kind" in process
+            or "collection_error_stage" in process):
         reject("process_evidence_contains_unverified_collection")
     if (not isinstance(process.get("running_executable_sha256"), str)
             or process["running_executable_sha256"]
