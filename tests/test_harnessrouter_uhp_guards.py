@@ -223,3 +223,80 @@ def test_opt_in_false_rejects_prior_to_network():
     with pytest.raises(PermissionError):
         a.submit_canary("synthetic",harness_id="h-1",model="fixture-model",explicit_opt_in=False)
     assert t.calls==[]
+
+def discovery_payload():
+    return {
+        "object":"uhp.discovery", "protocol":"uhp",
+        "versions":["2026-10-19","2026-10-04"],
+        "default_version":"2026-10-19","conformance_class":"core",
+        "capabilities":{"streaming":True,"sessions":True,"cancellation":True,
+                        "files_input":False,"files_output":False,"session_listing":False},
+    }
+
+
+def test_passive_discovery_does_not_submit_task_or_claim_conformance():
+    stub=Stub({("GET","/v1/uhp"):discovery_payload()})
+    a,_=adapter(stub,enabled=False)
+    report=a.discover_protocol()
+    assert report["default_version"]=="2026-10-19"
+    assert report["matches_tested_contract"] is True
+    assert report["conformance_independently_verified"] is False
+    assert report["authority"]=="discovery-only"
+    assert report["canary_enabled"] is False
+    assert stub.calls==[("GET","/v1/uhp",None)]
+
+
+def test_old_UHP_declaration_is_marked_untested_not_upgraded():
+    d=discovery_payload()
+    d["default_version"]="2026-10-04"
+    d["versions"]=["2026-10-04"]
+    a,_=adapter(Stub({("GET","/v1/uhp"):d}),enabled=False)
+    r=a.discover_protocol()
+    assert r["matches_tested_contract"] is False
+    assert r["default_version"]=="2026-10-04"
+    assert r["conformance_independently_verified"] is False
+
+
+@pytest.mark.parametrize("bad",[
+    {"object":"wrong"}, {"protocol":"not-uhp"}, {"versions":[]},
+    {"default_version":"2026-08-11"}, {"versions":["2026-10-19","2026-10-19"]},
+    {"versions":["bad"]}, {"versions":"2026-10-19"},
+    {"conformance_class":"unknown"}, {"capabilities":{"streaming":1}},
+    {"capabilities":[]},
+])
+def test_bad_discovery_is_refused_without_task_or_canary(bad):
+    d=discovery_payload()
+    d.update(bad)
+    stub=Stub({("GET","/v1/uhp"):d})
+    a,_=adapter(stub)
+    with pytest.raises(ValueError):
+        a.discover_protocol()
+    assert stub.calls==[("GET","/v1/uhp",None)]
+    assert a._owned_responses=={}
+
+
+def test_claimed_extended_without_files_and_listing_rejected():
+    d=discovery_payload()
+    d["conformance_class"]="extended"
+    a,_=adapter(Stub({("GET","/v1/uhp"):d}))
+    with pytest.raises(ValueError,match="contradicts"):
+        a.discover_protocol()
+
+
+def test_duplicate_response_id_cannot_change_cancellation_owner():
+    a,t=adapter(allow=("h-1","h-2"))
+    submit(a,"h-1")
+    with pytest.raises(ValueError,match="reused"):
+        submit(a,"h-2")
+    assert a._owned_responses=={"resp_a1":"h-1"}
+    before=list(t.calls)
+    with pytest.raises(PermissionError):
+        a.cancel_canary("resp_a1",explicit_opt_in=True,harness_id="h-2")
+    assert t.calls==before
+
+
+@pytest.mark.parametrize("status",[{},[],None,2,True])
+def test_unhashable_or_nonstring_lifecycle_state_is_clean_rejection(status):
+    with pytest.raises(ValueError,match="unknown lifecycle status"):
+        HarnessRouterAdapter._receipt({"id":"resp_a1","status":status})
+
