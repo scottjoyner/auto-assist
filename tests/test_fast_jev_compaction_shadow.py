@@ -2,12 +2,23 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import importlib.util
 import json
+from pathlib import Path
+import sys
 import unittest
 
-from assistx.fast_jev_compaction_shadow import (
-    MAX_MESSAGES, ShadowCompactionRejected, audit_shadow_compaction,
-)
+# The production assistx package imports runtime safety hooks in __init__.py.
+# These research-only tests load the pure auditor file directly so a test
+# collection/import cannot initialize services or mutate production hooks.
+MODULE_FILE = Path(__file__).resolve().parents[1] / "src" / "assistx" / "fast_jev_compaction_shadow.py"
+SPEC = importlib.util.spec_from_file_location("fast_jev_compaction_shadow_test", MODULE_FILE)
+shadow = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = shadow
+SPEC.loader.exec_module(shadow)
+MAX_MESSAGES = shadow.MAX_MESSAGES
+ShadowCompactionRejected = shadow.ShadowCompactionRejected
+audit_shadow_compaction = shadow.audit_shadow_compaction
 
 
 def use(key,tool="Read",text=""):
@@ -372,8 +383,7 @@ class TestShadowCompactionAudit(unittest.TestCase):
 
     def test_no_credential_or_server_access_in_adapter(self):
         from inspect import getsource
-        from assistx import fast_jev_compaction_shadow as mod
-        contents=getsource(mod)
+        contents=getsource(shadow)
         for forbidden in ("import requests","urllib.request","socket.","subprocess.",
                           "TYPESAFE_API_KEY","__import__(","eval(","exec("):
             self.assertNotIn(forbidden,contents)
