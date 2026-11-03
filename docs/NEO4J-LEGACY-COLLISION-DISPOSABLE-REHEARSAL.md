@@ -34,9 +34,12 @@ destinations or credentials are present in this research commit.
 4. Run a pure in-memory structural preflight: it must identify
    EXACTLY one service-only node and one service/model subtype, one
    shared owner, approved service type, known labels/relationship
-   types, one SERVES model, and no unexpected properties or edges.
+   types, one SERVES model, the complete native keys(e) property-key set,
+   and no unexpected properties or edges.
    Reject foreign owners, extra labels/edges, missing records, unknown
    fields and divergent model identities **without graph mutation**.
+   A deliberately added *stored* synthetic provenance property also
+   forces HOLD until the extra property is explicitly removed in the lab.
 5. **On this known test fixture only**, explicitly choose the model
    subtype as the surviving canonical node. A single test transaction
    preserves the existing EXPOSES owner and SERVES model semantics,
@@ -46,7 +49,7 @@ destinations or credentials are present in this research commit.
 6. Add the canonical uniqueness constraint; prove it is present;
    use the still-UNWIRED PR #324 writer to re-register the reconciled
    synthetic identity idempotently. **No production release**.
-7. Verify that source-guard/offline tests, the 19 physical booleans,
+7. Verify that source-guard/offline tests, the 20 physical booleans,
    no-ports/no-mounts/internal-network evidence and cleanup all pass.
 
 Command from the exact detached checkout:

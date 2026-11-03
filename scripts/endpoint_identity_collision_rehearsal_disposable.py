@@ -54,6 +54,7 @@ def assess_exact_synthetic_pair(rows: list[dict], *, expected_owner: str, expect
             "relationship_types",
             "serves",
             "endpoint",
+            "property_keys",
         }:
             raise SyntheticCollisionHold("unrecognized synthetic data schema")
         if (
@@ -63,19 +64,24 @@ def assess_exact_synthetic_pair(rows: list[dict], *, expected_owner: str, expect
             or type(item["labels"]) is not list
             or type(item["relationship_types"]) is not list
             or type(item["serves"]) is not int
+            or type(item["property_keys"]) is not list
         ):
             raise SyntheticCollisionHold("owner, type or edge ambiguity")
         if not all(isinstance(label, str) for label in item["labels"]) or not all(
             isinstance(edge, str) for edge in item["relationship_types"]
         ):
             raise SyntheticCollisionHold("malformed synthetic label or edge type")
+        if not all(isinstance(key, str) for key in item["property_keys"]):
+            raise SyntheticCollisionHold("malformed synthetic node property key")
         labels = set(item["labels"])
         types = set(item["relationship_types"])
+        properties = set(item["property_keys"])
         if labels not in ({"ServiceEndpoint"}, {"ServiceEndpoint", "ModelEndpoint"}):
             raise SyntheticCollisionHold("unknown labels or missing service identity")
         if "ModelEndpoint" in labels:
             if (
-                item["mid"] != expected_endpoint
+                properties != {"endpoint_id", "model_endpoint_id", "service_type"}
+                or item["mid"] != expected_endpoint
                 or item["port"] is not None
                 or types != {"EXPOSES", "SERVES"}
                 or item["serves"] != 1
@@ -83,7 +89,13 @@ def assess_exact_synthetic_pair(rows: list[dict], *, expected_owner: str, expect
                 raise SyntheticCollisionHold("model subtype has unexpected shape")
             entries.append("model")
         else:
-            if item["mid"] is not None or type(item["port"]) is not int or types != {"EXPOSES"} or item["serves"] != 0:
+            if (
+                properties != {"endpoint_id", "service_type", "port"}
+                or item["mid"] is not None
+                or type(item["port"]) is not int
+                or types != {"EXPOSES"}
+                or item["serves"] != 0
+            ):
                 raise SyntheticCollisionHold("legacy service has unexpected edges")
             entries.append("service")
     if sorted(entries) != ["model", "service"]:
@@ -103,7 +115,7 @@ def _read_pair(session, endpoint):
     OPTIONAL MATCH (e)-[r]-()
     WITH e, owners, collect(DISTINCT type(r)) AS edge_types
     OPTIONAL MATCH (e)-[:SERVES]->(model:Model)
-    RETURN labels(e) AS labels, owners, e.service_type AS kind,
+    RETURN keys(e) AS property_keys, labels(e) AS labels, owners, e.service_type AS kind,
            e.model_endpoint_id AS mid, e.port AS port,
            edge_types AS relationship_types, count(DISTINCT model) AS serves,
            e.endpoint_id AS endpoint
@@ -202,6 +214,31 @@ def extra_scenarios(driver, results):
             results["duplicate_blocks_uniqueness_ddl"] = False
         except Exception:
             results["duplicate_blocks_uniqueness_ddl"] = _aggregate(session, eid) == original
+        # Physical synthetic negative: a stored node can carry an extra
+        # key that the original projection silently omitted. A safe preview
+        # MUST inspect the complete keys(e) inventory and HOLD on surprises.
+        session.run(
+            """
+            MATCH (s:ServiceEndpoint {endpoint_id:$eid})
+            WHERE NOT s:ModelEndpoint
+            SET s.unreviewed_provenance = 'synthetic-only'
+        """,
+            eid=eid,
+        ).consume()
+        try:
+            assess_exact_synthetic_pair(_read_pair(session, eid), expected_owner=owner, expected_endpoint=eid)
+            results["hidden_stored_property_requires_hold"] = False
+        except SyntheticCollisionHold:
+            results["hidden_stored_property_requires_hold"] = _aggregate(session, eid) == original
+        finally:
+            session.run(
+                """
+                MATCH (s:ServiceEndpoint {endpoint_id:$eid})
+                WHERE NOT s:ModelEndpoint
+                REMOVE s.unreviewed_provenance
+            """,
+                eid=eid,
+            ).consume()
         # Simulate a *different owner* in-memory: must HOLD without graph write.
         altered = _read_pair(session, eid)
         altered[0]["owners"] = [harness.PREFIX + ":foreign"]

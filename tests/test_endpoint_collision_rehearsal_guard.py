@@ -30,6 +30,7 @@ def fixture():
             relationship_types=["EXPOSES"],
             serves=0,
             endpoint=EID,
+            property_keys=["endpoint_id", "service_type", "port"],
         ),
         dict(
             labels=["ServiceEndpoint", "ModelEndpoint"],
@@ -40,6 +41,7 @@ def fixture():
             relationship_types=["EXPOSES", "SERVES"],
             serves=1,
             endpoint=EID,
+            property_keys=["endpoint_id", "model_endpoint_id", "service_type"],
         ),
     ]
 
@@ -58,6 +60,28 @@ class CollisionLabGuardTests(unittest.TestCase):
         for x in ([], fixture()[:1], fixture() + [fixture()[0]]):
             with self.subTest(n=len(x)), self.assertRaises(lab.SyntheticCollisionHold):
                 self.assessment(x)
+
+    def test_refuses_hidden_stored_service_property(self):
+        x = fixture()
+        x[0]["property_keys"].append("private_token")
+        with self.assertRaises(lab.SyntheticCollisionHold):
+            self.assessment(x)
+
+    def test_refuses_hidden_stored_model_property(self):
+        x = fixture()
+        x[1]["property_keys"].append("unreviewed_provenance")
+        with self.assertRaises(lab.SyntheticCollisionHold):
+            self.assessment(x)
+
+    def test_native_pair_reader_must_return_full_property_keys(self):
+        class FakeSession:
+            def run(self, query, **kwargs):
+                self.query = query
+                return []
+
+        session = FakeSession()
+        lab._read_pair(session, EID)
+        self.assertIn("keys(e) AS property_keys", session.query)
 
     def test_refuses_foreign_ownership(self):
         x = fixture()
