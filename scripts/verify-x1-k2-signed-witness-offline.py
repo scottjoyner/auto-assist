@@ -23,6 +23,13 @@ SCHEMA = "assistx.k2-external-physical-witness.v1"
 OBSERVATION_KIND = "x1-k2-local-physical-observation-v1"
 NODE = "x1-370"
 TRUSTED_WITNESS_KEY_SHA256 = ""  # requires INDEPENDENT operator-controlled pin
+# These are NOT learned from a signed observation: operator policy must
+# approve exact executable identities as well as the witness signer.
+APPROVED_RUNTIME_EXECUTABLE_SHA256 = ""
+APPROVED_PROXY_EXECUTABLE_SHA256 = ""
+EXPECTED_MODEL_SHA256 = "371010db1807bb07b62e738422ee0de26c1e15a347f31108ed2c6e219095a8b8"
+EXPECTED_MODEL_BYTES = 2_159_424_896
+EXPECTED_MODEL_ID = "k2-horizon-0.9b"
 MAX_BYTES = 64 * 1024
 MAX_AGE_MS = 120_000
 MAX_LIFETIME_MS = 300_000
@@ -104,6 +111,11 @@ def validate_observation(obs: Any, *, now_ms: int, issued_ms: int) -> None:
         reject("unreviewed_runtime_version_claim")
     if obs.get("reasons") != ["independent_signed_witness_and_approval_missing"]:
         reject("internally_contradictory_physical_observation")
+    if (obs.get("model_id_expected") != EXPECTED_MODEL_ID
+            or obs.get("model_artifact_sha256_observed") != EXPECTED_MODEL_SHA256
+            or type(obs.get("model_artifact_bytes_observed")) is not int
+            or obs["model_artifact_bytes_observed"] != EXPECTED_MODEL_BYTES):
+        reject("model_artifact_identity_not_independently_bound")
     for field in (
         "reviewed_app_version_match",
         "model_artifact_sha256_match",
@@ -130,6 +142,10 @@ def validate_observation(obs: Any, *, now_ms: int, issued_ms: int) -> None:
         reject("process_evidence_missing")
     if "collection_error_kind" in process:
         reject("process_evidence_contains_unverified_collection")
+    if (not isinstance(process.get("running_executable_sha256"), str)
+            or process["running_executable_sha256"]
+            != APPROVED_RUNTIME_EXECUTABLE_SHA256):
+        reject("runtime_executable_fingerprint_not_approved")
     for field in (
         "executable_target_verified",
         "installed_executable_sha256_match",
@@ -162,6 +178,8 @@ def validate_observation(obs: Any, *, now_ms: int, issued_ms: int) -> None:
                 or not isinstance(proxy.get("running_executable_sha256"), str)
                 or not SHA_PATTERN.fullmatch(proxy["running_executable_sha256"])):
             reject("transport_proxy_runtime_identity_unverified")
+        if proxy["running_executable_sha256"] != APPROVED_PROXY_EXECUTABLE_SHA256:
+            reject("transport_proxy_fingerprint_not_approved")
     paths = obs.get("paths")
     if not isinstance(paths, dict) or set(paths) != {"loopback", "lan", "tailscale"}:
         reject("transport_paths_incomplete")
@@ -181,6 +199,11 @@ def verify(raw: bytes, *, expected_challenge_hex: str,
     pin = TRUSTED_WITNESS_KEY_SHA256
     if not isinstance(pin, str) or not SHA_PATTERN.fullmatch(pin):
         reject("no_independent_witness_trust_root")
+    if (not isinstance(APPROVED_RUNTIME_EXECUTABLE_SHA256, str)
+            or not SHA_PATTERN.fullmatch(APPROVED_RUNTIME_EXECUTABLE_SHA256)
+            or not isinstance(APPROVED_PROXY_EXECUTABLE_SHA256, str)
+            or not SHA_PATTERN.fullmatch(APPROVED_PROXY_EXECUTABLE_SHA256)):
+        reject("independently_approved_binary_fingerprints_missing")
     if not isinstance(expected_challenge_hex, str) or not NONCE_PATTERN.fullmatch(
         expected_challenge_hex
     ):
