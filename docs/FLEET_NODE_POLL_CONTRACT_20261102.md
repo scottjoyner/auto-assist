@@ -61,3 +61,28 @@ An isolated fake-session regression proves omitted session IDs never
 remove the original binding. The expanded source-only suite reports
 **31 passing tests** and one existing Pydantic warning. Full server-side
 lease/claim fencing and old-client reconciliation remain P0 release holds.
+
+
+## Productive completion is more than HTTP 200
+
+The previous local LLM handler recorded `DONE` whenever the transport status
+was HTTP 200, including `choices=[]` and empty or non-text message bodies.
+The worker now requires a nonempty text generation in the first completion
+choice and reports `FAILED` for HTTP-200 responses without a valid generated
+answer. Eight parameterized negative tests plus existing valid generation
+tests pass. This guards **task status quality**, not signed or independently
+verified token usage.
+
+Separately, the old worker discarded the HTTP response to
+`POST /api/tasks/{id}/complete`; a rejected, missing, or mismatched
+completion could be treated by the poller as finished work. The worker now
+requires HTTP 200 and an authoritative `task.id` and terminal `task.status`
+matching the exact submitted task and outcome; otherwise it returns no-work
+and yields. Five negative cases were tested, including transport failure,
+HTTP 409, empty response, mismatched task ID, and nonterminal status.
+The client does **not** blindly repeat a model inference or completion after
+an ambiguous response; independent post-commit reconciliation is a separate
+requirement.
+
+Expanded isolated regression suite: **44 passed** (one preexisting Pydantic
+warning). Source-only, not deployed, and still under the same P0 release holds.
