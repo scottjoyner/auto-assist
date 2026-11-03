@@ -7,6 +7,7 @@ on:
       - research/k2-witness-boot-binding-20261102
       - research/k2-current-process-identity-20261102
       - research/k2-authenticated-issuer-20261103
+      - research/k2-independent-custody-readiness-20261103
   workflow_dispatch:
 
 permissions:
@@ -34,7 +35,9 @@ jobs:
             tests/test_k2_external_highwater_fixture.py \
             tests/fixtures/k2_external_highwater_fixture.py \
             tests/fixtures/k2_authenticated_issuer_fixture.py \
-            tests/test_k2_authenticated_issuer_fixture.py
+            tests/test_k2_authenticated_issuer_fixture.py \
+            scripts/inspect-k2-witness-custody-readiness-readonly.py \
+            tests/test_k2_witness_custody_readiness_readonly.py
       - name: Strict lint observer, verifier and nonce replay fixture
         run: |
           ruff check scripts/verify-x1-k2-signed-witness-offline.py \
@@ -46,15 +49,19 @@ jobs:
             tests/test_k2_external_highwater_fixture.py \
             tests/fixtures/k2_external_highwater_fixture.py \
             tests/fixtures/k2_authenticated_issuer_fixture.py \
-            tests/test_k2_authenticated_issuer_fixture.py
-      - name: Run 141 offline physical, signature, nonce, issuer and rollback tests
+            tests/test_k2_authenticated_issuer_fixture.py \
+            scripts/inspect-k2-witness-custody-readiness-readonly.py \
+            tests/test_k2_witness_custody_readiness_readonly.py
+      - name: Run 174 offline physical, crypto, issuer, custody and rollback tests
         run: |
           python -m pytest --noconftest -q \
             tests/test_x1_k2_physical_witness.py \
             tests/test_x1_k2_signed_witness_offline.py \
             tests/test_k2_challenge_spend_fixture.py \
             tests/test_k2_external_highwater_fixture.py \
-            tests/test_k2_authenticated_issuer_fixture.py
+            tests/test_k2_authenticated_issuer_fixture.py \
+            scripts/inspect-k2-witness-custody-readiness-readonly.py \
+            tests/test_k2_witness_custody_readiness_readonly.py
       - name: Check no-production-trust configuration
         run: |
           grep -F 'TRUSTED_WITNESS_KEY_SHA256 = ""' scripts/verify-x1-k2-signed-witness-offline.py
