@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import re
 from typing import Any, Callable
 from urllib import error, request
 
@@ -30,8 +31,8 @@ class HarnessLifecycleReceipt:
     input_tokens: int | None
     output_tokens: int | None
     total_tokens: int | None
-    error: Any | None
-    raw: dict[str, Any]
+    error: Any | None = field(repr=False)
+    raw: dict[str, Any] = field(repr=False)
 
 
 class HarnessRouterAdapter:
@@ -45,6 +46,8 @@ class HarnessRouterAdapter:
             raise ValueError("base_url is required")
         self.config = config
         self._request_fn = request_fn or self._http_request
+        # Process-local ownership; never cancel arbitrary response IDs.
+        self._owned_responses: dict[str, str] = {}
 
     def discover(self) -> dict[str, Any]:
         harnesses = self._request_fn("GET", "/v1/harnesses", None)
@@ -78,21 +81,39 @@ class HarnessRouterAdapter:
             "background": True,
         }
         payload = self._request_fn("POST", "/v1/responses", body)
-        return self._receipt(payload)
+        receipt = self._receipt(payload)
+        if receipt.model is not None and receipt.model != model:
+            metadata = payload.get("metadata")
+            # Never mis-account a substituted model as the requested one.
+            if not (isinstance(metadata, dict)
+                    and metadata.get("model_fallback") is True
+                    and metadata.get("requested_model") == model
+                    and isinstance(metadata.get("model_fallback_reason"), str)
+                    and metadata["model_fallback_reason"].strip()):
+                raise ValueError("HarnessRouter substituted a model without a complete fallback receipt")
+        self._owned_responses[receipt.response_id] = harness_id
+        return receipt
 
     def get_response(self, response_id: str) -> HarnessLifecycleReceipt:
-        if not response_id.strip():
-            raise ValueError("response_id is required")
+        self._require_owned_response(response_id)
         payload = self._request_fn("GET", f"/v1/responses/{response_id}", None)
-        return self._receipt(payload)
+        receipt = self._receipt(payload)
+        if receipt.response_id != response_id:
+            raise ValueError("HarnessRouter returned a different response id")
+        return receipt
 
     def cancel_canary(self, response_id: str, *, explicit_opt_in: bool,
                       harness_id: str) -> HarnessLifecycleReceipt:
         self._require_canary(explicit_opt_in=explicit_opt_in, harness_id=harness_id)
-        if not response_id.strip():
-            raise ValueError("response_id is required")
+        owner = self._require_owned_response(response_id)
+        if owner != harness_id:
+            raise PermissionError("response was not submitted for the selected harness")
         payload = self._request_fn("POST", f"/v1/responses/{response_id}/cancel", {})
-        return self._receipt(payload)
+        receipt = self._receipt(payload)
+        if receipt.response_id != response_id:
+            raise ValueError("HarnessRouter cancelled a different response id")
+        # Acknowledgement is not proof that the running task has stopped.
+        return receipt
 
     def _require_canary(self, *, explicit_opt_in: bool, harness_id: str) -> None:
         if not self.config.canary_enabled:
@@ -100,30 +121,59 @@ class HarnessRouterAdapter:
         if not explicit_opt_in:
             raise PermissionError("HarnessRouter canary dispatch requires explicit per-call opt-in")
         allowed = self.config.allowed_harness_ids
-        if allowed and harness_id not in allowed:
-            raise PermissionError(f"harness_id is not allowlisted for canary use: {harness_id}")
+        if not allowed or harness_id not in allowed:
+            raise PermissionError("harness_id must be explicitly allowlisted for canary use")
+
+    def _require_owned_response(self, response_id: str) -> str:
+        if not isinstance(response_id, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", response_id) is None:
+            raise ValueError("response_id must be a canonical identifier")
+        owner = self._owned_responses.get(response_id)
+        if owner is None:
+            raise PermissionError("response_id is not owned by this canary adapter")
+        return owner
+
+    @staticmethod
+    def _token_count(value: Any, field_name: str) -> int | None:
+        if value is None:
+            return None
+        if type(value) is not int or value < 0:
+            raise ValueError(f"invalid token count for {field_name}")
+        return value
 
     @staticmethod
     def _receipt(payload: dict[str, Any]) -> HarnessLifecycleReceipt:
         if not isinstance(payload, dict):
             raise ValueError("HarnessRouter response must be a JSON object")
-        response_id = str(payload.get("id") or "").strip()
-        if not response_id:
-            raise ValueError("HarnessRouter response id is required")
-        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-        usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+        response_id = payload.get("id")
+        if not isinstance(response_id, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", response_id) is None:
+            raise ValueError("HarnessRouter response id must be a canonical identifier")
+        status = payload.get("status")
+        if status not in {"in_progress", "completed", "failed", "incomplete", "cancelled"}:
+            raise ValueError("HarnessRouter returned an unknown lifecycle status")
+        if status == "failed" and payload.get("error") is None:
+            raise ValueError("a failed HarnessRouter task requires an error")
+        metadata = payload.get("metadata")
+        if metadata is None:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            raise ValueError("HarnessRouter metadata must be an object")
+        usage = payload.get("usage")
+        if usage is None:
+            usage = {}
+        if not isinstance(usage, dict):
+            raise ValueError("HarnessRouter usage must be an object")
         return HarnessLifecycleReceipt(
             response_id=response_id,
-            status=str(payload.get("status") or "unknown"),
+            status=status,
             model=(str(payload["model"]) if payload.get("model") is not None else None),
             session_id=(str(metadata["session_id"]) if metadata.get("session_id") else None),
             previous_response_id=(
                 str(payload["previous_response_id"])
                 if payload.get("previous_response_id") else None
             ),
-            input_tokens=(int(usage["input_tokens"]) if usage.get("input_tokens") is not None else None),
-            output_tokens=(int(usage["output_tokens"]) if usage.get("output_tokens") is not None else None),
-            total_tokens=(int(usage["total_tokens"]) if usage.get("total_tokens") is not None else None),
+            input_tokens=HarnessRouterAdapter._token_count(usage.get("input_tokens"), "input_tokens"),
+            output_tokens=HarnessRouterAdapter._token_count(usage.get("output_tokens"), "output_tokens"),
+            total_tokens=HarnessRouterAdapter._token_count(usage.get("total_tokens"), "total_tokens"),
             error=payload.get("error"),
             raw=payload,
         )
@@ -146,10 +196,10 @@ class HarnessRouterAdapter:
             with request.urlopen(req, timeout=self.config.timeout_seconds) as response:
                 raw = response.read()
         except error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"HarnessRouter HTTP {exc.code}: {detail}") from exc
+            # An untrusted body may reflect a token or contain private traces.
+            raise RuntimeError(f"HarnessRouter HTTP {exc.code}") from exc
         except error.URLError as exc:
-            raise RuntimeError(f"HarnessRouter connection failed: {exc.reason}") from exc
+            raise RuntimeError("HarnessRouter connection failed") from exc
         try:
             payload = json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError as exc:
