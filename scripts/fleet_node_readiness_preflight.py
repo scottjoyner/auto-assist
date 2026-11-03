@@ -134,6 +134,8 @@ def observation(
         'backoff_implemented': 'auth_denials' in source,
         'credentials_loaded_from_secure_file': credentials is not None,
         'read_only_auth_probe_http': api_http,
+        # File parsing is not proof of the live systemd process environment.
+        'matches_live_process_credentials': 'NOT_CHECKED',
         'catalog_http': catalog_status,
         'catalog_entries': len(catalog_rows),
         'native_http': native_status,
