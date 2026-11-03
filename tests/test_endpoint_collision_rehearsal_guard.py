@@ -143,6 +143,14 @@ class CollisionLabGuardTests(unittest.TestCase):
         with self.assertRaises(lab.SyntheticCollisionHold):
             self.assessment(x)
 
+    def test_injected_failure_reaches_reconcile_then_always_raises(self):
+        from unittest.mock import patch
+
+        with patch.object(lab, "_manual_lab_reconcile") as mock_reconcile:
+            with self.assertRaises(lab.SyntheticCollisionHold):
+                lab._fault_after_synthetic_reconcile("fake-transaction", endpoint=EID, owner=OWNER)
+            mock_reconcile.assert_called_once_with("fake-transaction", endpoint=EID, owner=OWNER)
+
     def test_default_never_calls_docker(self):
         p = subprocess.run([sys.executable, str(SOURCE)], capture_output=True, text=True, timeout=8)
         self.assertEqual(p.returncode, 2)

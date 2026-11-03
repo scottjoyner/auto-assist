@@ -177,6 +177,16 @@ def _manual_lab_reconcile(tx, *, endpoint, owner):
     return {"synthetic_nodes": 1, "semantic_exposes": 1, "semantic_serves": 1, "production_release_authorized": False}
 
 
+def _fault_after_synthetic_reconcile(tx, *, endpoint, owner):
+    """Inject a deterministic exception AFTER a test-only graph mutation.
+
+    The caller MUST execute this callback through a managed transaction.
+    Neo4j must roll back every change when this exception escapes.
+    """
+    _manual_lab_reconcile(tx, endpoint=endpoint, owner=owner)
+    raise SyntheticCollisionHold("intentional synthetic post-write rollback")
+
+
 def extra_scenarios(driver, results):
     eid = harness.PREFIX + ":legacy-two-node"
     owner = harness.PREFIX + ":owner"
@@ -255,6 +265,51 @@ def extra_scenarios(driver, results):
             results["unknown_relationship_refuses_auto_reconciliation"] = False
         except SyntheticCollisionHold:
             results["unknown_relationship_refuses_auto_reconciliation"] = _aggregate(session, eid) == original
+
+        # Real physical failure path: an unreviewed relationship attached
+        # to the would-be deleted service must prevent ANY reconciliation.
+        session.run(
+            """
+            MATCH (s:ServiceEndpoint {endpoint_id:$eid})
+            WHERE NOT s:ModelEndpoint
+            CREATE (s)-[:UNREVIEWED_EDGE]->(:SyntheticCheck {test_only:true})
+            """,
+            eid=eid,
+        ).consume()
+        try:
+            session.execute_write(_manual_lab_reconcile, endpoint=eid, owner=owner)
+            results["physical_extra_edge_refuses_reconciliation"] = False
+        except SyntheticCollisionHold:
+            results["physical_extra_edge_refuses_reconciliation"] = _aggregate(session, eid) == original
+        finally:
+            session.run(
+                """
+                MATCH (s:ServiceEndpoint {endpoint_id:$eid})
+                      -[edge:UNREVIEWED_EDGE]->(check:SyntheticCheck)
+                DELETE edge, check
+                """,
+                eid=eid,
+            ).consume()
+        # Deliberately apply the *entire* test-only destructive write
+        # inside a managed transaction, then throw before commit. The
+        # original two nodes/relationships and the model port must
+        # survive. This does not substitute for process-kill recovery.
+        try:
+            session.execute_write(_fault_after_synthetic_reconcile, endpoint=eid, owner=owner)
+            results["post_write_injected_failure_rolls_back_atomically"] = False
+        except SyntheticCollisionHold:
+            original_restored = _aggregate(session, eid) == original
+            full_pair_restored = False
+            try:
+                assess_exact_synthetic_pair(
+                    _read_pair(session, eid),
+                    expected_owner=owner,
+                    expected_endpoint=eid,
+                )
+                full_pair_restored = True
+            except SyntheticCollisionHold:
+                pass
+            results["post_write_injected_failure_rolls_back_atomically"] = original_restored and full_pair_restored
 
         # Isolated graph ONLY, explicitly reviewed synthetic fixture: one
         # single transaction, no DETACH DELETE, no live data can be supplied.

@@ -40,16 +40,23 @@ destinations or credentials are present in this research commit.
    fields and divergent model identities **without graph mutation**.
    A deliberately added *stored* synthetic provenance property also
    forces HOLD until the extra property is explicitly removed in the lab.
-5. **On this known test fixture only**, explicitly choose the model
+5. Add a real unexpected relationship to the synthetic service,
+   verify the managed reconciliation fails closed with both records
+   retained, and clean the test-only edge afterward.
+6. Exercise a deliberate exception **after the test-only graph delete**
+   but before managed-transaction commit. Verify Neo4j rolls back both
+   nodes, all expected edges, and the survivor's copied property.
+   This tests transaction atomicity, **not** power-loss recovery.
+7. **On this known test fixture only**, explicitly choose the model
    subtype as the surviving canonical node. A single test transaction
    preserves the existing EXPOSES owner and SERVES model semantics,
    copies one safe synthetic port field, deletes the other synthetic
    node with *plain DELETE* (not DETACH DELETE), and verifies counts.
    The transaction aborts if any unexpected residual edge exists.
-6. Add the canonical uniqueness constraint; prove it is present;
+8. Add the canonical uniqueness constraint; prove it is present;
    use the still-UNWIRED PR #324 writer to re-register the reconciled
    synthetic identity idempotently. **No production release**.
-7. Verify that source-guard/offline tests, the 20 physical booleans,
+9. Verify that source-guard/offline tests, the 22 physical booleans,
    no-ports/no-mounts/internal-network evidence and cleanup all pass.
 
 Command from the exact detached checkout:
