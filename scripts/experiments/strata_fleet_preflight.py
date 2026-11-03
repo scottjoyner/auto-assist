@@ -124,7 +124,9 @@ def assess(snapshot: dict, *, ram_floor_mib: int = DEFAULT_MIN_AVAILABLE_RAM_MIB
 
 def collect() -> dict:
     devices = []
-    for folder in sorted(Path("/sys/class/drm").glob("card[0-9]*/device"))[:MAX_DEVICES]:
+    drm_folders = [p for p in Path("/sys/class/drm").glob("card*/device")
+                   if re.fullmatch(r"card[0-9]+", p.parent.name)]
+    for folder in sorted(drm_folders)[:MAX_DEVICES]:
         try:
             v = (folder / "vendor").read_text(encoding="ascii")[:32]
             d = (folder / "device").read_text(encoding="ascii")[:32]
