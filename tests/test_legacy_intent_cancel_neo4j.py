@@ -84,10 +84,44 @@ def test_protected_machine_and_hermes_task_not_cancelled(driver):
 
 def test_missing_canonical_lock_rolls_back_all_cancellation(driver):
     seed(driver, with_lock=False)
-    with pytest.raises(LegacyIntentCancelBlocked, match="lock_missing"):
+    with pytest.raises(LegacyIntentCancelBlocked, match="lock_not_unique"):
         cancel_legacy_intent_tasks(
             Neo(driver), intent_id="synthetic-intent", reason="synthetic",
         )
     got = snapshot(driver)
     assert got["legacy-ready"] == "READY"
     assert got["machine-claimed"] == "CLAIMED"
+
+
+def test_duplicate_canonical_lock_fails_closed_and_rolls_back(driver):
+    seed(driver)
+    with driver.session() as s:
+        s.run(
+            "CREATE (:WorkSupplyState {name:'canonical', legacy_intent_cancel_serial:0})"
+        ).consume()
+    with pytest.raises(LegacyIntentCancelBlocked, match="lock_not_unique"):
+        cancel_legacy_intent_tasks(
+            Neo(driver), intent_id="synthetic-intent", reason="synthetic",
+        )
+    assert snapshot(driver)["legacy-ready"] == "READY"
+    with driver.session() as s:
+        serials = [row["serial"] for row in s.run(
+            "MATCH (w:WorkSupplyState {name:'canonical'}) "
+            "RETURN w.legacy_intent_cancel_serial AS serial"
+        )]
+        assert serials == [0, 0]
+
+
+def test_partial_machine_approval_id_blocks_legacy_cancel(driver):
+    seed(driver)
+    with driver.session() as s:
+        s.run(
+            "MATCH (t:Task {id:'legacy-ready'}) "
+            "SET t.machine_authorization_approval_id='synthetic-partial-approval'"
+        ).consume()
+    result = cancel_legacy_intent_tasks(
+        Neo(driver), intent_id="synthetic-intent", reason="synthetic",
+    )
+    assert result == 1
+    assert snapshot(driver)["legacy-ready"] == "READY"
+    assert snapshot(driver)["legacy-running"] == "CANCELLED"

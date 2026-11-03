@@ -13,7 +13,7 @@ The helper starts a real Neo4j write transaction, obtains the write lock on the
 canonical WorkSupplyState node, then **in a subsequent Cypher statement**
 re-reads each candidate Task's current status and protected machine/Hermes
 provenance. The protected Tasks are excluded. If the canonical coordination
-node does not exist, the operation fails closed with a typed error and
+node is missing or nonunique, the operation fails closed with a typed error and
 the transaction rolls back. It does not regard missing Task approval evidence
 as authorization for machine execution.
 
@@ -24,14 +24,14 @@ owner-authorized, generation-bound protocol.
 
 ## Verified research cases
 
-- 8/8 focused source-contract tests, including missing lock and protected
+- 11/11 focused source-contract tests, including missing/duplicate lock and protected
   Task classifications.
-- 2/2 real disposable Neo4j tests for protected/ordinary Task separation
-  and missing canonical lock rollback.
+- 4/4 real disposable Neo4j tests for protected/ordinary Task separation,
+  missing/duplicate canonical lock rollback and partial machine approval denial.
 - One concurrent claim/cancel regression in the scoped-claim disposable graph
   suite with a successful scoped claim and zero protected cancellations.
-  Full combined disposable graph suite: **49/49 passed**.
-- Broader relevant synthetic source regression: **133 passed**, one existing
+  Full combined disposable graph suite: **51/51 passed**.
+- Broader relevant synthetic source regression: **136 passed**, one existing
   Starlette/httpx deprecation warning.
 - All disposable tests use independently synthetic Task IDs and credentials,
   loopback-only Neo4j Bolt port, uniquely named test container and limits.
