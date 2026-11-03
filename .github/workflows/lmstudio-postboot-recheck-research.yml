@@ -1,0 +1,28 @@
+name: LM Studio post-boot watchdog timer (research)
+
+on:
+  push:
+    branches:
+      - fix/lmstudio-postboot-recovery-timer-20261102
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  timer-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install 'pytest==8.4.2' 'ruff==0.13.3'
+      - name: Compile isolated watchdog modules
+        run: python -m py_compile scripts/lmstudio-api-recheck.py tests/test_lmstudio_api_recheck.py tests/test_lmstudio_postboot_recheck_schedule.py
+      - name: Strict lint new schedule regression tests
+        run: ruff check tests/test_lmstudio_postboot_recheck_schedule.py
+      - name: Run non-admitting API watchdog and timer tests
+        run: python -m pytest --noconftest -q tests/test_lmstudio_api_recheck.py tests/test_lmstudio_postboot_recheck_schedule.py

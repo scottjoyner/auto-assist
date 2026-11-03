@@ -1,9 +1,14 @@
 [Unit]
-Description=Recheck local LM Studio API health every five minutes
+Description=Recheck LM Studio API after user startup and every minute
 
 [Timer]
+# The first bootstrap may appear healthy and then lose its Electron server
+# process before the next five-minute calendar tick. Recheck after startup
+# and after each completed check, without loading a model or granting routing.
+OnStartupSec=90s
+OnUnitInactiveSec=60s
 OnCalendar=*:0/5
-AccuracySec=30s
+AccuracySec=10s
 Persistent=true
 Unit=lm-studio-api-recheck.service
 

@@ -1,6 +1,6 @@
 [Unit]
 Description=Bounded LM Studio API availability check (no model loading)
-After=network-online.target
+After=network-online.target lm-studio-api-start.service
 Wants=network-online.target
 
 [Service]
