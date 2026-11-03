@@ -1497,6 +1497,14 @@ class Neo4jClient:
         lease_seconds: int | None = None,
         claim_id: str | None = None,
     ) -> dict[str, Any] | None:
+        if os.getenv("ASSISTX_ENABLE_STRICT_LEGACY_HEARTBEAT") == "1":
+            from .legacy_task_writer_guard import strict_legacy_heartbeat
+            return strict_legacy_heartbeat(
+                self, task_id=task_id, agent_id=agent_id,
+                claim_id=claim_id, session_id=session_id,
+                status=status, lease_seconds=lease_seconds,
+                metadata=metadata,
+            )
         if status and status not in EXECUTABLE_TASK_STATUSES:
             raise ValueError(f"Unsupported task status: {status}")
         props = {
@@ -2413,6 +2421,9 @@ class Neo4jClient:
             return [dict(r["t"]) for r in res]
 
     def update_task_status(self, task_id: str, status: str):
+        if os.getenv("ASSISTX_ENABLE_STRICT_UNATTRIBUTED_TASK_STATUS") == "1":
+            from .legacy_task_writer_guard import reject_unattributed_status_change
+            reject_unattributed_status_change(task_id, status)
         with self._session() as s:
             s.run("MATCH (t:Task{id:$id}) SET t.status=$st, t.updated_at_ts = timestamp()", {"id": task_id, "st": status})
 
