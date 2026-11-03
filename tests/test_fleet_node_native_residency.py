@@ -127,6 +127,7 @@ def test_benchmark_task_uses_exact_native_model_gate_before_execution(monkeypatc
         auth=('operator','synthetic'),node_id='node-a',caps=['llm'],
         task={'id':'benchmark'},lmstudio_url='http://local') is None
 
+
 def test_ambiguous_native_default_is_not_implicitly_chosen(monkeypatch):
     monkeypatch.setattr(agent,'_native_loaded_chat_models',lambda *_:['a','b'])
     assert agent._default_model('http://local')==''
@@ -148,3 +149,52 @@ def test_unique_native_default_is_used_for_unpinned_direct_llm(monkeypatch):
     outcome=agent.execute_task({'required_capabilities':['llm'],
        'payload':{'prompt':'Inspect task supply'}},'http://local','.')
     assert outcome['status']=='DONE' and len(sent)==1 and sent[0]['model']=='only-chat'
+
+
+@pytest.mark.parametrize('before,claimed_model', [
+    (['m1'], 'm1'),
+    (['m1', 'm2'], ''),
+])
+def test_model_eviction_between_poll_and_claim_blocks_generation(
+    monkeypatch, before, claimed_model,
+):
+    """A stale poll result cannot authorize a generation after claim-time eviction."""
+    observations = []
+    sent = []
+
+    def fake_http(method, url, **kwargs):
+        if method == 'GET' and url.endswith('/api/v1/models'):
+            observations.append('poll' if not observations else 'after-claim')
+            models = before if len(observations) == 1 else []
+            return 200, {'models': [_model(key) for key in models]}
+        if url.endswith('/claim'):
+            return 200, {'claimed': True, 'task': {
+                'id': 't', 'claimed_by': 'node-a', 'status': 'CLAIMED',
+                'claim_id': 'fence-c',
+                'agent_session_id': kwargs['data']['session_id'],
+                'task_type': 'llm',
+                'payload_json': __import__('json').dumps({
+                    'model': claimed_model, 'prompt': 'Review a production code change'})}}
+        if url.endswith('/v1/chat/completions'):
+            sent.append(kwargs['data'])
+            raise AssertionError('stale availability must not dispatch inference')
+        if url.endswith('/complete'):
+            assert kwargs['data']['status'] == 'FAILED'
+            assert kwargs['data']['result']['error'] == 'claimed_model_not_native_resident'
+            assert kwargs['data']['claim_id'] == 'fence-c'
+            return 200, {'task': {'id': 't', 'status': 'FAILED'}}
+        raise AssertionError(f'unexpected request {url}')
+
+    monkeypatch.setattr(agent, '_http', fake_http)
+    monkeypatch.setattr(agent.subprocess, 'run',
+        lambda *_args, **_kw: type('Proc', (), {'returncode': 1})())
+    monkeypatch.delenv('FLEET_CAPABILITIES', raising=False)
+    caps, models = agent._detect_capabilities('http://local')
+    assert 'llm' in caps and models == sorted(before)
+    outcome = agent._claim_and_run(
+        assistx_url='http://assistx', router_url='http://router',
+        auth=('operator', 'synthetic'), node_id='node-a', caps=caps,
+        task={'id': 't'}, lmstudio_url='http://local')
+    assert outcome is None
+    assert observations == ['poll', 'after-claim']
+    assert sent == []
