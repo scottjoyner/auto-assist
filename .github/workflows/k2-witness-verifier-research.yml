@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - research/k2-independent-witness-verifier-20261102
+      - research/k2-witness-boot-binding-20261102
   workflow_dispatch:
 
 permissions:
