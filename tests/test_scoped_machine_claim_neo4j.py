@@ -266,3 +266,59 @@ def test_combined_observer_then_claim_shared_graph_contract(isolated_driver, mon
     assert claimed['items'] == []
     assert claimed['authorizes_claim'] is False
     assert claimed['authorizes_dispatch'] is False
+
+
+def test_legacy_intent_cancel_racing_scoped_claim_is_denied(isolated_driver, monkeypatch):
+    """Competing synthetic writers on one WorkSupplyState never cancel a scoped Task."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from assistx.legacy_intent_cancel import cancel_legacy_intent_tasks
+
+    monkeypatch.setenv('ASSISTX_ENABLE_SCOPED_NODE_CLAIMS', '1')
+    seed(isolated_driver, task_ids=('protected-intent-task',), supply=1)
+
+    with isolated_driver.session() as session:
+        session.run("""
+            CREATE (i:Intent {id:'synthetic-protected-intent'})
+            WITH i
+            MATCH (t:Task {id:'protected-intent-task'})
+            CREATE (i)-[:CREATED_TASK]->(t)
+        """).consume()
+
+    gate = Barrier(2)
+
+    def claim():
+        gate.wait(timeout=10)
+        return c.scoped_claim_task(
+            request(task_id='protected-intent-task'),
+            neo_factory=lambda: IsolatedNeo(isolated_driver),
+            token_authenticated=True, approved_policy=policy(),
+        )
+
+    def cancel():
+        gate.wait(timeout=10)
+        return cancel_legacy_intent_tasks(
+            IsolatedNeo(isolated_driver),
+            intent_id='synthetic-protected-intent',
+            reason='synthetic-racing-cancellation',
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        claim_future = executor.submit(claim)
+        cancel_future = executor.submit(cancel)
+        result = claim_future.result(timeout=25)
+        cancelled = cancel_future.result(timeout=25)
+
+    assert result['claimed'] is True
+    assert cancelled == 0
+    with isolated_driver.session() as session:
+        row = session.run("""
+            MATCH (t:Task {id:'protected-intent-task'})
+            RETURN t.status AS status,t.machine_token_epoch AS epoch,
+                   t.agent_session_id AS session_id,t.claim_id AS claim_id
+        """).single()
+        assert row['status'] == 'CLAIMED'
+        assert row['epoch'] == 2
+        assert row['session_id'] == 'scoped-session-1'
+        assert row['claim_id'] == result['receipt']['claim_id']
