@@ -114,7 +114,6 @@ class RipwireContextShadowTests(unittest.TestCase):
             (repo / "research" / "symlink.py").symlink_to(
                 repo / "research" / "gate.py"
             )
-            report = shadow.stage_source_only(repo, root / "second_snapshot") if False else None
             second = root / "new_snapshot"
             second.mkdir()
             report = shadow.stage_source_only(repo, second)
