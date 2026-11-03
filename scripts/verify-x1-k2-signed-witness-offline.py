@@ -30,6 +30,12 @@ APPROVED_PROXY_EXECUTABLE_SHA256 = ""
 # Must be measured under a DISTINCT trusted operator/witness control plane
 # for THIS boot. Never copy this value from the signed receipt being checked.
 TRUSTED_CURRENT_BOOT_ID_SHA256 = ""
+# Separately acquired live identities of the server + BOTH independent
+# proxy forwarders, captured AFTER the signed witness issuance. This is
+# not loaded from the receipt, environment, CLI or the measured host's API.
+# No independent process inventory/custody is configured in production.
+TRUSTED_CURRENT_PROCESS_IDENTITY = None
+MAX_CURRENT_PROCESS_IDENTITY_AGE_MS = 30_000
 EXPECTED_MODEL_SHA256 = "371010db1807bb07b62e738422ee0de26c1e15a347f31108ed2c6e219095a8b8"
 EXPECTED_MODEL_BYTES = 2_159_424_896
 EXPECTED_MODEL_ID = "k2-horizon-0.9b"
@@ -199,6 +205,53 @@ def validate_observation(obs: Any, *, now_ms: int, issued_ms: int) -> None:
             reject("model_not_loaded_on_all_paths")
 
 
+def validate_current_process_identity(obs: dict, *,
+                                      issued_ms: int, now_ms: int) -> None:
+    # A reboot pin alone cannot detect a restart within the SAME kernel
+    # boot. Require a separate fresh, post-issuance process identity
+    # observation, not a self-reported copy of the signed witness.
+    current = TRUSTED_CURRENT_PROCESS_IDENTITY
+    if current is None:
+        reject("independent_current_process_inventory_missing")
+    if not isinstance(current, dict) or set(current) != {
+        "node", "boot_id_sha256", "observed_at_ms", "runtime", "proxies"
+    }:
+        reject("independent_current_process_inventory_invalid")
+    if current["node"] != NODE or current["boot_id_sha256"] != TRUSTED_CURRENT_BOOT_ID_SHA256:
+        reject("independent_current_process_boot_mismatch")
+    observed = current["observed_at_ms"]
+    if (type(observed) is not int or observed < issued_ms
+            or observed > now_ms
+            or now_ms - observed > MAX_CURRENT_PROCESS_IDENTITY_AGE_MS):
+        reject("independent_current_process_inventory_not_fresh")
+
+    def match_identity(value: Any, expected: Any) -> bool:
+        return (
+            isinstance(value, dict)
+            and set(value) == {"pid", "start_ticks"}
+            and type(value["pid"]) is int and value["pid"] > 0
+            and type(value["start_ticks"]) is int and value["start_ticks"] > 0
+            and isinstance(expected, dict)
+            and value["pid"] == expected.get("pid")
+            and value["start_ticks"] == expected.get("start_ticks")
+        )
+
+    process = obs["process"]
+    if not match_identity(current["runtime"], process):
+        reject("live_runtime_process_replaced_since_witness")
+    proxies = current["proxies"]
+    if not isinstance(proxies, dict) or set(proxies) != {"lan", "tailscale"}:
+        reject("independent_current_proxy_inventory_incomplete")
+    if not all(
+        match_identity(proxies[kind], process["proxies"][kind])
+        for kind in ("lan", "tailscale")
+    ):
+        reject("live_transport_proxy_replaced_since_witness")
+    pids = [current["runtime"]["pid"], proxies["lan"]["pid"], proxies["tailscale"]["pid"]]
+    if len(set(pids)) != len(pids):
+        reject("duplicate_live_server_proxy_process_identity")
+
+
 def verify(raw: bytes, *, expected_challenge_hex: str,
            now_ms: int | None = None) -> dict:
     # The pin is not read from the untrusted witness envelope or any CLI
@@ -233,6 +286,9 @@ def verify(raw: bytes, *, expected_challenge_hex: str,
             or expires - issued > MAX_LIFETIME_MS):
         reject("stale_or_overlong_witness")
     validate_observation(document["observation"], now_ms=now, issued_ms=issued)
+    validate_current_process_identity(
+        document["observation"], issued_ms=issued, now_ms=now
+    )
     public = b64_strict(document["witness_public_key_b64"], length=32)
     if hashlib.sha256(public).hexdigest() != pin:
         reject("witness_signer_not_independently_approved")
