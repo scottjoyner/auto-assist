@@ -27,6 +27,9 @@ TRUSTED_WITNESS_KEY_SHA256 = ""  # requires INDEPENDENT operator-controlled pin
 # approve exact executable identities as well as the witness signer.
 APPROVED_RUNTIME_EXECUTABLE_SHA256 = ""
 APPROVED_PROXY_EXECUTABLE_SHA256 = ""
+# Must be measured under a DISTINCT trusted operator/witness control plane
+# for THIS boot. Never copy this value from the signed receipt being checked.
+TRUSTED_CURRENT_BOOT_ID_SHA256 = ""
 EXPECTED_MODEL_SHA256 = "371010db1807bb07b62e738422ee0de26c1e15a347f31108ed2c6e219095a8b8"
 EXPECTED_MODEL_BYTES = 2_159_424_896
 EXPECTED_MODEL_ID = "k2-horizon-0.9b"
@@ -152,10 +155,14 @@ def validate_observation(obs: Any, *, now_ms: int, issued_ms: int) -> None:
         "model_file_mapped_in_process_tree",
     ):
         _require_true(process, field)
-    if not isinstance(process.get("boot_id_sha256"), str) or not SHA_PATTERN.fullmatch(
-        process["boot_id_sha256"]
-    ):
+    if (not isinstance(process.get("boot_id_sha256"), str)
+            or not SHA_PATTERN.fullmatch(process["boot_id_sha256"])):
         reject("boot_identity_unverified")
+    # An authentic but old receipt can remain within the 120-second TTL
+    # across a reboot. The expected CURRENT boot must be independently
+    # observed and policy-pinned, not accepted from signed receipt claims.
+    if process["boot_id_sha256"] != TRUSTED_CURRENT_BOOT_ID_SHA256:
+        reject("witness_observation_from_different_boot")
     if (type(process.get("pid")) is not int or process["pid"] < 1
             or type(process.get("start_ticks")) is not int
             or process["start_ticks"] < 1):
@@ -204,6 +211,9 @@ def verify(raw: bytes, *, expected_challenge_hex: str,
             or not isinstance(APPROVED_PROXY_EXECUTABLE_SHA256, str)
             or not SHA_PATTERN.fullmatch(APPROVED_PROXY_EXECUTABLE_SHA256)):
         reject("independently_approved_binary_fingerprints_missing")
+    if (not isinstance(TRUSTED_CURRENT_BOOT_ID_SHA256, str)
+            or not SHA_PATTERN.fullmatch(TRUSTED_CURRENT_BOOT_ID_SHA256)):
+        reject("independent_current_boot_identity_missing")
     if not isinstance(expected_challenge_hex, str) or not NONCE_PATTERN.fullmatch(
         expected_challenge_hex
     ):
