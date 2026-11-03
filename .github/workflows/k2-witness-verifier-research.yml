@@ -11,6 +11,7 @@ on:
       - research/k2-custody-handoff-20261103
       - research/k2-witness-collection-stages-20261103
       - research/k2-observer-security-boundary-20261103
+      - research/k2-model-catalog-residency-20261103
   workflow_dispatch:
 
 permissions:
@@ -44,7 +45,9 @@ jobs:
             scripts/verify-k2-custody-handoff-offline.py \
             tests/test_k2_custody_handoff_offline.py \
             scripts/inspect-k2-observer-namespace-readonly.py \
-            tests/test_k2_observer_namespace_readonly.py
+            tests/test_k2_observer_namespace_readonly.py \
+            scripts/inspect-k2-catalog-residency-readonly.py \
+            tests/test_k2_catalog_residency_readonly.py
       - name: Strict lint observer, verifier and nonce replay fixture
         run: |
           ruff check scripts/verify-x1-k2-signed-witness-offline.py \
@@ -62,8 +65,10 @@ jobs:
             scripts/verify-k2-custody-handoff-offline.py \
             tests/test_k2_custody_handoff_offline.py \
             scripts/inspect-k2-observer-namespace-readonly.py \
-            tests/test_k2_observer_namespace_readonly.py
-      - name: Run 233 offline physical, namespace, crypto and custody tests
+            tests/test_k2_observer_namespace_readonly.py \
+            scripts/inspect-k2-catalog-residency-readonly.py \
+            tests/test_k2_catalog_residency_readonly.py
+      - name: Run 275 offline physical, catalog, crypto and custody tests
         run: |
           python -m pytest --noconftest -q \
             tests/test_x1_k2_physical_witness.py \
@@ -76,7 +81,9 @@ jobs:
             scripts/verify-k2-custody-handoff-offline.py \
             tests/test_k2_custody_handoff_offline.py \
             scripts/inspect-k2-observer-namespace-readonly.py \
-            tests/test_k2_observer_namespace_readonly.py
+            tests/test_k2_observer_namespace_readonly.py \
+            scripts/inspect-k2-catalog-residency-readonly.py \
+            tests/test_k2_catalog_residency_readonly.py
       - name: Check no-production-trust configuration
         run: |
           grep -F 'TRUSTED_WITNESS_KEY_SHA256 = ""' scripts/verify-x1-k2-signed-witness-offline.py
