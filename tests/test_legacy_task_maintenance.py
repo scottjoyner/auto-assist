@@ -80,6 +80,7 @@ def test_separate_post_lock_query_and_protection_guards(operation, args, keyword
 @pytest.mark.parametrize("operation,args", [
     (maintenance.reap_stale_legacy_tasks, {"lease_seconds": 600}),
     (maintenance.retain_terminal_legacy_tasks, {"retention_days": 30}),
+    (maintenance.retain_unlinked_legacy_memory_items, {"retention_days": 30}),
 ])
 def test_missing_or_duplicate_lock_never_runs_task_write(rows, operation, args):
     tx = Tx(rows=rows)
@@ -120,6 +121,10 @@ def test_all_three_maintenance_writers_use_guarded_helper():
         n.func.id for n in ast.walk(fn["maintenance_job"])
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
     }
+    assert "retain_unlinked_legacy_memory_items" in {
+        n.func.id for n in ast.walk(fn["maintenance_job"])
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
 
 
 def test_scheduled_maintenance_uses_both_guarded_writers(monkeypatch):
@@ -152,6 +157,10 @@ def test_scheduled_maintenance_uses_both_guarded_writers(monkeypatch):
     monkeypatch.setattr(
         maintenance, "retain_terminal_legacy_tasks",
         lambda neo, *, retention_days: calls.append("retain") or 3,
+    )
+    monkeypatch.setattr(
+        maintenance, "retain_unlinked_legacy_memory_items",
+        lambda neo, *, retention_days: calls.append("memory") or 4,
     )
     monkeypatch.setattr(scheduler.answers_store, "rebuild_index",
                         lambda: {"reindexed": 5})
@@ -194,11 +203,38 @@ def test_maintenance_missing_graph_lock_does_not_fallback_to_task_writes(monkeyp
     monkeypatch.setattr(neo4j_client, "Neo4jClient", FakeNeo)
     monkeypatch.setattr(maintenance, "reap_stale_legacy_tasks", denied)
     monkeypatch.setattr(maintenance, "retain_terminal_legacy_tasks", denied)
+    monkeypatch.setattr(maintenance, "retain_unlinked_legacy_memory_items", denied)
     monkeypatch.setattr(scheduler.answers_store, "rebuild_index",
                         lambda: {"reindexed": 0})
     monkeypatch.setattr(scheduler, "_reschedule", lambda: calls.append("rescheduled"))
     result = scheduler.maintenance_job()
     assert result["tasks_deleted"] == 0
     assert result["stale_claims_reaped"] == 0
-    assert result["memory_deleted"] == 1
-    assert calls == ["blocked", "blocked", "memory", "closed", "rescheduled"]
+    assert result["memory_deleted"] == 0
+    assert calls == ["blocked", "blocked", "blocked", "closed", "rescheduled"]
+
+
+
+def test_task_linked_memory_retention_query_is_post_lock_and_fail_closed():
+    tx=Tx()
+    assert maintenance.retain_unlinked_legacy_memory_items(
+        Neo(tx), retention_days=30,
+    )==3
+    assert len(tx.calls)==2
+    assert "MATCH (w:WorkSupplyState {name:'canonical'})" in tx.calls[0][0]
+    query=tx.calls[1][0]
+    assert "MATCH (m:MemoryItem)" in query
+    assert "NOT EXISTS" in query
+    assert "MATCH (:Task)-[:RELATED_MEMORY]->(m)" in query
+    assert "DETACH DELETE m" in query
+    assert "WITH DISTINCT m" in query
+
+
+@pytest.mark.parametrize("days",[0,-1,36501,1.2,True,None])
+def test_invalid_memory_retention_does_not_open_transaction(days):
+    tx=Tx()
+    with pytest.raises(maintenance.MaintenanceTaskWriteBlocked):
+        maintenance.retain_unlinked_legacy_memory_items(
+            Neo(tx),retention_days=days,
+        )
+    assert not tx.calls

@@ -39,7 +39,9 @@ def maintenance_job() -> Dict[str, Any]:
     neo = Neo4jClient()
     try:
         from .legacy_task_maintenance import (
-            reap_stale_legacy_tasks, retain_terminal_legacy_tasks,
+            reap_stale_legacy_tasks,
+            retain_terminal_legacy_tasks,
+            retain_unlinked_legacy_memory_items,
         )
         # Never let an uncoordinated fallback mutate Task rows. Failure of
         # task maintenance is reported while unrelated memory cleanup can run.
@@ -57,19 +59,15 @@ def maintenance_job() -> Dict[str, Any]:
         except Exception as exc:
             logger.warning("bounded Task retention denied: %s", exc)
 
-        with neo._session() as s:
-            rec2 = s.run(
-                """
-                MATCH (m:MemoryItem)
-                WHERE coalesce(m.updated_at_ts, m.created_at_ts, 0) <
-                      timestamp() - ($days * 24 * 60 * 60 * 1000)
-                WITH m LIMIT 5000
-                DETACH DELETE m
-                RETURN count(*) AS deleted
-                """,
-                {"days": MEMORY_RETENTION_DAYS},
-            ).single()
-            result["memory_deleted"] = int(rec2["deleted"] if rec2 else 0)
+        # Independent MemoryItem deletion could erase linked, protected
+        # Task outcome evidence. This experimental path must take the same
+        # canonical write lock and explicitly preserve ALL Task-linked memory.
+        try:
+            result["memory_deleted"] = retain_unlinked_legacy_memory_items(
+                neo, retention_days=MEMORY_RETENTION_DAYS,
+            )
+        except Exception as exc:
+            logger.warning("bounded MemoryItem retention denied: %s", exc)
 
         try:
             idx = answers_store.rebuild_index()
