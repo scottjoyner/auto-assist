@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import stat
 import subprocess
 import urllib.error
 import urllib.parse
@@ -33,7 +34,9 @@ def _get(url: str, *, credentials: tuple[str, str] | None = None) -> tuple[int, 
         raw = (credentials[0] + ':' + credentials[1]).encode()
         headers['Authorization'] = 'Basic ' + base64.b64encode(raw).decode('ascii')
     req = urllib.request.Request(url, headers=headers, method='GET')
-    opener = urllib.request.build_opener(NoRedirect)
+    # Never forward existing per-node Basic credentials through an inherited
+    # HTTP(S)_PROXY environment setting. Tailnet service must be direct.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
     try:
         with opener.open(req, timeout=4) as response:
             if response.status != 200:
@@ -65,13 +68,18 @@ def _credentials(path: Path) -> tuple[str, str] | None:
     # Refuse symlinked/unowned or group/world-readable secret files. Neither
     # file contents nor parsing exceptions are included in diagnostics.
     try:
-        if path.is_symlink():
-            return None
-        st = path.stat()
-        if not path.is_file() or st.st_uid != os.geteuid() or st.st_mode & 0o077:
-            return None
+        flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_CLOEXEC', 0)
+        fd = os.open(path, flags)
+        with os.fdopen(fd, 'r', encoding='utf-8') as fh:
+            st = os.fstat(fh.fileno())
+            if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid()
+                    or st.st_mode & 0o077 or st.st_size > 16384):
+                return None
+            content = fh.read(16385)
+            if len(content) > 16384:
+                return None
         pairs = {}
-        for line in path.read_text(encoding='utf-8').splitlines():
+        for line in content.splitlines():
             item = line.strip()
             if not item or item.startswith('#') or '=' not in item:
                 continue
