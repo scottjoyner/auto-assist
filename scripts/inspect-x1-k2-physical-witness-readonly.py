@@ -20,6 +20,8 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 PROC = Path("/proc")
 EXECUTABLE = Path("/opt/LM-Studio/lm-studio")
+PROXY_EXECUTABLE = Path("/usr/bin/socat")
+PROXY_IPS = {"lan": "192.168.1.237", "tailscale": "100.64.43.123"}
 PACKAGE = Path("/opt/LM-Studio/resources/app/package.json")
 MODEL = Path("/home/scott/.lmstudio/models/IFM/K2-Horizon-0.9B-GGUF/K2-Horizon-1B-BF16.gguf")
 EXPECTED_MODEL_SHA = "371010db1807bb07b62e738422ee0de26c1e15a347f31108ed2c6e219095a8b8"
@@ -107,9 +109,29 @@ def process_tree(proc_root: Path) -> dict:
         if merged == descendants:
             break
         descendants = merged
+    # The private LAN/Tailscale ingress points are separate systemd
+    # socat proxy services, not descendants of the LM Studio process.
+    # Require their exact loopback forwarding commands and unique PIDs.
+    proxies = {}
+    for kind, bind_ip in PROXY_IPS.items():
+        expected = [
+            str(PROXY_EXECUTABLE),
+            f"TCP-LISTEN:{PORT},bind={bind_ip},fork,reuseaddr",
+            f"TCP:127.0.0.1:{PORT}",
+        ]
+        found = [pid for pid, item in processes.items()
+                 if item["cmd"] == expected]
+        if len(found) != 1:
+            raise ValueError("transport_proxy_process_missing_or_ambiguous")
+        proxy_pid = found[0]
+        proxies[kind] = {
+            "pid": proxy_pid,
+            "start_ticks": processes[proxy_pid]["start_ticks"],
+        }
     return {"root_pid": root_pid,
             "start_ticks": processes[root_pid]["start_ticks"],
-            "descendants": sorted(descendants)}
+            "descendants": sorted(descendants),
+            "proxies": proxies}
 
 
 def listener_inodes(proc_root: Path) -> dict:
@@ -261,6 +283,7 @@ def observe(*, proc_root: Path = PROC, read_model_sha: bool = True) -> dict:
         report["process"]["pid"] = pid
         report["process"]["start_ticks"] = inventory["start_ticks"]
         report["process"]["descendants_count"] = len(inventory["descendants"])
+        report["process"]["proxy_processes_observed_unverified"] = inventory["proxies"]
         report["process"]["boot_id_sha256"] = boot_digest(proc_root)
         proc_exe = proc_root / str(pid) / "exe"
         # The /proc/PID/exe descriptor refers to the actual running
@@ -278,18 +301,33 @@ def observe(*, proc_root: Path = PROC, read_model_sha: bool = True) -> dict:
             raise ValueError("running_executable_image_differs_from_installed")
         all_listeners = listener_inodes(proc_root)
         pids = inventory["descendants"]
-        owned = process_socket_inodes(proc_root, pids)
-        expected_ips = ("127.0.0.1", "192.168.1.237", "100.64.43.123")
+        lmstudio_owned = process_socket_inodes(proc_root, pids)
         ownership = {
-            address: bool(owned & all_listeners.get(address, set()))
-            for address in expected_ips
+            "loopback": bool(lmstudio_owned & all_listeners.get("127.0.0.1", set())),
         }
-        report["process"]["all_exact_listener_inodes_owned"] = all(ownership.values())
-        report["process"]["per_transport_socket_owner_verified"] = {
-            "loopback": ownership["127.0.0.1"],
-            "lan": ownership["192.168.1.237"],
-            "tailscale": ownership["100.64.43.123"],
-        }
+        report["process"]["proxies"] = {}
+        for kind, bind_ip in PROXY_IPS.items():
+            proxy = inventory["proxies"][kind]
+            proxy_pid = proxy["pid"]
+            # The forwarding command is checked against an exact literal
+            # in process_tree; require the actual running socat executable
+            # and socket FD, not a configured systemd service alone.
+            proxy_exe = proc_root / str(proxy_pid) / "exe"
+            if os.readlink(proxy_exe) != str(PROXY_EXECUTABLE):
+                raise ValueError("transport_proxy_running_executable_mismatch")
+            proxy_exe_sha = digest_file(proxy_exe)
+            if proxy_exe_sha != digest_file(PROXY_EXECUTABLE):
+                raise ValueError("transport_proxy_executable_fingerprint_mismatch")
+            proxy_owned = process_socket_inodes(proc_root, [proxy_pid])
+            ownership[kind] = bool(proxy_owned & all_listeners.get(bind_ip, set()))
+            report["process"]["proxies"][kind] = {
+                "pid": proxy_pid,
+                "start_ticks": proxy["start_ticks"],
+                "running_executable_sha256": proxy_exe_sha,
+                "exact_forward_to_loopback_configured": True,
+                "listener_inode_owned": ownership[kind],
+            }
+        report["process"]["per_transport_socket_owner_verified"] = ownership
         report["physical_process_socket_chain_verified"] = all(ownership.values())
         if not report["physical_process_socket_chain_verified"]:
             report["reasons"].append("socket_inode_owner_unverified")
@@ -325,6 +363,10 @@ def observe(*, proc_root: Path = PROC, read_model_sha: bool = True) -> dict:
             if (proc_stat(proc_root / str(original["pid"]) / "stat")["start_ticks"]
                     != original["start_ticks"]):
                 raise ValueError("pid_start_ticks_changed_during_collection")
+            for proxy in original["proxies"].values():
+                if (proc_stat(proc_root / str(proxy["pid"]) / "stat")["start_ticks"]
+                        != proxy["start_ticks"]):
+                    raise ValueError("proxy_pid_start_ticks_changed_during_collection")
         except (OSError, ValueError):
             report["physical_process_socket_chain_verified"] = False
             report["reasons"].append("runtime_pid_reused_or_disappeared")

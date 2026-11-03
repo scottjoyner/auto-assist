@@ -34,6 +34,8 @@ def _create_fixture(tmp_path, *, socket_tailscale=True, model_mapped=True,
     root = tmp_path / "proc"
     exe = tmp_path / "lm-studio"
     exe.write_bytes(b"the exact synthetic executable bytes")
+    socat = tmp_path / "socat"
+    socat.write_bytes(b"synthetic socat executable")
     model = tmp_path / "k2.gguf"
     model.write_bytes(b"synthetic GGUF, never admitted")
     pkg = tmp_path / "package.json"
@@ -51,8 +53,25 @@ def _create_fixture(tmp_path, *, socket_tailscale=True, model_mapped=True,
         )
         if pid == 123:
             (target / "exe").symlink_to(exe)
-    for n, inode in enumerate((111, 112, 113)):
-        (root / "124" / "fd" / str(n)).symlink_to("socket:[" + str(inode) + "]")
+    (root / "124" / "fd" / "0").symlink_to("socket:[111]")
+    for proxy_pid, ip, inode in (
+        (125, "192.168.1.237", 112),
+        (126, "100.64.43.123", 113),
+    ):
+        target = root / str(proxy_pid)
+        (target / "fd").mkdir(parents=True)
+        (target / "stat").write_text(_stat(ppid=1, ticks=proxy_pid * 10))
+        cmd = [
+            str(socat),
+            "TCP-LISTEN:1234,bind=" + ip + ",fork,reuseaddr",
+            "TCP:127.0.0.1:1234",
+        ]
+        (target / "cmdline").write_bytes(
+            b"\x00".join(x.encode() for x in cmd) + b"\x00"
+        )
+        (target / "maps").write_text("0000-2000 r--p 00:00 1 irrelevant\n")
+        (target / "exe").symlink_to(socat)
+        (target / "fd" / "0").symlink_to("socket:[" + str(inode) + "]")
     tcp = [
         _tcp_line("127.0.0.1", 1234, 111),
         _tcp_line("192.168.1.237", 1234, 112),
@@ -90,6 +109,7 @@ def _observe_fixture(tmp_path, *, loaded=True, model_mapped=True,
     catalog_data = {"reachable": True, "loaded_count": int(loaded),
                     "expected_model_present": loaded}
     with patch.object(module, "EXECUTABLE", exe), \
+         patch.object(module, "PROXY_EXECUTABLE", tmp_path / "socat"), \
          patch.object(module, "MODEL", model), \
          patch.object(module, "PACKAGE", pkg), \
          patch.object(module, "EXPECTED_MODEL_BYTES", model.stat().st_size), \
@@ -110,12 +130,18 @@ def test_exact_listener_inodes_and_process_owner(tmp_path):
     assert sockets["127.0.0.1"] == {111}
     assert sockets["192.168.1.237"] == {112}
     assert sockets["100.64.43.123"] == {113}
-    owned = module.process_socket_inodes(root, [123, 124])
-    assert owned & sockets["127.0.0.1"]
-    assert owned & sockets["192.168.1.237"]
-    assert owned & sockets["100.64.43.123"]
-    with patch.object(module, "EXECUTABLE", tmp_path / "lm-studio"):
-        assert module.process_tree(root)["descendants"] == [123, 124]
+    server_owned = module.process_socket_inodes(root, [123, 124])
+    assert server_owned & sockets["127.0.0.1"]
+    assert not (server_owned & sockets["192.168.1.237"])
+    assert not (server_owned & sockets["100.64.43.123"])
+    assert module.process_socket_inodes(root, [125]) & sockets["192.168.1.237"]
+    assert module.process_socket_inodes(root, [126]) & sockets["100.64.43.123"]
+    with patch.object(module, "EXECUTABLE", tmp_path / "lm-studio"), \
+         patch.object(module, "PROXY_EXECUTABLE", tmp_path / "socat"):
+        tree = module.process_tree(root)
+    assert tree["descendants"] == [123, 124]
+    assert tree["proxies"]["lan"]["pid"] == 125
+    assert tree["proxies"]["tailscale"]["pid"] == 126
 
 
 def test_full_synthetic_local_chain_still_never_admits(tmp_path):
@@ -167,6 +193,7 @@ def test_process_executable_unreadable_is_hold(tmp_path):
             raise PermissionError("synthetic proc restriction")
         return real(path)
     with patch.object(module, "EXECUTABLE", exe), \
+         patch.object(module, "PROXY_EXECUTABLE", tmp_path / "socat"), \
          patch.object(module, "MODEL", model), \
          patch.object(module, "PACKAGE", pkg), \
          patch.object(module.os, "readlink", side_effect=deny), \
@@ -187,7 +214,6 @@ def test_redirects_never_follow_foreign_hosts():
 
 def test_socket_symlink_inventory_failure_is_error(tmp_path):
     root, _, _, _ = _create_fixture(tmp_path)
-    (root / "124" / "fd" / "0").unlink()
     with pytest.raises(ValueError, match="proc_fd_readlink_unavailable"):
         with patch.object(module.os, "readlink", side_effect=PermissionError):
             module.process_socket_inodes(root, [123, 124])
@@ -198,6 +224,7 @@ def test_model_symlink_rejected_even_if_digest_matches(tmp_path):
     model2 = tmp_path / "model-symlink.gguf"
     model2.symlink_to(model)
     with patch.object(module, "EXECUTABLE", exe), \
+         patch.object(module, "PROXY_EXECUTABLE", tmp_path / "socat"), \
          patch.object(module, "MODEL", model2), \
          patch.object(module, "PACKAGE", pkg), \
          patch.object(module, "EXPECTED_MODEL_BYTES", model.stat().st_size), \
@@ -223,6 +250,7 @@ def test_reused_runtime_pid_revokes_local_identity(tmp_path):
         return result
 
     with patch.object(module, "EXECUTABLE", exe), \
+         patch.object(module, "PROXY_EXECUTABLE", tmp_path / "socat"), \
          patch.object(module, "MODEL", model), \
          patch.object(module, "PACKAGE", pkg), \
          patch.object(module, "EXPECTED_MODEL_BYTES", model.stat().st_size), \
@@ -239,3 +267,21 @@ def test_reused_runtime_pid_revokes_local_identity(tmp_path):
     assert not report["physical_process_socket_chain_verified"]
     assert not report["model_loaded_physically_verified"]
     assert not report["can_dispatch"]
+
+
+
+def test_missing_expected_transport_forwarder_is_hold(tmp_path):
+    root, exe, model, pkg = _create_fixture(tmp_path)
+    (root / "125" / "cmdline").write_bytes(
+        b"/usr/bin/other\x00TCP-LISTEN:1234,bind=192.168.1.237,fork,reuseaddr\x00"
+    )
+    with patch.object(module, "EXECUTABLE", exe), \
+         patch.object(module, "PROXY_EXECUTABLE", tmp_path / "socat"), \
+         patch.object(module, "MODEL", model), \
+         patch.object(module, "PACKAGE", pkg), \
+         patch.object(module, "catalog", return_value={"reachable": True,
+             "expected_model_present": True, "loaded_count": 1}):
+        report = module.observe(proc_root=root, read_model_sha=False)
+    assert "process_identity_or_socket_unverified" in report["reasons"]
+    assert report["physical_process_socket_chain_verified"] is False
+    assert report["can_dispatch"] is False
