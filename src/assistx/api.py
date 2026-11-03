@@ -4266,6 +4266,18 @@ def api_approve_task_proposal(task_id: str, user: str = Depends(auth)):
         neo.close()
 
 
+# Deliberately separate from operator Basic and legacy agent Task routes.
+# This observation-only machine endpoint is off by default and never returns
+# a Task payload or changes claims, leases, Task state, or runtime approval.
+from .scoped_machine_poll import build_scoped_machine_router
+
+app.include_router(build_scoped_machine_router(
+    _neo_fleet,
+    lambda: _json_object_env("ASSISTX_FLEET_NODE_TOKENS"),
+    lambda: _json_object_env("ASSISTX_SCOPED_NODE_OBSERVATION_POLICIES"),
+))
+
+
 @app.get("/api/agent/tasks")
 def api_agent_tasks(
     status: str = Query("READY", description="task status to poll"),
