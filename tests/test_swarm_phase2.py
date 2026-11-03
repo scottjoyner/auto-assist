@@ -175,7 +175,7 @@ def test_model_endpoint_refresh_removes_stale_served_relationships(seeded_neo4j)
 
 def test_task_claim_heartbeat_complete_fail_and_lease_release(seeded_neo4j):
     task = seeded_neo4j.get_ready_tasks()[0]
-    claimed = seeded_neo4j.claim_task(task["id"], agent_id="agent-1", capabilities=[])
+    claimed = seeded_neo4j.claim_task(task["id"], agent_id="agent-1", capabilities=[], session_id="swarm-valid-session-1")
     assert claimed["claimed"] is True
     claimed_task = seeded_neo4j.get_task(task["id"])
     assert claimed_task["status"] == "CLAIMED"
@@ -185,7 +185,11 @@ def test_task_claim_heartbeat_complete_fail_and_lease_release(seeded_neo4j):
     assert heartbeated["status"] == "RUNNING"
     assert heartbeated.get("lease_expires_at_ts") is not None
 
-    set_task_lease(seeded_neo4j, task["id"], lease_seconds=1)
+    assert set_task_lease(
+        seeded_neo4j, task["id"], lease_seconds=1,
+        agent_id="agent-1", session_id=claimed_task["agent_session_id"],
+        claim_id=claimed_task["claim_id"],
+    ) is True
     with seeded_neo4j._session() as s:
         s.run("MATCH (t:Task {id:$id}) SET t.lease_expires_at_ts=0", {"id": task["id"]}).consume()
     released = release_expired_task_leases(seeded_neo4j, now_ms=1)

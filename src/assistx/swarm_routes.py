@@ -102,6 +102,7 @@ class TaskFailIn(BaseModel):
     error_summary: str
     retryable: bool = True
     session_id: Optional[str] = None
+    claim_id: Optional[str] = None
 
 
 class LeaseSweepIn(BaseModel):
@@ -378,6 +379,7 @@ def api_fail_task(
             body.error_summary,
             body.retryable,
             body.session_id,
+            body.claim_id,
         )
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")

@@ -188,3 +188,24 @@ def test_two_concurrent_completions_never_create_two_runs(seeded_neo4j):
     assert sum(response is not None for response in outcomes)>=1
     assert complete(neo,tid,cid)['idempotent'] is True
     assert graph_state(neo,tid)==before
+
+
+def test_repeated_two_writer_completion_races_preserve_exactly_one_run(seeded_neo4j):
+    """Regress the real double-AgentRun race found under the broad fleet suite."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    neo=seeded_neo4j
+    for number in range(10):
+        tid=f'cas-many-races-{number}'
+        cid=prepare(neo,tid)
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            outcomes=list(workers.map(lambda _:complete(neo,tid,cid),range(2)))
+        state=graph_state(neo,tid)
+        assert state['runs']==1, (number,state['runs'])
+        assert state['task']['status']=='DONE'
+        assert state['keys']==['complete-once:'+tid]
+        assert sum(x is not None for x in outcomes)>=1
+        previous=dict(state['task'])
+        again=complete(neo,tid,cid)
+        assert again is not None and again['idempotent'] is True
+        assert graph_state(neo,tid)['task']==previous
