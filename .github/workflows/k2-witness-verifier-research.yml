@@ -9,6 +9,7 @@ on:
       - research/k2-authenticated-issuer-20261103
       - research/k2-independent-custody-readiness-20261103
       - research/k2-custody-handoff-20261103
+      - research/k2-witness-collection-stages-20261103
   workflow_dispatch:
 
 permissions:
@@ -57,7 +58,7 @@ jobs:
             tests/test_k2_witness_custody_readiness_readonly.py \
             scripts/verify-k2-custody-handoff-offline.py \
             tests/test_k2_custody_handoff_offline.py
-      - name: Run 201 offline physical, crypto, issuer, custody and handoff tests
+      - name: Run 207 offline physical, collection, crypto and custody tests
         run: |
           python -m pytest --noconftest -q \
             tests/test_x1_k2_physical_witness.py \
