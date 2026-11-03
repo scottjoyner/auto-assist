@@ -1,0 +1,239 @@
+{
+  "schema": "assistx.open-issue-matches.input.v1",
+  "issues": [
+    {
+      "repo": "auto-assist",
+      "number": 21,
+      "title": "P0: make continuous fleet execution safe, authoritative, and non-idling",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/21"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 512,
+      "title": "P1: x1-370 Neo4j swap residency blocks guarded Herder productive inference",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/512"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 428,
+      "title": "P0: Enforce Hermes claim ID and transactional revocation fence on every task mutation",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/428"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 468,
+      "title": "Starred-repo intake: shadow-only model fit, harness interoperability, token efficiency, inference POCs",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/468"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 501,
+      "title": "P0: separate per-node Task authentication from operator Basic credentials before fleet agent rollout",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/501"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 470,
+      "title": "P1 security: remove plaintext inference API credentials from process argv",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/470"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 284,
+      "title": "P0: Reestablish approved signed runtime projection; canonical generation 642 and all support witnesses expired",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/284"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 418,
+      "title": "Hermes strict self-task mode: pass scoped claim token to direct inference, never fall back to internal service auth",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/418"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 417,
+      "title": "Executor token issuance: fail closed on malformed payload and explicit empty tool permissions",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/417"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 446,
+      "title": "P1 Beelink recovery guard: deployed Python entrypoint missing (exit 2)",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/446"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 405,
+      "title": "P0 Cross-repo release gates: Context resource authority, AssistX supervision, Auto-Router failover",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/405"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 414,
+      "title": "P0: Restrict Hermes adapter writable SSD/knowledge mounts exposing watchdog evidence",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/414"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 149,
+      "title": "P0 auth review: verify AssistX trusted-header provenance and ingress stripping before trace staging approval",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/149"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 427,
+      "title": "P0: Source-authoritative exhaustive Hermes claim census with snapshot generation",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/427"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 426,
+      "title": "P0: Provision independently administered Hermes revocation custodian and monotonic checkpoint",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/426"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 416,
+      "title": "Hermes executor: bind model and execution contract to authoritative claimed task snapshot",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/416"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 415,
+      "title": "Hermes workspace validation: reject dot-segment model IDs before knowledge-root migration",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/415"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 299,
+      "title": "P0: Shared router admin transport and coordinated four-service token transition",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/299"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 156,
+      "title": "P0 security: tracked environment snapshots and unsafe example values require custody/rotation review",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/156"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 304,
+      "title": "P0: Bound canonical projection apply to independently fresh source evidence; prevent stale-manifest replay",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/304"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 322,
+      "title": "P0: ServiceEndpoint / ModelEndpoint identity collision blocks Neo4j uniqueness constraint",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/322"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 340,
+      "title": "P0: persisted event may never project after deduped retry",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/340"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 319,
+      "title": "P0 security: deny admission of unauthenticated direct llama-server until listener access reviewed",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/319"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 297,
+      "title": "[P0 Identity] Trusted two-human gateway delegation for local-model execution receipts",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/297"
+    },
+    {
+      "repo": "auto-assist",
+      "number": 318,
+      "title": "P0: decouple Neo4j schema bootstrap from shared-admin application runtime before rotation",
+      "source_url": "https://github.com/scottjoyner/auto-assist/issues/318"
+    },
+    {
+      "repo": "auto-router",
+      "number": 117,
+      "title": "x1-370 RyzenAI NPU inference blocked: amdxdna CREATE_BO EFAULT on existing Qwen2.5 ONNX",
+      "source_url": "https://github.com/scottjoyner/auto-router/issues/117"
+    },
+    {
+      "repo": "auto-router",
+      "number": 40,
+      "title": "P0 Security: inherited Auto-Router admin endpoints bypass require_admin",
+      "source_url": "https://github.com/scottjoyner/auto-router/issues/40"
+    },
+    {
+      "repo": "auto-router",
+      "number": 52,
+      "title": "P0: Canonical fleet projection and all runtime proofs expired; operator reattestation required",
+      "source_url": "https://github.com/scottjoyner/auto-router/issues/52"
+    },
+    {
+      "repo": "auto-router",
+      "number": 102,
+      "title": "P0 deployed router still exposes upstream error bodies after security PR #101 merge",
+      "source_url": "https://github.com/scottjoyner/auto-router/issues/102"
+    },
+    {
+      "repo": "auto-router",
+      "number": 81,
+      "title": "P1: Qualify and protect Joyner LAN/Tailnet inference forwards before router promotion",
+      "source_url": "https://github.com/scottjoyner/auto-router/issues/81"
+    },
+    {
+      "repo": "auto-router",
+      "number": 37,
+      "title": "[Trace P0] Authenticated per-user local model execution receipts and two-user proof",
+      "source_url": "https://github.com/scottjoyner/auto-router/issues/37"
+    },
+    {
+      "repo": "auto-router",
+      "number": 76,
+      "title": "P0: Caller-supplied service metadata can suppress executor claim fencing and poison claim receipts",
+      "source_url": "https://github.com/scottjoyner/auto-router/issues/76"
+    },
+    {
+      "repo": "auto-router",
+      "number": 61,
+      "title": "[P0 #37] Physical native-process attempt witness and safe two-user canary gate",
+      "source_url": "https://github.com/scottjoyner/auto-router/issues/61"
+    },
+    {
+      "repo": "auto-router",
+      "number": 65,
+      "title": "P0 #37: separate post-auth native task allocation from signed slot witness (duplicate-safe)",
+      "source_url": "https://github.com/scottjoyner/auto-router/issues/65"
+    },
+    {
+      "repo": "auto-router",
+      "number": 58,
+      "title": "Review anonymous dashboard and metrics audience, redact operational secrets",
+      "source_url": "https://github.com/scottjoyner/auto-router/issues/58"
+    },
+    {
+      "repo": "auto-router",
+      "number": 43,
+      "title": "Evaluate QSIV vs Von vs AssistX policy with read-only typed-decision shadow harness",
+      "source_url": "https://github.com/scottjoyner/auto-router/issues/43"
+    },
+    {
+      "repo": "auto-router",
+      "number": 39,
+      "title": "Reconcile deployed Destroyer 36B provider alias with resident K2 1B and Ornith ports",
+      "source_url": "https://github.com/scottjoyner/auto-router/issues/39"
+    },
+    {
+      "repo": "auto-router",
+      "number": 14,
+      "title": "Enhancement suite: live cache-affinity shadow telemetry and TTFT evidence",
+      "source_url": "https://github.com/scottjoyner/auto-router/issues/14"
+    },
+    {
+      "repo": "auto-router",
+      "number": 12,
+      "title": "PoC prefix/KV-cache-aware routing for the heterogeneous inference fleet",
+      "source_url": "https://github.com/scottjoyner/auto-router/issues/12"
+    }
+  ]
+}
