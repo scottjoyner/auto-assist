@@ -45,6 +45,24 @@ def _node_policy(registry: dict[str, Any], node_id: str) -> dict[str, Any] | Non
     return None
 
 
+
+def _has_chat_role(encoded_roles: Any) -> bool:
+    """Require a well-formed JSON list proving chat/llm on a current model."""
+    if not isinstance(encoded_roles, list):
+        return False
+    for encoded in encoded_roles:
+        try:
+            capabilities = json.loads(encoded) if isinstance(encoded, str) else encoded
+        except (ValueError, TypeError):
+            continue
+        if isinstance(capabilities, list) and any(
+            role in ("chat", "llm") for role in capabilities
+            if isinstance(role, str)
+        ):
+            return True
+    return False
+
+
 def candidate_tasks(
     node_id: str,
     *,
@@ -114,48 +132,63 @@ def candidate_tasks(
             if not witness or int(witness['admitted_runtimes'] or 0) < 1:
                 raise HTTPException(status_code=503, detail='node_runtime_unavailable')
             # A loaded embedding-only model is not evidence of usable chat.
-            # Require explicit admitted chat-role capability, never a default.
-            observed_chat = False
-            for encoded in witness.get('model_capabilities') or []:
-                try:
-                    capabilities = json.loads(encoded) if isinstance(encoded, str) else encoded
-                except (ValueError, TypeError):
-                    continue
-                if (isinstance(capabilities, list)
-                        and any(item in ('chat', 'llm') for item in capabilities
-                                if isinstance(item, str))):
-                    observed_chat = True
-                    break
-            if not observed_chat:
+            if not _has_chat_role(witness.get('model_capabilities')):
                 raise HTTPException(status_code=503, detail='node_chat_model_unavailable')
-            # Never use generic list_agent_tasks(agent_id=...) here: it also
-            # includes all *untargeted* READY Tasks. Query the exact target
-            # and return metadata only, not payload_json, titles or context.
+            # Never use generic list_agent_tasks(agent_id=...): it includes all
+            # untargeted READY Tasks. Re-check ALL physical admission witnesses
+            # with the canonical approval, work supply and exact Task audience
+            # in this final read, not in prior separate reads alone. Neo4j's
+            # timestamp() is captured for this read instead of reusing the
+            # earlier Python now, which could go stale across multiple queries.
             records = session.run(
                 """
                 MATCH (p:FleetProjectionState {name:'canonical',status:'approved'})
-                WHERE p.generation=$generation AND p.expires_at_ts>$now
+                WHERE p.generation=$generation AND p.expires_at_ts>timestamp()
                   AND p.approved_by IS NOT NULL AND p.approval_id IS NOT NULL
                 MATCH (s:WorkSupplyState {name:'canonical'})
                 WHERE s.projection_generation=$generation
-                  AND s.generated_at_ts>$cutoff
+                  AND s.generated_at_ts>timestamp()-$max_age_ms
                   AND s.allow_background=true
                   AND coalesce(s.total_slots,0)>0
                   AND coalesce(s.free_slots,0)>0
+                MATCH (r:RuntimeInstance {node_id:$node_id})
+                WHERE coalesce(r.admitted,false)=true
+                  AND toLower(coalesce(r.status,'unknown')) IN ['online','healthy','ready']
+                  AND coalesce(r.expires_at_ts,0)>timestamp()
+                MATCH (r)-[:SERVES]->(m:LoadedModelInstance)
+                WHERE coalesce(m.admitted,false)=true
+                  AND coalesce(m.expires_at_ts,0)>timestamp()
+                  AND m.artifact_fingerprint=$artifact
+                  AND m.model_instance_id IS NOT NULL
+                MATCH (a:AccessPath {runtime_instance_id:r.runtime_instance_id})
+                WHERE coalesce(a.approved,false)=true
+                  AND coalesce(a.expires_at_ts,0)>timestamp()
+                  AND a.approved_by IS NOT NULL AND a.approval_id IS NOT NULL
+                MATCH (c:CapacityObservation {runtime_instance_id:r.runtime_instance_id})
+                WHERE coalesce(c.approved,false)=true
+                  AND coalesce(c.expires_at_ts,0)>timestamp()
+                  AND coalesce(c.parallel_slots,0)>0
+                  AND c.approved_by IS NOT NULL AND c.approval_id IS NOT NULL
                 MATCH (t:Task {status:'READY', target_agent_id:$node_id})
                 WHERE t.requires_approval = false
                   AND t.paperclip_dispatched = false
                   AND t.required_capabilities=['llm']
-                RETURN t.id AS id, t.priority AS priority
-                ORDER BY coalesce(t.created_at_ts,0) ASC
+                RETURN t.id AS id,
+                       collect(DISTINCT m.capabilities_json) AS model_capabilities,
+                       coalesce(t.created_at_ts,0) AS created_at_ts
+                ORDER BY created_at_ts ASC
                 LIMIT $limit
                 """,
-                {'node_id': node_id, 'limit': limit,
-                 'generation': generation, 'now': now,
-                 'cutoff': now - _MAX_STATE_AGE_MS},
+                {'node_id': node_id, 'limit': limit, 'generation': generation,
+                 'artifact': expected_artifact, 'max_age_ms': _MAX_STATE_AGE_MS},
             )
             hints = []
             for record in records:
+                # The final read can race model-role revocation too. Reject
+                # malformed or embedding-only role evidence, not just the
+                # earlier observed capabilities.
+                if not _has_chat_role(record.get('model_capabilities')):
+                    continue
                 task_id = record['id']
                 if isinstance(task_id, str) and 0 < len(task_id) <= 256:
                     hints.append({'id': task_id, 'requires_capability': 'llm'})
