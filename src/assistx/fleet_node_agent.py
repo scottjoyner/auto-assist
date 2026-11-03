@@ -100,24 +100,45 @@ def _detect_hostname() -> str:
     return os.getenv("FLEET_NODE_ID") or platform.node()
 
 
+def _native_loaded_chat_models(lmstudio_url: str | None) -> list[str]:
+    """Return native-confirmed *resident chat* model keys, never catalog IDs.
+
+    OpenAI /v1/models is a compatibility catalog on LM Studio and may list
+    downloaded but not loaded models. If native inspection is unavailable or
+    malformed, residency is unknown and we must not advertise an LLM lane.
+    This proves local residence only, not signed production admission.
+    """
+    if not lmstudio_url:
+        return []
+    status, body = _http(
+        "GET", f"{lmstudio_url.rstrip('/')}/api/v1/models", timeout=5
+    )
+    if status != 200 or not isinstance(body, dict):
+        return []
+    entries = body.get("models")
+    if not isinstance(entries, list):
+        return []
+    loaded: set[str] = set()
+    for model in entries:
+        if not isinstance(model, dict) or model.get("type") != "llm":
+            continue
+        name = model.get("key")
+        instances = model.get("loaded_instances")
+        if (isinstance(name, str) and name.strip()
+                and isinstance(instances, list)
+                and any(isinstance(instance, dict) for instance in instances)):
+            loaded.add(name)
+    return sorted(loaded)
+
+
 def _detect_capabilities(lmstudio_url: str | None) -> tuple[list[str], list[str]]:
     caps = set(DEFAULT_CAPS)
-    models: list[str] = []
+    models = _native_loaded_chat_models(lmstudio_url)
+    if models:
+        caps.update(("llm", "lmstudio"))
 
-    if lmstudio_url:
-        status, body = _http("GET", f"{lmstudio_url.rstrip('/')}/v1/models", timeout=5)
-        if status == 200 and isinstance(body, dict):
-            rows = body.get("data")
-            if isinstance(rows, list):
-                models = [str(item["id"]) for item in rows
-                          if isinstance(item, dict) and isinstance(item.get("id"), str)
-                          and item["id"].strip()]
-            # An API listener with zero advertised models is NOT an
-            # inference-capable node (observed on x1-370 Nov 2).
-            if models:
-                caps.update(("llm", "lmstudio"))
-
-    # Lightweight vision/tooling detection without importing heavyweight libs.
+    # Lightweight tooling detection is not an authorization to execute
+    # arbitrary commands; existing task-type guards still apply.
     for command in ("ffmpeg", "python3"):
         if subprocess.run(
             ["which", command], capture_output=True, text=True, check=False
@@ -125,7 +146,9 @@ def _detect_capabilities(lmstudio_url: str | None) -> tuple[list[str], list[str]
             caps.add(command)
 
     extra = os.getenv("FLEET_CAPABILITIES", "")
-    caps.update(cap.strip() for cap in extra.split(",") if cap.strip())
+    # An environment label cannot manufacture verified model residency.
+    caps.update(cap.strip() for cap in extra.split(",")
+                if cap.strip() and cap.strip() not in {"llm", "lmstudio"})
     return sorted(caps), models
 
 
@@ -148,16 +171,9 @@ def _auth_from_env() -> tuple[str, str] | None:
 
 
 def _default_model(lmstudio_url: str | None) -> str:
-    if not lmstudio_url:
-        return "local/model"
-    try:
-        status, body = _http("GET", f"{lmstudio_url}/v1/models", timeout=5)
-        data = body.get("data", []) if status == 200 and isinstance(body, dict) else []
-        if data and isinstance(data[0], dict) and data[0].get("id"):
-            return str(data[0]["id"])
-    except Exception:
-        pass
-    return "local/model"
+    models = _native_loaded_chat_models(lmstudio_url)
+    # Do not silently substitute the first downloaded model or a fabricated ID.
+    return models[0] if models else ""
 
 
 def execute_task(
@@ -556,8 +572,12 @@ def _claim_and_run(
                     except (json.JSONDecodeError, TypeError):
                         raw_payload = {}
                 if isinstance(raw_payload, dict) and raw_payload.get("benchmark"):
-                    result = execute_task(task, lmstudio_url, workdir=".", node_id=node_id)
-                    success = result.get("status") == "DONE"
+                    requested = str(raw_payload.get("model") or "").strip()
+                    if not requested or requested not in _native_loaded_chat_models(lmstudio_url):
+                        result = {"error": "claimed_model_not_native_resident"}
+                    else:
+                        result = execute_task(task, lmstudio_url, workdir=".", node_id=node_id)
+                        success = result.get("status") == "DONE"
                 else:
                     prompt = str(
                         raw_payload.get("prompt")
@@ -566,18 +586,28 @@ def _claim_and_run(
                         or task.get("description")
                         or ""
                     )
-                    model = str(raw_payload.get("model") or task.get("model") or "")
-                    request: dict[str, Any] = {
-                        "model": model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "stream": False,
-                    }
-                    llm_status, body = _http(
-                        "POST",
-                        f"{lmstudio_url.rstrip('/')}/v1/chat/completions",
-                        data=request,
-                        timeout=300,
-                    )
+                    model = str(raw_payload.get("model") or task.get("model") or "").strip()
+                    resident_models = _native_loaded_chat_models(lmstudio_url)
+                    if not model and len(resident_models) == 1:
+                        # An unpinned task can use a unique confirmed resident
+                        # model; multiple matches require an explicit model ID.
+                        model = resident_models[0]
+                    if not model or model not in resident_models:
+                        # Do not let the server auto-load or silently substitute
+                        # a downloaded, absent, or wrong-model artifact.
+                        llm_status, body = 0, {"error": "claimed_model_not_native_resident"}
+                    else:
+                        request: dict[str, Any] = {
+                            "model": model,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "stream": False,
+                        }
+                        llm_status, body = _http(
+                            "POST",
+                            f"{lmstudio_url.rstrip('/')}/v1/chat/completions",
+                            data=request,
+                            timeout=300,
+                        )
                     # HTTP 200 proves transport success, not a generated answer.
                     # Do not count an empty choice as useful completed work.
                     choices = body.get("choices") if isinstance(body, dict) else None
