@@ -80,3 +80,20 @@ real trace or paid endpoint is changed.
    verifier never creates that approval or enables routing.
 
 Draft only: NO GO for production.
+
+
+## Combined observer/verifier integration test
+
+The offline verifier test suite imports the actual synthetic two-tier
+observer fixture from PR #485 and signs its full output using a
+throwaway test-only Ed25519 key. This verifies the precise report
+structure (LM Studio loopback owner plus distinct LAN/Tailscale socat
+socket owners), rather than a hand-built receipt alone. It must still
+return HOLD and can_dispatch=false. A second integrated case verifies
+that an authentic observer output with the model absent is refused
+even when placed inside a valid synthetic signature envelope.
+
+Total local combined suite: 44 tests passed, including 13 physical
+observer tests and 31 signer/verifier tests. The scoped hosted workflow
+runs the entire combined suite and checks that the real trust-root pin
+remains empty. All evidence is synthetic and non-admitting.
