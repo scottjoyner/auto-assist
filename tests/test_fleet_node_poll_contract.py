@@ -72,7 +72,8 @@ def test_empty_model_listener_is_not_an_llm_capability(monkeypatch):
     caps, models = agent._detect_capabilities("http://local")
     assert not models and "llm" not in caps and "lmstudio" not in caps
     monkeypatch.setattr(agent, "_http",
-        lambda *a, **kw: (200, {"data": [{"id": "model-a"}]}))
+        lambda *a, **kw: (200, {"models": [{"type": "llm", "key": "model-a",
+            "loaded_instances": [{"id": "resident-a"}]}]}))
     caps, models = agent._detect_capabilities("http://local")
     assert models == ["model-a"] and "llm" in caps
 
@@ -169,6 +170,7 @@ def test_malformed_successful_claim_never_runs_or_heartbeats(monkeypatch, claim)
 
 
 def test_valid_claim_fence_flows_into_completion(monkeypatch):
+    monkeypatch.setattr(agent, "_native_loaded_chat_models", lambda _: ["m1", "model-a"])
     requests = []
 
     def fake_http(method, url, **kwargs):
@@ -223,6 +225,7 @@ def test_http_422_claim_denial_never_dispatches(monkeypatch):
     assert len(requests) == 2
 
 def test_execution_uses_authoritative_claimed_payload_not_stale_ready_entry(monkeypatch):
+    monkeypatch.setattr(agent, "_native_loaded_chat_models", lambda _: ["m1", "model-a"])
     emitted = []
 
     def fake_http(method, url, **kwargs):
@@ -265,6 +268,7 @@ def test_execution_uses_authoritative_claimed_payload_not_stale_ready_entry(monk
     {"choices": [{"message": {"content": []}}]},
 ])
 def test_http_200_without_generated_answer_must_not_complete_done(monkeypatch, body):
+    monkeypatch.setattr(agent, "_native_loaded_chat_models", lambda _: ["m1", "model-a"])
     calls = []
 
     def fake_http(method, url, **kwargs):
@@ -302,6 +306,7 @@ def test_http_200_without_generated_answer_must_not_complete_done(monkeypatch, b
     (200, {"task": {"id": "claimable", "status": "CLAIMED"}}),
 ])
 def test_unacknowledged_completion_does_not_count_as_work(monkeypatch, code, ack):
+    monkeypatch.setattr(agent, "_native_loaded_chat_models", lambda _: ["m1", "model-a"])
     requests = []
 
     def fake_http(method, url, **kwargs):
@@ -330,6 +335,7 @@ def test_unacknowledged_completion_does_not_count_as_work(monkeypatch, code, ack
 
 @pytest.mark.parametrize("finish_reason", ["length", "content_filter"])
 def test_truncated_or_filtered_text_is_not_a_completed_task(monkeypatch, finish_reason):
+    monkeypatch.setattr(agent, "_native_loaded_chat_models", lambda _: ["m1", "model-a"])
     terminal = []
 
     def fake_http(method, url, **kwargs):
