@@ -90,13 +90,18 @@ def _read_messages(value: Any, name: str) -> tuple[list[dict], dict, dict, list]
             results[key] = (index, tool)
             ids_result.append(key)
         signatures.append((item["role"], item["text"],
-                           frozenset(ids_use), frozenset(ids_result)))
+                           tuple(ids_use), tuple(ids_result)))
     if len(calls) > MAX_TOOL_PAIRS or set(calls) != set(results):
         raise ShadowCompactionRejected(f"{name}: orphan tool call or tool result")
     for key in calls:
         if results[key][0] < calls[key][0]:
             raise ShadowCompactionRejected(f"{name}: result before tool call")
     return value, calls, results, signatures
+
+
+def _in_original_order(candidate: tuple[str, ...], original: tuple[str, ...]) -> bool:
+    source = iter(original)
+    return all(any(current == wanted for current in source) for wanted in candidate)
 
 
 def _truncated(original: str, head_chars: int, is_error: bool) -> str:
@@ -172,14 +177,14 @@ def audit_shadow_compaction(
             prior = before_signatures[at]
             at += 1
             if (prior[0:2] == candidate[0:2] and
-                    candidate[2].issubset(prior[2]) and
-                    candidate[3].issubset(prior[3])):
+                    _in_original_order(candidate[2],prior[2]) and
+                    _in_original_order(candidate[3],prior[3])):
                 matched.append(at-1)
                 break
         else:
             raise ShadowCompactionRejected("invented or reordered message")
     matched_set = set(matched)
-    if any(i not in matched_set and message["text"].strip()
+    if any(i not in matched_set and message["text"] != ""
            for i,message in enumerate(before)):
         raise ShadowCompactionRejected("user or assistant prose was deleted")
     recent_cutoff = max(0,len(before)-preserve_recent_messages)
@@ -191,7 +196,8 @@ def audit_shadow_compaction(
                 tool["tool"] not in SAFE_COMPACTABLE_TOOL_NAMES or
                 tool.get("isError",False) or result.get("isError",False)):
             auto_protected.add(key)
-    counts={"kept":0,"result_truncated":0,"calls_dropped":0}
+    counts={"kept":0,"result_truncated":0,"result_truncation_noops":0,
+            "calls_dropped":0}
     for key,(_,tool) in before_calls.items():
         action=decisions.get(key,"keep")
         kept=key in after_calls
@@ -212,7 +218,11 @@ def audit_shadow_compaction(
         if action=="keep":
             counts["kept"]+=1
         else:
-            counts["result_truncated"]+=1
+            changed = (
+                tool.get("text","") != after_calls[key][1].get("text","") or
+                before_results[key][1]["text"] != after_results[key][1]["text"]
+            )
+            counts["result_truncated" if changed else "result_truncation_noops"]+=1
     before_size=len(json.dumps(before,ensure_ascii=False,separators=(",",":")).encode("utf-8"))
     after_size=len(json.dumps(after,ensure_ascii=False,separators=(",",":")).encode("utf-8"))
     if after_size > before_size:
