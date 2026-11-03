@@ -326,3 +326,33 @@ def test_unacknowledged_completion_does_not_count_as_work(monkeypatch, code, ack
     assert result is False
     assert len([x for x in requests if x[1].endswith("/v1/chat/completions")]) == 1
     assert len([x for x in requests if x[1].endswith("/complete")]) == 1
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "content_filter"])
+def test_truncated_or_filtered_text_is_not_a_completed_task(monkeypatch, finish_reason):
+    terminal = []
+
+    def fake_http(method, url, **kwargs):
+        if url.endswith("/claim"):
+            return 200, {"claimed": True, "task": {
+                "id": "claimable", "claimed_by": "node-a", "status": "CLAIMED",
+                "agent_session_id": kwargs["data"]["session_id"],
+                "claim_id": "fence-123", "task_type": "llm",
+                "payload_json": '{"prompt":"Review plan","model":"m1"}'}}
+        if url.endswith("/v1/chat/completions"):
+            return 200, {"choices": [{
+                "message": {"content": "Partial or filtered output"},
+                "finish_reason": finish_reason}]}
+        if url.endswith("/complete"):
+            terminal.append(kwargs["data"])
+            return 200, {"task": {"id": "claimable", "status": "FAILED"}}
+        raise AssertionError("Unexpected request")
+
+    monkeypatch.setattr(agent, "_http", fake_http)
+    outcome = agent._claim_and_run(
+        assistx_url="http://assistx", router_url="http://router",
+        auth=("operator", "test"), node_id="node-a", caps=["llm"],
+        task={"id": "claimable"}, lmstudio_url="http://local")
+    assert outcome is None and len(terminal) == 1
+    assert terminal[0]["status"] == "FAILED"
+    assert terminal[0]["result"]["error"] == "incomplete_or_filtered_model_generation"
