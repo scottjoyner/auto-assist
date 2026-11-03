@@ -322,3 +322,57 @@ def test_legacy_intent_cancel_racing_scoped_claim_is_denied(isolated_driver, mon
         assert row['epoch'] == 2
         assert row['session_id'] == 'scoped-session-1'
         assert row['claim_id'] == result['receipt']['claim_id']
+
+
+def test_protected_scoped_claim_cannot_be_reaped_even_after_expiry(
+    isolated_driver, monkeypatch,
+):
+    """Synthetic scoped claim vs legacy reaper uses the shared coordination lock."""
+    from threading import Barrier
+
+    from assistx.legacy_task_maintenance import reap_stale_legacy_tasks
+
+    monkeypatch.setenv('ASSISTX_ENABLE_SCOPED_NODE_CLAIMS','1')
+    seed(isolated_driver,task_ids=('machine-reaper-race',),supply=1)
+    gate=Barrier(2)
+
+    def claim():
+        gate.wait(timeout=10)
+        return c.scoped_claim_task(
+            request(task_id='machine-reaper-race'),
+            neo_factory=lambda: IsolatedNeo(isolated_driver),
+            token_authenticated=True,
+            approved_policy=policy(),
+        )
+
+    def reap():
+        gate.wait(timeout=10)
+        return reap_stale_legacy_tasks(
+            IsolatedNeo(isolated_driver),lease_seconds=600,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        f_claim=executor.submit(claim)
+        f_reap=executor.submit(reap)
+        claim_result=f_claim.result(timeout=25)
+        reaped=f_reap.result(timeout=25)
+
+    assert claim_result['claimed'] is True
+    assert reaped == 0
+    with isolated_driver.session() as session:
+        session.run(
+            "MATCH (t:Task {id:'machine-reaper-race'}) "
+            "SET t.lease_expires_at_ts=0"
+        ).consume()
+    assert reap_stale_legacy_tasks(
+        IsolatedNeo(isolated_driver), lease_seconds=600,
+    ) == 0
+    with isolated_driver.session() as session:
+        row=session.run("""
+            MATCH (t:Task {id:'machine-reaper-race'})
+            RETURN t.status AS status,t.claim_id AS claim_id,
+                   t.machine_token_epoch AS epoch
+        """).single()
+        assert row['status']=='CLAIMED'
+        assert row['epoch']==2
+        assert row['claim_id']==claim_result['receipt']['claim_id']

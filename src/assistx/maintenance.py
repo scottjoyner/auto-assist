@@ -38,53 +38,26 @@ def maintenance_job() -> Dict[str, Any]:
     from .neo4j_client import Neo4jClient
     neo = Neo4jClient()
     try:
-        with neo._session() as s:
-            # Reap zombie claims: tasks claimed/running but with no fresh
-            # heartbeat beyond the lease window get reset to READY so the
-            # fleet can re-acquire them. Prevents dead work from piling up.
-            try:
-                reap = s.run(
-                    """
-                    MATCH (t:Task)
-                    WHERE toUpper(coalesce(t.status, '')) IN ['CLAIMED','RUNNING','CLAIMED_PASSIVE']
-                      AND coalesce(t.passive_claim_expires_at_ts,
-                                   t.lease_expires_at_ts,
-                                   coalesce(t.last_heartbeat_ts, t.last_heartbeat_at_ts, t.claimed_at_ts, 0) + $lease*1000, 0) < timestamp()
-                    WITH t LIMIT 2000
-                    SET t.status = 'READY',
-                        t.claimed_by = null,
-                        t.claimed_at_ts = null,
-                        t.lease_expires_at_ts = null,
-                        t.last_heartbeat_ts = null,
-                        t.last_passive_claim_result = 'expired_stale_reaped'
-                    REMOVE t.passive_claim_id,
-                           t.passive_claim_agent_id,
-                           t.passive_claim_lease_id,
-                           t.passive_claim_mode,
-                           t.passive_claimed_at,
-                           t.passive_claimed_at_ts,
-                           t.passive_claim_expires_at_ts
-                    RETURN count(t) AS reaped
-                    """,
-                    {"lease": STALE_CLAIM_REAP_SECONDS},
-                ).single()
-                result["stale_claims_reaped"] = int(reap["reaped"] if reap else 0)
-            except Exception as e:
-                logger.warning("stale claim reap failed: %s", e)
-            rec1 = s.run(
-                """
-                MATCH (t:Task)
-                WHERE t.status IN ['DONE','FAILED','CANCELLED']
-                  AND coalesce(t.updated_at_ts, t.completed_at_ts, t.created_at_ts, 0) <
-                      timestamp() - ($days * 24 * 60 * 60 * 1000)
-                WITH t LIMIT 5000
-                DETACH DELETE t
-                RETURN count(*) AS deleted
-                """,
-                {"days": TASK_RETENTION_DAYS},
-            ).single()
-            result["tasks_deleted"] = int(rec1["deleted"] if rec1 else 0)
+        from .legacy_task_maintenance import (
+            reap_stale_legacy_tasks, retain_terminal_legacy_tasks,
+        )
+        # Never let an uncoordinated fallback mutate Task rows. Failure of
+        # task maintenance is reported while unrelated memory cleanup can run.
+        try:
+            result["stale_claims_reaped"] = reap_stale_legacy_tasks(
+                neo, lease_seconds=STALE_CLAIM_REAP_SECONDS,
+            )
+        except Exception as exc:
+            logger.warning("bounded Task reap denied: %s", exc)
 
+        try:
+            result["tasks_deleted"] = retain_terminal_legacy_tasks(
+                neo, retention_days=TASK_RETENTION_DAYS,
+            )
+        except Exception as exc:
+            logger.warning("bounded Task retention denied: %s", exc)
+
+        with neo._session() as s:
             rec2 = s.run(
                 """
                 MATCH (m:MemoryItem)
@@ -147,35 +120,12 @@ def run_stale_claim_reaper_loop() -> None:
                 from .neo4j_client import Neo4jClient
                 neo = Neo4jClient()
                 try:
-                    with neo._session() as s:
-                        reap = s.run(
-                        """
-                        MATCH (t:Task)
-                        WHERE toUpper(coalesce(t.status, '')) IN ['CLAIMED','RUNNING','CLAIMED_PASSIVE']
-                          AND coalesce(t.passive_claim_expires_at_ts,
-                                       t.lease_expires_at_ts,
-                                       coalesce(t.last_heartbeat_ts, t.last_heartbeat_at_ts, t.claimed_at_ts, 0) + $lease*1000, 0) < timestamp()
-                        WITH t LIMIT 2000
-                        SET t.status = 'READY',
-                            t.claimed_by = null,
-                            t.claimed_at_ts = null,
-                            t.lease_expires_at_ts = null,
-                            t.last_heartbeat_ts = null,
-                            t.last_passive_claim_result = 'expired_stale_reaped'
-                        REMOVE t.passive_claim_id,
-                               t.passive_claim_agent_id,
-                               t.passive_claim_lease_id,
-                               t.passive_claim_mode,
-                               t.passive_claimed_at,
-                               t.passive_claimed_at_ts,
-                               t.passive_claim_expires_at_ts
-                        RETURN count(t) AS reaped
-                        """,
-                        {"lease": STALE_CLAIM_REAP_SECONDS},
-                    ).single()
-                    reaped = int(reap["reaped"] if reap else 0)
+                    from .legacy_task_maintenance import reap_stale_legacy_tasks
+                    reaped = reap_stale_legacy_tasks(
+                        neo, lease_seconds=STALE_CLAIM_REAP_SECONDS,
+                    )
                     if reaped:
-                        logger.info("stale claim reaper reset %d task(s) to READY", reaped)
+                        logger.info("stale claim reaper reset %d legacy task(s) to READY", reaped)
                 finally:
                     neo.close()
             except Exception as e:
