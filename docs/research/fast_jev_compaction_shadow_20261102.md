@@ -57,8 +57,10 @@ action decision map, and it performs a fail-closed,
 side-effect-free integrity check:
 
 - No changed, invented, reordered or deleted nonempty
-  **user or assistant prose**; full text is compared in
-  memory, never printed.
+  **user or assistant prose**, including whitespace-only text;
+  full text is compared in memory, never printed. Tool uses
+  and results within a shared message must remain in their
+  original sequence, not merely retain the same IDs.
 - Each remaining tool-result ID must still identify exactly
   one original tool use. No unknown/duplicate tool IDs,
   unpaired calls, altered inputs, tool types, error flags
@@ -68,7 +70,8 @@ side-effect-free integrity check:
 - `drop_result`: both messages remain paired, and their
   text must match **exactly** fast-jev's documented
   head-plus-marker truncation; naturally short results
-  remain unchanged.
+  remain unchanged and are separately counted as
+  `result_truncation_noops`, not as saved context.
 - `drop_call`: original call **and** result must disappear
   together; no orphan may survive.
 - First-message and recent-message tool evidence is pinned.
@@ -93,7 +96,12 @@ side-effect-free integrity check:
 instruction mutation, tool/result orphan prevention,
 duplicate IDs, incorrect truncation, code/data injection,
 Bash/error preservation, explicit protected evidence,
-non-JSON values and source/budget limits.
+whitespace-only prose, same-message tool-order preservation,
+non-JSON values and source/budget limits. **48/48 isolated
+Python tests passed**, AST parsing passed at exact code
+commit `f52861ad405d46b6183e492a92454832650dbae1`.
+This includes the newly added first-message preservation
+test and short-result no-op accounting.
 
 ## Differential against the *real* upstream library
 
