@@ -18,15 +18,15 @@ class Row:
 
 
 class Tx:
-    def __init__(self, allow=True, cancelled=2):
-        self.allow = allow
+    def __init__(self, count=1, cancelled=2):
+        self.count = count
         self.cancelled = cancelled
         self.calls = []
 
     def run(self, query, params=None):
         self.calls.append((query, params))
         return Row(
-            {"serial": 1} if self.allow else None
+            {"matching_rows": self.count}
         ) if len(self.calls) == 1 else Row({"cancelled": self.cancelled})
 
 
@@ -65,13 +65,14 @@ def test_intent_cancel_acquires_canonical_node_lock_before_read():
     assert "t.machine_authorized,false" in tx.calls[1][0]
     assert "t.machine_token_epoch IS NULL" in tx.calls[1][0]
     assert "t.machine_authorization_generation IS NULL" in tx.calls[1][0]
+    assert "t.machine_authorization_approval_id IS NULL" in tx.calls[1][0]
     assert "t.hermes_claim_scope,false" in tx.calls[1][0]
     assert tx.calls[1][1] == {"intent_id": "synthetic-intent", "reason": "unit-only"}
 
 
 def test_missing_canonical_lock_fails_before_task_mutation():
-    tx = Tx(allow=False)
-    with pytest.raises(cancellation.LegacyIntentCancelBlocked, match="lock_missing"):
+    tx = Tx(count=0)
+    with pytest.raises(cancellation.LegacyIntentCancelBlocked, match="lock_not_unique"):
         cancellation.cancel_legacy_intent_tasks(
             Neo(tx), intent_id="synthetic-intent", reason="synthetic",
         )
@@ -119,3 +120,13 @@ def test_both_legacy_intent_entrypoints_use_shared_fence():
         ]
         assert "cancel_legacy_intent_tasks" in calls
         assert not any(isinstance(n, ast.Attribute) and n.attr == "run" for n in ast.walk(node))
+
+
+@pytest.mark.parametrize("count", [0, 2, 3])
+def test_canonical_source_lock_must_be_exactly_one_row(count):
+    tx = Tx(count=count)
+    with pytest.raises(cancellation.LegacyIntentCancelBlocked, match="not_unique"):
+        cancellation.cancel_legacy_intent_tasks(
+            Neo(tx), intent_id="synthetic-intent", reason="test",
+        )
+    assert len(tx.calls) == 1
