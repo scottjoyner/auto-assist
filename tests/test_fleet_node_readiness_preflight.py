@@ -22,11 +22,12 @@ def _observed(monkeypatch,tmp_path,*, native_status=200,loaded=True,credential=T
         calls.append((url,credentials is not None))
         if '/api/agent/tasks?' in url:return 401,{}
         if url.endswith('/api/v1/models'):
-            return native_status,{'models':[{'key':'exact-model','loaded_instances':[{'id':'i'}] if loaded else []},{'key':'catalog-only','loaded_instances':[]}]} if native_status==200 else {}
+            return native_status,{'models':[{'key':'exact-model','type':'llm','loaded_instances':[{'id':'i'}] if loaded else []},{'key':'catalog-only','type':'llm','loaded_instances':[]}]} if native_status==200 else {}
         if url.endswith('/v1/models'):return 200,{'data':[{'id':f'catalog-{i}'} for i in range(11)]}
         return 0,{}
     monkeypatch.setattr(a,'_get',fetch)
     monkeypatch.setattr(a,'_service_active',lambda _:True)
+    monkeypatch.setattr(a,'_running_credentials',lambda _:None)
     record=a.observation(worker_source=source,credential_file=secret,
       assistx_url='http://private-assistx',model_url='http://local-model',expected_model='exact-model')
     return record,calls
@@ -98,7 +99,7 @@ def test_auth_probe_disables_inherited_proxy_and_refuses_redirect(monkeypatch):
         seen.append(('handlers',handlers))
         return StubOpener()
     monkeypatch.setattr(a.urllib.request,'build_opener',intercept)
-    result=a._get('http://allowed-tailnet-host:8000/api/agent/tasks?status=READY',credentials=('account','credential'))
+    result=a._get('http://100.78.106.121:8000/api/agent/tasks?status=READY',credentials=('account','credential'))
     assert result==(302,{})
     handlers=seen[0][1]
     assert any(isinstance(x,a.urllib.request.ProxyHandler) and x.proxies=={} for x in handlers)
@@ -109,3 +110,175 @@ def test_auth_probe_disables_inherited_proxy_and_refuses_redirect(monkeypatch):
 def test_oversized_secret_file_rejected(tmp_path):
     p=tmp_path/'env';p.write_text('FLEET_AUTH_USER=a\nFLEET_AUTH_PASS='+'c'*18000+'\n');p.chmod(0o600)
     assert a._credentials(p) is None
+
+
+def test_credential_probe_rejects_public_metadata_and_operator_endpoints(monkeypatch):
+    called = []
+    monkeypatch.setattr(a.urllib.request, 'build_opener', lambda *args: called.append(args))
+    for url in (
+        'http://8.8.8.8:8000/api/agent/tasks',
+        'https://example.com:443/api/agent/tasks',
+        'http://169.254.169.254:80/api/agent/tasks',
+        'http://10.0.0.1:8000/api/agent/tasks',
+        'http://100.78.106.121:8000/admin/providers',
+        'http://100.78.106.121:8000/api/agent/tasks#fragment',
+    ):
+        assert a._get(url, credentials=('u', 'secret')) == (0, {})
+    assert called == []
+    assert a._credential_target_allowed(
+        'http://100.78.106.121:8000/api/agent/tasks?status=READY'
+    )
+    assert a._credential_target_allowed('https://10.0.0.1:8000/api/agent/tasks')
+
+
+def test_matching_effective_process_credentials_share_file_auth_probe(monkeypatch, tmp_path):
+    username, password = 'synthetic-user', 'synthetic-strong-credential'
+    monkeypatch.setattr(a, '_running_credentials', lambda _: (username, password))
+    monkeypatch.setattr(a, '_service_active', lambda _: True)
+    source = tmp_path / 'agent.py'
+    source.write_text('auth_denials=0')
+    secret = tmp_path / 'agent.env'
+    secret.write_text(f'FLEET_AUTH_USER={username}\nFLEET_AUTH_PASS={password}\n')
+    secret.chmod(0o600)
+    calls = []
+
+    def get(url, *, credentials=None):
+        if '/api/agent/tasks?' in url:
+            calls.append(credentials)
+            return 401, {}
+        return 404, {}
+
+    monkeypatch.setattr(a, '_get', get)
+    record = a.observation(
+        worker_source=source, credential_file=secret,
+        assistx_url='http://100.78.106.121:8000',
+        model_url='http://127.0.0.1:1234',
+    )
+    assert record['matches_live_process_credentials'] is True
+    assert record['live_process_credentials_present'] is True
+    assert record['read_only_auth_probe_http'] == 401
+    assert record['live_process_read_only_auth_probe_http'] == 401
+    assert len(calls) == 1
+    assert record['authentication_grants_task_admission'] is False
+    assert username not in str(record) and password not in str(record)
+
+
+def test_effective_process_and_file_auth_are_independently_observed_if_different(
+    monkeypatch, tmp_path,
+):
+    source = tmp_path / 'agent.py'
+    source.write_text('valid worker')
+    secret = tmp_path / 'agent.env'
+    secret.write_text('FLEET_AUTH_USER=user\nFLEET_AUTH_PASS=old-credential\n')
+    secret.chmod(0o600)
+    monkeypatch.setattr(a, '_running_credentials', lambda _: ('user', 'new-credential'))
+    monkeypatch.setattr(a, '_service_active', lambda _: True)
+    calls = []
+
+    def get(url, *, credentials=None):
+        if '/api/agent/tasks?' in url:
+            calls.append(credentials)
+            return (401 if credentials[1] == 'old-credential' else 200), {}
+        return 404, {}
+
+    monkeypatch.setattr(a, '_get', get)
+    record = a.observation(
+        worker_source=source, credential_file=secret,
+        assistx_url='http://100.78.106.121:8000',
+        model_url='http://127.0.0.1:1234',
+    )
+    assert record['matches_live_process_credentials'] is False
+    assert record['read_only_auth_probe_http'] == 401
+    assert record['live_process_read_only_auth_probe_http'] == 200
+    assert len(calls) == 2
+    assert 'old-credential' not in str(record)
+    assert 'new-credential' not in str(record)
+
+
+def test_extracts_only_same_user_fleet_worker_credentials(monkeypatch):
+    class ProcStat:
+        st_uid = os.geteuid()
+
+    class FakeProc:
+        def __init__(self, path):
+            self.path = str(path)
+
+        def stat(self):
+            return ProcStat()
+
+        def __truediv__(self, filename):
+            return FakeProc(self.path + '/' + filename)
+
+        def read_bytes(self):
+            if self.path.endswith('cmdline'):
+                return b'python3\0/home/scott/fleet-work/run_fleet_node_agent.py\0'
+            if self.path.endswith('environ'):
+                return b'FLEET_AUTH_USER=u\0FLEET_AUTH_PASS=synthetic-value\0'
+            raise AssertionError('unexpected process data')
+
+    class Run:
+        returncode = 0
+        stdout = '123\n'
+
+    monkeypatch.setattr(a.subprocess, 'run', lambda *args, **kwargs: Run())
+    monkeypatch.setattr(a, 'Path', FakeProc)
+    assert a._running_credentials('fleet-node-agent.service') == ('u', 'synthetic-value')
+
+
+def test_unrelated_process_identity_cannot_be_read(monkeypatch):
+    class ProcStat:
+        st_uid = os.geteuid()
+
+    class FakeProc:
+        def __init__(self, path):
+            self.path = str(path)
+
+        def stat(self):
+            return ProcStat()
+
+        def __truediv__(self, filename):
+            return FakeProc(self.path + '/' + filename)
+
+        def read_bytes(self):
+            if self.path.endswith('cmdline'):
+                return b'python3\0unrelated_daemon.py\0'
+            raise AssertionError('must not read unrelated process environment')
+
+    class Run:
+        returncode = 0
+        stdout = '123\n'
+
+    monkeypatch.setattr(a.subprocess, 'run', lambda *args, **kwargs: Run())
+    monkeypatch.setattr(a, 'Path', FakeProc)
+    assert a._running_credentials('fleet-node-agent.service') is None
+
+
+def test_loaded_embedding_is_not_a_loaded_chat_model(monkeypatch, tmp_path):
+    source = tmp_path / 'agent.py'
+    source.write_text('fleet-node-agent')
+    secret = tmp_path / 'agent.env'
+    secret.write_text('FLEET_AUTH_USER=u\nFLEET_AUTH_PASS=p\n')
+    secret.chmod(0o600)
+    monkeypatch.setattr(a, '_service_active', lambda _: False)
+
+    def get(url, *, credentials=None):
+        if url.endswith('/api/v1/models'):
+            return 200, {'models': [
+                {'key': 'embed-only', 'type': 'embedding',
+                 'loaded_instances': [{'id': 'e1'}]},
+                {'key': 'chat-resident', 'type': 'llm',
+                 'loaded_instances': [{'id': 'm1'}]},
+            ]}
+        return 200, {'data': []}
+
+    monkeypatch.setattr(a, '_get', get)
+    result = a.observation(
+        worker_source=source, credential_file=secret,
+        assistx_url='http://100.78.106.121:8000', model_url='http://127.0.0.1:1234',
+        expected_model='embed-only',
+    )
+    assert result['native_loaded_entries'] == 2
+    assert result['native_loaded_chat_entries'] == 1
+    assert result['native_loaded_embedding_entries'] == 1
+    assert result['expected_model_exactly_loaded'] is False
+    assert result['authorizes_dispatch'] is False
