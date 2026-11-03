@@ -1,0 +1,39 @@
+name: Fleet local safe-slot research (offline)
+
+on:
+  pull_request:
+    paths:
+      - scripts/fleet_local_safe_slot_readonly.py
+      - tests/test_fleet_local_safe_slot_readonly.py
+      - docs/FLEET_LOCAL_INFERENCE_CAPACITY_AND_QUALITY_20261103.md
+      - .github/workflows/fleet-local-safe-slot-research.yml
+  push:
+    branches:
+      - research/fleet-inference-safe-slot-20261103
+
+permissions:
+  contents: read
+
+jobs:
+  offline-safe-slot-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install only offline test tooling
+        run: python -m pip install --disable-pip-version-check "pytest>=8,<10" "ruff>=0.11,<1"
+      - name: Compile, lint, and diff-check
+        run: |
+          python -B -m py_compile scripts/fleet_local_safe_slot_readonly.py tests/test_fleet_local_safe_slot_readonly.py
+          ruff check scripts/fleet_local_safe_slot_readonly.py tests/test_fleet_local_safe_slot_readonly.py
+          git diff --check
+      - name: 40 offline adversarial read-only eligibility tests
+        run: python -B -m pytest --noconftest -q tests/test_fleet_local_safe_slot_readonly.py
+      - name: Source cannot load models or route production
+        run: |
+          ! grep -Eq 'method="POST"|models/load|models/unload|chat/completions|/api/generate|shell=True|systemctl restart|nsenter ' scripts/fleet_local_safe_slot_readonly.py
+          grep -F 'can_dispatch_production": False' scripts/fleet_local_safe_slot_readonly.py
+          grep -F 'can_run_scheduled_research": False' scripts/fleet_local_safe_slot_readonly.py
