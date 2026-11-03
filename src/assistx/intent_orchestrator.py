@@ -258,23 +258,16 @@ def _queue_intent_review(
 
 
 def _handle_cancel(neo: Neo4jClient, intent: Dict[str, Any]) -> None:
+    from .legacy_intent_cancel import cancel_legacy_intent_tasks
+
     intent_id = intent["id"]
-    text = intent.get("text", "")
-    with neo._session() as s:
-        pending = s.run(
-            """
-            MATCH (i:Intent {id:$id})-[:CREATED_TASK]->(t:Task)
-            WHERE t.status IN ['READY','CLAIMED','RUNNING']
-            SET t.status='CANCELLED',
-                t.cancelled_reason=$reason,
-                t.updated_at=datetime(),
-                t.updated_at_ts=timestamp()
-            RETURN t.id AS task_id, t.status AS old_status
-            """,
-            {"id": intent_id, "reason": f"Cancelled by intent: {text[:200]}"},
-        ).data()
-        if pending:
-            logger.info("Cancelled %d tasks for intent %s", len(pending), intent_id)
+    reason = f"Cancelled by intent: {intent.get('text', '')[:200]}"
+    cancelled = cancel_legacy_intent_tasks(
+        neo, intent_id=intent_id, reason=reason,
+    )
+    if cancelled:
+        logger.info("Cancelled %d legacy tasks for intent %s", cancelled, intent_id)
+
 
 
 def _handle_query(neo: Neo4jClient, intent: Dict[str, Any]) -> None:

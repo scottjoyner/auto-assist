@@ -897,20 +897,12 @@ def _require_ws_auth(token: Optional[str]) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 def _cancel_tasks_for_intent(neo: Neo4jClient, intent_id: str, reason: str) -> int:
-    with neo._session() as s:
-        rec = s.run(
-            """
-            MATCH (i:Intent {id:$intent_id})-[:CREATED_TASK]->(t:Task)
-            WHERE t.status IN ['READY','CLAIMED','RUNNING']
-            SET t.status='CANCELLED',
-                t.cancelled_reason=$reason,
-                t.updated_at=datetime(),
-                t.updated_at_ts=timestamp()
-            RETURN count(t) AS cancelled
-            """,
-            {"intent_id": intent_id, "reason": reason[:500]},
-        ).single()
-    return int(rec["cancelled"] if rec else 0)
+    # Scoped-machine and sticky Hermes Tasks must not be cancelled by the
+    # generic Intent writer. This research-only path shares their canonical
+    # WorkSupplyState transaction lock and re-reads after acquiring it.
+    from .legacy_intent_cancel import cancel_legacy_intent_tasks
+    return cancel_legacy_intent_tasks(neo, intent_id=intent_id, reason=reason)
+
 
 
 def _intent_outcome_and_confidence(text: str, classification: str) -> tuple[str, float]:
