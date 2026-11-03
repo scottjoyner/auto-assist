@@ -107,9 +107,15 @@ def _detect_capabilities(lmstudio_url: str | None) -> tuple[list[str], list[str]
     if lmstudio_url:
         status, body = _http("GET", f"{lmstudio_url.rstrip('/')}/v1/models", timeout=5)
         if status == 200 and isinstance(body, dict):
-            caps.add("llm")
-            caps.add("lmstudio")
-            models = [item.get("id", "") for item in body.get("data", []) if item.get("id")]
+            rows = body.get("data")
+            if isinstance(rows, list):
+                models = [str(item["id"]) for item in rows
+                          if isinstance(item, dict) and isinstance(item.get("id"), str)
+                          and item["id"].strip()]
+            # An API listener with zero advertised models is NOT an
+            # inference-capable node (observed on x1-370 Nov 2).
+            if models:
+                caps.update(("llm", "lmstudio"))
 
     # Lightweight vision/tooling detection without importing heavyweight libs.
     for command in ("ffmpeg", "python3"):
@@ -460,11 +466,27 @@ def _claim_and_run(
             "lease_seconds": 900,
         },
     )
-    if status != 200 or not isinstance(claim, dict):
-        # 404/409/etc: task gone, drained, or claimed elsewhere. Report no-work
-        # so the caller sleeps instead of hot-looping on the same task.
+    if status != 200 or not isinstance(claim, dict) or claim.get("claimed") is not True:
+        # HTTP 200 with missing/false claimed is not an authorized claim.
         return False
-    claim_id = claim.get("claim_id")
+    claimed_task = claim.get("task")
+    if not isinstance(claimed_task, dict):
+        return False
+    claim_id = claimed_task.get("claim_id")
+    # The Neo4j claim response carries claim_id inside the Task, not
+    # top-level. Never send None and silently bypass a stale claim fence.
+    if not isinstance(claim_id, str) or not claim_id.strip():
+        return False
+    if claim.get("claim_id") is not None and claim.get("claim_id") != claim_id:
+        return False
+    if (claimed_task.get("id") != task_id
+            or claimed_task.get("claimed_by") != node_id
+            or claimed_task.get("status") != "CLAIMED"
+            or claimed_task.get("agent_session_id") != session_id):
+        return False
+    # READY-list task contents may be stale. Execute the authoritative task
+    # returned by the claim, bound to the exact server-assigned claim fence.
+    task = claimed_task
 
     stop_heartbeat = threading.Event()
 
@@ -474,7 +496,8 @@ def _claim_and_run(
                 "POST",
                 f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/heartbeat",
                 auth=auth,
-                data={"node_id": node_id, "agent_id": node_id, "claim_id": claim_id},
+                data={"node_id": node_id, "agent_id": node_id,
+                      "claim_id": claim_id, "session_id": session_id},
                 timeout=10,
             )
 
@@ -555,8 +578,23 @@ def _claim_and_run(
                         data=request,
                         timeout=300,
                     )
-                    success = llm_status == 200
+                    # HTTP 200 proves transport success, not a generated answer.
+                    # Do not count an empty choice as useful completed work.
+                    choices = body.get("choices") if isinstance(body, dict) else None
+                    first = choices[0] if isinstance(choices, list) and choices else None
+                    message = first.get("message") if isinstance(first, dict) else None
+                    generated = message.get("content") if isinstance(message, dict) else None
+                    finish_reason = first.get("finish_reason") if isinstance(first, dict) else None
+                    incomplete = (isinstance(finish_reason, str)
+                                  and finish_reason in {"length", "content_filter"})
+                    success = (llm_status == 200 and isinstance(generated, str)
+                               and bool(generated.strip()) and not incomplete)
                     result = body if isinstance(body, dict) else {"result": body}
+                    if llm_status == 200 and not success:
+                        # A truncated/filtered response is not completed work.
+                        error = ("incomplete_or_filtered_model_generation" if incomplete
+                                 else "empty_or_invalid_model_generation")
+                        result = {**result, "error": error}
         else:
             result = {"error": f"unsupported task_type={task_type}"}
     except Exception as exc:  # pragma: no cover - defensive worker boundary
@@ -567,20 +605,28 @@ def _claim_and_run(
 
     # AssistX exposes a single completion endpoint; failures are reported via
     # POST /complete with status=FAILED (no separate /fail route exists).
-    _http(
+    requested_terminal = "DONE" if success else "FAILED"
+    completion_status, completion = _http(
         "POST",
         f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/complete",
         auth=auth,
         data={
             "node_id": node_id,
             "agent_id": node_id,
-            "status": "DONE" if success else "FAILED",
+            "status": requested_terminal,
             "summary": str(result.get("error") or result.get("summary") or "")[:500],
             "result": result,
             "session_id": session_id,
             "claim_id": claim_id,
         },
     )
+    acknowledged_task = completion.get("task") if isinstance(completion, dict) else None
+    if (completion_status != 200 or not isinstance(acknowledged_task, dict)
+            or acknowledged_task.get("id") != task_id
+            or acknowledged_task.get("status") != requested_terminal):
+        # A generated answer is not a committed task. Never claim success
+        # without the authoritative terminal receipt or blindly replay work.
+        return False
 
 
 def _poll_once(
@@ -591,13 +637,25 @@ def _poll_once(
     node_id: str,
     caps: list[str],
     lmstudio_url: str | None,
+    observed_status: list[int] | None = None,
 ) -> bool:
+    # Use backend's status, agent_id and repeated capabilities contract.
+    # This worker lacks token-fenced recovery claim/heartbeat/completion;
+    # recovery tasks must remain unavailable in this legacy worker.
+    advertised_caps = sorted({cap for cap in caps
+                              if isinstance(cap, str) and cap and cap != "recovery"})
+    query = urllib.parse.urlencode([
+        ("status", "READY"), ("limit", "20"), ("agent_id", node_id),
+        *(("capabilities", cap) for cap in advertised_caps),
+    ])
     status, body = _http(
         "GET",
-        f"{assistx_url.rstrip('/')}/api/agent/tasks?state=READY&limit=20",
+        f"{assistx_url.rstrip('/')}/api/agent/tasks?{query}",
         auth=auth,
         timeout=15,
     )
+    if observed_status is not None:
+        observed_status.append(status)
     if status != 200 or not isinstance(body, dict):
         return False
     tasks = body.get("tasks", body.get("items", []))
@@ -607,9 +665,20 @@ def _poll_once(
     for task in tasks:
         if not isinstance(task, dict):
             continue
-        required = set(task.get("required_capabilities") or [])
-        if required.issubset(set(caps)):
-            _claim_and_run(
+        if task.get("target_agent_id") not in (None, node_id):
+            continue
+        required_field = task.get("required_capabilities") or []
+        if not isinstance(required_field, list) or any(
+            not isinstance(cap, str) for cap in required_field
+        ):
+            continue
+        required = set(required_field)
+        if "recovery" in required:
+            continue  # No token-bound recovery identity in this worker.
+        if required.issubset(set(advertised_caps)):
+            if not (task.get("task_id") or task.get("id")):
+                continue
+            attempted = _claim_and_run(
                 assistx_url=assistx_url,
                 router_url=router_url,
                 auth=auth,
@@ -618,7 +687,9 @@ def _poll_once(
                 task=task,
                 lmstudio_url=lmstudio_url,
             )
-            return True
+            # A rejected claim must yield; never hot-loop on the same task.
+            # Successful legacy _claim_and_run returns None after execution.
+            return attempted is not False
     return False
 
 
@@ -633,6 +704,7 @@ def run(
     del concurrency  # current worker loop intentionally executes one claimed task at a time
     node_id = _detect_hostname()
     auth = _auth_from_env()
+    auth_denials = 0
 
     while True:
         # Re-detect per cycle: a value cached at startup is what a node booted
@@ -645,6 +717,7 @@ def run(
             data=_health_payload(node_id, caps, models),
             timeout=10,
         )
+        observed_status: list[int] = []
         worked = _poll_once(
             assistx_url=assistx_url,
             router_url=router_url,
@@ -652,9 +725,19 @@ def run(
             node_id=node_id,
             caps=caps,
             lmstudio_url=lmstudio_url,
+            observed_status=observed_status,
         )
-        if not worked:
-            time.sleep(poll_interval)
+        status = observed_status[-1] if observed_status else 0
+        if status in (401, 403):
+            # Auth rejection is not an empty queue. Never guess or disclose
+            # credentials; reduce repeated unauthorized requests instead.
+            auth_denials = min(auth_denials + 1, 8)
+            time.sleep(min(300.0, max(1.0, poll_interval) * (2 ** auth_denials)))
+        elif not worked:
+            auth_denials = 0
+            time.sleep(max(1.0, poll_interval))
+        else:
+            auth_denials = 0
 
 
 def main() -> None:
