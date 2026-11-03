@@ -65,12 +65,19 @@ ONLY on a uniquely named, resource-limited, loopback-Bolt Neo4j Enterprise
 disposable database. The role was granted ACCESS ON DATABASE neo4j and
 MATCH {*} ON GRAPH neo4j NODES Task, WorkSupplyState.
 
-Eight real database tests passed: the role read synthetic Task/WorkSupplyState
+Eight local disposable database tests passed: the role read synthetic Task/WorkSupplyState
 but could not see unrelated MemoryItem records; five attempted graph mutations
 (SET Task, CREATE Task, DETACH DELETE, SET WorkSupplyState, MERGE Task)
 all failed with Neo4j native Security errors. It also could not grant itself
 WRITE on the system database. The admin fixture confirmed no unexpected Task
 or coordination state changes. No production role, grant or secret changed.
+
+The physical role-creation negative test source remains local research evidence,
+not part of the published PR because its file could not be published through
+the connected source transport. Hosted PR CI therefore runs the source-only
+three-service census tests and the existing 171 disposable graph/recovery
+regressions, NOT the eight new role-creation negative cases. Do not claim a
+hosted physical RBAC proof from this PR.
 
 READ_ACCESS driver routing is not a security grant; a restricted database
 role is necessary for a defensible read-only observer.
