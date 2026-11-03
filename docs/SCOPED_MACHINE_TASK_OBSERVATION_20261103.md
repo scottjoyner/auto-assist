@@ -45,7 +45,10 @@ Before querying Task metadata it requires:
    `target_agent_id=$node_id` and `status=READY`:
    `requires_approval=false`, `paperclip_dispatched=false`, and
    `required_capabilities=['llm']`, capped at 20 hints. Untargeted Tasks are
-   categorically excluded. The response includes Task IDs only, no prompt,
+   categorically excluded. The **final Task query rechecks** canonical
+   approval expiry, generation and fresh work-supply capacity in the same
+   read query, so a mid-request revocation produces no Task IDs. The response
+   includes Task IDs only, no prompt,
    title, payload, tools, transcript, owner or context. Responses have
    `Cache-Control: private, no-store` and always explicitly report
    `authorizes_claim=false`, `authorizes_dispatch=false`.

@@ -24,11 +24,13 @@ class Result:
 
 
 class FakeNeo:
-    def __init__(self, *, supply=2, runtime=1, ready=True, capabilities='["chat","local_only"]'):
+    def __init__(self, *, supply=2, runtime=1, ready=True,
+                 capabilities='["chat","local_only"]', revoke_before_task=False):
         self.supply = supply
         self.runtime = runtime
         self.ready = ready
         self.capabilities = capabilities
+        self.revoke_before_task = revoke_before_task
         self.calls = []
         self.close_calls = 0
 
@@ -48,6 +50,17 @@ class FakeNeo:
         assert query.lstrip().startswith('MATCH')
         assert 'CREATE ' not in query and 'SET ' not in query and 'DELETE ' not in query
         self.calls.append((query, dict(parameters)))
+        if "MATCH (t:Task {status:'READY', target_agent_id:$node_id})" in query:
+            assert parameters['node_id'] == 'xwing'
+            assert parameters['limit'] <= 20
+            assert parameters['generation'] == 17
+            assert '$cutoff' in query and '$now' in query
+            assert "MATCH (p:FleetProjectionState {name:'canonical',status:'approved'})" in query
+            assert 'MATCH (s:WorkSupplyState' in query
+            assert "t.required_capabilities=['llm']" in query
+            assert 't.payload_json' not in query and 'RETURN t ' not in query
+            return Result([{'id': 'assigned-llm-1', 'priority': 'LOW'}]
+                          if self.ready and not self.revoke_before_task else [])
         if 'WorkSupplyState' in query:
             assert parameters['generation'] == 17
             return Result([{'slots': self.supply}] if self.supply else [])
@@ -59,22 +72,17 @@ class FakeNeo:
             assert 'CapacityObservation' in query
             return Result([{'admitted_runtimes': self.runtime,
                             'model_capabilities': [self.capabilities]}])
-        if "MATCH (t:Task {status:'READY', target_agent_id:$node_id})" in query:
-            assert parameters['node_id'] == 'xwing'
-            assert parameters['limit'] <= 20
-            assert "t.required_capabilities=['llm']" in query
-            assert 't.payload_json' not in query and 'RETURN t ' not in query
-            return Result([{'id': 'assigned-llm-1', 'priority': 'LOW'}] if self.ready else [])
         raise AssertionError('unexpected query: ' + query)
 
 
 def app_factory(monkeypatch, *, enabled=True, policy=True, token='secret-x',
                 supply=2, runtime=1, approved=True, ready=True,
                 capabilities='["chat","local_only"]', policy_generation=17,
-                artifact='a' * 64):
+                artifact='a' * 64, revoke_before_task=False):
     monkeypatch.setenv('ASSISTX_ENABLE_SCOPED_NODE_OBSERVATION', '1' if enabled else '0')
     db = FakeNeo(supply=supply, runtime=runtime, ready=ready,
-                 capabilities=capabilities)
+                 capabilities=capabilities,
+                 revoke_before_task=revoke_before_task)
     calls = []
 
     def projection(_factory, now):
@@ -207,3 +215,13 @@ def test_stale_projection_or_unpinned_artifact_never_exposes_task_ids(
     assert result.status_code in (403, 503)
     assert 'assigned-llm-1' not in result.text
     assert not any('MATCH (t:Task' in query for query, _ in db.calls)
+
+
+def test_approval_revoked_before_final_read_yields_no_task_metadata(monkeypatch):
+    client, db, _ = app_factory(monkeypatch, revoke_before_task=True)
+    result=client.get('/api/fleet/nodes/xwing/assigned-task-hints',
+                      headers={'X-Fleet-Node-Token':'secret-x'})
+    assert result.status_code==200
+    assert result.json()['items']==[]
+    assert result.json()['authorizes_claim'] is False
+    assert any('MATCH (p:FleetProjectionState' in query for query,_ in db.calls)

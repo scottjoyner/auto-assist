@@ -133,6 +133,15 @@ def candidate_tasks(
             # and return metadata only, not payload_json, titles or context.
             records = session.run(
                 """
+                MATCH (p:FleetProjectionState {name:'canonical',status:'approved'})
+                WHERE p.generation=$generation AND p.expires_at_ts>$now
+                  AND p.approved_by IS NOT NULL AND p.approval_id IS NOT NULL
+                MATCH (s:WorkSupplyState {name:'canonical'})
+                WHERE s.projection_generation=$generation
+                  AND s.generated_at_ts>$cutoff
+                  AND s.allow_background=true
+                  AND coalesce(s.total_slots,0)>0
+                  AND coalesce(s.free_slots,0)>0
                 MATCH (t:Task {status:'READY', target_agent_id:$node_id})
                 WHERE coalesce(t.requires_approval,false)=false
                   AND coalesce(t.paperclip_dispatched,false)=false
@@ -141,7 +150,9 @@ def candidate_tasks(
                 ORDER BY coalesce(t.created_at_ts,0) ASC
                 LIMIT $limit
                 """,
-                {'node_id': node_id, 'limit': limit},
+                {'node_id': node_id, 'limit': limit,
+                 'generation': generation, 'now': now,
+                 'cutoff': now - _MAX_STATE_AGE_MS},
             )
             hints = []
             for record in records:
