@@ -12,7 +12,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 _CHILD = r"""
 import os
 import socket
@@ -114,12 +113,20 @@ os.environ['ASSISTX_ENABLE_SCOPED_NODE_OBSERVATION'] = '1'
 # Registration alone without explicit per-node policy is insufficient.
 assert client.get(path, headers=node_headers).status_code == 403
 
-# With synthetic observer policy, unavailable runtime authority is still HOLD.
+# An enrolled token alone cannot grant hints without a pinned token epoch.
 import json
 os.environ['ASSISTX_SCOPED_NODE_OBSERVATION_POLICIES'] = json.dumps({
  'xwing': {'enabled': True, 'audience': 'targeted-llm-observer',
            'allowed_capabilities': ['llm'], 'projection_generation': 17,
            'artifact_fingerprint': 'a' * 64}
+})
+assert client.get(path, headers=node_headers).status_code == 403
+
+# With an explicit current synthetic epoch, unavailable runtime is still HOLD.
+os.environ['ASSISTX_SCOPED_NODE_OBSERVATION_POLICIES'] = json.dumps({
+ 'xwing': {'enabled': True, 'audience': 'targeted-llm-observer',
+           'allowed_capabilities': ['llm'], 'projection_generation': 17,
+           'artifact_fingerprint': 'a' * 64, 'token_epoch': 3}
 })
 def denied_projection(*args):
     raise scoped_machine_poll.RuntimeProjectionBlocked('synthetic no admission')

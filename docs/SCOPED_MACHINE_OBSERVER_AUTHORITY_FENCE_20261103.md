@@ -40,8 +40,16 @@ revoked or duplicate principals and wrong epoch. The graph was a new isolated
 localhost-only test container with a memory/CPU cap; it was removed after the
 test. Test assertions read Task properties before and after observer queries.
 
-Host source lint/compile/diff checks pass. Hosted exact-head CI is a distinct
-release gate; parent CI is not proof for this branch.
+Host source lint/compile/diff checks pass. The full assembled API security
+isolation fixture also **PASSED** in a new memory/CPU-limited, read-only-source
+Docker container with networking disabled. The fixture verifies missing-epoch
+403 denial and properly scoped but expired runtime 503 HOLD, along with legacy
+operator Basic isolation and machine credential denial on admin/Task routes.
+
+Initial hosted CI failed an old fixture expecting 503 without a token epoch;
+this is an expected stricter-policy mismatch, not reason to permit the missing
+epoch. The fixture was corrected to assert both 403 and 503 in order, and a
+new exact-head CI run is required. Parent CI is not proof for this branch.
 
 ## Production blockers (not solved here)
 
