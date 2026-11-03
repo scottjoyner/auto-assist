@@ -155,6 +155,8 @@ def test_success_synthetic_contract_is_exact_and_only_uses_transactional_cas(mon
         "status:'READY', target_agent_id:$node_id", "t.required_capabilities=['llm']",
         't.requires_approval=false', 't.paperclip_dispatched=false',
         't.machine_authorized=true', 't.machine_authorization_generation=$generation',
+        't.machine_authorization_approval_id=auth.approval_id',
+        'other.node_id<>$node_id',
         't.claim_id IS NULL', 't.agent_session_id IS NULL',
         't.owner_id IS NOT NULL', 't.lease_expires_at_ts IS NULL',
         'm.machine_chat_eligible=true', 'm.artifact_fingerprint=$artifact',

@@ -94,7 +94,7 @@ def seed(driver, task_ids=('claim-safe-1',), *, supply=2,
                required_capabilities:['llm'],requires_approval:false,
                paperclip_dispatched:false,machine_authorized:$auth,
                machine_authorization_generation:17,
-               machine_authorization_approval_id:'synthetic-task-approval',
+               machine_authorization_approval_id:'synthetic-node-approval',
                owner_id:'synthetic-owner'})
             ''',{'id':task,'auth':machine_authorized}).consume()
 
@@ -131,7 +131,9 @@ def test_real_neo4j_scoped_claim_and_duplicate_denial(isolated_driver, monkeypat
                                    'bad_existing_claim','wrong_task_generation',
                                    'wrong_task_caps','approval_flag_absent',
                                    'approval_expired','unapproved_access',
-                                   'wrong_artifact'])
+                                   'wrong_artifact',
+                                   'foreign_allocation',
+                                   'wrong_machine_approval'])
 def test_real_neo4j_negative_paths_have_zero_persisted_writes(
     isolated_driver, monkeypatch, mode,
 ):
@@ -149,6 +151,8 @@ def test_real_neo4j_negative_paths_have_zero_persisted_writes(
         'approval_expired': "MATCH (p:FleetProjectionState {name:'canonical'}) SET p.expires_at_ts=0",
         'unapproved_access': "MATCH (a:AccessPath) SET a.approved=false",
         'wrong_artifact': "MATCH (m:LoadedModelInstance) SET m.artifact_fingerprint='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'",
+        'foreign_allocation': "MATCH (t:Task {id:'claim-safe-1'}) CREATE (a:AllocationReservation {status:'ACTIVE',node_id:'other-node',expires_at_ts:timestamp()+100000}) CREATE (t)-[:HAS_ALLOCATION]->(a)",
+        'wrong_machine_approval': "MATCH (t:Task {id:'claim-safe-1'}) SET t.machine_authorization_approval_id='unrelated-approval'",
     }
     if mode in changes:
         with isolated_driver.session() as s:

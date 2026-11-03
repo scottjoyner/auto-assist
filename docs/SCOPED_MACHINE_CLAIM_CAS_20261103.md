@@ -40,7 +40,8 @@ is held, requires ALL of:
 - **explicit** READY Task target, `["llm"]` capabilities, false
   `requires_approval` / `paperclip_dispatched`, true
   `machine_authorized`, matching machine-authorization generation and
-  approval reference, nonempty owner identity
+  the **same** approval ID as the node's machine principal, nonempty owner
+  identity, and no active allocation reservation owned by another node
 - no prior claim, claimed-by, session, lease or execution attempt, and no
   external Paperclip dispatched relationship
 - active Task count below the approved global capacity limit

@@ -107,8 +107,12 @@ WHERE t.required_capabilities=['llm']
   AND t.requires_approval=false AND t.paperclip_dispatched=false
   AND t.machine_authorized=true
   AND t.machine_authorization_generation=$generation
-  AND t.machine_authorization_approval_id IS NOT NULL
+  AND t.machine_authorization_approval_id=auth.approval_id
   AND t.owner_id IS NOT NULL
+  AND NOT EXISTS {
+    MATCH (t)-[:HAS_ALLOCATION]->(other:AllocationReservation {status:'ACTIVE'})
+    WHERE other.expires_at_ts>timestamp() AND other.node_id<>$node_id
+  }
   AND t.claim_id IS NULL AND t.claimed_by IS NULL
   AND t.agent_session_id IS NULL AND t.lease_expires_at_ts IS NULL
   AND coalesce(t.execution_attempt,0)=0
