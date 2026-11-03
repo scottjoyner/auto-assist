@@ -42,6 +42,19 @@ that terminate and kill timeouts cannot be mistaken for process exit.
 No live Task was claimed, no real subprocess was killed, and production
 services remain unchanged.
 
+## Productive completion quality
+
+The executor's result parser also previously stringified lists/dictionaries and
+marked any nonblank HTTP-200 content as `DONE`, even if
+`finish_reason=length/content_filter/tool_calls`. This could misreport a
+truncated or filtered answer as useful Task output. The revised parser accepts
+only nonblank **string** content, fails closed on explicitly incomplete or
+malformed finish reasons, and avoids persisting untrusted partial response
+bodies for these failure cases. Unit tests cover invalid content types,
+whitespace, truncated/filtered outputs, malformed finish reasons and a real
+nonempty stop-terminated response. **A valid response is still not itself an
+independently witnessed Task receipt.**
+
 ## Remaining P0 release holds
 
 Client-side cleanup does **not** supply authoritative claim revocation or

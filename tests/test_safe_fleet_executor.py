@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import threading
 import time
+
+import pytest
 from typing import Any
 
 from assistx import fleet_executor as module
@@ -364,3 +366,54 @@ def test_heartbeat_exception_cannot_release_slot_while_router_invocation_runs(mo
         executor.stop()
     assert state.completed[0]['status']=='FAILED'
     assert all(row['status']!='DONE' for row in state.completed)
+
+
+@pytest.mark.parametrize('content', [None,'','   ',[],['not-generated-text'],
+                                      {'text':'not-generated-text'},123])
+def test_non_text_or_empty_http_200_is_not_productive_completion(content):
+    outcome = module.FleetExecutor._result_from_router({
+        'status_code':200,
+        'body':{'choices':[{'finish_reason':'stop','message':{'content':content}}],
+                'model':'local/valid'},
+    })
+    status, result = outcome
+    assert status=='FAILED'
+    assert result['error']=='empty_or_invalid_model_generation'
+    assert 'router_response' not in result
+
+
+@pytest.mark.parametrize('finish_reason',['length','content_filter','tool_calls'])
+def test_http_200_truncated_or_filtered_response_is_not_done(finish_reason):
+    status,result = module.FleetExecutor._result_from_router({
+        'status_code':200,
+        'body':{'choices':[{'finish_reason':finish_reason,
+                            'message':{'content':'Partial, not an accepted review'}}]},
+    })
+    assert status=='FAILED'
+    assert result['error']=='incomplete_or_filtered_model_generation'
+    assert result['finish_reason']==finish_reason
+    assert 'content' not in result
+
+
+def test_complete_text_remains_done_without_separate_task_receipt():
+    status,result = module.FleetExecutor._result_from_router({
+        'status_code':200,
+        'body':{'model':'local/only-chat',
+                'usage':{'completion_tokens':3},
+                'choices':[{'finish_reason':'stop',
+                            'message':{'content':'Evidence verified'}}]},
+    })
+    assert status=='DONE' and result['content']=='Evidence verified'
+    assert result['usage']['completion_tokens']==3
+    # This pure response parser is NOT independent Neo4j task acceptance.
+    assert 'claim_id' not in result
+
+
+@pytest.mark.parametrize('finish_reason',[[],{},7])
+def test_malformed_finish_reason_fails_without_unhandled_exception(finish_reason):
+    status,result=module.FleetExecutor._result_from_router({
+        'status_code':200,
+        'body':{'choices':[{'finish_reason':finish_reason,
+                            'message':{'content':'Apparently valid text'}}]}})
+    assert status=='FAILED'
+    assert result['error']=='invalid_model_finish_reason'

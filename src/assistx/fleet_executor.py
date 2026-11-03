@@ -542,18 +542,32 @@ class FleetExecutor:
                 "status_code": status_code,
                 "error": body,
             }
-        choices = body.get("choices") or []
-        content = ""
-        if choices and isinstance(choices[0], dict):
-            message = choices[0].get("message") or {}
-            if isinstance(message, dict):
-                content = str(message.get("content") or "")
-        if not content.strip():
+        choices = body.get("choices")
+        first = (choices[0] if isinstance(choices, list) and choices
+                 and isinstance(choices[0], dict) else {})
+        message = first.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        finish_reason = first.get("finish_reason")
+        if finish_reason is not None and not isinstance(finish_reason, str):
             return "FAILED", {
                 "exit_code": 1,
                 "status_code": status_code,
-                "error": "empty_response",
-                "router_response": body,
+                "error": "invalid_model_finish_reason",
+            }
+        if finish_reason in {"length", "content_filter", "tool_calls"}:
+            # A partial/filtered/tool-call response is not completed prose.
+            # Never persist its untrusted/possibly sensitive body as a Task result.
+            return "FAILED", {
+                "exit_code": 1,
+                "status_code": status_code,
+                "error": "incomplete_or_filtered_model_generation",
+                "finish_reason": finish_reason,
+            }
+        if not isinstance(content, str) or not content.strip():
+            return "FAILED", {
+                "exit_code": 1,
+                "status_code": status_code,
+                "error": "empty_or_invalid_model_generation",
             }
         return "DONE", {
             "exit_code": 0,
