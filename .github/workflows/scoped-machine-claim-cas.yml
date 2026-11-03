@@ -1,0 +1,48 @@
+name: Scoped machine claim transaction proof
+on:
+  pull_request:
+    branches:
+      - main
+      - feat/fleet-scoped-machine-observation-20261103
+    paths:
+      - src/assistx/scoped_machine_claim.py
+      - tests/test_scoped_machine_claim.py
+      - tests/test_scoped_machine_claim_neo4j.py
+      - .github/workflows/scoped-machine-claim-cas.yml
+  push:
+    branches:
+      - feat/scoped-machine-claim-cas-20261103
+    paths:
+      - src/assistx/scoped_machine_claim.py
+      - tests/test_scoped_machine_claim.py
+      - tests/test_scoped_machine_claim_neo4j.py
+      - .github/workflows/scoped-machine-claim-cas.yml
+  workflow_dispatch:
+
+jobs:
+  source-and-disposable-graph:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated project dependencies
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Compile and lint new contract
+        run: |
+          python -m py_compile src/assistx/scoped_machine_claim.py tests/test_scoped_machine_claim.py tests/test_scoped_machine_claim_neo4j.py
+          ruff check --ignore I001,E501,UP012,UP018,UP035,UP037,UP045 \
+            src/assistx/scoped_machine_claim.py tests/test_scoped_machine_claim.py tests/test_scoped_machine_claim_neo4j.py
+      - name: Fail-closed source, node identity and executor tests
+        run: |
+          pytest -q tests/test_scoped_machine_claim.py tests/test_scoped_machine_poll.py \
+            tests/test_node_identity.py tests/test_safe_fleet_executor.py \
+            tests/test_fleet_node_readiness_preflight.py tests/test_executor_security.py
+      - name: Disposable Neo4j integration and competing claims
+        env:
+          TEST_NEO4J_IMAGE: neo4j:5-enterprise
+        run: pytest -q tests/test_scoped_machine_claim_neo4j.py
