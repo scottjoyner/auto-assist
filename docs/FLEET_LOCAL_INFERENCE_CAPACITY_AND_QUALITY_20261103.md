@@ -79,7 +79,7 @@ resource conditions:
 - Xwing: earlier native reasoning-off issue triage had three
   completed jobs, 319 input + 287 output tokens, one syntactic
   human-review draft and two deterministic quality failures.
-- Xwing additional SensorGraft issue pair: 102 input + 160 output
+- Xwing additional private-source issue pair: 102 input + 160 output
   tokens, but the model incorrectly called real issue IDs fake and
   refused to perform the review. Original reference-only validator
   produced a false syntactic pass; post-run assistant review REJECTED
