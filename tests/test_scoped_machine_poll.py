@@ -25,12 +25,14 @@ class Result:
 
 class FakeNeo:
     def __init__(self, *, supply=2, runtime=1, ready=True,
-                 capabilities='["chat","local_only"]', revoke_before_task=False):
+                 capabilities='["chat","local_only"]', revoke_before_task=False,
+                 revoke_physical_before_task=None):
         self.supply = supply
         self.runtime = runtime
         self.ready = ready
         self.capabilities = capabilities
         self.revoke_before_task = revoke_before_task
+        self.revoke_physical_before_task = revoke_physical_before_task
         self.calls = []
         self.close_calls = 0
 
@@ -54,18 +56,36 @@ class FakeNeo:
             assert parameters['node_id'] == 'xwing'
             assert parameters['limit'] <= 20
             assert parameters['generation'] == 17
-            assert '$cutoff' in query and '$now' in query
+            assert parameters['artifact'] == 'a' * 64
+            assert parameters['max_age_ms'] == 90_000
             assert "MATCH (p:FleetProjectionState {name:'canonical',status:'approved'})" in query
-            assert 'MATCH (s:WorkSupplyState' in query
+            assert "MATCH (s:WorkSupplyState" in query
+            assert "MATCH (r:RuntimeInstance {node_id:$node_id})" in query
+            assert "(r)-[:SERVES]->(m:LoadedModelInstance)" in query
+            assert "MATCH (a:AccessPath {runtime_instance_id:r.runtime_instance_id})" in query
+            assert "MATCH (c:CapacityObservation {runtime_instance_id:r.runtime_instance_id})" in query
+            assert "r.admitted,false" in query and "r.expires_at_ts,0)>timestamp()" in query
+            assert "m.admitted,false" in query and "m.artifact_fingerprint=$artifact" in query
+            assert "a.approved,false" in query and "a.expires_at_ts,0)>timestamp()" in query
+            assert "c.approved,false" in query and "c.expires_at_ts,0)>timestamp()" in query
+            assert "c.parallel_slots,0)>0" in query
+            assert "m.capabilities_json" in query
             assert "t.required_capabilities=['llm']" in query
-            # Unknown/missing authorization fields must NOT mean 'approved'.
             assert 't.requires_approval = false' in query
             assert 't.paperclip_dispatched = false' in query
             assert 'coalesce(t.requires_approval,false)' not in query
             assert 'coalesce(t.paperclip_dispatched,false)' not in query
             assert 't.payload_json' not in query and 'RETURN t ' not in query
-            return Result([{'id': 'assigned-llm-1', 'priority': 'LOW'}]
-                          if self.ready and not self.revoke_before_task else [])
+            if self.revoke_before_task:
+                return Result([])
+            if self.revoke_physical_before_task in ('runtime','model','access','capacity'):
+                # Fake the *final* read of a revoked witness. No Task metadata
+                # may be returned if any matching physical witness disappears.
+                return Result([])
+            roles = ('["embedding"]' if self.revoke_physical_before_task == 'chat'
+                     else self.capabilities)
+            return Result([{'id': 'assigned-llm-1', 'priority': 'LOW',
+                            'model_capabilities': [roles]}] if self.ready else [])
         if 'WorkSupplyState' in query:
             assert parameters['generation'] == 17
             return Result([{'slots': self.supply}] if self.supply else [])
@@ -83,11 +103,13 @@ class FakeNeo:
 def app_factory(monkeypatch, *, enabled=True, policy=True, token='secret-x',
                 supply=2, runtime=1, approved=True, ready=True,
                 capabilities='["chat","local_only"]', policy_generation=17,
-                artifact='a' * 64, revoke_before_task=False):
+                artifact='a' * 64, revoke_before_task=False,
+                revoke_physical_before_task=None):
     monkeypatch.setenv('ASSISTX_ENABLE_SCOPED_NODE_OBSERVATION', '1' if enabled else '0')
     db = FakeNeo(supply=supply, runtime=runtime, ready=ready,
                  capabilities=capabilities,
-                 revoke_before_task=revoke_before_task)
+                 revoke_before_task=revoke_before_task,
+                 revoke_physical_before_task=revoke_physical_before_task)
     calls = []
 
     def projection(_factory, now):
@@ -230,3 +252,45 @@ def test_approval_revoked_before_final_read_yields_no_task_metadata(monkeypatch)
     assert result.json()['items']==[]
     assert result.json()['authorizes_claim'] is False
     assert any('MATCH (p:FleetProjectionState' in query for query,_ in db.calls)
+
+
+@pytest.mark.parametrize('revoked', ['runtime', 'model', 'access', 'capacity', 'chat'])
+def test_physical_admission_revoked_between_reads_exposes_no_task_ids(
+    monkeypatch, revoked,
+):
+    """A successful earlier witness read is not enough for Task metadata."""
+    client, db, _ = app_factory(
+        monkeypatch, revoke_physical_before_task=revoked,
+    )
+    response = client.get(
+        '/api/fleet/nodes/xwing/assigned-task-hints',
+        headers={'X-Fleet-Node-Token': 'secret-x'},
+    )
+    assert response.status_code == 200
+    assert response.json()['items'] == []
+    assert response.json()['authorizes_claim'] is False
+    assert response.json()['authorizes_dispatch'] is False
+    assert 'assigned-llm-1' not in response.text
+    assert len(db.calls) == 3
+
+
+@pytest.mark.parametrize('roles', ['not-json', 'null', '{}', '["embedding"]'])
+def test_final_witness_rejects_non_chat_evidence(monkeypatch, roles):
+    """Even final-read role evidence must be explicitly valid for chat."""
+    client, db, _ = app_factory(monkeypatch)
+    old_run = db.run
+
+    def final_roles_replaced(query, parameters):
+        result = old_run(query, parameters)
+        if "MATCH (t:Task {status:'READY', target_agent_id:$node_id})" in query:
+            return Result([{'id': 'assigned-llm-1', 'model_capabilities': [roles]}])
+        return result
+
+    db.run = final_roles_replaced
+    response = client.get(
+        '/api/fleet/nodes/xwing/assigned-task-hints',
+        headers={'X-Fleet-Node-Token': 'secret-x'},
+    )
+    assert response.status_code == 200
+    assert response.json()['items'] == []
+    assert response.json()['authorizes_claim'] is False
