@@ -1556,7 +1556,26 @@ class Neo4jClient:
     ) -> dict[str, Any] | None:
         if status not in TERMINAL_TASK_STATUSES:
             raise ValueError(f"Completion status must be one of: {sorted(TERMINAL_TASK_STATUSES)}")
-        with self._session() as s:
+        class _CompletionDenied(Exception):
+            """Abort the whole write transaction, including its serial lock."""
+
+        class _IdempotentReceipt(Exception):
+            def __init__(self, receipt):
+                self.receipt = receipt
+
+        def _tx_complete(s):
+            # This is a WRITE lock on the exact Task row acquired before
+            # checking any prior completion ID, claim, lease or Task status.
+            # It serializes competing fresh and replay completions. Abort via
+            # exception on denied/replayed work to roll back this lock write.
+            locked = s.run(
+                "MATCH (t:Task {id:$id}) "
+                "SET t.completion_lock_serial=coalesce(t.completion_lock_serial,0)+1 "
+                "RETURN t.id AS id",
+                {"id": task_id},
+            ).single()
+            if locked is None:
+                raise _CompletionDenied()
             if idempotency_key:
                 # Idempotency is a READ-ONLY receipt lookup, never a second
                 # opportunity to SET a Task terminal status. An old AgentRun
@@ -1572,7 +1591,7 @@ class Neo4jClient:
                     # Duplicate keys in the graph are ambiguous authority.
                     # Do not pick a conveniently matching row.
                     if len(priors) != 1:
-                        return None
+                        raise _CompletionDenied()
                     prior = priors[0]
                     prior_task = dict(prior["t"])
                     prior_run = dict(prior["r"])
@@ -1596,10 +1615,10 @@ class Neo4jClient:
                         or prior_run.get("summary") != summary
                         or prior_run.get("result_json") != json.dumps(result or {})
                     ):
-                        return None
+                        raise _CompletionDenied()
                     prior_task["run_id"] = prior["run_id"]
                     prior_task["idempotent"] = True
-                    return prior_task
+                    raise _IdempotentReceipt(prior_task)
             run_id = uuid.uuid4().hex
             rec = s.run(
                 """
@@ -1649,7 +1668,7 @@ class Neo4jClient:
                 },
             ).single()
             if not rec:
-                return None
+                raise _CompletionDenied()
             task = dict(rec["t"])
             task["run_id"] = rec["run_id"]
             if summary:
@@ -1678,6 +1697,14 @@ class Neo4jClient:
                 ).single()
                 task["memory_item_id"] = memory_rec["id"] if memory_rec else None
             return task
+
+        with self._session() as session:
+            try:
+                return session.execute_write(_tx_complete)
+            except _IdempotentReceipt as replay:
+                return replay.receipt
+            except _CompletionDenied:
+                return None
 
     def ingest_paperclip_event(
         self,

@@ -896,55 +896,123 @@ def upsert_memory_candidate(neo: Neo4jClient, payload: Dict[str, Any], event: Di
     return candidate_id
 
 
-def fail_task(neo: Neo4jClient, task_id: str, agent_id: str, error_summary: str, retryable: bool = True, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def fail_task(
+    neo: Neo4jClient,
+    task_id: str,
+    agent_id: str,
+    error_summary: str,
+    retryable: bool = True,
+    session_id: Optional[str] = None,
+    claim_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Transition only an unclaimed READY task or this exact live claim.
+
+    The READY compatibility branch is a legacy operator-controlled path,
+    NOT scoped machine authorization. Claimed/running tasks require exact
+    owner + session + claim and an unexpired lease inside the write query.
+    No terminal Task can be reset by this API.
+    """
     status = "READY" if retryable else "FAILED"
     with neo._session() as s:
         rec = s.run(
             """
             MATCH (t:Task {id:$task_id})
+            WHERE coalesce(t.machine_authorized,false)=false
+              AND ((
+              t.status='READY'
+              AND t.claimed_by IS NULL
+              AND t.claim_id IS NULL
+              AND t.agent_session_id IS NULL
+              AND $claim_id IS NULL
+              AND $session_id IS NULL
+            ) OR (
+              t.status IN ['CLAIMED','RUNNING']
+              AND t.claimed_by=$agent_id
+              AND t.agent_session_id=$session_id
+              AND t.claim_id=$claim_id
+              AND $session_id IS NOT NULL
+              AND $claim_id IS NOT NULL
+              AND t.lease_expires_at_ts>timestamp()
+            ))
             SET t.status=$status,
                 t.failed_by=$agent_id,
-                t.agent_session_id=coalesce($session_id, t.agent_session_id),
                 t.error_summary=$error_summary,
                 t.failure_count=coalesce(t.failure_count, 0) + 1,
                 t.last_failed_at=datetime(),
                 t.last_failed_at_ts=timestamp(),
                 t.updated_at=datetime(),
-                t.updated_at_ts=timestamp()
+                t.updated_at_ts=timestamp(),
+                t.claimed_by=CASE WHEN $status='READY' THEN null ELSE t.claimed_by END,
+                t.agent_session_id=CASE WHEN $status='READY' THEN null ELSE t.agent_session_id END,
+                t.claim_id=CASE WHEN $status='READY' THEN null ELSE t.claim_id END,
+                t.lease_expires_at_ts=CASE WHEN $status='READY' THEN null ELSE t.lease_expires_at_ts END
             RETURN t
             """,
-            {"task_id": task_id, "status": status, "agent_id": agent_id, "session_id": session_id, "error_summary": error_summary},
+            {"task_id": task_id, "status": status, "agent_id": agent_id,
+             "session_id": session_id, "claim_id": claim_id,
+             "error_summary": error_summary},
         ).single()
         return dict(rec["t"]) if rec else None
 
 
-def set_task_lease(neo: Neo4jClient, task_id: str, lease_seconds: int = 900) -> None:
-    lease_ms = max(1, int(lease_seconds)) * 1000
-    expires = _now_ms() + lease_ms
+def set_task_lease(
+    neo: Neo4jClient,
+    task_id: str,
+    lease_seconds: int = 900,
+    *,
+    agent_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    claim_id: Optional[str] = None,
+) -> bool:
+    """Bounded renewal by the authenticated caller's exact active claim.
+
+    No legacy Task-ID-only lease mutation is permitted. Do not extend an
+    expired lease or one owned by a different session or claim.
+    """
+    if (type(lease_seconds) is not int or not 1 <= lease_seconds <= 900
+            or not all(isinstance(x, str) and x.strip() for x in (
+                agent_id, session_id, claim_id))):
+        return False
     with neo._session() as s:
-        s.run(
+        rec = s.run(
             """
             MATCH (t:Task {id:$task_id})
-            SET t.lease_expires_at_ts=$expires,
+            WHERE coalesce(t.machine_authorized,false)=false
+              AND t.status IN ['CLAIMED','RUNNING']
+              AND t.claimed_by=$agent_id
+              AND t.agent_session_id=$session_id
+              AND t.claim_id=$claim_id
+              AND t.lease_expires_at_ts>timestamp()
+            SET t.lease_expires_at_ts=timestamp()+$lease_seconds*1000,
                 t.lease_seconds=$lease_seconds,
                 t.updated_at=datetime(),
                 t.updated_at_ts=timestamp()
+            RETURN t.id AS id
             """,
-            {"task_id": task_id, "expires": expires, "lease_seconds": int(lease_seconds)},
-        ).consume()
+            {"task_id": task_id, "agent_id": agent_id,
+             "session_id": session_id, "claim_id": claim_id,
+             "lease_seconds": lease_seconds},
+        ).single()
+    return rec is not None
 
 
 def release_expired_task_leases(neo: Neo4jClient, now_ms: Optional[int] = None) -> int:
-    now = int(now_ms or _now_ms())
+    """Reclaim only explicitly expired active leases, never missing evidence."""
+    now = _now_ms() if now_ms is None else int(now_ms)
     with neo._session() as s:
         rec = s.run(
             """
             MATCH (t:Task)
-            WHERE t.status IN ['CLAIMED','RUNNING'] AND coalesce(t.lease_expires_at_ts, 0) < $now
+            WHERE coalesce(t.machine_authorized,false)=false
+              AND t.status IN ['CLAIMED','RUNNING']
+              AND t.lease_expires_at_ts IS NOT NULL
+              AND t.lease_expires_at_ts < $now
             SET t.status='READY',
                 t.claimed_by=null,
                 t.agent_session_id=null,
                 t.claim_id=null,
+                t.claimed_at_ts=null,
+                t.lease_expires_at_ts=null,
                 t.lease_released_reason='expired',
                 t.updated_at=datetime(),
                 t.updated_at_ts=timestamp()
