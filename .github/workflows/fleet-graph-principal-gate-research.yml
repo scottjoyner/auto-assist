@@ -25,12 +25,12 @@ jobs:
         run: python -m pip install pytest ruff
       - name: Compile and lint research gate
         run: |
-          python -m py_compile scripts/read_only_native_graph_privileges.py \
+          python3 -m py_compile scripts/read_only_native_graph_privileges.py \
             scripts/read_only_fleet_graph_principals.py \
-            tests/test_fleet_graph_principal_census.py \
-          ruff check --ignore I001,E501,UP012,UP018,UP035,UP037,UP045 \
+            tests/test_fleet_graph_principal_census.py
+          python3 -m ruff check --ignore I001,E501,UP012,UP018,UP035,UP037,UP045 \
             scripts/read_only_fleet_graph_principals.py \
-            tests/test_fleet_graph_principal_census.py \
+            tests/test_fleet_graph_principal_census.py
       - name: Prove fixed allowlist, immutable pins, HOLD and redacted failures
         run: |
           pytest --noconftest -q tests/test_fleet_graph_principal_census.py \
