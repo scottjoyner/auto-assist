@@ -129,6 +129,42 @@ hook admission; deterministic fixture content; and SHA drift.
 Exact local focused result on x1-370 at the code head above:
 **20/20 tests passed**, AST parsing passed.
 
+## Additional successful-output control (no failure markers)
+
+To determine whether the failure-bearing fixtures were simply being
+protected because of diagnostic severity, a second **real binary**
+execution was run on the same verified Headroom 0.42.0 wheel, staged
+minimal dependencies and read-only, no-network Docker policy
+(`HEADROOM_OFFLINE=1`, `HEADROOM_BEACON=off`,
+`HEADROOM_TELEMETRY=off`, `DO_NOT_TRACK=1`).
+
+This controlled *exploratory* run tested four deliberately benign,
+highly repetitive and much larger synthetic payloads using
+`headroom.densify(..., protect_recent=0,
+min_tokens_to_compress=25)`. All four preserved the entire input
+byte for byte; the library reported `lossless=True` and
+estimated zero tokens saved. It again attempted an offline-blocked
+tokenizer fetch and fell back to estimated tokenization.
+
+| Benign synthetic fixture | Original bytes | Output bytes | Actual byte saving |
+| --- | ---: | ---: | ---: |
+| Pretty JSON, 650 rows | 188,409 | 188,409 | **0%** |
+| NDJSON, 650 rows | 153,939 | 153,939 | **0%** |
+| Cargo-success, 750 tests | 29,288 | 29,288 | **0%** |
+| Successful application logs, 750 rows | 51,639 | 51,639 | **0%** |
+
+The benign-control generator was kept ephemeral and is not yet an
+independently packaged, committed test fixture. These values are
+**measured exploratory observations**, not reproducible CI benchmarks
+or general evidence that upstream Headroom cannot compress other
+content. The four failure-bearing cases above remain the executable
+committed validation set.
+
+This result narrows the immediate recommendation: **no measured
+benefit in agent-lossless mode even on repetitive, success-only
+outputs under this constrained environment.** Do not enable
+context compression just to increase nominal token-savings reports.
+
 ## Decision
 
 **HOLD — no fleet rollout.** Headroom's conservative lossless mode
