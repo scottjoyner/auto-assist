@@ -1,0 +1,41 @@
+name: Fleet worker exact targeting and completion receipt
+on:
+  pull_request:
+    branches:
+      - main
+      - fix/fleet-node-worker-poll-contract-20261102
+    paths:
+      - src/assistx/fleet_node_agent.py
+      - tests/test_fleet_node_poll_contract.py
+      - .github/workflows/fleet-worker-exact-receipt.yml
+  push:
+    branches:
+      - fix/fleet-worker-exact-target-ack-20261103
+    paths:
+      - src/assistx/fleet_node_agent.py
+      - tests/test_fleet_node_poll_contract.py
+      - .github/workflows/fleet-worker-exact-receipt.yml
+  workflow_dispatch:
+
+jobs:
+  deny-shared-pool-and-replayed-completions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated project tests
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Compile and enforce scoped-worker lint
+        run: |
+          python -m py_compile src/assistx/fleet_node_agent.py tests/test_fleet_node_poll_contract.py
+          ruff check --ignore I001,E501,UP012,UP018,UP035,UP037,UP045 \
+            src/assistx/fleet_node_agent.py tests/test_fleet_node_poll_contract.py
+      - name: Exact READY target and claim/terminal-receipt regressions
+        run: |
+          pytest -q tests/test_fleet_node_poll_contract.py \
+            tests/test_fleet_claim_response_shape.py tests/test_node_identity.py \
+            tests/test_safe_fleet_executor.py tests/test_executor_security.py
