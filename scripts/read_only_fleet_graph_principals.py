@@ -18,12 +18,9 @@ import re
 import sys
 from typing import Any
 
-# Import via the repository namespace when tests load this as a module;
-# direct execution from scripts/ also works without editable installs.
-try:
-    from scripts import read_only_native_graph_privileges as native
-except ModuleNotFoundError:
-    import read_only_native_graph_privileges as native
+# Executing from scripts/ and explicitly loading that trusted directory in
+# the standalone source test both resolve this exact sibling module.
+import read_only_native_graph_privileges as native
 
 
 TARGETS = (
