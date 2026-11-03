@@ -88,3 +88,51 @@ Before any real challenge may be spent for a production admission:
 
 The actual x1 K2 resident count remains zero and canonical
 generation 896 has expired. Production HOLD.
+
+## Synthetic separate high-water / rollback experiment
+
+The expanded offline suite uses a SECOND disposable high-water database
+in the test directory. It maintains a nonce-spend registry and a
+monotonic sequence, separate from the local challenge ledger. It issues
+a test-only Ed25519 signature on a tightly structured acknowledgement
+binding the nonce, verified receipt SHA-256, and next sequence.
+The local fixture checks that acknowledgement's signature against a
+synthetic separately pinned public key before committing its local spend.
+
+In these tests the external reservation is committed FIRST, then the
+local database commits. If the external acknowledgement is lost or
+invalid after the reservation, the local nonce is not spent; a future
+attempt is denied because the external counter has already advanced.
+This is intentional fail-closed behavior: availability may suffer, but
+an uncertain transaction must not create duplicate authority.
+
+The adversarial tests demonstrate:
+
+- A standalone challenge database can be rolled back and reuse a nonce.
+- Keeping the second high-water store intact detects local rollback.
+- Restoring the external store alone prevents the next high-water
+  transition because its sequence disagrees with the local ledger.
+- A lost acknowledgement and a corrupt, forged, unsigned, or wrongly
+  pinned acknowledgement never authorize a local transition.
+- Eight competing consumers still have exactly one successful spend.
+- Restoring BOTH databases reproduces the replay even when the
+  synthetic acknowledgement is correctly signed.
+
+The last case is a deliberate proof of the UNSOLVED custody issue.
+Both databases and the test signing key are administered by the same
+disposable test runner. They are NOT independently controlled or
+rollback-resistant. A signature only authenticates the test key holder;
+it does not make local files an independent external CAS.
+
+The newer tests do not modify the actual K2 verifier's authority:
+all trusted production signer, runtime, boot, and process pins remain
+empty or unconfigured, all spent acknowledgement outputs report HOLD,
+and no real high-water backend, network endpoint or signing service
+is installed.
+
+The combined physical witness, signature verification, nonce CAS and
+dual-ledger rollback suite now contains 109 synthetic tests. Release
+still requires an independently administered signed witness/CAS,
+operator-authenticated issuance, anti-rollback outside shared fleet
+administration, approved rotation and recovery, and binding of the
+signed result to the execution-time model and canonical graph gate.

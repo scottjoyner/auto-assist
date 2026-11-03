@@ -6,6 +6,7 @@ operator approval. This fixture proves atomic replay behavior, not provenance.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -14,6 +15,9 @@ import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 NONCE = re.compile(r"[0-9a-f]{64}\Z")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
@@ -124,6 +128,8 @@ class SyntheticChallengeLedger:
     def consume_after_verification(
         self, raw: bytes, *, expected_nonce: str, now_ms: int,
         verify_signed: Callable[..., dict],
+        synthetic_external_reservation: Callable[[str, str, int], dict] | None = None,
+        synthetic_anchor_public_key_sha256: str | None = None,
     ) -> dict:
         """Verify first, then one atomic spent transition.
 
@@ -181,6 +187,57 @@ class SyntheticChallengeLedger:
                 if old_sequence is None or type(old_sequence[0]) is not int:
                     raise ChallengeHold("synthetic_highwater_missing")
                 next_sequence = old_sequence[0] + 1
+                # Optional test-only separate high-water: reserve before
+                # local commit. If remote outcome is lost, DO NOT retry
+                # or assume an unspent nonce. Prefer safe denial.
+                if synthetic_external_reservation is not None:
+                    if (not isinstance(synthetic_anchor_public_key_sha256, str)
+                            or not SHA.fullmatch(synthetic_anchor_public_key_sha256)):
+                        raise ChallengeHold("synthetic_external_anchor_key_not_pinned")
+                    anchored = synthetic_external_reservation(
+                        expected_nonce, sha, old_sequence[0]
+                    )
+                    expected_fields = {
+                        "kind", "sequence", "nonce", "receipt_sha256",
+                        "operator_signed", "independent_custody_verified",
+                        "can_dispatch", "decision",
+                        "test_public_key_b64", "test_signature_b64",
+                    }
+                    if (not isinstance(anchored, dict)
+                            or set(anchored) != expected_fields
+                            or anchored.get("kind")
+                            != "synthetic-untrusted-highwater-reservation-v1"
+                            or type(anchored.get("sequence")) is not int
+                            or anchored["sequence"] != next_sequence
+                            or anchored.get("nonce") != expected_nonce
+                            or anchored.get("receipt_sha256") != sha
+                            or anchored.get("operator_signed") is not False
+                            or anchored.get("independent_custody_verified") is not False
+                            or anchored.get("can_dispatch") is not False
+                            or anchored.get("decision") != "HOLD"):
+                        raise ChallengeHold("synthetic_external_anchor_evidence_invalid")
+                    try:
+                        pub64 = anchored["test_public_key_b64"]
+                        sig64 = anchored["test_signature_b64"]
+                        public = base64.b64decode(pub64, validate=True)
+                        sig = base64.b64decode(sig64, validate=True)
+                        if (len(public) != 32 or len(sig) != 64
+                                or base64.b64encode(public).decode() != pub64
+                                or base64.b64encode(sig).decode() != sig64
+                                or hashlib.sha256(public).hexdigest()
+                                != synthetic_anchor_public_key_sha256):
+                            raise ChallengeHold("synthetic_external_anchor_signer_not_pinned")
+                        unsigned = {k: v for k, v in anchored.items()
+                                    if k != "test_signature_b64"}
+                        Ed25519PublicKey.from_public_bytes(public).verify(
+                            sig,
+                            json.dumps(unsigned, sort_keys=True,
+                                       separators=(",", ":"), allow_nan=False).encode()
+                        )
+                    except ChallengeHold:
+                        raise
+                    except (InvalidSignature, ValueError, TypeError) as exc:
+                        raise ChallengeHold("synthetic_external_anchor_signature_invalid") from exc
                 changed = db.execute(
                     "UPDATE challenges SET spent_ms=?,spent_receipt_sha256=?,sequence=? "
                     "WHERE nonce=? AND spent_ms IS NULL",
@@ -204,6 +261,9 @@ class SyntheticChallengeLedger:
             "challenge_sha256": hashlib.sha256(bytes.fromhex(expected_nonce)).hexdigest(),
             "receipt_sha256": sha,
             "challenge_consumed_in_fixture": True,
+            "synthetic_external_anchor_reserved": (
+                synthetic_external_reservation is not None
+            ),
             "independent_custody_verified": False,
             "operator_approval_verified": False,
             "can_dispatch": False,
