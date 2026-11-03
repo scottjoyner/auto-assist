@@ -1,0 +1,43 @@
+name: Nomic public issue relations (offline)
+
+on:
+  pull_request:
+    paths:
+      - scripts/nomicsource_issue_relations_readonly.py
+      - tests/test_nomicsource_issue_relations_readonly.py
+      - tests/fixtures/nomicsource_public_open_issues_20261103.json
+      - docs/NOMICSOURCE_PUBLIC_ISSUE_RELATIONS_20261103.md
+      - .github/workflows/nomicsource-public-issues-research.yml
+  push:
+    branches:
+      - research/nomicsource-public-issues-20261103
+
+permissions:
+  contents: read
+
+jobs:
+  offline-nomic-public-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install offline test tooling only
+        run: python -m pip install --disable-pip-version-check "pytest>=8,<10" "ruff>=0.11,<1"
+      - name: Compile, lint, and source diff
+        run: |
+          python -B -m py_compile scripts/nomicsource_issue_relations_readonly.py tests/test_nomicsource_issue_relations_readonly.py
+          ruff check scripts/nomicsource_issue_relations_readonly.py tests/test_nomicsource_issue_relations_readonly.py
+          git diff --check
+      - name: Run 46 synthetic source and model-response safety tests
+        run: python -B -m pytest --noconftest -q tests/test_nomicsource_issue_relations_readonly.py
+      - name: "Frozen public-only title set: dry run, no SSH"
+        run: python -B scripts/nomicsource_issue_relations_readonly.py < tests/fixtures/nomicsource_public_open_issues_20261103.json
+      - name: "Reject nonpublic repositories and production authority"
+        run: |
+          ! grep -Eq '"repo": "(sensorgraft|knowledge)"' tests/fixtures/nomicsource_public_open_issues_20261103.json
+          ! grep -Eq 'models/load|models/unload|chat/completions|/api/generate|shell=True|nsenter |systemctl restart' scripts/nomicsource_issue_relations_readonly.py
+          grep -F '"production_dispatch": False' scripts/nomicsource_issue_relations_readonly.py
+          grep -F '"scheduled_research_authorized": False' scripts/nomicsource_issue_relations_readonly.py
