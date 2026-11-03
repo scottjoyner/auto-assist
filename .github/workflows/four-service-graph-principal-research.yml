@@ -1,0 +1,43 @@
+name: Four-Service Native Graph Authority (Research HOLD)
+on:
+  pull_request:
+    paths:
+      - scripts/read_only_phonelog_graph_privileges.py
+      - scripts/read_only_fleet_four_graph_principals.py
+      - tests/test_fleet_four_graph_principals.py
+      - .github/workflows/four-service-graph-principal-research.yml
+  push:
+    branches:
+      - research/phonelog-native-rbac-census-20261103
+    paths:
+      - scripts/read_only_phonelog_graph_privileges.py
+      - scripts/read_only_fleet_four_graph_principals.py
+      - tests/test_fleet_four_graph_principals.py
+      - .github/workflows/four-service-graph-principal-research.yml
+
+permissions:
+  contents: read
+
+jobs:
+  source-only-four-service-census:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install source-only test tools
+        run: python -m pip install 'pytest>=8,<10' 'ruff>=0.9,<1'
+      - name: Compile and semantic lint
+        run: |
+          python -m py_compile \
+            scripts/read_only_phonelog_graph_privileges.py \
+            scripts/read_only_fleet_four_graph_principals.py \
+            tests/test_fleet_four_graph_principals.py
+          ruff check --select F,I \
+            scripts/read_only_phonelog_graph_privileges.py \
+            scripts/read_only_fleet_four_graph_principals.py \
+            tests/test_fleet_four_graph_principals.py
+      - name: Fake runtime drift, spoofed receipt, four-pinned-service gate tests
+        run: python -m pytest --noconftest -q tests/test_fleet_four_graph_principals.py
