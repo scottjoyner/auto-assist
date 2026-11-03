@@ -170,14 +170,14 @@ def test_wrong_source_or_unsafe_repo_is_rejected(repo):
         check(e=e)
 
 
-@pytest.mark.parametrize("val",[True,1,None,"true",[],{}])
+@pytest.mark.parametrize("val",[1,None,"true",[],{}])
 def test_nonboolean_actor_verification_is_rejected(val):
     e=event();e["actor_verified"]=val
     with pytest.raises(IntakeRejected):
         check(e=e)
 
 
-@pytest.mark.parametrize("val",[True,1,None,"yes",[],{}])
+@pytest.mark.parametrize("val",[1,None,"yes",[],{}])
 def test_nonboolean_addressed_flag_is_rejected(val):
     e=event();e["addressed"]=val
     with pytest.raises(IntakeRejected):
