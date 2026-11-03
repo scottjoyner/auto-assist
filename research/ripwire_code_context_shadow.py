@@ -4,32 +4,39 @@
 Does not install hooks, start an MCP server, contact LLMs, alter a source
 checkout, grant repo authority, or classify signed SensorGraft evidence.
 """
+
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
 import stat
 import subprocess
 import sys
 import tempfile
+from pathlib import Path, PurePosixPath
 
 VERSION = "v0.6.9"
-RELEASE_SHA256 = (
-    "5444af4124bec689c36a65879b44389dd18fda9fd4ad2037369fc6d27625080a"
-)
-BINARY_SHA256 = (
-    "d72d639b298a01316fbd967af8156b8787c2cbe03ae6f0a91b10d8b9752abec2"
-)
+RELEASE_SHA256 = "5444af4124bec689c36a65879b44389dd18fda9fd4ad2037369fc6d27625080a"
+BINARY_SHA256 = "d72d639b298a01316fbd967af8156b8787c2cbe03ae6f0a91b10d8b9752abec2"
 IMAGE = "python:3.12-slim-bookworm"
 SOURCE_PARTS = ("src", "research", "tests", "contracts")
 SOURCE_SUFFIXES = frozenset({".py", ".rs", ".sh", ".toml", ".md", ".js", ".ts"})
-SKIP_DIRS = frozenset({
-    ".git", ".cache", ".venv", ".pytest_cache", "node_modules", "target",
-    "__pycache__", ".next", ".tgrep", ".ripwire",
-})
+SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".cache",
+        ".venv",
+        ".pytest_cache",
+        "node_modules",
+        "target",
+        "__pycache__",
+        ".next",
+        ".tgrep",
+        ".ripwire",
+    }
+)
 FILE_MAX_BYTES = 200_000
 CORPUS_MAX_BYTES = 25 * 1024 * 1024
 CORPUS_MAX_FILES = 3_000
@@ -82,22 +89,23 @@ def stage_source_only(root: Path, target: Path) -> dict:
             continue
         for current, dirs, filenames in os.walk(subroot, followlinks=False):
             dirs[:] = [
-                name for name in sorted(dirs)
-                if name not in SKIP_DIRS and not name.startswith(".")
+                name
+                for name in sorted(dirs)
+                if name not in SKIP_DIRS
+                and not name.startswith(".")
                 and not (Path(current) / name).is_symlink()
             ]
             for name in sorted(filenames):
                 source = Path(current) / name
                 if (
-                    name.startswith(".") or source.suffix not in SOURCE_SUFFIXES
+                    name.startswith(".")
+                    or source.suffix not in SOURCE_SUFFIXES
                     or source.is_symlink()
                 ):
                     skipped += 1
                     continue
                 try:
-                    fd = os.open(
-                        source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                    )
+                    fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
                 except OSError:
                     skipped += 1
                     continue
@@ -151,8 +159,11 @@ def _safe_relative_path(raw: object) -> str:
         raise ContextShadowError("untrusted filename syntax")
     p = PurePosixPath(raw)
     if (
-        p.is_absolute() or ".." in p.parts or "." in p.parts
-        or len(p.parts) < 2 or p.parts[0] not in SOURCE_PARTS
+        p.is_absolute()
+        or ".." in p.parts
+        or "." in p.parts
+        or len(p.parts) < 2
+        or p.parts[0] not in SOURCE_PARTS
         or any(part.startswith(".") for part in p.parts)
         or p.suffix not in SOURCE_SUFFIXES
     ):
@@ -161,7 +172,10 @@ def _safe_relative_path(raw: object) -> str:
 
 
 def audit_ripwire_json(
-    payload: bytes, *, task: str, snapshot: Path,
+    payload: bytes,
+    *,
+    task: str,
+    snapshot: Path,
     budget: int = BUDGET_TOKENS,
 ) -> dict:
     if type(payload) is not bytes or not 2 <= len(payload) <= OUTPUT_MAX_BYTES:
@@ -179,15 +193,15 @@ def audit_ripwire_json(
     if type(data) is not dict or data.get("task") != task:
         raise ContextShadowError("map does not match the requested task")
     confidence = data.get("confidence")
-    if type(confidence) is not str or confidence not in {
-        "low", "medium", "high"
-    }:
+    if type(confidence) is not str or confidence not in {"low", "medium", "high"}:
         raise ContextShadowError("missing or unrecognized confidence")
     estimate = data.get("est_tokens")
     reported_budget = data.get("budget_tokens")
     if (
-        type(estimate) is not int or not 0 <= estimate <= 500_000
-        or type(reported_budget) is not int or reported_budget != budget
+        type(estimate) is not int
+        or not 0 <= estimate <= 500_000
+        or type(reported_budget) is not int
+        or reported_budget != budget
         or type(data.get("capped")) is not bool
     ):
         raise ContextShadowError("untrusted context estimate")
@@ -221,8 +235,7 @@ def audit_ripwire_json(
         "requested_soft_budget": budget,
         "reported_budget_exceeded": estimate > budget,
         "candidate_files": [
-            {"relative_file": name, "first_symbol_rank": rank}
-            for name, rank in top
+            {"relative_file": name, "first_symbol_rank": rank} for name, rank in top
         ],
         "code_bodies_exported": False,
         "signatures_exported": False,
@@ -244,17 +257,40 @@ def docker_args(binary: Path, snapshot: Path, task: str) -> list[str]:
     if not no_symlink_ancestors(binary) or not no_symlink_ancestors(snapshot):
         raise ContextShadowError("invalid sandbox source paths")
     return [
-        "docker", "run", "--rm", "--pull=never", "--network=none",
-        "--read-only", "--user", "65534:65534", "--memory=750m",
-        "--cpus=1", "--pids-limit=70", "--cap-drop=ALL",
+        "docker",
+        "run",
+        "--rm",
+        "--pull=never",
+        "--network=none",
+        "--read-only",
+        "--user",
+        "65534:65534",
+        "--memory=750m",
+        "--cpus=1",
+        "--pids-limit=70",
+        "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
         "--tmpfs=/tmp:rw,nosuid,size=128m,mode=1777",
-        "-v", f"{binary}:/usr/local/bin/ripwire:ro",
-        "-v", f"{snapshot}:/corpus:ro", "-e", "HOME=/tmp",
-        "-w", "/corpus", IMAGE,
-        "timeout", "-k", "2s", "18s", "/usr/local/bin/ripwire",
-        "/corpus", "--no-cache", "--json", "--signatures-only",
-        f"--token-budget={BUDGET_TOKENS}", "--max-memory=256M",
+        "-v",
+        f"{binary}:/usr/local/bin/ripwire:ro",
+        "-v",
+        f"{snapshot}:/corpus:ro",
+        "-e",
+        "HOME=/tmp",
+        "-w",
+        "/corpus",
+        IMAGE,
+        "timeout",
+        "-k",
+        "2s",
+        "18s",
+        "/usr/local/bin/ripwire",
+        "/corpus",
+        "--no-cache",
+        "--json",
+        "--signatures-only",
+        f"--token-budget={BUDGET_TOKENS}",
+        "--max-memory=256M",
         f"--for={task}",
     ]
 
@@ -274,9 +310,7 @@ def run_shadow(source: Path, binary: Path, task: str) -> dict:
             raise ContextShadowError("sandbox unavailable or timed out") from exc
         if result.returncode != 0:
             raise ContextShadowError("offline code map failed")
-        report = audit_ripwire_json(
-            result.stdout, task=task, snapshot=snap
-        )
+        report = audit_ripwire_json(result.stdout, task=task, snapshot=snap)
         report["source_snapshot"] = overview
         return report
 
