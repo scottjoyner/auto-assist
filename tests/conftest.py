@@ -30,6 +30,7 @@ import socket
 import shutil
 import subprocess
 import time
+import uuid
 
 import pytest
 from assistx.neo4j_client import Neo4jClient
@@ -76,14 +77,22 @@ def neo4j_container():
         pytest.skip("Docker is required to run ephemeral Neo4j tests")
 
     port = _find_free_port()
-    container_name = f"assistx-test-neo4j-{int(time.time())}"
+    container_name = f"assistx-test-neo4j-{uuid.uuid4().hex[:16]}"
     cmd = [
         "docker",
         "run",
         "--rm",
         "-d",
         "-p",
-        f"{port}:7687",
+        f"127.0.0.1:{port}:7687",
+        "--label",
+        "assistx.disposable-test-db=true",
+        "--memory",
+        "3g",
+        "--cpus",
+        "2",
+        "--pids-limit",
+        "256",
         "-e",
         f"NEO4J_AUTH={NEO4J_USER}/{NEO4J_PASSWORD}",
         "-e",
