@@ -305,6 +305,9 @@ def verify(raw: bytes, *, expected_challenge_hex: str,
         "observation_sha256": hashlib.sha256(
             canonical(document["observation"])).hexdigest(),
         "challenge_bound": True,
+        # Binding a receipt to a challenge is NOT one-time consumption.
+        # No independently administered challenge ledger is installed.
+        "nonce_one_time_consumption_verified": False,
         "kind": "k2-physical-witness-offline-verification-research-v1",
         "independent_host_custody_verified": False,
         "operator_approval_verified": False,
