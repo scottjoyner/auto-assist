@@ -1,0 +1,43 @@
+name: Xwing useful shadow research (offline)
+
+on:
+  pull_request:
+    paths:
+      - scripts/xwing_useful_shadow_triage.py
+      - tests/test_xwing_useful_shadow_triage.py
+      - docs/XWING_USEFUL_SHADOW_TRIAGE_20261103.md
+      - .github/workflows/xwing-useful-shadow-research.yml
+  push:
+    branches:
+      - research/xwing-useful-shadow-lane-20261103
+
+permissions:
+  contents: read
+
+jobs:
+  offline-shadow-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated test dependencies
+        run: python -m pip install --disable-pip-version-check "pytest>=8,<10" "ruff>=0.11,<1"
+      - name: No-network source lint and compile
+        run: |
+          ruff check scripts/xwing_useful_shadow_triage.py tests/test_xwing_useful_shadow_triage.py
+          python -B -m py_compile scripts/xwing_useful_shadow_triage.py tests/test_xwing_useful_shadow_triage.py
+          git diff --check
+      - name: Run 51 synthetic research gates without SSH or inference
+        run: python -B -m pytest --noconftest -q tests/test_xwing_useful_shadow_triage.py
+      - name: Dry-run default must not request inference
+        run: |
+          printf '%s\n' '{"pairs":[{"a":{"id":"AA428","title":"Enforce claim fencing on task mutations"},"b":{"id":"AR76","title":"Caller metadata can bypass claim fencing"}}]}' | python -B scripts/xwing_useful_shadow_triage.py
+      - name: Production authority remains excluded
+        run: |
+          test "$(grep -c 'HOST = "xwing"' scripts/xwing_useful_shadow_triage.py)" -eq 1
+          test "$(grep -c 'MAX_PAIRS = 2' scripts/xwing_useful_shadow_triage.py)" -eq 1
+          test "$(grep -c 'MAX_OUTPUT = 160' scripts/xwing_useful_shadow_triage.py)" -eq 1
+          ! grep -Eq 'models/load|models/unload|shell=True|nsenter |systemctl restart' scripts/xwing_useful_shadow_triage.py
