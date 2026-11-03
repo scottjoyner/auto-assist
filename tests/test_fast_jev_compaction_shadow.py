@@ -68,7 +68,7 @@ class TestShadowCompactionAudit(unittest.TestCase):
     def test_valid_synthetic_pairing_and_prose(self):
         report=verify()
         self.assertTrue(report["identical_user_and_assistant_prose"])
-        self.assertEqual(report["actions"],{"kept":1,"result_truncated":1,"calls_dropped":1})
+        self.assertEqual(report["actions"],{"kept":1,"result_truncated":1,"result_truncation_noops":0,"calls_dropped":1})
         self.assertGreater(report["synthetic_bytes_reduced"],0)
         self.assertFalse(report["real_token_savings_measured"])
         self.assertFalse(report["external_jev_provider_called"])
@@ -322,13 +322,53 @@ class TestShadowCompactionAudit(unittest.TestCase):
         after[2]["toolUses"][0]["text"]="B"*4
         after[3]["toolResults"][0]["text"]="B"*4
         receipt=verify(orig=orig,after=after)
-        self.assertEqual(receipt["actions"]["result_truncated"],1)
+        self.assertEqual(receipt["actions"]["result_truncated"],0)
+        self.assertEqual(receipt["actions"]["result_truncation_noops"],1)
 
     def test_keep_never_allows_mismatched_message_text_even_with_duplicate(self):
         p=proposed()
         p[6]["text"]="The failure is in the second file.\n"
         with self.assertRaises(ShadowCompactionRejected):
             verify(after=p)
+
+    def test_whitespace_only_user_text_is_never_deleted(self):
+        orig=transcript()
+        orig.insert(1,{"role":"user","text":"   ","toolUses":[]})
+        p=proposed()
+        with self.assertRaises(ShadowCompactionRejected):
+            verify(orig=orig,after=p)
+
+    def test_tool_calls_in_same_message_cannot_be_reordered(self):
+        orig=[
+            {"role":"user","text":"synthetic instruction","toolUses":[]},
+            {"role":"assistant","text":"","toolUses":[
+                use("a","Read","alpha"),use("b","Grep","beta")]},
+            {"role":"user","text":"","toolUses":[],
+             "toolResults":[result("a","alpha"),result("b","beta")]},
+            {"role":"user","text":"continue","toolUses":[]}
+        ]
+        after=deepcopy(orig)
+        after[1]["toolUses"].reverse()
+        with self.assertRaises(ShadowCompactionRejected):
+            audit_shadow_compaction(
+                orig,after,decisions={"a":"keep","b":"keep"},
+                protected_ids=[],preserve_recent_messages=0)
+
+    def test_tool_results_in_same_message_cannot_be_reordered(self):
+        orig=[
+            {"role":"user","text":"synthetic instruction","toolUses":[]},
+            {"role":"assistant","text":"","toolUses":[
+                use("a","Read","alpha"),use("b","Grep","beta")]},
+            {"role":"user","text":"","toolUses":[],
+             "toolResults":[result("a","alpha"),result("b","beta")]},
+            {"role":"user","text":"continue","toolUses":[]}
+        ]
+        after=deepcopy(orig)
+        after[2]["toolResults"].reverse()
+        with self.assertRaises(ShadowCompactionRejected):
+            audit_shadow_compaction(
+                orig,after,decisions={"a":"keep","b":"keep"},
+                protected_ids=[],preserve_recent_messages=0)
 
     def test_no_credential_or_server_access_in_adapter(self):
         from inspect import getsource
