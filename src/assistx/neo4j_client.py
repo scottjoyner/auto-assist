@@ -1549,6 +1549,161 @@ class Neo4jClient:
         idempotency_key: str | None = None,
         claim_id: str | None = None,
     ) -> dict[str, Any] | None:
+        # Default preserves the existing legacy API until its callers have
+        # owner-approved claim/session migration. Strict mode is research-only.
+        # This does NOT close the existing production completion bypass.
+        if os.getenv("ASSISTX_ENABLE_STRICT_LEGACY_COMPLETION") != "1":
+            return self._complete_task_unfenced(
+                task_id=task_id, agent_id=agent_id, status=status,
+                summary=summary, result=result, session_id=session_id,
+                idempotency_key=idempotency_key, claim_id=claim_id,
+            )
+        if status not in TERMINAL_TASK_STATUSES:
+            raise ValueError(f"Completion status must be one of: {sorted(TERMINAL_TASK_STATUSES)}")
+        # Fail before database/session construction for a claimless legacy
+        # worker: no attempt=0 bypass or ownerless completion fallback.
+        if not isinstance(claim_id, str) or not claim_id.strip():
+            return None
+        from .legacy_task_completion import (
+            LegacyTaskCompletionDenied, LegacyTaskCompletionReplay,
+            require_current_legacy_completion,
+        )
+        with self._session() as s:
+            def _complete_in_transaction(tx):
+                current_state = require_current_legacy_completion(
+                    tx, task_id=task_id, agent_id=agent_id,
+                    claim_id=claim_id, session_id=session_id,
+                )
+                if idempotency_key:
+                    prior = tx.run(
+                        "MATCH (t:Task {id:$task_id})-[:EXECUTED_BY]->(r:AgentRun {completion_id:$completion_id}) "
+                        "WHERE r.agent=$agent_id AND r.status=$status AND r.summary=$summary "
+                        "AND r.result_json=$result_json "
+                        "RETURN t, r.id AS run_id",
+                        {"task_id": task_id, "completion_id": idempotency_key,
+                         "agent_id": agent_id, "status": status, "summary": summary,
+                         "result_json": json.dumps(result or {})},
+                    ).single()
+                    if prior:
+                        prior_task = dict(prior["t"])
+                        prior_task["run_id"] = prior["run_id"]
+                        prior_task["idempotent"] = True
+                        # A retry is read-only. The historical idempotency branch
+                        # changed terminal Task status/result for another agent
+                        # even after its claim had rotated or expired.
+                        if current_state != status:
+                            raise LegacyTaskCompletionDenied("terminal_result_rewrite")
+                        raise LegacyTaskCompletionReplay(prior_task)
+                if current_state in TERMINAL_TASK_STATUSES:
+                    raise LegacyTaskCompletionDenied("terminal_result_rewrite")
+                run_id = uuid.uuid4().hex
+                rec = tx.run(
+                    """
+                    MATCH (t:Task {id:$task_id})
+                    WHERE t.claimed_by=$agent_id
+                      AND t.claim_id=$claim_id AND t.claim_id IS NOT NULL
+                      AND (t.agent_session_id IS NULL OR t.agent_session_id=$session_id)
+                      AND coalesce(t.execution_attempt,0)>0
+                      AND t.lease_expires_at_ts>timestamp()
+                      AND t.status IN ['CLAIMED','RUNNING']
+                      AND t.target_agent_id IS NULL
+                      AND coalesce(t.machine_authorized,false)=false
+                      AND t.machine_authorization_generation IS NULL
+                      AND t.machine_authorization_approval_id IS NULL
+                      AND t.machine_token_epoch IS NULL
+                      AND t.projection_generation IS NULL
+                      AND coalesce(t.hermes_claim_scope,false)=false
+                      AND NOT toLower(coalesce(t.claimed_by,'')) CONTAINS 'hermes'
+                    SET t.status=$status,
+                        t.completed_by=$agent_id,
+                        t.agent_session_id=coalesce($session_id, t.agent_session_id),
+                        t.result_summary=$summary,
+                        t.result_json=$result_json,
+                        t.failure_count=CASE
+                            WHEN $status IN ['FAILED','CANCELLED'] THEN coalesce(t.failure_count, 0) + 1
+                            ELSE coalesce(t.failure_count, 0)
+                        END,
+                        t.completed_at=datetime(),
+                        t.completed_at_ts=timestamp(),
+                        t.updated_at=datetime(),
+                        t.updated_at_ts=timestamp()
+                    CREATE (r:AgentRun {id:$run_id, task_id:$task_id, agent:$agent_id,
+                        completion_id:$completion_id,
+                        status:$status, summary:$summary, result_json:$result_json,
+                        started_at_ts:coalesce(t.claimed_at_ts, timestamp()),
+                        ended_at:datetime(), ended_at_ts:timestamp(),
+                        created_at:datetime(), created_at_ts:timestamp(),
+                        updated_at:datetime(), updated_at_ts:timestamp()})
+                    MERGE (t)-[:EXECUTED_BY]->(r)
+                    RETURN t, r.id AS run_id
+                    """,
+                    {
+                        "task_id": task_id,
+                        "run_id": run_id,
+                        "agent_id": agent_id,
+                        "status": status,
+                        "summary": summary,
+                        "result_json": json.dumps(result or {}),
+                        "session_id": session_id,
+                        "completion_id": idempotency_key,
+                        "claim_id": claim_id,
+                    },
+                ).single()
+                if not rec:
+                    raise LegacyTaskCompletionDenied("state_changed_during_completion")
+                task = dict(rec["t"])
+                task["run_id"] = rec["run_id"]
+                if summary:
+                    memory_id = uuid.uuid4().hex
+                    memory_rec = tx.run(
+                        """
+                        CREATE (m:MemoryItem {id:$memory_id})
+                        SET m.kind='outcome',
+                            m.text=$summary,
+                            m.source=$agent_id,
+                            m.metadata_json=$metadata_json,
+                            m.created_at=datetime(),
+                            m.created_at_ts=timestamp(),
+                            m.updated_at=datetime(),
+                            m.updated_at_ts=timestamp()
+                        WITH m MATCH (t:Task {id:$task_id}) MERGE (t)-[:RELATED_MEMORY]->(m)
+                        RETURN m.id AS id
+                        """,
+                        {
+                            "task_id": task_id,
+                            "memory_id": memory_id,
+                            "summary": summary,
+                            "agent_id": agent_id,
+                            "metadata_json": json.dumps({"result": result or {}, "status": status}),
+                        },
+                    ).single()
+                    if memory_rec is None:
+                        raise LegacyTaskCompletionDenied("outcome_memory_link_failed")
+                    task["memory_item_id"] = memory_rec["id"]
+                return task
+
+
+            try:
+                return s.execute_write(_complete_in_transaction)
+            except LegacyTaskCompletionReplay as replay:
+                return replay.result
+            except LegacyTaskCompletionDenied:
+                return None
+
+    # Compatibility-only legacy path (NOT SAFE for machine claims, stale
+    # attempt fencing or idempotent terminal rewrites). Retained temporarily
+    # to avoid unapproved breaking recovery/worker cutovers. Production NO-GO.
+    def _complete_task_unfenced(
+        self,
+        task_id: str,
+        agent_id: str,
+        status: str,
+        summary: str | None = None,
+        result: dict[str, Any] | None = None,
+        session_id: str | None = None,
+        idempotency_key: str | None = None,
+        claim_id: str | None = None,
+    ) -> dict[str, Any] | None:
         if status not in TERMINAL_TASK_STATUSES:
             raise ValueError(f"Completion status must be one of: {sorted(TERMINAL_TASK_STATUSES)}")
         with self._session() as s:

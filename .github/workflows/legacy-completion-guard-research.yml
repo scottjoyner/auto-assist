@@ -1,0 +1,63 @@
+name: Legacy completion exact-claim fence (research HOLD)
+on:
+  pull_request:
+    branches:
+      - main
+      - research/memory-evidence-retention-20261103
+    paths:
+      - src/assistx/neo4j_client.py
+      - src/assistx/legacy_task_completion.py
+      - tests/test_legacy_task_completion.py
+      - tests/test_legacy_task_completion_neo4j.py
+      - .github/workflows/legacy-completion-guard-research.yml
+  workflow_dispatch:
+jobs:
+  strict-mode-source-and-compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated project requirements
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Compile and lint strict guard
+        run: |
+          python -m py_compile src/assistx/neo4j_client.py \
+            src/assistx/legacy_task_completion.py \
+            tests/test_legacy_task_completion.py \
+            tests/test_legacy_task_completion_neo4j.py
+          ruff check --ignore I001,E501,UP012,UP018,UP035,UP037,UP045 \
+            src/assistx/legacy_task_completion.py \
+            tests/test_legacy_task_completion.py \
+            tests/test_legacy_task_completion_neo4j.py
+      - name: Strict-mode negatives and existing worker compatibility
+        run: |
+          pytest -q tests/test_legacy_task_completion.py \
+            tests/test_continuous_work_safety.py tests/test_safe_fleet_executor.py \
+            tests/test_executor_security.py tests/test_legacy_task_maintenance.py
+  strict-mode-real-disposable-neo4j:
+    runs-on: ubuntu-latest
+    timeout-minutes: 24
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated project requirements
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Strict completion replay/race and default recovery lifecycle
+        env:
+          TEST_NEO4J_IMAGE: neo4j:5-enterprise
+        run: |
+          pytest -q tests/test_legacy_task_completion_neo4j.py \
+            tests/test_legacy_task_maintenance_neo4j.py \
+            tests/test_legacy_intent_cancel_neo4j.py \
+            tests/test_scoped_machine_claim_neo4j.py \
+            tests/test_scoped_machine_execution_neo4j.py \
+            tests/test_recovery_canary.py
