@@ -81,7 +81,10 @@ def assess(snapshot: dict, *, ram_floor_mib: int = DEFAULT_MIN_AVAILABLE_RAM_MIB
         raise ValueError("invalid disk availability")
     if type(processes) is not list or len(processes) > 64 or any(type(p) is not str or p not in INFERENCE_PROCESS_NAMES for p in processes):
         raise ValueError("invalid process evidence")
+    process_scan_complete = snapshot.get("process_scan_complete") is True
     blockers = []
+    if not process_scan_complete:
+        blockers.append("PROCESS_SCAN_INCOMPLETE")
     if not eligible:
         blockers.append("NO_VERIFIED_SUPPORTED_GPU")
     if ram is None or ram < ram_floor_mib:
@@ -101,6 +104,7 @@ def assess(snapshot: dict, *, ram_floor_mib: int = DEFAULT_MIN_AVAILABLE_RAM_MIB
         "mem_available_mib": ram,
         "root_available_gib": root,
         "active_inference_process_names": sorted(set(processes)),
+        "process_scan_complete": process_scan_complete,
         "research_reserve_floor_mib": ram_floor_mib,
         "research_reserve_floor_root_gib": root_floor_gib,
         "blockers": blockers,
@@ -137,8 +141,11 @@ def collect() -> dict:
     except OSError:
         root_gib = None
     names = set()
+    scan_complete = False
     try:
-        process_paths = list(Path("/proc").glob("[0-9]*/comm"))[:MAX_PROCESSES]
+        process_paths = list(Path("/proc").glob("[0-9]*/comm"))
+        scan_complete = len(process_paths) <= MAX_PROCESSES
+        process_paths = process_paths[:MAX_PROCESSES]
         for p in process_paths:
             try:
                 name = p.read_text(encoding="ascii")[:72].strip()
@@ -148,12 +155,14 @@ def collect() -> dict:
                 continue
     except OSError:
         names = set()
+        scan_complete = False
     # Without complete process enumeration, we cannot prove no servers.
     return {
         "hostname": socket.gethostname().split(".")[0],
         "devices": devices, "mem_available_mib": ram,
         "root_available_gib": root_gib,
         "inference_processes": sorted(names),
+        "process_scan_complete": scan_complete,
     }
 
 
