@@ -32,7 +32,7 @@ jobs:
             scripts/inspect-x1-k2-physical-witness-readonly.py \
             tests/test_x1_k2_signed_witness_offline.py \
             tests/test_x1_k2_physical_witness.py
-      - name: Run 44 synthetic physical, trust, crypto and replay tests
+      - name: Run physical and signed-verifier digest/replay regressions
         run: |
           python -m pytest --noconftest -q \
             tests/test_x1_k2_physical_witness.py \
@@ -40,3 +40,5 @@ jobs:
       - name: Check no-production-key default
         run: |
           grep -F 'TRUSTED_WITNESS_KEY_SHA256 = ""' scripts/verify-x1-k2-signed-witness-offline.py
+          grep -F 'APPROVED_RUNTIME_EXECUTABLE_SHA256 = ""' scripts/verify-x1-k2-signed-witness-offline.py
+          grep -F 'APPROVED_PROXY_EXECUTABLE_SHA256 = ""' scripts/verify-x1-k2-signed-witness-offline.py
