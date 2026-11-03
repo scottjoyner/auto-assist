@@ -71,8 +71,10 @@ def fingerprint(policy: dict) -> str:
     if policy["source"] != "github":
         raise IntakeRejected("only github policy source is modelled")
     repo = _id(policy["repository"], "repository")
-    if repo.count("/") != 1:
-        raise IntakeRejected("repository must be owner/name")
+    if (repo.count("/") != 1
+            or any(part in (".", "..") or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", part)
+                   for part in repo.split("/"))):
+        raise IntakeRejected("repository must be a canonical owner/name")
     version = policy["version"]
     if type(version) is not str or POLICY_VERSION.fullmatch(version) is None:
         raise IntakeRejected("invalid policy version")
@@ -98,10 +100,10 @@ def evaluate(policy: dict, event: dict, state: dict) -> dict:
         raise IntakeRejected("source binding does not match policy")
     event_id = _id(event["event_id"], "event_id")
     thread = _id(event["thread_id"], "thread_id")
-    if event["kind"] not in KINDS or type(event["kind"]) is not str:
+    if type(event["kind"]) is not str or event["kind"] not in KINDS:
         raise IntakeRejected("unknown event kind")
     actor = _actor(event["actor"])
-    if event["actor_kind"] not in ACTOR_KINDS or type(event["actor_kind"]) is not str:
+    if type(event["actor_kind"]) is not str or event["actor_kind"] not in ACTOR_KINDS:
         raise IntakeRejected("unknown actor classification")
     if type(event["actor_verified"]) is not bool or type(event["addressed"]) is not bool:
         raise IntakeRejected("actor verification/addressing must be boolean")
