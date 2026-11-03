@@ -28,6 +28,17 @@ def _synthetic_binary_approval_pins(monkeypatch):
     monkeypatch.setattr(module, "APPROVED_PROXY_EXECUTABLE_SHA256", "c" * 64)
     # Synthetic reference boot identity, never trusted from an envelope.
     monkeypatch.setattr(module, "TRUSTED_CURRENT_BOOT_ID_SHA256", "b" * 64)
+    # Only a test fixture; real external source remains unconfigured.
+    monkeypatch.setattr(module, "TRUSTED_CURRENT_PROCESS_IDENTITY", {
+        "node": "x1-370",
+        "boot_id_sha256": "b" * 64,
+        "observed_at_ms": NOW - 500,
+        "runtime": {"pid": 3525, "start_ticks": 1761},
+        "proxies": {
+            "lan": {"pid": 8991, "start_ticks": 2572},
+            "tailscale": {"pid": 8992, "start_ticks": 2572},
+        },
+    })
 
 
 def observation():
@@ -154,7 +165,9 @@ def test_unapproved_key_denied(monkeypatch):
 
 def test_correct_key_invalid_signature_denied(monkeypatch):
     doc = signed(monkeypatch)
-    doc["observation"]["process"]["pid"] = 3526
+    # Tamper with a semantically valid field so the independent process
+    # identity fence cannot mask the cryptographic signature rejection.
+    doc["observation"]["paths"]["lan"]["loaded_count"] = 2
     with pytest.raises(module.WitnessHold, match="invalid_witness_signature"):
         module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
 
@@ -339,6 +352,22 @@ def test_actual_two_tier_observer_fixture_matches_signed_verifier(monkeypatch, t
         module, "TRUSTED_CURRENT_BOOT_ID_SHA256",
         real_observer_output["process"]["boot_id_sha256"],
     )
+    monkeypatch.setattr(
+        module, "TRUSTED_CURRENT_PROCESS_IDENTITY",
+        {
+            "node": "x1-370",
+            "boot_id_sha256": real_observer_output["process"]["boot_id_sha256"],
+            "observed_at_ms": NOW - 500,
+            "runtime": {
+                "pid": real_observer_output["process"]["pid"],
+                "start_ticks": real_observer_output["process"]["start_ticks"],
+            },
+            "proxies": {
+                kind: {"pid": proxy["pid"], "start_ticks": proxy["start_ticks"]}
+                for kind, proxy in real_observer_output["process"]["proxies"].items()
+            },
+        },
+    )
     assert real_observer_output["physical_process_socket_chain_verified"]
     assert real_observer_output["model_loaded_physically_verified"]
     assert real_observer_output["gate"] == "HOLD"
@@ -455,4 +484,80 @@ def test_boot_identity_shape_still_required(monkeypatch):
     obs["process"]["boot_id_sha256"] = "not-sha256"
     doc = signed(monkeypatch, obs)
     with pytest.raises(module.WitnessHold, match="boot_identity_unverified"):
+        module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
+
+
+
+def test_production_current_process_inventory_unconfigured():
+    assert 'TRUSTED_CURRENT_PROCESS_IDENTITY = None' in SOURCE.read_text()
+
+
+def test_missing_independent_current_process_inventory_denied(monkeypatch):
+    doc = signed(monkeypatch)
+    monkeypatch.setattr(module, "TRUSTED_CURRENT_PROCESS_IDENTITY", None)
+    with pytest.raises(module.WitnessHold, match="independent_current_process_inventory_missing"):
+        module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
+
+
+def test_same_boot_runtime_restart_rejects_fresh_signed_receipt(monkeypatch):
+    doc = signed(monkeypatch)
+    current = copy.deepcopy(module.TRUSTED_CURRENT_PROCESS_IDENTITY)
+    current["runtime"]["start_ticks"] += 200
+    monkeypatch.setattr(module, "TRUSTED_CURRENT_PROCESS_IDENTITY", current)
+    with pytest.raises(module.WitnessHold, match="live_runtime_process_replaced_since_witness"):
+        module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
+
+
+@pytest.mark.parametrize("kind", ["lan", "tailscale"])
+@pytest.mark.parametrize("field", ["pid", "start_ticks"])
+def test_same_boot_proxy_replacement_refuses_old_signed_receipt(monkeypatch, kind, field):
+    doc = signed(monkeypatch)
+    current = copy.deepcopy(module.TRUSTED_CURRENT_PROCESS_IDENTITY)
+    current["proxies"][kind][field] += 1
+    monkeypatch.setattr(module, "TRUSTED_CURRENT_PROCESS_IDENTITY", current)
+    with pytest.raises(module.WitnessHold, match="live_transport_proxy_replaced_since_witness"):
+        module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
+
+
+@pytest.mark.parametrize("observed", [NOW - 35_000, NOW + 1, NOW - 5_000])
+def test_current_process_inventory_not_fresh_relative_to_receipt(monkeypatch, observed):
+    doc = signed(monkeypatch)
+    current = copy.deepcopy(module.TRUSTED_CURRENT_PROCESS_IDENTITY)
+    current["observed_at_ms"] = observed
+    monkeypatch.setattr(module, "TRUSTED_CURRENT_PROCESS_IDENTITY", current)
+    with pytest.raises(module.WitnessHold, match="independent_current_process_inventory_not_fresh"):
+        module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
+
+
+def test_current_identity_snapshot_cross_boot_denied_even_if_receipt_current(monkeypatch):
+    doc = signed(monkeypatch)
+    current = copy.deepcopy(module.TRUSTED_CURRENT_PROCESS_IDENTITY)
+    current["boot_id_sha256"] = "f" * 64
+    monkeypatch.setattr(module, "TRUSTED_CURRENT_PROCESS_IDENTITY", current)
+    with pytest.raises(module.WitnessHold, match="independent_current_process_boot_mismatch"):
+        module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
+
+
+def test_current_process_identity_rejects_boolean_start_ticks(monkeypatch):
+    doc = signed(monkeypatch)
+    current = copy.deepcopy(module.TRUSTED_CURRENT_PROCESS_IDENTITY)
+    current["runtime"]["start_ticks"] = True
+    monkeypatch.setattr(module, "TRUSTED_CURRENT_PROCESS_IDENTITY", current)
+    with pytest.raises(module.WitnessHold, match="live_runtime_process_replaced_since_witness"):
+        module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
+
+
+def test_duplicate_current_server_proxy_pid_is_rejected(monkeypatch):
+    doc = signed(monkeypatch)
+    obs = copy.deepcopy(doc["observation"])
+    obs["process"]["proxies"]["lan"]["pid"] = obs["process"]["pid"]
+    key = Ed25519PrivateKey.generate()
+    # The actual separate signed identity values will be rechecked before
+    # signature evaluation. No production signer is used in this fixture.
+    doc, pin = fixture(private=key, obs=obs)
+    monkeypatch.setattr(module, "TRUSTED_WITNESS_KEY_SHA256", pin)
+    current = copy.deepcopy(module.TRUSTED_CURRENT_PROCESS_IDENTITY)
+    current["proxies"]["lan"]["pid"] = current["runtime"]["pid"]
+    monkeypatch.setattr(module, "TRUSTED_CURRENT_PROCESS_IDENTITY", current)
+    with pytest.raises(module.WitnessHold, match="duplicate_live_server_proxy_process_identity"):
         module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
