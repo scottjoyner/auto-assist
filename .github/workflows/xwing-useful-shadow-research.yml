@@ -30,7 +30,7 @@ jobs:
           ruff check scripts/xwing_useful_shadow_triage.py tests/test_xwing_useful_shadow_triage.py
           python -B -m py_compile scripts/xwing_useful_shadow_triage.py tests/test_xwing_useful_shadow_triage.py
           git diff --check
-      - name: Run 51 synthetic research gates without SSH or inference
+      - name: Run 57 synthetic research gates without SSH or inference
         run: python -B -m pytest --noconftest -q tests/test_xwing_useful_shadow_triage.py
       - name: Dry-run default must not request inference
         run: |

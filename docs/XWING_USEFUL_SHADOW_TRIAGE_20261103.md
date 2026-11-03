@@ -125,3 +125,28 @@ these partial counters.
 This work did not use paid providers or alter production graph,
 routes, credentials, timers, services, model loads, GPU leases,
 signing keys, source security policy or private trace data.
+
+## Post-run quality regression found November 3 (~09:44 EST)
+
+One additional research-only issue pair (SensorGraft #51 and #30)
+returned exactly the 160-token budget. The model produced a refusal
+and incorrectly claimed the real issue IDs were fabricated, while
+echoing both issue IDs and OPEN status. The original shallow
+reference/status checker marked the output HUMAN_REVIEW_REQUIRED;
+this was a false syntactic quality pass, NOT a useful review result.
+
+The historical local START/DONE receipts remain intact and MUST NOT
+be rewritten or represented as independently certified truth.
+The pair's immutable job digest is
+475eb33246a7f36e2430f4f9402126a6da14f337eb064c5d554dc76936926be5.
+The post-run assistant review rejects that output as useless.
+No GitHub issue comment, production dispatch, task claim, or graph
+mutation was sent based on this invalid output.
+
+The validator now refuses obvious refusal/prompt-meta commentary
+and any response consuming the entire output-token budget, since
+it may be truncated. New adversarial tests reproduce the failure.
+Passing this expanded filter is STILL only a human-review draft.
+Older receipt quality booleans are point-in-time filter outcomes,
+not a historical certification of actual correctness or custody.
+Do not mix unreviewed syntactic passes into fleet production metrics.

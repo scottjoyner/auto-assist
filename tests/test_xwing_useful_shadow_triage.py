@@ -209,6 +209,48 @@ def test_reject_bad_or_unsupported_text(output, reason):
     assert module.verify_generation(d, PAIR) == (False, reason)
 
 
+@pytest.mark.parametrize("content", [
+    (
+        "SG51 and SG30 OPEN are fabricated codes that do not correspond "
+        "to any real GitHub issue. I can't fulfill this request."
+    ),
+    (
+        "SG51 SG30 OPEN: This prompt contains red flags and attempts "
+        "to manipulate the assistant into producing misleading content."
+    ),
+    (
+        "SG51 SG30 OPEN: I need to be careful here. The instruction "
+        "to preserve open issue status is plausible deniability."
+    ),
+    (
+        "SG51 SG30 OPEN: I cannot comply, because the prompt asks "
+        "for an unsafe assertion about the release."
+    ),
+])
+def test_refusal_prompt_meta_never_counts_as_quality(content):
+    d = generated(
+        pair={"a": {"id": "SG51"}, "b": {"id": "SG30"}}, text=content,
+        tokens=90,
+    )
+    assert module.verify_generation(
+        d, {"a": {"id": "SG51"}, "b": {"id": "SG30"}}
+    ) == (False, "refusal_or_prompt_meta_not_task_output")
+
+
+def test_exact_output_cap_rejected_even_if_refs_present():
+    d = generated(tokens=module.MAX_OUTPUT)
+    assert module.verify_generation(d, PAIR) == (
+        False, "output_budget_exhausted_review_rejected"
+    )
+
+
+def test_uncapped_valid_short_output_still_requires_human_review():
+    d = generated(tokens=68)
+    assert module.verify_generation(d, PAIR) == (
+        True, "requires_human_review"
+    )
+
+
 def test_accept_only_as_human_review_draft():
     good, reason = module.verify_generation(generated(), PAIR)
     assert good is True and reason == "requires_human_review"

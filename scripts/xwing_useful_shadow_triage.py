@@ -35,7 +35,21 @@ BAD_CLAIMS = re.compile(
     r"\b(?:now|already|successfully|has been|have been)\s+"
     r"(?:fixed|approved|resolved|deployed|restored)\b"
     r"|\bproduction\s+(?:ready|enabled|approved)\b"
-    r"|\b(?:bypass|ignore|disable)\s+(?:the\s+)?(?:approval|security|claim)\b",
+    r"|\b(?:bypass|ignore|disable)\s+(?:the\s+)?(?:approval|security|claim)\b"
+    r"|\b(?:both|all|these|the)\s+(?:issues?\s+)?(?:are\s+)?"
+    r"(?:fixed|resolved|closed|approved)\b"
+    r"|\b(?:no\s+longer|not)\s+open\b",
+    flags=re.IGNORECASE,
+)
+REFUSAL_OR_META = re.compile(
+    r"\b(?:i\s+(?:cannot|can['’]t|won['’]t|refuse|am\s+unable)|"
+    r"i\s+need\s+to\s+be\s+careful|"
+    r"i\s+can['’]t\s+fulfill|"
+    r"the\s+prompt|this\s+prompt|the\s+instruction|"
+    r"plausible\s+deniability|red\s+flags|"
+    r"attempts?\s+to\s+manipulate|"
+    r"codes?\s+are\s+fabricated|"
+    r"do\s+not\s+correspond\s+to\s+any\s+real)\b",
     flags=re.IGNORECASE,
 )
 
@@ -303,8 +317,13 @@ def verify_generation(result: dict, pair: dict) -> tuple[bool, str]:
             return False, "missing_source_issue_reference"
     if not re.search(r"\bopen\b", text, re.IGNORECASE):
         return False, "missing_open_status"
+    if REFUSAL_OR_META.search(text):
+        return False, "refusal_or_prompt_meta_not_task_output"
     if BAD_CLAIMS.search(text):
         return False, "unsupported_admission_or_resolution_claim"
+    # Output exactly at the cap may be truncated: no quality pass.
+    if type(result.get("outputTokens")) is int and result["outputTokens"] >= MAX_OUTPUT:
+        return False, "output_budget_exhausted_review_rejected"
     if not (type(result.get("promptTokens")) is int
             and result["promptTokens"] > 0
             and type(result.get("outputTokens")) is int
