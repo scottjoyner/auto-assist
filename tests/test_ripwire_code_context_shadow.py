@@ -1,19 +1,22 @@
 """Synthetic offline Ripwire navigation safety tests; no Docker/model execution."""
+
 from __future__ import annotations
 
-from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 import importlib.util
 import io
 import json
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest import mock
 
-SOURCE = Path(__file__).resolve().parents[1] / "research" / "ripwire_code_context_shadow.py"
+SOURCE = (
+    Path(__file__).resolve().parents[1] / "research" / "ripwire_code_context_shadow.py"
+)
 SPEC = importlib.util.spec_from_file_location("ripwire_context_shadow_test", SOURCE)
 shadow = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = shadow
@@ -111,9 +114,7 @@ class RipwireContextShadowTests(unittest.TestCase):
             (repo / "research" / "private.jsonl").write_text('{"payload":1}')
             (repo / "research" / "private.wav").write_bytes(b"audio")
             (repo / "src" / ".hidden.py").write_text("hidden")
-            (repo / "research" / "symlink.py").symlink_to(
-                repo / "research" / "gate.py"
-            )
+            (repo / "research" / "symlink.py").symlink_to(repo / "research" / "gate.py")
             second = root / "new_snapshot"
             second.mkdir()
             report = shadow.stage_source_only(repo, second)
@@ -168,12 +169,14 @@ class RipwireContextShadowTests(unittest.TestCase):
             self.assertEqual(result["confidence_reported_by_tool"], "low")
             self.assertEqual(result["production_gate"], "HOLD")
             self.assertEqual(len(result["candidate_files"]), 2)
-            self.assertEqual(result["candidate_files"][0], {
-                "relative_file": "research/gate.py", "first_symbol_rank": 1
-            })
-            self.assertEqual(result["candidate_files"][1], {
-                "relative_file": "src/journal.rs", "first_symbol_rank": 2
-            })
+            self.assertEqual(
+                result["candidate_files"][0],
+                {"relative_file": "research/gate.py", "first_symbol_rank": 1},
+            )
+            self.assertEqual(
+                result["candidate_files"][1],
+                {"relative_file": "src/journal.rs", "first_symbol_rank": 2},
+            )
             self.assertTrue(result["reported_budget_exceeded"])
             self.assertFalse(result["model_quality_verified"])
             self.assertFalse(result["network_egress_allowed"])
@@ -237,8 +240,9 @@ class RipwireContextShadowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             _, snap = fixture_dirs(Path(d))
             for item in (None, [], "{}", True):
-                with self.subTest(v=str(item)), self.assertRaises(
-                    shadow.ContextShadowError
+                with (
+                    self.subTest(v=str(item)),
+                    self.assertRaises(shadow.ContextShadowError),
                 ):
                     audit(item, snap)
 
@@ -246,8 +250,9 @@ class RipwireContextShadowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             _, snap = fixture_dirs(Path(d))
             for item in (None, True, 5, "excellent", ""):
-                with self.subTest(v=str(item)), self.assertRaises(
-                    shadow.ContextShadowError
+                with (
+                    self.subTest(v=str(item)),
+                    self.assertRaises(shadow.ContextShadowError),
                 ):
                     audit(payload(confidence=item), snap)
 
@@ -255,13 +260,15 @@ class RipwireContextShadowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             _, snap = fixture_dirs(Path(d))
             for item in (None, -1, 500_001, True, "2000"):
-                with self.subTest(v=str(item)), self.assertRaises(
-                    shadow.ContextShadowError
+                with (
+                    self.subTest(v=str(item)),
+                    self.assertRaises(shadow.ContextShadowError),
                 ):
                     audit(payload(est_tokens=item), snap)
             for budget in (None, True, 0, 1200, "2400"):
-                with self.subTest(budget=str(budget)), self.assertRaises(
-                    shadow.ContextShadowError
+                with (
+                    self.subTest(budget=str(budget)),
+                    self.assertRaises(shadow.ContextShadowError),
                 ):
                     audit(payload(budget_tokens=budget), snap)
 
@@ -269,8 +276,9 @@ class RipwireContextShadowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             _, snap = fixture_dirs(Path(d))
             for value in (None, 1, "true"):
-                with self.subTest(value=str(value)), self.assertRaises(
-                    shadow.ContextShadowError
+                with (
+                    self.subTest(value=str(value)),
+                    self.assertRaises(shadow.ContextShadowError),
                 ):
                     audit(payload(capped=value), snap)
 
@@ -278,8 +286,9 @@ class RipwireContextShadowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             _, snap = fixture_dirs(Path(d))
             for value in (None, {}, True, [{}] * 129):
-                with self.subTest(v=str(value)[:35]), self.assertRaises(
-                    shadow.ContextShadowError
+                with (
+                    self.subTest(v=str(value)[:35]),
+                    self.assertRaises(shadow.ContextShadowError),
                 ):
                     audit(payload(sigs=value), snap)
 
@@ -297,8 +306,9 @@ class RipwireContextShadowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             _, snap = fixture_dirs(Path(d))
             for rank in (True, -1, 0, None, "1", 100_001):
-                with self.subTest(rank=str(rank)), self.assertRaises(
-                    shadow.ContextShadowError
+                with (
+                    self.subTest(rank=str(rank)),
+                    self.assertRaises(shadow.ContextShadowError),
                 ):
                     audit(payload(sigs=[{"p": "src/journal.rs", "r": rank}]), snap)
 
@@ -306,13 +316,20 @@ class RipwireContextShadowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             _, snap = fixture_dirs(Path(d))
             bad = (
-                "/etc/passwd", "../secrets.txt", "src/../../secrets.py",
-                "src/.env.py", "src\\journal.rs", "research/private.jsonl",
-                "src/invalid\x00.py", "src/journal.txt", "random/path.py",
+                "/etc/passwd",
+                "../secrets.txt",
+                "src/../../secrets.py",
+                "src/.env.py",
+                "src\\journal.rs",
+                "research/private.jsonl",
+                "src/invalid\x00.py",
+                "src/journal.txt",
+                "random/path.py",
             )
             for path in bad:
-                with self.subTest(path=str(path)), self.assertRaises(
-                    shadow.ContextShadowError
+                with (
+                    self.subTest(path=str(path)),
+                    self.assertRaises(shadow.ContextShadowError),
                 ):
                     audit(payload(sigs=[{"p": path, "r": 1}]), snap)
 
@@ -356,10 +373,16 @@ class RipwireContextShadowTests(unittest.TestCase):
             args = shadow.docker_args(binpath, snap, TASK)
             joined = " ".join(args)
             for expected in (
-                "--network=none", "--read-only", "--pull=never",
-                "--cap-drop=ALL", "--security-opt=no-new-privileges",
-                "--no-cache", "--json", "--signatures-only",
-                "timeout -k 2s 18s", "--token-budget=2400",
+                "--network=none",
+                "--read-only",
+                "--pull=never",
+                "--cap-drop=ALL",
+                "--security-opt=no-new-privileges",
+                "--no-cache",
+                "--json",
+                "--signatures-only",
+                "timeout -k 2s 18s",
+                "--token-budget=2400",
             ):
                 self.assertIn(expected, joined)
             self.assertNotIn("--mcp", args)
@@ -374,8 +397,9 @@ class RipwireContextShadowTests(unittest.TestCase):
             snap = Path(d) / "code"
             snap.mkdir()
             for task in (None, "a", "x" * 241, "bad\nline", "bad\x00task"):
-                with self.subTest(v=str(task)[:20]), self.assertRaises(
-                    shadow.ContextShadowError
+                with (
+                    self.subTest(v=str(task)[:20]),
+                    self.assertRaises(shadow.ContextShadowError),
                 ):
                     shadow.docker_args(binary, snap, task)
 
@@ -385,13 +409,17 @@ class RipwireContextShadowTests(unittest.TestCase):
             repo, _ = fixture_dirs(base)
             binary = base / "ripwire"
             binary.write_text("fake")
+
             def fake_docker(args, **kwargs):
                 self.assertIn("--network=none", args)
                 self.assertIn("--read-only", args)
                 self.assertEqual(kwargs["timeout"], 30)
                 return subprocess.CompletedProcess(args, 0, payload(), b"")
+
             with mock.patch.object(shadow, "verify_binary") as gate:
-                with mock.patch.object(shadow.subprocess, "run", side_effect=fake_docker):
+                with mock.patch.object(
+                    shadow.subprocess, "run", side_effect=fake_docker
+                ):
                     result = shadow.run_shadow(repo, binary, TASK)
             gate.assert_called_once()
             self.assertEqual(result["source_snapshot"]["files"], 2)
@@ -406,7 +434,8 @@ class RipwireContextShadowTests(unittest.TestCase):
             binary.write_text("fake")
             with mock.patch.object(shadow, "verify_binary"):
                 with mock.patch.object(
-                    shadow.subprocess, "run",
+                    shadow.subprocess,
+                    "run",
                     return_value=subprocess.CompletedProcess(
                         [], 1, b"", b"SECRET_CREDENTIAL"
                     ),
@@ -423,7 +452,8 @@ class RipwireContextShadowTests(unittest.TestCase):
             binary.write_text("fake")
             with mock.patch.object(shadow, "verify_binary"):
                 with mock.patch.object(
-                    shadow.subprocess, "run",
+                    shadow.subprocess,
+                    "run",
                     side_effect=subprocess.TimeoutExpired(["docker"], 30),
                 ):
                     with self.assertRaises(shadow.ContextShadowError):
@@ -432,11 +462,16 @@ class RipwireContextShadowTests(unittest.TestCase):
     def test_cli_refuses_unapproved_source_read(self):
         err = io.StringIO()
         with redirect_stderr(err):
-            rc = shadow.main([
-                "--source-root", "/tmp/unknown",
-                "--ripwire-binary", "/tmp/unknown/ripwire",
-                "--task", TASK,
-            ])
+            rc = shadow.main(
+                [
+                    "--source-root",
+                    "/tmp/unknown",
+                    "--ripwire-binary",
+                    "/tmp/unknown/ripwire",
+                    "--task",
+                    TASK,
+                ]
+            )
         self.assertEqual(rc, 2)
         self.assertIn("--allow-code-read", err.getvalue())
 
@@ -449,12 +484,17 @@ class RipwireContextShadowTests(unittest.TestCase):
         result = io.StringIO()
         with mock.patch.object(shadow, "run_shadow", return_value=expected):
             with redirect_stdout(result):
-                rc = shadow.main([
-                    "--source-root", "/tmp/repo",
-                    "--ripwire-binary", "/tmp/ripwire",
-                    "--task", TASK,
-                    "--allow-code-read",
-                ])
+                rc = shadow.main(
+                    [
+                        "--source-root",
+                        "/tmp/repo",
+                        "--ripwire-binary",
+                        "/tmp/ripwire",
+                        "--task",
+                        TASK,
+                        "--allow-code-read",
+                    ]
+                )
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(result.getvalue()), expected)
         self.assertNotIn(TASK, result.getvalue())
@@ -462,15 +502,20 @@ class RipwireContextShadowTests(unittest.TestCase):
     def test_cli_error_no_user_path_or_exception_leak(self):
         err = io.StringIO()
         with mock.patch.object(
-            shadow, "run_shadow",
-            side_effect=shadow.ContextShadowError("private")
+            shadow, "run_shadow", side_effect=shadow.ContextShadowError("private")
         ):
             with redirect_stderr(err):
-                rc = shadow.main([
-                    "--source-root", "/tmp/secretcode",
-                    "--ripwire-binary", "/tmp/key",
-                    "--task", TASK, "--allow-code-read",
-                ])
+                rc = shadow.main(
+                    [
+                        "--source-root",
+                        "/tmp/secretcode",
+                        "--ripwire-binary",
+                        "/tmp/key",
+                        "--task",
+                        TASK,
+                        "--allow-code-read",
+                    ]
+                )
         self.assertEqual(rc, 3)
         self.assertNotIn("private", err.getvalue())
         self.assertNotIn("/tmp/secretcode", err.getvalue())
@@ -478,9 +523,16 @@ class RipwireContextShadowTests(unittest.TestCase):
     def test_no_external_requests_or_live_trace_ingest(self):
         src = SOURCE.read_text()
         for forbidden in (
-            "import requests", "import urllib", "socket.connect(",
-            "os.system(", "shell=True", "--mcp", "--listen",
-            "private_traces", "openai.ChatCompletion", "Anthropic(",
+            "import requests",
+            "import urllib",
+            "socket.connect(",
+            "os.system(",
+            "shell=True",
+            "--mcp",
+            "--listen",
+            "private_traces",
+            "openai.ChatCompletion",
+            "Anthropic(",
         ):
             self.assertNotIn(forbidden, src)
 
