@@ -53,7 +53,7 @@ def test_default_model_is_exact_native_resident_chat_not_first_catalog(monkeypat
     def http(method,url,**kw):
         assert url.endswith('/api/v1/models') and method=='GET'
         return 200,{'models':[_model('embedding',typ='embedding'),
-             _model('b-unloaded',resident=False),_model('a-chat'),_model('z-chat')]}
+             _model('b-unloaded',resident=False),_model('a-chat')]}
     monkeypatch.setattr(agent,'_http',http)
     assert agent._default_model('http://local')=='a-chat'
 
@@ -126,3 +126,25 @@ def test_benchmark_task_uses_exact_native_model_gate_before_execution(monkeypatc
     assert agent._claim_and_run(assistx_url='http://assistx',router_url='http://router',
         auth=('operator','synthetic'),node_id='node-a',caps=['llm'],
         task={'id':'benchmark'},lmstudio_url='http://local') is None
+
+def test_ambiguous_native_default_is_not_implicitly_chosen(monkeypatch):
+    monkeypatch.setattr(agent,'_native_loaded_chat_models',lambda *_:['a','b'])
+    assert agent._default_model('http://local')==''
+    monkeypatch.setattr(agent,'_http',lambda *args,**kw:pytest.fail('no inference or cache request'))
+    outcome=agent.execute_task({'required_capabilities':['llm'],
+       'payload':{'prompt':'Inspect routing drift'}},'http://local','.')
+    assert outcome['status']=='FAILED'
+    assert outcome['result']['reason']=='no_unique_native_resident_chat_model'
+
+
+def test_unique_native_default_is_used_for_unpinned_direct_llm(monkeypatch):
+    monkeypatch.setattr(agent,'_native_loaded_chat_models',lambda *_:['only-chat'])
+    sent=[]
+    def http(method,url,**kwargs):
+        assert url.endswith('/v1/chat/completions')
+        sent.append(kwargs['data'])
+        return 200,{'choices':[{'message':{'content':'Reviewed'}}]}
+    monkeypatch.setattr(agent,'_http',http)
+    outcome=agent.execute_task({'required_capabilities':['llm'],
+       'payload':{'prompt':'Inspect task supply'}},'http://local','.')
+    assert outcome['status']=='DONE' and len(sent)==1 and sent[0]['model']=='only-chat'
