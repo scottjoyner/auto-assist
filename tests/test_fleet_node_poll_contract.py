@@ -182,7 +182,7 @@ def test_valid_claim_fence_flows_into_completion(monkeypatch):
         if url.endswith("/v1/chat/completions"):
             return 200, {"choices": [{"message": {"content": "review successful"}}]}
         if url.endswith("/complete"):
-            return 200, {"task": {"status": "DONE"}}
+            return 200, {"task": {"id": "claimable", "status": "DONE"}}
         raise AssertionError(f"Unexpected route: {url}")
 
     monkeypatch.setattr(agent, "_http", fake_http)
@@ -236,7 +236,7 @@ def test_execution_uses_authoritative_claimed_payload_not_stale_ready_entry(monk
             emitted.append(kwargs["data"])
             return 200, {"choices": [{"message": {"content": "done"}}]}
         if url.endswith("/complete"):
-            return 200, {"task": {"status": "DONE"}}
+            return 200, {"task": {"id": "claimable", "status": "DONE"}}
         raise AssertionError("Unexpected endpoint")
 
     monkeypatch.setattr(agent, "_http", fake_http)
@@ -278,7 +278,7 @@ def test_http_200_without_generated_answer_must_not_complete_done(monkeypatch, b
         if url.endswith("/v1/chat/completions"):
             return 200, body
         if url.endswith("/complete"):
-            return 200, {"task": {"status": "FAILED"}}
+            return 200, {"task": {"id": "claimable", "status": "FAILED"}}
         raise AssertionError("Unexpected route")
 
     monkeypatch.setattr(agent, "_http", fake_http)
@@ -293,3 +293,36 @@ def test_http_200_without_generated_answer_must_not_complete_done(monkeypatch, b
     assert completions[0]["status"] == "FAILED"
     assert completions[0]["result"]["error"] == "empty_or_invalid_model_generation"
     assert completions[0]["claim_id"] == "fence-123"
+
+@pytest.mark.parametrize("code,ack", [
+    (0, {}),
+    (409, {"detail": "stale claim"}),
+    (200, {}),
+    (200, {"task": {"id": "wrong", "status": "DONE"}}),
+    (200, {"task": {"id": "claimable", "status": "CLAIMED"}}),
+])
+def test_unacknowledged_completion_does_not_count_as_work(monkeypatch, code, ack):
+    requests = []
+
+    def fake_http(method, url, **kwargs):
+        requests.append((method, url, kwargs))
+        if url.endswith("/claim"):
+            return 200, {"claimed": True, "task": {
+                "id": "claimable", "claimed_by": "node-a", "status": "CLAIMED",
+                "agent_session_id": kwargs["data"]["session_id"],
+                "claim_id": "fence-1", "task_type": "llm",
+                "payload_json": '{"prompt":"Audit work supply","model":"m1"}'}}
+        if url.endswith("/v1/chat/completions"):
+            return 200, {"choices": [{"message": {"content": "Audit complete"}}]}
+        if url.endswith("/complete"):
+            return code, ack
+        raise AssertionError("Unexpected request")
+
+    monkeypatch.setattr(agent, "_http", fake_http)
+    result = agent._claim_and_run(
+        assistx_url="http://assistx", router_url="http://router",
+        auth=("operator", "test"), node_id="node-a", caps=["llm"],
+        task={"id": "claimable"}, lmstudio_url="http://local")
+    assert result is False
+    assert len([x for x in requests if x[1].endswith("/v1/chat/completions")]) == 1
+    assert len([x for x in requests if x[1].endswith("/complete")]) == 1
