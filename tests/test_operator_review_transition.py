@@ -2,12 +2,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+import runpy
 
 import pytest
 
-from assistx.operator_review_transition import (
-    ReviewTransitionDenied, _in_tx, propose_operator_review_transition,
-)
+# Load only the stdlib-only research module, not assistx.__init__ or the
+# production app dependency graph. Hosted isolated CI intentionally installs
+# just pytest + ruff, with no Neo4j, dotenv, API or service imports.
+_MODULE = runpy.run_path(str(
+    Path(__file__).resolve().parents[1] /
+    "src" / "assistx" / "operator_review_transition.py"
+))
+ReviewTransitionDenied = _MODULE["ReviewTransitionDenied"]
+_in_tx = _MODULE["_in_tx"]
+propose_operator_review_transition = _MODULE["propose_operator_review_transition"]
 
 
 class Row:
