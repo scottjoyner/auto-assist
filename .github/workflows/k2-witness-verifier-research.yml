@@ -42,3 +42,4 @@ jobs:
           grep -F 'TRUSTED_WITNESS_KEY_SHA256 = ""' scripts/verify-x1-k2-signed-witness-offline.py
           grep -F 'APPROVED_RUNTIME_EXECUTABLE_SHA256 = ""' scripts/verify-x1-k2-signed-witness-offline.py
           grep -F 'APPROVED_PROXY_EXECUTABLE_SHA256 = ""' scripts/verify-x1-k2-signed-witness-offline.py
+          grep -F 'TRUSTED_CURRENT_BOOT_ID_SHA256 = ""' scripts/verify-x1-k2-signed-witness-offline.py
