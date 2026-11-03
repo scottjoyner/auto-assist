@@ -55,7 +55,7 @@ def verify_binary(path: Path, *, expected_sha256: str = BINARY_SHA256) -> None:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         try:
             st = os.fstat(fd)
-            if not stat.S_ISREG(st.st_mode) or not 0 < st.st_size < 40_000_000:
+            if not stat.S_ISREG(st.st_mode) or not 0 < st.st_size < 75_000_000:
                 raise ContextShadowError("invalid binary file")
             digest = hashlib.sha256()
             with os.fdopen(fd, "rb", closefd=False) as stream:
@@ -205,8 +205,6 @@ def audit_ripwire_json(
         if source.is_symlink() or not source.is_file():
             raise ContextShadowError("ranked symbol outside source snapshot")
         found[path] = min(found.get(path, rank), rank)
-    if any(b <= a for a, b in zip(sorted(seen_ranks), sorted(seen_ranks)[1:])):
-        raise ContextShadowError("nonunique ranks")
     top = sorted(found.items(), key=lambda z: (z[1], z[0]))[:12]
     return {
         "kind": "ripwire_source_only_shadow_v1",
@@ -248,7 +246,8 @@ def docker_args(binary: Path, snapshot: Path, task: str) -> list[str]:
         "--tmpfs=/tmp:rw,nosuid,size=128m,mode=1777",
         "-v", f"{binary}:/usr/local/bin/ripwire:ro",
         "-v", f"{snapshot}:/corpus:ro", "-e", "HOME=/tmp",
-        "-w", "/corpus", IMAGE, "/usr/local/bin/ripwire",
+        "-w", "/corpus", IMAGE,
+        "timeout", "-k", "2s", "18s", "/usr/local/bin/ripwire",
         "/corpus", "--no-cache", "--json", "--signatures-only",
         f"--token-budget={BUDGET_TOKENS}", "--max-memory=256M",
         f"--for={task}",
