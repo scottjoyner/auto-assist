@@ -26,6 +26,8 @@ def _synthetic_binary_approval_pins(monkeypatch):
     # Deliberately absent from installed production verifier.
     monkeypatch.setattr(module, "APPROVED_RUNTIME_EXECUTABLE_SHA256", "e" * 64)
     monkeypatch.setattr(module, "APPROVED_PROXY_EXECUTABLE_SHA256", "c" * 64)
+    # Synthetic reference boot identity, never trusted from an envelope.
+    monkeypatch.setattr(module, "TRUSTED_CURRENT_BOOT_ID_SHA256", "b" * 64)
 
 
 def observation():
@@ -333,6 +335,10 @@ def test_actual_two_tier_observer_fixture_matches_signed_verifier(monkeypatch, t
         module, "APPROVED_PROXY_EXECUTABLE_SHA256",
         real_observer_output["process"]["proxies"]["lan"]["running_executable_sha256"],
     )
+    monkeypatch.setattr(
+        module, "TRUSTED_CURRENT_BOOT_ID_SHA256",
+        real_observer_output["process"]["boot_id_sha256"],
+    )
     assert real_observer_output["physical_process_socket_chain_verified"]
     assert real_observer_output["model_loaded_physically_verified"]
     assert real_observer_output["gate"] == "HOLD"
@@ -412,3 +418,41 @@ def test_missing_independent_proxy_binary_pin_denied(monkeypatch):
     with pytest.raises(module.WitnessHold, match="independently_approved_binary_fingerprints_missing"):
         module.verify(module.canonical(doc),
                       expected_challenge_hex=CHALLENGE, now_ms=NOW)
+
+
+
+def test_current_boot_trust_pin_absent_in_production_source():
+    source = SOURCE.read_text()
+    assert 'TRUSTED_CURRENT_BOOT_ID_SHA256 = ""' in source
+
+
+def test_missing_current_boot_pin_refuses_signed_receipt(monkeypatch):
+    doc = signed(monkeypatch)
+    monkeypatch.setattr(module, "TRUSTED_CURRENT_BOOT_ID_SHA256", "")
+    with pytest.raises(module.WitnessHold, match="independent_current_boot_identity_missing"):
+        module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
+
+
+def test_old_boot_signed_receipt_denied_after_external_boot_change(monkeypatch):
+    doc = signed(monkeypatch)
+    # The signer was approved and receipt/time/challenge still pass.
+    # Only the separate trusted CURRENT-boot observation has changed.
+    monkeypatch.setattr(module, "TRUSTED_CURRENT_BOOT_ID_SHA256", "f" * 64)
+    with pytest.raises(module.WitnessHold, match="witness_observation_from_different_boot"):
+        module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
+
+
+def test_wrong_boot_id_even_with_verified_flag_denied(monkeypatch):
+    obs = observation()
+    obs["process"]["boot_id_sha256"] = "f" * 64
+    doc = signed(monkeypatch, obs)
+    with pytest.raises(module.WitnessHold, match="witness_observation_from_different_boot"):
+        module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
+
+
+def test_boot_identity_shape_still_required(monkeypatch):
+    obs = observation()
+    obs["process"]["boot_id_sha256"] = "not-sha256"
+    doc = signed(monkeypatch, obs)
+    with pytest.raises(module.WitnessHold, match="boot_identity_unverified"):
+        module.verify(module.canonical(doc), expected_challenge_hex=CHALLENGE, now_ms=NOW)
