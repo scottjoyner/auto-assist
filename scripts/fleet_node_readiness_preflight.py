@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import hmac
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -20,6 +22,72 @@ import urllib.parse
 import urllib.request
 
 
+def _credential_target_allowed(url: str) -> bool:
+    """Restrict Basic auth to explicit local/overlay nodes; fail closed on DNS.
+
+    HTTPS permits RFC1918 addresses. HTTP permits only loopback or Tailnet
+    CGNAT addresses; link-local cloud metadata/public destinations are denied.
+    """
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if (parsed.scheme not in ('http', 'https') or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.fragment or parsed.port is None
+                or parsed.path != '/api/agent/tasks'):
+            return False
+        if parsed.hostname == 'localhost':
+            return True
+        ip = ipaddress.ip_address(parsed.hostname)
+        if isinstance(ip, ipaddress.IPv4Address):
+            allowed_http = ('127.0.0.0/8', '100.64.0.0/10')
+            allowed_https = allowed_http + ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')
+        else:
+            allowed_http = ('::1/128',)
+            allowed_https = allowed_http + ('fc00::/7',)
+        blocks = allowed_http if parsed.scheme == 'http' else allowed_https
+        return any(ip in ipaddress.ip_network(block) for block in blocks)
+    except ValueError:
+        return False
+
+
+def _running_credentials(service: str) -> tuple[str, str] | None:
+    """Read active same-user worker credentials, never return them in a report."""
+    try:
+        result = subprocess.run(
+            ['systemctl', '--user', 'show', service, '--property=MainPID', '--value'],
+            capture_output=True, text=True, timeout=3, check=False)
+        if result.returncode != 0:
+            return None
+        pid = int(result.stdout.strip())
+        if pid < 2:
+            return None
+        proc = Path(f'/proc/{pid}')
+        if proc.stat().st_uid != os.geteuid():
+            return None
+        command = (proc / 'cmdline').read_bytes()[:8192]
+        if b'fleet_node_agent' not in command and b'run_fleet_node_agent' not in command:
+            return None
+        data = (proc / 'environ').read_bytes()
+        if len(data) > 65536:
+            return None
+        found: dict[str, str] = {}
+        for token in data.split(b'\0'):
+            if b'=' not in token:
+                continue
+            key, value = token.split(b'=', 1)
+            if key not in (b'FLEET_AUTH_USER', b'FLEET_AUTH_PASS'):
+                continue
+            name = key.decode('ascii')
+            if name in found:
+                return None
+            found[name] = value.decode('utf-8')
+        if found.get('FLEET_AUTH_USER') and found.get('FLEET_AUTH_PASS'):
+            return found['FLEET_AUTH_USER'], found['FLEET_AUTH_PASS']
+    except (OSError, ValueError, UnicodeError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, msg, headers, newurl):
         return None
@@ -28,6 +96,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def _get(url: str, *, credentials: tuple[str, str] | None = None) -> tuple[int, dict]:
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password:
+        return 0, {}
+    if credentials is not None and not _credential_target_allowed(url):
         return 0, {}
     headers = {'Accept': 'application/json'}
     if credentials is not None:
@@ -42,7 +112,10 @@ def _get(url: str, *, credentials: tuple[str, str] | None = None) -> tuple[int, 
             if response.status != 200:
                 return response.status, {}
             try:
-                obj = json.load(response)
+                raw = response.read(131073)
+                if len(raw) > 131072:
+                    return 0, {}
+                obj = json.loads(raw)
             except (ValueError, UnicodeError):
                 return 200, {}
             return 200, obj if isinstance(obj, dict) else {}
@@ -108,10 +181,22 @@ def observation(
         pass
     source_hash = hashlib.sha256(source.encode()).hexdigest() if source else None
     credentials = _credentials(credential_file)
+    running = _service_active(service)
+    effective = _running_credentials(service) if running else None
+    matches_live: bool | str = 'NOT_CHECKED'
+    if credentials is not None and effective is not None:
+        matches_live = (hmac.compare_digest(credentials[0], effective[0])
+                        and hmac.compare_digest(credentials[1], effective[1]))
+    task_endpoint = assistx_url.rstrip('/') + '/api/agent/tasks?status=READY&limit=1'
     api_http = None
     if credentials is not None:
-        api_http, _ = _get(assistx_url.rstrip('/') + '/api/agent/tasks?status=READY&limit=1',
-                           credentials=credentials)
+        api_http, _ = _get(task_endpoint, credentials=credentials)
+    effective_api_http = None
+    if effective is not None:
+        if matches_live is True and api_http is not None:
+            effective_api_http = api_http
+        else:
+            effective_api_http, _ = _get(task_endpoint, credentials=effective)
     catalog_status, catalog = _get(model_url.rstrip('/') + '/v1/models')
     catalog_rows = catalog.get('data') if isinstance(catalog.get('data'), list) else []
     native_status, native = _get(model_url.rstrip('/') + '/api/v1/models')
@@ -123,10 +208,15 @@ def observation(
                     and isinstance(item.get('loaded_instances'), list)
                     and item['loaded_instances']):
                 loaded.append(item)
-    exact = any(row['key'] == expected_model for row in loaded) if expected_model else None
+    # A resident embedding model is useful for retrieval, but cannot be
+    # advertised as a chat-generation lane. Preserve generic observations for
+    # compatibility and publish explicit capability counts separately.
+    chat = [row for row in loaded if row.get('type') == 'llm']
+    embeddings = [row for row in loaded if row.get('type') == 'embedding']
+    exact = any(row['key'] == expected_model for row in chat) if expected_model else None
     return {
         'schema_version': 'fleet-agent-readonly-preflight.v1',
-        'service_active': _service_active(service),
+        'service_active': running,
         'worker_source_present': bool(source),
         'source_sha256': source_hash,
         'source_matches_expected': source_hash == expected_sha256 if expected_sha256 else None,
@@ -134,13 +224,18 @@ def observation(
         'backoff_implemented': 'auth_denials' in source,
         'credentials_loaded_from_secure_file': credentials is not None,
         'read_only_auth_probe_http': api_http,
-        # File parsing is not proof of the live systemd process environment.
-        'matches_live_process_credentials': 'NOT_CHECKED',
+        # Never emit username, password, or digest of a weak credential.
+        'matches_live_process_credentials': matches_live,
+        'live_process_credentials_present': effective is not None,
+        'live_process_read_only_auth_probe_http': effective_api_http,
+        'authentication_grants_task_admission': False,
         'catalog_http': catalog_status,
         'catalog_entries': len(catalog_rows),
         'native_http': native_status,
         'native_inventory_authoritative': native_status == 200 and native_rows is not None,
         'native_loaded_entries': len(loaded),
+        'native_loaded_chat_entries': len(chat),
+        'native_loaded_embedding_entries': len(embeddings),
         'expected_model_exactly_loaded': exact,
         # Never equate successful GET, token validity, model residency or
         # this diagnostic report with an independently approved Task lease.
