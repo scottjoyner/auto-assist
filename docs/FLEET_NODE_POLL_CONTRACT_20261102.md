@@ -86,3 +86,22 @@ requirement.
 
 Expanded isolated regression suite: **44 passed** (one preexisting Pydantic
 warning). Source-only, not deployed, and still under the same P0 release holds.
+
+
+## Provider finish-reason quality gate
+
+During a bounded, real three-node fleet engineering review, Deathstar
+returned nonempty but visibly cut-off text after exhausting its 150-token
+cap, and Destroyer reported 249 total tokens but **no usable message
+content**. These were actual inference responses, not accepted engineering
+deliverables; only Lenovo returned a brief usable recommendation. Model
+reported token usage remains separate from productive completion.
+
+The LLM worker now explicitly treats `choices[0].finish_reason="length"`
+and `"content_filter"` as incomplete or filtered work even if message
+content is nonempty, returning a `FAILED` task status with a bounded
+error marker. Unknown/unset finish reasons are not implicitly rejected
+when the text is valid, for legacy model-server compatibility. Two new
+deterministic negative tests pass; the combined isolated suite totals
+**46 passed** (one preexisting Pydantic warning). No actual fleet Task
+was submitted or marked failed during these exploratory reviews.
