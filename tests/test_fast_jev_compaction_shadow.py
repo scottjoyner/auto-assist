@@ -295,6 +295,41 @@ class TestShadowCompactionAudit(unittest.TestCase):
         with self.assertRaises(ShadowCompactionRejected):
             verify(after=p)
 
+    def test_first_message_original_tool_cannot_be_dropped(self):
+        orig=[
+            {"role":"assistant","text":"","toolUses":[use("first","Read","important")]},
+            {"role":"user","text":"","toolUses":[],
+             "toolResults":[result("first","important")]},
+            {"role":"assistant","text":"synthetic work complete","toolUses":[]},
+            {"role":"user","text":"continue","toolUses":[]},
+        ]
+        after=deepcopy(orig[2:])
+        with self.assertRaises(ShadowCompactionRejected):
+            audit_shadow_compaction(
+                orig,after,decisions={"first":"drop_call"},
+                protected_ids=[],preserve_recent_messages=0,scope="synthetic_fixture_only")
+
+    def test_protected_read_result_cannot_be_truncated(self):
+        orig=transcript()
+        with self.assertRaises(ShadowCompactionRejected):
+            verify(orig=orig,protected=["grep_b"])
+
+    def test_short_truncate_is_a_valid_noop(self):
+        orig=transcript()
+        orig[4]["toolUses"][0]["text"]="B"*4
+        orig[5]["toolResults"][0]["text"]="B"*4
+        after=proposed()
+        after[2]["toolUses"][0]["text"]="B"*4
+        after[3]["toolResults"][0]["text"]="B"*4
+        receipt=verify(orig=orig,after=after)
+        self.assertEqual(receipt["actions"]["result_truncated"],1)
+
+    def test_keep_never_allows_mismatched_message_text_even_with_duplicate(self):
+        p=proposed()
+        p[6]["text"]="The failure is in the second file.\n"
+        with self.assertRaises(ShadowCompactionRejected):
+            verify(after=p)
+
     def test_no_credential_or_server_access_in_adapter(self):
         from inspect import getsource
         from assistx import fast_jev_compaction_shadow as mod
