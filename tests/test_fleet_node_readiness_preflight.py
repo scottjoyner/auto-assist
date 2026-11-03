@@ -85,3 +85,26 @@ def test_bad_auth_url_never_attempts_credentials(monkeypatch):
     # Direct invalid URL is refused before any credential-bearing Request.
     assert a._get('file:///etc/passwd',credentials=('u','p'))==(0,{})
     assert a._get('http://user:pass@example.org',credentials=('u','p'))==(0,{})
+
+
+def test_auth_probe_disables_inherited_proxy_and_refuses_redirect(monkeypatch):
+    seen=[]
+    class StubOpener:
+        def open(self,request,timeout):
+            seen.append(('request',request.headers.get('Authorization') is not None))
+            raise a.urllib.error.HTTPError(request.full_url,302,'redirect',{},None)
+    def intercept(*handlers):
+        seen.append(('handlers',handlers))
+        return StubOpener()
+    monkeypatch.setattr(a.urllib.request,'build_opener',intercept)
+    result=a._get('http://allowed-tailnet-host:8000/api/agent/tasks?status=READY',credentials=('account','credential'))
+    assert result==(302,{})
+    handlers=seen[0][1]
+    assert any(isinstance(x,a.urllib.request.ProxyHandler) and x.proxies=={} for x in handlers)
+    assert a.NoRedirect().redirect_request(None,None,302,'redirect',None,'http://other-host/') is None
+    assert seen[1]==('request',True)
+
+
+def test_oversized_secret_file_rejected(tmp_path):
+    p=tmp_path/'env';p.write_text('FLEET_AUTH_USER=a\nFLEET_AUTH_PASS='+'c'*18000+'\n');p.chmod(0o600)
+    assert a._credentials(p) is None
