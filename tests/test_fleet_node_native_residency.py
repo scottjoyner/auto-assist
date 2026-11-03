@@ -24,6 +24,9 @@ def test_native_loaded_chat_only_drops_catalog_and_embedding(monkeypatch):
         _model('loaded-chat'),_model('downloaded',resident=False),
         _model('nomic-embed',typ='embedding'),
         {'key':'invalid','type':'llm','loaded_instances':['not-an-instance']},
+        {'key':'no-instance-id','type':'llm','loaded_instances':[{}]},
+        {'key':'empty-instance-id','type':'llm','loaded_instances':[{'id':'  '}]},
+        {'key':'non-string-instance-id','type':'llm','loaded_instances':[{'id':7}]},
     ]}))
     assert models==['loaded-chat'] and 'llm' in caps and 'lmstudio' in caps
     assert calls==[('GET','http://local:1234/api/v1/models')]
