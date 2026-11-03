@@ -85,6 +85,23 @@ RETURN count(*) AS affected
 """
 
 
+# Preserve *all* Task-linked memory, not just records with current
+# machine flags. A missing/malformed marker is not evidence that outcome
+# history may be deleted. External custody and indirect links remain HOLD.
+_MEMORY_RETENTION = """
+MATCH (m:MemoryItem)
+WHERE coalesce(m.updated_at_ts,m.created_at_ts,0)
+      < timestamp()-($days*24*60*60*1000)
+  AND NOT EXISTS {
+    MATCH (:Task)-[:RELATED_MEMORY]->(m)
+  }
+WITH DISTINCT m
+LIMIT 5000
+DETACH DELETE m
+RETURN count(*) AS affected
+"""
+
+
 def _writer_transaction(tx: Any, query: str, params: dict[str, Any]) -> int:
     row = tx.run(_LOCK).single()
     if row is None or int(row.get("matching_rows") or 0) != 1:
@@ -108,3 +125,14 @@ def retain_terminal_legacy_tasks(neo: Any, *, retention_days: int) -> int:
     if type(retention_days) is not int or not 1 <= retention_days <= 36500:
         raise MaintenanceTaskWriteBlocked("invalid_task_retention_days")
     return _run(neo, _RETENTION, {"days": retention_days})
+
+
+def retain_unlinked_legacy_memory_items(neo: Any, *, retention_days: int) -> int:
+    """Only old, Task-unlinked MemoryItems may be garbage-collected.
+
+    MemoryItems linked to ANY Task are retained until an independently
+    approved, auditable Task/evidence retention protocol exists.
+    """
+    if type(retention_days) is not int or not 1 <= retention_days <= 36500:
+        raise MaintenanceTaskWriteBlocked("invalid_memory_retention_days")
+    return _run(neo, _MEMORY_RETENTION, {"days": retention_days})
