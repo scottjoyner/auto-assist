@@ -58,6 +58,11 @@ class FakeNeo:
             assert "MATCH (p:FleetProjectionState {name:'canonical',status:'approved'})" in query
             assert 'MATCH (s:WorkSupplyState' in query
             assert "t.required_capabilities=['llm']" in query
+            # Unknown/missing authorization fields must NOT mean 'approved'.
+            assert 't.requires_approval = false' in query
+            assert 't.paperclip_dispatched = false' in query
+            assert 'coalesce(t.requires_approval,false)' not in query
+            assert 'coalesce(t.paperclip_dispatched,false)' not in query
             assert 't.payload_json' not in query and 'RETURN t ' not in query
             return Result([{'id': 'assigned-llm-1', 'priority': 'LOW'}]
                           if self.ready and not self.revoke_before_task else [])

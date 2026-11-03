@@ -43,7 +43,8 @@ Before querying Task metadata it requires:
    list containing `chat` or `llm`. An embedding-only model is insufficient.
 6. A parameterized Cypher query with **exact**
    `target_agent_id=$node_id` and `status=READY`:
-   `requires_approval=false`, `paperclip_dispatched=false`, and
+   **explicit** `requires_approval=false` and
+   `paperclip_dispatched=false` (missing properties fail closed), and
    `required_capabilities=['llm']`, capped at 20 hints. Untargeted Tasks are
    categorically excluded. The **final Task query rechecks** canonical
    approval expiry, generation and fresh work-supply capacity in the same
@@ -76,6 +77,19 @@ an exact signed router admission proof.
 
 This is a test/example only. Do **not** enable this feature or install such
 a policy on production without independent source/approver/rotation checks.
+
+### Live schema-drift finding
+
+Read-only Neo4j `EXPLAIN` validated all three parameterized query shapes on
+November 3, 2026, without executing them or returning any Task payload.
+The live graph reported **unknown-property warnings** for
+`Task.requires_approval` and `Task.paperclip_dispatched`. Therefore a
+`coalesce(missing,false)` predicate would have incorrectly treated legacy
+missing authorization evidence as a positive permission. The final Task
+hint query instead requires these properties to be **explicitly false**;
+missing values cannot match. Until a separately approved Task creation
+contract writes these attestations, this observer cannot return those
+older Task IDs. Do not bulk-backfill or infer them from old payloads.
 
 ## Validation and remaining hard holds
 

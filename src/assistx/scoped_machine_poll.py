@@ -143,8 +143,8 @@ def candidate_tasks(
                   AND coalesce(s.total_slots,0)>0
                   AND coalesce(s.free_slots,0)>0
                 MATCH (t:Task {status:'READY', target_agent_id:$node_id})
-                WHERE coalesce(t.requires_approval,false)=false
-                  AND coalesce(t.paperclip_dispatched,false)=false
+                WHERE t.requires_approval = false
+                  AND t.paperclip_dispatched = false
                   AND t.required_capabilities=['llm']
                 RETURN t.id AS id, t.priority AS priority
                 ORDER BY coalesce(t.created_at_ts,0) ASC
