@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import sys
 
 import pytest
 
-from scripts import read_only_fleet_graph_principals as gate
+# Avoid ambiguity with an unrelated installed "scripts" package on hosted CI.
+_SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
+sys.path.insert(0, str(_SCRIPT_DIR))
+import read_only_fleet_graph_principals as gate  # noqa: E402
 
 
 A="sha256:"+"a"*64

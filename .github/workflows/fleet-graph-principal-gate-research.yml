@@ -33,7 +33,7 @@ jobs:
             tests/test_fleet_graph_principal_census.py
       - name: Prove fixed allowlist, immutable pins, HOLD and redacted failures
         run: |
-          pytest --noconftest -q tests/test_fleet_graph_principal_census.py \
+          python3 -m pytest --noconftest -q tests/test_fleet_graph_principal_census.py \
             tests/test_read_only_native_graph_privileges.py
   disposable-neo4j-prior-regression:
     runs-on: ubuntu-latest
