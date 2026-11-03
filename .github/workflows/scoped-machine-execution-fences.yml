@@ -1,0 +1,51 @@
+name: Machine heartbeat and result custody fence (research)
+on:
+  pull_request:
+    branches:
+      - main
+      - feat/scoped-machine-claim-cas-20261103
+    paths:
+      - src/assistx/scoped_machine_execution.py
+      - tests/test_scoped_machine_execution.py
+      - tests/test_scoped_machine_execution_neo4j.py
+      - .github/workflows/scoped-machine-execution-fences.yml
+  push:
+    branches:
+      - feat/scoped-machine-heartbeat-finalization-20261103
+    paths:
+      - src/assistx/scoped_machine_execution.py
+      - tests/test_scoped_machine_execution.py
+      - tests/test_scoped_machine_execution_neo4j.py
+      - .github/workflows/scoped-machine-execution-fences.yml
+  workflow_dispatch:
+
+jobs:
+  isolated-transaction-and-custody-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated requirements
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Compile and lint exact new source
+        run: |
+          python -m py_compile src/assistx/scoped_machine_execution.py tests/test_scoped_machine_execution.py tests/test_scoped_machine_execution_neo4j.py
+          ruff check --ignore I001,E501,UP012,UP018,UP035,UP037,UP045 \
+            src/assistx/scoped_machine_execution.py tests/test_scoped_machine_execution.py tests/test_scoped_machine_execution_neo4j.py
+      - name: Verify deny-by-default source and legacy adjacency
+        run: |
+          pytest -q tests/test_scoped_machine_execution.py \
+            tests/test_scoped_machine_claim.py tests/test_scoped_machine_poll.py \
+            tests/test_node_identity.py tests/test_safe_fleet_executor.py \
+            tests/test_fleet_node_readiness_preflight.py tests/test_executor_security.py
+      - name: Disposable Neo4j competing-finalizer and acceptance tests
+        env:
+          TEST_NEO4J_IMAGE: neo4j:5-enterprise
+        run: |
+          pytest -q tests/test_scoped_machine_execution_neo4j.py \
+            tests/test_scoped_machine_claim_neo4j.py
