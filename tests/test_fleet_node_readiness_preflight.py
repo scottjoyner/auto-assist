@@ -38,6 +38,7 @@ def test_200_catalog_is_not_loaded_model_count(monkeypatch,tmp_path):
     assert r['catalog_entries']==11 and r['native_loaded_entries']==1
     assert r['expected_model_exactly_loaded'] is True
     assert r['read_only_auth_probe_http']==401
+    assert r['matches_live_process_credentials']=='NOT_CHECKED'
     assert r['authorizes_dispatch'] is False and r['approved_runtime_slots']=='NOT_CHECKED'
     assert r['old_state_ready_query'] is True and not r['backoff_implemented']
     assert ('test-user' not in str(r)) and ('test-credential' not in str(r))
