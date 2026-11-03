@@ -10,6 +10,7 @@ from assistx.legacy_task_maintenance import (
     MaintenanceTaskWriteBlocked,
     reap_stale_legacy_tasks,
     retain_terminal_legacy_tasks,
+    retain_unlinked_legacy_memory_items,
 )
 
 
@@ -146,3 +147,63 @@ def test_maintenance_waits_for_same_canonical_lock(driver):
             if not tx.closed():
                 tx.rollback()
     assert snapshot(driver)["legacy-stale"] == "READY"
+
+
+
+def test_task_linked_memory_retained_while_unlinked_old_memory_deleted(driver):
+    """Memory evidence survives even for Tasks missing their machine flags."""
+    seed(driver)
+    with driver.session() as s:
+        s.run("""
+            MATCH (machine:Task {id:'machine-stale'})
+            MATCH (legacy:Task {id:'legacy-stale'})
+            CREATE (m1:MemoryItem {id:'protected-linked-memory',
+                                   created_at_ts:0,updated_at_ts:0})
+            CREATE (m2:MemoryItem {id:'legacy-linked-memory',
+                                   created_at_ts:0,updated_at_ts:0})
+            CREATE (:MemoryItem {id:'old-unlinked-memory',
+                                 created_at_ts:0,updated_at_ts:0})
+            CREATE (:MemoryItem {id:'recent-unlinked-memory',
+                                 created_at_ts:9999999999999,
+                                 updated_at_ts:9999999999999})
+            CREATE (machine)-[:RELATED_MEMORY]->(m1)
+            CREATE (legacy)-[:RELATED_MEMORY]->(m2)
+        """).consume()
+    assert retain_unlinked_legacy_memory_items(
+        Neo(driver),retention_days=30,
+    )==1
+    with driver.session() as s:
+        rows=list(s.run("MATCH (m:MemoryItem) RETURN m.id AS id"))
+        ids={row['id'] for row in rows}
+        assert ids=={
+            'protected-linked-memory','legacy-linked-memory',
+            'recent-unlinked-memory',
+        }
+        relation=s.run("""
+            MATCH (t:Task {id:'machine-stale'})-[:RELATED_MEMORY]->(m:MemoryItem)
+            RETURN count(m) AS memory_count
+        """).single()
+        assert relation['memory_count']==1
+    assert snapshot(driver)['machine-stale']=='CLAIMED'
+
+
+@pytest.mark.parametrize('coordination',[0,2])
+def test_memory_cleanup_missing_duplicate_canonical_lock_rolls_back(driver,coordination):
+    seed(driver,coordination=coordination)
+    with driver.session() as s:
+        s.run(
+            "CREATE (:MemoryItem {id:'old-unlinked-memory',"
+            "created_at_ts:0,updated_at_ts:0})"
+        ).consume()
+    with pytest.raises(MaintenanceTaskWriteBlocked,match='not_unique'):
+        retain_unlinked_legacy_memory_items(Neo(driver),retention_days=30)
+    with driver.session() as s:
+        assert s.run(
+            "MATCH (m:MemoryItem {id:'old-unlinked-memory'}) "
+            "RETURN count(m) AS n"
+        ).single()['n']==1
+        serials=[r['serial'] for r in s.run(
+            "MATCH (w:WorkSupplyState {name:'canonical'}) "
+            "RETURN w.legacy_maintenance_serial AS serial"
+        )]
+        assert serials==[0]*coordination
