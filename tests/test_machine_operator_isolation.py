@@ -30,6 +30,10 @@ from fastapi.testclient import TestClient
 from assistx.api_router import app
 from assistx import api, scoped_machine_poll
 
+# The assembled API overrides any environment-provided trusted identity
+# header with its own executor-only header; external copies are stripped.
+assert api.TRUSTED_AUTH_HEADER.lower() == 'x-assistx-executor-identity'
+
 expected = {
     ('GET', '/api/agent/tasks'),
     ('POST', '/api/tasks/{task_id}/claim'),
@@ -66,6 +70,29 @@ for method, path in cases:
                          json={} if method == 'POST' else None)
     assert got.status_code == 401, (method, path, got.status_code)
 
+# Neither the configured trusted-header name nor the internal executor identity
+# may be accepted as a client-provided operator credential. This exercises the
+# full installed middleware, not a standalone auth dependency.
+for headers in (
+    {'X-Synthetic-Trusted-Identity': 'operator'},
+    {'X-Assistx-Executor-Identity': 'executor-bootstrap'},
+    {'X-Assistx-Executor-Identity': 'operator',
+     'X-Synthetic-Trusted-Identity': 'operator'},
+):
+    denied = client.get('/api/agent/tasks', headers=headers)
+    assert denied.status_code == 401, (sorted(headers), denied.status_code)
+
+# High-impact fleet administration routes must also reject machine tokens
+# before any loader, model or control-plane effects can occur.
+for method, path in (
+    ('GET', '/api/fleet/models'),
+    ('POST', '/api/fleet/loader/load'),
+    ('POST', '/api/fleet/refresh-models'),
+):
+    denied = client.request(method, path, headers=node_headers,
+                            json={} if method == 'POST' else None)
+    assert denied.status_code == 401, (method, path, denied.status_code)
+
 # Operator Basic must remain authenticated on existing listing route.
 operator = ('synthetic-operator', 'synthetic-pass-for-testing')
 authorized = client.get('/api/agent/tasks', auth=operator)
@@ -100,8 +127,9 @@ scoped_machine_poll._projection_state = denied_projection
 hold = client.get(path, headers=node_headers)
 assert hold.status_code == 503, hold.status_code
 assert not attempts, attempts
-print('FULL_ASSEMBLED_API_ISOLATION_PASS: 4 legacy denies, operator allowed, '
-      'observer Basic/cross-node/revoked/policy/feature/authority denies; no network')
+print('FULL_ASSEMBLED_API_ISOLATION_PASS: 4 legacy denies, '
+      '3 forged-header denies, 3 admin denies, operator allowed, '
+      'observer Basic/cross-node/policy/feature/authority denies; no network')
 """
 
 
@@ -116,6 +144,7 @@ def test_machine_operator_routes_isolated_in_complete_api():
         env.update({
             "BASIC_AUTH_USER": "synthetic-operator",
             "BASIC_AUTH_PASS": "synthetic-pass-for-testing",
+            "TRUSTED_AUTH_HEADER": "X-Synthetic-Trusted-Identity",
             "ASSISTX_USER": "synthetic-operator",
             "ASSISTX_PASS": "synthetic-pass-for-testing",
             "ASSISTX_ENABLE_SCOPED_NODE_OBSERVATION": "1",
