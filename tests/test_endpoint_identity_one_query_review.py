@@ -10,14 +10,30 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
-
-from scripts import endpoint_identity_disposition_gate as gate
-from scripts import endpoint_identity_one_query_review as one
-from tests.test_endpoint_identity_disposition_gate import fixture, serialized
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / "scripts" / "endpoint_identity_one_query_review.py"
+
+
+def load_known_file(path: Path, name: str):
+    spec = spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Expected synthetic research file unavailable")
+    instance = module_from_spec(spec)
+    spec.loader.exec_module(instance)
+    return instance
+
+
+one = load_known_file(CLI, "_pinned_one_query_review")
+gate = one.base
+fixtures = load_known_file(
+    ROOT / "tests" / "test_endpoint_identity_disposition_gate.py",
+    "_pinned_synthetic_disposition_fixture",
+)
+fixture = fixtures.fixture
+serialized = fixtures.serialized
 FIXED_NOW = datetime(2026, 11, 4, 0, 30, tzinfo=timezone.utc)
 
 
@@ -198,6 +214,31 @@ class OneQueryVerifierTests(unittest.TestCase):
         self.assertEqual(outcome["status"], "HOLD_ONE_QUERY_CONSISTENT_BUT_UNAPPROVED")
         self.assertFalse(outcome["outside_operator_attestation_verified"])
         self.assertFalse(outcome["production_release_authorized"])
+
+    def test_imports_ignore_hostile_ambient_scripts_namespace(self):
+
+        code = """
+import importlib.util
+import pathlib
+import sys
+import types
+sys.modules['scripts'] = types.ModuleType('scripts')
+path = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location('one_query_isolated_test', path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert module.base.__file__ == str(path.with_name('endpoint_identity_disposition_gate.py'))
+print('PINNED_SIBLING_IMPORT_PASS')
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code, str(CLI)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=8,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PINNED_SIBLING_IMPORT_PASS", result.stdout)
 
     def test_default_cli_denies_without_opening_files(self):
         p = subprocess.run(

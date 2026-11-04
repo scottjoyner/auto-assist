@@ -13,10 +13,17 @@ import json
 import re
 from datetime import datetime, timezone
 
-if __package__:
-    from . import endpoint_identity_disposition_gate as base
-else:
-    import endpoint_identity_disposition_gate as base
+# Import only the known sibling file, never a possibly shadowing package
+# named "scripts" (or an unrelated ambient module on the Python path).
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+
+_SIBLING = Path(__file__).resolve().with_name("endpoint_identity_disposition_gate.py")
+_SPEC = spec_from_file_location("_pinned_endpoint_disposition_gate", _SIBLING)
+if _SPEC is None or _SPEC.loader is None:
+    raise RuntimeError("Local disposition gate unavailable")
+base = module_from_spec(_SPEC)
+_SPEC.loader.exec_module(base)
 
 MAX_AGE_SECONDS = 3600
 MAX_FUTURE_SKEW_SECONDS = 60
