@@ -1,6 +1,7 @@
 """No live Docker/network/credential access; synthetic router alias migration gate."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -9,11 +10,27 @@ import sys
 
 import pytest
 
-from scripts.audit_router_alias_preflight import (
-    CONTAINER, IDENTITY_TEMPLATE, RUNTIME_PROBE, ROOT,
-    SETTINGS, audit, compose_defaults_pinned, container_identity,
-    docker_read, evaluate, write_private,
+# Some installed dependencies also expose a top-level "scripts" package.
+# Load this specific checked-out module by path: the proof must never
+# accidentally test a third-party module during hosted pytest collection.
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location(
+    "assistx_router_alias_preflight_under_test",
+    ROOT / "scripts" / "audit_router_alias_preflight.py",
 )
+assert SPEC is not None and SPEC.loader is not None
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+CONTAINER = MODULE.CONTAINER
+IDENTITY_TEMPLATE = MODULE.IDENTITY_TEMPLATE
+RUNTIME_PROBE = MODULE.RUNTIME_PROBE
+SETTINGS = MODULE.SETTINGS
+audit = MODULE.audit
+compose_defaults_pinned = MODULE.compose_defaults_pinned
+container_identity = MODULE.container_identity
+docker_read = MODULE.docker_read
+evaluate = MODULE.evaluate
+write_private = MODULE.write_private
 
 IMAGE = "sha256:" + "a" * 64
 IDENTITY = IMAGE + "|2026-11-04T09:15:05Z|true"
