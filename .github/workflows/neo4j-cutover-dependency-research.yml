@@ -1,0 +1,65 @@
+name: Neo4j cutover dependencies (research HOLD)
+on:
+  pull_request:
+    branches:
+      - main
+      - research/neo4j-ingress-gate-20261103
+    paths:
+      - scripts/read_only_neo4j_cutover_dependencies.py
+      - tests/test_read_only_neo4j_cutover_dependencies.py
+      - docs/research/NEO4J_CUTOVER_DEPENDENCIES_20261103.md
+      - .github/workflows/neo4j-cutover-dependency-research.yml
+  workflow_dispatch:
+jobs:
+  source-only-topology-and-denials:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install minimal pure-source test requirements
+        run: python -m pip install pytest ruff
+      - name: Compile and lint research dependency inventory
+        run: |
+          python3 -m py_compile scripts/read_only_neo4j_cutover_dependencies.py \
+            scripts/read_only_neo4j_ingress_gate.py \
+            tests/test_read_only_neo4j_cutover_dependencies.py \
+            tests/test_read_only_neo4j_ingress_gate.py
+          python3 -m ruff check --ignore I001,E501,UP012,UP018,UP035,UP037,UP045 \
+            scripts/read_only_neo4j_cutover_dependencies.py \
+            tests/test_read_only_neo4j_cutover_dependencies.py
+      - name: Source-only network, client, forwarder and redaction contract
+        run: |
+          python3 -m pytest --noconftest -q \
+            tests/test_read_only_neo4j_cutover_dependencies.py \
+            tests/test_read_only_neo4j_ingress_gate.py
+  disposable-neo4j-existing-writer-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated project test requirements
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Physical disposable Neo4j Task writer and recovery regression
+        env:
+          TEST_NEO4J_IMAGE: neo4j:5-enterprise
+        run: |
+          python3 -m pytest -q tests/test_review_orphan_audit_neo4j.py \
+            tests/test_review_atomic_approval_neo4j.py \
+            tests/test_operator_review_transition_neo4j.py \
+            tests/test_legacy_task_writer_guard_neo4j.py \
+            tests/test_legacy_task_completion_neo4j.py \
+            tests/test_legacy_task_maintenance_neo4j.py \
+            tests/test_legacy_intent_cancel_neo4j.py \
+            tests/test_scoped_machine_claim_neo4j.py \
+            tests/test_scoped_machine_execution_neo4j.py \
+            tests/test_recovery_canary.py
