@@ -45,11 +45,28 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .kv_cache import runtime_capabilities
 from .lm_studio_client_auth import headers_for_request
 from .recovery_runbooks import RecoveryRunbookExecutor
 
 DEFAULT_CAPS = ["script"]
+
+
+class _RejectPrivilegedRedirect(urllib.request.HTTPRedirectHandler):
+    """Never forward Basic, bearer or node-identity headers to another URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _privileged_request(auth: tuple[str, str] | None, headers: dict[str, str]) -> bool:
+    if auth is not None:
+        return True
+    names = {str(name).casefold() for name in headers}
+    return any(
+        name in {"authorization", "proxy-authorization", "cookie", "x-fleet-node-token"}
+        or name.endswith(("-token", "-api-key"))
+        for name in names
+    )
 
 
 def _now() -> str:
@@ -78,22 +95,41 @@ def _http(
         req.add_header(key, value)
     if data is not None:
         req.data = json.dumps(data).encode()
+    credentialed = _privileged_request(auth, headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode()
+        if credentialed:
+            # urllib's default redirect handler forwards custom Authorization
+            # and X-Fleet-Node-Token headers across origins. Also disable
+            # environment proxies for every privileged request.
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({}), _RejectPrivilegedRedirect()
+            )
+            response_context = opener.open(req, timeout=timeout)
+        else:
+            response_context = urllib.request.urlopen(req, timeout=timeout)
+        with response_context as resp:
+            raw = resp.read(1024 * 1024 + 1) if credentialed else resp.read()
+            if credentialed and len(raw) > 1024 * 1024:
+                return 0, {"detail": "privileged_response_oversized"}
+            decoded = raw.decode()
             try:
-                return resp.status, json.loads(raw) if raw else {}
+                return resp.status, json.loads(decoded) if decoded else {}
             except json.JSONDecodeError:
-                return resp.status, raw
+                return resp.status, decoded
     except urllib.error.HTTPError as exc:
         try:
-            return exc.code, json.loads(exc.read().decode())
-        except Exception:
-            return exc.code, {"detail": str(exc)}
+            raw = exc.read(65536 + 1)
+            if len(raw) > 65536:
+                return exc.code, {"detail": "http_error_body_oversized"}
+            try:
+                return exc.code, json.loads(raw.decode())
+            except (UnicodeError, json.JSONDecodeError):
+                return exc.code, {"detail": "http_error_without_json"}
         finally:
             exc.close()
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return 0, {"detail": str(exc)}
+        # Never log or return a credential-bearing URL or exception string.
+        return 0, {"detail": type(exc).__name__}
 
 
 def _detect_hostname() -> str:
