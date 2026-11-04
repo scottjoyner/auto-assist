@@ -49,6 +49,25 @@ def _timestamp_ms(value: Any) -> int:
     return int(parsed.timestamp() * 1000)
 
 
+def _strict_backup_bool(value: Any, *, nullable: bool = False) -> bool | None:
+    """Parse a Neo4j backup metadata boolean without Python truthiness.
+
+    In particular, bool("false") is True, so never coerce string flags
+    through bool() when they authorize a full backup or recovered chain.
+    """
+    if value is None and nullable:
+        return None
+    if type(value) is bool:
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    raise BackupVerificationError("untrusted backup metadata boolean")
+
+
 class Neo4jBackupVerifier:
     """Inspect and validate Neo4j Enterprise backup artifacts.
 
@@ -249,7 +268,7 @@ class Neo4jBackupVerifier:
                         or row.get("timestamp")
                         or row.get("backupTime")
                     ),
-                    full=bool(row.get("full")),
+                    full=_strict_backup_bool(row.get("full")),
                     lowest_tx=int(
                         row.get("lowestTransactionId")
                         or row.get("lowest_tx")
@@ -260,10 +279,8 @@ class Neo4jBackupVerifier:
                         or row.get("highest_tx")
                         or 0
                     ),
-                    recovered=(
-                        None
-                        if row.get("recovered") is None
-                        else bool(row.get("recovered"))
+                    recovered=_strict_backup_bool(
+                        row.get("recovered"), nullable=True
                     ),
                 )
             )
@@ -271,36 +288,46 @@ class Neo4jBackupVerifier:
 
     @staticmethod
     def _parse_table(output: str, database: str) -> list[BackupArtifact]:
+        """Parse the fixed native 5.x 8-column table, never filename tokens.
+
+        FILE | DATABASE | DATABASE ID | TIME (UTC) | FULL | COMPRESSED |
+        LOWEST TX | HIGHEST TX. A compressed differential is NOT a full.
+        """
         artifacts: list[BackupArtifact] = []
         for raw in output.splitlines():
-            if "|" not in raw or database not in raw:
+            if "|" not in raw:
                 continue
-            columns = [value.strip() for value in raw.strip().strip("|").split("|")]
-            if len(columns) < 8 or columns[0].upper() == "FILE":
+            columns = [
+                value.strip() for value in raw.strip().strip("|").split("|")
+            ]
+            if len(columns) < 2 or columns[1] != database:
                 continue
+            # A malformed row for this requested database is a failed
+            # attestation, not an ignorable row that silently shrinks a chain.
+            if len(columns) != 8:
+                raise BackupVerificationError("backup table column count mismatch")
+            timestamp = _timestamp_ms(columns[3])
+            if timestamp <= 0:
+                raise BackupVerificationError("invalid backup table timestamp")
+            if not re.fullmatch(
+                r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}",
+                columns[2],
+            ):
+                raise BackupVerificationError("invalid backup database identity")
+            full = _strict_backup_bool(columns[4])
+            _strict_backup_bool(columns[5])  # validate, not a FULL substitute
             try:
-                lowest = int(columns[-2])
-                highest = int(columns[-1])
-            except ValueError:
-                continue
-            timestamp = next(
-                (_timestamp_ms(value) for value in columns if "T" in value),
-                0,
-            )
-            full = any(value.lower() == "true" for value in columns[3:6])
-            database_id = next(
-                (
-                    value
-                    for value in columns
-                    if re.fullmatch(r"[0-9a-fA-F-]{32,36}", value)
-                ),
-                "",
-            )
+                lowest = int(columns[6])
+                highest = int(columns[7])
+            except ValueError as exc:
+                raise BackupVerificationError("invalid backup transaction IDs") from exc
+            if lowest < 0 or highest < lowest:
+                raise BackupVerificationError("inverted backup transaction range")
             artifacts.append(
                 BackupArtifact(
                     path=columns[0],
-                    database=database,
-                    database_id=database_id,
+                    database=columns[1],
+                    database_id=columns[2],
                     timestamp_ms=timestamp,
                     full=full,
                     lowest_tx=lowest,
