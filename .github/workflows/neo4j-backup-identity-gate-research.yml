@@ -46,6 +46,21 @@ jobs:
             tests/test_neo4j_backup_identity_gate.py
       - name: Synthetic wrong DB / UUID / CLI default negatives
         run: |
-          PYTHONPATH=src python -m pytest --noconftest -q \
-            tests/test_neo4j_backup_verification.py \
-            tests/test_neo4j_backup_identity_gate.py
+          python - <<'PY'
+          import pathlib
+          import sys
+          import types
+
+          import pytest
+
+          # The backup verifier depends only on stdlib. Avoid executing
+          # AssistX's app-level __init__, which imports model/runtime clients.
+          package = types.ModuleType("assistx")
+          package.__path__ = [str(pathlib.Path.cwd() / "src" / "assistx")]
+          sys.modules["assistx"] = package
+          raise SystemExit(pytest.main([
+              "--noconftest", "-q",
+              "tests/test_neo4j_backup_verification.py",
+              "tests/test_neo4j_backup_identity_gate.py",
+          ]))
+          PY
