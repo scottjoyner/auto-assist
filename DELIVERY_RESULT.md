@@ -52,3 +52,14 @@ Allow the fleet node agent to authenticate `GET /api/agent/tasks`, `POST /api/ta
 ## Validation boundary
 
 Not run: any live/production probe, Neo4j container suites (memory/weight), full `assistx.api` import (deps absent). Local evidence = focused unit tests + py_compile + adjacent existing focused suites. Production admission and node onboarding require operator approval and separate validation.
+
+## Independent API test verification — November 4, 2026, 04:13 EST
+
+The post-delivery review corrected a test-only import (`fastapi.testclient` was referenced before its module was imported) and independently ran the previously skipped API-level tests against a pre-existing Auto-Assist application Docker image with `langgraph` installed.
+
+- Container execution: `--pull never --network none --read-only --user 1000:1000 --memory 2g --cpus 2`; no access to host services, container secrets, or network.
+- The research worktree and the necessary pytest packages were mounted read-only; only synthetic test fixtures were used.
+- `python -m pytest -q -p no:cacheprovider tests/test_fleet_node_api.py tests/test_fleet_node_auth.py` (application-image Python, `PYTHONPATH=/work/src:/opt/pytest`) => **19 passed, 0 skipped, 0 failed**.
+- Independent isolated-host suite of eight targeted modules => **48 passed, 1 skipped** (the API module skips only on the lightweight host; it executed and passed in the container above).
+- Five local dispatcher gate tests => **5 passed** (cooldown, two separated resource checks, active-run exclusion, unsafe-resource reset, dispatch fail-closed).
+- This is still **research-only PASS**, not hosted exact-head CI, merge, production credential registration, or release authorization. No live node credentials or production deployment were changed.

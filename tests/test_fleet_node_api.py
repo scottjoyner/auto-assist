@@ -14,7 +14,7 @@ fastapi = pytest.importorskip("fastapi", reason="full app dependencies not insta
 api_router = pytest.importorskip(
     "assistx.api_router", reason="full application dependencies not installed"
 )
-TestClient = fastapi.testclient.TestClient
+TestClient = pytest.importorskip("fastapi.testclient").TestClient
 
 _SYNTHETIC_TOKENS = {"node-a": "synthetic-token-a", "node-b": "synthetic-token-b"}
 
