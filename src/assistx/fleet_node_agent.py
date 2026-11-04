@@ -665,7 +665,14 @@ def _poll_once(
     for task in tasks:
         if not isinstance(task, dict):
             continue
-        if task.get("target_agent_id") not in (None, node_id):
+        # A machine worker must never infer its authority from an untargeted
+        # Task. The graph list/claim API still permits null targets for other
+        # clients, so this legacy polling boundary must be strictly narrower.
+        # Exact equality also denies missing, blank, malformed, and cross-node
+        # audiences; agent_id query parameters are NOT authorization.
+        if not node_id or task.get("target_agent_id") != node_id:
+            continue
+        if task.get("paperclip_dispatched"):
             continue
         required_field = task.get("required_capabilities") or []
         if not isinstance(required_field, list) or any(
