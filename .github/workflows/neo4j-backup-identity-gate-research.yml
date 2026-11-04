@@ -1,0 +1,51 @@
+name: Neo4j Backup Database Identity Gate (Research Only)
+on:
+  pull_request:
+    paths:
+      - src/assistx/neo4j_backup_verification.py
+      - scripts/verify-neo4j-backup.py
+      - tests/test_neo4j_backup_identity_gate.py
+      - .github/workflows/neo4j-backup-identity-gate-research.yml
+  push:
+    branches:
+      - research/neo4j-backup-identity-pin-20261103
+    paths:
+      - src/assistx/neo4j_backup_verification.py
+      - scripts/verify-neo4j-backup.py
+      - tests/test_neo4j_backup_identity_gate.py
+      - .github/workflows/neo4j-backup-identity-gate-research.yml
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-only-backup-name-and-id-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install synthetic-only tests
+        run: python -m pip install 'pytest>=8,<10' 'ruff>=0.9,<1'
+      - name: Compile and lint exact source
+        run: |
+          python -m py_compile \
+            src/assistx/neo4j_backup_verification.py \
+            scripts/verify-neo4j-backup.py \
+            tests/test_neo4j_backup_identity_gate.py
+          ruff check --select F \
+            src/assistx/neo4j_backup_verification.py \
+            scripts/verify-neo4j-backup.py \
+            tests/test_neo4j_backup_verification.py \
+            tests/test_neo4j_backup_identity_gate.py
+          ruff check --select I \
+            src/assistx/neo4j_backup_verification.py \
+            scripts/verify-neo4j-backup.py \
+            tests/test_neo4j_backup_identity_gate.py
+      - name: Synthetic wrong DB / UUID / CLI default negatives
+        run: |
+          PYTHONPATH=src python -m pytest --noconftest -q \
+            tests/test_neo4j_backup_verification.py \
+            tests/test_neo4j_backup_identity_gate.py
