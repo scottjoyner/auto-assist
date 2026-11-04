@@ -10,8 +10,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import HTTPRedirectHandler, Request as UrlRequest, build_opener
-from urllib.request import urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener, urlopen
+from urllib.request import Request as UrlRequest
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
@@ -130,7 +130,11 @@ def _http_json(
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 return None
 
-        opener = build_opener(_RejectAdminRedirect())
+        # A default urllib opener auto-installs ProxyHandler from the process
+        # environment. Never forward X-Admin-Token to inherited HTTP(S)
+        # proxies, including proxies added after this application starts.
+        # This is a direct-router, redirect-disabled privileged read.
+        opener = build_opener(ProxyHandler({}), _RejectAdminRedirect())
         with opener.open(request, timeout=timeout) as response:
             raw = response.read(_MAX_ROUTER_ADMIN_JSON_BYTES + 1)
             if len(raw) > _MAX_ROUTER_ADMIN_JSON_BYTES:

@@ -1,0 +1,40 @@
+name: Router Admin Client Proxy Isolation (Research)
+on:
+  pull_request:
+    paths:
+      - src/assistx/control_room.py
+      - tests/test_control_room_router_admin_proxy.py
+      - tests/test_control_room.py
+      - .github/workflows/router-admin-proxy-isolation-research.yml
+  push:
+    branches:
+      - security/router-admin-proxy-isolation-20261103
+    paths:
+      - src/assistx/control_room.py
+      - tests/test_control_room_router_admin_proxy.py
+      - .github/workflows/router-admin-proxy-isolation-research.yml
+
+permissions:
+  contents: read
+
+jobs:
+  scoped-admin-client-source-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install existing test dependencies
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Compile and lint exact source
+        run: |
+          python -m py_compile src/assistx/control_room.py tests/test_control_room_router_admin_proxy.py
+          ruff check --select F,I src/assistx/control_room.py tests/test_control_room_router_admin_proxy.py
+      - name: Offline admin HTTP, proxy and provider client regression
+        run: |
+          python -m pytest -q \
+            tests/test_control_room_router_admin_proxy.py \
+            tests/test_control_room.py \
+            tests/test_router_provider_inventory_portable.py
