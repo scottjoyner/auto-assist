@@ -13,30 +13,47 @@ from urllib.request import HTTPRedirectHandler, Request
 
 
 def _load_agent():
+    """Import a standalone worker without poisoning other pytest modules."""
     root = Path(__file__).resolve().parents[1] / "src" / "assistx"
-    pkg = types.ModuleType("assistx")
-    pkg.__path__ = [str(root)]
-    sys.modules["assistx"] = pkg
-    dependencies = {
-        "assistx.kv_cache": {"runtime_capabilities": lambda *_a, **_k: {}},
-        "assistx.lm_studio_client_auth": {
-            "headers_for_request": lambda _url, _auth, existing: dict(existing or {})
-        },
-        "assistx.recovery_runbooks": {
-            "RecoveryRunbookExecutor": type("NoOpRecovery", (), {})
-        },
-    }
-    for name, entries in dependencies.items():
-        module = types.ModuleType(name)
-        for key, value in entries.items():
-            setattr(module, key, value)
-        sys.modules[name] = module
-    spec = importlib.util.spec_from_file_location("assistx.fleet_node_agent", root / "fleet_node_agent.py")
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    package_names = (
+        "assistx", "assistx.kv_cache", "assistx.lm_studio_client_auth",
+        "assistx.recovery_runbooks", "assistx.fleet_node_agent",
+    )
+    missing = object()
+    previous = {name: sys.modules.get(name, missing) for name in package_names}
+    try:
+        pkg = types.ModuleType("assistx")
+        pkg.__path__ = [str(root)]
+        sys.modules["assistx"] = pkg
+        dependencies = {
+            "assistx.kv_cache": {"runtime_capabilities": lambda *_a, **_k: {}},
+            "assistx.lm_studio_client_auth": {
+                "headers_for_request": lambda _url, _auth, existing: dict(existing or {})
+            },
+            "assistx.recovery_runbooks": {
+                "RecoveryRunbookExecutor": type("NoOpRecovery", (), {})
+            },
+        }
+        for name, entries in dependencies.items():
+            module = types.ModuleType(name)
+            for key, value in entries.items():
+                setattr(module, key, value)
+            sys.modules[name] = module
+        spec = importlib.util.spec_from_file_location(
+            "assistx.fleet_node_agent", root / "fleet_node_agent.py"
+        )
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        for name, original in previous.items():
+            if original is missing:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = original
+
 
 AGENT = _load_agent()
 
@@ -62,6 +79,16 @@ class Opener:
         return self.response
 
 class PrivilegedTransportSafety(unittest.TestCase):
+    def test_isolated_loader_does_not_mutate_global_assistx_module_registry(self):
+        names = (
+            "assistx", "assistx.kv_cache", "assistx.lm_studio_client_auth",
+            "assistx.recovery_runbooks", "assistx.fleet_node_agent",
+        )
+        before = {name: sys.modules.get(name) for name in names}
+        second = _load_agent()
+        self.assertTrue(hasattr(second, "_http"))
+        self.assertTrue(all(sys.modules.get(name) is previous for name, previous in before.items()))
+
     def test_default_urllib_would_forward_custom_basic_and_node_headers(self):
         req = Request("http://trusted.invalid/api/agent/tasks", headers={
             "Authorization": "Basic SYNTHETIC",
