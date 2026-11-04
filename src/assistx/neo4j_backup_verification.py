@@ -220,6 +220,24 @@ class Neo4jBackupVerifier:
             "output_tail": str(result.stdout)[-1000:],
         }
 
+    @staticmethod
+    def _strict_inspection_bool(value: Any, *, field: str, allow_missing: bool = False) -> bool | None:
+        """Parse Neo4j JSON/table booleans without Python's bool("false") trap.
+
+        Only real JSON booleans and literal 'true'/'false' are permitted.
+        Unknown/missing *required* flags cannot certify an archive.
+        """
+        if type(value) is bool:
+            return value
+        if isinstance(value, str):
+            if value.strip().lower() == "true":
+                return True
+            if value.strip().lower() == "false":
+                return False
+        if value is None and allow_missing:
+            return None
+        raise BackupVerificationError(f"invalid backup inspection {field} flag")
+
     @classmethod
     def _parse_output(cls, output: str, database: str) -> list[BackupArtifact]:
         text = output.strip()
@@ -264,7 +282,7 @@ class Neo4jBackupVerifier:
                         or row.get("timestamp")
                         or row.get("backupTime")
                     ),
-                    full=bool(row.get("full")),
+                    full=cls._strict_inspection_bool(row.get("full"), field="full"),
                     lowest_tx=int(
                         row.get("lowestTransactionId")
                         or row.get("lowest_tx")
@@ -275,10 +293,8 @@ class Neo4jBackupVerifier:
                         or row.get("highest_tx")
                         or 0
                     ),
-                    recovered=(
-                        None
-                        if row.get("recovered") is None
-                        else bool(row.get("recovered"))
+                    recovered=cls._strict_inspection_bool(
+                        row.get("recovered"), field="recovered", allow_missing=True
                     ),
                 )
             )
@@ -306,14 +322,15 @@ class Neo4jBackupVerifier:
                 (_timestamp_ms(value) for value in columns if "T" in value),
                 0,
             )
-            full = any(value.lower() == "true" for value in columns[3:6])
-            database_id = next(
-                (
-                    value
-                    for value in columns
-                    if re.fullmatch(r"[0-9a-fA-F-]{32,36}", value)
-                ),
-                "",
+            # The FULL flag is in column 4, while COMPRESSED is column 5.
+            # A compressed differential is NOT a full backup.
+            full = Neo4jBackupVerifier._strict_inspection_bool(
+                columns[4], field="full"
+            )
+            # Database identity is in column 2, not an arbitrary path,
+            # timestamp, or filename that happens to contain a UUID.
+            database_id = (
+                columns[2] if re.fullmatch(r"[0-9a-fA-F-]{32,36}", columns[2]) else ""
             )
             artifacts.append(
                 BackupArtifact(
