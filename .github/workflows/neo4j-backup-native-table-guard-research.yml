@@ -21,8 +21,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install minimal source test dependencies
-        run: python3 -m pip install pytest ruff
+      - name: Install exact project runtime and test dependencies
+        run: python3 -m pip install -r requirements.txt -r requirements-dev.txt ruff
       - name: Compile and lint native metadata parser
         run: |
           python3 -m py_compile src/assistx/neo4j_backup_verification.py \
