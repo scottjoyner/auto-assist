@@ -66,6 +66,20 @@ def test_missing_or_malformed_registry_fail_closed(monkeypatch):
         fleet_node_auth.evaluate_fleet_node_identity("node-a", _SYNTHETIC_TOKENS["node-a"])
 
 
+@pytest.mark.parametrize("malformed_token", [12345, True, False, None, ["abc"], {"value": "abc"}])
+def test_registry_requires_literal_string_tokens(monkeypatch, malformed_token):
+    """Malformed JSON registry values must never become authenticating strings."""
+    monkeypatch.setenv("ASSISTX_FLEET_NODE_TOKENS", json.dumps({"node-a": malformed_token}))
+    with pytest.raises(fleet_node_auth.FleetNodeAuthHold):
+        fleet_node_auth.evaluate_fleet_node_identity("node-a", str(malformed_token))
+
+
+def test_supplied_token_must_be_string(monkeypatch):
+    monkeypatch.setenv("ASSISTX_FLEET_NODE_TOKENS", json.dumps(_SYNTHETIC_TOKENS))
+    with pytest.raises(fleet_node_auth.FleetNodeAuthHold):
+        fleet_node_auth.evaluate_fleet_node_identity("node-a", 123)  # type: ignore[arg-type]
+
+
 def test_binding_error_only_for_node_auth(monkeypatch):
     assert fleet_node_auth.fleet_node_binding_error(None, "node-b") is None
     assert fleet_node_auth.fleet_node_binding_error("node-a", "node-b") == "fleet node identity mismatch"
