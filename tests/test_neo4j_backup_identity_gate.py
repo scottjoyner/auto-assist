@@ -7,7 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from assistx.neo4j_backup_verification import (
     BackupVerificationError,
     Neo4jBackupVerifier,
@@ -143,3 +142,79 @@ def test_archive_metadata_tests_never_access_real_backup_files(monkeypatch):
     assert verifier_for([artifact()]).verify(
         "/fake-path-that-does-not-exist", "assistx", max_age_seconds=60
     )["database_restore_certified"] is False
+
+
+@pytest.mark.parametrize("false_value", [False, "false", "FALSE", " false "])
+def test_json_full_false_must_never_become_full_backup(false_value):
+    item = {**artifact(), "full": false_value, "recovered": True}
+    with pytest.raises(BackupVerificationError, match="does not begin with a full"):
+        verifier_for([item]).verify("/synthetic", "assistx", max_age_seconds=60)
+
+
+@pytest.mark.parametrize("false_value", [False, "false", "FALSE", " false "])
+def test_json_recovered_false_must_never_become_recovered_backup(false_value):
+    item = {**artifact(), "recovered": false_value}
+    with pytest.raises(BackupVerificationError, match="not recovered"):
+        verifier_for([item]).verify(
+            "/synthetic", "assistx", max_age_seconds=60, require_recovered=True
+        )
+
+
+@pytest.mark.parametrize("bad_value", [None, "", "sometimes", 1, 0, 17, [], {}])
+def test_invalid_json_full_flag_fails_closed(bad_value):
+    with pytest.raises(BackupVerificationError, match="invalid backup inspection full flag"):
+        verifier_for([{**artifact(), "full": bad_value}]).verify(
+            "/synthetic", "assistx", max_age_seconds=60
+        )
+
+
+@pytest.mark.parametrize("bad_value", ["sometimes", "", 1, 0, [], {}])
+def test_invalid_json_recovered_flag_fails_closed(bad_value):
+    with pytest.raises(BackupVerificationError, match="invalid backup inspection recovered flag"):
+        verifier_for([{**artifact(), "recovered": bad_value}]).verify(
+            "/synthetic", "assistx", max_age_seconds=60
+        )
+
+
+def test_legacy_table_compressed_differential_not_misclassified_full():
+    table = (
+        "| FILE | DATABASE | DATABASE ID | TIME | FULL | COMPRESSED "
+        "| LOWEST TX | HIGHEST TX |\n"
+        "| file:///backups/synthetic-differential.backup | assistx | "
+        + DB_ID + " | " + GOOD_TIME + " | false | true | 1 | 8 |"
+    )
+    rows = Neo4jBackupVerifier._parse_table(table, "assistx")
+    assert len(rows) == 1 and rows[0].full is False
+
+
+def test_legacy_table_full_flag_true_compression_false_still_full():
+    table = (
+        "| FILE | DATABASE | DATABASE ID | TIME | FULL | COMPRESSED "
+        "| LOWEST TX | HIGHEST TX |\n"
+        "| file:///backups/synthetic-full.backup | assistx | "
+        + DB_ID + " | " + GOOD_TIME + " | true | false | 1 | 8 |"
+    )
+    rows = Neo4jBackupVerifier._parse_table(table, "assistx")
+    assert len(rows) == 1 and rows[0].full is True
+
+
+def test_legacy_table_uuid_embedded_in_path_not_source_uuid():
+    table = (
+        "| FILE | DATABASE | DATABASE ID | TIME | FULL | COMPRESSED "
+        "| LOWEST TX | HIGHEST TX |\n"
+        "| file:///backups/" + DB_ID + ".backup | assistx | empty | "
+        + GOOD_TIME + " | true | true | 1 | 8 |"
+    )
+    rows = Neo4jBackupVerifier._parse_table(table, "assistx")
+    assert len(rows) == 1 and rows[0].database_id == ""
+
+
+def test_legacy_table_invalid_full_flag_denied():
+    table = (
+        "| FILE | DATABASE | DATABASE ID | TIME | FULL | COMPRESSED "
+        "| LOWEST TX | HIGHEST TX |\n"
+        "| file:///backups/synthetic.backup | assistx | "
+        + DB_ID + " | " + GOOD_TIME + " | MAYBE | true | 1 | 8 |"
+    )
+    with pytest.raises(BackupVerificationError, match="invalid backup inspection full flag"):
+        Neo4jBackupVerifier._parse_table(table, "assistx")
