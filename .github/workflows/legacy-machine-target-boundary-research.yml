@@ -1,0 +1,35 @@
+name: Legacy Fleet Worker Explicit Audience (Research HOLD)
+on:
+  pull_request:
+    paths:
+      - src/assistx/fleet_node_agent.py
+      - tests/test_fleet_node_poll_contract.py
+      - .github/workflows/legacy-machine-target-boundary-research.yml
+  push:
+    branches:
+      - security/legacy-worker-explicit-target-20261103
+    paths:
+      - src/assistx/fleet_node_agent.py
+      - tests/test_fleet_node_poll_contract.py
+      - .github/workflows/legacy-machine-target-boundary-research.yml
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-node-poll-negative-cases:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install project test dependencies
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Compile exact source
+        run: |
+          python -m py_compile src/assistx/fleet_node_agent.py tests/test_fleet_node_poll_contract.py
+      - name: Source-only negative audience regression tests
+        run: python -m pytest -q tests/test_fleet_node_poll_contract.py

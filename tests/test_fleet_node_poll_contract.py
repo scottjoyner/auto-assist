@@ -46,7 +46,7 @@ def test_worker_rejects_wrong_target_bad_caps_and_unfenced_recovery(monkeypatch)
         {"id": "recovery", "required_capabilities": ["recovery"]},
         {"id": "malformed", "required_capabilities": "llm"},
         {"id": "gpu", "required_capabilities": ["gpu"]},
-        {"id": "good", "required_capabilities": ["llm"]},
+        {"id": "good", "target_agent_id": "node-a", "required_capabilities": ["llm"]},
     ]
     worked, requests, claims, _ = poll(monkeypatch, (200, {"items": tasks}),
                                        caps=["llm", "recovery"])
@@ -105,7 +105,7 @@ def test_unauthorized_backoff_resets_on_non_auth_response(monkeypatch):
 def test_rejected_claim_yields_instead_of_hot_loop(monkeypatch):
     attempted = []
     monkeypatch.setattr(agent, "_http", lambda *a, **kw: (200, {"items": [
-        {"id": "still-ready", "required_capabilities": ["llm"]}]}))
+        {"id": "still-ready", "target_agent_id": "node-a", "required_capabilities": ["llm"]}]}))
     monkeypatch.setattr(agent, "_claim_and_run",
                         lambda **kw: (attempted.append(kw) or False))
     statuses = []
@@ -123,7 +123,7 @@ def test_real_claim_http_409_never_executes_or_reports_completion(monkeypatch):
         events.append((method, url))
         if method == "GET" and "/api/agent/tasks?" in url:
             return 200, {"items": [
-                {"id": "unclaimable", "task_type": "llm",
+                {"id": "unclaimable", "target_agent_id": "node-a", "task_type": "llm",
                  "required_capabilities": ["llm"]},
             ]}
         if method == "POST" and url.endswith("/api/tasks/unclaimable/claim"):
@@ -206,8 +206,8 @@ def test_http_422_claim_denial_never_dispatches(monkeypatch):
         requests.append((method, url))
         if method == "GET" and "/api/agent/tasks?" in url:
             return 200, {"items": [{
-                "id": "malformed", "required_capabilities": ["llm"],
-                "task_type": "llm"}]}
+                "id": "malformed", "target_agent_id": "node-a",
+                "required_capabilities": ["llm"], "task_type": "llm"}]}
         if method == "POST" and url.endswith("/api/tasks/malformed/claim"):
             return 422, {"detail": "invalid claim"}
         raise AssertionError("No model request, heartbeat or completion allowed")
@@ -356,3 +356,81 @@ def test_truncated_or_filtered_text_is_not_a_completed_task(monkeypatch, finish_
     assert outcome is None and len(terminal) == 1
     assert terminal[0]["status"] == "FAILED"
     assert terminal[0]["result"]["error"] == "incomplete_or_filtered_model_generation"
+
+
+@pytest.mark.parametrize("bad_target", [
+    None, "", "node-b", "Node-A", "node-a ", ["node-a"], {"id": "node-a"},
+])
+def test_legacy_worker_rejects_missing_blank_or_nonmatching_task_audience(
+    monkeypatch, bad_target,
+):
+    """A server response is not authority; require an exact positive target."""
+    task = {
+        "id": "unscoped-task", "required_capabilities": ["llm"],
+        "target_agent_id": bad_target,
+    }
+    worked, requests, claims, statuses = poll(
+        monkeypatch, (200, {"items": [task]}), caps=["llm"]
+    )
+    assert not worked and claims == [] and statuses == [200]
+    assert len(requests) == 1 and requests[0][0] == "GET"
+
+
+def test_legacy_worker_rejects_missing_target_key(monkeypatch):
+    worked, _, claims, status = poll(
+        monkeypatch, (200, {"items": [
+            {"id": "untargeted", "required_capabilities": ["llm"]}
+        ]}), caps=["llm"],
+    )
+    assert not worked and claims == [] and status == [200]
+
+
+def test_dispatched_lease_never_reclaimed_even_with_matching_target(monkeypatch):
+    task = {
+        "id": "paperclip-owned",
+        "target_agent_id": "node-a",
+        "required_capabilities": ["llm"],
+        "paperclip_dispatched": True,
+    }
+    worked, _, claims, status = poll(
+        monkeypatch, (200, {"items": [task]}), caps=["llm"],
+    )
+    assert not worked and not claims and status == [200]
+
+
+def test_bad_targets_are_skipped_but_explicit_matching_target_is_considered(
+    monkeypatch,
+):
+    bad = [
+        {"id": "none", "target_agent_id": None, "required_capabilities": ["llm"]},
+        {"id": "other", "target_agent_id": "node-b", "required_capabilities": ["llm"]},
+        {"id": "paperclip", "target_agent_id": "node-a",
+         "required_capabilities": ["llm"], "paperclip_dispatched": True},
+    ]
+    allowed = {
+        "id": "targeted", "target_agent_id": "node-a",
+        "required_capabilities": ["llm"],
+    }
+    worked, requests, claims, status = poll(
+        monkeypatch, (200, {"items": bad + [allowed]}), caps=["llm"]
+    )
+    assert worked and len(requests) == 1 and status == [200]
+    assert [call["task"] for call in claims] == [allowed]
+
+
+def test_worker_rejects_even_exact_target_with_missing_host_identity(monkeypatch):
+    events = []
+    monkeypatch.setattr(agent, "_http", lambda *a, **kw: (
+        events.append(("GET", a, kw)) or (200, {"items": [{
+            "id": "targeted", "target_agent_id": "", "required_capabilities": []
+        }]})
+    ))
+    monkeypatch.setattr(
+        agent, "_claim_and_run",
+        lambda **kw: events.append(("CLAIM", kw)),
+    )
+    assert agent._poll_once(
+        assistx_url="http://synthetic", router_url="http://synthetic-router",
+        auth=None, node_id="", caps=[], lmstudio_url=None,
+    ) is False
+    assert len(events) == 1
