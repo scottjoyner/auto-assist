@@ -141,6 +141,19 @@ def _auth_from_env() -> tuple[str, str] | None:
     return None
 
 
+def _node_auth_headers() -> dict[str, str]:
+    """Per-node identity headers for AssistX calls.
+
+    Sent only where the agent explicitly opts in (task list/claim/heartbeat/
+    complete). The token is never attached to LM Studio or other hosts.
+    """
+    token = os.getenv("FLEET_NODE_TOKEN", "")
+    node_id = _detect_hostname()
+    if not token or not node_id:
+        return {}
+    return {"X-Fleet-Node-Id": node_id, "X-Fleet-Node-Token": token}
+
+
 def _default_model(lmstudio_url: str | None) -> str:
     if not lmstudio_url:
         return "local/model"
@@ -448,11 +461,13 @@ def _claim_and_run(
     if not task_id:
         return
 
+    node_headers = _node_auth_headers()
     session_id = f"{node_id}-{uuid.uuid4().hex[:8]}"
     status, claim = _http(
         "POST",
         f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/claim",
         auth=auth,
+        headers=node_headers,
         data={
             "agent_id": node_id,
             "capabilities": caps,
@@ -474,6 +489,7 @@ def _claim_and_run(
                 "POST",
                 f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/heartbeat",
                 auth=auth,
+                headers=node_headers,
                 data={"node_id": node_id, "agent_id": node_id, "claim_id": claim_id},
                 timeout=10,
             )
@@ -571,6 +587,7 @@ def _claim_and_run(
         "POST",
         f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/complete",
         auth=auth,
+        headers=node_headers,
         data={
             "node_id": node_id,
             "agent_id": node_id,
@@ -592,10 +609,15 @@ def _poll_once(
     caps: list[str],
     lmstudio_url: str | None,
 ) -> bool:
+    node_headers = _node_auth_headers()
+    query = urllib.parse.urlencode(
+        {"state": "READY", "limit": "20", "agent_id": node_id}
+    )
     status, body = _http(
         "GET",
-        f"{assistx_url.rstrip('/')}/api/agent/tasks?state=READY&limit=20",
+        f"{assistx_url.rstrip('/')}/api/agent/tasks?{query}",
         auth=auth,
+        headers=node_headers,
         timeout=15,
     )
     if status != 200 or not isinstance(body, dict):
