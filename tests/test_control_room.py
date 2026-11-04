@@ -347,6 +347,7 @@ def test_provider_catalog_wrong_or_denied_credentials_do_not_infer_inventory(mon
     """Auth errors are lack of evidence, not authorization to use a fallback."""
     from urllib.error import HTTPError
 
+    monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://synthetic-router.local:8088")
     monkeypatch.setenv("AUTO_ROUTER_ADMIN_PROVIDERS_URL", "http://synthetic-router.local:8088/admin/providers")
     monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "synthetic-admin-token")
     seen = []
@@ -374,6 +375,7 @@ def test_collect_fleet_nodes_uses_exact_provider_endpoint_override(_fleet_env, m
     monkeypatch.setattr(control_room, "_http_json", _fake_http_json)
     monkeypatch.setattr(control_room, "_live_loaded_models", lambda _f: None)
     monkeypatch.setattr(control_room, "_historical_loaded_models", lambda _f: {})
+    monkeypatch.setenv("AUTO_ROUTER_BASE_URL", "http://router.test:9090")
     monkeypatch.setenv("AUTO_ROUTER_ADMIN_PROVIDERS_URL", "http://router.test:9090/admin/providers")
     monkeypatch.setenv("AUTO_ROUTER_ADMIN_TOKEN", "synthetic-admin-token")
     _open_registry(monkeypatch, {"nodes": []})
