@@ -1,0 +1,24 @@
+name: Fleet Node Privileged HTTP Safety (Synthetic)
+on:
+  pull_request:
+    paths:
+      - src/assistx/fleet_node_agent.py
+      - tests/test_fleet_node_privileged_transport.py
+      - .github/workflows/fleet-node-privileged-http-safety.yml
+permissions:
+  contents: read
+jobs:
+  no-socket-credential-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test exact source with synthetic HTTP only
+        run: |
+          python -m py_compile src/assistx/fleet_node_agent.py tests/test_fleet_node_privileged_transport.py
+          python -m unittest discover -s tests -p test_fleet_node_privileged_transport.py -v
