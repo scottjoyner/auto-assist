@@ -50,3 +50,30 @@ A real release must separately establish source database identity,
 archive contents/checksum, independent custody, a true isolated Neo4j
 restore, graph identity, transaction-consistency checks, and rollback.
 Swap-reserve and Task admission remain held. Production NO-GO.
+
+## Second exact-head parser defect, corrected after hosted feedback
+
+The same verifier had another fail-open condition: Python bool("false")
+is true, so JSON inspection flags encoded as "full":"false" and
+"recovered":"false" were previously treated as approved full/recovered
+backup evidence. A synthetic inspect response demonstrated that
+require_recovered=True incorrectly passed with both flags false.
+The legacy 5.x table fallback also determined full using any("true")
+across the TIME/FULL/COMPRESSED columns, allowing a compressed
+differential (FULL=false, COMPRESSED=true) to be misclassified as full.
+Its database ID search could accept a UUID found in a filename instead
+of the actual DATABASE ID column.
+
+The source now requires strict true/false inspection semantics (actual
+JSON booleans or literal true/false strings), fails closed for invalid or
+absent required flags, reads the actual table FULL column, and extracts
+the database ID from its dedicated table column. Synthetic negative
+tests cover false strings, false booleans, malformed values, compression
+confusion and a filename-embedded UUID. 45 focused synthetic tests
+passed locally after this amendment, plus Ruff F/I and compilation;
+the new exact-head hosted workflows must be checked independently.
+
+No physical archive has been inspected, hashed or restored by any of
+these synthetic tests. Production recovery remains NO-GO until the
+matching live database identity, independently verified source archive,
+and disposable restore are established.
