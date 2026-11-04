@@ -53,6 +53,11 @@ from .recovery_control import (
 )
 from .recovery_runbooks import build_runbook, sign_runbook
 from .node_identity import verify_node_token
+from .fleet_node_auth import (
+    FleetNodeAuthHold,
+    evaluate_fleet_node_identity,
+    fleet_node_binding_error,
+)
 from .operations_readiness import build_operations_readiness
 from .self_healing import SelfHealingController
 from .router_admin_transport import RouterAdminReadDenied, fetch_router_admin_ops_summary
@@ -796,6 +801,44 @@ def auth(
     if user is None:
         raise HTTPException(status_code=401, detail="Unauthorized", headers={"WWW-Authenticate": "Basic"})
     return user
+
+
+def fleet_node_or_basic_auth(
+    request: Request,
+    credentials: HTTPBasicCredentials | None = Depends(security),
+    x_fleet_node_id: Optional[str] = Header(None),
+    x_fleet_node_token: Optional[str] = Header(None),
+) -> str:
+    """Authenticate a fleet-node-agent request.
+
+    Node-credentialed requests (``X-Fleet-Node-Id`` + ``X-Fleet-Node-Token``)
+    are verified against the registered per-node tokens; unknown or mismatched
+    credentials fail closed with 403. Requests without node credentials fall
+    back to the legacy general Basic credential (existing behavior).
+    """
+    try:
+        node_id = evaluate_fleet_node_identity(x_fleet_node_id, x_fleet_node_token)
+    except FleetNodeAuthHold:
+        raise HTTPException(
+            status_code=403, detail="invalid fleet node identity"
+        ) from None
+    if node_id is not None:
+        request.state.fleet_node_id = node_id
+        return f"node:{node_id}"
+    request.state.fleet_node_id = None
+    user = _auth_user_from_credentials(request, credentials)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Unauthorized", headers={"WWW-Authenticate": "Basic"})
+    return user
+
+
+def _enforce_fleet_node_binding(request: Request, claimed_agent_id: Optional[str]) -> None:
+    error = fleet_node_binding_error(
+        getattr(request.state, "fleet_node_id", None),
+        claimed_agent_id,
+    )
+    if error:
+        raise HTTPException(status_code=403, detail=error)
 
 
 # Inject the auth dependency into swarm routes
@@ -4268,13 +4311,15 @@ def api_approve_task_proposal(task_id: str, user: str = Depends(auth)):
 
 @app.get("/api/agent/tasks")
 def api_agent_tasks(
+    request: Request,
     status: str = Query("READY", description="task status to poll"),
     capabilities: Optional[List[str]] = Query(None, description="agent capabilities"),
     agent_id: Optional[str] = Query(None, description="optional agent id for targeted tasks"),
     limit: int = Query(20, ge=1, le=100),
     x_fleet_node_token: Optional[str] = Header(None),
-    user: str = Depends(auth),
+    user: str = Depends(fleet_node_or_basic_auth),
 ):
+    _enforce_fleet_node_binding(request, agent_id)
     if capabilities and "recovery" in capabilities:
         _verify_recovery_node_identity(agent_id, x_fleet_node_token)
     neo = _neo_fleet()
@@ -4300,9 +4345,11 @@ def api_agent_tasks(
 def api_claim_task(
     task_id: str,
     body: TaskClaimIn,
+    request: Request,
     x_fleet_node_token: Optional[str] = Header(None),
-    user: str = Depends(auth),
+    user: str = Depends(fleet_node_or_basic_auth),
 ):
+    _enforce_fleet_node_binding(request, body.agent_id)
     neo = _neo_fleet()
     task_obj = neo.get_task(task_id)
     if not task_obj:
@@ -4335,9 +4382,11 @@ def api_claim_task(
 def api_heartbeat_task(
     task_id: str,
     body: TaskHeartbeatIn,
+    request: Request,
     x_fleet_node_token: Optional[str] = Header(None),
-    user: str = Depends(auth),
+    user: str = Depends(fleet_node_or_basic_auth),
 ):
+    _enforce_fleet_node_binding(request, body.agent_id)
     neo = _neo()
     try:
         task_before = neo.get_task(task_id)
@@ -4363,9 +4412,11 @@ def api_heartbeat_task(
 def api_complete_task(
     task_id: str,
     body: TaskCompleteIn,
+    request: Request,
     x_fleet_node_token: Optional[str] = Header(None),
-    user: str = Depends(auth),
+    user: str = Depends(fleet_node_or_basic_auth),
 ):
+    _enforce_fleet_node_binding(request, body.agent_id)
     if body.status not in {"DONE", "FAILED", "CANCELLED"}:
         raise HTTPException(status_code=400, detail="status must be DONE, FAILED, or CANCELLED")
     neo = _neo_fleet()
@@ -4469,8 +4520,11 @@ def api_complete_task(
 def api_checkpoint_task(
     task_id: str,
     body: TaskCheckpointIn,
-    user: str = Depends(auth),
+    request: Request,
+    x_fleet_node_token: Optional[str] = Header(None),
+    user: str = Depends(fleet_node_or_basic_auth),
 ):
+    _enforce_fleet_node_binding(request, body.agent_id)
     neo = _neo()
     try:
         result = _execution_control.checkpoint(
