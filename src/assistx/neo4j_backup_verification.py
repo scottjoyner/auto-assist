@@ -108,14 +108,25 @@ class Neo4jBackupVerifier:
         *,
         max_age_seconds: int = 3600,
         require_recovered: bool = False,
+        expected_database_id: str | None = None,
     ) -> dict[str, Any]:
         artifacts = self.inspect(path, database)
         artifacts = sorted(artifacts, key=lambda item: item.timestamp_ms)
         if not artifacts[0].full:
             raise BackupVerificationError("backup chain does not begin with a full backup")
-        database_ids = {item.database_id for item in artifacts if item.database_id}
-        if len(database_ids) > 1:
+        # File/path naming and the operator's --database are NOT proof of
+        # archive identity. The actual Neo4j inspection response must supply
+        # the database name AND a single nonempty database ID for every link.
+        if any(item.database != database for item in artifacts):
+            raise BackupVerificationError("backup database name does not match")
+        if any(not item.database_id for item in artifacts):
+            raise BackupVerificationError("backup database ID is missing")
+        database_ids = {item.database_id for item in artifacts}
+        if len(database_ids) != 1:
             raise BackupVerificationError("backup chain contains multiple database IDs")
+        if expected_database_id is not None:
+            if not expected_database_id or expected_database_id not in database_ids:
+                raise BackupVerificationError("backup database ID does not match pinned source")
         previous_high = artifacts[0].highest_tx
         for artifact in artifacts[1:]:
             # Neo4j 2026.02 permits the first differential to overlap the full
@@ -137,6 +148,8 @@ class Neo4jBackupVerifier:
             "ok": True,
             "database": database,
             "database_id": latest.database_id,
+            "live_database_identity_pinned": expected_database_id is not None,
+            "database_restore_certified": False,
             "artifact_count": len(artifacts),
             "latest_path": latest.path,
             "latest_timestamp_ms": latest.timestamp_ms,
@@ -232,13 +245,15 @@ class Neo4jBackupVerifier:
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            name = str(row.get("database") or row.get("databaseName") or "")
-            if name and name != database:
+            # No explicit source DB = no trust. Never synthesize a matching
+            # name from the caller's requested database.
+            name = row.get("database") or row.get("databaseName")
+            if not isinstance(name, str) or name != database:
                 continue
             artifacts.append(
                 BackupArtifact(
                     path=str(row.get("path") or row.get("file") or ""),
-                    database=name or database,
+                    database=name,
                     database_id=str(
                         row.get("databaseId")
                         or row.get("database_id")
@@ -273,10 +288,14 @@ class Neo4jBackupVerifier:
     def _parse_table(output: str, database: str) -> list[BackupArtifact]:
         artifacts: list[BackupArtifact] = []
         for raw in output.splitlines():
-            if "|" not in raw or database not in raw:
+            if "|" not in raw:
                 continue
             columns = [value.strip() for value in raw.strip().strip("|").split("|")]
             if len(columns) < 8 or columns[0].upper() == "FILE":
+                continue
+            # A path containing the requested DB name is not database
+            # identity. The legacy table has a dedicated DATABASE column.
+            if columns[1] != database:
                 continue
             try:
                 lowest = int(columns[-2])
