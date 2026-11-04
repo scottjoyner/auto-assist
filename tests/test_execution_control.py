@@ -172,11 +172,15 @@ def test_claim_endpoint_does_not_forward_an_unsupported_claim_token(monkeypatch)
         lambda _task: (True, ""),
     )
 
+    # A direct handler test still needs the Request injected by FastAPI.
+    # No node identity is set, matching the legacy Basic operator path.
+    request = api.Request({"type": "http", "headers": []})
+    request.state.fleet_node_id = None
     result = api.api_claim_task(
         "task-1",
         api.TaskClaimIn(agent_id="node-a", capabilities=["llm"]),
-        None,
-        "operator",
+        request,
+        user="operator",
     )
 
     assert result["claimed"] is True

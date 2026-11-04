@@ -219,6 +219,8 @@ def test_completion_api_downgrades_unverified_done_to_failed(monkeypatch):
         lambda *_args, **_kwargs: "repair-1",
     )
 
+    request = api.Request({"type": "http", "headers": []})
+    request.state.fleet_node_id = None
     response = api.api_complete_task(
         "task-1",
         api.TaskCompleteIn(
@@ -227,8 +229,8 @@ def test_completion_api_downgrades_unverified_done_to_failed(monkeypatch):
             status="DONE",
             result={"output": "Done."},
         ),
-        None,
-        "operator",
+        request,
+        user="operator",
     )
 
     assert neo.completion["status"] == "FAILED"
