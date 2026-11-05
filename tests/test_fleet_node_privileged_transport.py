@@ -185,5 +185,113 @@ class PrivilegedTransportSafety(unittest.TestCase):
         self.assertEqual(body, {"detail": "URLError"})
         self.assertNotIn("SYNTHETIC_SECRET", str(body))
 
+
+class IdentityOnlyProbeSafety(unittest.TestCase):
+    def _registered(self):
+        return patch.dict(AGENT.os.environ, {
+            "FLEET_NODE_ID": "node-synthetic",
+            "FLEET_NODE_TOKEN": "SYNTHETIC_NODE_TOKEN",
+        })
+
+    def test_https_positive_identity_stays_hold_without_task_calls(self):
+        calls = []
+        def fake_http(method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            return 200, {
+                "machine_identity_verified": True,
+                "node_id": "node-synthetic",
+                "task_admission": "HOLD",
+                "legacy_task_authorized": False,
+            }
+        with self._registered(), patch.object(AGENT, "_http", side_effect=fake_http):
+            result = AGENT.probe_node_identity(
+                assistx_url="https://assistx.example.invalid", node_id="node-synthetic"
+            )
+        self.assertTrue(result["identity_verified"])
+        self.assertFalse(result["production_admission_permitted"])
+        self.assertFalse(result["legacy_task_authorized"])
+        self.assertEqual(result["task_admission"], "HOLD")
+        self.assertEqual(len(calls), 1)
+        method, url, options = calls[0]
+        self.assertEqual(method, "GET")
+        self.assertEqual(url, "https://assistx.example.invalid/api/fleet-node/identity")
+        self.assertIsNone(options["auth"])
+        self.assertEqual(options["headers"]["X-Fleet-Node-Id"], "node-synthetic")
+        self.assertEqual(options["headers"]["X-Fleet-Node-Token"], "SYNTHETIC_NODE_TOKEN")
+        self.assertNotIn("/api/agent/tasks", url)
+        self.assertNotIn("/claim", url)
+
+    def test_unapproved_hosts_and_urls_are_rejected_before_token_transfer(self):
+        bad = (
+            "http://assistx.example.invalid:8000", "http://10.2.0.1:8000",
+            "https://operator:secret@assistx.example.invalid",
+            "https://assistx.example.invalid/not-root",
+            "https://assistx.example.invalid?q=something",
+            "https://assistx.example.invalid/#fragment",
+            "https://assistx.example.invalid:invalid",
+            "file:///etc/passwd",
+        )
+        with self._registered(), patch.object(AGENT, "_http", side_effect=AssertionError("never send token")):
+            for url in bad:
+                with self.subTest(url=url):
+                    result = AGENT.probe_node_identity(
+                        assistx_url=url, node_id="node-synthetic"
+                    )
+                    self.assertFalse(result["identity_verified"])
+                    self.assertEqual(result["task_admission"], "HOLD")
+
+    def test_loopback_requires_exact_ip_literal(self):
+        with self._registered(), patch.object(AGENT, "_http", return_value=(404, {})) as fake_http:
+            accepted = AGENT.probe_node_identity(
+                assistx_url="http://127.0.0.1:8000", node_id="node-synthetic"
+            )
+            self.assertFalse(accepted["identity_verified"])
+            fake_http.assert_called_once()
+        with self._registered(), patch.object(AGENT, "_http", side_effect=AssertionError("localhost not pinned")):
+            refused = AGENT.probe_node_identity(
+                assistx_url="http://localhost:8000", node_id="node-synthetic"
+            )
+            self.assertFalse(refused["identity_verified"])
+
+    def test_node_mismatch_and_missing_token_never_call_server(self):
+        with self._registered(), patch.object(AGENT, "_http", side_effect=AssertionError("no call allowed")):
+            result = AGENT.probe_node_identity(
+                assistx_url="https://assistx.example.invalid", node_id="other"
+            )
+            self.assertFalse(result["identity_verified"])
+        with patch.dict(AGENT.os.environ, {
+            "FLEET_NODE_ID": "node-synthetic", "FLEET_NODE_TOKEN": "",
+        }), patch.object(AGENT, "_http", side_effect=AssertionError("no token")):
+            result = AGENT.probe_node_identity(
+                assistx_url="https://assistx.example.invalid", node_id="node-synthetic"
+            )
+            self.assertFalse(result["identity_verified"])
+
+    def test_server_claiming_task_authority_denies_even_with_valid_identity(self):
+        with self._registered(), patch.object(AGENT, "_http", return_value=(200, {
+            "machine_identity_verified": True,
+            "node_id": "node-synthetic",
+            "task_admission": "READY",
+            "legacy_task_authorized": True,
+        })):
+            result = AGENT.probe_node_identity(
+                assistx_url="https://assistx.example.invalid", node_id="node-synthetic"
+            )
+        self.assertFalse(result["identity_verified"])
+        self.assertEqual(result["reason"], "IDENTITY_NOT_VERIFIED")
+        self.assertFalse(result["production_admission_permitted"])
+
+    def test_cli_exits_nonzero_and_does_not_start_agent_loop(self):
+        with self._registered(), patch.object(AGENT, "probe_node_identity", return_value={
+            "identity_verified": True, "task_admission": "HOLD"
+        }) as probe, patch.object(AGENT, "run", side_effect=AssertionError("no worker loop")), patch(
+            "sys.argv", ["fleet_node_agent", "--identity-probe-only",
+                         "--assistx-url", "https://assistx.example.invalid"]
+        ), patch("builtins.print"):
+            with self.assertRaises(SystemExit) as exit_ctx:
+                AGENT.main()
+        self.assertEqual(exit_ctx.exception.code, 2)
+        probe.assert_called_once()
+
 if __name__ == "__main__":
     unittest.main()
