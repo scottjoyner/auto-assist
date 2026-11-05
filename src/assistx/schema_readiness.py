@@ -29,10 +29,46 @@ SHOW_INDEXES = (
     "SHOW INDEXES YIELD type, entityType, labelsOrTypes, properties, state "
     "RETURN type, entityType, labelsOrTypes, properties, state"
 )
+SHOW_CURRENT_USER = "SHOW CURRENT USER YIELD roles RETURN roles"
 
 
 class SchemaReadinessHold(RuntimeError):
     """No sensitive data: runtime must not attempt schema repair."""
+
+
+def inspect_runtime_principal(session: Any, expected_role: str) -> dict[str, bool]:
+    """Require one explicitly pinned, non-admin custom runtime role.
+
+    This cannot prove exact native GRANT/DENY scope. An independent privilege
+    and cross-database negative test is still mandatory before release.
+    """
+    if (
+        not isinstance(expected_role, str)
+        or not re.fullmatch(r"[a-z][a-z0-9_]{2,48}", expected_role)
+        or expected_role in {"admin", "editor", "publisher", "reader",
+                             "architect", "public"}
+    ):
+        raise SchemaReadinessHold("operator-pinned restricted runtime role missing")
+    try:
+        rows = list(session.run(SHOW_CURRENT_USER))
+        if len(rows) != 1:
+            raise SchemaReadinessHold("runtime principal introspection is ambiguous")
+        roles = rows[0]["roles"]
+        if not isinstance(roles, (list, tuple)) or not roles:
+            raise SchemaReadinessHold("runtime principal role evidence missing")
+        normalized = [role.lower() for role in roles if isinstance(role, str)]
+        if len(normalized) != len(roles) or len(set(normalized)) != len(normalized):
+            raise SchemaReadinessHold("runtime principal role evidence malformed")
+        actual = set(normalized)
+        if expected_role not in actual or not actual.issubset({expected_role, "public"}):
+            raise SchemaReadinessHold("runtime principal has unapproved role")
+    except SchemaReadinessHold:
+        raise
+    except Exception:
+        raise SchemaReadinessHold("read-only runtime identity unavailable") from None
+    return {"pinned_runtime_role_observed": True,
+            "native_privilege_isolation_proven": False,
+            "production_release_authorized": False}
 
 
 def expected_schema(operations: Iterable[str]) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
