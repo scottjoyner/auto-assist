@@ -839,6 +839,36 @@ def _enforce_fleet_node_binding(request: Request, claimed_agent_id: Optional[str
     )
     if error:
         raise HTTPException(status_code=403, detail=error)
+    if getattr(request.state, "fleet_node_id", None) is not None:
+        # A registered machine credential establishes identity ONLY. Legacy
+        # Task endpoints use operator-era listing/claim/heartbeat/finalization
+        # and lack resource-side signed admission and exact claim authority.
+        # Never interpret a fleet token as a substitute for that authority.
+        raise HTTPException(
+            status_code=403,
+            detail="machine Task operations require independently scoped authority",
+        )
+
+
+@app.get("/api/fleet-node/identity")
+def api_fleet_node_identity_probe(
+    request: Request,
+    user: str = Depends(fleet_node_or_basic_auth),
+):
+    """Identity-only machine probe; NEVER implies Task or effect authority.
+
+    This permits separately controlled identity-path diagnostics without
+    granting the legacy Task API. No Neo4j, model, Task, lease or graph reads.
+    """
+    node_id = getattr(request.state, "fleet_node_id", None)
+    if not isinstance(node_id, str) or not node_id:
+        raise HTTPException(status_code=403, detail="machine identity required")
+    return {
+        "machine_identity_verified": True,
+        "node_id": node_id,
+        "task_admission": "HOLD",
+        "legacy_task_authorized": False,
+    }
 
 
 # Inject the auth dependency into swarm routes

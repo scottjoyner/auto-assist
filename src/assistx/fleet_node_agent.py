@@ -15,12 +15,14 @@ Design goals (per fleet unification plan):
   A node that dies mid-task leaves the lease to expire so another node can
   retry.
 
-Run:
+Identity-only supervised staging (never polls or claims Tasks):
     python -m assistx.fleet_node_agent \
-        --assistx-url http://assistx:8000 \
-        --router-url http://router:8088 \
-        --auth-user admin --auth-pass change-me \
-        --poll-interval 10 --concurrency 2
+        --identity-probe-only \
+        --assistx-url https://approved-staging.example.invalid
+
+Requires an independently pinned FLEET_NODE_IDENTITY_APPROVED_ORIGIN and
+owner-controlled FLEET_NODE_ID / FLEET_NODE_TOKEN. Never pass secrets on CLI.
+Legacy automatic Task dispatch remains HOLD until dedicated signed authority.
 
 Env equivalents: FLEET_ASSISTX_URL, FLEET_ROUTER_URL, FLEET_AUTH_USER,
 FLEET_AUTH_PASS, FLEET_POLL_INTERVAL, FLEET_CONCURRENCY, FLEET_LMSTUDIO_URL,
@@ -45,11 +47,28 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .kv_cache import runtime_capabilities
 from .lm_studio_client_auth import headers_for_request
 from .recovery_runbooks import RecoveryRunbookExecutor
 
 DEFAULT_CAPS = ["script"]
+
+
+class _RejectPrivilegedRedirect(urllib.request.HTTPRedirectHandler):
+    """Never forward Basic, bearer or node-identity headers to another URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _privileged_request(auth: tuple[str, str] | None, headers: dict[str, str]) -> bool:
+    if auth is not None:
+        return True
+    names = {str(name).casefold() for name in headers}
+    return any(
+        name in {"authorization", "proxy-authorization", "cookie", "x-fleet-node-token"}
+        or name.endswith(("-token", "-api-key"))
+        for name in names
+    )
 
 
 def _now() -> str:
@@ -78,22 +97,41 @@ def _http(
         req.add_header(key, value)
     if data is not None:
         req.data = json.dumps(data).encode()
+    credentialed = _privileged_request(auth, headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode()
+        if credentialed:
+            # urllib's default redirect handler forwards custom Authorization
+            # and X-Fleet-Node-Token headers across origins. Also disable
+            # environment proxies for every privileged request.
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({}), _RejectPrivilegedRedirect()
+            )
+            response_context = opener.open(req, timeout=timeout)
+        else:
+            response_context = urllib.request.urlopen(req, timeout=timeout)
+        with response_context as resp:
+            raw = resp.read(1024 * 1024 + 1) if credentialed else resp.read()
+            if credentialed and len(raw) > 1024 * 1024:
+                return 0, {"detail": "privileged_response_oversized"}
+            decoded = raw.decode()
             try:
-                return resp.status, json.loads(raw) if raw else {}
+                return resp.status, json.loads(decoded) if decoded else {}
             except json.JSONDecodeError:
-                return resp.status, raw
+                return resp.status, decoded
     except urllib.error.HTTPError as exc:
         try:
-            return exc.code, json.loads(exc.read().decode())
-        except Exception:
-            return exc.code, {"detail": str(exc)}
+            raw = exc.read(65536 + 1)
+            if len(raw) > 65536:
+                return exc.code, {"detail": "http_error_body_oversized"}
+            try:
+                return exc.code, json.loads(raw.decode())
+            except (UnicodeError, json.JSONDecodeError):
+                return exc.code, {"detail": "http_error_without_json"}
         finally:
             exc.close()
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return 0, {"detail": str(exc)}
+        # Never log or return a credential-bearing URL or exception string.
+        return 0, {"detail": type(exc).__name__}
 
 
 def _detect_hostname() -> str:
@@ -152,6 +190,75 @@ def _node_auth_headers() -> dict[str, str]:
     if not token or not node_id:
         return {}
     return {"X-Fleet-Node-Id": node_id, "X-Fleet-Node-Token": token}
+
+
+def probe_node_identity(*, assistx_url: str, node_id: str) -> dict[str, Any]:
+    """Manually invoked identity-only diagnostic. NEVER checks or claims Tasks.
+
+    Only a deliberately approved HTTPS origin or exact IP loopback HTTP is
+    eligible for credential submission. Redirects and proxies are separately
+    disabled by _http for node-token requests. No operator Basic fallback.
+    """
+    result: dict[str, Any] = {
+        "contract": "fleet-node-identity-probe-v1",
+        "identity_verified": False,
+        "task_admission": "HOLD",
+        "legacy_task_authorized": False,
+        "production_admission_permitted": False,
+    }
+    headers = _node_auth_headers()
+    explicit_node_id = os.getenv("FLEET_NODE_ID", "")
+    if (not explicit_node_id or not headers or not isinstance(node_id, str)
+            or node_id != explicit_node_id
+            or headers.get("X-Fleet-Node-Id") != node_id):
+        result["reason"] = "MISSING_OR_MISMATCHED_NODE_IDENTITY"
+        return result
+    # Operator-pinned target prevents leaking a registered node token to an
+    # arbitrary HTTPS site supplied through CLI or a stale URL override.
+    approved_origin = os.getenv("FLEET_NODE_IDENTITY_APPROVED_ORIGIN", "")
+    if (not approved_origin or not isinstance(assistx_url, str)
+            or assistx_url.rstrip("/") != approved_origin.rstrip("/")):
+        result["reason"] = "IDENTITY_ORIGIN_NOT_PINNED"
+        return result
+    try:
+        parsed = urllib.parse.urlsplit(assistx_url)
+        # Force validation: urlsplit defers malformed-port rejection until
+        # .port is evaluated, including nonnumeric/out-of-range ports.
+        parsed_port = parsed.port
+        # Accept a plain root origin only: no basic credentials, query, fragment
+        # or alternate path. Never send node secrets to arbitrary HTTP hosts.
+        if (not parsed.hostname or parsed.username is not None
+                or parsed.password is not None or parsed.path not in {"", "/"}
+                or parsed.query or parsed.fragment or parsed_port == 0):
+            result["reason"] = "UNAPPROVED_IDENTITY_ORIGIN"
+            return result
+        if parsed.scheme != "https" and not (
+            parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "::1"}
+        ):
+            result["reason"] = "UNAPPROVED_IDENTITY_ORIGIN"
+            return result
+    except (TypeError, ValueError, AttributeError):
+        result["reason"] = "UNAPPROVED_IDENTITY_ORIGIN"
+        return result
+    status, body = _http(
+        "GET", assistx_url.rstrip("/") + "/api/fleet-node/identity",
+        auth=None, headers=headers, timeout=5,
+    )
+    if (status == 200 and isinstance(body, dict)
+            and set(body) == {
+                "machine_identity_verified", "node_id",
+                "task_admission", "legacy_task_authorized",
+            }
+            and body["machine_identity_verified"] is True
+            and body["node_id"] == node_id
+            and body["task_admission"] == "HOLD"
+            and body["legacy_task_authorized"] is False):
+        result["identity_verified"] = True
+        result["reason"] = "IDENTITY_ONLY_NO_TASK_AUTHORITY"
+    else:
+        # Never emit raw HTTP body, host, token, username or error string.
+        result["reason"] = "IDENTITY_NOT_VERIFIED"
+    return result
 
 
 def _default_model(lmstudio_url: str | None) -> str:
@@ -694,7 +801,17 @@ def main() -> None:
         "--concurrency", type=int, default=int(os.getenv("FLEET_CONCURRENCY", "1"))
     )
     parser.add_argument("--lmstudio-url", default=os.getenv("FLEET_LMSTUDIO_URL"))
+    parser.add_argument(
+        "--identity-probe-only", action="store_true",
+        help="one-shot registered machine identity check; never polls/claims Tasks",
+    )
     args = parser.parse_args()
+    if args.identity_probe_only:
+        print(json.dumps(probe_node_identity(
+            assistx_url=args.assistx_url, node_id=_detect_hostname(),
+        ), sort_keys=True))
+        # A positive identity probe is NOT machine dispatch or release approval.
+        raise SystemExit(2)
     run(
         assistx_url=args.assistx_url,
         router_url=args.router_url,
