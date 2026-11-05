@@ -138,7 +138,9 @@ class Neo4jClient:
 
     # ---------- schema ----------
 
-    def ensure_schema(self):
+    @staticmethod
+    def schema_operations() -> list[str]:
+        """Declare schema obligations without executing privileged DDL."""
         cypher = [
             # Uniqueness
             "CREATE CONSTRAINT IF NOT EXISTS FOR (c:Conversation) REQUIRE c.id IS UNIQUE",
@@ -285,6 +287,32 @@ class Neo4jClient:
             "CREATE INDEX IF NOT EXISTS FOR (t:TraceEvent) ON (t.ts_ms)",
             "CREATE INDEX IF NOT EXISTS FOR (e:EventEnvelope) ON (e.correlation_id)",
         ]
+        return cypher
+
+    def verify_runtime_schema_readonly(self) -> dict[str, int | bool]:
+        """Read schema metadata using a READ-mode session, never create DDL.
+
+        Runtime MUST NOT silently try ensure_schema() under an admin principal.
+        An offline/missing constraint or denied SHOW privilege raises HOLD.
+        """
+        from neo4j import READ_ACCESS
+        from .schema_readiness import inspect_schema_readiness
+
+        kwargs = {"default_access_mode": READ_ACCESS}
+        if self.database:
+            kwargs["database"] = self.database
+        with self.driver.session(**kwargs) as session:
+            return inspect_schema_readiness(
+                session, self.schema_operations()
+            )
+
+    def ensure_schema(self):
+        """Legacy elevated bootstrap ONLY. Never invoke from an app lifespan.
+
+        This method still permits approved offline migration code to apply DDL;
+        long-lived API, worker and model paths must use read-only verification.
+        """
+        cypher = self.schema_operations()
         with self._session() as s:
             for q in cypher:
                 try:
