@@ -110,46 +110,37 @@ test venv). Targeted Ruff F401/F821 lint passed.
 remain misaligned and the production Auto-Router admin exposure
 remains live. The combined release gate is NO-GO.**
 
-## Newly discovered third consumer: Hermes adapter (later fleet iteration)
+## Third router consumer: Hermes adapter — isolated relay is required
 
-The previous two-variable preflight did **not** cover `hermes-adapter`. In the
-Compose source the Hermes adapter independently used
-`HERMES_LM_BASE_URL=http://host.docker.internal:8088/v1` and was **not**
-attached to `git_default`. This is a concrete service-compatibility gap:
-closing router host port 8088 after only migrating `assistx-api` could
-strand Hermes even if the API is healthy. This evidence is from source on the
-PR branch; it is not proof of the running Hermes container's effective values.
+A source audit found that the Hermes adapter still defaults to
+`HERMES_LM_BASE_URL=http://host.docker.internal:8088/v1`. It uses the
+router's host-published port independently of both AssistX API URL settings.
+Thus the existing two-variable migration **cannot** safely authorize removal
+of host port 8088: Hermes may lose inference access.
 
-This branch now additionally:
+An initial draft tried adding `hermes-adapter` to the shared
+`git_default` bridge and redirecting its default URL to
+`http://llm-router:8088/v1`. Hosted CI **correctly rejected this** via
+`make release-verify-compose` with `hermes-adapter: network is not isolated`.
+That proposal was reverted; **the enforced isolation policy remains intact**.
 
-1. Defaults `HERMES_LM_BASE_URL` to
-   `http://llm-router:8088/v1` without changing model credentials or
-   the separate host LM Studio port 1234.
-2. Attaches the Hermes adapter to its existing default network **and**
-   external `git_default`, preserving AssistX/Redis DNS while admitting the
-   private router alias.
-3. Extends the same read-only alias preflight with an exact-argv, bounded
-   `docker exec assistx-hermes-adapter` probe. It reports only whether
-   the current URL is canonical, whether DNS/TCP/public `GET /health`
-   work, and whether the Hermes container image/start identity was stable.
-   It reads no URL contents, authentication secrets, response bodies or
-   protected API paths.
-4. Rejects alias-path PASS unless the two API URLs, the Hermes `/v1`
-   URL, both bridge attachments and both container identities are
-   independently coherent. Dedicated synthetic tests cover a missing
-   Hermes container, stale URL, embedded URL credentials, DNS/TCP failures,
-   or container replacement during inspection.
+The preflight now reads only the existence/canonicality of Hermes's runtime
+`HERMES_LM_BASE_URL`, its stable container identity, and a credential-free
+DNS/TCP/public `GET /health` check against the router's internal alias.
+It neither prints the URL nor reads credentials, HTTP bodies or private
+API endpoints. `hermes_scoped_private_relay_reviewed=false` is a hard,
+unconditional HOLD gate. A green API-only URL preflight is therefore
+**insufficient** to close the router's public port.
 
-**Critical cutover addition:** independently reconcile the actual active
-deployment checkout and explicit Compose overrides for the Hermes adapter.
-Approved migration must preserve Hermes identity, volume/home/SSH mounts,
-task and inference compatibility, registered runtime projection, and any
-unrelated services. Test the Hermes adapter against the authenticated
-private `/v1` route and prove no regressions while router host 8088
-remains temporarily available. Then require a separately witnessed full
-client/ingress matrix before closing that host publication. No automatic
-recreation, source overlay or network change is approved here.
+**Implementation dependency:** design and independently review a scoped,
+authenticated private `/v1` relay that preserves Hermes's existing isolated
+Docker network, then verify exact-client inference, provider claims,
+request identity, throughput, retry and error behavior, and token custody.
+The relay must not forward arbitrary admin paths or grants and must not
+change live service network membership before owner-approved staging.
+Only after this separate implementation and independent tests pass may a
+future PR explicitly relax the Hermes relay gate. Do not change the Compose
+security verifier or attach privileged Hermes to a shared router bridge.
 
-This follow-up remains draft/NO-GO until **branch-head hosted CI** and real
-owner-controlled verification are accepted; prior green CI on an older
-two-variable branch does not validate the new Hermes integration.
+The running router and Hermes adapter have not been changed. No production
+cutover, restart, or host firewall change is authorized; **NO-GO** remains.
