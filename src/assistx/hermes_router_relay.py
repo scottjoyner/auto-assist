@@ -142,6 +142,7 @@ async def chat_completions(request: Request):
         raise _failure(429, "relay_capacity_exhausted") from exc
     client = _client()
     response = None
+    stream_handoff = False
     try:
         upstream_request = client.build_request(
             "POST", _UPSTREAM, content=bytes(raw),
@@ -162,6 +163,8 @@ async def chat_completions(request: Request):
             not size_hint.isdigit() or int(size_hint) > _MAX_RESPONSE
         ):
             raise _failure(502, "relay_upstream_size_invalid")
+        if streaming:
+            stream_handoff = True
         if not streaming:
             # Fully validate non-streaming responses *before* sending the
             # first byte or 200 status to the privileged Hermes caller.
@@ -200,7 +203,7 @@ async def chat_completions(request: Request):
         # A completed JSON response is returned above, so never leave its
         # upstream body open or leak the two-slot concurrency semaphore.
         # Streaming transfers ownership to the iterator below instead.
-        if response is None or not streaming or response.status_code != 200:
+        if not stream_handoff:
             if response is not None:
                 await response.aclose()
             await client.aclose()
