@@ -248,6 +248,39 @@ def test_streaming_media_mismatch_releases_upstream_slot(
     assert b"[DONE]" in answer.content
 
 
+@pytest.mark.parametrize("first", [
+    b'data: {"choices":{}}\n\n',
+    b'data: {"choices":[],"choices":[]}\n\n',
+    b'event: error\ndata: {"choices":[]}\n\n',
+    b'not an SSE payload',
+])
+def test_invalid_first_stream_event_returns_502_before_any_200(
+    client, monkeypatch, first,
+):
+    mock_router(monkeypatch, lambda _req: httpx.Response(
+        200, headers={"Content-Type": "text/event-stream"},
+        content=first,
+    ))
+    answer = request(client, {**VALID, "stream": True})
+    assert answer.status_code == 502
+    assert answer.json()["detail"] == "relay_upstream_sse_invalid"
+
+
+def test_truncated_stream_yields_explicit_error_not_fabricated_done(
+    client, monkeypatch,
+):
+    valid_first = b'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'
+    mock_router(monkeypatch, lambda _req: httpx.Response(
+        200, headers={"Content-Type": "text/event-stream"},
+        content=valid_first,  # upstream dies before [DONE]
+    ))
+    answer = request(client, {**VALID, "stream": True})
+    assert answer.status_code == 200  # First genuine model chunk already sent.
+    assert valid_first in answer.content
+    assert b'event: error\ndata: {"error":"relay_stream_incomplete"}\n\n' in answer.content
+    assert b"data: [DONE]" not in answer.content
+
+
 def test_missing_model_allowlist_and_query_string_fail_closed(client, monkeypatch):
     invoked = mock_router(monkeypatch, lambda _: pytest.fail("unexpected network"))
     monkeypatch.delenv("ASSISTX_HERMES_RELAY_ALLOWED_MODELS")
