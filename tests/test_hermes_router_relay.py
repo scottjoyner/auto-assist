@@ -166,6 +166,88 @@ def test_redirect_upstream_errors_and_media_type_deny(client, monkeypatch):
         assert "elsewhere.invalid" not in answer.text
 
 
+@pytest.mark.parametrize(("payload", "expected_status"), [
+    (b"not-json", 502),
+    (b"{}", 502),
+    (b'{"choices":{}}', 502),
+    (b'{"choices":[],"choices":[]}', 502),
+    (b'{"choices":[],"value":NaN}', 502),
+])
+def test_nonstream_upstream_invalid_json_never_emits_200(
+    client, monkeypatch, payload, expected_status,
+):
+    invoked = mock_router(
+        monkeypatch, lambda _req: httpx.Response(
+            200, headers={"Content-Type": "application/json"},
+            content=payload,
+        ),
+    )
+    answer = request(client)
+    assert answer.status_code == expected_status
+    assert answer.json()["detail"].startswith("relay_upstream_")
+    assert len(invoked) == 1
+
+
+def test_nonstream_oversized_upstream_body_and_length_hint_denied(
+    client, monkeypatch,
+):
+    # Oversized streaming-less responses must fail *before* any success
+    # headers are sent to Hermes. No unbounded buffering, or partial JSON.
+    big = b'{"choices":[],"pad":"' + b"x" * relay._MAX_RESPONSE + b'"}'
+    mock_router(monkeypatch, lambda _req: httpx.Response(
+        200, headers={"Content-Type": "application/json"}, content=big,
+    ))
+    answer = request(client)
+    assert answer.status_code == 502
+    assert answer.json()["detail"] == "relay_upstream_size_invalid"
+
+    def impossible_header(_):
+        return httpx.Response(
+            200,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(relay._MAX_RESPONSE + 1),
+            },
+            content=b'{"choices":[]}',
+        )
+    mock_router(monkeypatch, impossible_header)
+    answer = request(client)
+    assert answer.status_code == 502
+
+
+def test_failed_upstream_response_does_not_exhaust_relay_capacity(
+    client, monkeypatch,
+):
+    mock_router(monkeypatch, lambda _req: httpx.Response(
+        200, headers={"Content-Type": "application/json"},
+        content=b"not-json",
+    ))
+    for _ in range(5):
+        assert request(client).status_code == 502
+    mock_router(monkeypatch, lambda _req: httpx.Response(
+        200, headers={"Content-Type": "application/json"},
+        json={"choices": []},
+    ))
+    assert request(client).status_code == 200
+
+
+def test_streaming_media_mismatch_releases_upstream_slot(
+    client, monkeypatch,
+):
+    mock_router(monkeypatch, lambda _req: httpx.Response(
+        200, headers={"Content-Type": "text/html"}, content=b"bad",
+    ))
+    for _ in range(4):
+        assert request(client, {**VALID, "stream": True}).status_code == 502
+    mock_router(monkeypatch, lambda _req: httpx.Response(
+        200, headers={"Content-Type": "text/event-stream"},
+        content=b'data: [DONE]\\n\\n',
+    ))
+    answer = request(client, {**VALID, "stream": True})
+    assert answer.status_code == 200
+    assert b"[DONE]" in answer.content
+
+
 def test_missing_model_allowlist_and_query_string_fail_closed(client, monkeypatch):
     invoked = mock_router(monkeypatch, lambda _: pytest.fail("unexpected network"))
     monkeypatch.delenv("ASSISTX_HERMES_RELAY_ALLOWED_MODELS")
