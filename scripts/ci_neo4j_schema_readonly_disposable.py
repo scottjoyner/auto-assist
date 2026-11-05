@@ -14,6 +14,7 @@ from pathlib import Path
 import time
 
 from neo4j import GraphDatabase, READ_ACCESS
+from neo4j.exceptions import Neo4jError
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_URI = "bolt://127.0.0.1:27888"
@@ -54,8 +55,14 @@ def _wait_for_server(driver) -> None:
 def _expect_denied(session, query: str) -> None:
     try:
         session.run(query).consume()
-    except Exception:
-        return
+    except Neo4jError as exc:
+        # Wrong syntax, connection failure or a missing database is NOT proof
+        # of privilege isolation. Require a native security refusal.
+        if getattr(exc, "code", None) == "Neo.ClientError.Security.Forbidden":
+            return
+        raise AssertionError(
+            "negative action failed for reason other than native authorization"
+        ) from None
     raise AssertionError("unapproved database or DBMS mutation was accepted")
 
 
