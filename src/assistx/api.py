@@ -839,6 +839,15 @@ def _enforce_fleet_node_binding(request: Request, claimed_agent_id: Optional[str
     )
     if error:
         raise HTTPException(status_code=403, detail=error)
+    if getattr(request.state, "fleet_node_id", None) is not None:
+        # A registered machine credential establishes identity ONLY. Legacy
+        # Task endpoints use operator-era listing/claim/heartbeat/finalization
+        # and lack resource-side signed admission and exact claim authority.
+        # Never interpret a fleet token as a substitute for that authority.
+        raise HTTPException(
+            status_code=403,
+            detail="machine Task operations require independently scoped authority",
+        )
 
 
 # Inject the auth dependency into swarm routes
