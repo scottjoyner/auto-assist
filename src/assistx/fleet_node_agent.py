@@ -215,7 +215,7 @@ def probe_node_identity(*, assistx_url: str, node_id: str) -> dict[str, Any]:
         # or alternate path. Never send node secrets to arbitrary HTTP hosts.
         if (not parsed.hostname or parsed.username is not None
                 or parsed.password is not None or parsed.path not in {"", "/"}
-                or parsed.query or parsed.fragment or parsed.port is None):
+                or parsed.query or parsed.fragment):
             result["reason"] = "UNAPPROVED_IDENTITY_ORIGIN"
             return result
         if parsed.scheme != "https" and not (
