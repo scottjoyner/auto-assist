@@ -87,7 +87,7 @@ def test_agent_tasks_node_token_wrong_agent_id_rejected(
     assert fake_fleet_neo.calls == []
 
 
-def test_agent_tasks_200_with_registered_node_identity(
+def test_agent_tasks_403_with_registered_node_without_scoped_task_authority(
     monkeypatch, node_tokens, fake_fleet_neo
 ):
     client = TestClient(api_router.app)
@@ -95,8 +95,8 @@ def test_agent_tasks_200_with_registered_node_identity(
         "/api/agent/tasks?agent_id=node-a",
         headers={"X-Fleet-Node-Id": "node-a", "X-Fleet-Node-Token": _SYNTHETIC_TOKENS["node-a"]},
     )
-    assert r.status_code == 200
-    assert r.json()["items"] == []
+    assert r.status_code == 403
+    assert fake_fleet_neo.calls == []
 
 
 def test_agent_tasks_200_with_basic_auth_still_accepted(monkeypatch, fake_fleet_neo):
@@ -132,6 +132,40 @@ def test_claim_rejects_invalid_node_token_before_graph(
         "/api/tasks/task-synthetic/claim",
         headers={"X-Fleet-Node-Id": "node-a", "X-Fleet-Node-Token": "intruder-token"},
         json={"agent_id": "node-a", "capabilities": ["script"], "session_id": "s"},
+    )
+    assert r.status_code == 403
+    assert fake_fleet_neo.calls == []
+
+
+def test_claim_same_registered_node_still_denied_before_graph(
+    monkeypatch, node_tokens, fake_fleet_neo
+):
+    """Token identity cannot authorize a legacy mutable Task API."""
+    client = TestClient(api_router.app)
+    r = client.post(
+        "/api/tasks/task-synthetic/claim",
+        headers={"X-Fleet-Node-Id": "node-a", "X-Fleet-Node-Token": _SYNTHETIC_TOKENS["node-a"]},
+        json={"agent_id": "node-a", "capabilities": ["script"], "session_id": "s"},
+    )
+    assert r.status_code == 403
+    assert fake_fleet_neo.calls == []
+
+
+def test_verified_node_token_cannot_bypass_legacy_guard_with_basic(
+    monkeypatch, node_tokens, fake_fleet_neo
+):
+    """Node headers win: adding a valid operator Basic must not bypass the denial."""
+    monkeypatch.setenv("BASIC_AUTH_USER", "operator")
+    monkeypatch.setenv("BASIC_AUTH_PASS", "synthetic-operator-pass")
+    import assistx.api as api
+
+    monkeypatch.setattr(api, "USER", "operator")
+    monkeypatch.setattr(api, "PASS", "synthetic-operator-pass")
+    client = TestClient(api_router.app)
+    r = client.get(
+        "/api/agent/tasks?agent_id=node-a",
+        auth=("operator", "synthetic-operator-pass"),
+        headers={"X-Fleet-Node-Id": "node-a", "X-Fleet-Node-Token": _SYNTHETIC_TOKENS["node-a"]},
     )
     assert r.status_code == 403
     assert fake_fleet_neo.calls == []
