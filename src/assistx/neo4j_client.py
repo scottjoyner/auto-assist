@@ -138,7 +138,9 @@ class Neo4jClient:
 
     # ---------- schema ----------
 
-    def ensure_schema(self):
+    @staticmethod
+    def schema_operations() -> list[str]:
+        """Declare schema obligations without executing privileged DDL."""
         cypher = [
             # Uniqueness
             "CREATE CONSTRAINT IF NOT EXISTS FOR (c:Conversation) REQUIRE c.id IS UNIQUE",
@@ -285,6 +287,46 @@ class Neo4jClient:
             "CREATE INDEX IF NOT EXISTS FOR (t:TraceEvent) ON (t.ts_ms)",
             "CREATE INDEX IF NOT EXISTS FOR (e:EventEnvelope) ON (e.correlation_id)",
         ]
+        return cypher
+
+    def verify_runtime_schema_readonly(self) -> dict[str, int | bool]:
+        """Read schema metadata using a READ-mode session, never create DDL.
+
+        Runtime MUST NOT silently try ensure_schema() under an admin principal.
+        An offline/missing constraint or denied SHOW privilege raises HOLD.
+        """
+        from neo4j import READ_ACCESS
+        from .schema_readiness import (
+            inspect_schema_readiness, inspect_runtime_principal,
+        )
+
+        # A source-only schema checker does not prove isolation if the same
+        # runtime process still holds Neo4j's shared native admin principal.
+        # Require owner-selected dedicated role and verify current user
+        # metadata before considering schema. No role pin => fail closed.
+        expected_role = os.getenv("ASSISTX_NEO4J_RUNTIME_ROLE", "")
+        kwargs = {"default_access_mode": READ_ACCESS}
+        if self.database:
+            kwargs["database"] = self.database
+        with self.driver.session(**kwargs) as session:
+            principal = inspect_runtime_principal(session, expected_role)
+            schema = inspect_schema_readiness(
+                session, self.schema_operations()
+            )
+        return {**principal, **schema}
+
+    def ensure_schema(self, *, explicit_operator_migration: bool = False):
+        """Elevated bootstrap ONLY, with explicit migration intent and custody.
+
+        Boolean intent does NOT independently prove operator signing or restore
+        rights. An approved off-host change process and separate schema-admin
+        principal are still mandatory before any real database migration.
+        """
+        from .schema_readiness import SchemaReadinessHold
+
+        if explicit_operator_migration is not True:
+            raise SchemaReadinessHold("automatic schema DDL forbidden for runtime")
+        cypher = self.schema_operations()
         with self._session() as s:
             for q in cypher:
                 try:

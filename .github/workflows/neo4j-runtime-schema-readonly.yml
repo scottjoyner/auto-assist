@@ -1,0 +1,27 @@
+name: Neo4j Runtime Schema No-DDL (Synthetic)
+on:
+  pull_request:
+    paths:
+      - src/assistx/neo4j_client.py
+      - src/assistx/schema_readiness.py
+      - src/assistx/api.py
+      - src/assistx/cli.py
+      - tests/test_schema_runtime_readonly_gate.py
+      - .github/workflows/neo4j-runtime-schema-readonly.yml
+permissions:
+  contents: read
+jobs:
+  no-ddl-source-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and test source-level read-only schema gate without external services
+        run: |
+          python -B -m py_compile src/assistx/neo4j_client.py src/assistx/schema_readiness.py src/assistx/api.py src/assistx/cli.py
+          python -B -m unittest discover -s tests -p test_schema_runtime_readonly_gate.py -v

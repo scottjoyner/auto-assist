@@ -111,7 +111,8 @@ def neo4j_client(neo4j_container):
         password=neo4j_container["password"],
         database=None,  # use default db (tests run ephemeral CE container without 'assistx' db)
     )
-    client.ensure_schema()
+    # Only the isolated disposable Neo4j fixture may explicitly request DDL.
+    client.ensure_schema(explicit_operator_migration=True)
     yield client
     client.close()
 
@@ -120,7 +121,7 @@ def neo4j_client(neo4j_container):
 def seeded_neo4j(neo4j_client):
     with neo4j_client.driver.session() as s:
         s.run("MATCH (n) DETACH DELETE n").consume()
-    neo4j_client.ensure_schema()
+    neo4j_client.ensure_schema(explicit_operator_migration=True)
     conversation_id = neo4j_client.upsert_conversation("pytest conversation", "pytest")
     neo4j_client.add_utterances(
         conversation_id,

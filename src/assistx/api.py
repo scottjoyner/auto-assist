@@ -535,16 +535,16 @@ _api_logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_runtime_configuration(strict=True)
+    # P0 graph-identity isolation: ordinary API startup may READ schema
+    # metadata but MUST NOT CREATE constraints/indexes using application
+    # runtime credentials. Incomplete catalog or ungranted SHOW authority
+    # prevents startup, without falling back to admin/DDL. The operator
+    # migration must execute separately before this runtime is deployed.
+    neo = Neo4jClient()
     try:
-        neo = Neo4jClient()
-        neo.ensure_schema()
-    except Exception as e:
-        _lifespan_logger.warning(f"Neo4j schema initialization warning at startup: {e}")
+        neo.verify_runtime_schema_readonly()
     finally:
-        try:
-            neo.close()
-        except Exception:
-            pass
+        neo.close()
     try:
         from .paperclip_poller import schedule_paperclip_poller
         schedule_paperclip_poller()
