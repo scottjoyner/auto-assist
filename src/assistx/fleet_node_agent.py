@@ -205,8 +205,10 @@ def probe_node_identity(*, assistx_url: str, node_id: str) -> dict[str, Any]:
         "production_admission_permitted": False,
     }
     headers = _node_auth_headers()
-    if (not headers or not isinstance(node_id, str)
-            or not node_id or headers.get("X-Fleet-Node-Id") != node_id):
+    explicit_node_id = os.getenv("FLEET_NODE_ID", "")
+    if (not explicit_node_id or not headers or not isinstance(node_id, str)
+            or node_id != explicit_node_id
+            or headers.get("X-Fleet-Node-Id") != node_id):
         result["reason"] = "MISSING_OR_MISMATCHED_NODE_IDENTITY"
         return result
     # Operator-pinned target prevents leaking a registered node token to an
