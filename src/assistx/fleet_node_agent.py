@@ -209,6 +209,13 @@ def probe_node_identity(*, assistx_url: str, node_id: str) -> dict[str, Any]:
             or not node_id or headers.get("X-Fleet-Node-Id") != node_id):
         result["reason"] = "MISSING_OR_MISMATCHED_NODE_IDENTITY"
         return result
+    # Operator-pinned target prevents leaking a registered node token to an
+    # arbitrary HTTPS site supplied through CLI or a stale URL override.
+    approved_origin = os.getenv("FLEET_NODE_IDENTITY_APPROVED_ORIGIN", "")
+    if (not approved_origin or not isinstance(assistx_url, str)
+            or assistx_url.rstrip("/") != approved_origin.rstrip("/")):
+        result["reason"] = "IDENTITY_ORIGIN_NOT_PINNED"
+        return result
     try:
         parsed = urllib.parse.urlsplit(assistx_url)
         # Accept a plain root origin only: no basic credentials, query, fragment
