@@ -299,7 +299,7 @@ async def chat_completions(request: Request):
         except (ValueError, httpx.HTTPError, OSError, TimeoutError):
             # The HTTP status is already 200 after the first frame. Never
             # fabricate a [DONE]; emit a bounded explicit terminal failure.
-            yield b'event: error\\ndata: {"error":"relay_stream_incomplete"}\\n\\n'
+            yield b'event: error\ndata: {"error":"relay_stream_incomplete"}\n\n'
         finally:
             await frames.aclose()
             await response.aclose()
