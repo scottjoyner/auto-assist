@@ -87,30 +87,26 @@ def test_binding_error_only_for_node_auth(monkeypatch):
     assert fleet_node_auth.fleet_node_binding_error("node-a", None) == "fleet node identity mismatch"
 
 
-def test_node_agent_poll_attaches_node_token(monkeypatch, node_tokens):
-    captured = {}
-
-    def fake_http(method, url, **kwargs):
-        captured["method"] = method
-        captured["url"] = url
-        captured["kwargs"] = kwargs
-        return 200, {"items": []}
-
-    monkeypatch.setattr(fleet_node_agent, "_http", fake_http)
+def test_node_agent_poll_never_forwards_registered_token_to_legacy_task_api(monkeypatch, node_tokens):
+    # An enrolled machine identity is NOT a claim or Task-read authority.
+    # Deny before HTTP even when a general operator Basic pair is present.
+    monkeypatch.setattr(
+        fleet_node_agent, "_http",
+        lambda *_a, **_kw: pytest.fail("token/Basic must not reach legacy Task API"),
+    )
+    monkeypatch.setattr(
+        fleet_node_agent, "_claim_and_run",
+        lambda **_kw: pytest.fail("no claim without source-owned machine authority"),
+    )
     worked = fleet_node_agent._poll_once(
         assistx_url="http://assistx.internal:8000",
         router_url="http://router.internal:8088",
-        auth=None,
+        auth=("operator", "synthetic-basic"),
         node_id="node-a",
         caps=["script"],
         lmstudio_url=None,
     )
     assert worked is False
-    headers = captured["kwargs"]["headers"]
-    assert headers["X-Fleet-Node-Id"] == "node-a"
-    assert headers["X-Fleet-Node-Token"] == _SYNTHETIC_TOKENS["node-a"]
-    assert "agent_id=node-a" in captured["url"]
-
 
 def test_node_agent_omits_node_token_when_unset(monkeypatch):
     monkeypatch.delenv("FLEET_NODE_TOKEN", raising=False)
