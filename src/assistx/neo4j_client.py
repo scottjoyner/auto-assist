@@ -306,12 +306,17 @@ class Neo4jClient:
                 session, self.schema_operations()
             )
 
-    def ensure_schema(self):
-        """Legacy elevated bootstrap ONLY. Never invoke from an app lifespan.
+    def ensure_schema(self, *, explicit_operator_migration: bool = False):
+        """Elevated bootstrap ONLY, with explicit migration intent and custody.
 
-        This method still permits approved offline migration code to apply DDL;
-        long-lived API, worker and model paths must use read-only verification.
+        Boolean intent does NOT independently prove operator signing or restore
+        rights. An approved off-host change process and separate schema-admin
+        principal are still mandatory before any real database migration.
         """
+        from .schema_readiness import SchemaReadinessHold
+
+        if explicit_operator_migration is not True:
+            raise SchemaReadinessHold("automatic schema DDL forbidden for runtime")
         cypher = self.schema_operations()
         with self._session() as s:
             for q in cypher:
