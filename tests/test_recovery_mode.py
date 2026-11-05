@@ -12,12 +12,16 @@ class FakeNeo:
     instances = []
 
     def __init__(self):
-        self.schema_ensured = False
+        self.schema_verified_readonly = False
         self.closed = False
         self.__class__.instances.append(self)
 
     def ensure_schema(self):
-        self.schema_ensured = True
+        raise AssertionError("recovery startup must never CREATE schema")
+
+    def verify_runtime_schema_readonly(self):
+        self.schema_verified_readonly = True
+        return {"read_only": True, "production_release_authorized": False}
 
     def close(self):
         self.closed = True
@@ -48,9 +52,36 @@ def test_recovery_shadow_replaces_normal_lifespan(monkeypatch):
 
     asyncio.run(exercise())
     assert normal_started["value"] is False
-    assert FakeNeo.instances[-1].schema_ensured is True
+    assert FakeNeo.instances[-1].schema_verified_readonly is True
     assert FakeNeo.instances[-1].closed is True
     assert recovery_mode.recovery_shadow_status()["execution_promoted"] is False
+
+
+def test_recovery_shadow_schema_readiness_failure_blocks_startup(monkeypatch):
+    """Missing schema must stop inherited routes rather than serve degraded."""
+    import pytest
+
+    monkeypatch.setenv("ASSISTX_RECOVERY_SHADOW_MODE", "true")
+    app = FastAPI()
+
+    class FailingNeo(FakeNeo):
+        def verify_runtime_schema_readonly(self):
+            raise RuntimeError("synthetic-schema-HOLD")
+
+    module = SimpleNamespace(
+        app=app,
+        Neo4jClient=FailingNeo,
+        validate_runtime_configuration=lambda strict=False: {"ok": strict},
+    )
+    recovery_mode.install_recovery_shadow_mode(module)
+
+    async def exercise():
+        async with app.router.lifespan_context(app):
+            raise AssertionError("recovery should never become active")
+
+    with pytest.raises(RuntimeError, match="synthetic-schema-HOLD"):
+        asyncio.run(exercise())
+    assert FailingNeo.instances[-1].closed is True
 
 
 def test_normal_mode_leaves_lifespan_unchanged(monkeypatch):
