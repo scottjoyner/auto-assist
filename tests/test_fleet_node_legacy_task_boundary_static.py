@@ -91,6 +91,24 @@ class MachineTaskLegacyFenceTests(unittest.TestCase):
                 self.assertTrue(graph, f"{name}: graph operation inventory changed")
                 self.assertLess(guards[0], min(graph), f"{name}: guard runs after graph call")
 
+    def test_machine_identity_probe_is_read_only_and_explicitly_nonadmitting(self):
+        fn = _functions()
+        probe = fn["api_fleet_node_identity_probe"]
+        names = [
+            _call_name(n) for n in ast.walk(probe)
+            if isinstance(n, ast.Call)
+        ]
+        forbidden = {
+            "_neo", "_neo_fleet", "get_task", "list_agent_tasks",
+            "claim_task", "heartbeat_task", "complete_task", "checkpoint_task"
+        }
+        self.assertFalse(forbidden.intersection(names))
+        text = ast.unparse(probe)
+        self.assertIn("'machine_identity_verified': True", text)
+        self.assertIn("'legacy_task_authorized': False", text)
+        self.assertIn("'task_admission': 'HOLD'", text)
+        self.assertIn("machine identity required", text)
+
     def test_node_verification_still_has_no_basic_fallback(self):
         fn = _functions()
         f = fn["fleet_node_or_basic_auth"]
