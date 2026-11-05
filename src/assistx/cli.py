@@ -1,5 +1,6 @@
 
 import click
+import os
 from .neo4j_client import Neo4jClient
 from .pipeline_ingest import ingest_dir
 from .pipeline_summarize import summarize_conversation, summarize_since_days
@@ -10,8 +11,32 @@ def cli():
     pass
 
 @cli.command("init")
-def init_cmd():
-    neo = Neo4jClient(); neo.ensure_schema(); neo.close(); click.echo("Schema ensured.")
+@click.option(
+    "--explicit-operator-migration",
+    is_flag=True,
+    default=False,
+    help="Privileged, separately approved schema migration; never run as API runtime",
+)
+def init_cmd(explicit_operator_migration):
+    # This CLI flag is a deliberate operator intent signal, NOT independent
+    # authority or a substitute for signed backup/restore and custody gates.
+    # Use distinct schema-admin credentials, never the long-lived runtime user.
+    if not explicit_operator_migration:
+        raise click.ClickException("schema DDL requires separate operator migration")
+    schema_user = os.getenv("NEO4J_SCHEMA_OPERATOR_USER", "")
+    schema_password = os.getenv("NEO4J_SCHEMA_OPERATOR_PASSWORD", "")
+    if (
+        not schema_user or not schema_password
+        or schema_user == os.getenv("NEO4J_USER")
+        or schema_password == os.getenv("NEO4J_PASSWORD")
+    ):
+        raise click.ClickException("distinct schema operator identity unavailable")
+    neo = Neo4jClient(user=schema_user, password=schema_password)
+    try:
+        neo.ensure_schema(explicit_operator_migration=True)
+    finally:
+        neo.close()
+    click.echo("Schema migration attempted; independently verify schema state.")
 
 @cli.command("ingest")
 @click.option("--src", required=True, type=click.Path(exists=True, file_okay=False))
@@ -47,9 +72,17 @@ def approve_cmd(limit, approve_all):
 @click.option("--execute", is_flag=True, default=False)
 @click.option("--dry-run", is_flag=True, default=False)
 def run_all(src, since_days, execute, dry_run):
-    neo = Neo4jClient(); neo.ensure_schema(); ingest_dir(src, neo); summarize_since_days(neo, days=since_days)
-    if execute: execute_ready(neo, limit=10, dry_run=dry_run)
-    neo.close()
+    # A recurring ingestion/summarization command must never auto-create
+    # constraints or indexes under the app's shared graph principal.
+    neo = Neo4jClient()
+    try:
+        neo.verify_runtime_schema_readonly()
+        ingest_dir(src, neo)
+        summarize_since_days(neo, days=since_days)
+        if execute:
+            execute_ready(neo, limit=10, dry_run=dry_run)
+    finally:
+        neo.close()
 
 @cli.command("eval")
 @click.option("--gold", required=True, type=click.Path(exists=True, file_okay=False), help="Dir of gold JSON files")
