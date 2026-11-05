@@ -274,6 +274,20 @@ class IdentityOnlyProbeSafety(unittest.TestCase):
             )
             self.assertFalse(result["identity_verified"])
 
+    def test_hostname_fallback_does_not_authorize_token_diagnostic(self):
+        # Node ID must be explicitly enrolled, not guessed from platform.node.
+        with patch.dict(AGENT.os.environ, {
+            "FLEET_NODE_ID": "", "FLEET_NODE_TOKEN": "SYNTHETIC_NODE_TOKEN",
+            "FLEET_NODE_IDENTITY_APPROVED_ORIGIN": "https://assistx.example.invalid",
+        }), patch.object(AGENT, "_http", side_effect=AssertionError("never send token")):
+            with patch.object(AGENT.platform, "node", return_value="host-guessed-id"):
+                result = AGENT.probe_node_identity(
+                    assistx_url="https://assistx.example.invalid",
+                    node_id="host-guessed-id",
+                )
+                self.assertFalse(result["identity_verified"])
+                self.assertEqual(result["reason"], "MISSING_OR_MISMATCHED_NODE_IDENTITY")
+
     def test_wrong_or_absent_pinned_identity_origin_denied_before_token_use(self):
         with self._registered(), patch.object(AGENT, "_http", side_effect=AssertionError("no outbound token")):
             with patch.dict(AGENT.os.environ, {
