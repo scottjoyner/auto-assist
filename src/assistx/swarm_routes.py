@@ -164,7 +164,10 @@ def _default_auth(
         raise HTTPException(
             status_code=401, detail="verified operator authentication unavailable"
         )
-    return _injected_auth_dependency(request, credentials)
+    principal = _injected_auth_dependency(request, credentials)
+    if not isinstance(principal, str) or not principal.strip():
+        raise HTTPException(status_code=401, detail="verified operator identity unavailable")
+    return principal
 
 
 def _optional_operator_auth(
@@ -181,7 +184,11 @@ def _optional_operator_auth(
     if _injected_auth_dependency is None:
         return None
     try:
-        return _injected_auth_dependency(request, credentials)
+        principal = _injected_auth_dependency(request, credentials)
+        # A missing/blank identity is not positive authentication. Let the
+        # canonical voice path attempt its independently verified raw-body
+        # signature rather than trusting an empty Basic principal.
+        return principal if isinstance(principal, str) and principal.strip() else None
     except HTTPException as exc:
         if exc.status_code == 401:
             return None
