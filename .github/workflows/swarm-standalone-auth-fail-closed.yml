@@ -1,0 +1,25 @@
+name: Swarm Standalone Auth Fail-Closed (Synthetic)
+on:
+  pull_request:
+    paths:
+      - src/assistx/swarm_routes.py
+      - src/assistx/voice_routes.py
+      - tests/test_swarm_standalone_auth_contract.py
+      - .github/workflows/swarm-standalone-auth-fail-closed.yml
+permissions:
+  contents: read
+jobs:
+  source-executed-auth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and run dependency-free behavioral authorization tests
+        run: |
+          python -B -m py_compile src/assistx/swarm_routes.py src/assistx/voice_routes.py tests/test_swarm_standalone_auth_contract.py
+          python -B -m unittest discover -s tests -p test_swarm_standalone_auth_contract.py -v
