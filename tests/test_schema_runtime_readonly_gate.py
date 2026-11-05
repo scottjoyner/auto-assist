@@ -124,6 +124,67 @@ class SchemaRuntimeReadonlyTests(unittest.TestCase):
         with self.assertRaises(readiness.SchemaReadinessHold):
             readiness.expected_schema(_operations()[:-1])
 
+    def test_runtime_role_pin_rejects_shared_admin_and_unreviewed_roles(self):
+        class RolesSession:
+            def __init__(self, roles):
+                self.roles = roles
+                self.queries = []
+
+            def run(self, query):
+                self.queries.append(query)
+                if query == readiness.SHOW_CURRENT_USER:
+                    return [{"roles": self.roles}]
+                raise AssertionError("unexpected graph command")
+
+        good = RolesSession(["assistx_runtime", "PUBLIC"])
+        report = readiness.inspect_runtime_principal(good, "assistx_runtime")
+        self.assertEqual(good.queries, [readiness.SHOW_CURRENT_USER])
+        self.assertTrue(report["pinned_runtime_role_observed"])
+        self.assertFalse(report["native_privilege_isolation_proven"])
+        self.assertFalse(report["production_release_authorized"])
+        for names in (
+            ["admin"], ["assistx_runtime", "admin"],
+            ["assistx_runtime", "editor"], [], ["PUBLIC"],
+            ["assistx_runtime", "assistx_runtime"],
+        ):
+            with self.subTest(roles=names), self.assertRaises(readiness.SchemaReadinessHold):
+                readiness.inspect_runtime_principal(
+                    RolesSession(names), "assistx_runtime"
+                )
+
+    def test_unset_builtin_or_malformed_role_pin_fails_before_query(self):
+        class NoQuery:
+            def run(self, query):
+                raise AssertionError("must not query without valid pinned role")
+
+        for pin in ("", "admin", "reader", "publisher", "public", "A",
+                    "assistx runtime", "assistx_runtime;DELETE"):
+            with self.subTest(pin=pin), self.assertRaises(readiness.SchemaReadinessHold):
+                readiness.inspect_runtime_principal(NoQuery(), pin)
+
+    def test_role_query_failure_is_sanitized(self):
+        class Fails:
+            def run(self, query):
+                raise RuntimeError("bolt://private-host:7687 secret")
+        with self.assertRaises(readiness.SchemaReadinessHold) as caught:
+            readiness.inspect_runtime_principal(Fails(), "assistx_runtime")
+        self.assertNotIn("secret", str(caught.exception))
+        self.assertNotIn("private-host", str(caught.exception))
+
+    def test_client_runtime_verification_enforces_role_before_catalog(self):
+        tree = ast.parse(NEO_PATH.read_text(encoding="utf-8"))
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                   and n.name == "Neo4jClient")
+        fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef)
+                  and n.name == "verify_runtime_schema_readonly")
+        body = ast.unparse(fn)
+        self.assertIn("ASSISTX_NEO4J_RUNTIME_ROLE", body)
+        self.assertLess(
+            body.index("inspect_runtime_principal("),
+            body.index("inspect_schema_readiness(")
+        )
+        self.assertIn("default_access_mode", body)
+
     def test_api_lifespan_has_no_ddl_and_never_swallows_readonly_mismatch(self):
         tree = ast.parse(API_PATH.read_text(encoding="utf-8"))
         node = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)
