@@ -15,12 +15,14 @@ Design goals (per fleet unification plan):
   A node that dies mid-task leaves the lease to expire so another node can
   retry.
 
-Run:
+Identity-only supervised staging (never polls or claims Tasks):
     python -m assistx.fleet_node_agent \
-        --assistx-url http://assistx:8000 \
-        --router-url http://router:8088 \
-        --auth-user admin --auth-pass change-me \
-        --poll-interval 10 --concurrency 2
+        --identity-probe-only \
+        --assistx-url https://approved-staging.example.invalid
+
+Requires an independently pinned FLEET_NODE_IDENTITY_APPROVED_ORIGIN and
+owner-controlled FLEET_NODE_ID / FLEET_NODE_TOKEN. Never pass secrets on CLI.
+Legacy automatic Task dispatch remains HOLD until dedicated signed authority.
 
 Env equivalents: FLEET_ASSISTX_URL, FLEET_ROUTER_URL, FLEET_AUTH_USER,
 FLEET_AUTH_PASS, FLEET_POLL_INTERVAL, FLEET_CONCURRENCY, FLEET_LMSTUDIO_URL,
