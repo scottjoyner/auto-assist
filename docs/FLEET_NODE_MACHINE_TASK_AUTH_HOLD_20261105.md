@@ -32,7 +32,7 @@ A **separate, reviewed implementation** must provide (1) independently approved 
 
 The fleet-node agent accepts the optional --identity-probe-only CLI switch. It invokes the identity-only GET once, prints nonsecret aggregate JSON, and exits code 2 on BOTH success and failure. It never enters the worker loop, polls Tasks, claims work, reports completion or loads a model. It sends a node credential only if FLEET_NODE_TOKEN and FLEET_NODE_ID exist and agree with the requested node identity; operator Basic credentials are never attached.
 
-The probe only permits an HTTPS root origin with normal TLS certificate checking, or literal loopback HTTP (127.0.0.1 or [::1]). It rejects nonloopback HTTP, userinfo, nonroot paths, queries, fragments and malformed ports before sending credentials. Credentialed requests separately reject redirects and disable environment proxies.
+The probe only permits an HTTPS root origin with normal TLS certificate checking, or literal loopback HTTP (127.0.0.1 or [::1]). It rejects nonloopback HTTP, userinfo, nonroot paths, queries, fragments and malformed ports before sending credentials. It also requires FLEET_NODE_IDENTITY_APPROVED_ORIGIN to be set separately to the exact configured target; an absent or differing pin fails before HTTP. This additional operator-owned origin pin prevents accidental node-token forwarding to an arbitrary valid-HTTPS URL. Credentialed requests separately reject redirects and disable environment proxies.
 
 A positive server response must match the exact four-field identity-only reply, with task_admission=HOLD and legacy_task_authorized=false. Extra fields and any claim of Task admission fail closed.
 
