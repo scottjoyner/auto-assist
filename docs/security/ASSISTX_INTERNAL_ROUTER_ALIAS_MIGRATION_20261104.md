@@ -192,3 +192,20 @@ limit enforcement and rollback. Tool calling is intentionally unsupported
 in this initial scope; Hermes may require it before cutover. The
 `hermes_scoped_private_relay_reviewed` preflight remains hard-false until
 all these requirements are independently verified and approved.
+
+## Upstream response integrity and cleanup (November 5 iteration)
+
+The opt-in relay's **non-streaming** path now buffers at most 8 MiB and
+validates a complete unique-key JSON object with a `choices` array
+**before** returning 200 to Hermes. Upstream oversized Content-Length,
+truncated/malformed JSON and duplicate JSON keys yield sanitized 502,
+rather than an apparently successful partial response. Request error and
+cancellation paths close their upstream client and release the bounded
+admission semaphore; streaming ownership transfers only after upstream
+status, content-type and size-header checks. Streamed output remains
+bounded by 8 MiB but cannot retroactively change an already-emitted
+HTTP 200 on a mid-stream failure; a separately witnessed live cancellation
+and network-disconnect canary remains mandatory before enabling the relay.
+
+This change does not alter the production container, Docker network,
+credentials, ingress, model allowlist or draft NO-GO decision.
