@@ -11,7 +11,7 @@ import asyncio
 import hmac
 import json
 import os
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -21,6 +21,7 @@ router = APIRouter(prefix="/api/internal/hermes-router/v1", include_in_schema=Fa
 _UPSTREAM = "http://llm-router:8088/v1/chat/completions"
 _MAX_REQUEST = 64 * 1024
 _MAX_RESPONSE = 8 * 1024 * 1024
+_MAX_SSE_FRAME = 256 * 1024
 _INFLIGHT = asyncio.Semaphore(2)
 
 
@@ -119,6 +120,79 @@ def _client() -> httpx.AsyncClient:
     )
 
 
+
+def _sse_frame(frame: bytes) -> bool:
+    """Strict OpenAI data frame; True only for the terminal [DONE] event."""
+    lines = frame.replace(b"\r\n", b"\n").split(b"\n")
+    data: list[bytes] = []
+    for line in lines:
+        if line.startswith(b":"):
+            continue
+        if not line.startswith(b"data:"):
+            raise ValueError("unsupported upstream event field")
+        data.append(line[5:].lstrip(b" "))
+    if len(data) != 1:
+        raise ValueError("missing or multiline upstream event")
+    if data[0] == b"[DONE]":
+        return True
+    try:
+        parsed = json.loads(
+            data[0], object_pairs_hook=_object_unique,
+            parse_constant=lambda _v: (_ for _ in ()).throw(
+                ValueError("nonfinite SSE JSON"),
+            ),
+        )
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError("invalid upstream SSE JSON") from exc
+    if type(parsed) is not dict or type(parsed.get("choices")) is not list:
+        raise ValueError("invalid upstream SSE schema")
+    return False
+
+
+async def _validated_sse(response: httpx.Response) -> AsyncIterator[bytes]:
+    """Bound frames and total bytes; withhold [DONE] until clean upstream EOF.
+
+    This preserves low-latency model token delivery while preventing a
+    truncated upstream stream from masquerading as a clean completion.
+    """
+    pending = bytearray()
+    consumed = 0
+    seen_done = False
+    deferred_done: bytes | None = None
+    async for chunk in response.aiter_bytes():
+        consumed += len(chunk)
+        if consumed > _MAX_RESPONSE:
+            raise ValueError("upstream SSE size limit")
+        pending.extend(chunk)
+        while True:
+            lf = pending.find(b"\n\n")
+            crlf = pending.find(b"\r\n\r\n")
+            if lf < 0 and crlf < 0:
+                break
+            if crlf >= 0 and (lf < 0 or crlf < lf):
+                end, delim = crlf, 4
+            else:
+                end, delim = lf, 2
+            frame = bytes(pending[:end])
+            del pending[:end + delim]
+            if not frame or len(frame) > _MAX_SSE_FRAME or seen_done:
+                raise ValueError("invalid or post-terminal SSE frame")
+            terminal = _sse_frame(frame)
+            output = frame + (b"\r\n\r\n" if delim == 4 else b"\n\n")
+            if terminal:
+                seen_done = True
+                deferred_done = output
+            else:
+                yield output
+        if len(pending) > _MAX_SSE_FRAME:
+            raise ValueError("oversized upstream SSE frame")
+    if not seen_done or pending.strip(b" \t\r\n"):
+        raise ValueError("missing terminal event or trailing upstream data")
+    if deferred_done is None:
+        raise ValueError("missing SSE terminal frame")
+    yield deferred_done
+
+
 @router.post("/chat/completions")
 async def chat_completions(request: Request):
     upstream_token = _credentials(request)
@@ -164,6 +238,14 @@ async def chat_completions(request: Request):
         ):
             raise _failure(502, "relay_upstream_size_invalid")
         if streaming:
+            # Read and validate a complete first model event *before*
+            # authorizing an HTTP 200 streamed response to Hermes.
+            frames = _validated_sse(response)
+            try:
+                first_frame = await anext(frames)
+            except (ValueError, StopAsyncIteration) as exc:
+                await frames.aclose()
+                raise _failure(502, "relay_upstream_sse_invalid") from exc
             stream_handoff = True
         if not streaming:
             # Fully validate non-streaming responses *before* sending the
@@ -210,19 +292,21 @@ async def chat_completions(request: Request):
             _INFLIGHT.release()
 
     async def chunks():
-        total = 0
         try:
-            async for chunk in response.aiter_bytes():
-                total += len(chunk)
-                if total > _MAX_RESPONSE:
-                    raise RuntimeError("relay_response_limit_reached")
-                yield chunk
+            yield first_frame
+            async for frame in frames:
+                yield frame
+        except (ValueError, httpx.HTTPError, OSError, TimeoutError):
+            # The HTTP status is already 200 after the first frame. Never
+            # fabricate a [DONE]; emit a bounded explicit terminal failure.
+            yield b'event: error\\ndata: {"error":"relay_stream_incomplete"}\\n\\n'
         finally:
+            await frames.aclose()
             await response.aclose()
             await client.aclose()
             _INFLIGHT.release()
 
     return StreamingResponse(
-        chunks(), media_type="text/event-stream" if streaming else "application/json",
+        chunks(), media_type="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
     )
