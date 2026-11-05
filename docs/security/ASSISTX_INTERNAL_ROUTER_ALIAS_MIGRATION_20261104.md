@@ -144,3 +144,51 @@ security verifier or attach privileged Hermes to a shared router bridge.
 
 The running router and Hermes adapter have not been changed. No production
 cutover, restart, or host firewall change is authorized; **NO-GO** remains.
+
+## Disabled-by-default scoped relay implementation (next iteration)
+
+A first **working research implementation**, not just a blocking preflight,
+now lives at `src/assistx/hermes_router_relay.py`. The AssistX API mounts
+its router **only** if `ASSISTX_HERMES_ROUTER_RELAY_ENABLED=true` is
+explicitly set before startup. Otherwise the endpoint is absent from the
+live FastAPI route table. It forwards **only**
+`POST /api/internal/hermes-router/v1/chat/completions` to the constant
+`http://llm-router:8088/v1/chat/completions`, from AssistX's previously
+approved `git_default` attachment. Hermes remains on its existing isolated
+network and would reach the AssistX API over the already available default
+network when separately authorized. No Docker or firewall changes occur in
+this PR.
+
+Admission requires all three independently configured runtime values:
+`ASSISTX_HERMES_RELAY_CLIENT_TOKEN` (a dedicated >=32 character client
+bearer, distinct from the router token), `ASSISTX_INTERNAL_SERVICE_TOKEN`
+(the upstream service token) and `ASSISTX_HERMES_RELAY_ALLOWED_MODELS`
+(an explicit comma-separated list of approved model identifiers). No missing
+token or model list falls back to a broad default. The relay only supports
+bounded **text-only** OpenAI-compatible chat requests at this stage.
+It limits requests to 64 KiB and 32 messages, up to 4,096 output tokens,
+up to two concurrent upstream calls and 8 MiB of response data.
+Unreviewed tool-call, multimodal and arbitrary proxy behavior is rejected.
+Its HTTP transport does not inherit environment proxies, does not follow
+redirects, does not propagate client cookies or admin headers, and issues
+only one fixed upstream path with a separate upstream credential.
+Mock-only negative tests cover disabled mode, bad auth, unwanted headers,
+unapproved models and fields, duplicate JSON, oversize, redirect, media
+type and upstream failures. Response streaming is bounded and cleaned up.
+
+**Do not enable this on the current public AssistX instance yet.** The
+actual operator-controlled Compose override must inject a separate Hermes
+relay client credential (never the router service token), explicitly change
+Hermes's `HERMES_LM_BASE_URL` to
+`http://assistx-api:8000/api/internal/hermes-router/v1` and the Hermes
+inference key to that dedicated credential. Existing operational Compose
+defaults have **not** been changed by this iteration; legacy Hermes
+routing remains unchanged in production. The API ingress layer must block
+the internal relay path from public access independently of application
+authentication; source review alone does not prove such a rule exists.
+Staging must show a real Hermes client can generate tokens and stream,
+with correct claim scopes, cancellation/backpressure, model/tool coverage,
+limit enforcement and rollback. Tool calling is intentionally unsupported
+in this initial scope; Hermes may require it before cutover. The
+`hermes_scoped_private_relay_reviewed` preflight remains hard-false until
+all these requirements are independently verified and approved.
