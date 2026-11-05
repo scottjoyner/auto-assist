@@ -66,18 +66,14 @@ def install_recovery_shadow_mode(api_module: Any) -> dict[str, Any]:
     @asynccontextmanager
     async def recovery_shadow_lifespan(_app):
         api_module.validate_runtime_configuration(strict=True)
-        neo = None
+        # Recovery shadow is not a privileged schema migration mechanism.
+        # Fail startup on absent/incomplete READ-mode schema attestation,
+        # rather than silently serving inherited routes after a failed check.
+        neo = api_module.Neo4jClient()
         try:
-            neo = api_module.Neo4jClient()
-            neo.ensure_schema()
-        except Exception as exc:  # schema check must not hide the recovery API
-            logger.warning("recovery shadow schema check failed: %s", exc)
+            neo.verify_runtime_schema_readonly()
         finally:
-            if neo is not None:
-                try:
-                    neo.close()
-                except Exception:
-                    pass
+            neo.close()
         logger.warning(
             "AssistX recovery shadow mode active; task execution and mutation "
             "controllers are disabled"
