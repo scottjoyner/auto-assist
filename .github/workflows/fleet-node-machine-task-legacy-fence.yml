@@ -1,0 +1,27 @@
+name: Fleet Node Legacy Task Machine-Deny (Synthetic)
+on:
+  pull_request:
+    paths:
+      - src/assistx/api.py
+      - src/assistx/fleet_node_agent.py
+      - src/assistx/fleet_node_auth.py
+      - tests/test_fleet_node_api.py
+      - tests/test_fleet_node_legacy_task_boundary_static.py
+      - .github/workflows/fleet-node-machine-task-legacy-fence.yml
+permissions:
+  contents: read
+jobs:
+  deny-only-api-source-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify machine identity cannot authorize legacy Task API
+        run: |
+          python -m py_compile src/assistx/api.py src/assistx/fleet_node_agent.py
+          python -m unittest discover -s tests -p test_fleet_node_legacy_task_boundary_static.py -v
