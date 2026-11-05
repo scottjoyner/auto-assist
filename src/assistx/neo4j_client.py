@@ -296,15 +296,24 @@ class Neo4jClient:
         An offline/missing constraint or denied SHOW privilege raises HOLD.
         """
         from neo4j import READ_ACCESS
-        from .schema_readiness import inspect_schema_readiness
+        from .schema_readiness import (
+            inspect_schema_readiness, inspect_runtime_principal,
+        )
 
+        # A source-only schema checker does not prove isolation if the same
+        # runtime process still holds Neo4j's shared native admin principal.
+        # Require owner-selected dedicated role and verify current user
+        # metadata before considering schema. No role pin => fail closed.
+        expected_role = os.getenv("ASSISTX_NEO4J_RUNTIME_ROLE", "")
         kwargs = {"default_access_mode": READ_ACCESS}
         if self.database:
             kwargs["database"] = self.database
         with self.driver.session(**kwargs) as session:
-            return inspect_schema_readiness(
+            principal = inspect_runtime_principal(session, expected_role)
+            schema = inspect_schema_readiness(
                 session, self.schema_operations()
             )
+        return {**principal, **schema}
 
     def ensure_schema(self, *, explicit_operator_migration: bool = False):
         """Elevated bootstrap ONLY, with explicit migration intent and custody.
