@@ -108,8 +108,12 @@ def test_compose_default_alias_pins_are_correct():
 def test_proposed_verified_runtime_is_preflight_only_not_cutover():
     read, calls = fake_reader(fixture_output())
     result = audit(read=read)
-    assert result["gate"] == "PASS_ALIAS_PATH_PREFLIGHT_ONLY"
-    assert all(result["checks"].values())
+    # Both API URLs and Hermes health may look good in this synthetic
+    # fixture, but isolation-preserving Hermes relay is not yet reviewed.
+    assert result["gate"] == "HOLD"
+    assert all(v for k, v in result["checks"].items()
+               if k != "hermes_scoped_private_relay_reviewed")
+    assert result["checks"]["hermes_scoped_private_relay_reviewed"] is False
     assert result["production_ready"] is False
     assert result["host_port_isolation_approved"] is False
     assert result["container_recreation_authorized"] is False
@@ -196,6 +200,20 @@ def test_source_default_without_network_attachment_denies(tmp_path):
     r = audit(read=read, root=tmp_path)
     assert r["gate"] == "HOLD"
     assert not r["checks"]["compose_defaults_use_router_alias"]
+
+
+def test_hermes_adapter_isolation_is_not_weakened_in_compose():
+    source = (ROOT / "docker-compose.yml").read_text()
+    section = source.split("  hermes-adapter:", 1)[1].split("\nvolumes:", 1)[0]
+    assert "HERMES_LM_BASE_URL=${HERMES_LM_BASE_URL:-http://host.docker.internal:8088/v1}" in section
+    # The adapter intentionally does not join the router bridge; CI's
+    # release-verify-compose policy must remain unmodified and passing.
+    assert "      - git_default" not in section
+    assert "    networks:" not in section
+    read, _ = fake_reader(fixture_output())
+    proof = audit(read=read)
+    assert proof["gate"] == "HOLD"
+    assert proof["checks"]["hermes_scoped_private_relay_reviewed"] is False
 
 
 def test_docker_instance_replacement_denied():
