@@ -209,3 +209,26 @@ and network-disconnect canary remains mandatory before enabling the relay.
 
 This change does not alter the production container, Docker network,
 credentials, ingress, model allowlist or draft NO-GO decision.
+
+## Stream completion integrity (next fleet iteration)
+
+The opt-in Hermes text-chat relay now validates bounded SSE frames and their
+OpenAI-style `data: {...}` JSON objects (with a `choices` array). It
+requires an upstream `data: [DONE]` final event before the relay ever
+forwards a successful terminal marker. It handles chunk-split LF/CRLF frames,
+caps the total stream at 8 MiB and individual frames at 256 KiB, rejects
+duplicate JSON fields, unknown event fields, malformed response JSON and
+trailing post-terminal data. A malformed first event yields a sanitized
+502 **before HTTP 200**. Later malformed/truncated streams produce a
+bounded `event: error` record with `relay_stream_incomplete` and never
+fabricate `[DONE]`. Upstream client, response and concurrency slot are
+released on completion, error or cancellation.
+
+**Limitations:** HTTP 200 cannot be rolled back after the first streamed
+model event; clients must treat the terminal `[DONE]` as completion and
+interpret the `event: error` record as failure. Some custom OpenAI-like
+backends emit nonstandard SSE fields/comment-only frames and may be
+rejected by this strict research-only relay; real Hermes compatibility
+and cancellation acceptance must be witnessed before a staging opt-in.
+This does not add tool calling, public ingress access or any live network
+change. The existing hard-false Hermes scoped relay gate remains HOLD.
