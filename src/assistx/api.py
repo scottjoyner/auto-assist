@@ -4785,7 +4785,8 @@ def api_voice_event(
     credentials: HTTPBasicCredentials | None = Depends(security),
     x_voice_signature: Optional[str] = Header(None),
 ):
-    # Allow either operator auth (Basic/trusted header) or signed callback auth.
+    # Accept operator Basic or separately verified signed callback auth;
+    # a request-supplied trusted proxy header alone never authorizes events.
     user = _auth_user_from_credentials(request, credentials)
     if user is None:
         _verify_voice_signature(body, x_voice_signature)
