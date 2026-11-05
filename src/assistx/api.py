@@ -502,9 +502,12 @@ security = HTTPBasic(auto_error=False)
 USER = os.getenv("BASIC_AUTH_USER")
 PASS = os.getenv("BASIC_AUTH_PASS")
 TRUSTED_AUTH_HEADER = os.getenv("TRUSTED_AUTH_HEADER", "").strip()
-if not USER and not PASS and not TRUSTED_AUTH_HEADER:
-    print("WARNING: No auth configured. Set BASIC_AUTH_USER/BASIC_AUTH_PASS or TRUSTED_AUTH_HEADER.")
-    print("WARNING: All auth-required endpoints will return 401.")
+# The trusted-header value is retained only for source/config migration audits.
+# A request header is not proof of proxy custody, TLS peer identity, or any
+# operator authorization. Header-only auth is DISABLED at this security gate.
+if not USER or not PASS:
+    print("WARNING: Basic authentication is incomplete; auth-required endpoints fail closed.")
+    print("WARNING: TRUSTED_AUTH_HEADER cannot substitute for independently verified credentials.")
 
 API_TOKEN: Optional[str] = os.getenv("API_TOKEN")  # If set, required for /upload-audio
 PAPERCLIP_WEBHOOK_SECRET: Optional[str] = os.getenv("PAPERCLIP_WEBHOOK_SECRET")
@@ -779,10 +782,12 @@ def _auth_user_from_credentials(
     request: Request,
     credentials: HTTPBasicCredentials | None,
 ) -> Optional[str]:
-    if TRUSTED_AUTH_HEADER:
-        trusted_user = request.headers.get(TRUSTED_AUTH_HEADER)
-        if trusted_user:
-            return trusted_user
+    # P0 #149: never turn a caller-controlled HTTP header into an operator
+    # principal. This service cannot independently verify reverse-proxy
+    # identity, header stripping on every alternate ingress, or mTLS custody.
+    # A future separately governed gateway can introduce an authenticated
+    # identity assertion with independent negative tests and source pinning.
+    # Until then: Basic only (or a separately signed webhook outside auth()).
     if credentials is None:
         return None
     if USER is None or PASS is None:
@@ -4780,7 +4785,8 @@ def api_voice_event(
     credentials: HTTPBasicCredentials | None = Depends(security),
     x_voice_signature: Optional[str] = Header(None),
 ):
-    # Allow either operator auth (Basic/trusted header) or signed callback auth.
+    # Accept operator Basic or separately verified signed callback auth;
+    # a request-supplied trusted proxy header alone never authorizes events.
     user = _auth_user_from_credentials(request, credentials)
     if user is None:
         _verify_voice_signature(body, x_voice_signature)

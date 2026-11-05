@@ -1,0 +1,25 @@
+name: Trusted Header Provenance P0 HOLD (Synthetic)
+on:
+  pull_request:
+    paths:
+      - src/assistx/api.py
+      - tests/test_trusted_header_provenance_static.py
+      - tests/test_fleet_node_api.py
+      - .github/workflows/trusted-header-provenance-p0.yml
+permissions:
+  contents: read
+jobs:
+  fail-closed-source-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and verify trusted-header refusal at source
+        run: |
+          python -B -m py_compile src/assistx/api.py tests/test_trusted_header_provenance_static.py
+          python -B -m unittest discover -s tests -p test_trusted_header_provenance_static.py -v
