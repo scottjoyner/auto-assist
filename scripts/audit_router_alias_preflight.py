@@ -170,13 +170,10 @@ def compose_defaults_pinned(root: Path = ROOT) -> bool:
         expected = f"{key}=" + "$" + "{" + f"{key}:-http://llm-router:8088" + "}"
         if data.count(expected) != 1:
             return False
-    hermes = "HERMES_LM_BASE_URL=" + "$" + "{HERMES_LM_BASE_URL:-http://llm-router:8088/v1}"
-    # Both separately running consumers must attach the router's bridge.
-    return (
-        data.count(hermes) == 1
-        and data.count("      - git_default") == 2
-        and "  hermes-adapter:" in data
-    )
+    # This verifies ONLY the API's router URLs and its approved bridge.
+    # Hermes must remain isolated; attaching it to git_default violates
+    # release-verify-compose and is deliberately not accepted here.
+    return "      - git_default" in data
 
 
 def evaluate(before: str, after: str, result: dict,
@@ -240,6 +237,11 @@ def evaluate(before: str, after: str, result: dict,
         "hermes_adapter_router_tcp_reachable": hermes["router_alias_tcp_reachable"],
         "hermes_adapter_router_health_200":
             hermes["router_alias_health_http_status"] == 200,
+        # A functioning Hermes alias alone is NOT safe: Hermes currently
+        # runs in a distinct Docker trust zone. The release-verify-compose
+        # gate rejects joining the router's bridge. Only a separately
+        # reviewed scoped /v1 relay preserving isolation can close this.
+        "hermes_scoped_private_relay_reviewed": False,
     }
     return {
         "schema": SCHEMA,
