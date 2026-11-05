@@ -157,18 +157,54 @@ async def chat_completions(request: Request):
         content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
         if content_type != ("text/event-stream" if streaming else "application/json"):
             raise _failure(502, "relay_upstream_media_type_invalid")
+        size_hint = response.headers.get("content-length")
+        if size_hint is not None and (
+            not size_hint.isdigit() or int(size_hint) > _MAX_RESPONSE
+        ):
+            raise _failure(502, "relay_upstream_size_invalid")
+        if not streaming:
+            # Fully validate non-streaming responses *before* sending the
+            # first byte or 200 status to the privileged Hermes caller.
+            # Partial/truncated/unbounded JSON may never be treated as success.
+            received = bytearray()
+            async for chunk in response.aiter_bytes():
+                if len(received) + len(chunk) > _MAX_RESPONSE:
+                    raise _failure(502, "relay_upstream_size_invalid")
+                received.extend(chunk)
+            try:
+                parsed = json.loads(
+                    received, object_pairs_hook=_object_unique,
+                    parse_constant=lambda _constant: (
+                        _ for _ in ()
+                    ).throw(ValueError("nonfinite upstream JSON")),
+                )
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise _failure(502, "relay_upstream_json_invalid") from exc
+            if (
+                type(parsed) is not dict
+                or type(parsed.get("choices")) is not list
+            ):
+                raise _failure(502, "relay_upstream_schema_invalid")
+            return JSONResponse(
+                content=parsed,
+                headers={
+                    "Cache-Control": "no-store",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
     except HTTPException:
-        if response is not None:
-            await response.aclose()
-        await client.aclose()
-        _INFLIGHT.release()
         raise
     except (httpx.HTTPError, OSError, TimeoutError) as exc:
-        if response is not None:
-            await response.aclose()
-        await client.aclose()
-        _INFLIGHT.release()
         raise _failure(503, "relay_upstream_unavailable") from exc
+    finally:
+        # A completed JSON response is returned above, so never leave its
+        # upstream body open or leak the two-slot concurrency semaphore.
+        # Streaming transfers ownership to the iterator below instead.
+        if response is None or not streaming or response.status_code != 200:
+            if response is not None:
+                await response.aclose()
+            await client.aclose()
+            _INFLIGHT.release()
 
     async def chunks():
         total = 0
