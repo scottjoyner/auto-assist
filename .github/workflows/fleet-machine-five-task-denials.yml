@@ -1,0 +1,43 @@
+name: Fleet Machine All-Five Task Denial (Synthetic ASGI)
+
+on:
+  pull_request:
+    paths:
+      - "src/assistx/api.py"
+      - "src/assistx/fleet_node_auth.py"
+      - "src/assistx/node_identity.py"
+      - "tests/test_fleet_machine_five_task_route_denials.py"
+      - ".github/workflows/fleet-machine-five-task-denials.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  machine-identity-is-not-task-authority:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact source without retained credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install actual API dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Syntax and exact source contract
+        run: |
+          python -m py_compile src/assistx/api.py src/assistx/fleet_node_agent.py tests/test_fleet_machine_five_task_route_denials.py
+          python -m unittest discover -s tests -p test_fleet_node_legacy_task_boundary_static.py -v
+      - name: Run real synthetic ASGI five-route denial matrix (no skip)
+        env:
+          PYTHONPATH: src
+          FLEET_BACKGROUND_ENABLED: "false"
+        run: |
+          python -m pytest -q -x -ra tests/test_fleet_machine_five_task_route_denials.py
