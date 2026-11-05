@@ -261,6 +261,19 @@ def probe_node_identity(*, assistx_url: str, node_id: str) -> dict[str, Any]:
     return result
 
 
+def _machine_task_legacy_hold() -> bool:
+    """Machine-token staging never falls back to the legacy Task worker.
+
+    Identity-only authorization is not dispatch/claim authority. Even a valid
+    node token plus operator Basic credentials cannot opt into legacy Tasks.
+    A partial identity configuration remains a HOLD, never Basic fallback.
+    """
+    return bool(
+        os.getenv("FLEET_NODE_TOKEN", "")
+        or os.getenv("FLEET_NODE_IDENTITY_APPROVED_ORIGIN", "")
+    )
+
+
 def _default_model(lmstudio_url: str | None) -> str:
     if not lmstudio_url:
         return "local/model"
@@ -564,6 +577,10 @@ def _claim_and_run(
     task: dict[str, Any],
     lmstudio_url: str | None,
 ) -> None:
+    if _machine_task_legacy_hold():
+        # Never send a registered node token to operator-era Task paths or
+        # attempt inference after their incomplete claim/lease semantics.
+        return
     task_id = str(task.get("task_id") or task.get("id") or "")
     if not task_id:
         return
@@ -716,6 +733,9 @@ def _poll_once(
     caps: list[str],
     lmstudio_url: str | None,
 ) -> bool:
+    if _machine_task_legacy_hold():
+        # Token enrollment is not a Task grant. No HTTP poll, no Basic fallback.
+        return False
     node_headers = _node_auth_headers()
     query = urllib.parse.urlencode(
         {"state": "READY", "limit": "20", "agent_id": node_id}
@@ -760,6 +780,14 @@ def run(
     lmstudio_url: str | None,
 ) -> None:
     del concurrency  # current worker loop intentionally executes one claimed task at a time
+    if _machine_task_legacy_hold():
+        # Starting a background worker while identity-only staging is active
+        # would make repeated legacy polls/claims despite zero approved slots.
+        # Fail before any Router POST, Task GET or model request.
+        raise RuntimeError(
+            "machine identity mode has no legacy Task authority; "
+            "use --identity-probe-only in supervised staging"
+        )
     node_id = _detect_hostname()
     auth = _auth_from_env()
 

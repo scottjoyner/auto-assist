@@ -333,5 +333,98 @@ class IdentityOnlyProbeSafety(unittest.TestCase):
         self.assertEqual(exit_ctx.exception.code, 2)
         probe.assert_called_once()
 
+
+class LegacyMachineTaskNoDispatch(unittest.TestCase):
+    """New machine tokens can diagnose identity but must never dispatch work."""
+
+    def _machine(self, *, token="SYNTHETIC", origin=""):
+        return patch.dict(AGENT.os.environ, {
+            "FLEET_NODE_ID": "node-synthetic",
+            "FLEET_NODE_TOKEN": token,
+            "FLEET_NODE_IDENTITY_APPROVED_ORIGIN": origin,
+        })
+
+    def test_registered_node_token_cannot_call_legacy_task_poll(self):
+        with self._machine(), patch.object(
+            AGENT, "_http", side_effect=AssertionError("never send token or operator Basic")
+        ), patch.object(
+            AGENT, "_claim_and_run", side_effect=AssertionError("never claim")
+        ):
+            self.assertFalse(AGENT._poll_once(
+                assistx_url="http://untrusted.invalid:8000",
+                router_url="http://untrusted.invalid:8088",
+                auth=("operator", "synthetic-password"),
+                node_id="node-synthetic", caps=["llm"], lmstudio_url=None,
+            ))
+
+    def test_partial_node_token_without_node_id_fails_closed(self):
+        with self._machine(), patch.dict(AGENT.os.environ, {"FLEET_NODE_ID": ""}), patch.object(
+            AGENT, "_http", side_effect=AssertionError("no Basic fallback")
+        ):
+            self.assertFalse(AGENT._poll_once(
+                assistx_url="http://untrusted.invalid",
+                router_url="http://untrusted.invalid",
+                auth=("operator", "synthetic"), node_id="",
+                caps=["llm"], lmstudio_url=None,
+            ))
+
+    def test_approved_origin_without_node_token_still_blocks_legacy(self):
+        with self._machine(token="", origin="https://approved.invalid"), patch.object(
+            AGENT, "_http", side_effect=AssertionError("no token and no Basic fallback")
+        ):
+            self.assertFalse(AGENT._poll_once(
+                assistx_url="http://untrusted.invalid",
+                router_url="http://untrusted.invalid",
+                auth=("operator", "synthetic"), node_id="node-synthetic",
+                caps=["llm"], lmstudio_url=None,
+            ))
+
+    def test_direct_legacy_claim_helper_cannot_bypass_hold(self):
+        with self._machine(), patch.object(
+            AGENT, "_http", side_effect=AssertionError("no claim HTTP")
+        ), patch.object(
+            AGENT.uuid, "uuid4", side_effect=AssertionError("no lease/session")
+        ), patch.object(
+            AGENT.threading, "Thread", side_effect=AssertionError("no heartbeat")
+        ):
+            self.assertIsNone(AGENT._claim_and_run(
+                assistx_url="http://untrusted.invalid",
+                router_url="http://untrusted.invalid",
+                auth=("operator", "synthetic"),
+                node_id="node-synthetic", caps=["llm"],
+                task={"id": "synthetic-task", "required_capabilities": ["llm"]},
+                lmstudio_url="http://127.0.0.1:1234",
+            ))
+
+    def test_agent_run_rejects_before_router_or_model_activity(self):
+        with self._machine(), patch.object(
+            AGENT, "_http", side_effect=AssertionError("no network request")
+        ), patch.object(
+            AGENT, "_detect_capabilities", side_effect=AssertionError("no model probe")
+        ), patch.object(
+            AGENT, "time", **{"sleep.side_effect": AssertionError("no worker loop")}
+        ):
+            with self.assertRaisesRegex(RuntimeError, "no legacy Task authority"):
+                AGENT.run(
+                    assistx_url="http://untrusted.invalid",
+                    router_url="http://untrusted.invalid",
+                    poll_interval=10, concurrency=1, lmstudio_url=None,
+                )
+
+    def test_unconfigured_legacy_workflow_retains_existing_http_401(self):
+        # This test preserves prior source compatibility only; it is NOT
+        # authorization to supply Basic credentials to machine workers.
+        with self._machine(token="", origin=""), patch.object(
+            AGENT, "_http", return_value=(401, {"detail": "Unauthorized"})
+        ) as mock_http:
+            self.assertFalse(AGENT._poll_once(
+                assistx_url="http://synthetic.invalid",
+                router_url="http://synthetic.invalid",
+                auth=("operator", "synthetic"), node_id="node-synthetic",
+                caps=["llm"], lmstudio_url=None,
+            ))
+            mock_http.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
