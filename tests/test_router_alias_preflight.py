@@ -24,6 +24,8 @@ SPEC.loader.exec_module(MODULE)
 CONTAINER = MODULE.CONTAINER
 IDENTITY_TEMPLATE = MODULE.IDENTITY_TEMPLATE
 RUNTIME_PROBE = MODULE.RUNTIME_PROBE
+HERMES_PROBE = MODULE.HERMES_PROBE
+HERMES_CONTAINER = MODULE.HERMES_CONTAINER
 SETTINGS = MODULE.SETTINGS
 audit = MODULE.audit
 compose_defaults_pinned = MODULE.compose_defaults_pinned
@@ -57,22 +59,40 @@ def fixture_output(*, base=True, fleet=True, alias_dns=True,
         "credentials_or_headers_sent": False,
         "response_bodies_read": False,
         "production_mutation": False,
+        "hermes": {
+            "configured": True,
+            "canonical_internal_router_v1_url": True,
+            "embedded_userinfo": False,
+            "router_alias_dns_resolves": True,
+            "router_alias_tcp_reachable": True,
+            "router_alias_health_http_status": 200,
+            "credentials_or_headers_sent": False,
+            "response_bodies_read": False,
+            "production_mutation": False,
+            "identity_stable": True,
+        },
     }
 
 
-def fake_reader(response: dict, *, restarted=False):
+def fake_reader(response: dict, *, restarted=False, hermes_restarted=False):
     calls = []
-    count = [0]
+    counts = {CONTAINER: 0, HERMES_CONTAINER: 0}
 
     def read(argv):
         calls.append(tuple(argv))
-        if argv == ["docker", "inspect", "--format", IDENTITY_TEMPLATE, CONTAINER]:
-            count[0] += 1
-            if restarted and count[0] > 1:
-                return IMAGE + "|2026-11-04T09:16:05Z|true"
-            return IDENTITY
+        for container in counts:
+            if argv == ["docker", "inspect", "--format", IDENTITY_TEMPLATE, container]:
+                counts[container] += 1
+                if ((container == CONTAINER and restarted)
+                        or (container == HERMES_CONTAINER and hermes_restarted)):
+                    if counts[container] > 1:
+                        return IMAGE + "|2026-11-04T09:16:05Z|true"
+                return IDENTITY
         if argv == ["docker", "exec", CONTAINER, "python", "-B", "-c", RUNTIME_PROBE]:
             return json.dumps(response)
+        if argv == ["docker", "exec", HERMES_CONTAINER, "python", "-B", "-c", HERMES_PROBE]:
+            return json.dumps({k: v for k, v in response["hermes"].items()
+                               if k != "identity_stable"})
         raise AssertionError("unapproved Docker call: " + str(argv))
     return read, calls
 
@@ -129,6 +149,41 @@ def test_username_or_password_in_url_denies():
     assert not r["checks"]["no_embedded_url_credentials"]
 
 
+@pytest.mark.parametrize(("key", "value"), [
+    ("canonical_internal_router_v1_url", False),
+    ("configured", False),
+    ("embedded_userinfo", True),
+    ("router_alias_dns_resolves", False),
+    ("router_alias_tcp_reachable", False),
+    ("router_alias_health_http_status", None),
+    ("identity_stable", False),
+])
+def test_hermes_private_router_url_or_transport_failure_blocks_combined_preflight(key, value):
+    result = fixture_output()
+    result["hermes"][key] = value
+    proof = evaluate(IDENTITY, IDENTITY, result, compose_defaults_correct=True)
+    assert proof["gate"] == "HOLD"
+    assert proof["production_ready"] is False
+
+
+def test_missing_or_extra_hermes_evidence_rejected():
+    result = fixture_output()
+    del result["hermes"]
+    with pytest.raises(ValueError, match="Hermes runtime proof missing"):
+        evaluate(IDENTITY, IDENTITY, result, compose_defaults_correct=True)
+    result = fixture_output()
+    result["hermes"]["secrets"] = "should-never-be-in-receipt"
+    with pytest.raises(ValueError, match="unexpected Hermes"):
+        evaluate(IDENTITY, IDENTITY, result, compose_defaults_correct=True)
+
+
+def test_hermes_container_identity_change_forces_hold():
+    read, _ = fake_reader(fixture_output(), hermes_restarted=True)
+    result = audit(read=read)
+    assert result["gate"] == "HOLD"
+    assert not result["checks"]["hermes_adapter_identity_stable"]
+
+
 def test_source_default_without_network_attachment_denies(tmp_path):
     (tmp_path / "docker-compose.yml").write_text(
         "\n".join(
@@ -176,8 +231,12 @@ def test_unexpected_probe_side_effect_or_secret_field_denied():
     r["credentials_or_headers_sent"] = True
     with pytest.raises(ValueError):
         evaluate(IDENTITY, IDENTITY, r, compose_defaults_correct=True)
-    assert "AUTO_ROUTER_ADMIN_TOKEN" not in RUNTIME_PROBE
-    assert "FLEET_ROUTER_BEARER_TOKEN" not in RUNTIME_PROBE
+    assert "AUTO_ROUTER_ADMIN_TOKEN" not in RUNTIME_PROBE + HERMES_PROBE
+    assert "FLEET_ROUTER_BEARER_TOKEN" not in RUNTIME_PROBE + HERMES_PROBE
+    assert "HERMES_LM_API_KEY" not in HERMES_PROBE
+    assert "'/admin/" not in HERMES_PROBE
+    assert "'POST'" not in HERMES_PROBE
+    assert ".read(" not in HERMES_PROBE
     assert 'getresponse().status' in RUNTIME_PROBE
     assert '.read(' not in RUNTIME_PROBE
     assert "'/admin/" not in RUNTIME_PROBE
