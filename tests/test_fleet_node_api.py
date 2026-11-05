@@ -212,3 +212,65 @@ def test_identity_probe_denies_operator_only_and_invalid_machine(
     )
     assert invalid.status_code == 403
     assert fake_fleet_neo.calls == []
+
+
+def test_spoofed_trusted_header_cannot_open_trace_ui_without_basic(
+    monkeypatch, fake_fleet_neo
+):
+    """P0 #149: previously header-only /traces returned 200 in a synthetic lab."""
+    import assistx.api as api
+
+    monkeypatch.setattr(api, "TRUSTED_AUTH_HEADER", "X-Synthetic-Proxy-Identity")
+    monkeypatch.setattr(api, "USER", "operator")
+    monkeypatch.setattr(api, "PASS", "synthetic-operator-pass")
+    client = TestClient(api_router.app)
+    forged = client.get(
+        "/traces", headers={"X-Synthetic-Proxy-Identity": "operator"}
+    )
+    assert forged.status_code == 401
+    task = client.get(
+        "/api/agent/tasks?agent_id=node-a",
+        headers={"X-Synthetic-Proxy-Identity": "operator"},
+    )
+    assert task.status_code == 401
+    assert fake_fleet_neo.calls == []
+
+
+def test_spoofed_trusted_header_does_not_override_basic_identity(
+    monkeypatch, fake_fleet_neo
+):
+    import assistx.api as api
+
+    monkeypatch.setattr(api, "TRUSTED_AUTH_HEADER", "X-Synthetic-Proxy-Identity")
+    monkeypatch.setattr(api, "USER", "operator")
+    monkeypatch.setattr(api, "PASS", "synthetic-operator-pass")
+    client = TestClient(api_router.app)
+    accepted = client.get(
+        "/api/agent/tasks?agent_id=node-a",
+        auth=("operator", "synthetic-operator-pass"),
+        headers={"X-Synthetic-Proxy-Identity": "forged-admin"},
+    )
+    assert accepted.status_code == 200
+    wrong_basic = client.get(
+        "/api/agent/tasks?agent_id=node-a",
+        auth=("operator", "wrong-basic"),
+        headers={"X-Synthetic-Proxy-Identity": "operator"},
+    )
+    assert wrong_basic.status_code == 401
+
+
+def test_header_only_without_basic_configuration_is_not_authority(
+    monkeypatch, fake_fleet_neo
+):
+    import assistx.api as api
+
+    monkeypatch.setattr(api, "TRUSTED_AUTH_HEADER", "X-Synthetic-Proxy-Identity")
+    monkeypatch.setattr(api, "USER", None)
+    monkeypatch.setattr(api, "PASS", None)
+    client = TestClient(api_router.app)
+    response = client.get(
+        "/api/agent/tasks",
+        headers={"X-Synthetic-Proxy-Identity": "operator"},
+    )
+    assert response.status_code == 401
+    assert fake_fleet_neo.calls == []
