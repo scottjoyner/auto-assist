@@ -285,7 +285,7 @@ services:
       - HERMES_LOG_LEVEL=${HERMES_LOG_LEVEL:-INFO}
       - AUTO_ASSIGN_BASE_URL=${AUTO_ASSIGN_BASE_URL:-http://host.docker.internal:8090}
       - HERMES_PROVIDER=${HERMES_PROVIDER:-assistx-router}
-      - HERMES_LM_BASE_URL=${HERMES_LM_BASE_URL:-http://host.docker.internal:8088/v1}
+      - HERMES_LM_BASE_URL=${HERMES_LM_BASE_URL:-http://llm-router:8088/v1}
       - OPENAI_API_KEY=${AUTO_ROUTER_INTERNAL_SERVICE_TOKEN:?set router internal service token}
       - HERMES_LM_API_KEY=${AUTO_ROUTER_INTERNAL_SERVICE_TOKEN:?set router internal service token}
       - HERMES_MODEL=${HERMES_MODEL:-toolcall-v5-3b-combined-r2}
@@ -318,6 +318,11 @@ services:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Preserve default app/Redis DNS while admitting the private router
+    # alias; do not depend on the exposed host-published 8088 endpoint.
+    networks:
+      - default
+      - git_default
     volumes:
       # Source code (live edit)
       - ./src:/app/src
