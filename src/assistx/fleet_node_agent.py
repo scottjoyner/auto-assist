@@ -190,6 +190,63 @@ def _node_auth_headers() -> dict[str, str]:
     return {"X-Fleet-Node-Id": node_id, "X-Fleet-Node-Token": token}
 
 
+def probe_node_identity(*, assistx_url: str, node_id: str) -> dict[str, Any]:
+    """Manually invoked identity-only diagnostic. NEVER checks or claims Tasks.
+
+    Only a deliberately approved HTTPS origin or exact IP loopback HTTP is
+    eligible for credential submission. Redirects and proxies are separately
+    disabled by _http for node-token requests. No operator Basic fallback.
+    """
+    result: dict[str, Any] = {
+        "contract": "fleet-node-identity-probe-v1",
+        "identity_verified": False,
+        "task_admission": "HOLD",
+        "legacy_task_authorized": False,
+        "production_admission_permitted": False,
+    }
+    headers = _node_auth_headers()
+    if (not headers or not isinstance(node_id, str)
+            or not node_id or headers.get("X-Fleet-Node-Id") != node_id):
+        result["reason"] = "MISSING_OR_MISMATCHED_NODE_IDENTITY"
+        return result
+    try:
+        parsed = urllib.parse.urlsplit(assistx_url)
+        # Accept a plain root origin only: no basic credentials, query, fragment
+        # or alternate path. Never send node secrets to arbitrary HTTP hosts.
+        if (not parsed.hostname or parsed.username is not None
+                or parsed.password is not None or parsed.path not in {"", "/"}
+                or parsed.query or parsed.fragment or parsed.port is None):
+            result["reason"] = "UNAPPROVED_IDENTITY_ORIGIN"
+            return result
+        if parsed.scheme != "https" and not (
+            parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "::1"}
+        ):
+            result["reason"] = "UNAPPROVED_IDENTITY_ORIGIN"
+            return result
+    except (TypeError, ValueError, AttributeError):
+        result["reason"] = "UNAPPROVED_IDENTITY_ORIGIN"
+        return result
+    status, body = _http(
+        "GET", assistx_url.rstrip("/") + "/api/fleet-node/identity",
+        auth=None, headers=headers, timeout=5,
+    )
+    if (status == 200 and isinstance(body, dict)
+            and set(body) == {
+                "machine_identity_verified", "node_id",
+                "task_admission", "legacy_task_authorized",
+            }
+            and body["machine_identity_verified"] is True
+            and body["node_id"] == node_id
+            and body["task_admission"] == "HOLD"
+            and body["legacy_task_authorized"] is False):
+        result["identity_verified"] = True
+        result["reason"] = "IDENTITY_ONLY_NO_TASK_AUTHORITY"
+    else:
+        # Never emit raw HTTP body, host, token, username or error string.
+        result["reason"] = "IDENTITY_NOT_VERIFIED"
+    return result
+
+
 def _default_model(lmstudio_url: str | None) -> str:
     if not lmstudio_url:
         return "local/model"
@@ -730,7 +787,17 @@ def main() -> None:
         "--concurrency", type=int, default=int(os.getenv("FLEET_CONCURRENCY", "1"))
     )
     parser.add_argument("--lmstudio-url", default=os.getenv("FLEET_LMSTUDIO_URL"))
+    parser.add_argument(
+        "--identity-probe-only", action="store_true",
+        help="one-shot registered machine identity check; never polls/claims Tasks",
+    )
     args = parser.parse_args()
+    if args.identity_probe_only:
+        print(json.dumps(probe_node_identity(
+            assistx_url=args.assistx_url, node_id=_detect_hostname(),
+        ), sort_keys=True))
+        # A positive identity probe is NOT machine dispatch or release approval.
+        raise SystemExit(2)
     run(
         assistx_url=args.assistx_url,
         router_url=args.router_url,
