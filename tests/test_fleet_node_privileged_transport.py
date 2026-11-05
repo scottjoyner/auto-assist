@@ -234,7 +234,9 @@ class IdentityOnlyProbeSafety(unittest.TestCase):
         )
         with self._registered(), patch.object(AGENT, "_http", side_effect=AssertionError("never send token")):
             for url in bad:
-                with self.subTest(url=url):
+                with self.subTest(url=url), patch.dict(AGENT.os.environ, {
+                    "FLEET_NODE_IDENTITY_APPROVED_ORIGIN": url,
+                }):
                     result = AGENT.probe_node_identity(
                         assistx_url=url, node_id="node-synthetic"
                     )
@@ -250,7 +252,9 @@ class IdentityOnlyProbeSafety(unittest.TestCase):
             )
             self.assertFalse(accepted["identity_verified"])
             fake_http.assert_called_once()
-        with self._registered(), patch.object(AGENT, "_http", side_effect=AssertionError("localhost not pinned")):
+        with self._registered(), patch.dict(AGENT.os.environ, {
+            "FLEET_NODE_IDENTITY_APPROVED_ORIGIN": "http://localhost:8000",
+        }), patch.object(AGENT, "_http", side_effect=AssertionError("localhost must be rejected")):
             refused = AGENT.probe_node_identity(
                 assistx_url="http://localhost:8000", node_id="node-synthetic"
             )
