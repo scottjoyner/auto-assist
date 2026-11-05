@@ -174,6 +174,26 @@ class SchemaRuntimeReadonlyTests(unittest.TestCase):
                 offenders.append((str(path.relative_to(app_root)), fn, node.func.attr))
         self.assertEqual(offenders, [], "unreviewed implicit schema DDL caller")
 
+    def test_recovery_shadow_does_not_create_schema_or_swallow_mismatch(self):
+        tree = ast.parse(
+            (ROOT / "src" / "assistx" / "recovery_mode.py").read_text(
+                encoding="utf-8"
+            )
+        )
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.AsyncFunctionDef)
+                  and n.name == "recovery_shadow_lifespan")
+        body = ast.unparse(fn)
+        self.assertNotIn("ensure_schema(", body)
+        self.assertIn("verify_runtime_schema_readonly()", body)
+        self.assertNotIn("recovery shadow schema check failed", body)
+        # A missing schema must not silently start the original app's
+        # inherited API handlers through a swallowed Exception.
+        self.assertFalse(any(
+            isinstance(node, ast.ExceptHandler)
+            for node in ast.walk(fn)
+        ))
+
     def test_schema_creation_requires_explicit_separate_operator_intent(self):
         tree = ast.parse(NEO_PATH.read_text(encoding="utf-8"))
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
