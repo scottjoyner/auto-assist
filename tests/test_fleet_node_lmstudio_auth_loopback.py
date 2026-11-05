@@ -4,19 +4,17 @@ Synthetic server on an ephemeral port, intercepted test requests only.
 The live LM Studio model server at port 1234 is never accessed.
 """
 from __future__ import annotations
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
 import json
-import os
-from pathlib import Path
-import tempfile
 import threading
-from unittest.mock import patch
 import urllib.parse
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from assistx import fleet_node_agent
 from assistx.lm_studio_client_auth import LMStudioAuthHold
+
+from assistx import fleet_node_agent
 
 GOOD = "synthetic-allowed-agent-20261024"
 BAD = "synthetic-denied-agent-20261024"
@@ -58,7 +56,7 @@ def auth_server(monkeypatch, tmp_path):
     server.current_token = GOOD
     loop = threading.Thread(target=server.serve_forever, daemon=True)
     loop.start()
-    actual_urlopen = urllib.request.urlopen
+    actual_build_opener = urllib.request.build_opener
     token = tmp_path / "fake-bearer"
     token.write_text(GOOD)
     token.chmod(0o600)
@@ -66,20 +64,28 @@ def auth_server(monkeypatch, tmp_path):
     monkeypatch.setenv("FLEET_LM_TOKEN_FILE", str(token))
     requests = []
 
-    def redirect(request, timeout):
-        target = urllib.parse.urlsplit(request.full_url)
-        assert target.scheme == "http"
-        assert (target.hostname, target.port) == ("127.0.0.1", 1234)
-        assert target.path in ("/v1/models", "/v1/chat/completions")
-        requests.append(request.get_method())
-        redirected = urllib.request.Request(
-            "http://127.0.0.1:" + str(server.server_port) + target.path,
-            data=request.data, headers=dict(request.headers),
-            method=request.get_method(),
-        )
-        return actual_urlopen(redirected, timeout=timeout)
+    def intercepted_secure_opener(*handlers):
+        # Keep the actual no-proxy/no-redirect opener supplied by the agent.
+        # Only the synthetic target URL is mapped to our local test server.
+        secure_opener = actual_build_opener(*handlers)
 
-    monkeypatch.setattr(urllib.request, "urlopen", redirect)
+        class Interceptor:
+            def open(self, request, *, timeout):
+                target = urllib.parse.urlsplit(request.full_url)
+                assert target.scheme == "http"
+                assert (target.hostname, target.port) == ("127.0.0.1", 1234)
+                assert target.path in ("/v1/models", "/v1/chat/completions")
+                requests.append(request.get_method())
+                synthetic_request = urllib.request.Request(
+                    "http://127.0.0.1:" + str(server.server_port) + target.path,
+                    data=request.data, headers=dict(request.headers),
+                    method=request.get_method(),
+                )
+                return secure_opener.open(synthetic_request, timeout=timeout)
+
+        return Interceptor()
+
+    monkeypatch.setattr(urllib.request, "build_opener", intercepted_secure_opener)
     try:
         yield server, token, requests
     finally:
