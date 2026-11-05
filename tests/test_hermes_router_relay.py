@@ -241,7 +241,7 @@ def test_streaming_media_mismatch_releases_upstream_slot(
         assert request(client, {**VALID, "stream": True}).status_code == 502
     mock_router(monkeypatch, lambda _req: httpx.Response(
         200, headers={"Content-Type": "text/event-stream"},
-        content=b'data: [DONE]\\n\\n',
+        content=b'data: {"choices":[]}\n\ndata: [DONE]\n\n',
     ))
     answer = request(client, {**VALID, "stream": True})
     assert answer.status_code == 200
