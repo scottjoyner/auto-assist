@@ -156,26 +156,30 @@ def _default_auth(
     request: Request,
     credentials: HTTPBasicCredentials | None = Depends(security),
 ) -> str:
-    if _injected_auth_dependency is not None:
-        return _injected_auth_dependency(request, credentials)
-    if credentials:
-        return credentials.username
-    return "system"
+    # Swarm routes can be imported without the assembled AssistX API. Their
+    # standalone state has NO independently verifiable Basic secret, scope, or
+    # principal custody. A username (or an implicit "system" identity) is not
+    # authentication. Deny before any graph or model operation.
+    if _injected_auth_dependency is None:
+        raise HTTPException(
+            status_code=401, detail="verified operator authentication unavailable"
+        )
+    return _injected_auth_dependency(request, credentials)
 
 
 def _optional_operator_auth(
     request: Request,
     credentials: HTTPBasicCredentials | None = Depends(security),
 ) -> str | None:
-    """Return an operator identity or defer to signed webhook auth.
+    """Return a verified operator or defer to independently signed voice HMAC.
 
-    The canonical voice boundary supports the same operator Basic/trusted-header
-    authentication as the rest of AssistX, but a missing or invalid operator
-    credential must not pre-empt raw-body HMAC verification.
+    No injected operator dependency means no operator identity, regardless of
+    supplied Basic username/password. Voice routes separately verify a raw-body
+    HMAC when this function returns None; there is NO unsigned fallback.
     """
 
     if _injected_auth_dependency is None:
-        return credentials.username if credentials else None
+        return None
     try:
         return _injected_auth_dependency(request, credentials)
     except HTTPException as exc:
