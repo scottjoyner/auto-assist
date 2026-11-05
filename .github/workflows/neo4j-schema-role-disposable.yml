@@ -1,0 +1,40 @@
+name: Neo4j Enterprise Schema and Restricted Role (Disposable)
+on:
+  pull_request:
+    paths:
+      - src/assistx/neo4j_client.py
+      - src/assistx/schema_readiness.py
+      - scripts/ci_neo4j_schema_readonly_disposable.py
+      - .github/workflows/neo4j-schema-role-disposable.yml
+permissions:
+  contents: read
+jobs:
+  actual-isolated-neo4j:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      CI_DISPOSABLE_NEO4J: synthetic-only
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned Neo4j client on ephemeral hosted runner
+        run: python -m pip install 'neo4j==5.26.0'
+      - name: Start synthetic Neo4j Enterprise with loopback-only Bolt; no volume mounts
+        run: |
+          docker run --rm -d --name assistx-schema-ci --cpus=2 --memory=3g --pids-limit=256 \
+            -p 127.0.0.1:27888:7687 \
+            -e NEO4J_AUTH=neo4j/synthetic-neo4j-enterprise-schema-only-2026 \
+            -e NEO4J_ACCEPT_LICENSE_AGREEMENT=yes \
+            neo4j:5.26.26-enterprise
+      - name: Check actual scoped role and 53/86 schema, deny schema and DBMS mutations
+        run: |
+          python -B -m py_compile scripts/ci_neo4j_schema_readonly_disposable.py
+          python -B scripts/ci_neo4j_schema_readonly_disposable.py
+      - name: Delete only exact-owned synthetic container
+        if: always()
+        run: |
+          docker rm -f assistx-schema-ci 2>/dev/null || true
