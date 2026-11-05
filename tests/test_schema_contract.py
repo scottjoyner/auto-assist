@@ -31,7 +31,15 @@ def test_ensure_schema_declares_migration_constraints_and_indexes():
     client.driver = driver
     client.database = "assistx_test"
 
-    client.ensure_schema()
+    # The harness uses a disposable recording driver. Privileged DDL intent
+    # must be explicit and no ordinary runtime caller can acquire it.
+    from assistx.schema_readiness import SchemaReadinessHold
+    import pytest
+
+    with pytest.raises(SchemaReadinessHold):
+        client.ensure_schema()
+    assert driver.statements == []
+    client.ensure_schema(explicit_operator_migration=True)
 
     schema = "\n".join(driver.statements)
     for label in (
