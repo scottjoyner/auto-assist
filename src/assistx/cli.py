@@ -25,10 +25,13 @@ def init_cmd(explicit_operator_migration):
         raise click.ClickException("schema DDL requires separate operator migration")
     schema_user = os.getenv("NEO4J_SCHEMA_OPERATOR_USER", "")
     schema_password = os.getenv("NEO4J_SCHEMA_OPERATOR_PASSWORD", "")
+    # The app configuration can override NEO4J_USER/PASSWORD via settings;
+    # compare the effective runtime identity, not only the shell environment.
+    runtime_config = Neo4jClient._load_settings_fallback()
     if (
         not schema_user or not schema_password
-        or schema_user == os.getenv("NEO4J_USER")
-        or schema_password == os.getenv("NEO4J_PASSWORD")
+        or schema_user == runtime_config.get("user")
+        or schema_password == runtime_config.get("password")
     ):
         raise click.ClickException("distinct schema operator identity unavailable")
     neo = Neo4jClient(user=schema_user, password=schema_password)
