@@ -191,6 +191,7 @@ class IdentityOnlyProbeSafety(unittest.TestCase):
         return patch.dict(AGENT.os.environ, {
             "FLEET_NODE_ID": "node-synthetic",
             "FLEET_NODE_TOKEN": "SYNTHETIC_NODE_TOKEN",
+            "FLEET_NODE_IDENTITY_APPROVED_ORIGIN": "https://assistx.example.invalid",
         })
 
     def test_https_positive_identity_stays_hold_without_task_calls(self):
@@ -241,7 +242,9 @@ class IdentityOnlyProbeSafety(unittest.TestCase):
                     self.assertEqual(result["task_admission"], "HOLD")
 
     def test_loopback_requires_exact_ip_literal(self):
-        with self._registered(), patch.object(AGENT, "_http", return_value=(404, {})) as fake_http:
+        with self._registered(), patch.dict(AGENT.os.environ, {
+            "FLEET_NODE_IDENTITY_APPROVED_ORIGIN": "http://127.0.0.1:8000",
+        }), patch.object(AGENT, "_http", return_value=(404, {})) as fake_http:
             accepted = AGENT.probe_node_identity(
                 assistx_url="http://127.0.0.1:8000", node_id="node-synthetic"
             )
@@ -266,6 +269,25 @@ class IdentityOnlyProbeSafety(unittest.TestCase):
                 assistx_url="https://assistx.example.invalid", node_id="node-synthetic"
             )
             self.assertFalse(result["identity_verified"])
+
+    def test_wrong_or_absent_pinned_identity_origin_denied_before_token_use(self):
+        with self._registered(), patch.object(AGENT, "_http", side_effect=AssertionError("no outbound token")):
+            with patch.dict(AGENT.os.environ, {
+                "FLEET_NODE_IDENTITY_APPROVED_ORIGIN": "https://other.example.invalid",
+            }):
+                result = AGENT.probe_node_identity(
+                    assistx_url="https://assistx.example.invalid", node_id="node-synthetic"
+                )
+                self.assertFalse(result["identity_verified"])
+                self.assertEqual(result["reason"], "IDENTITY_ORIGIN_NOT_PINNED")
+            with patch.dict(AGENT.os.environ, {
+                "FLEET_NODE_IDENTITY_APPROVED_ORIGIN": "",
+            }):
+                result = AGENT.probe_node_identity(
+                    assistx_url="https://assistx.example.invalid", node_id="node-synthetic"
+                )
+                self.assertFalse(result["identity_verified"])
+                self.assertEqual(result["task_admission"], "HOLD")
 
     def test_server_claiming_task_authority_denies_even_with_valid_identity(self):
         with self._registered(), patch.object(AGENT, "_http", return_value=(200, {
