@@ -13,6 +13,7 @@ The API lifespan invoked Neo4jClient.ensure_schema(), executing up to 53 CREATE 
 - The existing ensure_schema method now requires explicit_operator_migration=True before privileged DDL. This boolean is a defensive source-intent guard, **not** independent operator approval.
 - The CLI 'init' path requires '--explicit-operator-migration' and separately supplied NEO4J_SCHEMA_OPERATOR_USER / NEO4J_SCHEMA_OPERATOR_PASSWORD, refusing absent credentials or equality with the standard NEO4J_USER / NEO4J_PASSWORD. Neither values nor usernames are logged.
 - The recurring CLI 'run-all' verifies schema read-only and no longer runs schema DDL before ingestion.
+- A wider AST source scan identified the alternate recovery-shadow lifespan also ran `ensure_schema` and suppressed failure. It now uses the same read-only metadata verification and fails before mounting inherited runtime handlers on schema HOLD. Emergency recovery visibility independent of the main application requires a separately isolated control-plane design; this draft does not silently bypass the missing constraint.
 
 ## Required operator release gates
 
