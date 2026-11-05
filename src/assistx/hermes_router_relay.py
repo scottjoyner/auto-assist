@@ -72,10 +72,16 @@ def _validate_body(raw: bytes) -> bool:
     }):
         raise _failure(422, "relay_field_denied")
     model = payload.get("model")
+    models_raw = os.getenv("ASSISTX_HERMES_RELAY_ALLOWED_MODELS", "")
+    allowed_models = {name.strip() for name in models_raw.split(",") if name.strip()}
+    if not allowed_models:
+        raise _failure(503, "relay_model_allowlist_missing")
     msgs = payload.get("messages")
     if (not isinstance(model, str) or not 1 <= len(model) <= 128
             or type(msgs) is not list or not 1 <= len(msgs) <= 32):
         raise _failure(422, "relay_model_or_messages_invalid")
+    if model not in allowed_models:
+        raise _failure(403, "relay_model_not_approved")
     for message in msgs:
         if (type(message) is not dict or set(message) != {"role", "content"}
                 or message["role"] not in {
