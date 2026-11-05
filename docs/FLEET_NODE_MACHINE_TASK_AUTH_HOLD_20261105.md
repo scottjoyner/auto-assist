@@ -18,6 +18,10 @@ The original #548 fleet-node agent HTTP implementation used default urllib.reque
 - A dependency-free AST safety test locks down all five legacy route guards and verifies that they execute before graph operations. Hosted synthetic transport checks are also carried forward from #547.
 - No feature flag, credential registration, live system change, Task approval, graph role mutation, Task claim, service restart, or production deployment is performed.
 
+## Positive identity-only diagnostic (not machine authorization)
+
+The new GET /api/fleet-node/identity path requires a valid registered machine token and responds only with the supplied, verified node ID, machine_identity_verified=true, legacy_task_authorized=false and task_admission=HOLD. Valid operator Basic credentials *alone* do not grant entry, and wrong/partial node tokens are rejected even alongside operator Basic. This endpoint never calls Neo4j, enumerates Tasks, grants capacity, claims work, or modifies runtime state. No production node token has been registered or exercised here. It is an isolated, source-only step toward proving each node's identity without misrepresenting the broader Task authority gate.
+
 ## Strict acceptance to enable machine work later
 
 A **separate, reviewed implementation** must provide (1) independently approved per-node principal registration/rotation/revocation and exact signed model/runtime-capacity projection, (2) ID-only source-authoritative scoped Task observer with complete snapshot/policy and no cross-node disclosure, (3) Task-specific transactional claim/heartbeat/finalize CAS with exact owner/session/attempt/generation/lease, (4) authenticated, non-restorable resource COMMIT and external high-water acceptance, (5) off-host negatives for stolen/rotated/replayed tokens, model drift, zero slots, unauthorized admin, and cross-node Task access, (6) staged one-node physical positive and immutable rollback under separately granted operator authority.
