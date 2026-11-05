@@ -110,6 +110,17 @@ class SwarmAuthFailsClosed(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 401)
         self.assertIsNone(self.sc["_optional_operator_auth"](self.req, None))
 
+    def test_blank_injected_identity_does_not_grant_privilege(self):
+        for value in (None, "", "   "):
+            with self.subTest(value=value):
+                self.sc["_injected_auth_dependency"] = lambda *_args: value
+                with self.assertRaises(DummyHttpException) as ctx:
+                    self.sc["_default_auth"](self.req, None)
+                self.assertEqual(ctx.exception.status_code, 401)
+                self.assertIsNone(
+                    self.sc["_optional_operator_auth"](self.req, None)
+                )
+
     def test_non401_authorization_denial_is_not_swallowed(self):
         def forbidden(_request, _credentials):
             raise DummyHttpException(status_code=403)
