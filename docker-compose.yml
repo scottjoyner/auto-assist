@@ -105,7 +105,7 @@ services:
       - VOICE_WEBHOOK_SECRET=${VOICE_WEBHOOK_SECRET:-}
 
       # --- Overlay services ---
-      - AUTO_ROUTER_BASE_URL=${AUTO_ROUTER_BASE_URL:-http://auto-router:8088}
+      - AUTO_ROUTER_BASE_URL=${AUTO_ROUTER_BASE_URL:-http://llm-router:8088}
       - AUTO_ASSIGN_BASE_URL=${AUTO_ASSIGN_BASE_URL:-http://auto-assign:8090}
 
       # --- Fleet executor: it runs INSIDE this api container and polls the
@@ -120,7 +120,7 @@ services:
       - FLEET_ASSISTX_URL=${FLEET_ASSISTX_URL:-http://localhost:8000}
       - FLEET_BASIC_AUTH_USER=${FLEET_BASIC_AUTH_USER:-admin}
       - FLEET_BASIC_AUTH_PASS=${FLEET_BASIC_AUTH_PASS:-change-me}
-      - FLEET_ROUTER_URL=${FLEET_ROUTER_URL:-http://router:8088}
+      - FLEET_ROUTER_URL=${FLEET_ROUTER_URL:-http://llm-router:8088}
       - FLEET_ROUTER_BEARER_TOKEN=${AUTO_ROUTER_INTERNAL_SERVICE_TOKEN:?set AssistX-only router inference token}
       # Nodes that don't register with the router (git-router-1 only learns
       # about hosts that send node-report). Seed them directly so the executor
@@ -153,7 +153,7 @@ services:
           memory: 6G
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # Join the git router's network so FLEET_ROUTER_URL (http://router:8088)
+    # Join the git router's network so FLEET_ROUTER_URL (http://llm-router:8088)
     # is reachable for fleet node discovery / hot-lane routing.
     networks:
       - default
