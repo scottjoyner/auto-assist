@@ -141,6 +141,39 @@ class SchemaRuntimeReadonlyTests(unittest.TestCase):
                                     for stmt in n.body for a in ast.walk(stmt))
                             for n in ast.walk(node)))
 
+    def test_no_other_application_source_invokes_runtime_schema_ddl(self):
+        # Scan every application module: new startup/recovery/model call sites
+        # cannot silently reintroduce elevated DDL after this split.
+        app_root = ROOT / "src" / "assistx"
+        offenders = []
+        for path in sorted(app_root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            parents = {}
+            for parent in ast.walk(tree):
+                for child in ast.iter_child_nodes(parent):
+                    parents[child] = parent
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                if node.func.attr not in {"ensure_schema", "ensure_indexes"}:
+                    continue
+                ancestor = node
+                while ancestor in parents and not isinstance(
+                    ancestor, (ast.FunctionDef, ast.AsyncFunctionDef)
+                ):
+                    ancestor = parents[ancestor]
+                fn = ancestor.name if isinstance(
+                    ancestor, (ast.FunctionDef, ast.AsyncFunctionDef)
+                ) else None
+                if (path.name == "cli.py" and fn == "init_cmd"
+                        and node.func.attr == "ensure_schema"):
+                    continue
+                if (path.name == "neo4j_client.py" and fn == "ensure_indexes"
+                        and node.func.attr == "ensure_schema"):
+                    continue
+                offenders.append((str(path.relative_to(app_root)), fn, node.func.attr))
+        self.assertEqual(offenders, [], "unreviewed implicit schema DDL caller")
+
     def test_schema_creation_requires_explicit_separate_operator_intent(self):
         tree = ast.parse(NEO_PATH.read_text(encoding="utf-8"))
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
