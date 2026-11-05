@@ -5,14 +5,11 @@ Hermetic: no real tokens, servers, GPUs, task dispatch, or network access.
 from __future__ import annotations
 
 import io
-import os
-from pathlib import Path
-import tempfile
-from unittest.mock import patch
 import urllib.error
 import urllib.request
 
 import pytest
+
 from assistx import fleet_node_agent
 from assistx import lm_studio_client_auth as lm_auth
 
@@ -33,8 +30,18 @@ class Response:
         return self
     def __exit__(self, *exc):
         return False
-    def read(self):
-        return b'{"data":[{"id":"synthetic"}]}'
+    def read(self, limit=None):
+        payload = b'{"data":[{"id":"synthetic"}]}'
+        return payload if limit is None else payload[:limit]
+
+
+
+def _mock_secure_open(monkeypatch, sender):
+    """Replace only the credentialed opener, never grant anonymous fallback."""
+    class Opener:
+        def open(self, req, *, timeout):
+            return sender(req, timeout)
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *_handlers: Opener())
 
 
 def test_default_legacy_maintains_existing_get(monkeypatch):
@@ -51,7 +58,7 @@ def test_explicit_required_get_has_private_bearer(monkeypatch, token_file):
     monkeypatch.setenv("FLEET_LM_AUTH_POLICY", "required")
     monkeypatch.setenv("FLEET_LM_TOKEN_FILE", str(token_file))
     seen = []
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: (seen.append(req), Response())[1])
+    _mock_secure_open(monkeypatch, lambda req, timeout: (seen.append(req), Response())[1])
     status, _ = fleet_node_agent._http("GET", "http://127.0.0.1:1234/v1/models")
     assert status == 200
     assert seen[0].get_header("Authorization") == "Bearer " + FAKE
@@ -61,7 +68,7 @@ def test_explicit_required_chat_post_has_bearer(monkeypatch, token_file):
     monkeypatch.setenv("FLEET_LM_AUTH_POLICY", "required")
     monkeypatch.setenv("FLEET_LM_TOKEN_FILE", str(token_file))
     seen = []
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: (seen.append(req), Response())[1])
+    _mock_secure_open(monkeypatch, lambda req, timeout: (seen.append(req), Response())[1])
     status, _ = fleet_node_agent._http("POST", "http://localhost:1234/v1/chat/completions",
                                        data={"model": "synthetic", "messages": []})
     assert status == 200
@@ -89,7 +96,7 @@ def test_foreign_assistx_basic_auth_preserved(monkeypatch, token_file):
     monkeypatch.setenv("FLEET_LM_AUTH_POLICY", "required")
     monkeypatch.setenv("FLEET_LM_TOKEN_FILE", str(token_file))
     seen = []
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: (seen.append(req), Response())[1])
+    _mock_secure_open(monkeypatch, lambda req, timeout: (seen.append(req), Response())[1])
     status, _ = fleet_node_agent._http(
         "GET", "http://100.64.43.123:8000/api/agent/tasks", auth=("alice", "example"),
     )
@@ -161,7 +168,7 @@ def test_401_response_is_closed(monkeypatch, token_file):
     exc = urllib.error.HTTPError(
         "http://127.0.0.1:1234/v1/models", 401, "Unauthorized", {}, io.BytesIO(b'{"error":"invalid_token"}')
     )
-    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kw: (_ for _ in ()).throw(exc))
+    _mock_secure_open(monkeypatch, lambda *_args: (_ for _ in ()).throw(exc))
     status, body = fleet_node_agent._http("GET", "http://127.0.0.1:1234/v1/models")
     assert status == 401 and body["error"] == "invalid_token"
     assert exc.fp is None or exc.fp.closed
