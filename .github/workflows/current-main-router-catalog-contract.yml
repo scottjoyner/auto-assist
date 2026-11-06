@@ -1,0 +1,48 @@
+name: Current-main Router Provider Catalog (Synthetic)
+on:
+  pull_request:
+    paths:
+      - src/assistx/control_room.py
+      - src/assistx/router_provider_inventory.py
+      - tests/test_router_provider_inventory_portable.py
+      - tests/test_router_catalog_current_main_port.py
+      - .github/workflows/current-main-router-catalog-contract.yml
+permissions:
+  contents: read
+jobs:
+  portable-source-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Exact source parse and pure-stdlib inventory tests
+        run: |
+          python -m py_compile src/assistx/control_room.py src/assistx/router_provider_inventory.py tests/test_router_provider_inventory_portable.py
+          python - <<'PY'
+          import pathlib
+          import sys
+          import types
+          import unittest
+          pkg = types.ModuleType('assistx')
+          pkg.__path__ = [str(pathlib.Path.cwd() / 'src' / 'assistx')]
+          sys.modules['assistx'] = pkg
+          suite = unittest.defaultTestLoader.discover('tests', pattern='test_router_provider_inventory_portable.py')
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          raise SystemExit(not result.wasSuccessful())
+          PY
+      - name: Require bounded privileged JSON body and exact current-main callsite
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          s = Path('src/assistx/control_room.py').read_text()
+          ast.parse(s)
+          assert 'response.read(4 * 1024 * 1024 + 1) if admin_token else response.read()' in s
+          assert 'fetch_provider_inventory(' in s
+          print('Current-main catalog source contract PASS')
+          PY
