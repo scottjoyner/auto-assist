@@ -96,3 +96,20 @@ def test_identity_route_exposed_by_complete_asgi_openapi():
     # full ASGI schema, not the outer router's immediate child list, is the
     # authoritative registration witness.
     assert "/api/fleet-node/identity" in api_router.app.openapi()["paths"]
+
+
+def test_existing_operator_basic_without_machine_headers_is_unchanged(client, monkeypatch):
+    """A machine-only security guard must not remove the operator-era API."""
+    class SyntheticGraph:
+        def list_agent_tasks(self, **_kwargs):
+            return []
+
+    monkeypatch.setattr(api, "_neo_fleet", lambda: SyntheticGraph())
+    monkeypatch.setattr(api, "_workflow_runtime_snapshot",
+                        lambda _neo: {"running": 0, "batch_ready_direct": 0})
+    monkeypatch.setattr(api, "_apply_workflow_admission",
+                        lambda items, _runtime: items)
+    response = client.get("/api/agent/tasks?status=READY&limit=1", auth=BASIC)
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+    assert response.json()["count"] == 0
