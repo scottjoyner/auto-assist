@@ -13,6 +13,9 @@ from .control_room_recovery import build_recovery_router
 from .control_room_runtime import install_control_room_runtime
 from .executor_claims import install_live_executor_claims
 from .executor_security import install_executor_security
+from .fleet_node_identity_only_route import (
+    build_identity_only_router, install_machine_legacy_task_guard,
+)
 from .mobile_agent_routes import register_mobile_agent_routes
 from .overlay_routes import build_overlay_router
 from .passive_agents import build_passive_agent_router
@@ -98,6 +101,9 @@ app.include_router(build_control_room_router(_neo, auth, templates))
 app.include_router(build_recovery_router(auth))
 app.include_router(build_router_integration_router(_neo))
 app.include_router(build_runtime_projection_router(_neo, auth_dependency=auth))
+# Bounded API-side identity migration only: machine tokens do not grant Tasks.
+install_machine_legacy_task_guard(app)
+app.include_router(build_identity_only_router())
 
 # The iPhone, Workbench, and Tailnet Serve edge all target these exact mobile
 # routes. Defining mobile_agent_routes.py alone did not expose them in the live
