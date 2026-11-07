@@ -31,4 +31,5 @@ jobs:
           PYTHONDONTWRITEBYTECODE: '1'
         run: |
           python -m py_compile scripts/fleet_node_source_witness.py tests/test_fleet_node_source_witness.py
-          python -m pytest -q -p no:cacheprovider tests/test_fleet_node_source_witness.py
+          # This stand-alone stdlib witness must not import the full AssistX conftest.
+          python -m pytest --noconftest -q -p no:cacheprovider tests/test_fleet_node_source_witness.py
