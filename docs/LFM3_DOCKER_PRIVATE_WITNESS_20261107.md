@@ -24,8 +24,15 @@ restart agents or expose model generation on a Docker/LAN/Tailnet interface.
   on 19181**, with `max_tokens=3` each and no Task/graph calls. All returned
   **HTTP 200**, one choice each and three output tokens. Durations: **296 ms,
   278 ms, 202 ms**, respectively. All five slot entries were idle again
-  afterward. This is *one tiny canary*, not a long-context throughput, thermal
-  soak, cross-runtime contention budget, rollback, or continuous SLA.
+  afterward. A **second, longer bounded three-way canary** then completed two
+  32-output-token requests on `19180` (**1,375 ms** and **1,374 ms**) and one
+  32-output-token request on `19181` (**1,200 ms**). All three returned HTTP
+  200 and 32 completion tokens each with 27 input tokens, with every slot idle
+  again afterward. Neither canary used a Task API or authorized execution.
+  These are short, low-context probes—not a long-context throughput benchmark,
+  thermal soak, independent process reservation, rollback, or continuous SLA.
+  They do **not** justify treating the 4+1 slot entries as five independently
+  approved or continuously supportable scheduling slots.
 - `assistx-api` is in Docker network `home_scott_git_auto-assist_default`
   (container source IP `172.21.0.6`, bridge gateway `172.21.0.1`). From that
   container, neither LFM3 `:19180` nor `:19181` was directly reachable via
