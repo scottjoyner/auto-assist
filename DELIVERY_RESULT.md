@@ -75,3 +75,10 @@ TESTS: `python3 -m pytest -q -p no:cacheprovider tests/test_fleet_node_api.py te
 - `git diff --check` passed. Local source worktree retains the preexisting untracked `FLEET_DELIVERY_BRIEF.md` (intentionally untouched).
 - Git still reports the malformed shared reference `refs/heads/fix/fleet-node-worker-poll-contract-20261102`; do not prune, delete or force-repair it. Promotion requires independently reviewed repo custody and hosted exact-head CI.
 - Existing production HOLD is unchanged: expired projection, zero approved execution slots, incomplete physical node registration/authentication and no controlled rollout acceptance.
+
+## Read-only shared Git ref recovery evidence — November 6, 2026
+
+- The shared loose ref `refs/heads/fix/fleet-node-worker-poll-contract-20261102` is a regular zero-byte file (mtime 2026-11-02 18:25:36 EST); its associated loose reflog is also zero bytes; no matching packed-ref entry.
+- In this local shared object store `git cat-file -t 96d3943` reports `Not a valid object name`; do not use that prior short SHA as a recovery source.
+- Read-only `GIT_TERMINAL_PROMPT=0 git ls-remote origin` confirms both `refs/heads/fix/fleet-node-worker-poll-contract-20261102` and `refs/pull/482/head` resolve to remote SHA `07c95e123dd2f4bd0dac69bfea13ca8dd6df0a4e`. The GitHub connector independently confirms PR #482 remains open.
+- No Git ref deletion, restoration, fetch, prune, garbage collection or force update was attempted. Quarantine/snapshot, recover and verify remote objects in a separate clean repository, then separately approve a shared-ref repair with rollback before any local normalization. Production HOLD unchanged.
