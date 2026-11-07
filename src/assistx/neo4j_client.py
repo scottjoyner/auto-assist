@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -1078,8 +1079,20 @@ class Neo4jClient:
                     break
             _PRIO_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3,
                           "BACKGROUND": 4, "BATCH": 5, "UNSET": 9}
-            items.sort(key=lambda t: (_PRIO_RANK.get((t.get("priority") or "UNSET").upper(), 9),
-                                      t.get("created_at_ts", 0) or 0))
+            def _stable_task_order(task: dict[str, Any]) -> tuple[int, int | float]:
+                # Older Task graph rows contain non-string priorities and mixed
+                # timestamp types. Never let one malformed READY row crash the
+                # operator list or accidentally gain high-priority ordering.
+                priority = task.get("priority")
+                rank = _PRIO_RANK.get(priority.upper(), 9) if isinstance(priority, str) else 9
+                created = task.get("created_at_ts")
+                if (isinstance(created, bool)
+                        or not isinstance(created, (int, float))
+                        or (isinstance(created, float) and not math.isfinite(created))):
+                    created = 0
+                return rank, created
+
+            items.sort(key=_stable_task_order)
             return items
 
     def claim_task(
