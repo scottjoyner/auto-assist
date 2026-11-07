@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from pathlib import Path
 import threading
 from http.server import HTTPServer
-from urllib import request, error
+from pathlib import Path
+from urllib import error, request
 
 import pytest
 
@@ -181,6 +181,27 @@ def test_fake_health_response_not_accepted():
     fake.entries['http://127.0.0.1:19181/health']={'status':'not-ok'}
     with pytest.raises(ValueError, match="upstream_not_healthy"):
         m.read_witness(19181,opener=fake)
+
+
+def test_malformed_health_status_is_controlled_hold():
+    fake = make_fake()
+    fake.entries["http://127.0.0.1:19181/health"] = {"status": []}
+    with pytest.raises(ValueError, match="upstream_not_healthy"):
+        m.read_witness(19181, opener=fake)
+
+
+@pytest.mark.parametrize("addresses", [None, "not-addresses", {}])
+def test_malformed_bridge_address_list_is_controlled_hold(addresses):
+    with pytest.raises(ValueError, match="not_a_matching_private_docker_bridge"):
+        m.verify_docker_bridge("172.21.0.1", "172.21.0.6",
+                               [{"ifname": "br-synthetic", "addr_info": addresses}])
+
+
+@pytest.mark.parametrize("prefix", [True, -1, 0, 33, "16"])
+def test_invalid_docker_bridge_prefix_is_controlled_hold(prefix):
+    with pytest.raises(ValueError, match="not_a_matching_private_docker_bridge"):
+        m.verify_docker_bridge("172.21.0.1", "172.21.0.6",
+                               _fake_bridge_interface(prefix=prefix))
 
 
 def test_bad_network_interface_read_fails_before_bind(monkeypatch):
