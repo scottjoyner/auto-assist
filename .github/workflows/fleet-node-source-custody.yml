@@ -34,4 +34,5 @@ jobs:
           NOUS_API_KEY: ''
         run: |
           python -m py_compile scripts/fleet_node_source_census.py tests/test_fleet_node_source_census.py
-          python -m pytest -q -p no:cacheprovider tests/test_fleet_node_source_census.py
+          # Deliberately bypass repo-wide conftest; this stdlib audit is standalone.
+          python -m pytest --noconftest -q -p no:cacheprovider tests/test_fleet_node_source_census.py
