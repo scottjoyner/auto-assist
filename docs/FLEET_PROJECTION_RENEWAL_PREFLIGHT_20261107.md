@@ -23,9 +23,14 @@ execution slot, update graph nodes, call a Task endpoint or authorize workers.
 - Additional physical inspection observed the actual `llama-server` process
   for the loaded model (PID `3602885` at snapshot), an ordinary non-symlink
   GGUF file of **23,718,411,552 bytes** and configured context **262,144**.
-  These are physical *existence and size* witnesses, not the full artifact
-  SHA-256 or immutable process/image attestation. No large model file was
-  rehashed while the production host was under swap/memory pressure.
+  A subsequent **read-only full-file SHA-256** of the exact backing GGUF
+  completed in approximately **19.7 seconds** using idle-class I/O and
+  process niceness 19, with inode, size and modification time unchanged
+  between before/after file metadata checks. Full artifact SHA-256:
+  `c83373e4c502c6d4929339406ffbb1f442598b153a3ade02b628752e00a282fd`.
+  This is a concrete file-content fingerprint of the observed backing artifact,
+  **not** a separately signed model attestation, immutable running image,
+  concurrency allocation or Task-admission authorization.
 - From inside the API container, pinned read-only model-list GETs succeeded on
   **three distinct addresses**—LAN `192.168.1.237:1234`, Tailscale
   `100.64.43.123:1234`, and Docker gateway
