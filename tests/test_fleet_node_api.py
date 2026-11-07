@@ -135,3 +135,53 @@ def test_claim_rejects_invalid_node_token_before_graph(
     )
     assert r.status_code == 403
     assert fake_fleet_neo.calls == []
+
+
+@pytest.mark.parametrize("headers", [
+    {"X-Fleet-Node-Id": "node-a"},
+    {"X-Fleet-Node-Token": "synthetic-token-a"},
+    {"X-Fleet-Node-Id": "node-a", "X-Fleet-Node-Token": "wrong-token"},
+])
+def test_invalid_node_headers_never_fall_back_to_valid_basic(
+    monkeypatch, fake_fleet_neo, headers
+):
+    """A valid operator password must not rescue a malformed node request."""
+    import assistx.api as api
+
+    monkeypatch.setenv("ASSISTX_FLEET_NODE_TOKENS", json.dumps(_SYNTHETIC_TOKENS))
+    monkeypatch.setattr(api, "USER", "synthetic-operator")
+    monkeypatch.setattr(api, "PASS", "synthetic-operator-secret")
+    client = TestClient(api_router.app)
+    response = client.get(
+        "/api/agent/tasks", headers=headers,
+        auth=("synthetic-operator", "synthetic-operator-secret"),
+    )
+    assert response.status_code == 403
+    assert fake_fleet_neo.calls == []
+
+
+@pytest.mark.parametrize("endpoint,body", [
+    ("claim", {"agent_id": "node-b", "capabilities": ["script"]}),
+    ("heartbeat", {"agent_id": "node-b", "status": "RUNNING"}),
+    ("complete", {"agent_id": "node-b", "status": "DONE"}),
+    ("checkpoint", {"agent_id": "node-b", "claim_id": "synthetic-claim"}),
+])
+def test_mutation_routes_reject_cross_node_identity_before_graph(
+    monkeypatch, node_tokens, fake_fleet_neo, endpoint, body
+):
+    """One node's credential must not mutate another node's tasks."""
+    import assistx.api as api
+
+    def forbidden_neo():
+        pytest.fail("cross-node mutation reached graph initialization")
+
+    monkeypatch.setattr(api, "_neo", forbidden_neo)
+    monkeypatch.setattr(api, "_neo_fleet", forbidden_neo)
+    client = TestClient(api_router.app)
+    response = client.post(
+        f"/api/tasks/task-synthetic/{endpoint}",
+        headers={"X-Fleet-Node-Id": "node-a", "X-Fleet-Node-Token": _SYNTHETIC_TOKENS["node-a"]},
+        json=body,
+    )
+    assert response.status_code == 403
+    assert fake_fleet_neo.calls == []

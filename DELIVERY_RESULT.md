@@ -63,3 +63,15 @@ The post-delivery review corrected a test-only import (`fastapi.testclient` was 
 - Independent isolated-host suite of eight targeted modules => **48 passed, 1 skipped** (the API module skips only on the lightweight host; it executed and passed in the container above).
 - Five local dispatcher gate tests => **5 passed** (cooldown, two separated resource checks, active-run exclusion, unsafe-resource reset, dispatch fail-closed).
 - This is still **research-only PASS**, not hosted exact-head CI, merge, production credential registration, or release authorization. No live node credentials or production deployment were changed.
+
+## Continuation — November 6, 2026, 22:30 EST (Fleet Commander)
+
+STATUS: PASS
+
+TESTS: `python3 -m pytest -q -p no:cacheprovider tests/test_fleet_node_api.py tests/test_fleet_node_auth.py` on lightweight host: 19 passed, 1 skipped; same suite in existing isolated application image `auto-assist-wt-ab3bb64-api:latest`: 33 passed, 0 skipped, 0 failed.
+
+- Added seven synthetic API-level negative tests in `tests/test_fleet_node_api.py`: 3 invalid/partial node-header cases must return 403 despite independently valid legacy operator Basic credentials; 4 cross-node mutation cases (claim, heartbeat, complete, checkpoint) must reject before Neo4j initialization.
+- Docker verification used `--pull never --network none --read-only --user 1000:1000 --memory 2g --cpus 2 --pids-limit 128`, read-only source/dependencies, ephemeral `/tmp` for the synthetic outbox, and no external credentials or services.
+- `git diff --check` passed. Local source worktree retains the preexisting untracked `FLEET_DELIVERY_BRIEF.md` (intentionally untouched).
+- Git still reports the malformed shared reference `refs/heads/fix/fleet-node-worker-poll-contract-20261102`; do not prune, delete or force-repair it. Promotion requires independently reviewed repo custody and hosted exact-head CI.
+- Existing production HOLD is unchanged: expired projection, zero approved execution slots, incomplete physical node registration/authentication and no controlled rollout acceptance.
