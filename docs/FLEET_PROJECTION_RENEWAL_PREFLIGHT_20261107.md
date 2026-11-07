@@ -19,9 +19,20 @@ execution slot, update graph nodes, call a Task endpoint or authorize workers.
 - Bounded native model smoke used an **existing loaded instance**, two output
   tokens, HTTP **200**, and approximately **549 ms**. The smoke made no graph
   claims, admission change, model load, account/provider inference or work
-  allocation. A successful local generation does *not* attest the full model
-  artifact fingerprint, physical capacity, dual LAN/Tailscale reachability,
-  resource fencing, rollback or fresh owner approval.
+  allocation.
+- Additional physical inspection observed the actual `llama-server` process
+  for the loaded model (PID `3602885` at snapshot), an ordinary non-symlink
+  GGUF file of **23,718,411,552 bytes** and configured context **262,144**.
+  These are physical *existence and size* witnesses, not the full artifact
+  SHA-256 or immutable process/image attestation. No large model file was
+  rehashed while the production host was under swap/memory pressure.
+- From inside the API container, pinned read-only model-list GETs succeeded on
+  **three distinct addresses**—LAN `192.168.1.237:1234`, Tailscale
+  `100.64.43.123:1234`, and Docker gateway
+  `host.docker.internal:1234`—each returning HTTP 200 and the same model ID.
+  This demonstrates path reachability, **not** independent outage failover,
+  approved access-path custody, signed slot capacity, resource fencing,
+  rollback, or fresh owner approval.
 
 ## How to collect again (no credentials displayed)
 
