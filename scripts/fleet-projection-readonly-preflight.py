@@ -24,7 +24,7 @@ QUERIES = {
     "loaded_models": "MATCH (s:LoadedModelInstance) RETURN count(s) AS total, sum(CASE WHEN s.admitted=true AND coalesce(s.expires_at_ts,0)>$now_ms THEN 1 ELSE 0 END) AS fresh",
     "access_paths": "MATCH (s:AccessPath) RETURN count(s) AS total, sum(CASE WHEN s.approved=true AND coalesce(s.expires_at_ts,0)>$now_ms THEN 1 ELSE 0 END) AS fresh",
     "capacity": "MATCH (s:CapacityObservation) RETURN count(s) AS total, sum(CASE WHEN s.approved=true AND coalesce(s.expires_at_ts,0)>$now_ms AND coalesce(s.parallel_slots,0)>0 THEN 1 ELSE 0 END) AS fresh",
-    "work_supply": "MATCH (s:WorkSupplyState) RETURN count(s) AS total, sum(CASE WHEN s.status='approved' AND coalesce(s.expires_at_ts,0)>$now_ms THEN 1 ELSE 0 END) AS fresh",
+    "work_supply": "MATCH (s:WorkSupplyState {name:'canonical'}) RETURN count(s) AS total, coalesce(sum(CASE WHEN coalesce(s.generated_at_ts,0)>$fresh_cutoff_ms THEN 1 ELSE 0 END),0) AS fresh, coalesce(sum(CASE WHEN coalesce(s.generated_at_ts,0)>$fresh_cutoff_ms AND s.allow_background=true THEN 1 ELSE 0 END),0) AS allowing_background, coalesce(max(s.projection_generation),0) AS projection_generation",
 }
 
 
@@ -33,11 +33,22 @@ def read_graph_snapshot(client: Any, now_ms: int) -> dict[str, dict[str, int]]:
     snapshot: dict[str, dict[str, int]] = {}
     with client._session() as session:
         for key, statement in QUERIES.items():
-            row = session.run(statement, now_ms=now_ms).single()
+            params = {"now_ms": now_ms}
+            if key == "work_supply":
+                # Conservative 60-second liveness witness. WorkSupplyState
+                # has no status=approved or expires_at_ts; it is a CONTROLLER
+                # decision, not an independently signed capacity approval.
+                params["fresh_cutoff_ms"] = now_ms - 60_000
+            row = session.run(statement, **params).single()
             if row is None:
                 raise ValueError("projection_query_no_result")
             values = dict(row)
-            wanted = ("total", "generation", "latest_expiry") if key == "canonical" else ("total", "fresh")
+            if key == "canonical":
+                wanted = ("total", "generation", "latest_expiry")
+            elif key == "work_supply":
+                wanted = ("total", "fresh", "allowing_background", "projection_generation")
+            else:
+                wanted = ("total", "fresh")
             item: dict[str, int] = {}
             for field in wanted:
                 value = values.get(field)
@@ -93,11 +104,28 @@ def assess(
     if canonical["latest_expiry"] <= now_ms:
         codes.append("CANONICAL_APPROVAL_EXPIRED")
     counters: dict[str, dict[str, int]] = {}
-    for label in ("runtime", "loaded_models", "access_paths", "capacity", "work_supply"):
+    for label in ("runtime", "loaded_models", "access_paths", "capacity"):
         counter = snapshot[label]
         counters[label] = {"total": counter["total"], "fresh_approved": counter["fresh"]}
         if counter["fresh"] <= 0:
             codes.append("NO_FRESH_APPROVED_" + label.upper())
+
+    # WorkSupplyState is a transient scheduler decision, NOT an approval node.
+    # Its absence/staleness blocks a scheduler, but a fresh HOLD is evidence
+    # that the controller is alive and correctly refusing unavailable slots.
+    supply = snapshot["work_supply"]
+    counters["work_supply"] = {
+        "total": supply["total"],
+        "fresh_controller_state": supply["fresh"],
+        "allow_background": supply["allowing_background"],
+        "projection_generation": supply["projection_generation"],
+    }
+    if supply["fresh"] <= 0:
+        codes.append("NO_FRESH_WORK_SUPPLY_CONTROLLER_STATE")
+    elif supply["allowing_background"] <= 0:
+        codes.append("WORK_SUPPLY_DISPATCH_HELD")
+    if supply["projection_generation"] != canonical["generation"]:
+        codes.append("WORK_SUPPLY_PROJECTION_GENERATION_MISMATCH")
     if not loaded_models:
         codes.append("NO_PHYSICAL_LOADED_MODEL_WITNESS")
     codes.append("INDEPENDENT_OWNER_SIGNED_REAPPROVAL_REQUIRED")
