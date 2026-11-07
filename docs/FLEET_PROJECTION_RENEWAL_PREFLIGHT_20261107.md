@@ -11,7 +11,14 @@ execution slot, update graph nodes, call a Task endpoint or authorize workers.
 - Canonical graph `FleetProjectionState{name:'canonical'}`: generation **896**,
   approval expired approximately **408.82 hours** earlier.
 - Fresh approved graph counts: **0/20 runtimes, 0/44 loaded-model instances,
-  0/35 access paths, 0/2705 capacity observations, 0/1 WorkSupplyState**.
+  0/35 access paths, 0/2705 capacity observations**. **Correction:** the
+  original `0/1 WorkSupplyState approved` count was a *diagnostic schema error*.
+  `WorkSupplyState` has `generated_at_ts`, `allow_background`,
+  `projection_generation` and `total_slots`, not `status='approved'` or
+  `expires_at_ts`. A new read-only query finds the WorkSupply controller
+  **fresh within 60 seconds**, with `allow_background=false`, zero slots and
+  projection_generation `0`. The controller is healthy and refusing dispatch;
+  it is not an expired or independent signed approval.
 - Actual `x1-370` LM Studio model catalog contains one *physically loaded*
   model (`ornith-1.5-35b-a3b-apex-mtp`). Verified both API-container access
   `http://host.docker.internal:1234/v1/models` and native
@@ -39,6 +46,39 @@ execution slot, update graph nodes, call a Task endpoint or authorize workers.
   approved access-path custody, signed slot capacity, resource fencing,
   rollback, or fresh owner approval.
 
+## New bounded physical capacity evidence — x1-370 2026-11-07 evening
+
+A strict opt-in local-only `scripts/fleet-local-capacity-nonadmitting-canary.py`
+verifies exactly one already loaded model and sends one single + two concurrent
+synthetic chat requests, each capped at **2 completion tokens**. Its native
+physical run returned HTTP **200** with exactly two output tokens on all three
+requests, in **792, 765, and 748 ms** respectively; the loaded model identity
+was unchanged on post-check. An earlier independent ad-hoc physical baseline
+also passed **505 ms solo** and **781/784 ms concurrently**, all HTTP 200.
+The earlier node telemetry observed `MemAvailable` near **20 GiB**, SwapFree
+around **1 MiB** and a model resident RSS increase of about **189 MiB** after
+three requests. These values are observational snapshots, **not** safe
+production headroom for longer requests, multi-user work or a guaranteed
+2-slot concurrency reservation. No process/service was restarted, no Task was
+claimed, and no provider account was billed.
+
+Safe repeat command **only on the existing x1-370 loopback where the exact
+model is already loaded**:
+
+```bash
+python3 scripts/fleet-local-capacity-nonadmitting-canary.py \
+  --live --model-id ornith-1.5-35b-a3b-apex-mtp
+# Exit 2 is REQUIRED even if all three local generations passed.
+```
+
+The script accepts no alternate origin, no remote URL, no extra output-token
+budget and no task identifiers. It caps HTTP response sizes, disables redirects
+and proxies, fails on a changed/unloaded model, emits no generated content,
+and always returns `task_admission=HOLD` with `approved_parallel_slots=0`.
+This canary proves short-request responsiveness and *observed* parallel
+execution only. **Sustained concurrency, exact memory limits, rollback and
+resource-fenced claim/COMMIT are still unverified**.
+
 ## How to collect again (no credentials displayed)
 
 Inside the approved x1-370 source checkout, pipe the script into the already
@@ -56,13 +96,16 @@ The resulting machine-readable JSON is categorical and contains only:
 canonical generation/expired hours, six fixed count summaries, model IDs,
 failed reasons, and `task_admission=HOLD`. No node token, approval ID, signer
 material, credential, Task payload or graph row is returned. A dedicated,
-permission-limited GitHub workflow runs 14 synthetic regression tests.
+permission-limited GitHub workflow runs the source-level synthetic
+regressions for both the graph preflight and opt-in local capacity canary.
 
 ## Why not renew approval in place
 
 The canonical approval is not the only stale object. The actual runtime,
-loaded-model, access and capacity evidence also expired and WorkSupplyState
-has no fresh approved result. The official publisher
+loaded-model, access and capacity evidence also expired. WorkSupplyState
+*does* contain fresh controller state, but it correctly reports zero slots,
+`allow_background=false` and generation zero while projection 896 is expired.
+It cannot confer Task authority. The official publisher
 `scripts/approve-runtime-projection.py --apply` would write to Neo4j and
 first retire *all* runtime/model/access/capacity approvals. Running it with
 stale manifests, guessed `approved_by`, fabricated evidence_refs or an
