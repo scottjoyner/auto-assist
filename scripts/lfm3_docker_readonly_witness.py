@@ -8,14 +8,14 @@ Run with a bounded --max-requests and short deadline. No daemon/install mode.
 from __future__ import annotations
 
 import argparse
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import ipaddress
 import json
 import os
 import subprocess
 import time
-from urllib import request
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
+from urllib import request
 
 EXPECTED_MODELS = {19180: "lfm3-local-test", 19181: "lfm3-1.7b-x1-fast"}
 MAX_BODY_BYTES = 128 * 1024
@@ -48,7 +48,8 @@ def read_witness(upstream_port: int, opener: Any | None = None) -> dict[str, Any
     slots = _get_json(transport, upstream_port, "/slots")
     if not isinstance(health, dict) or not isinstance(models, dict) or not isinstance(slots, list):
         raise ValueError("invalid_upstream_shape")
-    if health.get("status") not in {"ok", "healthy"}:
+    health_status = health.get("status")
+    if not isinstance(health_status, str) or health_status not in ("ok", "healthy"):
         raise ValueError("upstream_not_healthy")
     entries = models.get("data")
     if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
@@ -135,13 +136,16 @@ def verify_docker_bridge(listen_ip: str, allowed_client: str,
         name = iface.get("ifname", "")
         if not isinstance(name, str) or not (name.startswith("br-") or name == "docker0"):
             continue
-        for item in iface.get("addr_info", []):
+        addresses = iface.get("addr_info")
+        if not isinstance(addresses, list):
+            continue
+        for item in addresses:
             if not isinstance(item, dict) or item.get("family") != "inet":
                 continue
             if item.get("local") != str(listen):
                 continue
             prefix = item.get("prefixlen")
-            if isinstance(prefix, int) and client in ipaddress.ip_network(
+            if type(prefix) is int and 1 <= prefix <= 32 and client in ipaddress.ip_network(
                 f"{listen}/{prefix}", strict=False
             ):
                 return
