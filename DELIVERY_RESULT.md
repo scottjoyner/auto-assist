@@ -82,3 +82,10 @@ TESTS: `python3 -m pytest -q -p no:cacheprovider tests/test_fleet_node_api.py te
 - In this local shared object store `git cat-file -t 96d3943` reports `Not a valid object name`; do not use that prior short SHA as a recovery source.
 - Read-only `GIT_TERMINAL_PROMPT=0 git ls-remote origin` confirms both `refs/heads/fix/fleet-node-worker-poll-contract-20261102` and `refs/pull/482/head` resolve to remote SHA `07c95e123dd2f4bd0dac69bfea13ca8dd6df0a4e`. The GitHub connector independently confirms PR #482 remains open.
 - No Git ref deletion, restoration, fetch, prune, garbage collection or force update was attempted. Quarantine/snapshot, recover and verify remote objects in a separate clean repository, then separately approve a shared-ref repair with rollback before any local normalization. Production HOLD unchanged.
+
+## Independent remote-object custody witness — November 6, 2026
+
+- Created separate shallow Git bare witness store at `/tmp/fleet-482-witness.h4Q6J8Nm/repo.git`; the original shared repository and worktrees were not fetched into or mutated.
+- Fetched only `refs/heads/fix/fleet-node-worker-poll-contract-20261102` using HTTPS, `GIT_TERMINAL_PROMPT=0` and `--depth=1`, without a checkout. `refs/heads/remote-witness` resolved to exact expected SHA `07c95e123dd2f4bd0dac69bfea13ca8dd6df0a4e`; `git cat-file -t` returned `commit`.
+- `git fsck --no-reflogs --connectivity-only --no-progress` did not report object corruption; it noted the bare repo's default HEAD was unborn, because the fetched named ref was intentionally not made its default HEAD. Store uses about 1.7 MiB.
+- This is an independent remote-object retrieval witness, not a complete historic clone, Git shared-ref repair, host backup, CI proof, or deployment approval. Preserve local shared-ref HOLD pending a separately reviewed snapshot/restore procedure.
