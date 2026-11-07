@@ -55,3 +55,25 @@ If the isolated staging files are later retired, remove only the exact
 private `assistx-staging/<commit>` directory after verifying its pinned
 manifest and that no process uses it. **Never delete the active legacy
 `/media/scott/SSD_4TB/.../src/assistx` tree for this rollback.**
+
+## Source-only guarded launcher candidate (not installed on xwing)
+
+The research branch also provides `scripts/one_shot_identity_gate.py` as a
+**proposal for a separately reviewed operator-controlled one-shot launcher**.
+It is currently source-only: do not infer that this script has been copied to
+`xwing`, activated by a service, or given any real node credential.
+
+The launcher requires the stage directory to be owner-only, verifies exact
+SHA-256 pins for all three source modules, rejects sidecar code, symlinks and
+unapproved origins, sanitizes the child environment to remove operator Basic
+and provider credentials, and invokes **only** `--identity-probe-only`.
+Without `--identity-only` it checks the staged source without making HTTP;
+with `--identity-only` it still exits **2** even after a positive identity
+response. Tests use a synthetic loopback server and fake credentials.
+
+The launcher is not an immutable or remotely attested image and cannot close
+races with concurrent same-UID source replacement. Physical one-node adoption
+requires independent custody, a pinned approved origin, operator-owned node
+principal, rollback evidence and a fresh signed resource authority before
+any productive execution. The five legacy Task routes must remain 403 to
+machine callers regardless of identity-only acceptance.
