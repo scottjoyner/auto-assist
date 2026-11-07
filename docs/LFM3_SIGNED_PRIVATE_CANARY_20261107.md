@@ -80,6 +80,41 @@ legacy Basic refusal. The dedicated least-privilege hosted workflow runs only
 synthetic tests (no fleet credentials or physical model calls); production
 source has not been changed by this PR.
 
+## Independent supervised LFM3 launch / teardown witness (later Nov 7)
+
+A separate **physical** non-admitting rollback exercise on `x1-370` used the
+same verified 1,099,627,808-byte GGUF whose read-only full SHA-256 was
+`3793e1e6e2266919d6e015287221b41100175a98eddaba92e111aed3b05c93c4`.
+It did **not** alter either existing `llama-server` (`19180`, `19181`) or the
+Docker-private signed ephemeral helper described above.
+
+An operator-owned transient **systemd --user** service launched a *third*
+`llama-server` with explicit private `127.0.0.1:19182` binding, CPU-only
+`--n-gpu-layers 0`, two CPU threads, one parallel slot and context 512.
+The transient unit requested `MemoryMax=3G`, `CPUQuota=200%`, `TasksMax=64`,
+`RuntimeMaxSec=40s`, `Restart=no` and `NoNewPrivileges=yes` (requested
+resource properties, **not** an independent sustained cgroup enforcement test).
+The startup wrapper first checked that the port was unused, the expected
+reference process and model file existed, and the model was a non-symlink
+regular file.
+
+The **real** staged process started successfully, returned `GET /health=200`
+within **1.0 second**, and generated **2 output tokens** over the exact
+loopback `POST /v1/chat/completions` in **270 ms**, HTTP 200. In a `finally`
+cleanup, `systemctl --user stop` succeeded. A subsequent TCP check found no
+listener on `:19182`; both original LFM3 process IDs (`263346`, `307452` at
+this observation) were still alive; and the backing GGUF's device, inode,
+length and modification timestamp were unchanged. Independent later check
+also confirmed the transient service **inactive** and no port listener.
+
+**Staging launch / bounded inference / supervised teardown: PASS.** This
+closes a *staging-process rollback witness*, not a production outage or
+signed-worker rollback test. It does **not** establish continuous two-slot
+admission, failover of an authenticated user/workload transport, production
+Task replay prevention or signed resource-fenced CAS/COMMIT. No Task or graph
+write, persistent service, model load on the original runtimes, or principal
+change occurred; all real execution authority remains **HOLD**.
+
 ## Release decision — HOLD
 
 A one-shot synthetic-key canary proves protected *connectivity*, **not** a
