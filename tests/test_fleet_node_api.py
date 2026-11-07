@@ -185,3 +185,44 @@ def test_mutation_routes_reject_cross_node_identity_before_graph(
     )
     assert response.status_code == 403
     assert fake_fleet_neo.calls == []
+
+
+def test_node_credential_cannot_authorize_operator_fleet_endpoint(
+    monkeypatch, node_tokens, fake_fleet_neo
+):
+    """Machine principal authentication cannot grant general operator access."""
+    import assistx.api as api
+
+    monkeypatch.setattr(api, "USER", "synthetic-operator")
+    monkeypatch.setattr(api, "PASS", "synthetic-operator-secret")
+    client = TestClient(api_router.app)
+    response = client.get(
+        "/api/fleet/loadouts",
+        headers={
+            "X-Fleet-Node-Id": "node-a",
+            "X-Fleet-Node-Token": _SYNTHETIC_TOKENS["node-a"],
+        },
+    )
+    assert response.status_code == 401
+    assert fake_fleet_neo.calls == []
+
+
+def test_runtime_node_token_revocation_denies_next_request(
+    monkeypatch, node_tokens, fake_fleet_neo
+):
+    """Per-node token revocation is effective on the following HTTP request."""
+    client = TestClient(api_router.app)
+    headers = {
+        "X-Fleet-Node-Id": "node-a",
+        "X-Fleet-Node-Token": _SYNTHETIC_TOKENS["node-a"],
+    }
+    first = client.get("/api/agent/tasks?agent_id=node-a", headers=headers)
+    assert first.status_code == 200
+    assert fake_fleet_neo.calls == ["list_agent_tasks"]
+
+    monkeypatch.setenv("ASSISTX_FLEET_NODE_TOKENS", json.dumps({
+        "node-a": "synthetic-rotated-token", "node-b": "synthetic-token-b",
+    }))
+    second = client.get("/api/agent/tasks?agent_id=node-a", headers=headers)
+    assert second.status_code == 403
+    assert fake_fleet_neo.calls == ["list_agent_tasks"]

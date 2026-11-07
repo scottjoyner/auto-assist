@@ -89,3 +89,14 @@ TESTS: `python3 -m pytest -q -p no:cacheprovider tests/test_fleet_node_api.py te
 - Fetched only `refs/heads/fix/fleet-node-worker-poll-contract-20261102` using HTTPS, `GIT_TERMINAL_PROMPT=0` and `--depth=1`, without a checkout. `refs/heads/remote-witness` resolved to exact expected SHA `07c95e123dd2f4bd0dac69bfea13ca8dd6df0a4e`; `git cat-file -t` returned `commit`.
 - `git fsck --no-reflogs --connectivity-only --no-progress` did not report object corruption; it noted the bare repo's default HEAD was unborn, because the fetched named ref was intentionally not made its default HEAD. Store uses about 1.7 MiB.
 - This is an independent remote-object retrieval witness, not a complete historic clone, Git shared-ref repair, host backup, CI proof, or deployment approval. Preserve local shared-ref HOLD pending a separately reviewed snapshot/restore procedure.
+
+## Continuation — November 6, 2026, 22:50 EST onward
+
+STATUS: PASS (local security regression suite only; rollout HOLD)
+TESTS: `docker run --pull never --rm --network none --read-only --user 1000:1000 --memory 2g --cpus 2 --pids-limit 128 ... auto-assist-wt-ab3bb64-api:latest python -m pytest -q -p no:cacheprovider tests/test_fleet_node_api.py tests/test_fleet_node_auth.py` -> **35 passed, 0 failed** with a synthetic ephemeral outbox and read-only source/dependencies.
+
+- Repaired zero-byte shared Git ref `refs/heads/fix/fleet-node-worker-poll-contract-20261102` to verified PR #482 remote SHA `07c95e123dd2f4bd0dac69bfea13ca8dd6df0a4e` using `git update-ref` after quarantining the empty loose ref/reflog. No checked-out worktree used the ref. Full pre-repair .git metadata snapshot in `/tmp/fleet-git-custody-20261106.H4JCXxjs/`, SHA-256 `28fd64409553b007a2da51c325182fc11f715b15319adc48110d9a7fd5ce784c` passed re-verification. No production services touched.
+- Post-repair `git for-each-ref` enumerated 266 local heads without errors; `git fsck --connectivity-only --no-reflogs --no-progress` exited 0 and reported historical dangling objects only. No prune or GC requested.
+- Added two HTTP security tests: valid node credentials cannot grant operator-only `/api/fleet/loadouts` access; changing the node registry token revokes previously accepted node credentials on the immediately following request before graph access.
+- GitHub main `715b17aee91b071491950aede98e9f9478836dec` is one commit ahead of local branch's base `603718fa2f8ea73fa7ccfd946b0b031b9e1ae073`; the main change does not touch the authentication files. This check does not replace hosted CI or review.
+- Remote branch/PR publication, if performed, is research review only; expired projection, zero slots, unregistered physical nodes, secrets, cross-node replay/claim fencing and production admission remain separate HOLD gates.
