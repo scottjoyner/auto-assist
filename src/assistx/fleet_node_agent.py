@@ -732,6 +732,7 @@ def _poll_once(
     node_id: str,
     caps: list[str],
     lmstudio_url: str | None,
+    on_auth_denial: Callable[[int], None] | None = None,
 ) -> bool:
     if _machine_task_legacy_hold():
         # Token enrollment is not a Task grant. No HTTP poll, no Basic fallback.
@@ -747,6 +748,11 @@ def _poll_once(
         headers=node_headers,
         timeout=15,
     )
+    if status in {401, 403} and on_auth_denial is not None:
+        # Authentication failures must not be treated as ordinary empty polls:
+        # a running legacy worker otherwise retries rejected credentials every
+        # poll interval. This is backpressure, NEVER a Task-admission bypass.
+        on_auth_denial(status)
     if status != 200 or not isinstance(body, dict):
         return False
     tasks = body.get("tasks", body.get("items", []))
@@ -790,6 +796,7 @@ def run(
         )
     node_id = _detect_hostname()
     auth = _auth_from_env()
+    auth_denials = 0
 
     while True:
         # Re-detect per cycle: a value cached at startup is what a node booted
@@ -802,6 +809,7 @@ def run(
             data=_health_payload(node_id, caps, models),
             timeout=10,
         )
+        denied_statuses: list[int] = []
         worked = _poll_once(
             assistx_url=assistx_url,
             router_url=router_url,
@@ -809,9 +817,19 @@ def run(
             node_id=node_id,
             caps=caps,
             lmstudio_url=lmstudio_url,
+            on_auth_denial=denied_statuses.append,
         )
-        if not worked:
-            time.sleep(poll_interval)
+        if denied_statuses:
+            # Saturate before exponentiating; never perform unbounded integer
+            # growth during days of bad credentials or expired approval.
+            auth_denials = min(auth_denials + 1, 9)
+            backoff = min(300.0, max(1.0, poll_interval) * (2 ** min(auth_denials - 1, 8)))
+            time.sleep(backoff)
+        elif not worked:
+            auth_denials = 0
+            time.sleep(max(1.0, poll_interval))
+        else:
+            auth_denials = 0
 
 
 def main() -> None:
