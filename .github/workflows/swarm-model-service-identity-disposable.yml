@@ -1,0 +1,46 @@
+name: Swarm endpoint model/service identity (disposable Neo4j)
+
+on:
+  pull_request:
+    paths:
+      - src/assistx/swarm_core.py
+      - tests/test_swarm_service_endpoint_key_namespace.py
+      - scripts/ci_swarm_endpoint_namespace_disposable.py
+      - docs/SWARM_SERVICE_ENDPOINT_MODEL_NAMESPACE_FORWARD_ONLY_20261108.md
+      - .github/workflows/swarm-model-service-identity-disposable.yml
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-neo4j-forward-identity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      CI_DISPOSABLE_ENDPOINT_NAMESPACE: synthetic-only
+    steps:
+      - name: Checkout without retained credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Use pinned Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+      - name: Install only disposable database client
+        run: python -m pip install --disable-pip-version-check 'neo4j==5.26.0'
+      - name: Start one ephemeral Enterprise graph with synthetic auth and loopback-only Bolt
+        run: |
+          docker run --rm -d --name assistx-model-service-identity-synthetic --cpus=2 --memory=3g --pids-limit=256 \
+            -p 127.0.0.1:27889:7687 \
+            -e NEO4J_AUTH=neo4j/synthetic-graph-service-key-identity-only-2026 \
+            -e NEO4J_ACCEPT_LICENSE_AGREEMENT=yes \
+            neo4j:5.26.26-enterprise
+      - name: Prove exact source Cypher, uniqueness, synthetic repair and preserved edges
+        run: |
+          python -B -m py_compile scripts/ci_swarm_endpoint_namespace_disposable.py
+          python -B scripts/ci_swarm_endpoint_namespace_disposable.py
+      - name: Remove the exact-owned disposable graph container
+        if: always()
+        run: |
+          docker rm -f assistx-model-service-identity-synthetic 2>/dev/null || true
