@@ -26,7 +26,7 @@ ORNITH_PATH = Path(
     "Ornith-1.5-35B-A3B-APEX-MTP-Quality.gguf"
 )
 APPROVE_SCRIPT = Path("/home/scott/git/auto-assist/scripts/approve-runtime-projection.py")
-APPROVE_SCRIPT_SHA256 = "ab89f989577712a2f2e86f2f2c3c4e30aa27c7f8ebeea013f8d05204da6e1a87"
+APPROVE_SCRIPT_SHA256 = "4265e6743272ae8be62273ae03b1f3fc1540851872539bb9680c1a195ae464fb"
 LAN_BASE = "http://192.168.1.237:1234/v1"
 TS_BASE = "http://100.64.43.123:1234/v1"
 LMS_BIN = Path("/home/scott/.lmstudio/bin/lms")
