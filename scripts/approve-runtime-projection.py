@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import ipaddress
 import json
 import os
@@ -17,11 +18,26 @@ from urllib.parse import urlparse
 import yaml
 from neo4j import GraphDatabase
 
-from runtime_owner_approval_receipt import (
-    load_root_owned_key,
-    read_receipt,
-    verify_receipt,
+# This module is also loaded by review/CI using importlib's file-spec API.
+# Resolve the reviewed sibling verifier explicitly rather than importing an
+# arbitrary same-named module from the caller's Python sys.path.
+_THIS_SCRIPT = pathlib.Path(__file__)
+if _THIS_SCRIPT.name != "approve-runtime-projection.py" or _THIS_SCRIPT.is_symlink():
+    raise RuntimeError("owner approval publisher must be the reviewed script")
+_THIS_SCRIPT = _THIS_SCRIPT.resolve(strict=True)
+_VERIFIER_PATH = _THIS_SCRIPT.with_name("runtime_owner_approval_receipt.py")
+if _VERIFIER_PATH.is_symlink():
+    raise RuntimeError("owner approval verifier must not be a symlink")
+_VERIFIER_SPEC = importlib.util.spec_from_file_location(
+    "_assistx_independent_owner_approval_verifier", _VERIFIER_PATH.resolve(strict=True)
 )
+if _VERIFIER_SPEC is None or _VERIFIER_SPEC.loader is None:
+    raise RuntimeError("owner approval verifier is unavailable")
+_VERIFIER = importlib.util.module_from_spec(_VERIFIER_SPEC)
+_VERIFIER_SPEC.loader.exec_module(_VERIFIER)
+load_root_owned_key = _VERIFIER.load_root_owned_key
+read_receipt = _VERIFIER.read_receipt
+verify_receipt = _VERIFIER.verify_receipt
 
 
 _TAILSCALE = ipaddress.ip_network("100.64.0.0/10")
@@ -312,9 +328,15 @@ def validate_manifest(payload: dict[str, Any]) -> ValidatedManifest:
 def _apply_transaction(
     tx: Any, manifest: ValidatedManifest, now_ms: int,
     required_roster: dict[str, Any],
-    owner_receipt: dict[str, Any],
-    owner_key: Any,
+    owner_receipt: dict[str, Any] | None = None,
+    owner_key: Any = None,
 ) -> dict[str, Any]:
+    # Preserve the original independent-roster preflight contract (including
+    # older four-argument callers), without ever permitting unsigned writes.
+    payload = manifest.payload
+    validate_required_node_coverage(payload, required_roster)
+    if owner_receipt is None or owner_key is None:
+        raise ValueError("independent_owner_signed_receipt_required")
     # Reverify receipt time inside the write transaction. Cannot proceed on a
     # receipt that expired during connection/retry; verification occurs BEFORE
     # the first Neo4j mutation. The generation CAS stays mandatory.
@@ -323,8 +345,6 @@ def _apply_transaction(
         manifest, owner_receipt, owner_key,
         required_roster_sha256=roster_checksum, now_ms=now_ms
     )
-    payload = manifest.payload
-    validate_required_node_coverage(payload, required_roster)
     generation = int(payload["generation"])
     expected = int(payload["expected_current_generation"])
     expires_at_ts = now_ms + int(payload["ttl_seconds"]) * 1000

@@ -105,6 +105,11 @@ python3 scripts/approve-runtime-projection.py /secure/reviewed/current-manifest.
   --owner-approval-receipt /secure/reviewed/owner-receipt.json
 ```
 
+The source publisher loads its exact-reviewed sibling verifier by file path,
+not a caller-controlled import-search path. It preserves older four-argument
+roster-guard test entrypoints, but without a signed receipt those entrypoints
+still return a controlled BLOCK before any graph command.
+
 This code path requires explicit Neo4j configuration already handled by the
 protected approval process. Do **not** put credentials or private signing keys
 in command lines or PRs. Read-only validation without `--apply` is the safe
@@ -121,7 +126,8 @@ manifest and roster binding, signature tampering, wrong signer, expired/future r
 invalid nonce/duplicate JSON fields, root-ownership safeguards, invalid file sources,
 unsigned CLI denial *before Neo4j connection*, successful fake write
 provenance, a competing generation and an expiring in-flight receipt.
-A minimal-permission GitHub workflow runs synthetic tests and source compile
+A minimal-permission GitHub workflow runs synthetic signer, original
+independent-roster-coverage and retired-keepalive tests plus source compile
 only: **no `--apply`, graph credentials, trust-path provisioning or model
 request is ever executed in CI**.
 

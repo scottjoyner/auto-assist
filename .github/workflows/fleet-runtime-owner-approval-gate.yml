@@ -7,6 +7,7 @@ on:
       - scripts/runtime_owner_approval_receipt.py
       - tests/test_runtime_projection_approval.py
       - tests/test_runtime_owner_approval_receipt.py
+      - tests/test_fleet_roster_approval_guard.py
       - scripts/assistx-fleet-admit-live.py
       - tests/test_live_admission_keepalive_contract.py
       - docs/FLEET_RUNTIME_OWNER_RECEIPT_GATE_20261107.md
@@ -37,5 +38,5 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: '1'
         run: |
-          python -m py_compile scripts/approve-runtime-projection.py scripts/runtime_owner_approval_receipt.py scripts/assistx-fleet-admit-live.py tests/test_runtime_projection_approval.py tests/test_runtime_owner_approval_receipt.py tests/test_live_admission_keepalive_contract.py
-          python -m pytest --noconftest -q -p no:cacheprovider tests/test_runtime_projection_approval.py tests/test_runtime_owner_approval_receipt.py tests/test_live_admission_keepalive_contract.py
+          python -m py_compile scripts/approve-runtime-projection.py scripts/runtime_owner_approval_receipt.py scripts/assistx-fleet-admit-live.py tests/test_runtime_projection_approval.py tests/test_runtime_owner_approval_receipt.py tests/test_fleet_roster_approval_guard.py tests/test_live_admission_keepalive_contract.py
+          python -m pytest --noconftest -q -p no:cacheprovider tests/test_runtime_projection_approval.py tests/test_runtime_owner_approval_receipt.py tests/test_fleet_roster_approval_guard.py tests/test_live_admission_keepalive_contract.py

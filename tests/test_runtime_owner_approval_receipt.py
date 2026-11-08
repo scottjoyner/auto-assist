@@ -343,9 +343,7 @@ def test_invalid_owner_receipt_stops_transaction_before_any_neo4j_query(monkeypa
     receipt = valid_signed_receipt(item, key, now)
     receipt["signature"] = "0" * 86
     tx = FakeTx(generation=3)
-    monkeypatch.setattr(
-        issuer, "validate_required_node_coverage", lambda *_: pytest.fail("profile roster checked before signature")
-    )
+    monkeypatch.setattr(issuer, "validate_required_node_coverage", lambda *_: None)
     with pytest.raises(ValueError):
         issuer._apply_transaction(tx, item, now, {}, receipt, key.public_key())
     assert tx.queries == []
