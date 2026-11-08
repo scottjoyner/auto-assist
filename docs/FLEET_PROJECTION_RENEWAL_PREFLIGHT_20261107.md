@@ -72,12 +72,23 @@ python3 scripts/fleet-local-capacity-nonadmitting-canary.py \
 ```
 
 The script accepts no alternate origin, no remote URL, no extra output-token
-budget and no task identifiers. It caps HTTP response sizes, disables redirects
+budget and no task identifiers. The ceiling is **64 output tokens per request**
+using the fixed short prompt `Reply OK.`. The previous two-token witness
+returned HTTP 200 and two **reasoning-only tokens** with empty final content,
+and a longer canary prompt also consumed 64 tokens without an answer. Neither
+is valid productive-output evidence. Identical fixed prompts may be cached;
+three successful client requests do not prove physical server concurrency. It caps HTTP response sizes, disables redirects
 and proxies, fails on a changed/unloaded model, emits no generated content,
 and always returns `task_admission=HOLD` with `approved_parallel_slots=0`.
-This canary proves short-request responsiveness and *observed* parallel
-execution only. **Sustained concurrency, exact memory limits, rollback and
-resource-fenced claim/COMMIT are still unverified**.
+This canary proves bounded short-request responsiveness and that a *pair
+of client requests completed* using a two-worker pool. It **does not prove
+server-side simultaneous inference**, since the model server may queue the
+requests internally. The machine-readable fields keep the old
+`physical_parallel_pair_observed=false` and explicitly set
+`server_parallel_processing_verified=false` until independent slot traces
+exist. The tool also rejects zero-token, blank-content and mismatched-model
+responses. **Sustained concurrency, exact memory limits, rollback and
+resource-fenced claim/COMMIT remain unverified**.
 
 ## How to collect again (no credentials displayed)
 
@@ -135,3 +146,43 @@ alone is not a durable scheduler or indefinite grant.
 
 Until all gates pass, `task_admission=HOLD` and machine legacy Task routes 403
 are the correct operational result.
+
+## November 7 capacity-evidence integrity correction (production admission HOLD)
+
+The originally merged local LM Studio preflight unconditionally reported
+`physical_parallel_pair_observed=true` after submitting two HTTP client calls.
+That was an **unsupported physical concurrency claim**: the server may have
+queued those two requests. The corrected tool preserves the legacy field but
+sets it to `false`, records `client_parallel_requests_completed=true` when
+both client requests complete, and explicitly sets
+`server_parallel_processing_verified=false` until independent server-side
+slot observations exist. The tool can never issue an approval.
+
+The original **two-output-token** canary also accepted a valid HTTP 200 with
+two reasoning-only tokens and **no final user-visible content**. The strict
+replacement rejects zero token counts, blank/non-text final content, and an
+unexpected served model ID. An actual Ornith-1.5-35B-A3B-APEX-MTP canary with
+the longer synthetic prompt failed to produce final text within 64 output
+tokens. Therefore, the corrected canary uses the fixed `Reply OK.` prompt,
+retains a **64 output-token request ceiling**, and requires a *nonblank final
+content string*; neither model-generated reasoning nor the content itself is
+logged. A stale hard-coded two-token validation cap was identified during
+live validation and replaced by the same configured 64-token maximum.
+
+**Final real physical evidence**, from already-loaded `x1-370` LM Studio:
+three requests returned HTTP 200 with **30 completion tokens each** and
+nonblank final answers, at **2724 / 3368 / 3446 ms**. The last two were
+submitted from a two-worker client pool, which is **not proof** of server-side
+simultaneous processing. No model was loaded/unloaded, no Task API was called,
+no graph node was written, and no signer state was changed. The tool retained
+`approved_parallel_slots=0`, `owner_signed_projection_verified=false`,
+`rollback_verified=false`, `task_admission=HOLD`, and intentional exit code 2.
+
+The rewritten tests (35 focused tests) require a valid **30-token** final
+answer to be accepted and verify rejection of zero, boolean, fractional,
+negative, oversized, blank, non-string and wrong-model completions. Failures
+emit only **allowlisted categorical error codes**, never arbitrary exception
+messages that might include private user data or credentials. These are
+capacity-observation improvements only; separate owner approval, fresh
+signed resource evidence, independently verified server-side parallel slot
+trace, realistic contention and a supervised Task rollback remain necessary.
