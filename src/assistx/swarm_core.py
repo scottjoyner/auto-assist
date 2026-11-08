@@ -11,6 +11,17 @@ from .contracts.event_envelope import EventEnvelope
 from .coordination_metadata import build_event_metadata
 from .neo4j_client import Neo4jClient
 
+# Reserved private graph key, separate from the public model_endpoint_id.
+# Existing collided data still requires a separately approved operator migration.
+MODEL_SERVICE_KEY_PREFIX = "model_ep:v1:"
+RESERVED_SERVICE_KEY_PREFIX = "model_ep:"
+
+
+def _model_service_key(model_endpoint_id: str) -> str:
+    """Opaque stable identity for model nodes with the ServiceEndpoint label."""
+    return MODEL_SERVICE_KEY_PREFIX + hashlib.sha256(model_endpoint_id.encode("utf-8")).hexdigest()
+
+
 SCHEMA_VERSION = "2026-06-08.v1"
 SUPPORTED_SCHEMA_VERSIONS = {"1.0", "2026-06-08.v1"}
 LOW_RISK_ACTIONS = {
@@ -473,6 +484,11 @@ def upsert_swarm_node(neo: Neo4jClient, payload: Dict[str, Any]) -> Dict[str, An
     props = _neo4j_props({**payload, "node_id": node_id, "status": payload.get("status") or "online"})
     capabilities = payload.get("capabilities") or []
     services = payload.get("services") or []
+    # Validate entire batch BEFORE any graph write; model_ep: is reserved.
+    for svc in services:
+        candidate = str(svc.get("endpoint_id") or f"{node_id}:{svc.get('service_type', 'service')}")
+        if candidate.startswith(RESERVED_SERVICE_KEY_PREFIX):
+            raise EventValidationError("reserved model endpoint graph identity namespace")
     with neo._session() as s:
         s.run(
             """
@@ -688,7 +704,10 @@ def _infer_context_length(model_id: str) -> int:
 def upsert_model_endpoint(neo: Neo4jClient, payload: Dict[str, Any], event_node_id: Optional[str] = None) -> Dict[str, Any]:
     node_id = str(payload.get("node_id") or event_node_id or "unknown")
     endpoint_id = str(payload.get("model_endpoint_id") or payload.get("endpoint_id") or f"{node_id}:model:{payload.get('base_url','unknown')}")
+    service_graph_id = _model_service_key(endpoint_id)
     props = _neo4j_props({**payload, "model_endpoint_id": endpoint_id, "node_id": node_id, "status": payload.get("status") or "online"})
+    # An external/payload endpoint_id must not override the namespaced key.
+    props.pop("endpoint_id", None)
     model_ids: List[str] = []
     with neo._session() as s:
         rec = s.run(
@@ -697,16 +716,17 @@ def upsert_model_endpoint(neo: Neo4jClient, payload: Dict[str, Any], event_node_
             ON CREATE SET n.created_at=datetime(), n.created_at_ts=timestamp(), n.status='online'
             SET n.updated_at=datetime(), n.updated_at_ts=timestamp()
             MERGE (e:ModelEndpoint:ServiceEndpoint {model_endpoint_id:$endpoint_id})
-            ON CREATE SET e.created_at=datetime(), e.created_at_ts=timestamp()
+            ON CREATE SET e.created_at=datetime(), e.created_at_ts=timestamp(),
+                e.endpoint_id=$service_graph_id
             SET e += $props,
-                e.endpoint_id=coalesce(e.endpoint_id, $endpoint_id),
+                e.endpoint_id=coalesce(e.endpoint_id, $service_graph_id),
                 e.service_type='model_endpoint',
                 e.updated_at=datetime(),
                 e.updated_at_ts=timestamp()
             MERGE (n)-[:EXPOSES]->(e)
             RETURN e
             """,
-            {"node_id": node_id, "endpoint_id": endpoint_id, "props": props},
+            {"node_id": node_id, "endpoint_id": endpoint_id, "service_graph_id": service_graph_id, "props": props},
         ).single()
         for model in payload.get("models") or []:
             model_id = model.get("model_id") or f"{endpoint_id}:{model.get('served_name') or model.get('id') or model.get('name') or 'unknown'}"
