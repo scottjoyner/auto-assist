@@ -162,19 +162,87 @@ def test_root_rejected_before_any_docker_calls(monkeypatch):
         stage._attested_local_inputs()
 
 
-def test_cleanup_names_are_bounded_to_staging_resources(monkeypatch):
+def test_cleanup_without_created_ids_never_removes_named_resources(monkeypatch):
+    # A different process may create the fixed names after preflight.
+    monkeypatch.setattr(stage.subprocess, "run", lambda *_a, **_k: pytest.fail("unowned removal"))
+    monkeypatch.setattr(stage, "docker", lambda *_a, **_k: pytest.fail("no cleanup discovery"))
+    stage._cleanup([], None)
+
+
+@pytest.mark.parametrize("bad", [stage.MODEL_CONTAINER, "", "a" * 63, "a" * 65, "../other", "G" * 64])
+def test_cleanup_refuses_unverified_docker_ids(monkeypatch, bad):
+    monkeypatch.setattr(stage.subprocess, "run", lambda *_a, **_k: pytest.fail("must validate before removal"))
+    with pytest.raises(ValueError, match="created_docker_identity_unverified"):
+        stage._cleanup([bad], None)
+
+
+def test_cleanup_targets_only_owned_full_ids(monkeypatch):
+    model_id, gateway_id, network_id = "a" * 64, "b" * 64, "c" * 64
     seen = []
-    monkeypatch.setattr(
-        stage.subprocess, "run", lambda args, **kwargs: seen.append(args) or SimpleNamespace(returncode=0)
-    )
-    stage._cleanup()
+
+    def fake_run(args, **kwargs):
+        seen.append(args)
+        return SimpleNamespace(returncode=0)
+
+    def fake_docker(*args, **_kwargs):
+        if args[:2] == ("ps", "-a"):
+            return ""  # both exact owned identities absent after teardown
+        if args[:2] == ("network", "ls"):
+            return ""
+        pytest.fail("unexpected Docker operation")
+
+    monkeypatch.setattr(stage.subprocess, "run", fake_run)
+    monkeypatch.setattr(stage, "docker", fake_docker)
+    stage._cleanup([model_id, gateway_id], network_id)
     assert seen == [
-        ["docker", "rm", "-f", stage.GATEWAY_CONTAINER],
-        ["docker", "rm", "-f", stage.CLIENT_CONTAINER],
-        ["docker", "rm", "-f", stage.MODEL_CONTAINER],
-        ["docker", "network", "rm", stage.NETWORK],
+        ["docker", "rm", "-f", gateway_id],
+        ["docker", "rm", "-f", model_id],
+        ["docker", "network", "rm", network_id],
     ]
-    assert "assistx-api" not in str(seen) and "neo4j" not in str(seen)
+    assert not any(stage.MODEL_CONTAINER in str(item) or stage.GATEWAY_CONTAINER in str(item) for item in seen)
+
+
+def test_cleanup_does_not_accept_residual_owned_container(monkeypatch):
+    owned = "a" * 64
+    monkeypatch.setattr(stage.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=1))
+    monkeypatch.setattr(stage, "docker", lambda *_a, **_k: owned)
+    with pytest.raises(ValueError, match="owned_stage_container_cleanup_failed"):
+        stage._cleanup([owned], None)
+
+
+def test_cleanup_does_not_accept_residual_owned_network(monkeypatch):
+    owned = "a" * 64
+    monkeypatch.setattr(stage.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=1))
+
+    def fake_docker(*args, **_kwargs):
+        return "" if args[:2] == ("ps", "-a") else owned
+
+    monkeypatch.setattr(stage, "docker", fake_docker)
+    with pytest.raises(ValueError, match="owned_stage_network_cleanup_failed"):
+        stage._cleanup([], owned)
+
+
+def test_network_create_name_race_does_not_delete_unowned_resources(monkeypatch):
+    monkeypatch.setattr(stage, "_attested_local_inputs", lambda: None)
+    monkeypatch.setattr(stage, "docker", lambda *_a, **_k: (_ for _ in ()).throw(ValueError("simulated_network_name_race")))
+    observed = []
+    monkeypatch.setattr(stage, "_cleanup", lambda ids, net: observed.append((ids.copy(), net)))
+    with pytest.raises(ValueError, match="simulated_network_name_race"):
+        stage.run()
+    assert observed == [([], None)]
+
+
+def test_created_network_is_tracked_if_model_launch_fails(monkeypatch):
+    network_id = "f" * 64
+    monkeypatch.setattr(stage, "_attested_local_inputs", lambda: None)
+    monkeypatch.setattr(stage, "docker", lambda *_a, **_k: network_id)
+    monkeypatch.setattr(stage, "_network_attest", lambda **_k: None)
+    monkeypatch.setattr(stage, "_docker_run", lambda *_a, **_k: (_ for _ in ()).throw(ValueError("simulated_model_failure")))
+    observed = []
+    monkeypatch.setattr(stage, "_cleanup", lambda ids, net: observed.append((ids.copy(), net)))
+    with pytest.raises(ValueError, match="simulated_model_failure"):
+        stage.run()
+    assert observed == [([], network_id)]
 
 
 def test_fixed_stage_model_gateway_client_names_are_distinct():
