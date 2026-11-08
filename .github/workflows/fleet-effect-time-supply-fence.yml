@@ -1,0 +1,41 @@
+name: Fleet effect-time supply fence (synthetic only)
+
+on:
+  pull_request:
+    paths:
+      - src/assistx/fleet_executor.py
+      - src/assistx/fleet_supply_effect_gate.py
+      - tests/test_fleet_supply_effect_gate.py
+      - tests/test_safe_fleet_executor.py
+      - tests/test_fleet_executor_concurrency.py
+      - tests/test_fleet_executor_priority_query.py
+      - docs/FLEET_EFFECT_TIME_WORK_SUPPLY_FENCE_20261107.md
+      - .github/workflows/fleet-effect-time-supply-fence.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-fence-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Check out source without retained credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+      - name: Install reviewed project test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt -r requirements-dev.txt
+      - name: Verify new gate without a fleet or live Task request
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          ASSISTX_OUTBOX_DB: /tmp/fleet-effect-time-offline-ci.sqlite
+        run: |
+          python -m py_compile src/assistx/fleet_executor.py src/assistx/fleet_supply_effect_gate.py tests/test_fleet_supply_effect_gate.py tests/test_safe_fleet_executor.py
+          python -m pytest --noconftest -q -p no:cacheprovider tests/test_fleet_supply_effect_gate.py tests/test_safe_fleet_executor.py tests/test_fleet_executor_concurrency.py tests/test_fleet_executor_priority_query.py

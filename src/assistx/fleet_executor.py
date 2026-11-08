@@ -38,6 +38,7 @@ from .controller_runtime import (
     start_durable_controller_loop,
 )
 from .neo4j_client import Neo4jClient
+from .fleet_supply_effect_gate import current_supply_permits_effect
 from .runtime_projection import RuntimeProjectionBlocked, build_runtime_projection
 
 logger = logging.getLogger(__name__)
@@ -552,6 +553,13 @@ class FleetExecutor:
         cancel_event = threading.Event()
         neo = self.neo_factory()
         try:
+            # The signed projection is not an effect-time resource grant.
+            # Require fresh matching WorkSupply AND an owner-receipt-bearing
+            # canonical generation before sending anything to the model.
+            pre_effect = current_supply_permits_effect(neo, projection)
+            if not pre_effect.allowed:
+                logger.warning("fleet executor: refusing model effect task=%s reason=%s", task_id, pre_effect.reason)
+                return  # leave claim to expire; never commit without authority
             request_payload = self._request_payload(task, claim_id, projection)
             holder: dict[str, Any] = {}
 
@@ -572,6 +580,11 @@ class FleetExecutor:
                 invocation.join(timeout=HEARTBEAT_INTERVAL)
                 if not invocation.is_alive():
                     break
+                if not current_supply_permits_effect(neo, projection).allowed:
+                    logger.warning("fleet executor: controller authority lost during task=%s", task_id)
+                    cancel_event.set()
+                    invocation.join(timeout=10)
+                    return
                 heartbeat = neo.heartbeat_task(
                     task_id,
                     EXECUTOR_AGENT_ID,
@@ -593,6 +606,11 @@ class FleetExecutor:
                     invocation.join(timeout=10)
                     return
 
+            # A completed model response from an expired grant must not become
+            # an authoritative Task COMMIT. Check the effective generation.
+            if not current_supply_permits_effect(neo, projection).allowed:
+                logger.warning("fleet executor: withholding stale Task completion task=%s", task_id)
+                return
             response = holder.get(
                 "response",
                 {
@@ -653,6 +671,12 @@ class FleetExecutor:
     ) -> bool:
         task_id = str(task.get("id") or "").strip()
         if not task_id:
+            return False
+        # No Task claim without current authoritative controller capacity;
+        # an in-memory projection alone cannot mint a resource claim.
+        decision = current_supply_permits_effect(neo, projection)
+        if not decision.allowed:
+            logger.warning("fleet executor: refusing claim task=%s reason=%s", task_id, decision.reason)
             return False
         claimed = neo.claim_task(
             task_id,
@@ -752,6 +776,15 @@ class FleetExecutor:
         neo = self.neo_factory()
         claimed_count = 0
         try:
+            decision = current_supply_permits_effect(neo, projection)
+            if not decision.allowed:
+                return {
+                    "executed": False, "claimed": 0,
+                    "reason": "work_supply_or_owner_grant_unavailable",
+                    "gate": decision.reason,
+                    "capacity": 0,
+                    "projection_generation": projection.generation,
+                }
             candidates = self._list_ready_llm_tasks(neo, max(free * 4, 20))
             high_priority_waiting = any(not _is_background(task) for task in candidates)
             if BACKGROUND_MAX_FRACTION <= 0:
