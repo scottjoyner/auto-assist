@@ -1,0 +1,40 @@
+name: Fleet authenticated host-slot LFM3 bridge (synthetic, HOLD)
+
+on:
+  pull_request:
+    paths:
+      - scripts/fleet_lfm3_signed_slot_bridge_canary.py
+      - scripts/fleet_lfm3_slot_bridge_operator_probe.py
+      - tests/test_fleet_lfm3_signed_slot_bridge_canary.py
+      - src/assistx/fleet_resource_slot_ledger.py
+      - scripts/lfm3_signed_private_canary.py
+      - scripts/fleet_signed_ssh_docker_catalog_canary.py
+      - docs/FLEET_LFM3_SIGNED_SLOT_BRIDGE_20261108.md
+      - .github/workflows/fleet-lfm3-signed-slot-bridge-offline.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-authenticated-host-slot-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - name: Check out without retained credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+      - name: Install synthetic test runner only
+        run: python -m pip install --disable-pip-version-check pytest==9.0.2
+      - name: Prove non-admitting request/lease/timeout/denial contracts
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          PYTHONPATH: src:scripts
+        run: |
+          python -m py_compile scripts/fleet_lfm3_signed_slot_bridge_canary.py scripts/fleet_lfm3_slot_bridge_operator_probe.py tests/test_fleet_lfm3_signed_slot_bridge_canary.py
+          python -m pytest --noconftest -q -p no:cacheprovider tests/test_fleet_lfm3_signed_slot_bridge_canary.py tests/test_fleet_resource_slot_ledger.py tests/test_lfm3_signed_private_canary.py
