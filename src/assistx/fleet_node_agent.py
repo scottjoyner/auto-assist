@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import uuid
 import json
+import math
 import os
 import platform
 import subprocess
@@ -45,11 +46,37 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .kv_cache import runtime_capabilities
 from .lm_studio_client_auth import headers_for_request
 from .recovery_runbooks import RecoveryRunbookExecutor
 
 DEFAULT_CAPS = ["script"]
+
+
+class _RejectPrivilegedRedirect(urllib.request.HTTPRedirectHandler):
+    """Credentialed requests may not redirect to any other endpoint."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _privileged_request(auth: tuple[str, str] | None, headers: dict[str, str]) -> bool:
+    if auth is not None:
+        return True
+    names = {str(name).casefold() for name in headers}
+    return any(
+        name in {"authorization", "proxy-authorization", "cookie", "x-fleet-node-token"}
+        or name.endswith(("-token", "-api-key"))
+        for name in names
+    )
+
+
+def _machine_task_legacy_hold() -> bool:
+    """Machine-token intent can NEVER silently inherit operator Basic Tasks.
+
+    A separate signed, resource-fenced machine Task route does not yet exist.
+    Even an empty/partial machine credential must block legacy worker calls.
+    """
+    return "FLEET_NODE_TOKEN" in os.environ or "FLEET_NODE_IDENTITY_APPROVED_ORIGIN" in os.environ
 
 
 def _now() -> str:
@@ -78,22 +105,38 @@ def _http(
         req.add_header(key, value)
     if data is not None:
         req.data = json.dumps(data).encode()
+    credentialed = _privileged_request(auth, headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode()
+        if credentialed:
+            # No environment proxies, no redirects for operator Basic or
+            # machine-token headers; a redirected host must never get secrets.
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RejectPrivilegedRedirect())
+            response_context = opener.open(req, timeout=timeout)
+        else:
+            response_context = urllib.request.urlopen(req, timeout=timeout)
+        with response_context as resp:
+            raw = resp.read(1024 * 1024 + 1) if credentialed else resp.read()
+            if credentialed and len(raw) > 1024 * 1024:
+                return 0, {"detail": "privileged_response_oversized"}
+            decoded = raw.decode()
             try:
-                return resp.status, json.loads(raw) if raw else {}
+                return resp.status, json.loads(decoded) if decoded else {}
             except json.JSONDecodeError:
-                return resp.status, raw
+                return resp.status, decoded
     except urllib.error.HTTPError as exc:
         try:
-            return exc.code, json.loads(exc.read().decode())
-        except Exception:
-            return exc.code, {"detail": str(exc)}
+            raw = exc.read(65536 + 1)
+            if len(raw) > 65536:
+                return exc.code, {"detail": "http_error_body_oversized"}
+            try:
+                return exc.code, json.loads(raw.decode())
+            except (UnicodeError, json.JSONDecodeError):
+                return exc.code, {"detail": "http_error_without_json"}
         finally:
             exc.close()
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return 0, {"detail": str(exc)}
+        # Never expose bearer tokens embedded in a URL or proxy exception.
+        return 0, {"detail": type(exc).__name__}
 
 
 def _detect_hostname() -> str:
@@ -113,9 +156,7 @@ def _detect_capabilities(lmstudio_url: str | None) -> tuple[list[str], list[str]
 
     # Lightweight vision/tooling detection without importing heavyweight libs.
     for command in ("ffmpeg", "python3"):
-        if subprocess.run(
-            ["which", command], capture_output=True, text=True, check=False
-        ).returncode == 0:
+        if subprocess.run(["which", command], capture_output=True, text=True, check=False).returncode == 0:
             caps.add(command)
 
     extra = os.getenv("FLEET_CAPABILITIES", "")
@@ -226,9 +267,7 @@ def execute_task(
         }
 
     if payload.get("benchmark"):
-        return _run_benchmark_cases(
-            task, payload, lmstudio_url, should_stop, saved_checkpoint
-        )
+        return _run_benchmark_cases(task, payload, lmstudio_url, should_stop, saved_checkpoint)
     if "llm" in required and lmstudio_url:
         return _run_llm_task(
             task,
@@ -353,9 +392,7 @@ def _run_llm_task(
             "progress": 0.0,
             "checkpoint": {"handler": "llm", "phase": "before_inference"},
         }
-    cache_request = (
-        payload.get("kv_cache") if isinstance(payload.get("kv_cache"), dict) else {}
-    )
+    cache_request = payload.get("kv_cache") if isinstance(payload.get("kv_cache"), dict) else {}
     cache_resolution: dict[str, Any] = {}
     request_fields: dict[str, Any] = {}
     if cache_control_url and cache_request.get("prefix_id"):
@@ -383,9 +420,7 @@ def _run_llm_task(
                 cache_resolution = resolved
                 safe_fields = {"cache_id", "cache_prompt", "session_id", "slot_id"}
                 request_fields = {
-                    key: value
-                    for key, value in (resolved.get("request_fields") or {}).items()
-                    if key in safe_fields
+                    key: value for key, value in (resolved.get("request_fields") or {}).items() if key in safe_fields
                 }
     st, body = _http(
         "POST",
@@ -420,9 +455,7 @@ def _run_llm_task(
             result["kv_cache_event"] = {
                 "cache_id": cache_id,
                 "node_id": node_id,
-                "outcome": (
-                    "RESTORE" if mode == "restore" else "HIT" if mode == "local" else "MISS"
-                ),
+                "outcome": ("RESTORE" if mode == "restore" else "HIT" if mode == "local" else "MISS"),
                 "prefix_id": cache_request.get("prefix_id"),
                 "tokens_saved": int(cache_resolution.get("tokens_saved") or 0),
                 "prefill_ms_saved": int(cache_resolution.get("prefill_ms_saved") or 0),
@@ -591,13 +624,19 @@ def _poll_once(
     node_id: str,
     caps: list[str],
     lmstudio_url: str | None,
+    on_auth_denial: Callable[[int], None] | None = None,
 ) -> bool:
+    if _machine_task_legacy_hold():
+        # No machine identity grants old Basic-backed Task or Router effects.
+        return False
     status, body = _http(
         "GET",
         f"{assistx_url.rstrip('/')}/api/agent/tasks?state=READY&limit=20",
         auth=auth,
         timeout=15,
     )
+    if status in {401, 403} and on_auth_denial is not None:
+        on_auth_denial(status)
     if status != 200 or not isinstance(body, dict):
         return False
     tasks = body.get("tasks", body.get("items", []))
@@ -631,8 +670,13 @@ def run(
     lmstudio_url: str | None,
 ) -> None:
     del concurrency  # current worker loop intentionally executes one claimed task at a time
+    if _machine_task_legacy_hold():
+        raise RuntimeError("machine identity has no legacy Task authority")
+    if type(poll_interval) not in (int, float) or not math.isfinite(poll_interval) or poll_interval < 0:
+        raise ValueError("invalid_poll_interval")
     node_id = _detect_hostname()
     auth = _auth_from_env()
+    auth_denials = 0
 
     while True:
         # Re-detect per cycle: a value cached at startup is what a node booted
@@ -645,6 +689,7 @@ def run(
             data=_health_payload(node_id, caps, models),
             timeout=10,
         )
+        denied_statuses: list[int] = []
         worked = _poll_once(
             assistx_url=assistx_url,
             router_url=router_url,
@@ -652,25 +697,25 @@ def run(
             node_id=node_id,
             caps=caps,
             lmstudio_url=lmstudio_url,
+            on_auth_denial=denied_statuses.append,
         )
-        if not worked:
-            time.sleep(poll_interval)
+        if denied_statuses:
+            auth_denials = min(auth_denials + 1, 9)  # bounded saturation
+            base = min(300.0, max(1.0, poll_interval))
+            time.sleep(min(300.0, base * (2 ** min(auth_denials - 1, 8))))
+        elif not worked:
+            auth_denials = 0
+            time.sleep(max(1.0, poll_interval))
+        else:
+            auth_denials = 0
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run this machine as an AssistX fleet worker")
-    parser.add_argument(
-        "--assistx-url", default=os.getenv("FLEET_ASSISTX_URL", "http://assistx:8000")
-    )
-    parser.add_argument(
-        "--router-url", default=os.getenv("FLEET_ROUTER_URL", "http://router:8088")
-    )
-    parser.add_argument(
-        "--poll-interval", type=float, default=float(os.getenv("FLEET_POLL_INTERVAL", "10"))
-    )
-    parser.add_argument(
-        "--concurrency", type=int, default=int(os.getenv("FLEET_CONCURRENCY", "1"))
-    )
+    parser.add_argument("--assistx-url", default=os.getenv("FLEET_ASSISTX_URL", "http://assistx:8000"))
+    parser.add_argument("--router-url", default=os.getenv("FLEET_ROUTER_URL", "http://router:8088"))
+    parser.add_argument("--poll-interval", type=float, default=float(os.getenv("FLEET_POLL_INTERVAL", "10")))
+    parser.add_argument("--concurrency", type=int, default=int(os.getenv("FLEET_CONCURRENCY", "1")))
     parser.add_argument("--lmstudio-url", default=os.getenv("FLEET_LMSTUDIO_URL"))
     args = parser.parse_args()
     run(
