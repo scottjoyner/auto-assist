@@ -1,0 +1,38 @@
+name: Fleet host-local slot ledger (synthetic only)
+
+on:
+  pull_request:
+    paths:
+      - src/assistx/fleet_resource_slot_ledger.py
+      - tests/test_fleet_resource_slot_ledger.py
+      - tests/support/resource_slot_contender.py
+      - scripts/fleet_resource_slot_local_staging_witness.py
+      - docs/FLEET_RESOURCE_OWNED_SLOT_LEDGER_20261107.md
+      - .github/workflows/fleet-resource-slot-ledger-offline.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-host-slot-cas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - name: Checkout without retained GitHub credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up isolated Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+      - name: Install test runner only (no fleet credentials)
+        run: python -m pip install --disable-pip-version-check pytest==9.0.2
+      - name: Prove no provision or gateway admission; test cross-process leases
+        env:
+          PYTHONPATH: src
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python -m py_compile src/assistx/fleet_resource_slot_ledger.py tests/test_fleet_resource_slot_ledger.py scripts/fleet_resource_slot_local_staging_witness.py
+          python -m pytest --noconftest -q -p no:cacheprovider tests/test_fleet_resource_slot_ledger.py
