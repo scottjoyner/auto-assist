@@ -40,7 +40,7 @@ GATEWAY_CONTAINER = "lfm3-internal-stage-gateway-20261108"
 CLIENT_CONTAINER = "lfm3-internal-stage-client-20261108"
 IMAGE = "sha256:74df40c5c720dbef283f83eaf69eae585212748ca3889be508eaa9c88cd5b4c4"
 GGUF_SHA256 = "3793e1e6e2266919d6e015287221b41100175a98eddaba92e111aed3b05c93c4"
-OWNED_ID = re.compile(r"[0-9a-f]{64}\\Z")
+OWNED_ID = re.compile(r"[0-9a-f]{64}\Z")
 EGRESS = """
 import socket
 for dest in [('1.1.1.1',443),('8.8.8.8',53)]:
