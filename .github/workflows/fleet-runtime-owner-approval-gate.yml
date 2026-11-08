@@ -1,0 +1,42 @@
+name: Fleet independent owner receipt gate (synthetic, HOLD)
+
+on:
+  pull_request:
+    paths:
+      - scripts/approve-runtime-projection.py
+      - scripts/runtime_owner_approval_receipt.py
+      - tests/test_runtime_projection_approval.py
+      - tests/test_runtime_owner_approval_receipt.py
+      - tests/test_fleet_roster_approval_guard.py
+      - scripts/assistx-fleet-admit-live.py
+      - tests/test_live_admission_keepalive_contract.py
+      - docs/FLEET_RUNTIME_OWNER_RECEIPT_GATE_20261107.md
+      - .github/workflows/fleet-runtime-owner-approval-gate.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-no-db-owner-signature:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check out without retained credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+      - name: Install narrow verification dependencies only
+        run: |
+          python -m pip install --disable-pip-version-check \
+            pytest==9.0.2 neo4j==5.23.0 PyYAML==6.0.2 'cryptography>=43.0.0,<46'
+      - name: Prove unsigned owner grant cannot touch database
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python -m py_compile scripts/approve-runtime-projection.py scripts/runtime_owner_approval_receipt.py scripts/assistx-fleet-admit-live.py tests/test_runtime_projection_approval.py tests/test_runtime_owner_approval_receipt.py tests/test_fleet_roster_approval_guard.py tests/test_live_admission_keepalive_contract.py
+          python -m pytest --noconftest -q -p no:cacheprovider tests/test_runtime_projection_approval.py tests/test_runtime_owner_approval_receipt.py tests/test_fleet_roster_approval_guard.py tests/test_live_admission_keepalive_contract.py

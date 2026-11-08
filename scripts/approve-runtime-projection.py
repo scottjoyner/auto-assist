@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import ipaddress
 import json
 import os
@@ -16,6 +17,27 @@ from urllib.parse import urlparse
 
 import yaml
 from neo4j import GraphDatabase
+
+# This module is also loaded by review/CI using importlib's file-spec API.
+# Resolve the reviewed sibling verifier explicitly rather than importing an
+# arbitrary same-named module from the caller's Python sys.path.
+_THIS_SCRIPT = pathlib.Path(__file__)
+if _THIS_SCRIPT.name != "approve-runtime-projection.py" or _THIS_SCRIPT.is_symlink():
+    raise RuntimeError("owner approval publisher must be the reviewed script")
+_THIS_SCRIPT = _THIS_SCRIPT.resolve(strict=True)
+_VERIFIER_PATH = _THIS_SCRIPT.with_name("runtime_owner_approval_receipt.py")
+if _VERIFIER_PATH.is_symlink():
+    raise RuntimeError("owner approval verifier must not be a symlink")
+_VERIFIER_SPEC = importlib.util.spec_from_file_location(
+    "_assistx_independent_owner_approval_verifier", _VERIFIER_PATH.resolve(strict=True)
+)
+if _VERIFIER_SPEC is None or _VERIFIER_SPEC.loader is None:
+    raise RuntimeError("owner approval verifier is unavailable")
+_VERIFIER = importlib.util.module_from_spec(_VERIFIER_SPEC)
+_VERIFIER_SPEC.loader.exec_module(_VERIFIER)
+load_root_owned_key = _VERIFIER.load_root_owned_key
+read_receipt = _VERIFIER.read_receipt
+verify_receipt = _VERIFIER.verify_receipt
 
 
 _TAILSCALE = ipaddress.ip_network("100.64.0.0/10")
@@ -306,24 +328,44 @@ def validate_manifest(payload: dict[str, Any]) -> ValidatedManifest:
 def _apply_transaction(
     tx: Any, manifest: ValidatedManifest, now_ms: int,
     required_roster: dict[str, Any],
+    owner_receipt: dict[str, Any] | None = None,
+    owner_key: Any = None,
 ) -> dict[str, Any]:
+    # Preserve the original independent-roster preflight contract (including
+    # older four-argument callers), without ever permitting unsigned writes.
     payload = manifest.payload
     validate_required_node_coverage(payload, required_roster)
+    if owner_receipt is None or owner_key is None:
+        raise ValueError("independent_owner_signed_receipt_required")
+    # Reverify receipt time inside the write transaction. Cannot proceed on a
+    # receipt that expired during connection/retry; verification occurs BEFORE
+    # the first Neo4j mutation. The generation CAS stays mandatory.
+    roster_checksum = hashlib.sha256(_canonical(required_roster)).hexdigest()
+    owner_receipt_sha256 = verify_receipt(
+        manifest, owner_receipt, owner_key,
+        required_roster_sha256=roster_checksum, now_ms=now_ms
+    )
     generation = int(payload["generation"])
     expected = int(payload["expected_current_generation"])
     expires_at_ts = now_ms + int(payload["ttl_seconds"]) * 1000
+    # Update the generation PROPERTY atomically, under Neo4j's write lock,
+    # before retiring any approved runtimes. A standalone read-then-compare
+    # can race concurrent writers. In the mismatch case the exception aborts
+    # the transaction, rolling this increment back with zero other changes.
     state = tx.run(
         """
         MERGE (s:FleetProjectionState {name:'canonical'})
         ON CREATE SET s.generation=0, s.status='uninitialized',
                       s.created_at=datetime(), s.created_at_ts=timestamp()
-        RETURN coalesce(s.generation, 0) AS generation
+        SET s.generation=coalesce(s.generation,0)+1
+        RETURN s.generation AS generation
         """
     ).single()
-    current = int(state["generation"] if state else 0)
-    if current != expected:
+    granted = int(state["generation"] if state else -1)
+    if granted != generation:
         raise RuntimeError(
-            f"generation compare-and-swap failed: expected {expected}, current {current}"
+            f"generation compare-and-swap failed: expected {expected}, "
+            f"current {granted - 1}"
         )
 
     tx.run(
@@ -511,6 +553,14 @@ def _apply_transaction(
                 expires_at_ts=expires_at_ts,
             ).consume()
 
+    # Check the owner receipt has not expired while preparing writes.
+    # Any expiration aborts the entire transaction, including the CAS and
+    # all staged node updates; do not permit a late grant at commit time.
+    verify_receipt(
+        manifest, owner_receipt, owner_key,
+        required_roster_sha256=roster_checksum,
+        now_ms=int(time.time() * 1000),
+    )
     tx.run(
         """
         MATCH (s:FleetProjectionState {name:'canonical'})
@@ -520,6 +570,7 @@ def _apply_transaction(
             s.approved_by=$approved_by,
             s.approval_id=$approval_id,
             s.manifest_checksum=$manifest_checksum,
+            s.owner_approval_receipt_sha256=$owner_approval_receipt_sha256,
             s.expires_at_ts=$expires_at_ts,
             s.updated_at=datetime(), s.updated_at_ts=timestamp()
         """,
@@ -528,12 +579,14 @@ def _apply_transaction(
         approved_by=payload["approved_by"],
         approval_id=payload["approval_id"],
         manifest_checksum=manifest.checksum,
+        owner_approval_receipt_sha256=owner_receipt_sha256,
         expires_at_ts=expires_at_ts,
     ).consume()
     return {
         "generation": generation,
         "revision": payload["revision"],
         "manifest_checksum": manifest.checksum,
+        "owner_approval_receipt_sha256": owner_receipt_sha256,
         "runtime_count": runtime_count,
         "model_count": model_count,
         "access_path_count": path_count,
@@ -550,6 +603,8 @@ def main() -> int:
     )
     parser.add_argument("manifest", type=pathlib.Path)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--owner-approval-receipt", type=pathlib.Path,
+                        help="fresh independent owner signature (required for --apply)")
     parser.add_argument("--required-nodes-file", type=pathlib.Path)
     parser.add_argument("--evidence-output", type=pathlib.Path)
     args = parser.parse_args()
@@ -577,6 +632,25 @@ def main() -> int:
         "runtime_count": len(manifest.payload["runtimes"]),
     }
     if args.apply:
+        # The runtime service cannot sign its own operator authorization.
+        # This trust root must be independently provisioned by an admin.
+        # Reject all unsigned, stale, or manifest-mismatched approvals BEFORE
+        # any Neo4j connection or writes, even if DB credentials are present.
+        try:
+            if args.owner_approval_receipt is None:
+                raise ValueError("independent_owner_signed_receipt_required")
+            owner_key = load_root_owned_key()
+            owner_receipt = read_receipt(args.owner_approval_receipt)
+            roster_checksum = hashlib.sha256(_canonical(required_roster)).hexdigest()
+            receipt_hash = verify_receipt(
+                manifest, owner_receipt, owner_key,
+                required_roster_sha256=roster_checksum,
+                now_ms=int(time.time()*1000),
+            )
+        except (ValueError, OSError) as exc:
+            print(f"RUNTIME_PROJECTION_APPROVAL: BLOCKED {type(exc).__name__}", file=sys.stderr)
+            return 2
+        summary["owner_approval_receipt_sha256"] = receipt_hash
         uri = os.getenv("NEO4J_URI", "").strip()
         user = os.getenv("NEO4J_USER", "neo4j").strip()
         password = os.getenv("NEO4J_PASSWORD", "").strip()
@@ -595,6 +669,8 @@ def main() -> int:
                     manifest,
                     int(time.time() * 1000),
                     required_roster,
+                    owner_receipt,
+                    owner_key,
                 )
         except Exception as exc:
             print(
