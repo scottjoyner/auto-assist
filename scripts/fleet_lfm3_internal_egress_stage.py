@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import secrets
 import signal
 import subprocess
@@ -39,6 +40,7 @@ GATEWAY_CONTAINER = "lfm3-internal-stage-gateway-20261108"
 CLIENT_CONTAINER = "lfm3-internal-stage-client-20261108"
 IMAGE = "sha256:74df40c5c720dbef283f83eaf69eae585212748ca3889be508eaa9c88cd5b4c4"
 GGUF_SHA256 = "3793e1e6e2266919d6e015287221b41100175a98eddaba92e111aed3b05c93c4"
+OWNED_ID = re.compile(r"[0-9a-f]{64}\\Z")
 EGRESS = """
 import socket
 for dest in [('1.1.1.1',443),('8.8.8.8',53)]:
@@ -102,30 +104,60 @@ def _deny_external_egress(name: str) -> None:
         raise ValueError("network_egress_not_denied")
 
 
-def _cleanup() -> None:
-    for name in (GATEWAY_CONTAINER, CLIENT_CONTAINER, MODEL_CONTAINER):
+def _created_id(value: str) -> str:
+    # IDs are supplied only by successful Docker creation or our private
+    # --cidfile; names are never proof of ownership.
+    if not isinstance(value, str) or not OWNED_ID.fullmatch(value):
+        raise ValueError("created_docker_identity_unverified")
+    return value
+
+
+def _cleanup(container_ids: list[str], network_id: str | None) -> None:
+    """Remove only IDs returned by this run. Fail closed if removal is unproven."""
+    if not container_ids and network_id is None:
+        return
+    for cid in reversed(container_ids):
+        _created_id(cid)
+    if network_id is not None:
+        _created_id(network_id)
+    for cid in reversed(container_ids):
         try:
-            subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=5)
+            subprocess.run(["docker", "rm", "-f", cid], capture_output=True, timeout=5)
         except subprocess.SubprocessError:
             pass
-    try:
-        subprocess.run(["docker", "network", "rm", NETWORK], capture_output=True, timeout=7)
-    except subprocess.SubprocessError:
-        pass
+    if network_id is not None:
+        try:
+            subprocess.run(["docker", "network", "rm", network_id], capture_output=True, timeout=7)
+        except subprocess.SubprocessError:
+            pass
+    # A failed 'rm' can be harmless for --rm containers that already exited.
+    # Independently require an accessible daemon and absence of every exact ID.
+    containers = set(docker("ps", "-a", "--no-trunc", "--format", "{{.ID}}", timeout=7).splitlines())
+    if any(cid in containers for cid in container_ids):
+        raise ValueError("owned_stage_container_cleanup_failed")
+    if network_id is not None:
+        networks = set(docker("network", "ls", "--no-trunc", "--format", "{{.ID}}", timeout=7).splitlines())
+        if network_id in networks:
+            raise ValueError("owned_stage_network_cleanup_failed")
 
 
-def _docker_run(*params: str, timeout: float = 12.0) -> None:
-    docker("run", "--pull", "never", "-d", "--rm", *params, timeout=timeout)
+def _docker_run(*params: str, timeout: float = 12.0) -> str:
+    return _created_id(docker("run", "--pull", "never", "-d", "--rm", *params, timeout=timeout))
 
 
 def run() -> dict:
     _attested_local_inputs()
     private = None
     child = None
+    gateway_cidfile = None
+    owned_container_ids: list[str] = []
+    owned_network_id = None
     try:
-        docker("network", "create", "--internal", "--driver", "bridge", NETWORK, timeout=9)
+        owned_network_id = _created_id(
+            docker("network", "create", "--internal", "--driver", "bridge", NETWORK, timeout=9)
+        )
         _network_attest(expected_count=0, expected_containers=set())
-        _docker_run(
+        owned_model_id = _docker_run(
             "--name",
             MODEL_CONTAINER,
             "--network",
@@ -175,6 +207,7 @@ def run() -> dict:
             "--no-webui",
             timeout=14,
         )
+        owned_container_ids.append(owned_model_id)
         model_ip = _ip_for(MODEL_CONTAINER)
         _network_attest(expected_count=1, expected_containers={MODEL_CONTAINER})
         exposed = json.loads(docker("inspect", MODEL_CONTAINER, "--format", "{{json .HostConfig.PortBindings}}"))
@@ -200,7 +233,7 @@ def run() -> dict:
         if not is_healthy:
             raise ValueError("internal_model_not_ready")
         valid_no_direct_model(model_ip)
-        _docker_run(
+        owned_client_id = _docker_run(
             "--name",
             CLIENT_CONTAINER,
             "--network",
@@ -226,6 +259,7 @@ def run() -> dict:
             "-c",
             "import time; time.sleep(32)",
         )
+        owned_container_ids.append(owned_client_id)
         client_ip = _ip_for(CLIENT_CONTAINER)
         if client_ip == model_ip:
             raise ValueError("model_client_ip_conflict")
@@ -245,6 +279,7 @@ def run() -> dict:
         private = tempfile.TemporaryDirectory(prefix="lfm3-internal-egress-grant-stage-")
         folder = Path(private.name)
         folder.chmod(0o700)
+        gateway_cidfile = folder / "gateway.cid"
         db = folder / "synthetic-slot-ledger.sqlite"
         provision_disposable_synthetic_db(db, now_ms=int(time.time() * 1000))
         secret = secrets.token_bytes(32)
@@ -255,6 +290,8 @@ def run() -> dict:
             "never",
             "--rm",
             "-i",
+            "--cidfile",
+            str(gateway_cidfile),
             "--name",
             GATEWAY_CONTAINER,
             "--network",
@@ -355,9 +392,24 @@ def run() -> dict:
             except subprocess.TimeoutExpired:
                 child.kill()
                 child.wait(timeout=3)
-        _cleanup()
-        if private is not None:
-            private.cleanup()
+        cidfile_problem = False
+        if gateway_cidfile is not None:
+            try:
+                if gateway_cidfile.is_symlink():
+                    raise ValueError("gateway_cidfile_symlink")
+                owned_container_ids.append(_created_id(gateway_cidfile.read_text().strip()))
+            except FileNotFoundError:
+                # Docker may have refused container creation entirely.
+                pass
+            except (ValueError, OSError):
+                cidfile_problem = True
+        try:
+            _cleanup(owned_container_ids, owned_network_id)
+        finally:
+            if private is not None:
+                private.cleanup()
+        if cidfile_problem:
+            raise ValueError("gateway_container_identity_unverified")
 
 
 def _termination_requested(_signum, _frame):
