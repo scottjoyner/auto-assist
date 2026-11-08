@@ -155,10 +155,26 @@ def main() -> None:
                     "Neo.ClientError.Schema.ConstraintValidationFailed",
                     "Neo.ClientError.Schema.ConstraintViolation",
                     "Neo.ClientError.Statement.ConstraintViolation",
+                    # Enterprise 5.26 returns this *database-side* code when
+                    # constraint-population discovers duplicated existing keys.
+                    "Neo.DatabaseError.Schema.ConstraintCreationFailed",
                 }
                 print("synthetic_uniqueness_error_code=" + code)
                 if code not in accepted:
                     raise AssertionError("negative_schema_failure_was_not_native_constraint_denial") from None
+                # ConstraintCreationFailed is broad. Independently establish
+                # the precise duplicate collision and two semantic labels;
+                # never treat an arbitrary DB failure as a valid negative.
+                with driver.session(database="neo4j") as witness:
+                    collision = witness.run(
+                        "MATCH (e:ServiceEndpoint {endpoint_id:$key}) "
+                        "WITH collect(e) AS nodes "
+                        "RETURN size(nodes)=2 AND "
+                        "size([n IN nodes WHERE n:ModelEndpoint])=1 AS valid",
+                        {"key": RAW_ID},
+                    ).single()
+                if not collision or collision["valid"] is not True:
+                    raise AssertionError("constraint_failure_not_grounded_in_exact_synthetic_collision")
             else:
                 raise AssertionError("historical_duplicate_was_not_denied")
             # Explicit operator-style synthetic repair, never called by normal
