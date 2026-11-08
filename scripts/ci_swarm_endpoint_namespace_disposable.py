@@ -146,8 +146,18 @@ def main() -> None:
             try:
                 s.run(SERVICE_CONSTRAINT).consume()
             except Neo4jError as exc:
-                code = getattr(exc, "code", "")
-                if not code.startswith("Neo.ClientError.Schema."):
+                code = str(getattr(exc, "code", ""))
+                # Both classes are native Neo4j uniqueness failures, as
+                # opposed to syntax, auth, transient or connectivity errors.
+                # Emit only the symbolic error code when debugging synthetic CI;
+                # never print graph values, query text or driver exceptions.
+                accepted = {
+                    "Neo.ClientError.Schema.ConstraintValidationFailed",
+                    "Neo.ClientError.Schema.ConstraintViolation",
+                    "Neo.ClientError.Statement.ConstraintViolation",
+                }
+                print("synthetic_uniqueness_error_code=" + code)
+                if code not in accepted:
                     raise AssertionError("negative_schema_failure_was_not_native_constraint_denial") from None
             else:
                 raise AssertionError("historical_duplicate_was_not_denied")
