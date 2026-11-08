@@ -1,0 +1,38 @@
+name: Fleet node source custody (read-only)
+
+on:
+  pull_request:
+    paths:
+      - scripts/fleet_node_source_census.py
+      - tests/test_fleet_node_source_census.py
+      - .github/workflows/fleet-node-source-custody.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  non-admitting-static-census-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout without persistent Git credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+      - name: Install synthetic test dependency
+        run: python -m pip install --disable-pip-version-check pytest==9.0.2
+      - name: Verify source and strictly offline unit cases
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          OPENAI_API_KEY: ''
+          OPENROUTER_API_KEY: ''
+          NOUS_API_KEY: ''
+        run: |
+          python -m py_compile scripts/fleet_node_source_census.py tests/test_fleet_node_source_census.py
+          # Deliberately bypass repo-wide conftest; this stdlib audit is standalone.
+          python -m pytest --noconftest -q -p no:cacheprovider tests/test_fleet_node_source_census.py
