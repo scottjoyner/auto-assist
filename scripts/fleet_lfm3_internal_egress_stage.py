@@ -280,7 +280,10 @@ def run() -> dict:
         folder = Path(private.name)
         folder.chmod(0o700)
         gateway_cidfile = folder / "gateway.cid"
-        db = folder / "synthetic-slot-ledger.sqlite"
+        # Never mount the owner-identity cidfile into the writable gateway.
+        ledger_folder = folder / "ledger"
+        ledger_folder.mkdir(mode=0o700)
+        db = ledger_folder / "synthetic-slot-ledger.sqlite"
         provision_disposable_synthetic_db(db, now_ms=int(time.time() * 1000))
         secret = secrets.token_bytes(32)
         cmd = [
@@ -314,7 +317,7 @@ def run() -> dict:
             "-v",
             str(REPO) + ":/work:ro",
             "-v",
-            str(folder) + ":/staging:rw",
+            str(ledger_folder) + ":/staging:rw",
             "--entrypoint",
             "python3",
             IMAGE,
