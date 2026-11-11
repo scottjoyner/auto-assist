@@ -110,6 +110,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--detect-looping", action="store_true", help="Detect looping session registrations")
     parser.add_argument("--detect-stale", action="store_true", help="Detect stale subagent records")
     parser.add_argument("--projection", action="store_true", help="Emit supervision projection")
+    parser.add_argument("--free-pool-freshness", action="store_true", help="Audit stale local free-pool evidence without provider calls")
+    parser.add_argument("--free-pool-state-root", type=pathlib.Path, default=None, help="Override local audit fixture root")
     parser.add_argument("--supervise", action="store_true", help="Act on projection: terminate stale/duplicate/looping (hold) or admit subagents (healthy)")
     parser.add_argument("--loop", action="store_true", help="Run supervise continuously")
     parser.add_argument("--interval", type=int, default=60, help="Loop interval in seconds (default 60)")
@@ -129,6 +131,15 @@ def main(argv: list[str] | None = None) -> int:
 
     state_path = pathlib.Path(args.state)
     fixture_path = pathlib.Path(args.fixture) if args.fixture else None
+
+    if args.free_pool_freshness:
+        if args.supervise or args.loop or not args.dry_run or args.register_subagent:
+            print(json.dumps({"status": "HOLD", "error": "free_pool_audit_conflicts_with_active_mode", "actions_taken": []}, sort_keys=True), file=sys.stderr)
+            return 3
+        from free_pool_freshness import STATE_ROOT, review_state
+        root = args.free_pool_state_root if args.free_pool_state_root is not None else STATE_ROOT
+        print(json.dumps(review_state(root), sort_keys=True, separators=(",", ":")))
+        return 0
 
     if args.enumerate_models:
         for m in enumerate_free_models(fixture_path):
