@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
+import stat
 import sys
 from datetime import UTC, datetime
 from typing import Any
@@ -68,11 +70,90 @@ def _read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
     return records
 
 
+def _read_bounded_local_object(path: pathlib.Path) -> dict[str, Any]:
+    """Only regular, bounded local JSON objects; never follow the final symlink."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(path, flags)
+    try:
+        meta = os.fstat(fd)
+        if not stat.S_ISREG(meta.st_mode) or not 0 < meta.st_size <= 2 * 1024 * 1024:
+            raise ValueError("local_file_invalid")
+        with os.fdopen(fd, "rb", closefd=False) as f:
+            payload = f.read(2 * 1024 * 1024 + 1)
+        if len(payload) > 2 * 1024 * 1024:
+            raise ValueError("local_file_oversized")
+        data = json.loads(payload)
+        if not isinstance(data, dict):
+            raise ValueError("local_json_not_object")
+        return data
+    finally:
+        os.close(fd)
+
+
 def load_projection(projection_path: pathlib.Path | None = None) -> dict[str, Any]:
     path = projection_path or DEFAULT_PROJECTION
-    if not path.exists():
-        return {"schema": "free-pool-projection/v1", "error": "projection not found"}
-    return json.loads(path.read_text())
+    try:
+        return _read_bounded_local_object(path)
+    except (OSError, ValueError, UnicodeError):
+        return {"schema": "free-pool-projection/v1", "error": "projection unavailable"}
+
+
+def _local_file_recent(path: pathlib.Path, now: float, max_age: int = 3600) -> bool:
+    """Advisory only. Refuse missing, symlinked, future, stale or oversized local evidence."""
+    try:
+        if path.is_symlink():
+            return False
+        meta = path.stat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(meta.st_mode)
+        and 0 < meta.st_size <= 2 * 1024 * 1024
+        and -30 <= now - meta.st_mtime <= max_age
+    )
+
+
+def projection_evidence_recent(
+    projection: dict[str, Any],
+    projection_path: pathlib.Path,
+    state_root: pathlib.Path,
+    *,
+    now: float,
+) -> tuple[bool, tuple[str, ...]]:
+    """Require BOTH snapshot and completed refresh evidence; never grants route admission."""
+    reasons: list[str] = []
+    if (
+        projection.get("schema") != "free-pool-projection/v1"
+        or projection.get("read_only") is not True
+        or projection.get("authoritative_routing_unchanged") is not True
+    ):
+        reasons.append("projection_contract_missing")
+    if not _local_file_recent(projection_path, now):
+        reasons.append("projection_missing_or_stale")
+
+    refresh_path = state_root / "last-free-pool-refresh.json"
+    if not _local_file_recent(refresh_path, now):
+        reasons.append("refresh_missing_or_stale")
+    else:
+        try:
+            refresh = _read_bounded_local_object(refresh_path)
+            if not isinstance(refresh, dict) or (
+                refresh.get("schema") != "free-pool-refresh-run/v1"
+                or refresh.get("executed") is not True
+                or refresh.get("paid_fallback") is not False
+            ):
+                reasons.append("refresh_contract_invalid")
+            else:
+                stamp = refresh.get("finished_at")
+                if not isinstance(stamp, str) or not stamp.endswith(("+00:00", "Z")):
+                    reasons.append("refresh_completion_invalid")
+                else:
+                    age = now - _parse_time(stamp)
+                    if not -30 <= age <= 3600:
+                        reasons.append("refresh_completion_stale")
+        except (OSError, ValueError, TypeError):
+            reasons.append("refresh_invalid")
+    return not reasons, tuple(sorted(set(reasons)))
 
 
 def classify_runs(
@@ -163,9 +244,21 @@ def build_status(
 
     runs = classify_runs(state_records, process_alive=process_alive)
     model_tiers = classify_models(projection)
+    now = datetime.now(UTC).timestamp()
+    projection_fresh, projection_blockers = projection_evidence_recent(
+        projection, effective_projection_path, state_root, now=now
+    )
+    # Do not publish stale "proven"/"trial" models as live candidates. Preserve
+    # only counts for historical diagnosis; no local receipt grants admission.
+    historical_model_counts = {
+        "proven": len(model_tiers["proven"]),
+        "trial": len(model_tiers["trial"]),
+    }
+    if not projection_fresh:
+        model_tiers["proven"] = []
+        model_tiers["trial"] = []
 
     # Recent provider failures (last 24h)
-    now = datetime.now(UTC).timestamp()
     recent_failures = [
         r for r in runs["failed"]
         if r.get("failure_class") and now - _parse_time(r.get("updated_at")) < 86400
@@ -180,13 +273,24 @@ def build_status(
         default=0.0,
     )
     evidence_age_seconds = round(now - latest_update, 1) if latest_update else None
-    evidence_fresh = evidence_age_seconds is not None and evidence_age_seconds < 3600
+    lifecycle_recent = (
+        evidence_age_seconds is not None
+        and -30 <= evidence_age_seconds <= 3600
+    )
+    evidence_fresh = lifecycle_recent and projection_fresh
 
     return {
         "schema": "free-pool-status/v1",
         "read_only": True,
         "evidence_fresh": evidence_fresh,
         "evidence_age_seconds": evidence_age_seconds,
+        "lifecycle_recent": lifecycle_recent,
+        "projection_fresh": projection_fresh,
+        "projection_blockers": list(projection_blockers),
+        "historical_model_counts": historical_model_counts,
+        "dispatch_allowed": False,
+        "account_entitlement_proven": False,
+        "shared_quota_lease_proven": False,
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "models": model_tiers,
         "runs": runs,
