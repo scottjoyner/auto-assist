@@ -108,3 +108,56 @@ def test_review_only_llm_envelope_remains_eligible_without_exec():
     assert agent._legacy_worker_recovery_denied(task) is False
     assert agent._legacy_worker_recovery_denied(
         {**task, "payload_json": '{"prompt":"x","prompt":"y"}'}) is True
+
+@pytest.mark.parametrize("claimed_changes", [
+    {"target_agent_id": "node-b"},
+    {"required_capabilities": ["gpu"]},
+    {"required_capabilities": ["llm", "gpu"]},
+    {"required_capabilities": ["recovery"]},
+    {"required_capabilities": "llm"},
+    {"required_capabilities": ["llm", 17]},
+    {"required_capabilities": [""]},
+])
+def test_claimed_task_must_still_target_node_and_approved_capabilities(
+    monkeypatch, claimed_changes
+):
+    calls = []
+
+    def fake_http(method, url, **kwargs):
+        calls.append((method, url))
+        if url.endswith("/claim"):
+            return 200, {"claimed": True, "task": {
+                "id": "ordinary", "claimed_by": "node-a",
+                "agent_session_id": kwargs["data"]["session_id"],
+                "claim_id": "server-fence", "status": "CLAIMED",
+                "task_type": "llm", "target_agent_id": "node-a",
+                "required_capabilities": ["llm"], **claimed_changes}}
+        raise AssertionError("No heartbeat, inference, runbook, or terminal receipt")
+
+    monkeypatch.setattr(agent, "_http", fake_http)
+    assert agent._claim_and_run(
+        assistx_url="http://synthetic", router_url="http://router",
+        auth=None, node_id="node-a", caps=["llm"],
+        task={"id": "ordinary", "task_type": "llm",
+              "required_capabilities": ["llm"],
+              "target_agent_id": "node-a"},
+        lmstudio_url="http://local",
+    ) is False
+    assert len(calls) == 1 and calls[0][1].endswith("/claim")
+
+
+def test_restricted_claim_still_does_not_advertise_recovery(monkeypatch):
+    observed = []
+
+    def fake_http(method, url, **kwargs):
+        observed.append(kwargs["data"])
+        return 409, {"claimed": False}
+
+    monkeypatch.setattr(agent, "_http", fake_http)
+    agent._claim_and_run(
+        assistx_url="http://synthetic", router_url="http://router",
+        auth=None, node_id="node-a", caps=["llm", "recovery"],
+        task={"id": "ordinary", "task_type": "llm"},
+        lmstudio_url="http://local")
+    assert len(observed) == 1
+    assert observed[0]["capabilities"] == ["llm"]

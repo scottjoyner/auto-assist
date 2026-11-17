@@ -25,7 +25,10 @@ is asserted by this code audit.
 - `_claim_and_run` also rejects the direct READY task before HTTP,
   removes recovery from any advertised claim capabilities, and
   re-checks the authoritative server CLAIMED task *before* heartbeat,
-  model work, a runbook or completion.
+  model work, a runbook or completion. The server's authoritative
+  CLAIMED task must also retain the requesting node as target (or remain
+  untargeted) and require only this node's current non-recovery
+  capabilities; claim fencing alone is not audience authorization.
 - If a server unexpectedly grants a claim whose returned payload is a
   recovery runbook, the worker returns false without execution or
   completion. The server lease must expire; the worker does **not**
