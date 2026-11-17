@@ -537,6 +537,22 @@ def _claim_and_run(
     # that this principal was never authorized to execute.
     if _legacy_worker_recovery_denied(claimed_task):
         return False
+    # Re-check target and capabilities on the server's authoritative claim,
+    # not only on the possibly stale READY list.  A successful CAS claim
+    # alone is not proof the newly returned task matches this worker's scope.
+    target = claimed_task.get("target_agent_id")
+    if target is not None and target != node_id:
+        return False
+    required = claimed_task.get("required_capabilities")
+    if required is not None:
+        if not isinstance(required, list) or any(
+            not isinstance(cap, str) or not cap.strip() for cap in required
+        ):
+            return False
+        permitted = {cap for cap in caps if isinstance(cap, str)
+                     and cap.strip().lower() != "recovery"}
+        if not set(required).issubset(permitted):
+            return False
     task = claimed_task
 
     stop_heartbeat = threading.Event()
