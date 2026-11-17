@@ -160,6 +160,52 @@ def _default_model(lmstudio_url: str | None) -> str:
     return "local/model"
 
 
+def _legacy_worker_recovery_denied(task: dict[str, Any]) -> bool:
+    """Deny all runbook/recovery envelopes before legacy Basic-auth claims.
+
+    A READY list entry is untrusted; the authoritative CLAIMED response must
+    be checked again. This worker has no token/session-bound recovery principal.
+    """
+    if not isinstance(task, dict):
+        return True
+    task_type = task.get("task_type")
+    if task_type is not None and not isinstance(task_type, str):
+        return True
+    if isinstance(task_type, str) and task_type.strip().lower() in {"script", "recovery"}:
+        return True
+    required = task.get("required_capabilities")
+    if required is not None:
+        if not isinstance(required, list) or any(not isinstance(c, str) for c in required):
+            return True
+        if any(c.strip().lower() == "recovery" for c in required):
+            return True
+    payload = task.get("payload")
+    if payload is not None and not isinstance(payload, dict):
+        return True
+    if isinstance(payload, dict) and "runbook" in payload:
+        return True
+    raw = task.get("payload_json")
+    if raw not in (None, ""):
+        if not isinstance(raw, str) or len(raw) > 64 * 1024:
+            return True
+        def unique(pairs):
+            out = {}
+            for key, value in pairs:
+                if key in out:
+                    raise ValueError("ambiguous task payload JSON")
+                out[key] = value
+            return out
+        def reject_constant(value):
+            raise ValueError("nonstandard JSON constant")
+        try:
+            decoded = json.loads(raw, object_pairs_hook=unique, parse_constant=reject_constant)
+        except (ValueError, TypeError, RecursionError):
+            return True
+        if not isinstance(decoded, dict) or "runbook" in decoded:
+            return True
+    return False
+
+
 def execute_task(
     task: dict[str, Any],
     lmstudio_url: str | None,
@@ -451,8 +497,8 @@ def _claim_and_run(
     lmstudio_url: str | None,
 ) -> None:
     task_id = str(task.get("task_id") or task.get("id") or "")
-    if not task_id:
-        return
+    if not task_id or _legacy_worker_recovery_denied(task):
+        return False  # No unfenced recovery Task claims in legacy worker.
 
     session_id = f"{node_id}-{uuid.uuid4().hex[:8]}"
     status, claim = _http(
@@ -461,7 +507,8 @@ def _claim_and_run(
         auth=auth,
         data={
             "agent_id": node_id,
-            "capabilities": caps,
+            "capabilities": [c for c in caps if isinstance(c, str)
+                             and c.strip().lower() != "recovery"],
             "session_id": session_id,
             "lease_seconds": 900,
         },
@@ -484,8 +531,12 @@ def _claim_and_run(
             or claimed_task.get("status") != "CLAIMED"
             or claimed_task.get("agent_session_id") != session_id):
         return False
-    # READY-list task contents may be stale. Execute the authoritative task
-    # returned by the claim, bound to the exact server-assigned claim fence.
+    # A claim response can differ from the READY list. A legacy worker has no
+    # recovery principal: refuse BEFORE heartbeat, runbook or model execution.
+    # The claim lease expires under the server fence; do not complete a task
+    # that this principal was never authorized to execute.
+    if _legacy_worker_recovery_denied(claimed_task):
+        return False
     task = claimed_task
 
     stop_heartbeat = threading.Event()
@@ -643,7 +694,8 @@ def _poll_once(
     # This worker lacks token-fenced recovery claim/heartbeat/completion;
     # recovery tasks must remain unavailable in this legacy worker.
     advertised_caps = sorted({cap for cap in caps
-                              if isinstance(cap, str) and cap and cap != "recovery"})
+                              if isinstance(cap, str) and cap
+                              and cap.strip().lower() != "recovery"})
     query = urllib.parse.urlencode([
         ("status", "READY"), ("limit", "20"), ("agent_id", node_id),
         *(("capabilities", cap) for cap in advertised_caps),
@@ -663,7 +715,7 @@ def _poll_once(
         return False
 
     for task in tasks:
-        if not isinstance(task, dict):
+        if not isinstance(task, dict) or _legacy_worker_recovery_denied(task):
             continue
         if task.get("target_agent_id") not in (None, node_id):
             continue
