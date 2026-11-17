@@ -161,3 +161,95 @@ def test_restricted_claim_still_does_not_advertise_recovery(monkeypatch):
         lmstudio_url="http://local")
     assert len(observed) == 1
     assert observed[0]["capabilities"] == ["llm"]
+
+
+@pytest.mark.parametrize("capabilities,endpoint,task_type", [
+    (["script"], "http://local", "llm"),
+    (["script"], "http://local", None),
+    ([], "http://local", "llm"),
+    (["llm"], None, "llm"),
+    (["llm"], "", "llm"),
+    (["llm"], "http://local", "gpu"),
+    (["llm"], "http://local", "vision"),
+])
+def test_unsupported_ready_task_never_claims(
+    monkeypatch, capabilities, endpoint, task_type
+):
+    requests = []
+    task = {"id": "unapproved", "task_type": task_type,
+            "required_capabilities": []}
+
+    def fake_http(method, url, **kwargs):
+        requests.append(method)
+        if method == "GET":
+            return 200, {"items": [task]}
+        raise AssertionError("unexpected claim or side effect")
+
+    monkeypatch.setattr(agent, "_http", fake_http)
+    monkeypatch.setattr(agent, "_claim_and_run", lambda **kwargs:
+                        (_ for _ in ()).throw(AssertionError("not admitted")))
+    assert agent._poll_once(
+        assistx_url="http://synthetic", router_url="http://router",
+        auth=None, node_id="node-a", caps=capabilities,
+        lmstudio_url=endpoint) is False
+    assert requests == ["GET"]
+
+
+@pytest.mark.parametrize("capabilities,endpoint,task_type", [
+    (["script"], "http://local", "llm"),
+    (["llm"], None, "llm"),
+    (["llm"], "http://local", "vision"),
+])
+def test_direct_unsupported_claim_never_contacts_api(
+    monkeypatch, capabilities, endpoint, task_type
+):
+    monkeypatch.setattr(agent, "_http", lambda *args, **kwargs:
+                        (_ for _ in ()).throw(AssertionError("no HTTP")))
+    assert agent._claim_and_run(
+        assistx_url="http://synthetic", router_url="http://router",
+        auth=None, node_id="node-a", caps=capabilities,
+        task={"id": "task-1", "task_type": task_type,
+              "required_capabilities": []},
+        lmstudio_url=endpoint) is False
+
+
+@pytest.mark.parametrize("claimed_changes", [
+    {"task_type": "vision"},
+    {"task_type": "gpu"},
+    {"task_type": "script"},
+    {"task_type": "LLM "},
+])
+def test_authoritative_unsupported_task_type_denied_before_execution(
+    monkeypatch, claimed_changes
+):
+    events = []
+
+    def fake_http(method, url, **kwargs):
+        events.append(url)
+        if url.endswith("/claim"):
+            return 200, {"claimed": True, "task": {
+                "id": "task-1", "claimed_by": "node-a",
+                "agent_session_id": kwargs["data"]["session_id"],
+                "claim_id": "fence", "status": "CLAIMED",
+                "target_agent_id": "node-a",
+                "required_capabilities": ["llm"],
+                "task_type": "llm", **claimed_changes}}
+        raise AssertionError("no execution, heartbeat, or completion")
+
+    monkeypatch.setattr(agent, "_http", fake_http)
+    assert agent._claim_and_run(
+        assistx_url="http://synthetic", router_url="http://router",
+        auth=None, node_id="node-a", caps=["llm"],
+        task={"id": "task-1", "task_type": "llm",
+              "required_capabilities": ["llm"]},
+        lmstudio_url="http://local") is False
+    assert len(events) == 1 and events[0].endswith("/claim")
+
+
+def test_old_plain_llm_task_keeps_compatibility_without_authorizing_any_call():
+    assert agent._legacy_worker_llm_dispatch_eligible(
+        {"task_type": None}, ["llm"], "http://local") is True
+    assert agent._legacy_worker_llm_dispatch_eligible(
+        {"task_type": ""}, ["llm"], "http://local") is True
+    assert agent._legacy_worker_llm_dispatch_eligible(
+        {"task_type": "llm"}, ["script"], "http://local") is False
