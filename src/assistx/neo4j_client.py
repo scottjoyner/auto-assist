@@ -1110,28 +1110,71 @@ class Neo4jClient:
         effective_lease = lease_seconds if lease_seconds is not None else 900
         with self._session() as s:
             if idempotency_key:
+                # A repeated claim ID alone is not authorization to reuse a
+                # lease. Fence replay on the current Task principal, session,
+                # state, expiry, audience and capability scope in the graph.
+                # No state is mutated by this lookup.
                 prior = s.run(
-                    "MATCH (t:Task {id:$task_id, claim_id:$claim_id}) RETURN t",
-                    {"task_id": task_id, "claim_id": idempotency_key},
+                    "MATCH (t:Task {id:$task_id, claim_id:$claim_id}) "
+                    "WHERE t.status='CLAIMED' "
+                    "AND t.claimed_by=$agent_id "
+                    "AND t.agent_session_id=$session_id "
+                    "AND t.lease_expires_at_ts > timestamp() "
+                    "AND (t.target_agent_id IS NULL OR t.target_agent_id=$agent_id) "
+                    "AND all(required IN coalesce(t.required_capabilities, "
+                    "t.capabilities, []) WHERE required IN $capabilities) "
+                    "AND NOT EXISTS { "
+                    "  MATCH (t)-[:DISPATCHED_AS]->(pc:Dispatch) "
+                    "  WHERE pc.paperclip_issue_id IS NOT NULL "
+                    "} "
+                    "RETURN t",
+                    {
+                        "task_id": task_id,
+                        "claim_id": idempotency_key,
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                        "capabilities": caps,
+                    },
                 ).single()
                 if prior:
-                    return {"claimed": True, "claim_id": claim_id, "idempotent": True, "task": dict(prior["t"])}
+                    task = dict(prior["t"])
+                    expiry = task.get("lease_expires_at_ts")
+                    required = task.get("required_capabilities")
+                    if required is None:
+                        required = task.get("capabilities") or []
+                    if (task.get("id") == task_id
+                            and task.get("claim_id") == claim_id
+                            and task.get("status") == "CLAIMED"
+                            and task.get("claimed_by") == agent_id
+                            and session_id
+                            and task.get("agent_session_id") == session_id
+                            and type(expiry) is int
+                            and expiry > int(time.time() * 1000)
+                            and task.get("target_agent_id") in (None, agent_id)
+                            and isinstance(required, list)
+                            and all(isinstance(cap, str) and cap in caps
+                                    for cap in required)
+                            and not task.get("paperclip_dispatched")):
+                        return {
+                            "claimed": True,
+                            "claim_id": claim_id,
+                            "idempotent": True,
+                            "task": task,
+                        }
 
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
                 WHERE t.status='READY'
+                  AND (t.claim_id IS NULL OR t.claim_id <> $claim_id)
                 OPTIONAL MATCH (t)-[:HAS_ALLOCATION]->(ar:AllocationReservation {status:'ACTIVE'})
                 WHERE ar.expires_at_ts > timestamp()
                 WITH t, ar
                 WHERE (ar IS NULL OR ar.node_id=$agent_id)
                   AND (t.target_agent_id IS NULL OR t.target_agent_id=$agent_id)
-                  AND (
-                    size($capabilities)=0
-                    OR all(
-                      required IN coalesce(t.required_capabilities, t.capabilities, [])
-                      WHERE required IN $capabilities
-                    )
+                  AND all(
+                    required IN coalesce(t.required_capabilities, t.capabilities, [])
+                    WHERE required IN $capabilities
                   )
                   AND NOT EXISTS {
                     MATCH (t)-[:DISPATCHED_AS]->(pc:Dispatch)
@@ -1191,7 +1234,7 @@ class Neo4jClient:
             if existing["paperclip_dispatched"]:
                 return {"claimed": False, "reason": "paperclip_dispatched"}
             required = existing.get("required_capabilities") or existing.get("capabilities") or []
-            if caps and required and not all(cap in caps for cap in required):
+            if required and not all(cap in caps for cap in required):
                 return {"claimed": False, "reason": "capability_mismatch", "required_capabilities": required}
             if existing["target_agent_id"] and existing["target_agent_id"] != agent_id:
                 return {"claimed": False, "reason": "target_agent_mismatch"}
