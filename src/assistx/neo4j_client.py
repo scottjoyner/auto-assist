@@ -1557,6 +1557,8 @@ class Neo4jClient:
     ) -> dict[str, Any] | None:
         if status and status not in EXECUTABLE_TASK_STATUSES:
             raise ValueError(f"Unsupported task status: {status}")
+        if status in TERMINAL_TASK_STATUSES:
+            raise ValueError("Terminal task status requires fenced completion, not heartbeat")
         props = {
             "heartbeat_by": agent_id,
             "heartbeat_metadata_json": json.dumps(metadata or {}),
@@ -1572,7 +1574,10 @@ class Neo4jClient:
                 WHERE coalesce(t.execution_attempt, 0)=0
                    OR (
                      t.claimed_by=$agent_id
-                     AND ($claim_id IS NULL OR t.claim_id=$claim_id)
+                     AND $claim_id IS NOT NULL
+                     AND t.claim_id=$claim_id
+                     AND t.lease_expires_at_ts > timestamp()
+                     AND ($session_id IS NULL OR t.agent_session_id=$session_id)
                      AND t.status IN ['CLAIMED','RUNNING','PAUSING']
                    )
                 SET t += $props,
@@ -1592,6 +1597,7 @@ class Neo4jClient:
                     "task_id": task_id,
                     "agent_id": agent_id,
                     "claim_id": claim_id,
+                    "session_id": session_id,
                     "props": props,
                     "status": status,
                     "lease_seconds": lease_seconds,
@@ -1614,40 +1620,48 @@ class Neo4jClient:
             raise ValueError(f"Completion status must be one of: {sorted(TERMINAL_TASK_STATUSES)}")
         with self._session() as s:
             if idempotency_key:
+                # Idempotent completion is an exact, read-only replay, not an
+                # alternate write authority. Do not reopen or re-status a
+                # completed Task from another node/claim/terminal outcome.
                 prior = s.run(
-                    "MATCH (t:Task {id:$task_id})-[:EXECUTED_BY]->(r:AgentRun {completion_id:$completion_id}) "
-                    "RETURN t, r.id AS run_id",
-                    {"task_id": task_id, "completion_id": idempotency_key},
+                    """
+                    MATCH (t:Task {id:$task_id})-[:EXECUTED_BY]->
+                          (r:AgentRun {completion_id:$completion_id})
+                    WHERE t.status=$status
+                      AND t.completed_by=$agent_id
+                      AND r.agent=$agent_id
+                      AND r.status=$status
+                      AND ($session_id IS NULL OR t.agent_session_id=$session_id)
+                      AND (
+                        (coalesce(t.execution_attempt,0)=0
+                         AND $claim_id IS NULL AND r.claim_id IS NULL)
+                        OR ($claim_id IS NOT NULL
+                            AND t.claim_id=$claim_id
+                            AND r.claim_id=$claim_id)
+                      )
+                    RETURN t, r.id AS run_id
+                    """,
+                    {
+                        "task_id": task_id,
+                        "completion_id": idempotency_key,
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                        "status": status,
+                        "claim_id": claim_id,
+                    },
                 ).single()
                 if prior:
                     prior_task = dict(prior["t"])
-                    prior_task["run_id"] = prior["run_id"]
-                    prior_task["idempotent"] = True
-                    # Still update the task status and result even if idempotent,
-                    # so a later successful execution can un-FAIL a prior failure.
-                    if prior_task.get("status") != status:
-                        s.run(
-                            """
-                            MATCH (t:Task {id:$task_id})
-                            SET t.status=$status,
-                                t.result_summary=$summary,
-                                t.result_json=$result_json,
-                                t.completed_by=$agent_id,
-                                t.completed_at=datetime(),
-                                t.completed_at_ts=timestamp(),
-                                t.updated_at=datetime(),
-                                t.updated_at_ts=timestamp()
-                            """,
-                            {
-                                "task_id": task_id,
-                                "status": status,
-                                "summary": summary,
-                                "result_json": json.dumps(result or {}),
-                                "agent_id": agent_id,
-                            },
-                        )
-                        prior_task["status"] = status
-                    return prior_task
+                    if (prior_task.get("id") == task_id
+                            and prior_task.get("status") == status
+                            and prior_task.get("completed_by") == agent_id
+                            and (session_id is None or
+                                 prior_task.get("agent_session_id") == session_id)
+                            and (claim_id is None or
+                                 prior_task.get("claim_id") == claim_id)):
+                        prior_task["run_id"] = prior["run_id"]
+                        prior_task["idempotent"] = True
+                        return prior_task
             run_id = uuid.uuid4().hex
             rec = s.run(
                 """
@@ -1655,7 +1669,10 @@ class Neo4jClient:
                 WHERE coalesce(t.execution_attempt, 0)=0
                    OR (
                      t.claimed_by=$agent_id
-                     AND ($claim_id IS NULL OR t.claim_id=$claim_id)
+                     AND $claim_id IS NOT NULL
+                     AND t.claim_id=$claim_id
+                     AND t.lease_expires_at_ts > timestamp()
+                     AND ($session_id IS NULL OR t.agent_session_id=$session_id)
                      AND t.status IN ['CLAIMED','RUNNING']
                    )
                 SET t.status=$status,
@@ -1672,7 +1689,7 @@ class Neo4jClient:
                     t.updated_at=datetime(),
                     t.updated_at_ts=timestamp()
                 CREATE (r:AgentRun {id:$run_id, task_id:$task_id, agent:$agent_id,
-                    completion_id:$completion_id,
+                    completion_id:$completion_id, claim_id:$claim_id,
                     status:$status, summary:$summary, result_json:$result_json,
                     started_at_ts:coalesce(t.claimed_at_ts, timestamp()),
                     ended_at:datetime(), ended_at_ts:timestamp(),
