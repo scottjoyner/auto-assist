@@ -33,6 +33,12 @@ is asserted by this code audit.
   recovery runbook, the worker returns false without execution or
   completion. The server lease must expire; the worker does **not**
   assert it has released or completed the claim.
+- `_legacy_worker_llm_dispatch_eligible()` now requires the current `llm`
+  capability, a configured local endpoint, and an LLM or legacy plain task
+  before READY selection, direct claim, and acceptance of a CLAIMED task.
+  Unsupported GPU, vision and script task types are not claimed even if
+  `required_capabilities` is omitted. This is local denial only; it does
+  not grant signed model residency or Task authorization.
 - Exported `execute_task()` retains its separate typed runbook path for
   independently authorized callers; this patch fences only the legacy
   polling and claim path that lacks per-node recovery authorization.
@@ -43,9 +49,13 @@ python3 -B -m pytest -q -p no:cacheprovider \
  tests/test_fleet_node_recovery_claim_guard.py \
  tests/test_fleet_node_poll_contract.py \
  tests/test_fleet_node_recovery.py \
- tests/test_fleet_claim_response_shape.py
+ tests/test_fleet_claim_response_shape.py \
+ tests/test_fleet_node_shell_gate.py \
+ tests/test_fleet_executor_concurrency.py \
+ tests/test_fleet_node_lmstudio_auth.py \
+ tests/test_fleet_node_kv_cache.py
 ```
-The focused offline suite returned 63 PASS. It uses synthetic HTTP,
+The expanded offline suite returned 117 PASS. It uses synthetic HTTP,
 never a real router, API, Task claim, Neo4j write or inference endpoint.
 
 **Still HOLD:** machine-principal node registration and secrets custody,
