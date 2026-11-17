@@ -247,6 +247,25 @@ def _legacy_worker_recovery_denied(task: dict[str, Any]) -> bool:
     return False
 
 
+def _legacy_worker_llm_dispatch_eligible(
+    task: dict[str, Any], caps: list[str], lmstudio_url: str | None
+) -> bool:
+    """Require observed LLM capability and a configured local endpoint.
+
+    Legacy Basic-auth workers may not claim unsupported task types simply
+    because the READY item omits required_capabilities. This is only an
+    extra local denial, never signed runtime capacity authorization.
+    """
+    if not lmstudio_url or "llm" not in {
+        c for c in caps if isinstance(c, str)
+    }:
+        return False
+    kind = task.get("task_type")
+    return kind is None or kind == "" or (
+        isinstance(kind, str) and kind.lower() == "llm"
+    )
+
+
 def execute_task(
     task: dict[str, Any],
     lmstudio_url: str | None,
@@ -530,8 +549,9 @@ def _claim_and_run(
     lmstudio_url: str | None,
 ) -> None:
     task_id = str(task.get("task_id") or task.get("id") or "")
-    if not task_id or _legacy_worker_recovery_denied(task):
-        return False  # No unfenced recovery Task claims in legacy worker.
+    if (not task_id or _legacy_worker_recovery_denied(task)
+            or not _legacy_worker_llm_dispatch_eligible(task, caps, lmstudio_url)):
+        return False  # No unfenced or unsupported work claims in legacy worker.
 
     session_id = f"{node_id}-{uuid.uuid4().hex[:8]}"
     status, claim = _http(
@@ -568,7 +588,9 @@ def _claim_and_run(
     # recovery principal: refuse BEFORE heartbeat, runbook or model execution.
     # The claim lease expires under the server fence; do not complete a task
     # that this principal was never authorized to execute.
-    if _legacy_worker_recovery_denied(claimed_task):
+    if (_legacy_worker_recovery_denied(claimed_task)
+            or not _legacy_worker_llm_dispatch_eligible(
+                claimed_task, caps, lmstudio_url)):
         return False
     # Re-check target and capabilities on the server's authoritative claim,
     # not only on the possibly stale READY list.  A successful CAS claim
@@ -770,7 +792,9 @@ def _poll_once(
         return False
 
     for task in tasks:
-        if not isinstance(task, dict) or _legacy_worker_recovery_denied(task):
+        if (not isinstance(task, dict) or _legacy_worker_recovery_denied(task)
+                or not _legacy_worker_llm_dispatch_eligible(
+                    task, caps, lmstudio_url)):
             continue
         if task.get("target_agent_id") not in (None, node_id):
             continue
