@@ -80,6 +80,10 @@ class OutboxClient:
         self.retry_max_s = retry_max_s
         self._auth_header = _basic_auth_header(api_user, api_pass) if api_user or api_pass else None
         self._lock = threading.Lock()
+        # Counts flush() calls skipped because no destination is configured, so
+        # a misconfigured producer is observable instead of silently draining
+        # retry budgets.
+        self.skipped_unconfigured = 0
         self._init_db()
         self._purge_expired()
         if auto_flush:
@@ -221,6 +225,14 @@ class OutboxClient:
     def flush(self, max_attempts: Optional[int] = None) -> int:
         max_attempts = max_attempts or self.max_retries
         max_retries = max_attempts
+        # A missing destination is a configuration fault, not a delivery
+        # failure. Burning an attempt here would silently kill every queued
+        # event (2026-11 incident: 78 rows wedged at attempt_count=9 on a
+        # process started without ASSISTX_API_URL). Leave the rows untouched
+        # and surface the condition to the caller as "nothing attempted".
+        if not self.api_url:
+            self.skipped_unconfigured += 1
+            return 0
         with self._lock:
             conn = sqlite3.connect(self.db_path)
             try:
@@ -255,7 +267,12 @@ class OutboxClient:
                 delivered += 1
             else:
                 if new_count >= max_retries:
-                    self._update_status(entry.outbox_id, "failed", new_count)
+                    # Exhaustion is terminal. 'dead' is the only status the
+                    # purge path recognises, so landing in 'failed' here left
+                    # rows that were neither retried to completion nor ever
+                    # collected, and a later flush(max_attempts=<higher>) could
+                    # resurrect them.
+                    self._update_status(entry.outbox_id, "dead", new_count)
                 else:
                     self._update_status(entry.outbox_id, "pending", new_count)
         return delivered
@@ -289,6 +306,11 @@ class OutboxClient:
             finally:
                 conn.close()
         stats = {"total": 0}
+        # Report every known status, including the ones at zero. Callers index
+        # stats["dead"] / stats["pending"] directly, and a status that has
+        # never occurred must read as 0 rather than raise KeyError.
+        for known in ("pending", "failed", "delivered", "dead"):
+            stats[known] = 0
         for status, count in rows:
             stats[status] = count
             stats["total"] += count
