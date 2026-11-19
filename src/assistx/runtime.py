@@ -112,6 +112,40 @@ def validate_runtime_configuration(*, strict: bool = False) -> Dict[str, Any]:
     return config
 
 
+def _outbox_readiness_enforced() -> bool:
+    """Whether a stale outbox may fail readiness (ASSISTX_OUTBOX_READINESS).
+
+    Enabled by default; an operator draining a known backlog can set 0 to keep
+    /health green without lying about the queue — the payload still reports it.
+    """
+    raw = os.getenv("ASSISTX_OUTBOX_READINESS", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled"}
+
+
+def _check_outbox() -> Dict[str, Any]:
+    """Queue depth and staleness, read-only so a health probe never writes.
+
+    The outbox is a local SQLite queue, not a network dependency: the probe
+    opens the file read-only and only reports. A queue whose oldest deliverable
+    event is older than ASSISTX_OUTBOX_STALE_S (default 24 h) is unhealthy —
+    depth grows silently otherwise (2026-11: 78 events, 43 days, invisible).
+    """
+    from .outbox_client import DEFAULT_DB_PATH, read_queue_health
+
+    path = os.getenv("ASSISTX_OUTBOX_DB", DEFAULT_DB_PATH)
+    try:
+        health = read_queue_health(path)
+    except Exception as exc:  # noqa: BLE001 - health must answer
+        health = {
+            "db_path": path,
+            "status": "error",
+            "ok": True,
+            "reason": f"outbox probe failed: {str(exc)[:200]}",
+        }
+    health["readiness_enforced"] = _outbox_readiness_enforced()
+    return health
+
+
 def build_runtime_health() -> Dict[str, Any]:
     profile = runtime_profile()
     configuration = build_runtime_configuration()
@@ -120,6 +154,7 @@ def build_runtime_health() -> Dict[str, Any]:
         "neo4j": _check_neo4j(),
         "llm": _check_llm(),
     }
+    outbox = _check_outbox()
     overlay_health = {
         "ok": True,
         "status": "skipped",
@@ -129,7 +164,8 @@ def build_runtime_health() -> Dict[str, Any]:
     core_ok = dependencies["redis"]["status"] == "ok" and dependencies["neo4j"]["status"] == "ok"
     llm_ok = dependencies["llm"]["status"] in {"ok", "degraded"}
     overlay_ok = overlay_health["status"] in {"ok", "degraded"} and overlay_health["ok"]
-    overall_ok = core_ok and llm_ok and configuration["ok"]
+    outbox_ok = outbox.get("ok", True) or not outbox.get("readiness_enforced", True)
+    overall_ok = core_ok and llm_ok and configuration["ok"] and outbox_ok
     overall_status = "ok" if overall_ok else "degraded"
     return {
         "ok": overall_ok,
@@ -143,6 +179,7 @@ def build_runtime_health() -> Dict[str, Any]:
         "configuration": configuration,
         "overlay": overlay_health,
         "dependencies": dependencies,
+        "outbox": outbox,
     }
 
 
