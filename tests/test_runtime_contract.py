@@ -22,6 +22,14 @@ def test_runtime_health_snapshots_dependencies_and_configuration(monkeypatch):
     monkeypatch.setattr(runtime_mod, "_check_redis", lambda: {"status": "ok", "url": "redis://example"})
     monkeypatch.setattr(runtime_mod, "_check_neo4j", lambda: {"status": "ok", "uri": "bolt://example", "database": "assistx"})
     monkeypatch.setattr(runtime_mod, "_check_llm", lambda: {"status": "degraded", "backend": "openai", "endpoint": "http://llm"})
+    # The outbox lives on the host filesystem; keep this test about the
+    # dependency and configuration snapshot rather than the local queue.
+    monkeypatch.setattr(
+        runtime_mod,
+        "_check_outbox",
+        lambda: {"status": "ok", "ok": True, "pending": 0, "dead": 0,
+                 "oldest_pending_age_s": None, "readiness_enforced": True},
+    )
 
     health = runtime_mod.build_runtime_health()
 
