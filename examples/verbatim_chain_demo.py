@@ -16,8 +16,10 @@ Run:
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
+import time
 import unittest.mock as mock
 
 # Ensure the adapter's module constants pick up the delegation env before import.
@@ -49,12 +51,28 @@ def main() -> int:
         assert "delegation" in (toolsets or ""), "delegation toolset must be enabled"
         return {"success": True, "output": expected, "session_id": "child", "elapsed": 0.5}
 
-    with mock.patch.object(adapter, "run_hermes", fake_run_hermes):
+    with mock.patch.object(adapter, "run_hermes", fake_run_hermes), mock.patch.object(
+        adapter, "ensure_model_env", return_value="/synthetic/verbatim-demo"
+    ):
         assistx = mock.MagicMock()
-        assistx.claim_task.return_value = {
-            "claimed": True,
-            "task": {"id": task["id"], "claim_id": "demo-claim"},
-        }
+        def synthetic_claim(_task_id, session_id):
+            # The real source claim contains the complete current Task, not
+            # only its id and a claim id. No live graph or claim is created.
+            return {
+                "claimed": True,
+                "task": {
+                    **task,
+                    "status": "CLAIMED",
+                    "claim_id": "demo-claim",
+                    "claimed_by": adapter.AGENT_ID,
+                    "agent_session_id": session_id,
+                    "lease_expires_at_ts": int(time.time() * 1000) + 120_000,
+                    "execution_attempt": 1,
+                    "payload_json": json.dumps(task.get("payload", {})),
+                },
+            }
+
+        assistx.claim_task.side_effect = synthetic_claim
         assistx.get_context.return_value = {}
 
         adapter.process_task(assistx, task)
