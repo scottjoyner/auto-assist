@@ -1,0 +1,15 @@
+# Tailnet sanitized fallback — boot persistence witness (October 23, 2026)
+
+**Scope:** draft auto-assist PR #425; ingress P0 #149. This is a read-only observational guard, **not a reboot test, service change, or release authorization**.
+
+Fleet Commander observed the live **fallback** `assistx-tailnet-sanitizer-fallback.service` active and enabled, with its `Restart=on-failure` policy, `After=network-online.target`, and user manager `Linger=yes`. The primary Caddy unit remains disabled/inactive; original `control-room-ts-proxy.service` (socat) remains inactive and **masked**. A single Tailnet TCP:8000 listener is bound by the fallback's systemd cgroup (kernel UID and inode), and the backend remains bound only at localhost:8000.
+
+The enhanced `scripts/assistx_tailnet_ingress_persistence_guard.py --physical-readonly` now invokes the separate pinned post-cutover attestation for the **one** active and enabled Caddy candidate (primary or fallback). That attestation checks exact installed unit bytes, manager ExecStart, service PID/cgroup and kernel-owned listening socket, pinned Caddy executable/config SHA-256, original service mask, two expected port 8000 endpoints and the five scoped Tailscale Serve routes. The boot guard separately checks user-systemd lingering. It is inert by default and does not change service state or read credentials.
+
+**Actual observed outcome:** `reason=PINNED_SANITIZER_BOOT_CONFIGURED_REBOOT_NOT_WITNESSED`, `pinned_caddy_live_static_verified=true`, `legacy_socat_masked=true`, `exactly_one_boot_enabled_caddy=true`, `user_systemd_linger_enabled=true`, `real_reboot_survival_verified=false`, `decision=HOLD`, and `production_mutations=0`. This replaces the stale generic `CADDY_INGRESS_NOT_YET_AUTHENTICATED` classification without claiming post-reboot persistence.
+
+Focused regression tests cover full static witness, wrong active/boot unit state, raw socat restart, missing file/binary pins, unexpected listeners, broken Serve routes, absent linger, invalid input types and default-inert CLI. The existing primary-only assessment still returns HOLD while the fallback owns the socket; no false primary promotion.
+
+**Live authentication evidence is separate:** the previous Lenovo-originated, verified-Caddy-only test returned HTTP 200 for health, HTTP 401 for anonymous/forged identity, and HTTP 200 for Basic with and without a synthetic forged header. This static boot guard intentionally does **not** adopt those prior test results as a new on-demand authentication verification.
+
+**Still open:** an approved actual reboot/recovery test, all authorized client streaming/task workflows, continued ingress header provenance (including direct localhost and separate mobile Serve routes), independent signer/nonce/high-water custody, real multi-owner receipts/revocation, and Hermes's unsafe legacy 16-bind storage cutover. Do not restart x1-370 or restore raw socat merely to make this guard green. Keep P0 #149 and #414 open; production Hermes deployment remains HOLD.

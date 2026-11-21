@@ -134,3 +134,53 @@ def seeded_neo4j(neo4j_client):
         [{"title": "Review item", "status": "READY"}],
     )
     return neo4j_client
+
+# Source-integrity witness: a full test suite must never silently replace the
+# exact Hermes adapter implementation after checkout. In particular, the
+# physical canary pins this source at the Git-blob level. This witness uses
+# local file hashes only, never imports or executes the adapter under test.
+_HERMES_TRACKED_ADAPTER = 'src/assistx/agents/hermes_agent_adapter.py'
+_HERMES_BASELINE_SHA = None
+_HERMES_DRIFT_REPORTED = False
+
+
+def _hermes_git_blob_sha(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha1(f'blob {len(data)}\0'.encode() + data).hexdigest()
+
+
+def pytest_sessionstart(session):
+    import pathlib
+
+    global _HERMES_BASELINE_SHA
+    repo = pathlib.Path(__file__).resolve().parents[1]
+    sha = subprocess.run(
+        ['git', '-C', str(repo), 'rev-parse', 'HEAD:' + _HERMES_TRACKED_ADAPTER],
+        capture_output=True, text=True, timeout=7, check=True,
+    ).stdout.strip()
+    current = _hermes_git_blob_sha((repo / _HERMES_TRACKED_ADAPTER).read_bytes())
+    if current != sha:
+        pytest.exit(
+            f'Hermes adapter changed BEFORE pytest: HEAD {sha}, working tree {current}',
+            returncode=1,
+        )
+    _HERMES_BASELINE_SHA = sha
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_runtest_teardown(item, nextitem):
+    import pathlib
+
+    global _HERMES_DRIFT_REPORTED
+    if _HERMES_DRIFT_REPORTED or _HERMES_BASELINE_SHA is None:
+        return
+    repo = pathlib.Path(__file__).resolve().parents[1]
+    current = _hermes_git_blob_sha((repo / _HERMES_TRACKED_ADAPTER).read_bytes())
+    if current != _HERMES_BASELINE_SHA:
+        _HERMES_DRIFT_REPORTED = True
+        pytest.fail(
+            f'Hermes adapter tracked source mutated during/after {item.nodeid}: '
+            f'HEAD={_HERMES_BASELINE_SHA}; working={current}',
+            pytrace=False,
+        )

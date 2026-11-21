@@ -88,3 +88,52 @@ def test_lease_loss_blocks_new_hermes_process(monkeypatch):
     result = adapter.run_hermes("must not start")
     assert result["success"] is False
     assert result["error"] == "executor_lease_lost"
+
+
+def test_terminate_group_even_when_session_leader_already_exited(monkeypatch):
+    # A SIGTERM-ignoring descendant still owns the process group.
+    import signal
+    signals=[]
+    class ReapedLeader:
+        pid=712345
+        def poll(self): return 0
+    monkeypatch.setattr(strict_executor_adapter.os,"killpg",
+                        lambda pid,sig: signals.append((pid,sig)))
+    strict_executor_adapter._terminate_process(ReapedLeader())
+    assert signals==[(712345,signal.SIGTERM),(712345,signal.SIGKILL)]
+
+
+def test_terminate_group_forces_sigkill_after_parent_reaps(monkeypatch):
+    import signal
+    signals=[]
+    class Leader:
+        pid = 712346
+        def __init__(self):
+            self.reaped = False
+        def poll(self):
+            return 0 if self.reaped else None
+        def wait(self, timeout):
+            self.reaped = True
+            return 0
+    monkeypatch.setattr(strict_executor_adapter.os,"killpg",
+                        lambda pid,sig: signals.append((pid,sig)))
+    strict_executor_adapter._terminate_process(Leader(),grace_seconds=0.1)
+    assert signals==[(712346,signal.SIGTERM),(712346,signal.SIGKILL)]
+
+
+def test_terminate_process_rejects_invalid_process_group(monkeypatch):
+    import pytest
+    class Untrusted:
+        pid=1
+    with pytest.raises(RuntimeError,match="invalid executor process group"):
+        strict_executor_adapter._terminate_process(Untrusted())
+
+
+def test_terminate_group_tolerates_already_gone_processes(monkeypatch):
+    class Reaped:
+        pid=712347
+        def poll(self): return 0
+    def vanished(*args):
+        raise ProcessLookupError()
+    monkeypatch.setattr(strict_executor_adapter.os,"killpg",vanished)
+    strict_executor_adapter._terminate_process(Reaped())
