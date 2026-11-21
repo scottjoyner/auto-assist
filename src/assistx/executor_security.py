@@ -335,6 +335,84 @@ def _string_list(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+_MODEL_ALIAS_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./:+@-]{0,199}\Z")
+
+
+def _claimed_payload_mapping(value: Any, *, label: str) -> dict[str, Any]:
+    """Fail closed on ambiguous stored Task data before minting authority.
+
+    In particular, do not turn corrupt JSON or non-object JSON into an empty
+    payload that silently grants fleet-default tools and a default model.
+    """
+    if isinstance(value, Mapping):
+        parsed = dict(value)
+    elif isinstance(value, str) and value.strip() and len(value) <= 65_536:
+        def distinct_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, item in pairs:
+                if key in result:
+                    raise ValueError("duplicate JSON object key")
+                result[key] = item
+            return result
+
+        def reject_constant(_value: str) -> Any:
+            raise ValueError("nonfinite JSON constant")
+
+        try:
+            parsed = json.loads(
+                value, object_pairs_hook=distinct_keys, parse_constant=reject_constant,
+            )
+        except (ValueError, RecursionError) as exc:
+            raise HTTPException(status_code=409, detail=f"{label} is invalid") from exc
+    else:
+        raise HTTPException(status_code=409, detail=f"{label} is invalid")
+
+    if not isinstance(parsed, Mapping):
+        raise HTTPException(status_code=409, detail=f"{label} must be an object")
+    try:
+        # Includes already-decoded mappings: NaN/Infinity must not slip through.
+        canonical = json.dumps(parsed, allow_nan=False, sort_keys=True)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise HTTPException(status_code=409, detail=f"{label} is invalid") from exc
+    if len(canonical) > 65_536:
+        raise HTTPException(status_code=409, detail=f"{label} is oversized")
+    return dict(parsed)
+
+
+def _claimed_string_list(value: Any, *, label: str) -> list[str]:
+    """Parse an explicitly supplied constraint; never treat bad input as absent."""
+    if isinstance(value, str):
+        if not value.strip():
+            return []
+        if value.lstrip().startswith("["):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(status_code=409, detail=f"{label} is invalid") from exc
+        elif value.lstrip().startswith(("{", '"')):
+            raise HTTPException(status_code=409, detail=f"{label} is invalid")
+        else:
+            value = [item.strip() for item in value.split(",")]
+    if (
+        not isinstance(value, list)
+        or len(value) > 128
+        or any(type(item) is not str or not item or item != item.strip() for item in value)
+    ):
+        raise HTTPException(status_code=409, detail=f"{label} is invalid")
+    return value
+
+
+def _validated_model_alias(value: Any) -> str:
+    if (
+        type(value) is not str
+        or not _MODEL_ALIAS_PATTERN.fullmatch(value)
+        or any(segment in {".", ".."} for segment in value.split("/"))
+        or "//" in value
+    ):
+        raise HTTPException(status_code=409, detail="requested model alias is invalid")
+    return value
+
+
 def _bootstrap_authorized(authorization: str | None) -> bool:
     expected = os.getenv("ASSISTX_EXECUTOR_BOOTSTRAP_TOKEN", "").strip()
     supplied = str(authorization or "").strip()
@@ -480,18 +558,37 @@ def build_executor_security_router(neo_factory: Callable[[], Any]) -> APIRouter:
         if projection_expiry <= now_ms:
             raise HTTPException(status_code=409, detail="runtime projection approval is expired")
 
-        payload = _json_mapping(task.get("payload_json") or task.get("payload"))
-        contract = _json_mapping(payload.get("execution_contract"))
-        model_aliases = _string_list(payload.get("allowed_model_aliases"))
-        if not model_aliases:
-            model_aliases = [str(payload.get("model") or "auto/code")]
-        # Operator-approved fleet defaults ride along so adapters whose runtime
-        # model differs from the task-declared alias are not 401'd by their own
-        # token scope. Comma-separated, empty by default.
+        # Prefer the canonical stored payload. An explicitly present, corrupt
+        # payload_json must never fall back to a more permissive task.payload.
+        canonical_payload = (
+            task["payload_json"] if "payload_json" in task else task.get("payload")
+        )
+        payload = _claimed_payload_mapping(canonical_payload, label="claimed task payload")
+        contract = (
+            _claimed_payload_mapping(payload["execution_contract"], label="execution contract")
+            if "execution_contract" in payload else {}
+        )
+
+        if "model" in payload:
+            requested_model = _validated_model_alias(payload["model"])
+        else:
+            requested_model = "auto/code"
+        if "allowed_model_aliases" in payload:
+            model_aliases = _claimed_string_list(
+                payload["allowed_model_aliases"], label="allowed model aliases",
+            )
+            if not model_aliases:
+                raise HTTPException(status_code=409, detail="allowed model aliases are empty")
+        else:
+            model_aliases = [requested_model]
+        model_aliases = [_validated_model_alias(item) for item in model_aliases]
+
+        # Operator-approved fleet defaults retain their explicit configured
+        # behavior; validate the aliases rather than accepting path-like names.
         model_aliases += [
-            a.strip() for a in
-            os.getenv("ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES", "").split(",")
-            if a.strip()
+            _validated_model_alias(item.strip())
+            for item in os.getenv("ASSISTX_EXECUTOR_DEFAULT_MODEL_ALIASES", "").split(",")
+            if item.strip()
         ]
         configured_tools = {
             item.strip()
@@ -501,7 +598,14 @@ def build_executor_security_router(neo_factory: Callable[[], Any]) -> APIRouter:
             ).split(",")
             if item.strip()
         }
-        requested_tools = set(_string_list(payload.get("allowed_tools"))) or configured_tools
+        # Absent tools preserve the documented legacy fleet default. Explicit
+        # [] or "" means *no* tools, not all configured tools.
+        if "allowed_tools" not in payload:
+            requested_tools = configured_tools
+        else:
+            requested_tools = set(_claimed_string_list(
+                payload["allowed_tools"], label="allowed tools",
+            ))
         allowed_tools = sorted(requested_tools & configured_tools)
         repository = str(contract.get("repository") or payload.get("repository") or "")
         allowed_paths = _string_list(contract.get("allowed_paths") or payload.get("allowed_paths"))
