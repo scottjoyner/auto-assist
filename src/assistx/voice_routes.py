@@ -272,6 +272,11 @@ def _cancel_target_task(neo: Any, event: dict[str, Any]) -> int:
         row = session.run(
             """
             MATCH (t:Task {id:$task_id})
+            // Voice cancellation is a safety action: preserve its availability,
+            // but serialize with claim and completion writers before rechecking.
+            SET t.hermes_fence_check_epoch =
+                coalesce(t.hermes_fence_check_epoch, 0) + 1
+            WITH t
             WHERE t.status IN ['READY','CLAIMED','RUNNING']
             SET t.status='CANCELLED',
                 t.cancelled_reason=$reason,

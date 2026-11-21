@@ -264,6 +264,11 @@ def _handle_cancel(neo: Neo4jClient, intent: Dict[str, Any]) -> None:
         pending = s.run(
             """
             MATCH (i:Intent {id:$id})-[:CREATED_TASK]->(t:Task)
+            // Intent cancellation must not race past an authoritative
+            // completion. Take the Task write lock before status validation.
+            SET t.hermes_fence_check_epoch =
+                coalesce(t.hermes_fence_check_epoch, 0) + 1
+            WITH t
             WHERE t.status IN ['READY','CLAIMED','RUNNING']
             SET t.status='CANCELLED',
                 t.cancelled_reason=$reason,

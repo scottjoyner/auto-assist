@@ -1,0 +1,43 @@
+# Explicitly opt-in research service; never merge with production Compose.
+name: assistx-hermes-synthetic-rootless
+services:
+  hermes-rootless-synthetic:
+    profiles: [synthetic-canary]
+    image: ${HERMES_CANDIDATE_IMAGE:?reviewed local candidate image required}
+    pull_policy: never
+    entrypoint: ["/entrypoint.sh"]
+    # Deliberately benign fixture; does NOT execute the real agent loop.
+    command: ["/bin/sh", "/workspace/synthetic_smoke.sh"]
+    restart: "no"
+    user: "1000:1000"
+    init: false
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 402653184
+    cpus: 0.5
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16777216
+    environment:
+      HOME: /workspace
+      HERMES_HOME: /workspace/hermes-home
+      HERMES_CONFIG_HOME: /workspace/.hermes
+      HERMES_KNOWLEDGE_READ_ROOT: /research/knowledge
+      HERMES_KNOWLEDGE_ROOT: /workspace/knowledge
+      HERMES_EVAL_PATH: /workspace/registry/model-profiles.json
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - type: bind
+        source: ${HERMES_SYNTHETIC_KNOWLEDGE:?synthetic read-only knowledge fixture required}
+        target: /research/knowledge
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${HERMES_SYNTHETIC_WORKSPACE:?synthetic private workspace required}
+        target: /workspace
+        read_only: false
+        bind:
+          create_host_path: false

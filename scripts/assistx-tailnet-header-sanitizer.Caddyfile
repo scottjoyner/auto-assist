@@ -1,0 +1,19 @@
+# Research-only staged replacement for control-room-ts-proxy.service.
+# Inert unless Caddy is explicitly started. NEVER run alongside the live
+# socat service on the same Tailnet IP:8000. Backend remains 127.0.0.1:8000.
+# ASSISTX_TAILNET_IP must be set from an independently confirmed Tailscale IPv4.
+{
+    admin off
+    auto_https off
+}
+
+http://{$ASSISTX_TAILNET_IP}:8000 {
+    reverse_proxy http://127.0.0.1:8000 {
+        header_up -Tailscale-User-Login
+        header_up -X-Forwarded-User
+        header_up -X-Authenticated-User
+        header_up -X-Remote-User
+        header_up -Remote-User
+        header_up -X-Forwarded-Email
+    }
+}

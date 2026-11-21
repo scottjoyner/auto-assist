@@ -23,7 +23,10 @@ def execute_task_job(task_id: str, dry_run: bool = False):
         if not rec:
             neo.close(); return {"error": "task not found", "task_id": task_id}
         t = _json_safe(dict(rec[0]))
-    neo.update_task_status(task_id, "RUNNING")
+    if neo.update_task_status(task_id, "RUNNING") is not True:
+        neo.close()
+        return {"status": "DENIED", "reason": "task_claim_fence_denied",
+                "task_id": task_id}
     try:
         state = run_task(neo, t, dry_run=dry_run)
         rid = state.get('run_id')
@@ -31,7 +34,9 @@ def execute_task_job(task_id: str, dry_run: bool = False):
         final_status = "DONE" if (acc.get('passed') or dry_run) else "FAILED"
         if rid:
             neo.log_tool_call(rid, 'acceptance', {'task_id': task_id, 'acceptance': t.get('acceptance')}, acc, final_status=='DONE')
-        neo.update_task_status(task_id, final_status)
+        if neo.update_task_status(task_id, final_status) is not True:
+            return {"status": "HOLD", "reason": "task_terminal_commit_unverified",
+                    "task_id": task_id}
         return _json_safe({"status": final_status, "state": state, "task_id": task_id, "acceptance": acc})
     except Exception as e:
         neo.update_task_status(task_id, "FAILED")
