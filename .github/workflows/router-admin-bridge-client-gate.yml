@@ -1,0 +1,37 @@
+name: Router admin bridge client security (offline)
+on:
+  pull_request:
+    paths:
+      - scripts/opencode-bridge/sync_configs_to_assistx.py
+      - tests/test_opencode_bridge_router_admin.py
+      - .github/workflows/router-admin-bridge-client-gate.yml
+  push:
+    branches:
+      - security/router-admin-client-cutover-20261103
+    paths:
+      - scripts/opencode-bridge/sync_configs_to_assistx.py
+      - tests/test_opencode_bridge_router_admin.py
+      - .github/workflows/router-admin-bridge-client-gate.yml
+
+permissions:
+  contents: read
+
+jobs:
+  fail-closed-urllib-admin-client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install portable offline test tooling
+        run: python -m pip install "pytest>=8,<10" "ruff>=0.9,<1"
+      - name: Compile and semantic/import lint
+        run: |
+          python -m py_compile scripts/opencode-bridge/sync_configs_to_assistx.py \
+            tests/test_opencode_bridge_router_admin.py
+          ruff check --select F,I scripts/opencode-bridge/sync_configs_to_assistx.py \
+            tests/test_opencode_bridge_router_admin.py
+      - name: No-network source safety checks
+        run: python -m pytest --noconftest -q tests/test_opencode_bridge_router_admin.py
