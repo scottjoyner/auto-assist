@@ -594,6 +594,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AssistX API & UI", lifespan=lifespan)
+# Internal Hermes inference relay is deliberately absent from all production
+# route tables unless explicitly enabled for an owner-approved staging trial.
+# Import lazily to avoid introducing an optional transport dependency into
+# the default API startup path.
+if os.getenv("ASSISTX_HERMES_ROUTER_RELAY_ENABLED") == "true":
+    from .hermes_router_relay import router as hermes_router_relay_router
+    app.include_router(hermes_router_relay_router)
 setup_logging()
 install_logging_middleware(app)
 
