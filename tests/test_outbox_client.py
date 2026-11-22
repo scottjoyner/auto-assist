@@ -90,3 +90,84 @@ def test_outbox_purges_terminal_rows_older_than_ttl(tmp_path, monkeypatch):
 
     client._purge_expired()
     assert client.get_stats()["total"] == 0
+
+
+def test_outbox_migrates_preclaim_database_and_drains_exhausted_rows(tmp_path):
+    """A queue created before the claim protocol must migrate and still drain.
+
+    This is the exact shape of the live ~/.assistx_outbox.db: created by an
+    older release, rows already at the retry ceiling, no claim columns. If
+    migration or exhaustion handling regresses, those rows become permanently
+    undeliverable while still being counted as pending.
+    """
+    db = str(tmp_path / "legacy.sqlite")
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "CREATE TABLE outbox ("
+            " outbox_id TEXT PRIMARY KEY,"
+            " event_id TEXT NOT NULL,"
+            " payload_json TEXT NOT NULL,"
+            " attempt_count INTEGER DEFAULT 0,"
+            " last_attempt_at TEXT,"
+            " status TEXT DEFAULT 'pending',"
+            " created_at TEXT NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO outbox (outbox_id, event_id, payload_json, attempt_count,"
+            " last_attempt_at, status, created_at) VALUES (?,?,?,?,?,?,?)",
+            [
+                ("wedged-1", "evt-a", "{}", 9, "2026-10-06T05:16:12+00:00", "pending",
+                 "2026-10-06T05:16:12+00:00"),
+                ("wedged-2", "evt-b", "{}", 9, "2026-10-06T05:20:01+00:00", "pending",
+                 "2026-10-06T05:20:01+00:00"),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Opening the client is what performs the additive migration.
+    client = OutboxClient(
+        db_path=db, api_url="http://127.0.0.1:9/never", auto_flush=False
+    )
+
+    columns = {
+        r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(outbox)")
+    }
+    assert {"claim_owner", "claimed_at"}.issubset(columns)
+    assert client.get_stats()["pending"] == 2
+
+    # Rows already at the ceiling must land in terminal 'dead', not retry forever.
+    client.flush(max_attempts=10)
+    stats = client.get_stats()
+    assert stats["dead"] == 2
+    assert stats.get("pending", 0) == 0
+
+
+def test_outbox_claim_is_exclusive_between_flushers(tmp_path):
+    """Two flushers over one queue must never claim the same row.
+
+    The live deployment has a prefork worker pool, so concurrent flushers are
+    the normal case, not a theoretical one. Without the claim lease this
+    delivers duplicates to the API.
+    """
+    db = str(tmp_path / "outbox.sqlite")
+    first = OutboxClient(db_path=db, api_url="http://127.0.0.1:9/never", auto_flush=False)
+    second = OutboxClient(db_path=db, api_url="http://127.0.0.1:9/never", auto_flush=False)
+    first.enqueue({"event_id": "shared-event"})
+
+    claimed = first._claim_next()
+    assert claimed is not None
+    assert claimed.claim_owner
+
+    # The row belongs to `first` for the lease duration.
+    assert second._claim_next() is None
+
+    # Releasing it makes it claimable again, and then the second flusher sees it.
+    assert first._release(claimed, "pending", claimed.attempt_count)
+    reclaim = second._claim_next()
+    assert reclaim is not None
+    assert reclaim.outbox_id == claimed.outbox_id
+    assert reclaim.claim_owner != claimed.claim_owner
+
