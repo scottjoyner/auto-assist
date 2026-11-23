@@ -1110,28 +1110,71 @@ class Neo4jClient:
         effective_lease = lease_seconds if lease_seconds is not None else 900
         with self._session() as s:
             if idempotency_key:
+                # A repeated claim ID alone is not authorization to reuse a
+                # lease. Fence replay on the current Task principal, session,
+                # state, expiry, audience and capability scope in the graph.
+                # No state is mutated by this lookup.
                 prior = s.run(
-                    "MATCH (t:Task {id:$task_id, claim_id:$claim_id}) RETURN t",
-                    {"task_id": task_id, "claim_id": idempotency_key},
+                    "MATCH (t:Task {id:$task_id, claim_id:$claim_id}) "
+                    "WHERE t.status='CLAIMED' "
+                    "AND t.claimed_by=$agent_id "
+                    "AND t.agent_session_id=$session_id "
+                    "AND t.lease_expires_at_ts > timestamp() "
+                    "AND (t.target_agent_id IS NULL OR t.target_agent_id=$agent_id) "
+                    "AND all(required IN coalesce(t.required_capabilities, "
+                    "t.capabilities, []) WHERE required IN $capabilities) "
+                    "AND NOT EXISTS { "
+                    "  MATCH (t)-[:DISPATCHED_AS]->(pc:Dispatch) "
+                    "  WHERE pc.paperclip_issue_id IS NOT NULL "
+                    "} "
+                    "RETURN t",
+                    {
+                        "task_id": task_id,
+                        "claim_id": idempotency_key,
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                        "capabilities": caps,
+                    },
                 ).single()
                 if prior:
-                    return {"claimed": True, "claim_id": claim_id, "idempotent": True, "task": dict(prior["t"])}
+                    task = dict(prior["t"])
+                    expiry = task.get("lease_expires_at_ts")
+                    required = task.get("required_capabilities")
+                    if required is None:
+                        required = task.get("capabilities") or []
+                    if (task.get("id") == task_id
+                            and task.get("claim_id") == claim_id
+                            and task.get("status") == "CLAIMED"
+                            and task.get("claimed_by") == agent_id
+                            and session_id
+                            and task.get("agent_session_id") == session_id
+                            and type(expiry) is int
+                            and expiry > int(time.time() * 1000)
+                            and task.get("target_agent_id") in (None, agent_id)
+                            and isinstance(required, list)
+                            and all(isinstance(cap, str) and cap in caps
+                                    for cap in required)
+                            and not task.get("paperclip_dispatched")):
+                        return {
+                            "claimed": True,
+                            "claim_id": claim_id,
+                            "idempotent": True,
+                            "task": task,
+                        }
 
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
                 WHERE t.status='READY'
+                  AND (t.claim_id IS NULL OR t.claim_id <> $claim_id)
                 OPTIONAL MATCH (t)-[:HAS_ALLOCATION]->(ar:AllocationReservation {status:'ACTIVE'})
                 WHERE ar.expires_at_ts > timestamp()
                 WITH t, ar
                 WHERE (ar IS NULL OR ar.node_id=$agent_id)
                   AND (t.target_agent_id IS NULL OR t.target_agent_id=$agent_id)
-                  AND (
-                    size($capabilities)=0
-                    OR all(
-                      required IN coalesce(t.required_capabilities, t.capabilities, [])
-                      WHERE required IN $capabilities
-                    )
+                  AND all(
+                    required IN coalesce(t.required_capabilities, t.capabilities, [])
+                    WHERE required IN $capabilities
                   )
                   AND NOT EXISTS {
                     MATCH (t)-[:DISPATCHED_AS]->(pc:Dispatch)
@@ -1172,7 +1215,9 @@ class Neo4jClient:
                         "WITH a MATCH (t:Task {id:$task_id}) MERGE (a)-[:CLAIMED]->(t)",
                         {"sid": session_id, "agent_id": agent_id, "task_id": task_id},
                     )
-                return {"claimed": True, "task": task}
+                # Match the idempotent-claim response shape so all callers
+                # can carry the authoritative claim fence through execution.
+                return {"claimed": True, "claim_id": claim_id, "task": task}
 
             existing = s.run(
                 "MATCH (t:Task {id:$task_id}) "
@@ -1191,7 +1236,7 @@ class Neo4jClient:
             if existing["paperclip_dispatched"]:
                 return {"claimed": False, "reason": "paperclip_dispatched"}
             required = existing.get("required_capabilities") or existing.get("capabilities") or []
-            if caps and required and not all(cap in caps for cap in required):
+            if required and not all(cap in caps for cap in required):
                 return {"claimed": False, "reason": "capability_mismatch", "required_capabilities": required}
             if existing["target_agent_id"] and existing["target_agent_id"] != agent_id:
                 return {"claimed": False, "reason": "target_agent_mismatch"}
@@ -1512,11 +1557,16 @@ class Neo4jClient:
     ) -> dict[str, Any] | None:
         if status and status not in EXECUTABLE_TASK_STATUSES:
             raise ValueError(f"Unsupported task status: {status}")
+        if status in TERMINAL_TASK_STATUSES:
+            raise ValueError("Terminal task status requires fenced completion, not heartbeat")
         props = {
             "heartbeat_by": agent_id,
-            "agent_session_id": session_id,
             "heartbeat_metadata_json": json.dumps(metadata or {}),
         }
+        # Omitted session_id must not erase the claimed owner's session.
+        # This preserves compatibility without relaxing claim/lease checks.
+        if session_id is not None:
+            props["agent_session_id"] = session_id
         with self._session() as s:
             rec = s.run(
                 """
@@ -1524,7 +1574,10 @@ class Neo4jClient:
                 WHERE coalesce(t.execution_attempt, 0)=0
                    OR (
                      t.claimed_by=$agent_id
-                     AND ($claim_id IS NULL OR t.claim_id=$claim_id)
+                     AND $claim_id IS NOT NULL
+                     AND t.claim_id=$claim_id
+                     AND t.lease_expires_at_ts > timestamp()
+                     AND ($session_id IS NULL OR t.agent_session_id=$session_id)
                      AND t.status IN ['CLAIMED','RUNNING','PAUSING']
                    )
                 SET t += $props,
@@ -1544,6 +1597,7 @@ class Neo4jClient:
                     "task_id": task_id,
                     "agent_id": agent_id,
                     "claim_id": claim_id,
+                    "session_id": session_id,
                     "props": props,
                     "status": status,
                     "lease_seconds": lease_seconds,
@@ -1566,40 +1620,48 @@ class Neo4jClient:
             raise ValueError(f"Completion status must be one of: {sorted(TERMINAL_TASK_STATUSES)}")
         with self._session() as s:
             if idempotency_key:
+                # Idempotent completion is an exact, read-only replay, not an
+                # alternate write authority. Do not reopen or re-status a
+                # completed Task from another node/claim/terminal outcome.
                 prior = s.run(
-                    "MATCH (t:Task {id:$task_id})-[:EXECUTED_BY]->(r:AgentRun {completion_id:$completion_id}) "
-                    "RETURN t, r.id AS run_id",
-                    {"task_id": task_id, "completion_id": idempotency_key},
+                    """
+                    MATCH (t:Task {id:$task_id})-[:EXECUTED_BY]->
+                          (r:AgentRun {completion_id:$completion_id})
+                    WHERE t.status=$status
+                      AND t.completed_by=$agent_id
+                      AND r.agent=$agent_id
+                      AND r.status=$status
+                      AND ($session_id IS NULL OR t.agent_session_id=$session_id)
+                      AND (
+                        (coalesce(t.execution_attempt,0)=0
+                         AND $claim_id IS NULL AND r.claim_id IS NULL)
+                        OR ($claim_id IS NOT NULL
+                            AND t.claim_id=$claim_id
+                            AND r.claim_id=$claim_id)
+                      )
+                    RETURN t, r.id AS run_id
+                    """,
+                    {
+                        "task_id": task_id,
+                        "completion_id": idempotency_key,
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                        "status": status,
+                        "claim_id": claim_id,
+                    },
                 ).single()
                 if prior:
                     prior_task = dict(prior["t"])
-                    prior_task["run_id"] = prior["run_id"]
-                    prior_task["idempotent"] = True
-                    # Still update the task status and result even if idempotent,
-                    # so a later successful execution can un-FAIL a prior failure.
-                    if prior_task.get("status") != status:
-                        s.run(
-                            """
-                            MATCH (t:Task {id:$task_id})
-                            SET t.status=$status,
-                                t.result_summary=$summary,
-                                t.result_json=$result_json,
-                                t.completed_by=$agent_id,
-                                t.completed_at=datetime(),
-                                t.completed_at_ts=timestamp(),
-                                t.updated_at=datetime(),
-                                t.updated_at_ts=timestamp()
-                            """,
-                            {
-                                "task_id": task_id,
-                                "status": status,
-                                "summary": summary,
-                                "result_json": json.dumps(result or {}),
-                                "agent_id": agent_id,
-                            },
-                        )
-                        prior_task["status"] = status
-                    return prior_task
+                    if (prior_task.get("id") == task_id
+                            and prior_task.get("status") == status
+                            and prior_task.get("completed_by") == agent_id
+                            and (session_id is None or
+                                 prior_task.get("agent_session_id") == session_id)
+                            and (claim_id is None or
+                                 prior_task.get("claim_id") == claim_id)):
+                        prior_task["run_id"] = prior["run_id"]
+                        prior_task["idempotent"] = True
+                        return prior_task
             run_id = uuid.uuid4().hex
             rec = s.run(
                 """
@@ -1607,7 +1669,10 @@ class Neo4jClient:
                 WHERE coalesce(t.execution_attempt, 0)=0
                    OR (
                      t.claimed_by=$agent_id
-                     AND ($claim_id IS NULL OR t.claim_id=$claim_id)
+                     AND $claim_id IS NOT NULL
+                     AND t.claim_id=$claim_id
+                     AND t.lease_expires_at_ts > timestamp()
+                     AND ($session_id IS NULL OR t.agent_session_id=$session_id)
                      AND t.status IN ['CLAIMED','RUNNING']
                    )
                 SET t.status=$status,
@@ -1624,7 +1689,7 @@ class Neo4jClient:
                     t.updated_at=datetime(),
                     t.updated_at_ts=timestamp()
                 CREATE (r:AgentRun {id:$run_id, task_id:$task_id, agent:$agent_id,
-                    completion_id:$completion_id,
+                    completion_id:$completion_id, claim_id:$claim_id,
                     status:$status, summary:$summary, result_json:$result_json,
                     started_at_ts:coalesce(t.claimed_at_ts, timestamp()),
                     ended_at:datetime(), ended_at_ts:timestamp(),
