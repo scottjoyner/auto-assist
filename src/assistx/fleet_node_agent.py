@@ -868,9 +868,17 @@ def run(
         if denied_statuses or status in (401, 403):
             # Auth rejection is not an empty queue. Never guess or disclose
             # credentials; reduce repeated unauthorized requests instead.
-            auth_denials = min(auth_denials + 1, 9)  # bounded saturation
-            base = min(300.0, max(1.0, poll_interval))
-            time.sleep(min(300.0, base * (2 ** min(auth_denials - 1, 8))))
+            # Both branches are bounded (exponent capped, 300s ceiling).
+            if denied_statuses:
+                # Legacy on_auth_denial callback contract (origin/main):
+                # capped base and exponent.
+                auth_denials = min(auth_denials + 1, 9)
+                base = min(300.0, max(1.0, poll_interval))
+                time.sleep(min(300.0, base * (2 ** min(auth_denials - 1, 8))))
+            else:
+                # observed_status contract (targeted-poll prerequisite chain).
+                auth_denials = min(auth_denials + 1, 8)
+                time.sleep(min(300.0, max(1.0, poll_interval) * (2 ** auth_denials)))
         elif not worked:
             auth_denials = 0
             time.sleep(max(1.0, poll_interval))
