@@ -1476,6 +1476,46 @@ class Neo4jClient:
                 result.append(item)
             return result
 
+    def list_fleet_nodes(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        with self._session() as session:
+            rows = session.run(
+                "MATCH (n:FleetNode) RETURN n ORDER BY n.node_id LIMIT $limit",
+                {"limit": max(1, min(int(limit), 2000))},
+            )
+            return [dict(r["n"]) for r in rows]
+
+    def list_runtime_instances(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        with self._session() as session:
+            rows = session.run(
+                "MATCH (r:RuntimeInstance) RETURN r ORDER BY r.runtime_instance_id LIMIT $limit",
+                {"limit": max(1, min(int(limit), 2000))},
+            )
+            return [dict(r["r"]) for r in rows]
+
+    def list_service_endpoints(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        with self._session() as session:
+            rows = session.run(
+                "MATCH (e:ServiceEndpoint) RETURN e ORDER BY e.endpoint_id LIMIT $limit",
+                {"limit": max(1, min(int(limit), 2000))},
+            )
+            return [dict(r["e"]) for r in rows]
+
+    def list_model_endpoints(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        with self._session() as session:
+            rows = session.run(
+                "MATCH (e:ModelEndpoint) RETURN e ORDER BY e.endpoint_id LIMIT $limit",
+                {"limit": max(1, min(int(limit), 2000))},
+            )
+            return [dict(r["e"]) for r in rows]
+
+    def list_capabilities(self, *, limit: int = 2000) -> list[dict[str, Any]]:
+        with self._session() as session:
+            rows = session.run(
+                "MATCH (c:Capability) RETURN c ORDER BY c.capability_id LIMIT $limit",
+                {"limit": max(1, min(int(limit), 5000))},
+            )
+            return [dict(r["c"]) for r in rows]
+
     def kv_cache_status(self, *, limit: int = 500) -> dict[str, Any]:
         manifests = self.list_kv_cache_manifests(active_only=False, limit=limit)
         active = [
