@@ -1,0 +1,124 @@
+# AssistX-specific Hermes config (ops/remediation agent)
+# Purpose-built for the AssistX Hermes session: query the knowledge graph,
+# search the web, SSH into tailscale nodes for remediation, and handle
+# Signal "note to self" commands. Tuned for performance — only the toolsets
+# the role needs, no browser/vision/computer-use bloat.
+#
+# Writable copy: /media/scott/SSD_4TB/hermes-home/container/hermes-home/config.yaml
+# (symlinked into the container at /app/hermes-home/config.yaml and /root/.hermes/config.yaml)
+# HERMES_HOME drives the path; hermes reads config.yaml by default name.
+
+model:
+  default: refinedtoolcallv5-3b
+  provider: lmstudio
+  base_url: http://host.docker.internal:1234/v1
+
+terminal:
+  backend: local
+  cwd: /media/scott/SSD_4TB/hermes-home
+  timeout: 180
+  persistent_shell: true
+
+web:
+  backend: ""
+  search_backend: ""
+
+# Only what the AssistX ops role needs. Deliberately EXCLUDES browser / vision /
+# computer_use to keep token/context cost low for an SSH+KG+web agent.
+toolsets:
+  - hermes-cli
+  - mcp            # loads neo4j + signal-cli MCP servers below
+  - kg             # kg_search / kg_query / kg_related
+  - knowledge_graph
+  - web
+  - search
+  - terminal
+  - file
+  - code_execution
+  - memory
+  - session_search
+  - delegation
+
+agent:
+  max_turns: 90
+  gateway_timeout: 1800
+  tool_use_enforcement: auto
+  disabled_toolsets: []
+
+delegation:
+  model: ""
+  provider: ""
+  base_url: ""
+  api_key: ""
+  inherit_mcp_toolsets: true
+  max_iterations: 50
+  child_timeout_seconds: 600
+  max_spawn_depth: 1
+  orchestrator_enabled: true
+
+memory:
+  memory_enabled: true
+  provider: knowledge_graph
+
+knowledge_graph:
+  enabled: true
+  uri: bolt://host.docker.internal:7687
+  user: neo4j
+  # Env-interpolated: container mounts .env which holds the real NEO4J_PASSWORD.
+  password: ${NEO4J_PASSWORD}
+  database: neo4j
+  embeddings:
+    backend: local
+    base_url: http://host.docker.internal:1234/v1
+    model: text-embedding-nomic-embed-text-v1.5
+  capture:
+    sessions: true
+    tool_calls: true
+    user_messages: true
+    assistant_messages: true
+
+mcp_servers:
+  neo4j:
+    command: node
+    args:
+      - /root/.hermes/mcp/neo4j-control/server.mjs
+    env:
+      NEO4J_URL: bolt://host.docker.internal:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      NEO4J_DATABASE: neo4j
+    enabled: true
+  signal-cli:
+    command: python3
+    args:
+      - /root/.hermes/mcp/signal-cli-mcp/server.py
+    env:
+      SIGNAL_CLI_REST_URL: http://host.docker.internal:8080
+      SIGNAL_FROM: +170****5781
+    enabled: true
+
+display:
+  compact: true
+  streaming: false
+  show_cost: false
+
+context:
+  engine: compressor
+
+approvals:
+  mode: auto
+
+code_execution:
+  mode: project
+
+logging:
+  level: INFO
+
+# Auto-router (assistx-router) — OpenAI-compatible endpoint the adapter uses.
+# Lets the agent route through the fleet router instead of a single local model.
+providers:
+  assistx-router:
+    type: openai
+    base_url: http://host.docker.internal:8088/v1
+    api_key: dummy
+    default_model: local/reasoning-large

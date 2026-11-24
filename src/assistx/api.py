@@ -811,6 +811,16 @@ def _neo() -> Neo4jClient:
         _neo_instance.shared = True
     return _neo_instance
 
+
+# Fleet discovery (background thread, every REGISTRY_TTL seconds) must reuse
+# this long-lived shared client instead of constructing a new driver pool.
+# Late import avoids an api <-> fleet import cycle; the provider is lazy.
+try:
+    from .fleet import set_neo_client_provider
+    set_neo_client_provider(_neo)
+except Exception:  # pragma: no cover - enrichment is best-effort
+    pass
+
 _neo_fleet_instance: Optional[Neo4jClient] = None
 _benchmark_controller = BenchmarkController()
 _loadout_control = LoadoutControlPlane()
@@ -2572,6 +2582,7 @@ def api_fleet_dashboard(user: str = Depends(auth)):
     controllers: list[dict[str, Any]] = []
     skill_profiles: list[dict[str, Any]] = []
     kv_cache: dict[str, Any] = {"manifests": [], "summary": {}}
+    context_packets: list[dict[str, Any]] = []
     neo = _neo()
     try:
         with neo._session() as session:
@@ -2595,6 +2606,7 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         controllers = Neo4jControllerStore(neo).list_status()
         skill_profiles = _improvement_cycle.status(neo, limit=500)["profiles"]
         kv_cache = neo.kv_cache_status(limit=500)
+        context_packets = neo.list_context_packets(limit=500)
     except Exception as exc:
         router_errors.append(f"assistx-control-state: {str(exc)[:240]}")
     finally:
@@ -2715,6 +2727,7 @@ def api_fleet_dashboard(user: str = Depends(auth)):
         value_matrix,
         skill_profiles=skill_profiles,
         cache_manifests=kv_cache.get("manifests") or [],
+        context_packets=context_packets,
     )
     diagnoses = [
         diagnose_incident(incident, {"nodes": nodes})

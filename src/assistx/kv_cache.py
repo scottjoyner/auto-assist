@@ -320,3 +320,90 @@ def cache_value(
         "score_bonus": round(bonus, 4),
         "cache_id": manifest.get("cache_id"),
     }
+
+
+# Tier 3: a ContextPacket is a textual summary, not reusable KV tensors. It can
+# avoid part of the prefill but must stay well below a real cache hit (0.18 cap).
+CONTEXT_PACKET_MAX_BONUS = 0.06
+CONTEXT_PACKET_STATUSES = {"READY", "ACTIVE"}
+CONTEXT_PACKET_PREFILL_FRACTION = 0.5
+
+
+def context_packet_match(
+    request: Mapping[str, Any],
+    packets: Iterable[Mapping[str, Any]],
+    *,
+    now_ms: int | None = None,
+) -> dict[str, Any]:
+    """Select the best ContextPacket for the request's prefix/scope.
+
+    Prefix identity is authoritative when present; otherwise fall back to a
+    query_hash link. Privacy scope always has to match (fail closed)."""
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    prefix_id = str(request.get("prefix_id") or "").strip()
+    query_hash = str(request.get("query_hash") or "").strip()
+    privacy_scope = str(request.get("privacy_scope") or "private")
+    scope_id = str(request.get("scope_id") or "")
+    wanted_model = str(request.get("model_id") or "")
+    best = None
+    for packet in packets:
+        p_prefix = str(packet.get("prefix_id") or "").strip()
+        if prefix_id:
+            if p_prefix and p_prefix != prefix_id:
+                continue
+        elif not (query_hash and str(packet.get("query_hash") or "") == query_hash):
+            continue
+        if str(packet.get("privacy_scope") or "private") != privacy_scope:
+            continue
+        if str(packet.get("scope_id") or "") != scope_id:
+            continue
+        if str(packet.get("status") or "") not in CONTEXT_PACKET_STATUSES:
+            continue
+        expiry = packet.get("expires_at_ts")
+        try:
+            expired = expiry not in (None, "") and float(expiry) <= now
+        except (TypeError, ValueError):
+            expired = True  # malformed expiry fails closed
+        if expired:
+            continue
+        model_id = str(packet.get("model_id") or "")
+        if model_id and wanted_model and model_id != wanted_model:
+            continue
+        if best is None or int(packet.get("token_count") or 0) > int(
+            best.get("token_count") or 0
+        ):
+            best = packet
+    if best is None:
+        return {"mode": "miss", "reason": "no_matching_context_packet"}
+    return {"mode": "context_packet", "packet": dict(best)}
+
+
+def context_packet_bonus(
+    match: Mapping[str, Any],
+    *,
+    tokens_per_second: float,
+) -> dict[str, Any]:
+    """Economics for tier 3, deliberately bounded below cache_value's 0.18."""
+    mode = str(match.get("mode") or "miss")
+    packet = match.get("packet") or {}
+    tokens = max(0, int(packet.get("token_count") or 0))
+    rate = max(1.0, float(tokens_per_second or 1.0))
+    avoided_seconds = (
+        tokens / rate * CONTEXT_PACKET_PREFILL_FRACTION
+        if mode == "context_packet"
+        else 0.0
+    )
+    bonus = (
+        min(
+            CONTEXT_PACKET_MAX_BONUS,
+            avoided_seconds / 120.0 * CONTEXT_PACKET_MAX_BONUS,
+        )
+        if mode == "context_packet"
+        else 0.0
+    )
+    return {
+        "mode": mode,
+        "seconds_saved": round(avoided_seconds, 3),
+        "score_bonus": round(bonus, 4),
+        "context_packet_id": packet.get("id"),
+    }

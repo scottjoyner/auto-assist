@@ -4,7 +4,12 @@ import json
 from collections.abc import Iterable
 from typing import Any
 
-from .kv_cache import cache_match, cache_value
+from .kv_cache import (
+    cache_match,
+    cache_value,
+    context_packet_bonus,
+    context_packet_match,
+)
 
 PRIORITY_WEIGHT = {"CRITICAL": 1.0, "HIGH": 0.85, "MEDIUM": 0.55, "LOW": 0.25}
 
@@ -15,6 +20,7 @@ def build_allocation_plan(
     value_matrix: dict[str, Any],
     skill_profiles: Iterable[dict[str, Any]] = (),
     cache_manifests: Iterable[dict[str, Any]] = (),
+    context_packets: Iterable[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     """Rank task/node/model placements using value, urgency, fit, and displacement."""
     ready = [task for task in tasks if task.get("status") == "READY"]
@@ -22,6 +28,7 @@ def build_allocation_plan(
     values = value_matrix.get("entries") or []
     learned_profiles = list(skill_profiles)
     cache_catalog = list(cache_manifests)
+    packet_catalog = list(context_packets)
     recommendations = []
     for task in ready:
         payload = _payload(task)
@@ -107,6 +114,22 @@ def build_allocation_plan(
                         node.get("cache_transfer_mib_per_second") or 100
                     ),
                 )
+                # Tier 3 is consulted only when tiers 1-2 missed.
+                packet_match = (
+                    context_packet_match(
+                        {**cache_request, "model_id": model}, packet_catalog
+                    )
+                    if cache_economics["mode"] == "miss"
+                    else {"mode": "miss"}
+                )
+                packet_bonus = context_packet_bonus(
+                    packet_match,
+                    tokens_per_second=float(
+                        value.get("prefill_tokens_per_second")
+                        or value.get("tokens_per_second")
+                        or 1
+                    ),
+                )
                 affinity_node = str(
                     cache_request.get("affinity_node_id") or ""
                 )
@@ -123,6 +146,7 @@ def build_allocation_plan(
                     + (1 - load) * 0.1
                     + learned_reliability * 0.16
                     + cache_economics["score_bonus"]
+                    + packet_bonus["score_bonus"]
                     + affinity_bonus
                     - displacement
                 )
@@ -151,6 +175,8 @@ def build_allocation_plan(
                         ],
                         "cache_seconds_saved": cache_economics["seconds_saved"],
                         "cache_locality_bonus": cache_economics["score_bonus"],
+                        "context_packet_mode": packet_bonus["mode"],
+                        "context_packet_bonus": packet_bonus["score_bonus"],
                         "session_affinity_bonus": affinity_bonus,
                     },
                 })
