@@ -4,6 +4,18 @@ import pytest
 from assistx import fleet_node_agent as agent
 
 
+def _heartbeat_ack(data):
+    return 200, {"task": {"id": "claimable", "claimed_by": data["agent_id"],
+        "claim_id": data["claim_id"], "agent_session_id": data["session_id"],
+        "status": "RUNNING", "lease_expires_at_ts": int(agent.time.time()*1000)+900000}}
+
+
+def _completion_ack(data, status):
+    return 200, {"task": {"id": "claimable", "status": status,
+        "completed_by": data["agent_id"], "claim_id": data["claim_id"],
+        "agent_session_id": data["session_id"], "run_id": "synthetic-run"}}
+
+
 def poll(monkeypatch, response, *, caps=None):
     requests, claims, statuses = [], [], []
 
@@ -179,10 +191,12 @@ def test_valid_claim_fence_flows_into_completion(monkeypatch):
                 "claim_id": "claim-fenced-123", "task_type": "llm",
                 "payload_json": '{"prompt":"review","model":"m1"}',
                 "agent_session_id": kwargs["data"]["session_id"]}}
+        if url.endswith("/heartbeat"):
+            return _heartbeat_ack(kwargs["data"])
         if url.endswith("/v1/chat/completions"):
             return 200, {"choices": [{"message": {"content": "review successful"}}]}
         if url.endswith("/complete"):
-            return 200, {"task": {"id": "claimable", "status": "DONE"}}
+            return _completion_ack(kwargs["data"], "DONE")
         raise AssertionError(f"Unexpected route: {url}")
 
     monkeypatch.setattr(agent, "_http", fake_http)
@@ -232,11 +246,13 @@ def test_execution_uses_authoritative_claimed_payload_not_stale_ready_entry(monk
                 "agent_session_id": kwargs["data"]["session_id"],
                 "claim_id": "fence-123", "task_type": "llm",
                 "payload_json": '{"prompt":"CURRENT AUTHORIZED REVIEW","model":"model-a"}'}}
+        if url.endswith("/heartbeat"):
+            return _heartbeat_ack(kwargs["data"])
         if url.endswith("/v1/chat/completions"):
             emitted.append(kwargs["data"])
             return 200, {"choices": [{"message": {"content": "done"}}]}
         if url.endswith("/complete"):
-            return 200, {"task": {"id": "claimable", "status": "DONE"}}
+            return _completion_ack(kwargs["data"], "DONE")
         raise AssertionError("Unexpected endpoint")
 
     monkeypatch.setattr(agent, "_http", fake_http)
@@ -275,10 +291,12 @@ def test_http_200_without_generated_answer_must_not_complete_done(monkeypatch, b
                 "agent_session_id": kwargs["data"]["session_id"],
                 "claim_id": "fence-123", "task_type": "llm",
                 "payload_json": '{"prompt":"Review a PR","model":"m1"}'}}
+        if url.endswith("/heartbeat"):
+            return _heartbeat_ack(kwargs["data"])
         if url.endswith("/v1/chat/completions"):
             return 200, body
         if url.endswith("/complete"):
-            return 200, {"task": {"id": "claimable", "status": "FAILED"}}
+            return _completion_ack(kwargs["data"], "FAILED")
         raise AssertionError("Unexpected route")
 
     monkeypatch.setattr(agent, "_http", fake_http)
@@ -312,6 +330,8 @@ def test_unacknowledged_completion_does_not_count_as_work(monkeypatch, code, ack
                 "agent_session_id": kwargs["data"]["session_id"],
                 "claim_id": "fence-1", "task_type": "llm",
                 "payload_json": '{"prompt":"Audit work supply","model":"m1"}'}}
+        if url.endswith("/heartbeat"):
+            return _heartbeat_ack(kwargs["data"])
         if url.endswith("/v1/chat/completions"):
             return 200, {"choices": [{"message": {"content": "Audit complete"}}]}
         if url.endswith("/complete"):
@@ -339,13 +359,15 @@ def test_truncated_or_filtered_text_is_not_a_completed_task(monkeypatch, finish_
                 "agent_session_id": kwargs["data"]["session_id"],
                 "claim_id": "fence-123", "task_type": "llm",
                 "payload_json": '{"prompt":"Review plan","model":"m1"}'}}
+        if url.endswith("/heartbeat"):
+            return _heartbeat_ack(kwargs["data"])
         if url.endswith("/v1/chat/completions"):
             return 200, {"choices": [{
                 "message": {"content": "Partial or filtered output"},
                 "finish_reason": finish_reason}]}
         if url.endswith("/complete"):
             terminal.append(kwargs["data"])
-            return 200, {"task": {"id": "claimable", "status": "FAILED"}}
+            return _completion_ack(kwargs["data"], "FAILED")
         raise AssertionError("Unexpected request")
 
     monkeypatch.setattr(agent, "_http", fake_http)
