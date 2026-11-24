@@ -23,6 +23,7 @@ routes to the intended machine.
 """
 from __future__ import annotations
 
+import copy
 import csv
 import json
 import logging
@@ -52,6 +53,38 @@ REGISTRY_TTL = float(os.getenv("FLEET_REGISTRY_TTL", "5"))
 PROBE_TOKENS = int(os.getenv("FLEET_PROBE_TOKENS", "24"))
 PROBE_COOLDOWN = float(os.getenv("FLEET_PROBE_COOLDOWN", "300"))  # re-probe every 5 min
 PROBE_PER_CYCLE = int(os.getenv("FLEET_PROBE_PER_CYCLE", "3"))   # avoid probe storms
+
+# Neo4j durable-authority discovery is opt-in. A fresh Neo4jClient() creates a
+# new GraphDatabase.driver pool; on the 5s refresh loop that leaked ~12 pools/min.
+# Set ASSISTX_NEO4J_DISCOVERY=1 together with NEO4J_URI to enable enrichment.
+NEO4J_DISCOVERY = os.getenv("ASSISTX_NEO4J_DISCOVERY", "0").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+NEO4J_DISCOVERY_QUERY_LIMIT = max(
+    1, min(int(os.getenv("ASSISTX_NEO4J_DISCOVERY_QUERY_LIMIT", "200")), 500)
+)
+# Strict endpoint admission: unknown/missing status is NOT usable (fail closed).
+NEO_ENDPOINT_STATUSES = {"online", "ready", "available", "active", "admitted"}
+NEO_CAPABILITY_STATUSES = {"active", "approved", "online", "ready", "available"}
+# runtime_kind -> the router prefixes that parse_router_model_id() understands.
+_NEO_RUNTIME_PREFIX = {
+    "lmstudio": "lmstudio", "lm-studio": "lmstudio",
+    "llama_cpp": "llama_cpp", "llamacpp": "llama_cpp", "llama.cpp": "llama_cpp",
+    "vllm": "vllm", "sglang": "sglang",
+    "fastflowlm": "fastflowlm", "fast-flowlm": "fastflowlm",
+    "fast_flow_lm": "fastflowlm", "ollama": "ollama",
+}
+_neo_client_provider = None  # callable[[], Neo4jClient | None] | None
+
+
+def set_neo_client_provider(provider) -> None:
+    """Register the process-wide shared Neo4j client (``api._neo``).
+
+    Discovery must never own a driver pool. The provider is invoked lazily so
+    registering it at import time cannot create a driver before settings load.
+    """
+    global _neo_client_provider
+    _neo_client_provider = provider
 
 # Failure-aware routing: nodes that start failing are demoted for a while (so we
 # stop hammering a sleeping/crashed machine) but automatically recovered once they
@@ -132,6 +165,8 @@ _node_selftask_inflight: Dict[str, int] = {}
 _lock = threading.Lock()
 _nodes: dict = {}          # node -> {"models": {bare: full_id}}
 _model_map: dict = {}      # bare model -> [(node, full_id, bare), ...]
+_router_nodes: dict = {}   # last router-only snapshot (Neo rebuild baseline)
+_router_model_map: dict = {}
 _last_refresh = 0.0
 _lru: dict = {}            # full_id -> last used timestamp (load spreading)
 _node_last_used: dict = {} # node -> last used timestamp (whole-machine idleness)
@@ -501,7 +536,7 @@ def _value_factor(full_id: str, model: str, task_family: str, endpoint: str = ""
 def discover(force: bool = False) -> None:
     """Refresh node/model maps from the router. Cached via TTL; the background
     thread keeps it warm so callers rarely block."""
-    global _nodes, _model_map, _last_refresh
+    global _nodes, _model_map, _last_refresh, _router_nodes, _router_model_map
     # Ingest lms benchmark value data (self-throttled; cheap when fresh). Runs on
     # every discover so the value layer tracks new benchmark runs without a restart.
     _load_value_data()
@@ -535,14 +570,15 @@ def discover(force: bool = False) -> None:
         if (node, full, model) not in existing:
             existing.append((node, full, model))
     with _lock:
+        _router_nodes, _router_model_map = nodes, model_map
         _nodes, _model_map, _last_refresh = nodes, model_map, time.time()
 
     # Best-effort enrichment from the Neo4j durable authority so that endpoints,
     # runtimes, and models registered there (including non-LM-Studio runtimes)
     # are visible to the inference engine even when the auto-router never
-    # advertised them. Guarded by NEO4J_URI so discovery stays fast and
-    # dependency-free when Neo4j is not configured.
-    if os.environ.get("NEO4J_URI"):
+    # advertised them. Opt-in via ASSISTX_NEO4J_DISCOVERY (and NEO4J_URI) so
+    # discovery stays fast and dependency-free by default.
+    if NEO4J_DISCOVERY and os.environ.get("NEO4J_URI"):
         try:
             discover_neo4j()
         except Exception:
@@ -553,24 +589,41 @@ def registry_from_neo4j_rows(
     fleet_nodes=None,
     runtime_instances=None,
     endpoints=None,
+    *,
+    capabilities=None,
+    access_paths=None,
+    now_ms: int | None = None,
 ) -> tuple[dict, dict]:
     """Build a (nodes, model_map) registry fragment from Neo4j durable-authority
     rows, in the same shape produced by :func:`discover`.
 
-    This complements the router-based discovery: any endpoint/runtime/node that
-    is registered in Neo4j (including non-LM-Studio runtimes such as llama.cpp,
-    vLLM, SGLang, FastFlowLM) becomes visible to the inference engine even when
-    the auto-router never advertised it. Pure function: no I/O, no locks."""
+    Admission is strict: only an allowlisted, unexpired endpoint is usable.
+    Capabilities and approved AccessPaths are ingested as node annotations.
+    Pure function: no I/O, no locks."""
     nodes: dict = {}
     model_map: dict = {}
     fleet_nodes = fleet_nodes or []
     runtime_instances = runtime_instances or []
     endpoints = endpoints or []
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+
+    def _not_expired(row: dict) -> bool:
+        raw = row.get("expires_at_ts")
+        if raw in (None, ""):
+            return True  # design decision: no expiry field means no expiry
+        try:
+            return float(raw) > now
+        except (TypeError, ValueError):
+            return False  # malformed expiry fails closed
 
     runtime_by_node: dict[str, str] = {}
+    node_by_runtime: dict[str, str] = {}
     for ri in runtime_instances:
         nid = str(ri.get("node_id") or "").strip()
-        if not nid:
+        rid = str(ri.get("runtime_instance_id") or "").strip()
+        if rid and nid:
+            node_by_runtime[rid] = nid
+        if not nid or not _not_expired(ri):
             continue
         runtime_by_node.setdefault(
             nid, str(ri.get("runtime_kind") or "openai_compatible")
@@ -582,16 +635,26 @@ def registry_from_neo4j_rows(
         if nid:
             nodes.setdefault(nid, {"models": {}})
 
+    # Approved, unexpired AccessPaths are the durable authority for base URLs.
+    approved_urls: dict[str, str] = {}
+    for ap in access_paths or []:
+        if not bool(ap.get("approved")) or not _not_expired(ap):
+            continue
+        url = str(ap.get("base_url") or ap.get("url") or "").strip()
+        rid = str(ap.get("runtime_instance_id") or "").strip()
+        if not url or not rid:
+            continue
+        approved_urls.setdefault(node_by_runtime.get(rid, rid), url)
+
     for ep in endpoints:
         nid = str(ep.get("node_id") or "").strip()
         if not nid:
             continue
-        status = str(ep.get("status") or "").lower()
-        if status and status not in {"online", "ready", "available", "active"}:
-            # Keep unknown/missing status (treat as usable) but skip explicit
-            # offline/deprecated endpoints.
-            if status in {"offline", "down", "disabled", "deprecated", "expired"}:
-                continue
+        status = str(ep.get("status") or "").strip().lower()
+        if status not in NEO_ENDPOINT_STATUSES:
+            continue  # strict allowlist: unknown/missing status is not usable
+        if not _not_expired(ep):
+            continue
         model = str(
             ep.get("model_endpoint_id") or ep.get("model_id") or ""
         ).strip()
@@ -600,15 +663,40 @@ def registry_from_neo4j_rows(
             # fabricate a model entry.
             nodes.setdefault(nid, {"models": {}})
             continue
-        full = str(ep.get("base_url") or ep.get("endpoint_id") or model).strip()
-        if not full:
+        prefix = _NEO_RUNTIME_PREFIX.get(runtime_by_node.get(nid, "").strip().lower())
+        if not prefix:
+            logger.info(
+                "discovery: skipping Neo4j endpoint %s: unmapped runtime %r",
+                ep.get("endpoint_id"), runtime_by_node.get(nid),
+            )
             continue
-        nodes.setdefault(nid, {"models": {}})
-        if model not in nodes[nid]["models"]:
-            nodes[nid]["models"][model] = full
+        # parse_router_model_id() rejects a bare URL, so base_url can never be
+        # a routable model id. Emit a router-shaped id; keep the URL as metadata.
+        full = f"{prefix}-{nid}.{model}"
+        base_url = approved_urls.get(nid) or str(ep.get("base_url") or "").strip()
+        node = nodes.setdefault(nid, {"models": {}})
+        node.setdefault("models", {})
+        node.setdefault("endpoint_urls", {}).setdefault(model, base_url)
+        if model not in node["models"]:
+            node["models"][model] = full
         existing = model_map.setdefault(model, [])
         if (nid, model) not in {(e[0], e[2]) for e in existing}:
             existing.append((nid, full, model))
+
+    for cap in capabilities or []:
+        nid = str(cap.get("node_id") or "").strip()
+        status = str(cap.get("status") or "").strip().lower()
+        if not nid or status not in NEO_CAPABILITY_STATUSES:
+            continue
+        if not _not_expired(cap):
+            continue
+        name = str(cap.get("name") or cap.get("capability_id") or "").strip()
+        if not name:
+            continue
+        node = nodes.setdefault(nid, {"models": {}})
+        caps = node.setdefault("capabilities", [])
+        if name not in caps:
+            caps.append(name)
 
     return nodes, model_map
 
@@ -617,42 +705,76 @@ def discover_neo4j(neo_client=None) -> bool:
     """Best-effort enrichment of the registry from Neo4j durable authority.
 
     Returns True when enrichment ran, False otherwise (client missing/unreachable).
-    Never raises: discovery must keep working when Neo4j is unavailable."""
-    global _nodes, _model_map, _last_refresh
+    Never raises: discovery must keep working when Neo4j is unavailable.
+
+    Prefer the registered shared client (``api._neo``). If none is registered,
+    create a short-lived client and ALWAYS close it in ``finally`` -- never let
+    a per-refresh driver pool survive on the background thread."""
+    global _nodes, _model_map, _last_refresh, _router_nodes, _router_model_map
+    owned_client = False
+    if neo_client is None and _neo_client_provider is not None:
+        try:
+            neo_client = _neo_client_provider()
+        except Exception:
+            neo_client = None
     if neo_client is None:
         try:
             from .neo4j_client import Neo4jClient
 
             neo_client = Neo4jClient()
+            owned_client = True
         except Exception:
             return False
     try:
-        fleet_nodes = neo_client.list_fleet_nodes()
-        runtimes = neo_client.list_runtime_instances()
+        limit = NEO4J_DISCOVERY_QUERY_LIMIT
+        fleet_nodes = neo_client.list_fleet_nodes(limit=limit)
+        runtimes = neo_client.list_runtime_instances(limit=limit)
         endpoints = []
-        endpoints.extend(neo_client.list_service_endpoints())
-        endpoints.extend(neo_client.list_model_endpoints())
+        endpoints.extend(neo_client.list_service_endpoints(limit=limit))
+        endpoints.extend(neo_client.list_model_endpoints(limit=limit))
+        caps = neo_client.list_capabilities(limit=limit)
+        access_paths = neo_client.list_access_paths(limit=limit)
     except Exception:
         return False
+    finally:
+        if owned_client:
+            try:
+                neo_client.close()
+            except Exception:
+                pass
 
     new_nodes, new_map = registry_from_neo4j_rows(
         fleet_nodes=fleet_nodes,
         runtime_instances=runtimes,
         endpoints=endpoints,
+        capabilities=caps,
+        access_paths=access_paths,
     )
-    if not new_nodes and not new_map:
-        return False
     with _lock:
+        # Rebuild from the last router-only snapshot. An additive-only merge
+        # never let offline/expired endpoints leave the registry; rebuilding
+        # each refresh does. discover() re-fetches the router immediately before
+        # this call, so the snapshot is current.
+        merged_nodes = copy.deepcopy(_router_nodes or {})
+        merged_map = {k: list(v) for k, v in (_router_model_map or {}).items()}
         for nid, info in new_nodes.items():
-            base = _nodes.setdefault(nid, {"models": {}})
+            base = merged_nodes.setdefault(nid, {"models": {}})
             base.setdefault("models", {})
             for m, full in (info.get("models") or {}).items():
                 base["models"].setdefault(m, full)
+            for m, url in (info.get("endpoint_urls") or {}).items():
+                base.setdefault("endpoint_urls", {}).setdefault(m, url)
+            node_caps = info.get("capabilities") or []
+            if node_caps:
+                base["capabilities"] = sorted(
+                    set(base.get("capabilities") or []) | set(node_caps)
+                )
         for model, entries in new_map.items():
-            existing = _model_map.setdefault(model, [])
+            existing = merged_map.setdefault(model, [])
             for entry in entries:
                 if entry not in existing:
                     existing.append(entry)
+        _nodes, _model_map = merged_nodes, merged_map
         _last_refresh = time.time()
     return True
 

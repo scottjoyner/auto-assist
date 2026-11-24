@@ -362,6 +362,12 @@ class Neo4jClient:
         session_id: str | None = None,
         max_items: int = 20,
         include_sources: list[str] | None = None,
+        *,
+        prefix_id: str | None = None,
+        privacy_scope: str | None = None,
+        scope_id: str | None = None,
+        model_id: str | None = None,
+        ttl_seconds: int = 3600,
     ) -> dict[str, Any]:
         packet_id = uuid.uuid4().hex
         payload = {
@@ -370,7 +376,20 @@ class Neo4jClient:
             "query_hash": hashlib.sha1(query.encode("utf-8")).hexdigest(),
             "max_items": max_items,
             "include_sources": include_sources or [],
+            "status": "READY",
+            "expires_at_ts": int(time.time() * 1000)
+            + max(1, int(ttl_seconds)) * 1000,
         }
+        # Optional links make the packet eligible for allocation tier 3.
+        # Existing callers keep working unchanged.
+        for key, value in (
+            ("prefix_id", prefix_id),
+            ("privacy_scope", privacy_scope),
+            ("scope_id", scope_id),
+            ("model_id", model_id),
+        ):
+            if value:
+                payload[key] = value
         with self._session() as s:
             q = (
                 "CREATE (p:ContextPacket {id:$id}) "
@@ -1432,6 +1451,29 @@ class Neo4jClient:
             "manifest": dict(row["k"]) if row and row["k"] else None,
         }
 
+    def list_context_packets(
+        self,
+        *,
+        prefix_id: str | None = None,
+        scope_id: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Context packets eligible for allocation tier 3 (catalog read only)."""
+        with self._session() as session:
+            rows = session.run(
+                "MATCH (p:ContextPacket) "
+                "WHERE ($prefix_id = '' OR p.prefix_id = $prefix_id) "
+                "  AND ($scope_id = '' OR p.scope_id = $scope_id) "
+                "RETURN p ORDER BY coalesce(p.created_at_ts, p.updated_at_ts, 0) DESC "
+                "LIMIT $limit",
+                {
+                    "prefix_id": prefix_id or "",
+                    "scope_id": scope_id or "",
+                    "limit": max(1, min(int(limit), 2000)),
+                },
+            )
+            return [dict(row["p"]) for row in rows]
+
     def list_kv_cache_manifests(
         self,
         *,
@@ -1515,6 +1557,20 @@ class Neo4jClient:
                 {"limit": max(1, min(int(limit), 5000))},
             )
             return [dict(r["c"]) for r in rows]
+
+    def list_access_paths(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        """Approved, unexpired AccessPaths -- matches runtime_projection's
+        admission rule so discovery cannot admit a URL that projection rejects."""
+        with self._session() as session:
+            rows = session.run(
+                "MATCH (a:AccessPath) "
+                "WHERE coalesce(a.approved, false) = true "
+                "  AND coalesce(a.expires_at_ts, 0) > timestamp() "
+                "RETURN a ORDER BY a.runtime_instance_id, "
+                "coalesce(a.preference, a.priority, 100) LIMIT $limit",
+                {"limit": max(1, min(int(limit), 2000))},
+            )
+            return [dict(r["a"]) for r in rows]
 
     def kv_cache_status(self, *, limit: int = 500) -> dict[str, Any]:
         manifests = self.list_kv_cache_manifests(active_only=False, limit=limit)
