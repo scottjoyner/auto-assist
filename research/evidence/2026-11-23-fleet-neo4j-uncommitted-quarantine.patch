@@ -1,0 +1,181 @@
+diff --git a/src/assistx/fleet.py b/src/assistx/fleet.py
+index 3222f3dc..1cbd4c6f 100644
+--- a/src/assistx/fleet.py
++++ b/src/assistx/fleet.py
+@@ -537,6 +537,125 @@ def discover(force: bool = False) -> None:
+     with _lock:
+         _nodes, _model_map, _last_refresh = nodes, model_map, time.time()
+ 
++    # Best-effort enrichment from the Neo4j durable authority so that endpoints,
++    # runtimes, and models registered there (including non-LM-Studio runtimes)
++    # are visible to the inference engine even when the auto-router never
++    # advertised them. Guarded by NEO4J_URI so discovery stays fast and
++    # dependency-free when Neo4j is not configured.
++    if os.environ.get("NEO4J_URI"):
++        try:
++            discover_neo4j()
++        except Exception:
++            pass
++
++
++def registry_from_neo4j_rows(
++    fleet_nodes=None,
++    runtime_instances=None,
++    endpoints=None,
++) -> tuple[dict, dict]:
++    """Build a (nodes, model_map) registry fragment from Neo4j durable-authority
++    rows, in the same shape produced by :func:`discover`.
++
++    This complements the router-based discovery: any endpoint/runtime/node that
++    is registered in Neo4j (including non-LM-Studio runtimes such as llama.cpp,
++    vLLM, SGLang, FastFlowLM) becomes visible to the inference engine even when
++    the auto-router never advertised it. Pure function: no I/O, no locks."""
++    nodes: dict = {}
++    model_map: dict = {}
++    fleet_nodes = fleet_nodes or []
++    runtime_instances = runtime_instances or []
++    endpoints = endpoints or []
++
++    runtime_by_node: dict[str, str] = {}
++    for ri in runtime_instances:
++        nid = str(ri.get("node_id") or "").strip()
++        if not nid:
++            continue
++        runtime_by_node.setdefault(
++            nid, str(ri.get("runtime_kind") or "openai_compatible")
++        )
++        nodes.setdefault(nid, {"models": {}})
++
++    for fn in fleet_nodes:
++        nid = str(fn.get("node_id") or "").strip()
++        if nid:
++            nodes.setdefault(nid, {"models": {}})
++
++    for ep in endpoints:
++        nid = str(ep.get("node_id") or "").strip()
++        if not nid:
++            continue
++        status = str(ep.get("status") or "").lower()
++        if status and status not in {"online", "ready", "available", "active"}:
++            # Keep unknown/missing status (treat as usable) but skip explicit
++            # offline/deprecated endpoints.
++            if status in {"offline", "down", "disabled", "deprecated", "expired"}:
++                continue
++        model = str(
++            ep.get("model_endpoint_id") or ep.get("model_id") or ""
++        ).strip()
++        if not model:
++            # Non-model service endpoint: ensure the node exists but do not
++            # fabricate a model entry.
++            nodes.setdefault(nid, {"models": {}})
++            continue
++        full = str(ep.get("base_url") or ep.get("endpoint_id") or model).strip()
++        if not full:
++            continue
++        nodes.setdefault(nid, {"models": {}})
++        if model not in nodes[nid]["models"]:
++            nodes[nid]["models"][model] = full
++        existing = model_map.setdefault(model, [])
++        if (nid, model) not in {(e[0], e[2]) for e in existing}:
++            existing.append((nid, full, model))
++
++    return nodes, model_map
++
++
++def discover_neo4j(neo_client=None) -> bool:
++    """Best-effort enrichment of the registry from Neo4j durable authority.
++
++    Returns True when enrichment ran, False otherwise (client missing/unreachable).
++    Never raises: discovery must keep working when Neo4j is unavailable."""
++    global _nodes, _model_map, _last_refresh
++    if neo_client is None:
++        try:
++            from .neo4j_client import Neo4jClient
++
++            neo_client = Neo4jClient()
++        except Exception:
++            return False
++    try:
++        fleet_nodes = neo_client.list_fleet_nodes()
++        runtimes = neo_client.list_runtime_instances()
++        endpoints = []
++        endpoints.extend(neo_client.list_service_endpoints())
++        endpoints.extend(neo_client.list_model_endpoints())
++    except Exception:
++        return False
++
++    new_nodes, new_map = registry_from_neo4j_rows(
++        fleet_nodes=fleet_nodes,
++        runtime_instances=runtimes,
++        endpoints=endpoints,
++    )
++    if not new_nodes and not new_map:
++        return False
++    with _lock:
++        for nid, info in new_nodes.items():
++            base = _nodes.setdefault(nid, {"models": {}})
++            base.setdefault("models", {})
++            for m, full in (info.get("models") or {}).items():
++                base["models"].setdefault(m, full)
++        for model, entries in new_map.items():
++            existing = _model_map.setdefault(model, [])
++            for entry in entries:
++                if entry not in existing:
++                    existing.append(entry)
++        _last_refresh = time.time()
++    return True
++
+ 
+ def _ensure_refresh_thread() -> None:
+     global _refresh_thread, _refresh_started
+diff --git a/src/assistx/neo4j_client.py b/src/assistx/neo4j_client.py
+index 4e1af8e0..89514bd6 100644
+--- a/src/assistx/neo4j_client.py
++++ b/src/assistx/neo4j_client.py
+@@ -1463,6 +1463,46 @@ class Neo4jClient:
+                 result.append(item)
+             return result
+ 
++    def list_fleet_nodes(self, *, limit: int = 500) -> list[dict[str, Any]]:
++        with self._session() as session:
++            rows = session.run(
++                "MATCH (n:FleetNode) RETURN n ORDER BY n.node_id LIMIT $limit",
++                {"limit": max(1, min(int(limit), 2000))},
++            )
++            return [dict(r["n"]) for r in rows]
++
++    def list_runtime_instances(self, *, limit: int = 500) -> list[dict[str, Any]]:
++        with self._session() as session:
++            rows = session.run(
++                "MATCH (r:RuntimeInstance) RETURN r ORDER BY r.runtime_instance_id LIMIT $limit",
++                {"limit": max(1, min(int(limit), 2000))},
++            )
++            return [dict(r["r"]) for r in rows]
++
++    def list_service_endpoints(self, *, limit: int = 500) -> list[dict[str, Any]]:
++        with self._session() as session:
++            rows = session.run(
++                "MATCH (e:ServiceEndpoint) RETURN e ORDER BY e.endpoint_id LIMIT $limit",
++                {"limit": max(1, min(int(limit), 2000))},
++            )
++            return [dict(r["e"]) for r in rows]
++
++    def list_model_endpoints(self, *, limit: int = 500) -> list[dict[str, Any]]:
++        with self._session() as session:
++            rows = session.run(
++                "MATCH (e:ModelEndpoint) RETURN e ORDER BY e.endpoint_id LIMIT $limit",
++                {"limit": max(1, min(int(limit), 2000))},
++            )
++            return [dict(r["e"]) for r in rows]
++
++    def list_capabilities(self, *, limit: int = 2000) -> list[dict[str, Any]]:
++        with self._session() as session:
++            rows = session.run(
++                "MATCH (c:Capability) RETURN c ORDER BY c.capability_id LIMIT $limit",
++                {"limit": max(1, min(int(limit), 5000))},
++            )
++            return [dict(r["c"]) for r in rows]
++
+     def kv_cache_status(self, *, limit: int = 500) -> dict[str, Any]:
+         manifests = self.list_kv_cache_manifests(active_only=False, limit=limit)
+         active = [
