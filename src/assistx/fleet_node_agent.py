@@ -50,6 +50,7 @@ from .lm_studio_client_auth import headers_for_request
 from .recovery_runbooks import RecoveryRunbookExecutor
 
 DEFAULT_CAPS = ["script"]
+_LEASE_HEARTBEAT_INTERVAL = 15
 
 
 class _RejectPrivilegedRedirect(urllib.request.HTTPRedirectHandler):
@@ -611,18 +612,47 @@ def _claim_and_run(
     task = claimed_task
 
     stop_heartbeat = threading.Event()
+    lease_lost = threading.Event()
 
-    def _heartbeat() -> None:
-        while not stop_heartbeat.wait(15):
-            _http(
+    def _renew_lease() -> bool:
+        if lease_lost.is_set():
+            return False
+        try:
+            code, body = _http(
                 "POST",
                 f"{assistx_url.rstrip('/')}/api/tasks/{task_id}/heartbeat",
                 auth=auth,
                 data={"node_id": node_id, "agent_id": node_id,
-                      "claim_id": claim_id, "session_id": session_id},
+                      "claim_id": claim_id, "session_id": session_id,
+                      "status": "RUNNING", "lease_seconds": 900},
                 timeout=10,
             )
+            ack = body.get("task") if isinstance(body, dict) else None
+            expires = ack.get("lease_expires_at_ts") if isinstance(ack, dict) else None
+            verified = (code == 200 and isinstance(ack, dict)
+                        and ack.get("id") == task_id
+                        and ack.get("claimed_by") == node_id
+                        and ack.get("claim_id") == claim_id
+                        and ack.get("agent_session_id") == session_id
+                        and ack.get("status") == "RUNNING"
+                        and type(expires) is int
+                        and expires > int(time.time() * 1000))
+        except Exception:
+            # Any unverifiable renewal is a hold, not authority to retry.
+            verified = False
+        if not verified:
+            lease_lost.set()
+            stop_heartbeat.set()
+        return verified
 
+    def _heartbeat() -> None:
+        while not stop_heartbeat.wait(_LEASE_HEARTBEAT_INTERVAL):
+            if not _renew_lease():
+                return
+
+    # No inference before a positive, attributable lease witness.
+    if not _renew_lease():
+        return False
     heartbeat = threading.Thread(target=_heartbeat, daemon=True)
     heartbeat.start()
 
@@ -678,7 +708,8 @@ def _claim_and_run(
                     except (json.JSONDecodeError, TypeError):
                         raw_payload = {}
                 if isinstance(raw_payload, dict) and raw_payload.get("benchmark"):
-                    result = execute_task(task, lmstudio_url, workdir=".", node_id=node_id)
+                    result = execute_task(task, lmstudio_url, workdir=".", node_id=node_id,
+                                          should_stop=lease_lost.is_set)
                     success = result.get("status") == "DONE"
                 else:
                     prompt = str(
@@ -694,6 +725,8 @@ def _claim_and_run(
                         "messages": [{"role": "user", "content": prompt}],
                         "stream": False,
                     }
+                    if lease_lost.is_set():
+                        return False
                     llm_status, body = _http(
                         "POST",
                         f"{lmstudio_url.rstrip('/')}/v1/chat/completions",
@@ -725,6 +758,12 @@ def _claim_and_run(
         stop_heartbeat.set()
         heartbeat.join(timeout=1)
 
+    # An in-flight blocking inference request may not be cancellable by this
+    # client. Discard its result on lost authority; no follow-on case or
+    # terminal mutation. An unresolved heartbeat must not race completion.
+    if heartbeat.is_alive() or lease_lost.is_set() or not _renew_lease():
+        return False
+
     # AssistX exposes a single completion endpoint; failures are reported via
     # POST /complete with status=FAILED (no separate /fail route exists).
     requested_terminal = "DONE" if success else "FAILED"
@@ -745,7 +784,12 @@ def _claim_and_run(
     acknowledged_task = completion.get("task") if isinstance(completion, dict) else None
     if (completion_status != 200 or not isinstance(acknowledged_task, dict)
             or acknowledged_task.get("id") != task_id
-            or acknowledged_task.get("status") != requested_terminal):
+            or acknowledged_task.get("status") != requested_terminal
+            or acknowledged_task.get("completed_by") != node_id
+            or acknowledged_task.get("claim_id") != claim_id
+            or acknowledged_task.get("agent_session_id") != session_id
+            or not isinstance(acknowledged_task.get("run_id"), str)
+            or not acknowledged_task["run_id"].strip()):
         # A generated answer is not a committed task. Never claim success
         # without the authoritative terminal receipt or blindly replay work.
         return False
