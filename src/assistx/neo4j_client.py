@@ -1501,6 +1501,10 @@ class Neo4jClient:
     ) -> dict[str, Any] | None:
         if status and status not in EXECUTABLE_TASK_STATUSES:
             raise ValueError(f"Unsupported task status: {status}")
+        if lease_seconds is not None and (
+            type(lease_seconds) is not int or not 1 <= lease_seconds <= 900
+        ):
+            return None
         props = {
             "heartbeat_by": agent_id,
             "heartbeat_metadata_json": json.dumps(metadata or {}),
@@ -1513,12 +1517,12 @@ class Neo4jClient:
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
-                WHERE coalesce(t.execution_attempt, 0)=0
-                   OR (
-                     t.claimed_by=$agent_id
-                     AND ($claim_id IS NULL OR t.claim_id=$claim_id)
-                     AND t.status IN ['CLAIMED','RUNNING','PAUSING']
-                   )
+                WHERE coalesce(t.machine_authorized,false)=false
+                  AND t.status IN ['CLAIMED','RUNNING','PAUSING']
+                  AND t.claimed_by=$agent_id
+                  AND ($claim_id IS NULL OR t.claim_id=$claim_id)
+                  AND ($session_id IS NULL OR t.agent_session_id=$session_id)
+                  AND t.lease_expires_at_ts>timestamp()
                 SET t += $props,
                     t.status = CASE
                       WHEN t.status='PAUSING' THEN t.status
@@ -1536,6 +1540,7 @@ class Neo4jClient:
                     "task_id": task_id,
                     "agent_id": agent_id,
                     "claim_id": claim_id,
+                    "session_id": session_id,
                     "props": props,
                     "status": status,
                     "lease_seconds": lease_seconds,

@@ -28,6 +28,55 @@ MEMORY_RETENTION_DAYS = int(os.getenv("MEMORY_RETENTION_DAYS", "90"))
 STALE_CLAIM_REAP_SECONDS = int(os.getenv("STALE_CLAIM_REAP_SECONDS", "600"))
 
 
+# The RQ maintenance job and independent daemon loop MUST use one identical
+# predicate. This is legacy cleanup, not an approved machine Task revoker.
+_STALE_CLAIM_REAP_CYPHER = """
+MATCH (t:Task)
+WHERE coalesce(t.machine_authorized,false)=false
+  AND (
+    (
+      toUpper(coalesce(t.status,'')) IN ['CLAIMED','RUNNING']
+      AND t.lease_expires_at_ts IS NOT NULL
+      AND t.lease_expires_at_ts<timestamp()
+    ) OR (
+      toUpper(coalesce(t.status,''))='CLAIMED_PASSIVE'
+      AND t.passive_claim_expires_at_ts IS NOT NULL
+      AND t.passive_claim_expires_at_ts<timestamp()
+    )
+  )
+WITH t LIMIT 2000
+SET t.status='READY',
+    t.claimed_by=null,
+    t.agent_session_id=null,
+    t.claim_id=null,
+    t.claimed_at_ts=null,
+    t.lease_expires_at_ts=null,
+    t.last_heartbeat_ts=null,
+    t.last_heartbeat_at_ts=null,
+    t.last_passive_claim_result='expired_stale_reaped',
+    t.updated_at=datetime(),
+    t.updated_at_ts=timestamp()
+REMOVE t.passive_claim_id,
+       t.passive_claim_agent_id,
+       t.passive_claim_lease_id,
+       t.passive_claim_mode,
+       t.passive_claimed_at,
+       t.passive_claimed_at_ts,
+       t.passive_claim_expires_at_ts
+RETURN count(t) AS reaped
+"""
+
+
+def _reap_stale_claims(session) -> int:
+    """Reap only expired legacy leases; never infer missing lease authority.
+
+    The caller's transaction must keep this mutation separate from any
+    machine-authorized Task transition. Return count only; no Task payload.
+    """
+    record = session.run(_STALE_CLAIM_REAP_CYPHER).single()
+    return int(record['reaped'] if record else 0)
+
+
 def maintenance_job() -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "tasks_deleted": 0,
@@ -43,38 +92,14 @@ def maintenance_job() -> Dict[str, Any]:
             # heartbeat beyond the lease window get reset to READY so the
             # fleet can re-acquire them. Prevents dead work from piling up.
             try:
-                reap = s.run(
-                    """
-                    MATCH (t:Task)
-                    WHERE toUpper(coalesce(t.status, '')) IN ['CLAIMED','RUNNING','CLAIMED_PASSIVE']
-                      AND coalesce(t.passive_claim_expires_at_ts,
-                                   t.lease_expires_at_ts,
-                                   coalesce(t.last_heartbeat_ts, t.last_heartbeat_at_ts, t.claimed_at_ts, 0) + $lease*1000, 0) < timestamp()
-                    WITH t LIMIT 2000
-                    SET t.status = 'READY',
-                        t.claimed_by = null,
-                        t.claimed_at_ts = null,
-                        t.lease_expires_at_ts = null,
-                        t.last_heartbeat_ts = null,
-                        t.last_passive_claim_result = 'expired_stale_reaped'
-                    REMOVE t.passive_claim_id,
-                           t.passive_claim_agent_id,
-                           t.passive_claim_lease_id,
-                           t.passive_claim_mode,
-                           t.passive_claimed_at,
-                           t.passive_claimed_at_ts,
-                           t.passive_claim_expires_at_ts
-                    RETURN count(t) AS reaped
-                    """,
-                    {"lease": STALE_CLAIM_REAP_SECONDS},
-                ).single()
-                result["stale_claims_reaped"] = int(reap["reaped"] if reap else 0)
+                result["stale_claims_reaped"] = _reap_stale_claims(s)
             except Exception as e:
                 logger.warning("stale claim reap failed: %s", e)
             rec1 = s.run(
                 """
                 MATCH (t:Task)
                 WHERE t.status IN ['DONE','FAILED','CANCELLED']
+                  AND coalesce(t.machine_authorized,false)=false
                   AND coalesce(t.updated_at_ts, t.completed_at_ts, t.created_at_ts, 0) <
                       timestamp() - ($days * 24 * 60 * 60 * 1000)
                 WITH t LIMIT 5000
@@ -148,32 +173,7 @@ def run_stale_claim_reaper_loop() -> None:
                 neo = Neo4jClient()
                 try:
                     with neo._session() as s:
-                        reap = s.run(
-                        """
-                        MATCH (t:Task)
-                        WHERE toUpper(coalesce(t.status, '')) IN ['CLAIMED','RUNNING','CLAIMED_PASSIVE']
-                          AND coalesce(t.passive_claim_expires_at_ts,
-                                       t.lease_expires_at_ts,
-                                       coalesce(t.last_heartbeat_ts, t.last_heartbeat_at_ts, t.claimed_at_ts, 0) + $lease*1000, 0) < timestamp()
-                        WITH t LIMIT 2000
-                        SET t.status = 'READY',
-                            t.claimed_by = null,
-                            t.claimed_at_ts = null,
-                            t.lease_expires_at_ts = null,
-                            t.last_heartbeat_ts = null,
-                            t.last_passive_claim_result = 'expired_stale_reaped'
-                        REMOVE t.passive_claim_id,
-                               t.passive_claim_agent_id,
-                               t.passive_claim_lease_id,
-                               t.passive_claim_mode,
-                               t.passive_claimed_at,
-                               t.passive_claimed_at_ts,
-                               t.passive_claim_expires_at_ts
-                        RETURN count(t) AS reaped
-                        """,
-                        {"lease": STALE_CLAIM_REAP_SECONDS},
-                    ).single()
-                    reaped = int(reap["reaped"] if reap else 0)
+                        reaped = _reap_stale_claims(s)
                     if reaped:
                         logger.info("stale claim reaper reset %d task(s) to READY", reaped)
                 finally:
