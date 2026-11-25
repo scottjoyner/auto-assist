@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from assistx import intent_orchestrator as io
 from assistx import my_jev_policy
 from assistx.system_one_receipt import (
     SHADOW_BINDING_SCHEMA,
@@ -264,7 +263,7 @@ def test_missing_receipt_is_compatible_by_default(monkeypatch):
     assert evidence["receipt_evidence"] is None
 
 
-def test_non_object_receipt_fails_closed_inside_observer_job(
+def test_non_object_receipt_rejected_before_shadow_recording(
     monkeypatch,
 ):
     monkeypatch.setenv(
@@ -282,34 +281,21 @@ def test_non_object_receipt_fails_closed_inside_observer_job(
                 "decision_receipt": "not-an-object",
             }
 
-    class _Neo:
-        def __init__(self):
-            self.recorded = []
-
-        def record_intent_policy_shadow(
-            self,
-            intent_id,
-            evidence,
-        ):
-            self.recorded.append(
-                (intent_id, evidence)
-            )
-
     monkeypatch.setattr(
         my_jev_policy.requests,
         "post",
         lambda *args, **kwargs: _Response(),
     )
-    neo = _Neo()
-    io._record_my_jev_policy_shadow(
-        neo,
-        {
-            "id": "intent-malformed-receipt",
-            "text": "hello",
-        },
-    )
-
-    assert neo.recorded == []
+    # There is no live observer-job persistence hook in intent_orchestrator.
+    # Invalid receipt input must be rejected by the actual policy contract,
+    # before any caller could choose to persist its output.
+    with pytest.raises(ValueError, match="must be a JSON object"):
+        my_jev_policy.request_policy_shadow(
+            {
+                "id": "intent-malformed-receipt",
+                "text": "hello",
+            }
+        )
 
 
 def test_offline_acceptance_harness_validates_expected_identity(
@@ -522,7 +508,7 @@ def test_shadow_policy_rejects_configured_receipt_identity_mismatch(
         )
 
 
-def test_receipt_identity_mismatch_is_contained_inside_observer_job(
+def test_receipt_identity_mismatch_rejected_before_shadow_recording(
     monkeypatch,
 ):
     monkeypatch.setenv(
@@ -544,31 +530,25 @@ def test_receipt_identity_mismatch_is_contained_inside_observer_job(
                 "decision_receipt": receipt(),
             }
 
-    class _Neo:
-        def __init__(self):
-            self.recorded = []
-
-        def record_intent_policy_shadow(
-            self,
-            intent_id,
-            evidence,
-        ):
-            self.recorded.append(
-                (intent_id, evidence)
-            )
-
     monkeypatch.setattr(
         my_jev_policy.requests,
         "post",
         lambda *args, **kwargs: _Response(),
     )
-    neo = _Neo()
-    io._record_my_jev_policy_shadow(
-        neo,
-        {
-            "id": "intent-identity-observer",
-            "text": "hello",
-        },
-    )
+    with pytest.raises(ValueError, match="provider_id"):
+        my_jev_policy.request_policy_shadow(
+            {
+                "id": "intent-identity-observer",
+                "text": "hello",
+            }
+        )
 
-    assert neo.recorded == []
+
+def test_shadow_disabled_cannot_make_policy_network_request(monkeypatch):
+    monkeypatch.setenv("MY_JEV_POLICY_SHADOW_ENABLED", "false")
+    def unexpected_network_call(*_args, **_kwargs):
+        raise AssertionError("network call when shadow is disabled")
+    monkeypatch.setattr(my_jev_policy.requests, "post", unexpected_network_call)
+    assert my_jev_policy.request_policy_shadow(
+        {"id": "intent-disabled", "text": "hello"}
+    ) is None
