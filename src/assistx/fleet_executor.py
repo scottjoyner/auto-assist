@@ -511,15 +511,92 @@ class FleetExecutor:
             result_queue.close()
 
     @staticmethod
+    def _router_accounting(body: dict[str, Any], status_code: int) -> dict[str, Any]:
+        """Evidence only: router-reported counts are not verified work or billing.
+
+        Never coerce strings, booleans, floats or negative counts into tokens.
+        Missing counts remain null; a partial report is never a measured total.
+        """
+        usage = body.get("usage")
+        counts = {}
+        issues = []
+        ceiling = (1 << 63) - 1
+        for name in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = usage.get(name) if isinstance(usage, dict) else None
+            if value is None:
+                counts[name] = None
+            elif type(value) is int and 0 <= value <= ceiling:
+                counts[name] = value
+            else:
+                counts[name] = None
+                issues.append("invalid_" + name)
+        if usage is not None and not isinstance(usage, dict):
+            issues.append("invalid_usage_object")
+        prompt = counts["prompt_tokens"]
+        completion = counts["completion_tokens"]
+        supplied_total = counts["total_tokens"]
+        total = None
+        if prompt is not None and completion is not None:
+            if prompt + completion > ceiling:
+                issues.append("token_sum_overflow")
+            elif supplied_total is not None and supplied_total != prompt + completion:
+                issues.append("inconsistent_total_tokens")
+            elif not issues:
+                total = prompt + completion
+        if issues:
+            usage_state = "INVALID"
+            total = None
+        elif total is not None:
+            usage_state = "COMPLETE_REPORTED"
+        elif any(value is not None for value in counts.values()):
+            usage_state = "PARTIAL_REPORTED"
+        else:
+            usage_state = "NOT_REPORTED"
+
+        choices = body.get("choices")
+        first = choices[0] if isinstance(choices, list) and choices else None
+        message = first.get("message") if isinstance(first, dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        finish = first.get("finish_reason") if isinstance(first, dict) else None
+        if status_code != 200:
+            response_state = "HTTP_NOT_SUCCESS"
+        elif not isinstance(content, str) or not content.strip():
+            response_state = "NO_NONEMPTY_TEXT"
+        elif finish == "stop":
+            response_state = "TEXT_STOP_REPORTED"
+        elif finish == "length":
+            response_state = "TEXT_TRUNCATED_REPORTED"
+        elif finish is None:
+            response_state = "TEXT_FINISH_UNKNOWN"
+        else:
+            response_state = "TEXT_OTHER_FINISH"
+        return {
+            "schema": "fleet-router-response-accounting-v1",
+            "usage_state": usage_state,
+            "reported_prompt_tokens": prompt,
+            "reported_completion_tokens": completion,
+            "reported_total_tokens": supplied_total,
+            "reconciled_reported_total_tokens": total,
+            "issues": issues,
+            "response_state": response_state,
+            "provider_execution_verified": False,
+            "independent_quality_verified": False,
+            "accepted_work_units": None,
+            "billing_verified": False,
+        }
+
+    @staticmethod
     def _result_from_router(response: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         status_code = int(response.get("status_code") or 0)
         body = response.get("body")
         if not isinstance(body, dict):
             body = {"response": body}
+        accounting = FleetExecutor._router_accounting(body, status_code)
         if status_code != 200:
             return "FAILED", {
                 "exit_code": 1,
                 "status_code": status_code,
+                "response_accounting": accounting,
                 "error": body,
             }
         choices = body.get("choices") or []
@@ -532,12 +609,14 @@ class FleetExecutor:
             return "FAILED", {
                 "exit_code": 1,
                 "status_code": status_code,
+                "response_accounting": accounting,
                 "error": "empty_response",
                 "router_response": body,
             }
         return "DONE", {
             "exit_code": 0,
             "status_code": status_code,
+            "response_accounting": accounting,
             "content": content,
             "model": body.get("model"),
             "usage": body.get("usage") or {},
