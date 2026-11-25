@@ -78,3 +78,10 @@ def test_workbench_template_keeps_instrumentation_separate_from_chat():
     assert 'data-tab="execution"' in template
     assert 'data-tab="sessions"' in template
     assert 'data-tab="fleet"' in template
+    # A prior Jinja extends to a parent with no `content` block silently
+    # rendered Control Room rather than the actual chat surface.
+    assert '{% extends "base.html" %}' not in template
+    assert '<title>AssistX // Agent Workbench</title>' in template
+    assert 'id="workbench-messages"' in template
+    assert 'id="workbench-composer"' in template
+    assert '/static/js/workbench.js' in template
