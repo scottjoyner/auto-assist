@@ -47,6 +47,11 @@ def maintenance_job() -> Dict[str, Any]:
                     """
                     MATCH (t:Task)
                     WHERE toUpper(coalesce(t.status, '')) IN ['CLAIMED','RUNNING','CLAIMED_PASSIVE']
+                      AND NOT (
+                        coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                      )
                       AND coalesce(t.passive_claim_expires_at_ts,
                                    t.lease_expires_at_ts,
                                    coalesce(t.last_heartbeat_ts, t.last_heartbeat_at_ts, t.claimed_at_ts, 0) + $lease*1000, 0) < timestamp()
@@ -75,6 +80,11 @@ def maintenance_job() -> Dict[str, Any]:
                 """
                 MATCH (t:Task)
                 WHERE t.status IN ['DONE','FAILED','CANCELLED']
+                      AND NOT (
+                        coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                      )
                   AND coalesce(t.updated_at_ts, t.completed_at_ts, t.created_at_ts, 0) <
                       timestamp() - ($days * 24 * 60 * 60 * 1000)
                 WITH t LIMIT 5000
@@ -152,6 +162,11 @@ def run_stale_claim_reaper_loop() -> None:
                         """
                         MATCH (t:Task)
                         WHERE toUpper(coalesce(t.status, '')) IN ['CLAIMED','RUNNING','CLAIMED_PASSIVE']
+                      AND NOT (
+                        coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                        OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                      )
                           AND coalesce(t.passive_claim_expires_at_ts,
                                        t.lease_expires_at_ts,
                                        coalesce(t.last_heartbeat_ts, t.last_heartbeat_at_ts, t.claimed_at_ts, 0) + $lease*1000, 0) < timestamp()

@@ -29,7 +29,12 @@ class FakeSession:
     def run(self,query,params):
         self.calls.append((query,params))
         assert "LIMIT $limit" in query
-        assert "t.claimed_by=$agent OR t.target_agent_id=$agent" in query
+        for field in (
+            "claimed_by", "target_agent_id", "completed_by", "heartbeat_by",
+            "failed_by", "paused_from_agent_id", "migration_target_agent_id",
+            "passive_claim_agent_id", "last_passive_claim_agent_id",
+        ):
+            assert f"t.{field}=$agent" in query
         return iter(self.scans.pop(0)[:params["limit"]])
 
 
@@ -134,6 +139,38 @@ class CensusFixtureTests(unittest.TestCase):
         self.assertFalse(out["bounded_double_scan_stable"])
         self.assertEqual(out["reason"],"incomplete_or_unqualified_source_claim_inventory")
         self.assertNotIn("synthetic connection failure",str(out))
+
+
+    def test_all_source_owner_lineage_identifiers_are_present_in_query(self):
+        fields = (
+            "claimed_by", "target_agent_id", "completed_by", "heartbeat_by",
+            "failed_by", "paused_from_agent_id", "migration_target_agent_id",
+            "passive_claim_agent_id", "last_passive_claim_agent_id",
+        )
+        for field in fields:
+            with self.subTest(field=field):
+                self.assertIn(f"t.{field}=$agent", c.QUERY)
+                self.assertNotIn(f"t.{field}=$agent", c.QUERY.replace(
+                    f"t.{field}=$agent", "false", 1))
+
+    def test_historical_owner_without_current_claim_is_not_false_complete(self):
+        # FakeSession supplies the row already returned by the widened
+        # physical query; erased claimed_by/claim_id must invalidate it.
+        for field in ("completed_by", "heartbeat_by", "failed_by",
+                      "paused_from_agent_id", "migration_target_agent_id",
+                      "passive_claim_agent_id", "last_passive_claim_agent_id"):
+            with self.subTest(field=field):
+                historical = task(17)
+                historical["claimed_by"] = None
+                historical["target_agent_id"] = None
+                historical["claim_id"] = None
+                historical["session_id"] = None
+                historical["status"] = "DONE"
+                out, _ = self.get([[historical], [historical]])
+                self.assertFalse(out["bounded_double_scan_stable"])
+                self.assertEqual(
+                    out["reason"], "incomplete_or_unqualified_source_claim_inventory")
+                self.assertFalse(out["authoritative_complete_census"])
 
     def test_synthetic_rollback_aba_is_not_proven_safe(self):
         row=task(1)

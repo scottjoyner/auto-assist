@@ -19,14 +19,22 @@ VALID_STATES = frozenset({"CLAIMED", "RUNNING", "PAUSING", "READY",
 ACTIVE = frozenset({"CLAIMED", "RUNNING", "PAUSING"})
 IDENTITY = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
-# Include claimless active records assigned to Hermes: silently dropping
-# them would yield a false "complete" claim list. Also include residual
-# claim IDs on terminal tasks so an old claim cannot vanish without notice.
+# Include all observable Hermes-owner lineage, even terminal Tasks with
+# erased claimed_by, target_agent_id, claim_id or session. Such ambiguous
+# records must make the bounded candidate fail closed, not disappear from
+# both read-committed passes. This is NOT a historical source-generation
+# proof; an independently anchored owner ledger remains required.
 QUERY = """
 MATCH (t:Task)
-WHERE (t.claimed_by=$agent OR t.target_agent_id=$agent)
-  AND (t.status IN ['CLAIMED','RUNNING','PAUSING']
-       OR t.claim_id IS NOT NULL)
+WHERE t.claimed_by=$agent
+   OR t.target_agent_id=$agent
+   OR t.completed_by=$agent
+   OR t.heartbeat_by=$agent
+   OR t.failed_by=$agent
+   OR t.paused_from_agent_id=$agent
+   OR t.migration_target_agent_id=$agent
+   OR t.passive_claim_agent_id=$agent
+   OR t.last_passive_claim_agent_id=$agent
 RETURN t.id AS task_id, t.claimed_by AS claimed_by,
        t.target_agent_id AS target_agent_id,
        t.claim_id AS claim_id, t.agent_session_id AS session_id,

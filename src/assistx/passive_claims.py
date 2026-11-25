@@ -325,7 +325,24 @@ def _tx_claim_passive_task(tx: Any, body: PassiveClaimIn, claim_id: str, now_ms:
         """
         MATCH (t:Task)
         WHERE coalesce(t.id, t.task_id) = $task_id
-          AND toUpper(coalesce(t.status, 'READY')) IN ['READY','REVIEW']
+        // This generic passive review writer is not Hermes owner-authoritative.
+        // Lock the exact Task, then validate current owner and claim state.
+        SET t.hermes_fence_check_epoch =
+            coalesce(t.hermes_fence_check_epoch, 0) + 1
+        WITH t
+        WHERE toUpper(coalesce(t.status, 'READY')) IN ['READY','REVIEW']
+          AND NOT (coalesce($agent_id, '') STARTS WITH 'hermes-')
+          AND NOT (
+            coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+            OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+            OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+            OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+            OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+            OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+            OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+            OR coalesce(t.passive_claim_agent_id, '') STARTS WITH 'hermes-'
+            OR coalesce(t.last_passive_claim_agent_id, '') STARTS WITH 'hermes-'
+          )
         SET t.previous_status = t.status,
             t.status = 'CLAIMED_PASSIVE',
             t.passive_claim_id = $claim_id,
@@ -367,10 +384,27 @@ def _tx_renew_passive_claim(tx: Any, body: PassiveClaimRenewIn, now_ms: int, exp
         """
         MATCH (t:Task)
         WHERE coalesce(t.id, t.task_id) = $task_id
-          AND toUpper(coalesce(t.status, '')) = 'CLAIMED_PASSIVE'
+        // This generic passive review writer is not Hermes owner-authoritative.
+        // Lock the exact Task, then validate current owner and claim state.
+        SET t.hermes_fence_check_epoch =
+            coalesce(t.hermes_fence_check_epoch, 0) + 1
+        WITH t
+        WHERE toUpper(coalesce(t.status, '')) = 'CLAIMED_PASSIVE'
           AND t.passive_claim_id = $claim_id
           AND t.passive_claim_agent_id = $agent_id
           AND coalesce(t.passive_claim_expires_at_ts, 0) >= $now_ms
+          AND NOT (coalesce($agent_id, '') STARTS WITH 'hermes-')
+          AND NOT (
+            coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+            OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+            OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+            OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+            OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+            OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+            OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+            OR coalesce(t.passive_claim_agent_id, '') STARTS WITH 'hermes-'
+            OR coalesce(t.last_passive_claim_agent_id, '') STARTS WITH 'hermes-'
+          )
         SET t.passive_claim_expires_at_ts = $expires_at_ts,
             t.passive_claim_renewed_at = datetime(),
             t.passive_claim_renewed_at_ts = $now_ms,
@@ -406,8 +440,26 @@ def _tx_release_passive_claim(tx: Any, body: PassiveClaimReleaseIn, now_ms: int)
         """
         MATCH (t:Task)
         WHERE coalesce(t.id, t.task_id) = $task_id
+        // This generic passive review writer is not Hermes owner-authoritative.
+        // Lock the exact Task, then validate current owner and claim state.
+        SET t.hermes_fence_check_epoch =
+            coalesce(t.hermes_fence_check_epoch, 0) + 1
+        WITH t
+        WHERE toUpper(coalesce(t.status, '')) = 'CLAIMED_PASSIVE'
           AND t.passive_claim_id = $claim_id
           AND t.passive_claim_agent_id = $agent_id
+          AND NOT (coalesce($agent_id, '') STARTS WITH 'hermes-')
+          AND NOT (
+            coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+            OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+            OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+            OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+            OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+            OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+            OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+            OR coalesce(t.passive_claim_agent_id, '') STARTS WITH 'hermes-'
+            OR coalesce(t.last_passive_claim_agent_id, '') STARTS WITH 'hermes-'
+          )
         SET t.status = $next_status,
             t.last_passive_claim_id = t.passive_claim_id,
             t.last_passive_claim_agent_id = t.passive_claim_agent_id,
@@ -463,6 +515,24 @@ def _tx_expire_passive_claims(tx: Any, now_ms: int, limit: int) -> list[dict[str
         WITH t
         ORDER BY coalesce(t.passive_claim_expires_at_ts, 0) ASC
         LIMIT $limit
+        // This generic passive review writer is not Hermes owner-authoritative.
+        // Lock the exact Task, then validate current owner and claim state.
+        SET t.hermes_fence_check_epoch =
+            coalesce(t.hermes_fence_check_epoch, 0) + 1
+        WITH t
+        WHERE toUpper(coalesce(t.status, '')) = 'CLAIMED_PASSIVE'
+          AND coalesce(t.passive_claim_expires_at_ts, 0) < $now_ms
+          AND NOT (
+            coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+            OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+            OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+            OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+            OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+            OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+            OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+            OR coalesce(t.passive_claim_agent_id, '') STARTS WITH 'hermes-'
+            OR coalesce(t.last_passive_claim_agent_id, '') STARTS WITH 'hermes-'
+          )
         WITH t,
              t.passive_claim_id AS claim_id,
              t.passive_claim_agent_id AS agent_id,
@@ -505,11 +575,26 @@ def _rollback_claim(neo_factory: Callable[[], Any], task_id: str, claim_id: str,
     try:
         neo = neo_factory()
         with neo.driver.session() as s:
-            s.run(
+            rec = s.run(
                 """
                 MATCH (t:Task)
                 WHERE coalesce(t.id, t.task_id) = $task_id
+                SET t.hermes_fence_check_epoch =
+                    coalesce(t.hermes_fence_check_epoch, 0) + 1
+                WITH t
+                WHERE toUpper(coalesce(t.status, '')) = 'CLAIMED_PASSIVE'
                   AND t.passive_claim_id = $claim_id
+                  AND NOT (
+                    coalesce(t.claimed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.target_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.completed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.heartbeat_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.failed_by, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.paused_from_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.migration_target_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.passive_claim_agent_id, '') STARTS WITH 'hermes-'
+                    OR coalesce(t.last_passive_claim_agent_id, '') STARTS WITH 'hermes-'
+                  )
                 SET t.status = coalesce(t.previous_status, 'REVIEW'),
                     t.last_passive_claim_result = $reason,
                     t.last_passive_claim_released_at = datetime()
@@ -525,9 +610,12 @@ def _rollback_claim(neo_factory: Callable[[], Any], task_id: str, claim_id: str,
                        t.passive_claim_renewed_at_ts,
                        t.passive_claim_progress_note,
                        t.passive_claim_renew_metadata_json
+                RETURN coalesce(t.id, t.task_id) AS rolled_back_task_id
                 """,
                 {"task_id": task_id, "claim_id": claim_id, "reason": reason},
-            ).consume()
+            ).single()
+        if not rec:
+            return
         record_passive_event(
             neo_factory,
             "passive_claim.rollback",
