@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
+import tempfile
 import pathlib
 import sys
 from typing import Any
@@ -25,14 +28,87 @@ _AUTHORITY_FIELDS = (
 )
 
 
+MAX_CAPTURE_BYTES = 1024 * 1024
+MAX_JSON_DEPTH = 64
+
+
+def _unique_object(pairs):
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError("duplicate JSON key")
+        obj[key] = value
+    return obj
+
+
+def _reject_constant(value):
+    raise ValueError("nonfinite JSON constant")
+
+
+def _check_json_depth(raw: bytes) -> None:
+    # Count structural delimiters outside quoted strings before parsing.
+    depth = 0
+    quoted = escaped = False
+    for byte in raw:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif byte == 92:
+                escaped = True
+            elif byte == 34:
+                quoted = False
+        elif byte == 34:
+            quoted = True
+        elif byte in (91, 123):
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                raise ValueError("JSON depth limit")
+        elif byte in (93, 125):
+            depth -= 1
+            if depth < 0:
+                raise ValueError("invalid JSON structure")
+
+
+def _file_identity(info):
+    return (info.st_dev, info.st_ino, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns)
+
+
 def _load_mapping(path: pathlib.Path, label: str) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"{label} is not readable JSON: {exc}") from exc
+    # No final-component symlinks, blocking FIFO opens, or unbounded reads.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(fd, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_CAPTURE_BYTES:
+            raise ValueError(f"{label} invalid input file")
+        raw = stream.read(MAX_CAPTURE_BYTES + 1)
+        after = os.fstat(stream.fileno())
+        if (len(raw) > MAX_CAPTURE_BYTES or len(raw) != before.st_size
+                or _file_identity(before) != _file_identity(after)):
+            raise ValueError(f"{label} unstable or oversized input")
+    _check_json_depth(raw)
+    value = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object,
+                       parse_constant=_reject_constant)
     if not isinstance(value, dict):
         raise ValueError(f"{label} root must be a JSON object")
     return value
+
+
+def _publish_new_report(path: pathlib.Path, rendered: str) -> None:
+    """Publish a complete private report without replacing existing evidence.
+
+    Parent must already exist. Hard-link publication is atomic and exclusive;
+    an unsupported filesystem fails closed. Not a custody or signature proof.
+    """
+    fd, temp_name = tempfile.mkstemp(prefix=".shadow-receipt-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(rendered)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temp_name, path, follow_symlinks=False)
+    finally:
+        os.unlink(temp_name)
 
 
 def validate_capture(
@@ -132,17 +208,16 @@ def main() -> int:
             ),
             require_model_artifact=args.require_model_artifact,
         )
-    except (TypeError, ValueError) as exc:
-        print(f"SYSTEM_ONE_RECEIPT_ACCEPTANCE: BLOCKED {exc}", file=sys.stderr)
+        rendered = json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        if args.output is not None:
+            _publish_new_report(args.output, rendered)
+            print(args.output)
+        else:
+            print(rendered, end="")
+    except (OSError, TypeError, ValueError, RecursionError, OverflowError) as exc:
+        # Validation errors may include untrusted input values; never echo them.
+        print(f"SYSTEM_ONE_RECEIPT_ACCEPTANCE: BLOCKED {type(exc).__name__}", file=sys.stderr)
         return 1
-
-    rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
-    if args.output is not None:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(rendered, encoding="utf-8")
-        print(args.output)
-    else:
-        print(rendered, end="")
     print("SYSTEM_ONE_RECEIPT_ACCEPTANCE: PASS", file=sys.stderr)
     return 0
 
