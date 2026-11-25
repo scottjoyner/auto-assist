@@ -158,6 +158,24 @@ def test_job_terminal_uncertainty_does_not_report_done():
     assert neo.closed
 
 
+def test_job_exception_with_uncommitted_failure_is_held_without_details():
+    neo, calls = FakeNeo([True, False]), []
+    env = make_env(neo, calls)
+    def failed_dispatch(db, task, dry_run=False):
+        calls.append("MODEL_OR_TASK_EXECUTION")
+        raise RuntimeError("SYNTHETIC_SECRET_SHOULD_NOT_LEAK")
+    env["run_task"] = failed_dispatch
+    f = function_from_source("jobs.py", "execute_task_job", env)
+    outcome = f("synthetic-only")
+    assert outcome == {
+        "status": "HOLD", "reason": "task_terminal_commit_unverified",
+        "task_id": "synthetic-only",
+    }
+    assert "SYNTHETIC_SECRET_SHOULD_NOT_LEAK" not in str(outcome)
+    assert calls == ["MODEL_OR_TASK_EXECUTION"]
+    assert neo.closed
+
+
 def test_cli_pipeline_does_not_dispatch_unclaimed_task():
     neo, calls, log = FakeNeo([False]), [], Log()
     f = function_from_source("pipeline_execute.py", "execute_ready",

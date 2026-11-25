@@ -39,7 +39,9 @@ def execute_task_job(task_id: str, dry_run: bool = False):
                     "task_id": task_id}
         return _json_safe({"status": final_status, "state": state, "task_id": task_id, "acceptance": acc})
     except Exception as e:
-        neo.update_task_status(task_id, "FAILED")
+        if neo.update_task_status(task_id, "FAILED") is not True:
+            return {"status": "HOLD", "reason": "task_terminal_commit_unverified",
+                    "task_id": task_id}
         return _json_safe({"status": "FAILED", "error": str(e), "task_id": task_id})
     finally:
         neo.close()
