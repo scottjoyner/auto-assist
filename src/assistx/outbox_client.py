@@ -311,8 +311,11 @@ class OutboxClient:
             status="pending",
         )
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=10)
             try:
+                # The process-local lock cannot serialize other clients. Acquire
+                # SQLite's write reservation before the deduplication lookup.
+                conn.execute("BEGIN IMMEDIATE")
                 if event_id:
                     row = conn.execute(
                         "SELECT outbox_id, event_id, payload_json, attempt_count, last_attempt_at, status, created_at "
@@ -459,6 +462,8 @@ class OutboxClient:
         Returns False when the lease was recovered by another flusher, in which
         case this process must not overwrite the row.
         """
+        if not entry.claim_owner:
+            return False
         sets = ["status=?", "attempt_count=?", "claim_owner=NULL", "claimed_at=NULL"]
         params: List[Any] = [status, attempt_count]
         if touch:
@@ -467,7 +472,7 @@ class OutboxClient:
         params.extend([entry.outbox_id, entry.claim_owner])
         sql = (
             f"UPDATE outbox SET {', '.join(sets)} WHERE outbox_id=? "
-            "AND (claim_owner IS NULL OR claim_owner=?)"
+            "AND status='claimed' AND claim_owner=?"
         )
         with self._lock:
             conn = sqlite3.connect(self.db_path, timeout=10)
