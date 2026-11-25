@@ -28,6 +28,15 @@ FLUSH_BATCH = int(os.environ.get("ASSISTX_OUTBOX_FLUSH_BATCH", "50"))
 STALE_READINESS_S = int(os.environ.get("ASSISTX_OUTBOX_STALE_S", "86400"))
 
 STATUSES = ("pending", "failed", "claimed", "delivered", "dead")
+MAX_ACK_BYTES = 65536
+
+def _unique_ack_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate acknowledgement field")
+        result[key] = value
+    return result
 
 
 class OutboxEntry:
@@ -214,6 +223,9 @@ class OutboxClient:
         with self._lock:
             conn = sqlite3.connect(self.db_path, timeout=10)
             try:
+                # Concurrent clients may start against the same legacy DB.
+                # Serialize schema inspection and additive migration.
+                conn.execute("BEGIN IMMEDIATE")
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS outbox (
@@ -346,13 +358,12 @@ class OutboxClient:
             req.add_header("Authorization", self._auth_header)
         try:
             with urlopen(req, timeout=15) as resp:
-                body = resp.read().decode()
-                result = json.loads(body)
-                accepted = result.get("accepted", False)
-                if accepted:
-                    return True
-                return False
-        except (URLError, HTTPError, OSError, json.JSONDecodeError):
+                raw = resp.read(MAX_ACK_BYTES + 1)
+                if len(raw) > MAX_ACK_BYTES:
+                    return False
+                result = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_ack_fields)
+                return isinstance(result, dict) and result.get("accepted") is True
+        except (URLError, HTTPError, OSError, ValueError, RecursionError):
             return False
 
     def _update_status(self, outbox_id: str, status: str, attempt_count: int) -> None:
