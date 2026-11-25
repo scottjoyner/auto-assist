@@ -1651,12 +1651,24 @@ class Neo4jClient:
                         # A reused completion key cannot certify a different
                         # output, even when the task/claim/status still match.
                         # Compare semantic JSON, not historical object key order.
+                        def unique_object(pairs):
+                            obj = {}
+                            for key, value in pairs:
+                                if key in obj:
+                                    raise ValueError("duplicate stored result key")
+                                obj[key] = value
+                            return obj
+
+                        def canonical_stored(raw):
+                            obj = json.loads(raw, object_pairs_hook=unique_object)
+                            if not isinstance(obj, dict):
+                                raise ValueError("stored result must be an object")
+                            return json.dumps(obj, sort_keys=True, allow_nan=False)
+
                         try:
-                            stored_task = json.dumps(json.loads(prior_task.get("result_json")),
-                                                     sort_keys=True, allow_nan=False)
-                            stored_run = json.dumps(json.loads(prior["run_result_json"]),
-                                                    sort_keys=True, allow_nan=False)
-                        except (TypeError, ValueError, KeyError):
+                            stored_task = canonical_stored(prior_task.get("result_json"))
+                            stored_run = canonical_stored(prior["run_result_json"])
+                        except (TypeError, ValueError, KeyError, RecursionError):
                             return None
                         if (stored_task != result_json or stored_run != result_json
                                 or prior_task.get("result_summary") != summary

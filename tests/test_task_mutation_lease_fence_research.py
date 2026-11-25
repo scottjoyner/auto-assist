@@ -257,3 +257,16 @@ def test_conflicting_existing_completion_key_cannot_create_new_run():
     assert neo.complete_task("task-1", "node-a", "DONE", idempotency_key="complete-once", session_id="session-a", claim_id="claim-current") is None
     assert not store.writes
     assert "NOT EXISTS {" in store.queries[-1][0]
+
+
+@pytest.mark.parametrize("raw", ['{"ok":false,"ok":true}', '{"nested":{"x":0,"x":1}}', '{"x":NaN}', '[]', 'null', '{broken'])
+@pytest.mark.parametrize("source", ["task", "run"])
+def test_completion_replay_rejects_ambiguous_or_malformed_stored_result(raw, source):
+    result = {"ok": True}
+    canonical = '{"ok":true}'
+    task = current_task(status="DONE", completed_by="node-a", result_json=raw if source == "task" else canonical)
+    run = {"id":"run-1", "agent":"node-a", "status":"DONE", "claim_id":"claim-current", "result_json":raw if source == "run" else canonical}
+    neo, store = client(task, prior_run=run)
+    assert neo.complete_task("task-1", "node-a", "DONE", result=result, idempotency_key="complete-once", session_id="session-a", claim_id="claim-current") is None
+    assert store.writes == []
+    assert len(store.queries) == 1
