@@ -904,6 +904,15 @@ def emit_projection(
     }
 
     # Read-only trace exporter integration (never mutates state).
+    # An absent OpenCode SQLite DB is not proof of zero observed sessions:
+    # report unavailable explicitly, without claiming exporter health.
+    if trace_exporter_path is not None:
+        projection["trace_records_count"] = None
+        projection["trace_records_sample"] = []
+        projection["trace_provider_summary"] = {}
+        projection["trace_exporter_status"] = (
+            "unavailable" if not trace_exporter_path.exists() else "not_observed"
+        )
     if trace_exporter_path and trace_exporter_path.exists():
         try:
             import importlib.util
@@ -915,10 +924,13 @@ def emit_projection(
 
             # OpenCode SQLite read-only path
             opencode_db_path = pathlib.Path.home() / ".local" / "share" / "opencode" / "opencode.db"
-            if opencode_db_path.exists():
+            if not opencode_db_path.exists():
+                projection["trace_exporter_status"] = "unavailable"
+            else:
                 raw_records = trace_exporter_module.export_sessions(opencode_db_path)
                 trace_records = [_annotate_trace_session(r) for r in raw_records]
                 projection["trace_records_count"] = len(trace_records)
+                projection["trace_exporter_status"] = "observed"
                 projection["trace_records_sample"] = [
                     {
                         k: v
@@ -971,7 +983,8 @@ def emit_projection(
                             }
                         )
         except Exception as e:
-            projection["trace_exporter_error"] = str(e)
+            projection["trace_exporter_status"] = "unavailable"
+            projection["trace_exporter_error_class"] = type(e).__name__
 
     return projection
 

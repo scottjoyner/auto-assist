@@ -2,16 +2,22 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from assistx.api import auth
 from assistx.api_router import app
 
 ROOT = Path(__file__).resolve().parents[1]
-AUTH = ("neo4j", "redacted-rotate-credentials")
 
 
 def test_workbench_route_renders_chat_first_surface():
-    client = TestClient(app)
-
-    response = client.get("/workbench", auth=AUTH)
+    # Production authentication is intentionally configured via a runtime
+    # secret and cannot be exercised with old hardcoded test credentials.
+    # Override only the auth dependency for this isolated rendering test.
+    app.dependency_overrides[auth] = lambda: "test-operator"
+    try:
+        with TestClient(app) as client:
+            response = client.get("/workbench")
+    finally:
+        app.dependency_overrides.pop(auth, None)
 
     assert response.status_code == 200
     assert "Agent Workbench" in response.text
