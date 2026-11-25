@@ -1605,6 +1605,7 @@ class Neo4jClient:
     ) -> dict[str, Any] | None:
         if status not in TERMINAL_TASK_STATUSES:
             raise ValueError(f"Completion status must be one of: {sorted(TERMINAL_TASK_STATUSES)}")
+        result_json = json.dumps(result or {}, sort_keys=True, allow_nan=False)
         with self._session() as s:
             if idempotency_key:
                 # Idempotent completion is an exact, read-only replay, not an
@@ -1626,7 +1627,8 @@ class Neo4jClient:
                             AND t.claim_id=$claim_id
                             AND r.claim_id=$claim_id)
                       )
-                    RETURN t, r.id AS run_id
+                    RETURN t, r.id AS run_id, r.summary AS run_summary,
+                           r.result_json AS run_result_json
                     """,
                     {
                         "task_id": task_id,
@@ -1646,6 +1648,20 @@ class Neo4jClient:
                                  prior_task.get("agent_session_id") == session_id)
                             and (claim_id is None or
                                  prior_task.get("claim_id") == claim_id)):
+                        # A reused completion key cannot certify a different
+                        # output, even when the task/claim/status still match.
+                        # Compare semantic JSON, not historical object key order.
+                        try:
+                            stored_task = json.dumps(json.loads(prior_task.get("result_json")),
+                                                     sort_keys=True, allow_nan=False)
+                            stored_run = json.dumps(json.loads(prior["run_result_json"]),
+                                                    sort_keys=True, allow_nan=False)
+                        except (TypeError, ValueError, KeyError):
+                            return None
+                        if (stored_task != result_json or stored_run != result_json
+                                or prior_task.get("result_summary") != summary
+                                or prior["run_summary"] != summary):
+                            return None
                         prior_task["run_id"] = prior["run_id"]
                         prior_task["idempotent"] = True
                         return prior_task
@@ -1653,7 +1669,9 @@ class Neo4jClient:
             rec = s.run(
                 """
                 MATCH (t:Task {id:$task_id})
-                WHERE coalesce(t.execution_attempt, 0)=0
+                WHERE ($completion_id IS NULL OR NOT EXISTS {
+                    MATCH (t)-[:EXECUTED_BY]->(:AgentRun {completion_id:$completion_id})
+                }) AND (coalesce(t.execution_attempt, 0)=0
                    OR (
                      t.claimed_by=$agent_id
                      AND $claim_id IS NOT NULL
@@ -1661,7 +1679,7 @@ class Neo4jClient:
                      AND t.lease_expires_at_ts > timestamp()
                      AND ($session_id IS NULL OR t.agent_session_id=$session_id)
                      AND t.status IN ['CLAIMED','RUNNING']
-                   )
+                   ))
                 SET t.status=$status,
                     t.completed_by=$agent_id,
                     t.agent_session_id=coalesce($session_id, t.agent_session_id),
@@ -1691,7 +1709,7 @@ class Neo4jClient:
                     "agent_id": agent_id,
                     "status": status,
                     "summary": summary,
-                    "result_json": json.dumps(result or {}),
+                    "result_json": result_json,
                     "session_id": session_id,
                     "completion_id": idempotency_key,
                     "claim_id": claim_id,

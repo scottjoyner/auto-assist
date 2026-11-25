@@ -15,7 +15,7 @@ def current_task(**changes):
         "agent_session_id": "session-a", "claim_id": "claim-current",
         "execution_attempt": 1,
         "lease_expires_at_ts": int(time.time() * 1000) + 60_000,
-        "completed_by": None,
+        "completed_by": None, "result_json": "{}", "result_summary": None,
         **changes,
     }
 
@@ -49,7 +49,7 @@ class Fake:
     def run(self, query, args=None):
         args = dict(args or {})
         self.queries.append((query, args))
-        if "EXECUTED_BY]" in query and "AgentRun {completion_id:$completion_id}" in query:
+        if "EXECUTED_BY]" in query and "AgentRun {completion_id:$completion_id}" in query and "CREATE (r:AgentRun" not in query:
             if self.prior_run is None:
                 return Row(None)
             run = self.prior_run
@@ -69,7 +69,9 @@ class Fake:
                 and self.task.get("claim_id") == args["claim_id"]
                 and self.task.get("agent_session_id") == args.get("session_id")
             ))
-            return Row({"t": self.task, "run_id": run["id"]} if allowed else None)
+            return Row({"t": self.task, "run_id": run["id"],
+                        "run_summary": run.get("summary"),
+                        "run_result_json": run.get("result_json", "{}")} if allowed else None)
         if "SET t += $props" in query:
             guarded = (
                 "t.lease_expires_at_ts > timestamp()" in query
@@ -82,6 +84,10 @@ class Fake:
                 return Row({"t": self.task})
             return Row(None)
         if "CREATE (r:AgentRun" in query:
+            if (self.prior_run and args.get("completion_id") and
+                "NOT EXISTS {" in query and
+                "(:AgentRun {completion_id:$completion_id})" in query):
+                return Row(None)
             guarded = (
                 "t.lease_expires_at_ts > timestamp()" in query
                 and "t.claim_id=$claim_id" in query
@@ -224,3 +230,30 @@ def test_heartbeat_must_not_mark_task_terminal_without_completion(terminal):
         )
     assert store.queries == []
     assert store.writes == []
+
+
+@pytest.mark.parametrize("result,summary", [({"ok": False}, "original"), ({"ok": True}, "changed")])
+def test_completion_replay_rejects_changed_result_or_summary(result, summary):
+    task = current_task(status="DONE", completed_by="node-a", result_json='{"ok":true}', result_summary="original")
+    run = {"id":"run-1", "agent":"node-a", "status":"DONE", "claim_id":"claim-current", "result_json":'{"ok":true}', "summary":"original"}
+    neo, store = client(task, prior_run=run)
+    assert neo.complete_task("task-1", "node-a", "DONE", result=result, summary=summary, idempotency_key="complete-once", session_id="session-a", claim_id="claim-current") is None
+    assert store.writes == []
+    assert len(store.queries) == 1
+
+
+def test_completion_replay_accepts_equivalent_json_key_order():
+    task = current_task(status="DONE", completed_by="node-a", result_json='{"z":1,"a":2}')
+    run = {"id":"run-1", "agent":"node-a", "status":"DONE", "claim_id":"claim-current", "result_json":'{"a":2,"z":1}'}
+    neo, store = client(task, prior_run=run)
+    assert neo.complete_task("task-1", "node-a", "DONE", result={"z":1,"a":2}, idempotency_key="complete-once", session_id="session-a", claim_id="claim-current")["idempotent"] is True
+    assert not store.writes
+
+
+def test_conflicting_existing_completion_key_cannot_create_new_run():
+    task = current_task()
+    run = {"id":"run-1", "agent":"node-b", "status":"FAILED", "claim_id":"old-claim"}
+    neo, store = client(task, prior_run=run)
+    assert neo.complete_task("task-1", "node-a", "DONE", idempotency_key="complete-once", session_id="session-a", claim_id="claim-current") is None
+    assert not store.writes
+    assert "NOT EXISTS {" in store.queries[-1][0]
