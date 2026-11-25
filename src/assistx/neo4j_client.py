@@ -1692,6 +1692,21 @@ class Neo4jClient:
                      AND ($session_id IS NULL OR t.agent_session_id=$session_id)
                      AND t.status IN ['CLAIMED','RUNNING']
                    ))
+                AND t._assistx_completion_lock IS NULL
+                SET t._assistx_completion_lock = true
+                REMOVE t._assistx_completion_lock
+                WITH t
+                WHERE ($completion_id IS NULL OR NOT EXISTS {
+                    MATCH (t)-[:EXECUTED_BY]->(:AgentRun {completion_id:$completion_id})
+                }) AND (coalesce(t.execution_attempt, 0)=0
+                   OR (
+                     t.claimed_by=$agent_id
+                     AND $claim_id IS NOT NULL
+                     AND t.claim_id=$claim_id
+                     AND t.lease_expires_at_ts > datetime.realtime().epochMillis
+                     AND ($session_id IS NULL OR t.agent_session_id=$session_id)
+                     AND t.status IN ['CLAIMED','RUNNING']
+                   ))
                 SET t.status=$status,
                     t.completed_by=$agent_id,
                     t.agent_session_id=coalesce($session_id, t.agent_session_id),
