@@ -240,3 +240,22 @@ def test_metadata_cannot_admit_unknown_models_or_grant_privileges(monkeypatch):
         _decode(document["signature"]),
         runtime_projection_v2.signing_message(document),
     )
+
+
+def test_v2_public_alias_is_exactly_same_signed_builder(monkeypatch):
+    _install_fixtures(monkeypatch)
+    key = Ed25519PrivateKey.generate()
+    args = {
+        "private_key": key,
+        "key_id": "synthetic-contract-key",
+        "now_ms": 1_000_000,
+    }
+    canonical = runtime_projection_v2.build_runtime_projection(lambda: None, **args)
+    compatibility = runtime_projection_v2.build_runtime_projection_v2(
+        lambda: None, **args
+    )
+    assert canonical == compatibility
+    key.public_key().verify(
+        _decode(compatibility["signature"]),
+        runtime_projection_v2.signing_message(compatibility),
+    )
