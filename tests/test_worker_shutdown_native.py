@@ -51,6 +51,12 @@ class ShutdownTests(unittest.TestCase):
         self.assertEqual(a.terminated,1)
 
     def test_real_parent_sigterm_drains_two_children(self):
+        self.assert_real_drain(2)
+
+    def test_real_parent_sigterm_drains_32_children(self):
+        self.assert_real_drain(32)
+
+    def assert_real_drain(self,count):
         # No live worker or broker: isolated subprocess, real OS signals.
         program = r"""
 import importlib.util,multiprocessing as mp,signal,sys,time
@@ -61,17 +67,17 @@ def child(ready):
     signal.signal(signal.SIGTERM,stop)
     ready.set()
     while True:time.sleep(.05)
-events=[mp.Event(),mp.Event()]
+events=[mp.Event() for _ in range(int(sys.argv[2]))]
 children=[mp.Process(target=child,args=(e,)) for e in events]
 for p in children:p.start()
 if not all(e.wait(2) for e in events):raise SystemExit(2)
 with m.shutdown_flag() as stopping:
     print("READY",flush=True)
     rc=m.supervise(children,stopping,grace_seconds=2,poll_seconds=.02)
-print("DRAINED",rc,flush=True)
+print("DRAINED",rc,len(children),flush=True)
 raise SystemExit(rc)
 """
-        proc=subprocess.Popen([sys.executable,'-B','-c',program,str(path)],
+        proc=subprocess.Popen([sys.executable,'-B','-c',program,str(path),str(count)],
                               stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                               text=True,start_new_session=True)
         try:
@@ -82,7 +88,7 @@ raise SystemExit(rc)
             proc.send_signal(signal.SIGTERM)
             out,err=proc.communicate(timeout=4)
             self.assertEqual(proc.returncode,0,err)
-            self.assertIn('DRAINED 0',out)
+            self.assertIn(f'DRAINED 0 {count}',out)
         finally:
             if proc.poll() is None:
                 # Only our disposable synthetic process group.
