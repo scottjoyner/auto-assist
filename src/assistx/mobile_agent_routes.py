@@ -231,6 +231,9 @@ def _sse_chunks(output: str, model: str, session_id: str, chunk_size: int = 256)
 
 
 
+_DEFAULT_MOBILE_HANDLE_SECRET_FILE = "/run/secrets/kipnerter_mobile_model_handle"
+
+
 def _configured_mobile_handle_secret() -> str:
     """Use explicit environment configuration or a private mounted secret file.
 
@@ -240,7 +243,7 @@ def _configured_mobile_handle_secret() -> str:
     configured = os.getenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET", "").strip()
     if configured:
         return configured
-    path = os.getenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET_FILE", "").strip()
+    path = os.getenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET_FILE", _DEFAULT_MOBILE_HANDLE_SECRET_FILE).strip()
     if not path or not os.path.isabs(path):
         return ""
     try:

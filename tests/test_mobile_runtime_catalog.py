@@ -569,3 +569,17 @@ def test_mobile_display_name_never_exposes_artifact_parent_directory():
     assert "/private/home/operator" not in json.dumps(catalog)
     assert mobile._mobile_model_display_name(r"C:\Users\operator\model.gguf") == "model"
     assert mobile._mobile_model_display_name("../") == "Fleet model"
+
+
+def test_mobile_handle_default_private_mount_and_explicit_disable(monkeypatch, tmp_path):
+    monkeypatch.delenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET", raising=False)
+    monkeypatch.delenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET_FILE", raising=False)
+    path = tmp_path / "private-default-key"
+    monkeypatch.setattr(mobile, "_DEFAULT_MOBILE_HANDLE_SECRET_FILE", str(path))
+    model = {"artifact_fingerprint": "sha256:test"}
+    assert mobile._mobile_model_handle(model) is None
+    path.write_text("c" * 64)
+    path.chmod(0o600)
+    assert mobile._mobile_model_handle(model) == mobile._mobile_model_handle(model, secret="c" * 64)
+    monkeypatch.setenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET_FILE", "")
+    assert mobile._mobile_model_handle(model) is None
