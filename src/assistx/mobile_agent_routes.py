@@ -621,6 +621,14 @@ def _mobile_model_upstream_failure(response: Any) -> str:
                 return "fleet_model_no_eligible_runtime"
             if error == "all providers failed" and detail.get("details") == []:
                 return "fleet_model_no_eligible_runtime"
+            if error == "all providers failed":
+                reasons = detail.get("details")
+                if isinstance(reasons, list) and reasons:
+                    # Only classify the exact known internal claim-status failure;
+                    # never pass provider diagnostics, credentials or addresses through.
+                    marker = "AssistX claim-status check returned HTTP "
+                    if all(isinstance(reason, str) and any(marker + code in reason for code in ("401", "403")) for reason in reasons):
+                        return "fleet_model_claim_status_authentication_failed"
     return "fleet_model_unavailable"
 
 
@@ -639,6 +647,12 @@ def _mobile_model_router_payload(
     }
     if mobile_request_id:
         metadata["assistx_mobile_request_id"] = mobile_request_id
+        # The external request ID is opaque; durable router receipts require a UUID.
+        if mobile_request_id.startswith("kmr:"):
+            try:
+                metadata["correlation_id"] = str(uuid.UUID(mobile_request_id[4:]))
+            except ValueError:
+                pass
     return {
         "model": "auto/local",
         "messages": [
