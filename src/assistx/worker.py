@@ -239,6 +239,10 @@ def main():
         _run_one_worker(1, listen, redis_url)
         return
 
+    from .worker_supervision import shutdown_flag, supervise
+
+    # Fork children before installing the parent's signal handler, so RQ
+    # retains its own warm-shutdown signal handling inside each child.
     processes: list[mp.Process] = []
     for i in range(concurrency):
         p = mp.Process(
@@ -249,11 +253,8 @@ def main():
         p.start()
         processes.append(p)
 
-    exit_code = 0
-    for p in processes:
-        p.join()
-        if p.exitcode not in (0, None):
-            exit_code = p.exitcode
+    with shutdown_flag() as stopping:
+        exit_code = supervise(processes, stopping)
     if exit_code:
         raise SystemExit(exit_code)
 
