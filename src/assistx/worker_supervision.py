@@ -53,8 +53,37 @@ def launch_children(ctx,count,target,args_for_index,stopping):
     return processes,None
 
 
-def readiness_worker_class(base,ready):
-    """Emit an acknowledgement only after RQ installs its real handlers."""
+def await_start_gate(gate,stopping,*,timeout=90,poll_seconds=.05):
+    """Bounded local startup barrier; shutdown wins over opening admission."""
+    deadline=time.monotonic()+timeout
+    while not stopping():
+        if gate.is_set():
+            return not stopping()
+        if time.monotonic()>=deadline:
+            return False
+        time.sleep(poll_seconds)
+    return False
+
+
+def open_group_admission(gate,processes,expected,stopping):
+    """Parent-only release, after the caller verifies every readiness ack."""
+    if expected<1 or len(processes)!=expected or stopping():
+        return False
+    if any(not p.is_alive() for p in processes) or stopping():
+        return False
+    gate.set()
+    return True
+
+
+def readiness_worker_class(base,ready,*,startup_gate=None,stop_exception=None,gate_timeout=90):
+    """Acknowledge real RQ handlers, then fence the first queue check.
+
+    RQ 1.16.2 calls check_for_suspension inside its work-loop try/finally,
+    before any dequeue. A closed or timed-out gate raises its StopRequested
+    so ordinary teardown runs; no synthetic broker operation is needed.
+    """
+    if startup_gate is not None and stop_exception is None:
+        raise ValueError("startup gate requires the runtime stop exception")
     class ReadyWorker(base):
         def _install_signal_handlers(self):
             super()._install_signal_handlers()
@@ -62,6 +91,13 @@ def readiness_worker_class(base,ready):
                 ready.send_bytes(b"RQ_READY_V1")
             finally:
                 ready.close()
+
+        def check_for_suspension(self,burst):
+            if startup_gate is not None and not await_start_gate(
+                startup_gate,lambda:bool(self._stop_requested),timeout=gate_timeout,
+            ):
+                raise stop_exception()
+            return super().check_for_suspension(burst)
     return ReadyWorker
 
 

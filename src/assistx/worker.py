@@ -79,7 +79,7 @@ def _health_server(stop_event: threading.Event) -> None:
                     continue
 
 
-def _run_one_worker(index: int, listen: list[str], redis_url: str, ready) -> None:
+def _run_one_worker(index: int, listen: list[str], redis_url: str, ready, startup_gate) -> None:
     conn = redis.from_url(redis_url)
     worker_name = _worker_name(index)
     # Agent loops (decide + tool calls + retries) can run well past RQ's
@@ -106,7 +106,11 @@ def _run_one_worker(index: int, listen: list[str], redis_url: str, ready) -> Non
         # imports concurrently and races on the import lock; we don't need the
         # scheduler (the drainer enqueues directly).
         from .worker_supervision import readiness_worker_class
-        w = readiness_worker_class(SimpleWorker, ready)(queues, name=worker_name)
+        from rq.worker import StopRequested
+        w = readiness_worker_class(
+            SimpleWorker, ready, startup_gate=startup_gate,
+            stop_exception=StopRequested,
+        )(queues, name=worker_name)
         w.work(with_scheduler=False)
 
 
@@ -237,11 +241,12 @@ def main():
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
     concurrency = max(1, int(os.getenv("WORKER_CONCURRENCY", "1")))
 
-    from .worker_supervision import launch_children, shutdown_flag, supervise, wait_child_readiness
+    from .worker_supervision import launch_children, shutdown_flag, supervise, wait_child_readiness, open_group_admission
 
     # Install the parent handler before creating any child. Forked children
     # reset inherited handlers before unblocking termination signals.
     ctx = mp.get_context("fork")
+    startup_gate = ctx.Event()
     stop_event = threading.Event()
     background = []
     with shutdown_flag() as stopping:
@@ -249,7 +254,7 @@ def main():
         try:
             processes, startup_error = launch_children(
                 ctx, concurrency, _run_one_worker,
-                lambda i: (i + 1, listen, redis_url, channels[i][1]), stopping,
+                lambda i: (i + 1, listen, redis_url, channels[i][1], startup_gate), stopping,
             )
             for reader, writer in channels:
                 writer.close()
@@ -280,6 +285,9 @@ def main():
                 if not startup_error and not stopping():
                     t = threading.Thread(target=_health_server, args=(stop_event,), daemon=True)
                     t.start()
+                    if not open_group_admission(startup_gate, processes, concurrency, stopping):
+                        startup_error = "group_admission_not_opened"
+                        stop_event.set()
             exit_code = supervise(
                 processes, stopping, on_shutdown=stop_event.set,
                 fail_on_child_exit=True,
