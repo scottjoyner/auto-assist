@@ -1,5 +1,6 @@
 # src/assistx/worker.py
 import faulthandler
+import json
 import logging
 import multiprocessing as mp
 import os
@@ -47,31 +48,35 @@ def _worker_name(index: int) -> str:
     return f"assistx-worker-{index}-{hostname}-{pid}"
 
 
-def _health_server() -> None:
-    """Minimal HTTP health endpoint so Docker can check worker liveness."""
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(("0.0.0.0", HEALTH_PORT))
-    server.listen(1)
-    server.settimeout(1.0)
-    resp = (
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: 41\r\n"
-        "Connection: close\r\n"
-        "\r\n"
-        '{"ok":true,"service":"auto-assist-worker"}\r\n'
-    )
-    while True:
-        try:
-            conn, _ = server.accept()
-            conn.recv(1024)
-            conn.sendall(resp.encode())
-            conn.close()
-        except socket.timeout:
-            continue
-        except Exception:
-            break
+def _health_response(draining: bool) -> bytes:
+    body = json.dumps({"ok": not draining, "service": "auto-assist-worker"},
+                      separators=(",", ":")).encode("utf-8")
+    status = "503 Service Unavailable" if draining else "200 OK"
+    return (f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode("ascii") + body
+
+
+def _health_server(stop_event: threading.Event) -> None:
+    """Report supervised liveness, not broker readiness or claim health."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("0.0.0.0", HEALTH_PORT))
+        server.listen(8)
+        server.settimeout(1.0)
+        while True:
+            try:
+                conn, _ = server.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            with conn:
+                try:
+                    conn.settimeout(1.0)
+                    conn.recv(1024)
+                    conn.sendall(_health_response(stop_event.is_set()))
+                except OSError:
+                    continue
 
 
 def _run_one_worker(index: int, listen: list[str], redis_url: str) -> None:
@@ -104,7 +109,7 @@ def _run_one_worker(index: int, listen: list[str], redis_url: str) -> None:
         w.work(with_scheduler=False)
 
 
-def _start_execution_pollers() -> list[threading.Thread]:
+def _start_execution_pollers(stop_event: threading.Event) -> list[threading.Thread]:
     """W-22: start execution-authority pollers behind a single config switch.
 
     ``EXECUTION_BACKEND`` (paperclip|direct|auto) decides which execution
@@ -121,17 +126,17 @@ def _start_execution_pollers() -> list[threading.Thread]:
             from .paperclip_poller import paperclip_poll_job
 
             def _paperclip_loop() -> None:
-                while True:
+                while not stop_event.is_set():
                     try:
                         paperclip_poll_job()
                     except Exception as exc:  # pragma: no cover
                         logger.warning("paperclip poller error: %s", exc)
-                    time.sleep(int(os.getenv("PAPERCLIP_POLL_INTERVAL", "30")))
+                    stop_event.wait(int(os.getenv("PAPERCLIP_POLL_INTERVAL", "30")))
 
             t = threading.Thread(
                 target=_paperclip_loop,
                 name="paperclip-poller",
-                daemon=True,
+                daemon=False,
             )
             t.start()
             threads.append(t)
@@ -149,8 +154,9 @@ def _start_execution_pollers() -> list[threading.Thread]:
 
             t = threading.Thread(
                 target=hermes_run_loop,
+                kwargs={"stopping": stop_event.is_set},
                 name="hermes-adapter-poller",
-                daemon=True,
+                daemon=False,
             )
             t.start()
             threads.append(t)
@@ -173,12 +179,12 @@ def _start_execution_pollers() -> list[threading.Thread]:
     return threads
 
 
-def _start_recovery_island_controller() -> threading.Thread | None:
+def _start_recovery_island_controller(stop_event: threading.Event) -> threading.Thread | None:
     """Start the Neo4j-fenced Beelink dispatcher when explicitly enabled."""
     try:
         from .recovery_island_control import start_recovery_island_dispatcher
 
-        thread = start_recovery_island_dispatcher()
+        thread = start_recovery_island_dispatcher(stop_event=stop_event)
         if thread is not None:
             logger.info("fenced recovery-island dispatcher started")
         return thread
@@ -226,35 +232,48 @@ def main():
                 logger.warning("parent warmup import of %s failed: %s", _m, exc)
     except Exception as exc:  # pragma: no cover
         logger.warning("parent warmup failed: %s", exc)
-    _start_execution_pollers()
-    _start_recovery_island_controller()
     listen = [os.getenv("RQ_QUEUE", "assistx")]
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
     concurrency = max(1, int(os.getenv("WORKER_CONCURRENCY", "1")))
 
-    t = threading.Thread(target=_health_server, daemon=True)
-    t.start()
+    from .worker_supervision import launch_children, shutdown_flag, supervise
 
-    if concurrency == 1:
-        _run_one_worker(1, listen, redis_url)
-        return
-
-    from .worker_supervision import shutdown_flag, supervise
-
-    # Fork children before installing the parent's signal handler, so RQ
-    # retains its own warm-shutdown signal handling inside each child.
-    processes: list[mp.Process] = []
-    for i in range(concurrency):
-        p = mp.Process(
-            target=_run_one_worker,
-            args=(i + 1, listen, redis_url),
-            daemon=False,
-        )
-        p.start()
-        processes.append(p)
-
+    # Install the parent handler before creating any child. Forked children
+    # reset inherited handlers before unblocking termination signals.
+    ctx = mp.get_context("fork")
+    stop_event = threading.Event()
+    background = []
     with shutdown_flag() as stopping:
-        exit_code = supervise(processes, stopping)
+        processes, startup_error = launch_children(
+            ctx, concurrency, _run_one_worker,
+            lambda i: (i + 1, listen, redis_url), stopping,
+        )
+        if startup_error:
+            logger.error("worker startup failed: %s", startup_error)
+        # No direct execution or health admission after an incomplete startup.
+        t = None
+        try:
+            if not stopping() and not startup_error and len(processes) == concurrency:
+                background.extend(_start_execution_pollers(stop_event))
+                controller = _start_recovery_island_controller(stop_event)
+                if controller is not None:
+                    background.append(controller)
+                t = threading.Thread(target=_health_server, args=(stop_event,), daemon=True)
+                t.start()
+            exit_code = supervise(
+                processes, stopping, on_shutdown=stop_event.set,
+                fail_on_child_exit=True,
+                faulted=lambda: bool(startup_error or len(processes) != concurrency
+                                     or t is None or not t.is_alive()
+                                     or any(not thread.is_alive() for thread in background)),
+            )
+            if startup_error and not exit_code:
+                exit_code = 70
+        finally:
+            stop_event.set()
+            for thread in background:
+                thread.join()
+
     if exit_code:
         raise SystemExit(exit_code)
 
