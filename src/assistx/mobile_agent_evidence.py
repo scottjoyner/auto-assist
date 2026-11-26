@@ -177,6 +177,7 @@ def gateway_health(base_url: str, *, transport: httpx.BaseTransport | None = Non
         "source": "AssistX backend to configured Auto-Router /health",
         "observed_at": datetime.now(timezone.utc).isoformat(),
         "state": "unknown", "http_status": None, "projection_active": None,
+        "open_circuits": None, "claim_fence_rejections": None, "claim_status_recent_failure": None,
     }
     url = urlsplit(base_url)
     if (url.scheme not in {"http", "https"} or not url.hostname or
@@ -201,6 +202,14 @@ def gateway_health(base_url: str, *, transport: httpx.BaseTransport | None = Non
         payload = json.loads(content)
         if not isinstance(payload, dict):
             return result
+        for key, wire_key in (("open_circuits", "open_circuits"),
+                              ("claim_fence_rejections", "executor_claim_fence_rejections")):
+            value = payload.get(wire_key)
+            if type(value) is int and 0 <= value <= 2**63-1:
+                result[key] = value
+        recent = payload.get("executor_claim_status_recent_failure")
+        if type(recent) is bool:
+            result["claim_status_recent_failure"] = recent
         if payload.get("ok") is True and payload.get("status") == "ok":
             result["state"] = "healthy"
         elif payload.get("ok") is False:
@@ -219,11 +228,22 @@ def render_gateway_health(evidence: dict[str, Any]) -> str:
     state = evidence["state"]
     detail = f"HTTP {status}; {state}" if status is not None else "not verified"
     projection = {True: "reported active", False: "reported degraded", None: "unknown"}[evidence["projection_active"]]
+    diagnostics = []
+    if evidence.get("open_circuits") is not None:
+        diagnostics.append(f"- Open provider circuits: {evidence['open_circuits']}.\n")
+    if evidence.get("claim_fence_rejections") is not None:
+        diagnostics.append(f"- Claim-fence rejections reported by router: {evidence['claim_fence_rejections']} (process lifetime; not inference attempts).\n")
+    recent = evidence.get("claim_status_recent_failure")
+    if recent is True:
+        diagnostics.append("- Router reports a recent executor claim-status service failure; generic inference is not established.\n")
+    elif recent is False:
+        diagnostics.append("- No recent claim-status service failure reported; this does not establish successful authorization.\n")
     return (
         f"Server connection (checked {evidence['observed_at']}):\n"
         "- This authenticated request reached the AssistX mobile API.\n"
         f"- Backend-to-inference-gateway health probe: {detail}.\n"
         f"- Gateway context projection: {projection}.\n"
+        + "".join(diagnostics) +
         "- Model inference and executor authorization: not tested by this health probe.\n"
         "- Phone upload acknowledgements, last successful synchronization, and data received "
         "by the server: not verified. A local sensor reading or queued event is not evidence of delivery.\n"

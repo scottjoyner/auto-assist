@@ -617,6 +617,10 @@ def _mobile_model_upstream_failure(response: Any) -> str:
             detail = None
         if isinstance(detail, dict):
             error = detail.get("error")
+            if error == "executor_claim_status_unavailable":
+                return "fleet_model_claim_status_unavailable"
+            if error == "executor_claim_unavailable":
+                return "fleet_model_claim_unavailable"
             if error == "no provider satisfies required capabilities":
                 return "fleet_model_no_eligible_runtime"
             if error == "all providers failed" and detail.get("details") == []:

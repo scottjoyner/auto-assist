@@ -295,3 +295,39 @@ def test_overview_authenticated_route(monkeypatch):
     r=c.post("/api/v1/agent/chat/completions",headers={"Tailscale-User-Login":"other@example.com"},
         json={"messages":[{"role":"user","content":"Fleet overview"}],"stream":False})
     assert r.status_code in (401,403)
+
+
+def test_gateway_distinguishes_claim_authority_failure_from_model_circuits():
+    import httpx
+    result = evidence.gateway_health("http://router.test", transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"ok":False,"status":"degraded",
+            "open_circuits":0,"executor_claim_fence_rejections":30,
+            "executor_claim_status_recent_failure":True,"private_detail":"private endpoint"})))
+    text = evidence.render_gateway_health(result)
+    assert "Open provider circuits: 0" in text
+    assert "30 (process lifetime; not inference attempts)" in text
+    assert "recent executor claim-status service failure" in text
+    assert "private endpoint" not in text
+    assert "not tested" in text
+
+
+def test_gateway_does_not_infer_missing_or_invalid_claim_telemetry():
+    import httpx
+    result = evidence.gateway_health("http://router.test", transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"ok":True,"status":"ok",
+            "open_circuits":False,"executor_claim_fence_rejections":-1,
+            "executor_claim_status_recent_failure":"false"})))
+    text = evidence.render_gateway_health(result)
+    assert "Open provider circuits" not in text
+    assert "Claim-fence rejections" not in text
+    assert "No recent claim-status" not in text
+
+
+def test_mobile_router_new_typed_claim_errors_are_redacted():
+    import httpx
+    for source, expected in [
+        ("executor_claim_status_unavailable","fleet_model_claim_status_unavailable"),
+        ("executor_claim_unavailable","fleet_model_claim_unavailable"),
+    ]:
+        response=httpx.Response(503,json={"detail":{"error":source,"private":"secret"}})
+        assert mobile._mobile_model_upstream_failure(response)==expected
