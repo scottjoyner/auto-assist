@@ -5,7 +5,6 @@ import hashlib
 import hmac
 import json
 import os
-import stat
 from pathlib import Path
 import time
 import uuid
@@ -187,13 +186,6 @@ def _mobile_agent_failure_code(result: dict[str, Any]) -> str:
     )
     if any(marker in diagnostic for marker in projection_markers):
         return "runtime_projection_unavailable"
-    credential_markers = (
-        "executor token must contain three segments",
-        "executor_task_token_missing",
-        "invalid executor bootstrap token",
-    )
-    if any(marker in diagnostic for marker in credential_markers) or result.get("error") == "executor_task_token_missing":
-        return "agent_executor_credential_unavailable"
     return str(result.get("error") or "hermes_execution_failed")[:240]
 
 
@@ -231,38 +223,6 @@ def _sse_chunks(output: str, model: str, session_id: str, chunk_size: int = 256)
 
 
 
-_DEFAULT_MOBILE_HANDLE_SECRET_FILE = "/run/secrets/kipnerter_mobile_model_handle"
-
-
-def _configured_mobile_handle_secret() -> str:
-    """Use explicit environment configuration or a private mounted secret file.
-
-    Do not create or rotate a key on read. Missing, insecure, or malformed
-    files leave model handles unavailable rather than minting unstable IDs.
-    """
-    configured = os.getenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET", "").strip()
-    if configured:
-        return configured
-    path = os.getenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET_FILE", _DEFAULT_MOBILE_HANDLE_SECRET_FILE).strip()
-    if not path or not os.path.isabs(path):
-        return ""
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-        with os.fdopen(fd, "rb") as handle:
-            metadata = os.fstat(handle.fileno())
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
-                return ""
-            if not 1 <= metadata.st_size <= 4096:
-                return ""
-            raw = handle.read(4097)
-            if len(raw) > 4096:
-                return ""
-            secret = raw.decode("utf-8").strip()
-            return secret if len(secret) >= 32 and not any(ch.isspace() or ord(ch) < 33 for ch in secret) else ""
-    except (OSError, UnicodeError):
-        return ""
-
-
 def _mobile_model_handle(
     model: dict[str, Any],
     *,
@@ -283,7 +243,7 @@ def _mobile_model_handle(
     handle_secret = (
         secret
         if secret is not None
-        else _configured_mobile_handle_secret()
+        else os.getenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET", "")
     ).strip()
     if not handle_secret:
         return None
@@ -293,16 +253,6 @@ def _mobile_model_handle(
         hashlib.sha256,
     ).hexdigest()[:32]
     return f"model:v1:{digest}"
-
-
-def _mobile_model_display_name(value: Any) -> str:
-    # Artifact aliases sometimes originate from a local filename rather than
-    # a presentation label. Never disclose the parent directory to a phone.
-    name = str(value or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
-    name = "".join(ch for ch in name if ch.isprintable()).strip()
-    if name.lower().endswith(".gguf"):
-        name = name[:-5].strip()
-    return name[:160] if name not in {"", ".", ".."} else "Fleet model"
 
 
 def _sanitize_runtime_projection_for_mobile(
@@ -378,7 +328,7 @@ def _sanitize_runtime_projection_for_mobile(
                 # artifact identity. If an older/incomplete record slips through,
                 # keep aggregate visibility but do not mint an unstable handle.
                 continue
-            display_name = _mobile_model_display_name(model.get("alias"))
+            display_name = str(model.get("alias") or "").strip()
             if not display_name:
                 continue
             accumulator = model_accumulators.setdefault(
@@ -539,7 +489,7 @@ def _resolve_mobile_model_handle(
             matches.append(
                 {
                     "artifact_fingerprint": fingerprint,
-                    "display_name": _mobile_model_display_name(model.get("alias")),
+                    "display_name": str(model.get("alias") or "").strip(),
                     "capabilities": {
                         str(value)
                         for value in (model.get("capabilities") or [])
@@ -869,22 +819,6 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
         # enforce the optional Kipnerter login allowlist here as well. Basic
         # auth remains available as an explicit legacy operator fallback.
         _tailnet_identity(request)
-
-        # The mobile route must respect the same runtime admission view it
-        # publishes to clients. Do not start Hermes when no agent runtime is
-        # admitted, and never interpret catalog failure as permission to run.
-        try:
-            catalog = await asyncio.to_thread(_mobile_runtime_catalog)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail={"error": "runtime_projection_unavailable", "executor": "hermes"},
-            ) from exc
-        if catalog.get("agent_auto_available") is not True:
-            raise HTTPException(
-                status_code=503,
-                detail={"error": "agent_runtime_unavailable", "executor": "hermes"},
-            )
 
         prompt = _prompt_from_messages(body.messages)
         model_override = _requested_hermes_model(body.model)
