@@ -177,6 +177,7 @@ def gateway_health(base_url: str, *, transport: httpx.BaseTransport | None = Non
         "source": "AssistX backend to configured Auto-Router /health",
         "observed_at": datetime.now(timezone.utc).isoformat(),
         "state": "unknown", "http_status": None, "projection_active": None,
+        "open_provider_circuits": None, "recent_claim_status_failure": None,
     }
     url = urlsplit(base_url)
     if (url.scheme not in {"http", "https"} or not url.hostname or
@@ -209,6 +210,13 @@ def gateway_health(base_url: str, *, transport: httpx.BaseTransport | None = Non
             result["projection_active"] = True
         elif payload.get("context_projection_degraded") is True:
             result["projection_active"] = False
+        circuits = payload.get("open_circuits")
+        if type(circuits) is int and 0 <= circuits <= 1_000_000:
+            result["open_provider_circuits"] = circuits
+        recent = payload.get("executor_claim_status_recent_failure")
+        if type(recent) is bool:
+            result["recent_claim_status_failure"] = recent
+
     except (httpx.HTTPError, ValueError):
         pass
     return result
@@ -219,11 +227,20 @@ def render_gateway_health(evidence: dict[str, Any]) -> str:
     state = evidence["state"]
     detail = f"HTTP {status}; {state}" if status is not None else "not verified"
     projection = {True: "reported active", False: "reported degraded", None: "unknown"}[evidence["projection_active"]]
+    circuits = evidence.get("open_provider_circuits")
+    circuit_text = str(circuits) if type(circuits) is int else "not reported"
+    recent = evidence.get("recent_claim_status_failure")
+    authority_text = ("recent failure reported" if recent is True else
+                      "no recent failure reported; not proof of authorization" if recent is False else
+                      "not reported")
     return (
         f"Server connection (checked {evidence['observed_at']}):\n"
         "- This authenticated request reached the AssistX mobile API.\n"
         f"- Backend-to-inference-gateway health probe: {detail}.\n"
         f"- Gateway context projection: {projection}.\n"
+        f"- Open provider circuits: {circuit_text}.\n"
+        f"- Claim-status authority: {authority_text}.\n"
+
         "- Model inference and executor authorization: not tested by this health probe.\n"
         "- Phone upload acknowledgements, last successful synchronization, and data received "
         "by the server: not verified. A local sensor reading or queued event is not evidence of delivery.\n"

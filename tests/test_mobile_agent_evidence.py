@@ -295,3 +295,37 @@ def test_overview_authenticated_route(monkeypatch):
     r=c.post("/api/v1/agent/chat/completions",headers={"Tailscale-User-Login":"other@example.com"},
         json={"messages":[{"role":"user","content":"Fleet overview"}],"stream":False})
     assert r.status_code in (401,403)
+
+
+@pytest.mark.parametrize("reported,expected", [(True,"recent failure reported"),(False,"not proof of authorization"),(None,"not reported")])
+def test_gateway_reports_aggregate_authority_status_without_leaking_diagnostics(reported,expected):
+    import httpx
+    payload={"ok":False,"status":"degraded","open_circuits":0,
+             "executor_claim_status_recent_failure":reported,
+             "context_projection_status":"active","context_projection_degraded":False,
+             "private_detail":"private sentinel"}
+    result=evidence.gateway_health("http://router.test",transport=httpx.MockTransport(lambda r:httpx.Response(200,json=payload)))
+    answer=evidence.render_gateway_health(result)
+    assert "Open provider circuits: 0" in answer
+    assert expected in answer and "not tested" in answer
+    assert "private sentinel" not in answer
+    assert result["state"]=="unhealthy"
+
+
+def test_gateway_rejects_malformed_aggregate_health_fields():
+    import httpx
+    result=evidence.gateway_health("http://router.test",transport=httpx.MockTransport(lambda r:httpx.Response(200,json={
+        "ok":True,"status":"ok","open_circuits":True,"executor_claim_status_recent_failure":"false"})))
+    assert result["open_provider_circuits"] is None
+    assert result["recent_claim_status_failure"] is None
+
+
+@pytest.mark.parametrize("code,expected", [
+    ("executor_claim_status_unavailable","fleet_model_claim_status_unavailable"),
+    ("executor_claim_unavailable","fleet_model_execution_claim_unavailable"),
+    ("arbitrary diagnostic","fleet_model_unavailable"),
+])
+def test_typed_router_claim_errors_remain_redacted(code,expected):
+    import httpx
+    response=httpx.Response(503,json={"detail":{"error":code,"private_detail":"secret fixture"}})
+    assert mobile._mobile_model_upstream_failure(response)==expected
