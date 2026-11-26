@@ -816,6 +816,19 @@ def register_mobile_agent_routes(
             headers=response_headers,
         )
 
+    @router.get("/api/v1/agent/capabilities", tags=["kipnerter-mobile"])
+    def mobile_agent_capabilities(
+        request: Request,
+        user: str = Depends(mobile_auth),
+    ):
+        if _tailnet_identity(request) is None:
+            raise HTTPException(status_code=403, detail={"error": "tailnet_identity_required"})
+        from .mobile_agent_evidence import capability_profile
+        return JSONResponse(
+            content=capability_profile(evidence_configured=fleet_evidence_factory is not None),
+            headers={"Cache-Control": "no-store"},
+        )
+
     @router.post("/api/v1/agent/chat/completions", tags=["kipnerter-mobile"])
     async def mobile_agent_chat(
         body: MobileAgentChatIn,

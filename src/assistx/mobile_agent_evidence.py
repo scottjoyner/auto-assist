@@ -227,3 +227,29 @@ def render_gateway_health(evidence: dict[str, Any]) -> str:
         "by the server: not verified. A local sensor reading or queued event is not evidence of delivery.\n"
         f"Source: {evidence['source']}."
     )
+
+
+def capability_profile(*, evidence_configured: bool) -> dict[str, Any]:
+    """Describe only server-owned capabilities wired in this deployment."""
+    tools = [
+        {"id": tool_id, "description": description, "read_only": True,
+         "execution": "server_intent", "configured": evidence_configured}
+        for tool_id, description in STANDARD_TOOLS
+    ]
+    return {
+        "profile": PROFILE,
+        "schema_version": 1,
+        "tools": tools,
+        "skills": [
+            {"id": "fleet_diagnostics", "tools": ["fleet.status", "inference.status", "gateway.health"]},
+        ],
+        "knowledge_sources": [
+            {"id": "fleet_registry", "access": "aggregate_heartbeat_only"},
+            {"id": "runtime_projection", "access": "redacted_admission_inventory"},
+            {"id": "gateway_health", "access": "bounded_health_probe"},
+        ] if evidence_configured else [],
+        "native_model_tool_calls": False,
+        "generic_knowledge_search": False,
+        "device_sync_receipts": False,
+        "note": "Configured capabilities are not a live readiness or authorization witness.",
+    }

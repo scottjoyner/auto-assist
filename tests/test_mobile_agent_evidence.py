@@ -179,3 +179,20 @@ def test_gateway_exact_user_question_no_model(monkeypatch):
     assert r.status_code == 200
     assert "data received by the server: not verified" in r.text
     assert not evidence.is_gateway_status([SimpleNamespace(role="user",content="server connection and delete data")])
+
+
+def test_standard_capability_profile_authenticated(monkeypatch):
+    c = client_for(monkeypatch, FakeNeo(None))
+    r = c.get("/api/v1/agent/capabilities", headers={"Tailscale-User-Login":"owner@example.com"})
+    assert r.status_code == 200
+    assert r.headers["cache-control"] == "no-store"
+    profile = r.json()
+    assert profile["profile"] == "kipnerter-agent-v1"
+    assert {t["id"] for t in profile["tools"]} == {"fleet.status","inference.status","gateway.health"}
+    assert all(t["configured"] and t["read_only"] for t in profile["tools"])
+    assert not profile["native_model_tool_calls"]
+    assert not profile["device_sync_receipts"]
+    assert not profile["generic_knowledge_search"]
+    denied = c.get("/api/v1/agent/capabilities",headers={"Tailscale-User-Login":"other@example.com"})
+    assert denied.status_code in (401,403)
+    assert not any(t["configured"] for t in evidence.capability_profile(evidence_configured=False)["tools"])
