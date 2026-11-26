@@ -83,6 +83,8 @@ STANDARD_TOOLS = (
     ("fleet.status", "Aggregate heartbeat observations from fleet registry"),
     ("inference.status", "Fresh admitted runtime and model capability inventory"),
     ("gateway.health", "Bounded health probe of the configured inference gateway"),
+    ("workflow.status", "Aggregate queued and active fleet tasks"),
+    ("knowledge.lookup", "Read curated agent operating handbook topics"),
 )
 _INFERENCE_STATUS = re.compile(
     r"(?:please )?(?:inference status|model status|(?:what(?:'s| is) (?:the )?(?:current )?)?"
@@ -241,15 +243,102 @@ def capability_profile(*, evidence_configured: bool) -> dict[str, Any]:
         "schema_version": 1,
         "tools": tools,
         "skills": [
-            {"id": "fleet_diagnostics", "tools": ["fleet.status", "inference.status", "gateway.health"]},
+            {"id": "fleet_diagnostics", "tools": ["fleet.status", "inference.status", "gateway.health", "workflow.status"]},
+            {"id": "agent_handbook", "tools": ["knowledge.lookup"]},
         ],
         "knowledge_sources": [
             {"id": "fleet_registry", "access": "aggregate_heartbeat_only"},
             {"id": "runtime_projection", "access": "redacted_admission_inventory"},
             {"id": "gateway_health", "access": "bounded_health_probe"},
+            {"id": "workflow_registry", "access": "aggregate_task_counts_only"},
+            {"id": "agent_handbook_v1", "access": "curated_static_topics_only"},
         ] if evidence_configured else [],
         "native_model_tool_calls": False,
         "generic_knowledge_search": False,
         "device_sync_receipts": False,
         "note": "Configured capabilities are not a live readiness or authorization witness.",
     }
+
+
+_WORKFLOW_INTENT = re.compile(
+    r"(?:please )?(?:workflow status|fleet work status|task queue status|"
+    r"what (?:is|are) (?:the )?(?:fleet|agents) (?:working on|doing)|"
+    r"(?:check|show(?: me)?|report) (?:the )?(?:workflow status|task queue))"
+    r"\s*[?.!]*", re.I,
+)
+_HANDBOOK_INTENT = re.compile(
+    r"(?:please )?(?:agent handbook|how does agent auto work|"
+    r"what tools (?:do you have|can you use)|what can agent auto do|"
+    r"how (?:do i|can i) verify (?:location )?(?:sync|uploads))\s*[?.!]*", re.I,
+)
+
+
+def _last_user_text(messages: Iterable[Any]) -> str:
+    return " ".join(next((m.content for m in reversed(list(messages))
+                          if m.role == "user"), "").replace("’", "'").split())
+
+
+def is_workflow_status(messages: Iterable[Any]) -> bool:
+    return bool(_WORKFLOW_INTENT.fullmatch(_last_user_text(messages)))
+
+
+def is_handbook_query(messages: Iterable[Any]) -> bool:
+    return bool(_HANDBOOK_INTENT.fullmatch(_last_user_text(messages)))
+
+
+def workflow_status(neo_factory: Callable[[], Any]) -> dict[str, Any]:
+    """No task titles, messages, ownership, outputs or identifiers leave the graph."""
+    neo = neo_factory()
+    try:
+        with neo._session() as session:
+            row = session.run(
+                """MATCH (t:Task) WHERE t.status IN $statuses
+                   RETURN count(CASE WHEN t.status = 'READY' THEN 1 END) AS ready,
+                          count(CASE WHEN t.status = 'CLAIMED' THEN 1 END) AS claimed,
+                          count(CASE WHEN t.status = 'RUNNING' THEN 1 END) AS running""",
+                {"statuses": ["READY", "CLAIMED", "RUNNING"]},
+            ).single()
+            if row is None:
+                raise ValueError("missing workflow aggregate")
+            counts = {k: row[k] for k in ("ready", "claimed", "running")}
+            if any(type(v) is not int or v < 0 for v in counts.values()):
+                raise ValueError("invalid workflow aggregate")
+            return {**counts, "observed_at": datetime.now(timezone.utc).isoformat()}
+    finally:
+        neo.close()
+
+
+def render_workflow_status(evidence: dict[str, Any]) -> str:
+    return (
+        f"Fleet work registry (checked {evidence['observed_at']}):\n"
+        f"- Ready: {evidence['ready']}\n"
+        f"- Claimed: {evidence['claimed']}\n"
+        f"- Running: {evidence['running']}\n"
+        "These are recorded task states, not proof of active computation or successful completion. "
+        "Private task contents and individual identities are not exposed.\n"
+        "Source: AssistX Task registry."
+    )
+
+
+def render_handbook(messages: Iterable[Any]) -> str:
+    """Versioned, server-authored knowledge; never interpolate user or graph text."""
+    query = _last_user_text(messages).lower()
+    if "verify" in query:
+        body = (
+            "Local capture, queued events, historical acknowledgements and server persistence "
+            "are different observations. A successful gateway probe does not verify an upload. "
+            "Check the local sync queue and the latest retained acknowledgement; compare them "
+            "with a server-side receipt for the same event or device when available. "
+            "This agent does not yet have a server-side receipt lookup."
+        )
+    else:
+        tools = "; ".join(f"{tool}: {description}" for tool, description in STANDARD_TOOLS)
+        body = (
+            "Agent Auto uses the authenticated AssistX gateway. Its deterministic evidence tools "
+            "can answer recognized read-only questions without invoking a model. "
+            f"Configured tools in this release: {tools}. "
+            "General conversation is a separate executor path; a healthy gateway or an admitted "
+            "model does not prove that path works. Native model tool calls, unrestricted graph "
+            "search, device receipt lookup and administrative actions are not provided by this profile."
+        )
+    return body + "\nSource: kipnerter-agent-v1 curated operating handbook, revision 1."
