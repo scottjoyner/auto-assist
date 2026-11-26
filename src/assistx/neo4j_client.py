@@ -1016,11 +1016,19 @@ class Neo4jClient:
         with self._session() as s:
             if idempotency_key:
                 prior = s.run(
-                    "MATCH (t:Task {id:$task_id, claim_id:$claim_id}) RETURN t",
+                    "MATCH (t:Task {id:$task_id, claim_id:$claim_id}) "
+                    "RETURN t, coalesce(t.lease_expires_at_ts > timestamp(), false) AS lease_current",
                     {"task_id": task_id, "claim_id": idempotency_key},
                 ).single()
                 if prior:
-                    return {"claimed": True, "claim_id": claim_id, "idempotent": True, "task": dict(prior["t"])}
+                    task = dict(prior["t"])
+                    if (task.get("claimed_by") != agent_id
+                            or task.get("agent_session_id") != session_id):
+                        return {"claimed": False, "reason": "claim_owner_mismatch"}
+                    if (task.get("status") not in {"CLAIMED", "RUNNING"}
+                            or prior.get("lease_current") is not True):
+                        return {"claimed": False, "reason": "claim_not_current"}
+                    return {"claimed": True, "claim_id": claim_id, "idempotent": True, "task": task}
 
             rec = s.run(
                 """
