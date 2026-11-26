@@ -292,6 +292,16 @@ def _mobile_model_handle(
     return f"model:v1:{digest}"
 
 
+def _mobile_model_display_name(value: Any) -> str:
+    # Artifact aliases sometimes originate from a local filename rather than
+    # a presentation label. Never disclose the parent directory to a phone.
+    name = str(value or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
+    name = "".join(ch for ch in name if ch.isprintable()).strip()
+    if name.lower().endswith(".gguf"):
+        name = name[:-5].strip()
+    return name[:160] if name not in {"", ".", ".."} else "Fleet model"
+
+
 def _sanitize_runtime_projection_for_mobile(
     projection: dict[str, Any],
     *,
@@ -365,7 +375,7 @@ def _sanitize_runtime_projection_for_mobile(
                 # artifact identity. If an older/incomplete record slips through,
                 # keep aggregate visibility but do not mint an unstable handle.
                 continue
-            display_name = str(model.get("alias") or "").strip()
+            display_name = _mobile_model_display_name(model.get("alias"))
             if not display_name:
                 continue
             accumulator = model_accumulators.setdefault(
@@ -526,7 +536,7 @@ def _resolve_mobile_model_handle(
             matches.append(
                 {
                     "artifact_fingerprint": fingerprint,
-                    "display_name": str(model.get("alias") or "").strip(),
+                    "display_name": _mobile_model_display_name(model.get("alias")),
                     "capabilities": {
                         str(value)
                         for value in (model.get("capabilities") or [])

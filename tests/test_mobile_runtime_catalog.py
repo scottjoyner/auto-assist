@@ -557,3 +557,15 @@ def test_mobile_handle_rejects_insecure_or_invalid_secret_file(monkeypatch, tmp_
     assert mobile._mobile_model_handle(model) is None
     monkeypatch.setenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET_FILE", str(tmp_path))
     assert mobile._mobile_model_handle(model) is None
+
+
+def test_mobile_display_name_never_exposes_artifact_parent_directory():
+    projection = _projection()
+    model = projection["providers"][0]["models"][0]
+    model["alias"] = "/private/home/operator/models/Example-2B-Q4.gguf"
+    projection["providers"][1]["models"][0]["alias"] = "Example-2B-Q4"
+    catalog = mobile._sanitize_runtime_projection_for_mobile(projection, handle_secret="test-key")
+    assert any(m["display_name"] == "Example-2B-Q4" for m in catalog["models"])
+    assert "/private/home/operator" not in json.dumps(catalog)
+    assert mobile._mobile_model_display_name(r"C:\Users\operator\model.gguf") == "model"
+    assert mobile._mobile_model_display_name("../") == "Fleet model"
