@@ -65,12 +65,16 @@ m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 def child(ready):
     def stop(signum,frame):raise SystemExit(0)
     signal.signal(signal.SIGTERM,stop)
-    ready.set()
+    ready.send(True)
+    ready.close()
     while True:time.sleep(.05)
-events=[mp.Event() for _ in range(int(sys.argv[2]))]
-children=[mp.Process(target=child,args=(e,)) for e in events]
+ctx=mp.get_context("fork")
+channels=[ctx.Pipe(duplex=False) for _ in range(int(sys.argv[2]))]
+children=[ctx.Process(target=child,args=(send,)) for recv,send in channels]
 for p in children:p.start()
-if not all(e.wait(2) for e in events):raise SystemExit(2)
+for recv,send in channels:send.close()
+if not all(recv.poll(2) and recv.recv() is True for recv,send in channels):raise SystemExit(2)
+for recv,send in channels:recv.close()
 with m.shutdown_flag() as stopping:
     print("READY",flush=True)
     rc=m.supervise(children,stopping,grace_seconds=2,poll_seconds=.02)
@@ -84,7 +88,10 @@ raise SystemExit(rc)
             import select
             ready,_,_=select.select([proc.stdout],[],[],4)
             self.assertTrue(ready)
-            self.assertEqual(proc.stdout.readline().strip(),'READY')
+            marker=proc.stdout.readline().strip()
+            if marker!='READY':
+                out,err=proc.communicate(timeout=2)
+                self.fail(f'fixture startup failed: {marker!r} {err}')
             proc.send_signal(signal.SIGTERM)
             out,err=proc.communicate(timeout=4)
             self.assertEqual(proc.returncode,0,err)
@@ -94,3 +101,4 @@ raise SystemExit(rc)
                 # Only our disposable synthetic process group.
                 os.killpg(proc.pid,signal.SIGKILL)
                 proc.communicate(timeout=2)
+            proc.stdout.close();proc.stderr.close()
