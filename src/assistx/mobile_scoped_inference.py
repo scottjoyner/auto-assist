@@ -107,7 +107,7 @@ def _open_claim(neo_factory: Callable[[], Any], admission: Callable[[Any], bool]
         if not admission(neo):
             raise MobileInferenceError("mobile_admission_unavailable")
         # Never persist message text, user identifiers, or model output in shared tasks.
-        task_id = neo.upsert_ticket(title="Mobile scoped inference", task_type="mobile_inference",
+        task_id = neo.upsert_ticket(title="Mobile scoped inference", ticket_type="mobile_inference",
                     kind="mobile_inference", status="READY", required_capabilities=["mobile_inference"],
                     target_agent_id=AGENT, priority="HIGH", payload=dict(_TASK_PAYLOAD), max_migrations=0)
         result = neo.claim_task(task_id, AGENT, capabilities=["mobile_inference"],

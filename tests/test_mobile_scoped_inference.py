@@ -20,7 +20,8 @@ def state(**overrides):
 class Neo:
     def __init__(self):
         self.created, self.finished = [], []
-    def upsert_ticket(self, **kwargs):
+    def upsert_ticket(self, *, ticket_type, **kwargs):
+        assert ticket_type == "mobile_inference"
         self.created.append(kwargs)
         return "t"
     def claim_task(self, task, agent, **kwargs):
