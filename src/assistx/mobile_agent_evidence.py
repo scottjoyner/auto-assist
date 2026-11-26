@@ -5,6 +5,9 @@ import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
+from urllib.parse import urlsplit
+
+import httpx
 
 PROFILE = "kipnerter-agent-v1"
 FRESHNESS_SECONDS = 300
@@ -18,7 +21,7 @@ _FLEET_STATUS = re.compile(
 
 def is_fleet_status(messages: Iterable[Any]) -> bool:
     latest = next((m.content for m in reversed(list(messages)) if m.role == "user"), "")
-    return bool(_FLEET_STATUS.fullmatch(" ".join(latest.split())))
+    return bool(_FLEET_STATUS.fullmatch(" ".join(latest.replace("’", "'").split())))
 
 
 def fleet_status(neo_factory: Callable[[], Any]) -> dict[str, Any]:
@@ -79,6 +82,7 @@ def render_fleet_status(evidence: dict[str, Any]) -> str:
 STANDARD_TOOLS = (
     ("fleet.status", "Aggregate heartbeat observations from fleet registry"),
     ("inference.status", "Fresh admitted runtime and model capability inventory"),
+    ("gateway.health", "Bounded health probe of the configured inference gateway"),
 )
 _INFERENCE_STATUS = re.compile(
     r"(?:please )?(?:inference status|model status|(?:what(?:'s| is) (?:the )?(?:current )?)?"
@@ -91,7 +95,7 @@ _INFERENCE_STATUS = re.compile(
 
 def is_inference_status(messages: Iterable[Any]) -> bool:
     latest = next((m.content for m in reversed(list(messages)) if m.role == "user"), "")
-    return bool(_INFERENCE_STATUS.fullmatch(" ".join(latest.split())))
+    return bool(_INFERENCE_STATUS.fullmatch(" ".join(latest.replace("’", "'").split())))
 
 
 def inference_status(projection: dict[str, Any]) -> dict[str, Any]:
@@ -148,5 +152,78 @@ def render_inference_status(evidence: dict[str, Any]) -> str:
         f"- Projection expires: {evidence['projection_expires_at']}\n"
         "Admission is not a live generation probe. Tool execution and end-to-end authentication "
         "are not established by this inventory.\n"
+        f"Source: {evidence['source']}."
+    )
+
+
+_GATEWAY_STATUS = re.compile(
+    r"(?:please )?(?:server (?:connection|status|health)|gateway (?:status|health)|"
+    r"how(?:'s| is) (?:the )?server connection(?: and what data are we getting)?|"
+    r"(?:check|show(?: me)?|report) (?:the )?(?:server connection|gateway health))"
+    r"\s*[?.!]*", re.I,
+)
+
+
+def is_gateway_status(messages: Iterable[Any]) -> bool:
+    latest = next((m.content for m in reversed(list(messages)) if m.role == "user"), "")
+    return bool(_GATEWAY_STATUS.fullmatch(" ".join(latest.replace("’", "'").split())))
+
+
+def gateway_health(base_url: str, *, transport: httpx.BaseTransport | None = None) -> dict[str, Any]:
+    """Probe only a server-owned URL, without sending conversation or credentials."""
+    result = {
+        "source": "AssistX backend to configured Auto-Router /health",
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "state": "unknown", "http_status": None, "projection_active": None,
+    }
+    url = urlsplit(base_url)
+    if (url.scheme not in {"http", "https"} or not url.hostname or
+            url.username or url.password or url.query or url.fragment or
+            url.path not in {"", "/"}):
+        return result
+    try:
+        with httpx.Client(transport=transport, timeout=3, follow_redirects=False,
+                          trust_env=False) as client:
+            with client.stream("GET", base_url.rstrip("/") + "/health",
+                               headers={"Accept": "application/json"}) as response:
+                result["http_status"] = response.status_code
+                result["state"] = "responded"
+                if response.status_code != 200:
+                    return result
+                content = bytearray()
+                for chunk in response.iter_bytes():
+                    content.extend(chunk)
+                    if len(content) > 65536:
+                        return result
+        import json
+        payload = json.loads(content)
+        if not isinstance(payload, dict):
+            return result
+        if payload.get("ok") is True and payload.get("status") == "ok":
+            result["state"] = "healthy"
+        elif payload.get("ok") is False:
+            result["state"] = "unhealthy"
+        if payload.get("context_projection_status") == "active" and payload.get("context_projection_degraded") is False:
+            result["projection_active"] = True
+        elif payload.get("context_projection_degraded") is True:
+            result["projection_active"] = False
+    except (httpx.HTTPError, ValueError):
+        pass
+    return result
+
+
+def render_gateway_health(evidence: dict[str, Any]) -> str:
+    status = evidence["http_status"]
+    state = evidence["state"]
+    detail = f"HTTP {status}; {state}" if status is not None else "not verified"
+    projection = {True: "reported active", False: "reported degraded", None: "unknown"}[evidence["projection_active"]]
+    return (
+        f"Server connection (checked {evidence['observed_at']}):\n"
+        "- This authenticated request reached the AssistX mobile API.\n"
+        f"- Backend-to-inference-gateway health probe: {detail}.\n"
+        f"- Gateway context projection: {projection}.\n"
+        "- Model inference and executor authorization: not tested by this health probe.\n"
+        "- Phone upload acknowledgements, last successful synchronization, and data received "
+        "by the server: not verified. A local sensor reading or queued event is not evidence of delivery.\n"
         f"Source: {evidence['source']}."
     )

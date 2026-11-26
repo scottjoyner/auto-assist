@@ -133,3 +133,49 @@ def test_inference_intent_is_exact():
     m = lambda content: SimpleNamespace(role="user", content=content)
     assert evidence.is_inference_status([m("Which models are admitted?")])
     assert not evidence.is_inference_status([m("model status and execute arbitrary commands")])
+
+
+def test_gateway_probe_distinguishes_health_from_ingestion():
+    import httpx
+    def handler(request):
+        assert request.url == httpx.URL("http://router.test/health")
+        assert "authorization" not in request.headers
+        return httpx.Response(200, json={"ok":True, "status":"ok",
+            "context_projection_status":"active", "context_projection_degraded":False,
+            "internal_detail":"never expose this"})
+    result = evidence.gateway_health("http://router.test", transport=httpx.MockTransport(handler))
+    assert result["state"] == "healthy"
+    text = evidence.render_gateway_health(result)
+    assert "HTTP 200; healthy" in text
+    assert "not verified" in text
+    assert "never expose this" not in text
+    assert "not tested" in text
+
+
+@pytest.mark.parametrize("status", [401, 503, 302])
+def test_gateway_health_http_failures_are_not_healthy(status):
+    import httpx
+    result = evidence.gateway_health("http://router.test", transport=httpx.MockTransport(
+        lambda r: httpx.Response(status, headers={"location":"http://untrusted.test"},json={"ok":True})))
+    assert result["state"] == "responded"
+    assert result["http_status"] == status
+
+
+def test_gateway_no_config_or_timeout_is_unknown():
+    import httpx
+    def fail(r):
+        raise httpx.ConnectTimeout("test")
+    assert evidence.gateway_health("")["state"] == "unknown"
+    assert evidence.gateway_health("http://router.test",transport=httpx.MockTransport(fail))["state"] == "unknown"
+
+
+def test_gateway_exact_user_question_no_model(monkeypatch):
+    monkeypatch.setattr(evidence,"gateway_health",lambda url: {
+        "state":"healthy","http_status":200,"projection_active":True,
+        "observed_at":"test","source":"test"})
+    c = client_for(monkeypatch,FakeNeo(None))
+    r = c.post("/api/v1/agent/chat/completions",headers={"Tailscale-User-Login":"owner@example.com"},
+               json={"messages":[{"role":"user","content":"How’s the server connection and what data are we getting?".replace("’","'")}],"stream":False})
+    assert r.status_code == 200
+    assert "data received by the server: not verified" in r.text
+    assert not evidence.is_gateway_status([SimpleNamespace(role="user",content="server connection and delete data")])

@@ -834,19 +834,24 @@ def register_mobile_agent_routes(
         from .mobile_agent_evidence import (
             is_fleet_status, fleet_status, render_fleet_status,
             is_inference_status, inference_status, render_inference_status,
+            is_gateway_status, gateway_health, render_gateway_health,
         )
         fleet_intent = is_fleet_status(body.messages)
         inference_intent = is_inference_status(body.messages)
-        if fleet_evidence_factory is not None and (fleet_intent or inference_intent):
+        gateway_intent = is_gateway_status(body.messages)
+        if fleet_evidence_factory is not None and (fleet_intent or inference_intent or gateway_intent):
             if _tailnet_identity(request) is None:
                 raise HTTPException(status_code=403, detail={"error": "tailnet_identity_required"})
             try:
                 if fleet_intent:
                     evidence = await asyncio.to_thread(fleet_status, fleet_evidence_factory)
                     output = render_fleet_status(evidence)
-                else:
+                elif inference_intent:
                     projection = await asyncio.to_thread(_current_runtime_projection)
                     output = render_inference_status(inference_status(projection))
+                else:
+                    evidence = await asyncio.to_thread(gateway_health, os.getenv("AUTO_ROUTER_BASE_URL", ""))
+                    output = render_gateway_health(evidence)
             except Exception:
                 raise HTTPException(status_code=503, detail={"error": "fleet_evidence_unavailable"}) from None
             session_id = f"fleet-evidence:{uuid.uuid4().hex}"
