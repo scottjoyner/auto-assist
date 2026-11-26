@@ -186,6 +186,13 @@ def _mobile_agent_failure_code(result: dict[str, Any]) -> str:
     )
     if any(marker in diagnostic for marker in projection_markers):
         return "runtime_projection_unavailable"
+    credential_markers = (
+        "executor token must contain three segments",
+        "executor_task_token_missing",
+        "invalid executor bootstrap token",
+    )
+    if any(marker in diagnostic for marker in credential_markers) or result.get("error") == "executor_task_token_missing":
+        return "agent_executor_credential_unavailable"
     return str(result.get("error") or "hermes_execution_failed")[:240]
 
 
@@ -819,6 +826,22 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
         # enforce the optional Kipnerter login allowlist here as well. Basic
         # auth remains available as an explicit legacy operator fallback.
         _tailnet_identity(request)
+
+        # The mobile route must respect the same runtime admission view it
+        # publishes to clients. Do not start Hermes when no agent runtime is
+        # admitted, and never interpret catalog failure as permission to run.
+        try:
+            catalog = await asyncio.to_thread(_mobile_runtime_catalog)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "runtime_projection_unavailable", "executor": "hermes"},
+            ) from exc
+        if catalog.get("agent_auto_available") is not True:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "agent_runtime_unavailable", "executor": "hermes"},
+            )
 
         prompt = _prompt_from_messages(body.messages)
         model_override = _requested_hermes_model(body.model)

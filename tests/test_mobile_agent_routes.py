@@ -229,6 +229,7 @@ def test_current_runtime_projection_calls_real_v2_export_name(monkeypatch):
 
 
 def test_agent_chat_invokes_hermes_server_side_and_streams_openai_sse(monkeypatch):
+    monkeypatch.setattr(mobile, "_mobile_runtime_catalog", lambda: {"agent_auto_available": True})
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
     monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
     captured = {}
@@ -279,6 +280,7 @@ def test_agent_chat_invokes_hermes_server_side_and_streams_openai_sse(monkeypatc
 
 
 def test_agent_chat_returns_gateway_failure_when_hermes_fails(monkeypatch):
+    monkeypatch.setattr(mobile, "_mobile_runtime_catalog", lambda: {"agent_auto_available": True})
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
     monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
     monkeypatch.setattr(
@@ -307,6 +309,7 @@ def test_agent_chat_returns_gateway_failure_when_hermes_fails(monkeypatch):
 
 
 def test_agent_chat_maps_projection_failure_to_stable_mobile_error(monkeypatch):
+    monkeypatch.setattr(mobile, "_mobile_runtime_catalog", lambda: {"agent_auto_available": True})
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
     monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
     monkeypatch.setattr(
@@ -342,3 +345,42 @@ def test_agent_chat_maps_projection_failure_to_stable_mobile_error(monkeypatch):
     }
     assert "signed AssistX" not in response.text
     assert "internal executor trace" not in response.text
+
+
+def test_agent_chat_rejects_unadmitted_runtime_without_spawning_hermes(monkeypatch):
+    monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
+    monkeypatch.setattr(mobile, "_mobile_runtime_catalog", lambda: {"agent_auto_available": False})
+    def forbidden(*args, **kwargs):
+        raise AssertionError("unadmitted Hermes subprocess")
+    monkeypatch.setattr(mobile, "_run_hermes", forbidden)
+    response = TestClient(_app()).post("/api/v1/agent/chat/completions", headers={"Tailscale-User-Login": "scott@example.com"}, json={"messages": [{"role": "user", "content": "hello"}]})
+    assert response.status_code == 503
+    assert response.json()["detail"] == {"error": "agent_runtime_unavailable", "executor": "hermes"}
+
+
+def test_agent_chat_fails_closed_if_catalog_unavailable(monkeypatch):
+    monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
+    def unavailable():
+        raise RuntimeError("private catalog diagnostic")
+    monkeypatch.setattr(mobile, "_mobile_runtime_catalog", unavailable)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("unexpected Hermes invocation")
+    monkeypatch.setattr(mobile, "_run_hermes", forbidden)
+    response = TestClient(_app()).post("/api/v1/agent/chat/completions", headers={"Tailscale-User-Login": "scott@example.com"}, json={"messages": [{"role": "user", "content": "hello"}]})
+    assert response.status_code == 503
+    assert response.json()["detail"]["error"] == "runtime_projection_unavailable"
+    assert "private catalog diagnostic" not in response.text
+
+
+def test_agent_chat_classifies_executor_credential_failure_without_leak(monkeypatch):
+    monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
+    monkeypatch.setattr(mobile, "_mobile_runtime_catalog", lambda: {"agent_auto_available": True})
+    monkeypatch.setattr(mobile, "_run_hermes", lambda *a, **kw: {"success": False, "error": "exit_code_1", "output": 'HTTP 401: {"detail":"executor token must contain three segments"}', "stderr": "private executor diagnostic"})
+    response = TestClient(_app()).post("/api/v1/agent/chat/completions", headers={"Tailscale-User-Login": "scott@example.com"}, json={"messages": [{"role": "user", "content": "hello"}]})
+    assert response.status_code == 503
+    assert response.json()["detail"] == {"error": "agent_executor_credential_unavailable", "executor": "hermes"}
+    assert "three segments" not in response.text
+    assert "private executor diagnostic" not in response.text
