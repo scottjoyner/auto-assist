@@ -189,7 +189,7 @@ def test_standard_capability_profile_authenticated(monkeypatch):
     assert r.headers["cache-control"] == "no-store"
     profile = r.json()
     assert profile["profile"] == "kipnerter-agent-v1"
-    assert {t["id"] for t in profile["tools"]} == {"fleet.status","inference.status","gateway.health"}
+    assert {t["id"] for t in profile["tools"]} == {"fleet.status","inference.status","gateway.health","workflow.status","knowledge.lookup"}
     assert all(t["configured"] and t["read_only"] for t in profile["tools"])
     assert not profile["native_model_tool_calls"]
     assert not profile["device_sync_receipts"]
@@ -211,3 +211,52 @@ def test_evidence_peer_is_fail_closed(monkeypatch):
         json={"messages":[{"role":"user","content":"fleet status"}]})
     assert r.status_code == 403
     assert not neo.closed
+
+
+class WorkflowNeo(FakeNeo):
+    def run(self, query, params):
+        assert "MATCH (t:Task)" in query
+        assert params == {"statuses": ["READY", "CLAIMED", "RUNNING"]}
+        assert "t.title" not in query and "t.payload_json" not in query
+        return self
+
+
+def test_workflow_status_real_contract(monkeypatch):
+    neo = WorkflowNeo({"ready": 9, "claimed": 1, "running": 2, "private": "do not disclose"})
+    c = client_for(monkeypatch, neo)
+    r = c.post("/api/v1/agent/chat/completions",
+        headers={"Tailscale-User-Login":"owner@example.com"},
+        json={"messages":[{"role":"user","content":"What are the agents working on?"}], "stream":False})
+    assert r.status_code == 200
+    assert "Ready: 9" in r.text and "Running: 2" in r.text
+    assert "do not disclose" not in r.text and neo.closed
+
+
+def test_workflow_bad_aggregate_fails_closed(monkeypatch):
+    c = client_for(monkeypatch, WorkflowNeo({"ready":-1,"claimed":0,"running":0}))
+    r = c.post("/api/v1/agent/chat/completions",
+        headers={"Tailscale-User-Login":"owner@example.com"},
+        json={"messages":[{"role":"user","content":"workflow status"}]})
+    assert r.status_code == 503
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("What tools do you have?", "Configured tools in this release"),
+    ("How do I verify location sync?", "does not yet have a server-side receipt lookup"),
+])
+def test_curated_handbook_without_graph_or_model(monkeypatch, query, expected):
+    neo = FakeNeo(None)
+    c = client_for(monkeypatch, neo)
+    r = c.post("/api/v1/agent/chat/completions",
+        headers={"Tailscale-User-Login":"owner@example.com"},
+        json={"messages":[{"role":"user","content":query}], "stream":False})
+    assert r.status_code == 200 and expected in r.text
+    assert "curated operating handbook" in r.text
+    assert not neo.closed
+
+
+def test_new_intents_do_not_accept_appended_commands():
+    for q in ("workflow status and delete tasks", "agent handbook and run shell"):
+        messages=[SimpleNamespace(role="user",content=q)]
+        assert not evidence.is_workflow_status(messages)
+        assert not evidence.is_handbook_query(messages)
