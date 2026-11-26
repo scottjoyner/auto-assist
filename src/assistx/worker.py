@@ -236,43 +236,44 @@ def main():
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
     concurrency = max(1, int(os.getenv("WORKER_CONCURRENCY", "1")))
 
-    from .worker_supervision import shutdown_flag, supervise
+    from .worker_supervision import launch_children, shutdown_flag, supervise
 
-    # The parent owns shutdown for every configured concurrency, including one.
-    # Start children before explicit execution/health threads are created.
-    # Linux deployment uses fork to inherit the warmed import chain.
+    # Install the parent handler before creating any child. Forked children
+    # reset inherited handlers before unblocking termination signals.
     ctx = mp.get_context("fork")
-    processes: list[mp.Process] = []
-    for i in range(concurrency):
-        p = ctx.Process(
-            target=_run_one_worker,
-            args=(i + 1, listen, redis_url),
-            daemon=False,
-        )
-        p.start()
-        processes.append(p)
-
     stop_event = threading.Event()
     background = []
     with shutdown_flag() as stopping:
+        processes, startup_error = launch_children(
+            ctx, concurrency, _run_one_worker,
+            lambda i: (i + 1, listen, redis_url), stopping,
+        )
+        if startup_error:
+            logger.error("worker startup failed: %s", startup_error)
+        # No direct execution or health admission after an incomplete startup.
+        t = None
         try:
-            background.extend(_start_execution_pollers(stop_event))
-            controller = _start_recovery_island_controller(stop_event)
-            if controller is not None:
-                background.append(controller)
-            t = threading.Thread(target=_health_server, args=(stop_event,), daemon=True)
-            t.start()
+            if not stopping() and not startup_error and len(processes) == concurrency:
+                background.extend(_start_execution_pollers(stop_event))
+                controller = _start_recovery_island_controller(stop_event)
+                if controller is not None:
+                    background.append(controller)
+                t = threading.Thread(target=_health_server, args=(stop_event,), daemon=True)
+                t.start()
             exit_code = supervise(
                 processes, stopping, on_shutdown=stop_event.set,
                 fail_on_child_exit=True,
-                faulted=lambda: not t.is_alive() or any(not thread.is_alive() for thread in background),
+                faulted=lambda: bool(startup_error or len(processes) != concurrency
+                                     or t is None or not t.is_alive()
+                                     or any(not thread.is_alive() for thread in background)),
             )
+            if startup_error and not exit_code:
+                exit_code = 70
         finally:
             stop_event.set()
-            # Keep the parent alive for in-flight execution rather than
-            # terminating non-daemon pollers or issuing a second RQ signal.
             for thread in background:
                 thread.join()
+
     if exit_code:
         raise SystemExit(exit_code)
 
