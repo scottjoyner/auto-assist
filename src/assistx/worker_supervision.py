@@ -17,7 +17,7 @@ def shutdown_flag():
     finally:
         for signum,handler in previous.items():signal.signal(signum,handler)
 
-def supervise(processes,stopping,*,grace_seconds=120,poll_seconds=.1):
+def supervise(processes,stopping,*,grace_seconds=120,poll_seconds=.1,on_shutdown=None):
     """Forward one warm shutdown signal; report timeout without SIGKILL.
 
     A child that stays busy can keep the parent alive through Python's
@@ -31,6 +31,7 @@ def supervise(processes,stopping,*,grace_seconds=120,poll_seconds=.1):
             return next((p.exitcode for p in processes if p.exitcode not in (0,None)),0)
         if stopping() and deadline is None:
             deadline=time.monotonic()+grace_seconds
+            if on_shutdown is not None:on_shutdown()
             for p in alive:
                 try:p.terminate()
                 except ProcessLookupError:pass

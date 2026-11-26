@@ -104,7 +104,7 @@ def _run_one_worker(index: int, listen: list[str], redis_url: str) -> None:
         w.work(with_scheduler=False)
 
 
-def _start_execution_pollers() -> list[threading.Thread]:
+def _start_execution_pollers(stop_event: threading.Event) -> list[threading.Thread]:
     """W-22: start execution-authority pollers behind a single config switch.
 
     ``EXECUTION_BACKEND`` (paperclip|direct|auto) decides which execution
@@ -121,17 +121,17 @@ def _start_execution_pollers() -> list[threading.Thread]:
             from .paperclip_poller import paperclip_poll_job
 
             def _paperclip_loop() -> None:
-                while True:
+                while not stop_event.is_set():
                     try:
                         paperclip_poll_job()
                     except Exception as exc:  # pragma: no cover
                         logger.warning("paperclip poller error: %s", exc)
-                    time.sleep(int(os.getenv("PAPERCLIP_POLL_INTERVAL", "30")))
+                    stop_event.wait(int(os.getenv("PAPERCLIP_POLL_INTERVAL", "30")))
 
             t = threading.Thread(
                 target=_paperclip_loop,
                 name="paperclip-poller",
-                daemon=True,
+                daemon=False,
             )
             t.start()
             threads.append(t)
@@ -149,8 +149,9 @@ def _start_execution_pollers() -> list[threading.Thread]:
 
             t = threading.Thread(
                 target=hermes_run_loop,
+                kwargs={"stopping": stop_event.is_set},
                 name="hermes-adapter-poller",
-                daemon=True,
+                daemon=False,
             )
             t.start()
             threads.append(t)
@@ -173,12 +174,12 @@ def _start_execution_pollers() -> list[threading.Thread]:
     return threads
 
 
-def _start_recovery_island_controller() -> threading.Thread | None:
+def _start_recovery_island_controller(stop_event: threading.Event) -> threading.Thread | None:
     """Start the Neo4j-fenced Beelink dispatcher when explicitly enabled."""
     try:
         from .recovery_island_control import start_recovery_island_dispatcher
 
-        thread = start_recovery_island_dispatcher()
+        thread = start_recovery_island_dispatcher(stop_event=stop_event)
         if thread is not None:
             logger.info("fenced recovery-island dispatcher started")
         return thread
@@ -226,26 +227,19 @@ def main():
                 logger.warning("parent warmup import of %s failed: %s", _m, exc)
     except Exception as exc:  # pragma: no cover
         logger.warning("parent warmup failed: %s", exc)
-    _start_execution_pollers()
-    _start_recovery_island_controller()
     listen = [os.getenv("RQ_QUEUE", "assistx")]
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
     concurrency = max(1, int(os.getenv("WORKER_CONCURRENCY", "1")))
 
-    t = threading.Thread(target=_health_server, daemon=True)
-    t.start()
-
-    if concurrency == 1:
-        _run_one_worker(1, listen, redis_url)
-        return
-
     from .worker_supervision import shutdown_flag, supervise
 
-    # Fork children before installing the parent's signal handler, so RQ
-    # retains its own warm-shutdown signal handling inside each child.
+    # The parent owns shutdown for every configured concurrency, including one.
+    # Start children before explicit execution/health threads are created.
+    # Linux deployment uses fork to inherit the warmed import chain.
+    ctx = mp.get_context("fork")
     processes: list[mp.Process] = []
     for i in range(concurrency):
-        p = mp.Process(
+        p = ctx.Process(
             target=_run_one_worker,
             args=(i + 1, listen, redis_url),
             daemon=False,
@@ -253,8 +247,23 @@ def main():
         p.start()
         processes.append(p)
 
+    stop_event = threading.Event()
+    background = []
     with shutdown_flag() as stopping:
-        exit_code = supervise(processes, stopping)
+        try:
+            background.extend(_start_execution_pollers(stop_event))
+            controller = _start_recovery_island_controller(stop_event)
+            if controller is not None:
+                background.append(controller)
+            t = threading.Thread(target=_health_server, daemon=True)
+            t.start()
+            exit_code = supervise(processes, stopping, on_shutdown=stop_event.set)
+        finally:
+            stop_event.set()
+            # Keep the parent alive for in-flight execution rather than
+            # terminating non-daemon pollers or issuing a second RQ signal.
+            for thread in background:
+                thread.join()
     if exit_code:
         raise SystemExit(exit_code)
 

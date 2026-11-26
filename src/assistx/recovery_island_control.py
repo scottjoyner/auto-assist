@@ -374,6 +374,7 @@ class RecoveryIslandDispatcher:
 
 def start_recovery_island_dispatcher(
     neo_factory: Callable[[], Any] = Neo4jClient,
+    *, stop_event: threading.Event | None = None,
 ) -> threading.Thread | None:
     enabled = os.getenv(
         "ASSISTX_RECOVERY_ISLAND_DISPATCH_ENABLED",
@@ -388,19 +389,22 @@ def start_recovery_island_dispatcher(
     dispatcher = RecoveryIslandDispatcher(neo_factory)
 
     def loop() -> None:
-        while True:
+        while stop_event is None or not stop_event.is_set():
             try:
                 result = dispatcher.tick()
                 if result.get("proposal_count"):
                     logger.info("recovery-island dispatch tick: %s", result)
             except Exception as exc:  # pragma: no cover - resilience loop
                 logger.warning("recovery-island dispatcher failed safely: %s", exc)
-            time.sleep(interval)
+            if stop_event is None:
+                time.sleep(interval)
+            elif stop_event.wait(interval):
+                break
 
     thread = threading.Thread(
         target=loop,
         name="recovery-island-dispatcher",
-        daemon=True,
+        daemon=stop_event is None,
     )
     thread.start()
     return thread
