@@ -6,6 +6,7 @@ does not cover RQ, passive claims, external dispatchers or legacy binaries.
 """
 from contextlib import contextmanager
 import os
+from neo4j.exceptions import ResultNotSingleError
 
 LOCK_QUERY = """
 MATCH (g:DirectClaimAdmission {id:'global'})
@@ -24,7 +25,10 @@ def direct_claim_scope(session):
         yield session, "unavailable"
         return
     with session.begin_transaction(timeout=10) as tx:
-        row = tx.run(LOCK_QUERY).single()
+        try:
+            row = tx.run(LOCK_QUERY).single(strict=True)
+        except ResultNotSingleError:
+            row = None
         mode = row.get("mode") if row else None
         revision = row.get("revision") if row else None
         if mode not in {"open", "closed"} or type(revision) is not int or revision < 0:
@@ -43,8 +47,11 @@ def set_direct_claim_admission(session, *, mode, expected_revision):
     if mode not in {"open", "closed"} or type(expected_revision) is not int or expected_revision < 0:
         raise ValueError("invalid direct admission change")
     with session.begin_transaction(timeout=10) as tx:
-        row = tx.run(LOCK_QUERY).single()
-        if not row or row.get("mode") not in {"open", "closed"} or row.get("revision") != expected_revision:
+        try:
+            row = tx.run(LOCK_QUERY).single(strict=True)
+        except ResultNotSingleError:
+            row = None
+        if not row or row.get("mode") not in {"open", "closed"} or type(row.get("revision")) is not int or row.get("revision") != expected_revision:
             return {"changed": False, "reason": "revision_conflict_or_missing"}
         updated = tx.run(
             """MATCH (g:DirectClaimAdmission {id:'global'})

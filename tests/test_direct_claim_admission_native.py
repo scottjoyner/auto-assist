@@ -70,3 +70,50 @@ class DirectAdmissionTests(unittest.TestCase):
         with patch.dict("os.environ",{"ASSISTX_DIRECT_CLAIM_FENCE_REQUIRED":"typo"}):
             self.assertFalse(n.claim_task("fixture-task","fixture-agent")["claimed"])
         s.run.assert_not_called();tx.run.assert_not_called()
+
+class MaintenanceTransitionTests(unittest.TestCase):
+    def fixture(self, row, updated=None):
+        from assistx.direct_claim_admission import set_direct_claim_admission
+        s=MagicMock()
+        tx=s.begin_transaction.return_value.__enter__.return_value
+        tx.run.return_value.single.side_effect=[row,updated]
+        return s,tx,set_direct_claim_admission
+    def test_close_uses_same_lock_and_commits_new_revision(self):
+        s,tx,change=self.fixture({"mode":"open","revision":4},{"mode":"closed","revision":5})
+        self.assertEqual(change(s,mode="closed",expected_revision=4),{"changed":True,"mode":"closed","revision":5})
+        self.assertIn("SET g.lock_sequence",tx.run.call_args_list[0].args[0])
+        self.assertEqual(tx.run.call_args_list[1].args[1],{"mode":"closed","revision":5})
+        tx.commit.assert_called_once()
+    def test_stale_reopen_cannot_change_gate(self):
+        s,tx,change=self.fixture({"mode":"closed","revision":5})
+        self.assertFalse(change(s,mode="open",expected_revision=4)["changed"])
+        self.assertEqual(tx.run.call_count,1)
+        tx.commit.assert_not_called()
+    def test_missing_singleton_does_not_create_gate(self):
+        s,tx,change=self.fixture(None)
+        self.assertFalse(change(s,mode="open",expected_revision=0)["changed"])
+        self.assertEqual(tx.run.call_count,1)
+        tx.commit.assert_not_called()
+    def test_update_without_witness_rolls_back(self):
+        s,tx,change=self.fixture({"mode":"open","revision":4},None)
+        with self.assertRaises(RuntimeError):change(s,mode="closed",expected_revision=4)
+        tx.commit.assert_not_called()
+    def test_invalid_mode_and_revision_rejected(self):
+        s,tx,change=self.fixture(None)
+        for mode,rev in [("unknown",4),("open",True),("closed",-1)]:
+            with self.assertRaises(ValueError):change(s,mode=mode,expected_revision=rev)
+        s.begin_transaction.assert_not_called()
+    def test_ambiguous_singleton_fails_closed(self):
+        from neo4j.exceptions import ResultNotSingleError
+        n,s,tx=DirectAdmissionTests().fixture()
+        tx.run.return_value.single.side_effect=ResultNotSingleError("duplicate")
+        tx.run.side_effect=None
+        self.assertEqual(DirectAdmissionTests().claim(n)["reason"],"direct_claim_admission_unavailable")
+        tx.commit.assert_not_called()
+    def test_ambiguous_transition_never_updates(self):
+        from neo4j.exceptions import ResultNotSingleError
+        s,tx,change=self.fixture(None)
+        tx.run.return_value.single.side_effect=ResultNotSingleError("duplicate")
+        self.assertFalse(change(s,mode="closed",expected_revision=4)["changed"])
+        self.assertEqual(tx.run.call_count,1)
+        tx.commit.assert_not_called()
