@@ -831,13 +831,24 @@ def register_mobile_agent_routes(
 
         # Only the explicitly allowlisted Tailnet identity can access the
         # aggregate fleet tool. Legacy Basic and generic chat remain unchanged.
-        from .mobile_agent_evidence import is_fleet_status, fleet_status, render_fleet_status
-        if fleet_evidence_factory is not None and _tailnet_identity(request) is not None and is_fleet_status(body.messages):
+        from .mobile_agent_evidence import (
+            is_fleet_status, fleet_status, render_fleet_status,
+            is_inference_status, inference_status, render_inference_status,
+        )
+        fleet_intent = is_fleet_status(body.messages)
+        inference_intent = is_inference_status(body.messages)
+        if fleet_evidence_factory is not None and (fleet_intent or inference_intent):
+            if _tailnet_identity(request) is None:
+                raise HTTPException(status_code=403, detail={"error": "tailnet_identity_required"})
             try:
-                evidence = await asyncio.to_thread(fleet_status, fleet_evidence_factory)
-                output = render_fleet_status(evidence)
+                if fleet_intent:
+                    evidence = await asyncio.to_thread(fleet_status, fleet_evidence_factory)
+                    output = render_fleet_status(evidence)
+                else:
+                    projection = await asyncio.to_thread(_current_runtime_projection)
+                    output = render_inference_status(inference_status(projection))
             except Exception:
-                raise HTTPException(status_code=503, detail={"error": "fleet_evidence_unavailable"})
+                raise HTTPException(status_code=503, detail={"error": "fleet_evidence_unavailable"}) from None
             session_id = f"fleet-evidence:{uuid.uuid4().hex}"
             response_model = "kipnerter-agent-v1"
             headers = {

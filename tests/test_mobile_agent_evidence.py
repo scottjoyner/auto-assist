@@ -94,3 +94,42 @@ def test_latest_user_and_exact_intent():
 
 def test_auth_failure_code_is_redacted():
     assert mobile._mobile_agent_failure_code({"output": 'HTTP 401: {"detail":"executor token must contain three segments"}', "error": "exit_code_1"}) == "executor_authentication_failed"
+
+
+def test_inference_inventory_fresh_and_redacted(monkeypatch):
+    import time
+    now = int(time.time()*1000)
+    monkeypatch.setattr(mobile, "_current_runtime_projection", lambda: {
+        "generated_at_ms": now-1000, "expires_at_ms": now+60000,
+        "providers": [
+            {"enabled": True, "base_url": "http://secret.example",
+             "models": [{"alias": "ornith-35b", "capabilities": ["chat"]}]},
+            {"enabled": False, "models": [{"alias":"lfm3", "capabilities":["tools"]}]},
+        ],
+    })
+    c = client_for(monkeypatch, FakeNeo(None))
+    r = c.post("/api/v1/agent/chat/completions",
+               headers={"Tailscale-User-Login":"owner@example.com"},
+               json={"stream":False,"messages":[{"role":"user","content":"What models are available?"}]})
+    assert r.status_code == 200
+    assert "ornith" in r.text
+    assert "secret.example" not in r.text
+    assert "lfm3" not in r.text
+    assert "advertising tools: 0" in r.text
+    assert "not a live generation probe" in r.text
+
+
+def test_inference_inventory_stale_fails_closed(monkeypatch):
+    monkeypatch.setattr(mobile, "_current_runtime_projection", lambda: {
+        "generated_at_ms":1, "expires_at_ms":2, "providers":[]})
+    c = client_for(monkeypatch, FakeNeo(None))
+    r = c.post("/api/v1/agent/chat/completions",
+               headers={"Tailscale-User-Login":"owner@example.com"},
+               json={"messages":[{"role":"user","content":"inference status"}]})
+    assert r.status_code == 503
+
+
+def test_inference_intent_is_exact():
+    m = lambda content: SimpleNamespace(role="user", content=content)
+    assert evidence.is_inference_status([m("Which models are admitted?")])
+    assert not evidence.is_inference_status([m("model status and execute arbitrary commands")])
