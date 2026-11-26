@@ -53,6 +53,45 @@ def launch_children(ctx,count,target,args_for_index,stopping):
     return processes,None
 
 
+def readiness_worker_class(base,ready):
+    """Emit an acknowledgement only after RQ installs its real handlers."""
+    class ReadyWorker(base):
+        def _install_signal_handlers(self):
+            super()._install_signal_handlers()
+            try:
+                ready.send_bytes(b"RQ_READY_V1")
+            finally:
+                ready.close()
+    return ReadyWorker
+
+
+def wait_child_readiness(processes,readers,stopping,*,timeout=60,poll_seconds=.05):
+    """One bounded readiness window for the whole group, never per-child."""
+    if len(processes)!=len(readers) or not processes:
+        return "readiness_incomplete"
+    pending=set(range(len(processes)))
+    deadline=time.monotonic()+timeout
+    while True:
+        if stopping():
+            return "shutdown_requested"
+        if any(not p.is_alive() for p in processes):
+            return "child_exited"
+        for i in tuple(pending):
+            try:
+                if readers[i].poll(0):
+                    if readers[i].recv_bytes(32)!=b"RQ_READY_V1":
+                        return "readiness_invalid"
+                    pending.remove(i)
+            except (OSError,EOFError):
+                return "readiness_channel_failed"
+        if not pending:
+            return "shutdown_requested" if stopping() else (
+                "child_exited" if any(not p.is_alive() for p in processes) else None)
+        if time.monotonic()>=deadline:
+            return "readiness_timeout"
+        time.sleep(poll_seconds)
+
+
 def supervise(processes,stopping,*,grace_seconds=120,poll_seconds=.1,on_shutdown=None,
               fail_on_child_exit=False,faulted=None):
     """Forward one warm shutdown signal; report timeout without SIGKILL.

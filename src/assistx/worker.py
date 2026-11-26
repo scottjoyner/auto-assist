@@ -79,7 +79,7 @@ def _health_server(stop_event: threading.Event) -> None:
                     continue
 
 
-def _run_one_worker(index: int, listen: list[str], redis_url: str) -> None:
+def _run_one_worker(index: int, listen: list[str], redis_url: str, ready) -> None:
     conn = redis.from_url(redis_url)
     worker_name = _worker_name(index)
     # Agent loops (decide + tool calls + retries) can run well past RQ's
@@ -105,7 +105,8 @@ def _run_one_worker(index: int, listen: list[str], redis_url: str) -> None:
         # with_scheduler=False: RQ's scheduler spawns a background thread that
         # imports concurrently and races on the import lock; we don't need the
         # scheduler (the drainer enqueues directly).
-        w = SimpleWorker(queues, name=worker_name)
+        from .worker_supervision import readiness_worker_class
+        w = readiness_worker_class(SimpleWorker, ready)(queues, name=worker_name)
         w.work(with_scheduler=False)
 
 
@@ -236,7 +237,7 @@ def main():
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
     concurrency = max(1, int(os.getenv("WORKER_CONCURRENCY", "1")))
 
-    from .worker_supervision import launch_children, shutdown_flag, supervise
+    from .worker_supervision import launch_children, shutdown_flag, supervise, wait_child_readiness
 
     # Install the parent handler before creating any child. Forked children
     # reset inherited handlers before unblocking termination signals.
@@ -244,10 +245,24 @@ def main():
     stop_event = threading.Event()
     background = []
     with shutdown_flag() as stopping:
-        processes, startup_error = launch_children(
-            ctx, concurrency, _run_one_worker,
-            lambda i: (i + 1, listen, redis_url), stopping,
-        )
+        channels = [ctx.Pipe(duplex=False) for _ in range(concurrency)]
+        try:
+            processes, startup_error = launch_children(
+                ctx, concurrency, _run_one_worker,
+                lambda i: (i + 1, listen, redis_url, channels[i][1]), stopping,
+            )
+            for reader, writer in channels:
+                writer.close()
+            if not startup_error and not stopping():
+                startup_error = wait_child_readiness(
+                    processes, [reader for reader, _ in channels], stopping,
+                )
+                if startup_error == "shutdown_requested":
+                    startup_error = None
+        finally:
+            for reader, writer in channels:
+                reader.close()
+                writer.close()
         if startup_error:
             logger.error("worker startup failed: %s", startup_error)
         # No direct execution or health admission after an incomplete startup.
@@ -255,11 +270,16 @@ def main():
         try:
             if not stopping() and not startup_error and len(processes) == concurrency:
                 background.extend(_start_execution_pollers(stop_event))
+                expected = 2 if settings.execution_backend == "auto" else 1
+                if len(background) != expected:
+                    startup_error = "execution_poller_startup_incomplete"
+                    stop_event.set()
                 controller = _start_recovery_island_controller(stop_event)
                 if controller is not None:
                     background.append(controller)
-                t = threading.Thread(target=_health_server, args=(stop_event,), daemon=True)
-                t.start()
+                if not startup_error and not stopping():
+                    t = threading.Thread(target=_health_server, args=(stop_event,), daemon=True)
+                    t.start()
             exit_code = supervise(
                 processes, stopping, on_shutdown=stop_event.set,
                 fail_on_child_exit=True,
