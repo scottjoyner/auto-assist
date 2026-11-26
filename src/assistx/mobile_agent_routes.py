@@ -601,6 +601,29 @@ def _mobile_router_config() -> tuple[str, str]:
     return base_url, token
 
 
+def _mobile_model_upstream_failure(response: Any) -> str:
+    """Map router failures to a fixed mobile-safe vocabulary, never raw text."""
+    status = response.status_code
+    if status in (401, 403):
+        return "fleet_model_router_authentication_failed"
+    if status == 429:
+        return "fleet_model_capacity_unavailable"
+    if status == 504:
+        return "fleet_model_router_timeout"
+    if status == 503:
+        try:
+            detail = response.json().get("detail")
+        except (ValueError, TypeError, AttributeError):
+            detail = None
+        if isinstance(detail, dict):
+            error = detail.get("error")
+            if error == "no provider satisfies required capabilities":
+                return "fleet_model_no_eligible_runtime"
+            if error == "all providers failed" and detail.get("details") == []:
+                return "fleet_model_no_eligible_runtime"
+    return "fleet_model_unavailable"
+
+
 def _mobile_model_router_payload(
     body: MobileModelChatIn,
     resolved: dict[str, Any],
@@ -827,7 +850,8 @@ def register_mobile_agent_routes(
                 if response.status_code >= 400:
                     raise HTTPException(
                         status_code=503,
-                        detail={"error": "fleet_model_unavailable"},
+                        detail={"error": _mobile_model_upstream_failure(response)},
+                        headers=response_headers,
                     )
                 decoded = response.json()
                 if not isinstance(decoded, dict):
@@ -860,12 +884,18 @@ def register_mobile_agent_routes(
                 detail={"error": "fleet_model_unavailable"},
             ) from exc
         if response.status_code >= 400:
-            await response.aread()
-            await stream_context.__aexit__(None, None, None)
-            await client.aclose()
+            try:
+                await response.aread()
+                error = _mobile_model_upstream_failure(response)
+            except httpx.HTTPError:
+                error = "fleet_model_unavailable"
+            finally:
+                await stream_context.__aexit__(None, None, None)
+                await client.aclose()
             raise HTTPException(
                 status_code=503,
-                detail={"error": "fleet_model_unavailable"},
+                detail={"error": error},
+                headers=response_headers,
             )
         return StreamingResponse(
             _sanitized_router_stream(
