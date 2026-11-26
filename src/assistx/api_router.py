@@ -131,7 +131,7 @@ async def _scoped_mobile_inference(messages):
         projection = await asyncio.to_thread(_current_runtime_projection)
         return await execute_mobile_inference(
             messages, neo_factory=_neo, admission=admission,
-            projection=projection, router_url=os.getenv("FLEET_ROUTER_URL", ""),
+            projection=projection, router_url=os.getenv("AUTO_ROUTER_BASE_URL", ""),
         )
 
 register_mobile_agent_routes(_mobile_router, auth, fleet_evidence_factory=_neo,
