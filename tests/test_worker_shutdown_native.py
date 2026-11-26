@@ -1,5 +1,7 @@
 """Offline supervisor shutdown tests; no Redis, network or real fleet jobs."""
 import importlib.util
+import os
+import subprocess
 import pathlib
 import signal
 import sys
@@ -47,3 +49,42 @@ class ShutdownTests(unittest.TestCase):
         m=self.load();a=Child(finish_on_signal=False)
         self.assertEqual(m.supervise([a],lambda:True,grace_seconds=.002,poll_seconds=.001),75)
         self.assertEqual(a.terminated,1)
+
+    def test_real_parent_sigterm_drains_two_children(self):
+        # No live worker or broker: isolated subprocess, real OS signals.
+        program = r"""
+import importlib.util,multiprocessing as mp,signal,sys,time
+spec=importlib.util.spec_from_file_location('supervision',sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+def child(ready):
+    def stop(signum,frame):raise SystemExit(0)
+    signal.signal(signal.SIGTERM,stop)
+    ready.set()
+    while True:time.sleep(.05)
+events=[mp.Event(),mp.Event()]
+children=[mp.Process(target=child,args=(e,)) for e in events]
+for p in children:p.start()
+if not all(e.wait(2) for e in events):raise SystemExit(2)
+with m.shutdown_flag() as stopping:
+    print("READY",flush=True)
+    rc=m.supervise(children,stopping,grace_seconds=2,poll_seconds=.02)
+print("DRAINED",rc,flush=True)
+raise SystemExit(rc)
+"""
+        proc=subprocess.Popen([sys.executable,'-B','-c',program,str(path)],
+                              stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                              text=True,start_new_session=True)
+        try:
+            import select
+            ready,_,_=select.select([proc.stdout],[],[],4)
+            self.assertTrue(ready)
+            self.assertEqual(proc.stdout.readline().strip(),'READY')
+            proc.send_signal(signal.SIGTERM)
+            out,err=proc.communicate(timeout=4)
+            self.assertEqual(proc.returncode,0,err)
+            self.assertIn('DRAINED 0',out)
+        finally:
+            if proc.poll() is None:
+                # Only our disposable synthetic process group.
+                os.killpg(proc.pid,signal.SIGKILL)
+                proc.communicate(timeout=2)
