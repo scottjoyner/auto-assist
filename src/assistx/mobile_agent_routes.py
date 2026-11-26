@@ -626,6 +626,7 @@ async def _sanitized_router_stream(
 def register_mobile_agent_routes(
     router: APIRouter, auth_dependency: Callable[..., str],
     *, fleet_evidence_factory: Callable[..., Any] | None = None,
+    scoped_inference: Callable[..., Any] | None = None,
 ) -> None:
     def mobile_auth(
         request: Request,
@@ -849,15 +850,30 @@ def register_mobile_agent_routes(
             return StreamingResponse(_sse_chunks(output, response_model, session_id),
                                      media_type="text/event-stream", headers=headers)
 
-        prompt = _prompt_from_messages(body.messages)
-        model_override = _requested_hermes_model(body.model)
-        result = await asyncio.to_thread(
-            _run_hermes,
-            prompt,
-            timeout=_agent_timeout(),
-            model=model_override,
-            provider=os.getenv("HERMES_PROVIDER", "assistx-router").strip() or "assistx-router",
-        )
+        if scoped_inference is not None and os.getenv("KIPNERTER_SCOPED_AGENT_INFERENCE", "0") == "1":
+            # No legacy or direct-model fallback after entering this lane.
+            if _tailnet_identity(request) is None:
+                raise HTTPException(status_code=403, detail={"error": "tailnet_identity_required"})
+            from .mobile_scoped_inference import MobileInferenceError
+            try:
+                answer = await scoped_inference([message.model_dump() for message in body.messages])
+            except MobileInferenceError as exc:
+                raise HTTPException(status_code=503, detail={"error": str(exc), "executor": "scoped-inference"}) from None
+            except Exception:
+                raise HTTPException(status_code=503, detail={"error": "scoped_inference_unavailable", "executor": "scoped-inference"}) from None
+            result = {"success": True, "output": answer, "session_id": uuid.uuid4().hex}
+            executor_name = "scoped-inference"
+        else:
+            prompt = _prompt_from_messages(body.messages)
+            model_override = _requested_hermes_model(body.model)
+            result = await asyncio.to_thread(
+                _run_hermes,
+                prompt,
+                timeout=_agent_timeout(),
+                model=model_override,
+                provider=os.getenv("HERMES_PROVIDER", "assistx-router").strip() or "assistx-router",
+            )
+            executor_name = "hermes"
         if not result.get("success"):
             error = _mobile_agent_failure_code(result)
             raise HTTPException(
@@ -874,7 +890,7 @@ def register_mobile_agent_routes(
         session_id = server_session[:128] or client_session or "kipnerter-hermes"
         response_model = body.model.strip() or "hermes-agent"
         headers = {
-            "X-Kipnerter-Agent-Executor": "hermes",
+            "X-Kipnerter-Agent-Executor": executor_name,
             "X-Hermes-Session-Id": session_id,
             "Cache-Control": "no-store",
         }

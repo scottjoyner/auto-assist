@@ -110,7 +110,32 @@ app.include_router(build_identity_only_router())
 # Keep the existing Tailnet identity and Basic-auth fallback; this is routing
 # registration only, not a new authentication or execution policy.
 _mobile_router = APIRouter()
-register_mobile_agent_routes(_mobile_router, auth, fleet_evidence_factory=_neo)
+# Staging-only opt-in. This inference-only lane is not a replacement for
+# supervised Hermes tools; it gives mobile a narrow authenticated model path.
+import asyncio
+import os
+from .mobile_agent_routes import _current_runtime_projection
+from .mobile_scoped_inference import execute as execute_mobile_inference, MobileInferenceError
+
+_mobile_inference_gate = asyncio.Lock()
+
+async def _scoped_mobile_inference(messages):
+    if _mobile_inference_gate.locked():
+        raise MobileInferenceError("mobile_inference_busy")
+    async with _mobile_inference_gate:
+        def admission(neo):
+            control = api_module._get_workflow_control()
+            snapshot = api_module._workflow_runtime_snapshot(neo)
+            return (control.get("mode") == "resume" and
+                    snapshot["running"] < int(control["max_concurrent_workflows"]))
+        projection = await asyncio.to_thread(_current_runtime_projection)
+        return await execute_mobile_inference(
+            messages, neo_factory=_neo, admission=admission,
+            projection=projection, router_url=os.getenv("FLEET_ROUTER_URL", ""),
+        )
+
+register_mobile_agent_routes(_mobile_router, auth, fleet_evidence_factory=_neo,
+                             scoped_inference=_scoped_mobile_inference)
 app.include_router(_mobile_router)
 
 app.include_router(build_overlay_router())
