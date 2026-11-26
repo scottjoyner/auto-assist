@@ -1,5 +1,6 @@
 # src/assistx/worker.py
 import faulthandler
+import json
 import logging
 import multiprocessing as mp
 import os
@@ -47,31 +48,35 @@ def _worker_name(index: int) -> str:
     return f"assistx-worker-{index}-{hostname}-{pid}"
 
 
-def _health_server() -> None:
-    """Minimal HTTP health endpoint so Docker can check worker liveness."""
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(("0.0.0.0", HEALTH_PORT))
-    server.listen(1)
-    server.settimeout(1.0)
-    resp = (
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: 41\r\n"
-        "Connection: close\r\n"
-        "\r\n"
-        '{"ok":true,"service":"auto-assist-worker"}\r\n'
-    )
-    while True:
-        try:
-            conn, _ = server.accept()
-            conn.recv(1024)
-            conn.sendall(resp.encode())
-            conn.close()
-        except socket.timeout:
-            continue
-        except Exception:
-            break
+def _health_response(draining: bool) -> bytes:
+    body = json.dumps({"ok": not draining, "service": "auto-assist-worker"},
+                      separators=(",", ":")).encode("utf-8")
+    status = "503 Service Unavailable" if draining else "200 OK"
+    return (f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode("ascii") + body
+
+
+def _health_server(stop_event: threading.Event) -> None:
+    """Report supervised liveness, not broker readiness or claim health."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("0.0.0.0", HEALTH_PORT))
+        server.listen(8)
+        server.settimeout(1.0)
+        while True:
+            try:
+                conn, _ = server.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            with conn:
+                try:
+                    conn.settimeout(1.0)
+                    conn.recv(1024)
+                    conn.sendall(_health_response(stop_event.is_set()))
+                except OSError:
+                    continue
 
 
 def _run_one_worker(index: int, listen: list[str], redis_url: str) -> None:
@@ -255,9 +260,13 @@ def main():
             controller = _start_recovery_island_controller(stop_event)
             if controller is not None:
                 background.append(controller)
-            t = threading.Thread(target=_health_server, daemon=True)
+            t = threading.Thread(target=_health_server, args=(stop_event,), daemon=True)
             t.start()
-            exit_code = supervise(processes, stopping, on_shutdown=stop_event.set)
+            exit_code = supervise(
+                processes, stopping, on_shutdown=stop_event.set,
+                fail_on_child_exit=True,
+                faulted=lambda: not t.is_alive() or any(not thread.is_alive() for thread in background),
+            )
         finally:
             stop_event.set()
             # Keep the parent alive for in-flight execution rather than
