@@ -969,22 +969,38 @@ def set_task_lease(neo: Neo4jClient, task_id: str, lease_seconds: int = 900) -> 
 
 
 def release_expired_task_leases(neo: Neo4jClient, now_ms: Optional[int] = None) -> int:
-    now = int(now_ms or _now_ms())
+    """Bounded direct-lease sweep. A caller may narrow, never advance, expiry."""
+    if now_ms is not None and (type(now_ms) is not int or now_ms < 0):
+        raise ValueError("lease sweep cutoff must be a nonnegative integer")
     with neo._session() as s:
         rec = s.run(
             """
+            WITH CASE WHEN $now IS NULL OR $now > timestamp() THEN timestamp() ELSE $now END AS cutoff
             MATCH (t:Task)
-            WHERE t.status IN ['CLAIMED','RUNNING'] AND coalesce(t.lease_expires_at_ts, 0) < $now
+            WHERE t.status IN ['CLAIMED','RUNNING']
+              AND t.passive_claim_id IS NULL
+              AND t.lease_expires_at_ts < cutoff
+            WITH t, cutoff ORDER BY t.id LIMIT 2000
+            SET t.failure_fence_sequence=coalesce(t.failure_fence_sequence,0)+1
+            WITH t, cutoff
+            WHERE t.status IN ['CLAIMED','RUNNING']
+              AND t.passive_claim_id IS NULL
+              AND t.lease_expires_at_ts < cutoff
             SET t.status='READY',
+                t.last_released_claim_id=t.claim_id,
                 t.claimed_by=null,
                 t.agent_session_id=null,
                 t.claim_id=null,
+                t.lease_expires_at_ts=null,
+                t.claimed_at_ts=null,
+                t.last_heartbeat_at_ts=null,
+                t.last_heartbeat_ts=null,
                 t.lease_released_reason='expired',
                 t.updated_at=datetime(),
                 t.updated_at_ts=timestamp()
             RETURN count(t) AS released
             """,
-            {"now": now},
+            {"now": now_ms},
         ).single()
         return int(rec["released"] if rec else 0)
 

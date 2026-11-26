@@ -108,7 +108,7 @@ class TaskFailIn(BaseModel):
 class LeaseSweepIn(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    now_ms: Optional[int] = None
+    now_ms: Optional[int] = Field(default=None, ge=0, strict=True)
 
 
 class ModelEndpointRegisterIn(BaseModel):
