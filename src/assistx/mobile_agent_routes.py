@@ -942,19 +942,22 @@ def register_mobile_agent_routes(
             is_inference_status, inference_status, render_inference_status,
             is_gateway_status, gateway_health, render_gateway_health,
             is_workflow_status, workflow_status, render_workflow_status,
-            is_handbook_query, render_handbook,
+            is_handbook_query, render_handbook, overview_sections, render_overview,
         )
         fleet_intent = is_fleet_status(body.messages)
         inference_intent = is_inference_status(body.messages)
         gateway_intent = is_gateway_status(body.messages)
         workflow_intent = is_workflow_status(body.messages)
         handbook_intent = is_handbook_query(body.messages)
-        if fleet_evidence_factory is not None and (fleet_intent or inference_intent or gateway_intent or workflow_intent or handbook_intent):
+        overview = overview_sections(body.messages)
+        if fleet_evidence_factory is not None and (fleet_intent or inference_intent or gateway_intent or workflow_intent or handbook_intent or overview):
             if _tailnet_identity(request) is None:
                 raise HTTPException(status_code=403, detail={"error": "tailnet_identity_required"})
             _require_evidence_peer(request)
             try:
-                if fleet_intent:
+                if overview:
+                    output = await asyncio.to_thread(render_overview, overview, neo_factory=fleet_evidence_factory, projection_factory=_current_runtime_projection, gateway_url=os.getenv("AUTO_ROUTER_BASE_URL", ""))
+                elif fleet_intent:
                     evidence = await asyncio.to_thread(fleet_status, fleet_evidence_factory)
                     output = render_fleet_status(evidence)
                 elif inference_intent:

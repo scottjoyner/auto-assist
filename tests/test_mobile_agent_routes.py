@@ -229,6 +229,7 @@ def test_current_runtime_projection_calls_real_v2_export_name(monkeypatch):
 
 
 def test_agent_chat_invokes_hermes_server_side_and_streams_openai_sse(monkeypatch):
+    monkeypatch.setattr(mobile, "_mobile_runtime_catalog", lambda: {"agent_auto_available": True})
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
     monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
     captured = {}
@@ -279,6 +280,7 @@ def test_agent_chat_invokes_hermes_server_side_and_streams_openai_sse(monkeypatc
 
 
 def test_agent_chat_returns_gateway_failure_when_hermes_fails(monkeypatch):
+    monkeypatch.setattr(mobile, "_mobile_runtime_catalog", lambda: {"agent_auto_available": True})
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
     monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
     monkeypatch.setattr(
@@ -342,3 +344,32 @@ def test_agent_chat_maps_projection_failure_to_stable_mobile_error(monkeypatch):
     }
     assert "signed AssistX" not in response.text
     assert "internal executor trace" not in response.text
+
+def test_generic_agent_denied_when_runtime_not_admitted(monkeypatch):
+    monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
+    monkeypatch.setattr(mobile, "_mobile_runtime_catalog", lambda: {"agent_auto_available": False})
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Hermes must not run")
+    monkeypatch.setattr(mobile, "_run_hermes", forbidden)
+    r = TestClient(_app()).post("/api/v1/agent/chat/completions",
+        headers={"Tailscale-User-Login":"scott@example.com"},
+        json={"messages":[{"role":"user","content":"hello"}]})
+    assert r.status_code == 503
+    assert r.json()["detail"]["error"] == "agent_runtime_unavailable"
+
+
+def test_generic_agent_denied_when_catalog_unavailable(monkeypatch):
+    monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
+    monkeypatch.setenv("KIPNERTER_TAILNET_ALLOWED_LOGINS", "scott@example.com")
+    def unavailable():
+        raise RuntimeError("unavailable")
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Hermes must not run")
+    monkeypatch.setattr(mobile, "_mobile_runtime_catalog", unavailable)
+    monkeypatch.setattr(mobile, "_run_hermes", forbidden)
+    r = TestClient(_app()).post("/api/v1/agent/chat/completions",
+        headers={"Tailscale-User-Login":"scott@example.com"},
+        json={"messages":[{"role":"user","content":"hello"}]})
+    assert r.status_code == 503
+    assert r.json()["detail"]["error"] == "runtime_projection_unavailable"

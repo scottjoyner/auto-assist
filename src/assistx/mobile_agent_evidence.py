@@ -257,6 +257,7 @@ def capability_profile(*, evidence_configured: bool) -> dict[str, Any]:
         "generic_knowledge_search": False,
         "device_sync_receipts": False,
         "note": "Configured capabilities are not a live readiness or authorization witness.",
+        "example_questions": ["Fleet overview", "Fleet status and model status", "What tools do you have?"],
     }
 
 
@@ -342,3 +343,55 @@ def render_handbook(messages: Iterable[Any]) -> str:
             "search, device receipt lookup and administrative actions are not provided by this profile."
         )
     return body + "\nSource: kipnerter-agent-v1 curated operating handbook, revision 1."
+
+
+_OVERVIEW_INTENT = re.compile(
+    r"(?:please )?(?:fleet overview|fleet health summary|fleet operational overview|"
+    r"how(?:'s| is) (?:the )?fleet doing overall|"
+    r"(?:give|show) me (?:a |the )?fleet (?:overview|health summary))\s*[?.!]*", re.I,
+)
+
+
+def overview_sections(messages: Iterable[Any]) -> tuple[str, ...]:
+    """Recognize explicit overview and bounded combinations, not arbitrary commands."""
+    from types import SimpleNamespace
+    query = _last_user_text(messages)
+    if _OVERVIEW_INTENT.fullmatch(query):
+        return ("fleet", "inference", "workflow", "gateway")
+    matchers = (("fleet", is_fleet_status), ("inference", is_inference_status),
+                ("workflow", is_workflow_status), ("gateway", is_gateway_status))
+    # Existing single-intent phrases (including the gateway's compound phrase)
+    # retain precedence. Only two independently recognized clauses are accepted.
+    if any(m(messages) for _, m in matchers):
+        return ()
+    parts = re.split(r"\s+and\s+", query, flags=re.I)
+    if len(parts) != 2:
+        return ()
+    sections = []
+    for part in parts:
+        matching = [name for name, matcher in matchers
+                    if matcher([SimpleNamespace(role="user", content=part)])]
+        if len(matching) != 1 or matching[0] in sections:
+            return ()
+        sections.append(matching[0])
+    return tuple(sections)
+
+
+def render_overview(sections: tuple[str, ...], *, neo_factory: Callable[[], Any],
+                    projection_factory: Callable[[], dict[str, Any]], gateway_url: str) -> str:
+    """Only fixed read-only adapters. Preserve partial success and source freshness."""
+    handlers = {
+        "fleet": lambda: render_fleet_status(fleet_status(neo_factory)),
+        "inference": lambda: render_inference_status(inference_status(projection_factory())),
+        "workflow": lambda: render_workflow_status(workflow_status(neo_factory)),
+        "gateway": lambda: render_gateway_health(gateway_health(gateway_url)),
+    }
+    if not 2 <= len(sections) <= 4 or len(set(sections)) != len(sections) or any(s not in handlers for s in sections):
+        raise ValueError("invalid overview sections")
+    output = ["Fleet evidence overview. Each section is independently observed; this is not a single atomic snapshot."]
+    for section in sections:
+        try:
+            output.append(handlers[section]())
+        except Exception:
+            output.append(f"{section.capitalize()} evidence unavailable; no current status inferred.")
+    return "\n\n".join(output)

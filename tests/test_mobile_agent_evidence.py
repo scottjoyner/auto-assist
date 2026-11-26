@@ -260,3 +260,38 @@ def test_new_intents_do_not_accept_appended_commands():
         messages=[SimpleNamespace(role="user",content=q)]
         assert not evidence.is_workflow_status(messages)
         assert not evidence.is_handbook_query(messages)
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("Fleet overview", ("fleet", "inference", "workflow", "gateway")),
+    ("What is the status of the fleet and what models are available?", ("fleet", "inference")),
+    ("gateway health and task queue status", ("gateway", "workflow")),
+    ("fleet status and delete tasks", ()),
+    ("fleet status and fleet status", ()),
+    ("fleet status and model status and workflow status", ()),
+    ("How is the server connection and what data are we getting?", ()),
+])
+def test_overview_closed_intents(query, expected):
+    assert evidence.overview_sections([SimpleNamespace(role="user",content=query)]) == expected
+
+
+def test_overview_partial_success_and_no_private_error(monkeypatch):
+    monkeypatch.setattr(evidence,"fleet_status",lambda factory: {"fixture": True})
+    monkeypatch.setattr(evidence,"render_fleet_status",lambda row:"Fleet verified fixture.")
+    def bad(): raise RuntimeError("private endpoint diagnostic")
+    result=evidence.render_overview(("fleet","inference"),neo_factory=lambda:None,projection_factory=bad,gateway_url="")
+    assert "Fleet verified fixture." in result
+    assert "Inference evidence unavailable" in result
+    assert "private endpoint diagnostic" not in result
+
+
+def test_overview_authenticated_route(monkeypatch):
+    monkeypatch.setattr(evidence,"render_overview",lambda sections,**kw: "Overview: "+",".join(sections))
+    c=client_for(monkeypatch,FakeNeo(None))
+    r=c.post("/api/v1/agent/chat/completions",headers={"Tailscale-User-Login":"owner@example.com"},
+        json={"messages":[{"role":"user","content":"Fleet overview"}],"stream":False})
+    assert r.status_code==200 and "Overview: fleet,inference,workflow,gateway" in r.text
+    assert r.headers["x-kipnerter-agent-executor"]=="fleet-evidence"
+    r=c.post("/api/v1/agent/chat/completions",headers={"Tailscale-User-Login":"other@example.com"},
+        json={"messages":[{"role":"user","content":"Fleet overview"}],"stream":False})
+    assert r.status_code in (401,403)
