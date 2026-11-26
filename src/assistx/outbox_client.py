@@ -99,6 +99,46 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
     return parsed
 
 
+def _bucket_by_attempt(rows, *, max_retries: int) -> dict[str, Any]:
+    """Derive the pending/retry/dead signal from ``(status, attempt_count)`` rows.
+
+    A pure helper over the result of ``SELECT status, attempt_count FROM outbox``
+    so the signal can be verified against an in-memory SQLite fixture without
+    opening a live queue. Every row lands in exactly one mutually exclusive
+    bucket; the three-way split is what a status-only counter cannot express
+    (48 rows all ``pending`` can hide 14 wedged attempt-9 rows).
+    """
+    buckets: dict[str, Any] = {
+        "pending": 0,    # status='pending', never attempted
+        "retry": 0,      # deliverable, attempted, still inside the retry budget
+        "dead": 0,       # terminal exhaustion: status='dead' or budget spent
+        "claimed": 0,
+        "delivered": 0,
+        "failed": 0,     # status='failed' with no attempt recorded (attempt 0)
+        "total": 0,
+        "max_retries": int(max_retries),
+    }
+    ceiling = int(max_retries)
+    for status, attempt_count in rows:
+        attempt = int(attempt_count or 0)
+        buckets["total"] += 1
+        if status in ("pending", "failed") and attempt >= ceiling:
+            buckets["dead"] += 1
+        elif status in ("pending", "failed") and attempt > 0:
+            buckets["retry"] += 1
+        elif status == "dead":
+            buckets["dead"] += 1
+        elif status == "pending":
+            buckets["pending"] += 1
+        elif status == "claimed":
+            buckets["claimed"] += 1
+        elif status == "delivered":
+            buckets["delivered"] += 1
+        elif status == "failed":
+            buckets["failed"] += 1
+    return buckets
+
+
 def read_queue_health(
     db_path: str = DEFAULT_DB_PATH,
     *,
@@ -114,10 +154,17 @@ def read_queue_health(
 
     ``ok`` is False only when the oldest deliverable row is older than
     ``stale_after_s`` (default 24 h): depth alone is not a fault, age is.
+
+    Depth is derived on every probe from ``SELECT status, attempt_count FROM
+    outbox`` — never from an in-memory counter that a restart resets. The
+    pre-existing status counts stay unchanged for backward compatibility; the
+    ``retry`` key and ``attempt_buckets`` add the attempt-count dimension that
+    a status-only counter cannot express.
     """
     now = now or datetime.now(timezone.utc)
     threshold = STALE_READINESS_S if stale_after_s is None else int(stale_after_s)
     path = os.path.expanduser(db_path or DEFAULT_DB_PATH)
+    empty_buckets = _bucket_by_attempt((), max_retries=MAX_RETRIES)
     health: Dict[str, Any] = {
         "db_path": path,
         "status": "absent",
@@ -129,7 +176,9 @@ def read_queue_health(
         "claimed": 0,
         "delivered": 0,
         "dead": 0,
+        "retry": 0,
         "total": 0,
+        "attempt_buckets": empty_buckets,
         "oldest_pending_at": None,
         "oldest_pending_age_s": None,
     }
@@ -141,8 +190,11 @@ def read_queue_health(
         else:
             conn = sqlite3.connect(path, timeout=5)
         try:
+            # One read-only query carries both dimensions. The status counts
+            # below preserve the f3478e7 public shape; the attempt-count
+            # buckets expose wedged rows that a status-only count hides.
             rows = conn.execute(
-                "SELECT status, COUNT(*) FROM outbox GROUP BY status"
+                "SELECT status, attempt_count FROM outbox"
             ).fetchall()
             oldest = conn.execute(
                 "SELECT MIN(created_at) FROM outbox "
@@ -160,9 +212,15 @@ def read_queue_health(
         )
         return health
 
-    for status, count in rows:
-        health[status] = int(count)
-        health["total"] += int(count)
+    by_status: dict[str, int] = {}
+    for status, _attempt in rows:
+        by_status[status] = by_status.get(status, 0) + 1
+    for status, count in by_status.items():
+        health[status] = count
+        health["total"] += count
+    buckets = _bucket_by_attempt(rows, max_retries=MAX_RETRIES)
+    health["retry"] = buckets["retry"]
+    health["attempt_buckets"] = buckets
     oldest_at = oldest[0] if oldest else None
     health["oldest_pending_at"] = oldest_at
     oldest_dt = _parse_iso(oldest_at)
