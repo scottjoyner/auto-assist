@@ -515,3 +515,45 @@ def test_mobile_runtime_catalog_route_sanitizes_backend_failure(monkeypatch):
     assert response.status_code == 503
     assert response.json() == {"detail": {"error": "runtime_catalog_unavailable"}}
     assert "neo4j" not in response.text.lower()
+
+
+def test_mobile_handle_private_file_is_stable_and_environment_wins(monkeypatch, tmp_path):
+    monkeypatch.delenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET", raising=False)
+    path = tmp_path / "handle-key"
+    path.write_text("a" * 64 + "\n")
+    path.chmod(0o600)
+    monkeypatch.setenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET_FILE", str(path))
+    model = {"artifact_fingerprint": "sha256:test"}
+    expected = mobile._mobile_model_handle(model, secret="a" * 64)
+    assert mobile._mobile_model_handle(model) == expected
+    assert mobile._mobile_model_handle(model) == expected
+    catalog = mobile._sanitize_runtime_projection_for_mobile(_projection())
+    assert catalog["fleet_unique_model_count"] == 2
+    assert "a" * 64 not in json.dumps(catalog)
+    monkeypatch.setenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET", "environment-value")
+    assert mobile._mobile_model_handle(model) == mobile._mobile_model_handle(model, secret="environment-value")
+
+
+def test_mobile_handle_rejects_insecure_or_invalid_secret_file(monkeypatch, tmp_path):
+    monkeypatch.delenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET", raising=False)
+    path = tmp_path / "handle-key"
+    path.write_text("b" * 64)
+    monkeypatch.setenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET_FILE", str(path))
+    model = {"artifact_fingerprint": "sha256:test"}
+    path.chmod(0o644)
+    assert mobile._mobile_model_handle(model) is None
+    path.chmod(0o600)
+    link = tmp_path / "link"
+    link.symlink_to(path)
+    monkeypatch.setenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET_FILE", str(link))
+    assert mobile._mobile_model_handle(model) is None
+    monkeypatch.setenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET_FILE", str(path))
+    for malformed in ("", "short", "x" * 4097, "x" * 32 + " y"):
+        path.write_text(malformed)
+        assert mobile._mobile_model_handle(model) is None
+    monkeypatch.setenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET_FILE", "relative-key")
+    assert mobile._mobile_model_handle(model) is None
+    monkeypatch.setenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET_FILE", str(tmp_path / "missing"))
+    assert mobile._mobile_model_handle(model) is None
+    monkeypatch.setenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET_FILE", str(tmp_path))
+    assert mobile._mobile_model_handle(model) is None

@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import os
+import stat
 from pathlib import Path
 import time
 import uuid
@@ -230,6 +231,35 @@ def _sse_chunks(output: str, model: str, session_id: str, chunk_size: int = 256)
 
 
 
+def _configured_mobile_handle_secret() -> str:
+    """Use explicit environment configuration or a private mounted secret file.
+
+    Do not create or rotate a key on read. Missing, insecure, or malformed
+    files leave model handles unavailable rather than minting unstable IDs.
+    """
+    configured = os.getenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET", "").strip()
+    if configured:
+        return configured
+    path = os.getenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET_FILE", "").strip()
+    if not path or not os.path.isabs(path):
+        return ""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as handle:
+            metadata = os.fstat(handle.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
+                return ""
+            if not 1 <= metadata.st_size <= 4096:
+                return ""
+            raw = handle.read(4097)
+            if len(raw) > 4096:
+                return ""
+            secret = raw.decode("utf-8").strip()
+            return secret if len(secret) >= 32 and not any(ch.isspace() or ord(ch) < 33 for ch in secret) else ""
+    except (OSError, UnicodeError):
+        return ""
+
+
 def _mobile_model_handle(
     model: dict[str, Any],
     *,
@@ -250,7 +280,7 @@ def _mobile_model_handle(
     handle_secret = (
         secret
         if secret is not None
-        else os.getenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET", "")
+        else _configured_mobile_handle_secret()
     ).strip()
     if not handle_secret:
         return None
