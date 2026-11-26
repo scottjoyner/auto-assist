@@ -110,7 +110,7 @@ app.include_router(build_identity_only_router())
 # Keep the existing Tailnet identity and Basic-auth fallback; this is routing
 # registration only, not a new authentication or execution policy.
 _mobile_router = APIRouter()
-register_mobile_agent_routes(_mobile_router, auth)
+register_mobile_agent_routes(_mobile_router, auth, fleet_evidence_factory=_neo)
 app.include_router(_mobile_router)
 
 app.include_router(build_overlay_router())

@@ -186,6 +186,11 @@ def _mobile_agent_failure_code(result: dict[str, Any]) -> str:
     )
     if any(marker in diagnostic for marker in projection_markers):
         return "runtime_projection_unavailable"
+    if any(marker in diagnostic for marker in (
+        "executor token must contain three segments", "executor token expired",
+        "executor token invalid", "invalid executor token",
+    )):
+        return "executor_authentication_failed"
     return str(result.get("error") or "hermes_execution_failed")[:240]
 
 
@@ -618,7 +623,10 @@ async def _sanitized_router_stream(
         await client.aclose()
 
 
-def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..., str]) -> None:
+def register_mobile_agent_routes(
+    router: APIRouter, auth_dependency: Callable[..., str],
+    *, fleet_evidence_factory: Callable[..., Any] | None = None,
+) -> None:
     def mobile_auth(
         request: Request,
         credentials: HTTPBasicCredentials | None = Depends(_mobile_security),
@@ -819,6 +827,27 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
         # enforce the optional Kipnerter login allowlist here as well. Basic
         # auth remains available as an explicit legacy operator fallback.
         _tailnet_identity(request)
+
+        # Only the explicitly allowlisted Tailnet identity can access the
+        # aggregate fleet tool. Legacy Basic and generic chat remain unchanged.
+        from .mobile_agent_evidence import is_fleet_status, fleet_status, render_fleet_status
+        if fleet_evidence_factory is not None and _tailnet_identity(request) is not None and is_fleet_status(body.messages):
+            try:
+                evidence = await asyncio.to_thread(fleet_status, fleet_evidence_factory)
+                output = render_fleet_status(evidence)
+            except Exception:
+                raise HTTPException(status_code=503, detail={"error": "fleet_evidence_unavailable"})
+            session_id = f"fleet-evidence:{uuid.uuid4().hex}"
+            response_model = "kipnerter-agent-v1"
+            headers = {
+                "X-Kipnerter-Agent-Executor": "fleet-evidence",
+                "X-Hermes-Session-Id": session_id,
+                "Cache-Control": "no-store",
+            }
+            if not body.stream:
+                return JSONResponse(content=_openai_response(output, response_model, session_id), headers=headers)
+            return StreamingResponse(_sse_chunks(output, response_model, session_id),
+                                     media_type="text/event-stream", headers=headers)
 
         prompt = _prompt_from_messages(body.messages)
         model_override = _requested_hermes_model(body.model)
