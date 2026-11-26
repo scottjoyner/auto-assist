@@ -2,7 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import APIRouter, FastAPI, HTTPException
-from fastapi.testclient import TestClient
+import asyncio
+
+import httpx
 
 from assistx import mobile_agent_evidence as evidence
 from assistx import mobile_agent_routes as mobile
@@ -34,6 +36,33 @@ class FakeNeo:
         self.closed = True
 
 
+class EvidenceTestClient:
+    """Portable in-process HTTP client with an explicit ASGI peer address.
+
+    HTTPX supplies the real ASGI client scope used by the authorization
+    checks. Do not patch request.client or the production peer check.
+    """
+    def __init__(self, app, peer=("127.0.0.1", 50000)):
+        self.app = app
+        self.peer = peer
+
+    def request(self, method, path, **kwargs):
+        async def call():
+            transport = httpx.ASGITransport(app=self.app, client=self.peer)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://testserver",
+                trust_env=False,
+            ) as client:
+                return await client.request(method, path, **kwargs)
+        return asyncio.run(call())
+
+    def get(self, path, **kwargs):
+        return self.request("GET", path, **kwargs)
+
+    def post(self, path, **kwargs):
+        return self.request("POST", path, **kwargs)
+
+
 def client_for(monkeypatch, neo):
     monkeypatch.setenv("TRUSTED_AUTH_HEADER", "Tailscale-User-Login")
     monkeypatch.setenv("KIPNERTER_EVIDENCE_PROXY_PEERS", "127.0.0.1")
@@ -47,7 +76,7 @@ def client_for(monkeypatch, neo):
     router = APIRouter()
     mobile.register_mobile_agent_routes(router, no_legacy, fleet_evidence_factory=lambda: neo)
     app.include_router(router)
-    return TestClient(app, client=("127.0.0.1", 50000))
+    return EvidenceTestClient(app)
 
 
 @pytest.mark.parametrize("stream", [True, False])
