@@ -232,8 +232,7 @@ def _start_recovery_island_controller(stop_event: threading.Event, *, startup_ga
         return None
 
 
-def main():
-    validate_runtime_configuration(strict=True)
+def _warm_parent(stopping):
     # Warm up the full import chain in the PARENT process, single-threaded,
     # BEFORE forking the worker children. The fork copy-on-write then hands
     # each child an already-populated sys.modules, so child job execution
@@ -265,47 +264,60 @@ def main():
             "tenacity",
         ]
         for _m in _warm:
+            if stopping():
+                return
             try:
                 importlib.import_module(_m)
             except Exception as exc:  # pragma: no cover
                 logger.warning("parent warmup import of %s failed: %s", _m, exc)
     except Exception as exc:  # pragma: no cover
         logger.warning("parent warmup failed: %s", exc)
+
+
+def _run_worker_group(stopping):
     listen = [os.getenv("RQ_QUEUE", "assistx")]
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
     concurrency = max(1, int(os.getenv("WORKER_CONCURRENCY", "1")))
 
-    from .worker_supervision import launch_children, shutdown_flag, supervise, wait_child_readiness, open_group_admission
+    from .worker_supervision import launch_children, supervise, wait_child_readiness, open_group_admission
 
-    # Install the parent handler before creating any child. Forked children
-    # reset inherited handlers before unblocking termination signals.
+    # main() owns the signal handler from validation through final drain.
     ctx = mp.get_context("fork")
     startup_gate = ctx.Event()
     stop_event = threading.Event()
     background = []
-    with shutdown_flag() as stopping:
-        channels = [ctx.Pipe(duplex=False) for _ in range(concurrency)]
+    processes = []
+    channels = []
+    startup_error = None
+    t = None
+    try:
         try:
-            processes, startup_error = launch_children(
-                ctx, concurrency, _run_one_worker,
-                lambda i: (i + 1, listen, redis_url, channels[i][1], startup_gate), stopping,
-            )
-            for reader, writer in channels:
-                writer.close()
-            if not startup_error and not stopping():
-                startup_error = wait_child_readiness(
-                    processes, [reader for reader, _ in channels], stopping,
+            for _ in range(concurrency):
+                if stopping():
+                    break
+                channels.append(ctx.Pipe(duplex=False))
+            if not stopping():
+                processes, startup_error = launch_children(
+                    ctx, concurrency, _run_one_worker,
+                    lambda i: (i + 1, listen, redis_url, channels[i][1], startup_gate), stopping,
                 )
-                if startup_error == "shutdown_requested":
-                    startup_error = None
+                for reader, writer in channels:
+                    writer.close()
+                if not startup_error and not stopping():
+                    startup_error = wait_child_readiness(
+                        processes, [reader for reader, _ in channels], stopping,
+                    )
+                    if startup_error == "shutdown_requested":
+                        startup_error = None
+        except (OSError, RuntimeError) as exc:
+            startup_error = type(exc).__name__
         finally:
             for reader, writer in channels:
                 reader.close()
                 writer.close()
         if startup_error:
             logger.error("worker startup failed: %s", startup_error)
-        # No direct execution or health admission after an incomplete startup.
-        t = None
+            stop_event.set()
         try:
             if not stopping() and not startup_error and len(processes) == concurrency:
                 background.extend(_start_execution_pollers(stop_event, startup_gate=startup_gate))
@@ -327,27 +339,46 @@ def main():
                         args=(stop_event, startup_gate, listening), daemon=True,
                     )
                     t.start()
+
                     def startup_stopping():
                         return stopping() or stop_event.is_set() or any(
                             not thread.is_alive() for thread in background
                         )
+
                     if (not _wait_health_listener(listening, t, startup_stopping)
                             or not open_group_admission(startup_gate, processes, concurrency, startup_stopping)):
                         startup_error = "group_admission_not_opened"
                         stop_event.set()
-            exit_code = supervise(
-                processes, stopping, on_shutdown=stop_event.set,
-                fail_on_child_exit=True,
-                faulted=lambda: bool(startup_error or len(processes) != concurrency
-                                     or t is None or not t.is_alive()
-                                     or any(not thread.is_alive() for thread in background)),
-            )
-            if startup_error and not exit_code:
-                exit_code = 70
-        finally:
+        except (OSError, RuntimeError) as exc:
+            startup_error = type(exc).__name__
             stop_event.set()
-            for thread in background:
-                thread.join()
+        exit_code = supervise(
+            processes, stopping, on_shutdown=stop_event.set,
+            fail_on_child_exit=True,
+            faulted=lambda: bool(startup_error or len(processes) != concurrency
+                                 or t is None or not t.is_alive()
+                                 or any(not thread.is_alive() for thread in background)),
+        )
+        if startup_error and not exit_code:
+            exit_code = 70
+        return exit_code
+    finally:
+        stop_event.set()
+        for thread in background:
+            thread.join()
+
+
+def main():
+    from .worker_supervision import shutdown_flag
+
+    with shutdown_flag() as stopping:
+        validate_runtime_configuration(strict=True)
+        if stopping():
+            return
+        _warm_parent(stopping)
+        if stopping():
+            return
+        exit_code = _run_worker_group(stopping)
 
     if exit_code:
         raise SystemExit(exit_code)
