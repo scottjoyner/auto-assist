@@ -374,7 +374,7 @@ class RecoveryIslandDispatcher:
 
 def start_recovery_island_dispatcher(
     neo_factory: Callable[[], Any] = Neo4jClient,
-    *, stop_event: threading.Event | None = None,
+    *, stop_event: threading.Event | None = None, startup_gate=None,
 ) -> threading.Thread | None:
     enabled = os.getenv(
         "ASSISTX_RECOVERY_ISLAND_DISPATCH_ENABLED",
@@ -389,6 +389,12 @@ def start_recovery_island_dispatcher(
     dispatcher = RecoveryIslandDispatcher(neo_factory)
 
     def loop() -> None:
+        if startup_gate is not None:
+            from .worker_supervision import await_start_gate
+            if not await_start_gate(
+                startup_gate, lambda: stop_event is not None and stop_event.is_set(),
+            ):
+                return
         while stop_event is None or not stop_event.is_set():
             try:
                 result = dispatcher.tick()

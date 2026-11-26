@@ -56,13 +56,29 @@ def _health_response(draining: bool) -> bytes:
             f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode("ascii") + body
 
 
-def _health_server(stop_event: threading.Event) -> None:
+def _health_unavailable(stop_event, startup_gate=None):
+    return stop_event.is_set() or (startup_gate is not None and not startup_gate.is_set())
+
+
+def _wait_health_listener(ready, thread, stopping, *, timeout=5):
+    deadline = time.monotonic() + timeout
+    while not stopping() and thread.is_alive():
+        if ready.wait(.05):
+            return not stopping() and thread.is_alive()
+        if time.monotonic() >= deadline:
+            break
+    return False
+
+
+def _health_server(stop_event: threading.Event, startup_gate=None, listening=None) -> None:
     """Report supervised liveness, not broker readiness or claim health."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(("0.0.0.0", HEALTH_PORT))
         server.listen(8)
         server.settimeout(1.0)
+        if listening is not None:
+            listening.set()
         while True:
             try:
                 conn, _ = server.accept()
@@ -74,7 +90,7 @@ def _health_server(stop_event: threading.Event) -> None:
                 try:
                     conn.settimeout(1.0)
                     conn.recv(1024)
-                    conn.sendall(_health_response(stop_event.is_set()))
+                    conn.sendall(_health_response(_health_unavailable(stop_event, startup_gate)))
                 except OSError:
                     continue
 
@@ -114,12 +130,19 @@ def _run_one_worker(index: int, listen: list[str], redis_url: str, ready, startu
         w.work(with_scheduler=False)
 
 
-def _start_execution_pollers(stop_event: threading.Event) -> list[threading.Thread]:
+def _start_execution_pollers(stop_event: threading.Event, *, startup_gate=None) -> list[threading.Thread]:
     """W-22: start execution-authority pollers behind a single config switch.
 
     ``EXECUTION_BACKEND`` (paperclip|direct|auto) decides which execution
     authority runs. Both implementations are preserved; neither is removed.
     """
+    from .worker_supervision import await_start_gate
+
+    def admitted():
+        if startup_gate is None:
+            return not stop_event.is_set()
+        return await_start_gate(startup_gate, stop_event.is_set)
+
     threads: list[threading.Thread] = []
     backend = settings.execution_backend
 
@@ -131,6 +154,8 @@ def _start_execution_pollers(stop_event: threading.Event) -> list[threading.Thre
             from .paperclip_poller import paperclip_poll_job
 
             def _paperclip_loop() -> None:
+                if not admitted():
+                    return
                 while not stop_event.is_set():
                     try:
                         paperclip_poll_job()
@@ -157,9 +182,12 @@ def _start_execution_pollers(stop_event: threading.Event) -> list[threading.Thre
             install_strict_executor_adapter(hermes_agent_adapter)
             hermes_run_loop = hermes_agent_adapter.run_loop
 
+            def _direct_loop():
+                if admitted() and not stop_event.is_set():
+                    hermes_run_loop(stopping=stop_event.is_set)
+
             t = threading.Thread(
-                target=hermes_run_loop,
-                kwargs={"stopping": stop_event.is_set},
+                target=_direct_loop,
                 name="hermes-adapter-poller",
                 daemon=False,
             )
@@ -184,12 +212,18 @@ def _start_execution_pollers(stop_event: threading.Event) -> list[threading.Thre
     return threads
 
 
-def _start_recovery_island_controller(stop_event: threading.Event) -> threading.Thread | None:
+def _recovery_required():
+    return os.getenv("ASSISTX_RECOVERY_ISLAND_DISPATCH_ENABLED", "false").lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
+def _start_recovery_island_controller(stop_event: threading.Event, *, startup_gate=None) -> threading.Thread | None:
     """Start the Neo4j-fenced Beelink dispatcher when explicitly enabled."""
     try:
         from .recovery_island_control import start_recovery_island_dispatcher
 
-        thread = start_recovery_island_dispatcher(stop_event=stop_event)
+        thread = start_recovery_island_dispatcher(stop_event=stop_event, startup_gate=startup_gate)
         if thread is not None:
             logger.info("fenced recovery-island dispatcher started")
         return thread
@@ -274,18 +308,31 @@ def main():
         t = None
         try:
             if not stopping() and not startup_error and len(processes) == concurrency:
-                background.extend(_start_execution_pollers(stop_event))
+                background.extend(_start_execution_pollers(stop_event, startup_gate=startup_gate))
                 expected = 2 if settings.execution_backend == "auto" else 1
                 if len(background) != expected:
                     startup_error = "execution_poller_startup_incomplete"
                     stop_event.set()
-                controller = _start_recovery_island_controller(stop_event)
-                if controller is not None:
-                    background.append(controller)
                 if not startup_error and not stopping():
-                    t = threading.Thread(target=_health_server, args=(stop_event,), daemon=True)
+                    controller = _start_recovery_island_controller(stop_event, startup_gate=startup_gate)
+                    if controller is not None:
+                        background.append(controller)
+                    elif _recovery_required():
+                        startup_error = "recovery_dispatcher_startup_failed"
+                        stop_event.set()
+                if not startup_error and not stopping():
+                    listening = threading.Event()
+                    t = threading.Thread(
+                        target=_health_server,
+                        args=(stop_event, startup_gate, listening), daemon=True,
+                    )
                     t.start()
-                    if not open_group_admission(startup_gate, processes, concurrency, stopping):
+                    def startup_stopping():
+                        return stopping() or stop_event.is_set() or any(
+                            not thread.is_alive() for thread in background
+                        )
+                    if (not _wait_health_listener(listening, t, startup_stopping)
+                            or not open_group_admission(startup_gate, processes, concurrency, startup_stopping)):
                         startup_error = "group_admission_not_opened"
                         stop_event.set()
             exit_code = supervise(
