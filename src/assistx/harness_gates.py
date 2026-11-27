@@ -22,6 +22,7 @@ Gates, in registry order:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -35,6 +36,23 @@ class PromotionDecision:
     promote: bool
     reasons: list[str] = field(default_factory=list)
     checks: dict[str, bool] = field(default_factory=dict)
+
+
+def _valid_score(value: Any) -> bool:
+    """Only a real, finite numeric score counts as rescore evidence.
+
+    ``bool`` is a subclass of ``int`` in Python, so ``isinstance(True, int)``
+    succeeds and a bare numeric check would certify ``True`` as a perfect
+    score. An infinite float or an oversized integer is likewise not a
+    measured benchmark result. None of these must satisfy the score floor or
+    the valid-trial count of a fine-tune promotion gate.
+    """
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except (OverflowError, TypeError, ValueError):
+        return False
 
 
 def _rescore_runs(chain_id: str, runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -96,7 +114,7 @@ def evaluate_promotion(
     scored = [
         run for run in chain_runs
         if str(run.get("status") or "").upper() in {"DONE", "COMPLETED", "PASS"}
-        and isinstance(run.get("score"), (int, float))
+        and _valid_score(run.get("score"))
     ]
     checks["trials_met"] = len(scored) >= suite.min_trials
     if not checks["trials_met"]:
