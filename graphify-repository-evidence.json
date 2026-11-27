@@ -1,0 +1,4215 @@
+{
+  "authoritative_behavior_changed": false,
+  "commit_sha": "a7cd86d0ff40fa48b06895b27c1ba69af5965b6a",
+  "edges": 8399,
+  "graph_json_bytes": 4462218,
+  "graphify_version": "0.9.46",
+  "historical_commits_considered": 200,
+  "historical_context_plans": {
+    "10p10e": {
+      "mean_precision": 0.27894609607133325,
+      "mean_recall": 0.3602150537634409,
+      "median_precision": 0.23076923076923078,
+      "median_recall": 0.3,
+      "perfect_recall_seed_count": 3,
+      "zero_hit_seed_count": 0
+    },
+    "6p6e": {
+      "mean_precision": 0.31604175394497974,
+      "mean_recall": 0.3181968569065343,
+      "median_precision": 0.25,
+      "median_recall": 0.23076923076923078,
+      "perfect_recall_seed_count": 3,
+      "zero_hit_seed_count": 1
+    },
+    "8p8e": {
+      "mean_precision": 0.29623669341411274,
+      "mean_recall": 0.3463192721257237,
+      "median_precision": 0.25,
+      "median_recall": 0.3,
+      "perfect_recall_seed_count": 3,
+      "zero_hit_seed_count": 0
+    }
+  },
+  "historical_depth1": {
+    "mean_precision": 0.6330052612310677,
+    "mean_recall": 0.2987593052109181,
+    "median_precision": 0.5714285714285714,
+    "median_recall": 0.23076923076923078,
+    "perfect_recall_seed_count": 2,
+    "zero_hit_seed_count": 0
+  },
+  "historical_depth2": {
+    "mean_precision": 0.21790152054874548,
+    "mean_recall": 0.6544251447477254,
+    "median_precision": 0.14516129032258066,
+    "median_recall": 0.6923076923076923,
+    "perfect_recall_seed_count": 5,
+    "zero_hit_seed_count": 0
+  },
+  "historical_multifile_python_commits": 4,
+  "historical_proxy_note": "current graph vs recent non-merge commit co-change; retrospective, not causal or held-out",
+  "historical_reranked_depth2": {
+    "top10": {
+      "mean_precision": 0.32188940092165896,
+      "mean_recall": 0.3463192721257237,
+      "median_precision": 0.3,
+      "median_recall": 0.3,
+      "perfect_recall_seed_count": 3,
+      "zero_hit_seed_count": 0
+    },
+    "top20": {
+      "mean_precision": 0.2624930177349532,
+      "mean_recall": 0.4182795698924731,
+      "median_precision": 0.2,
+      "median_recall": 0.3076923076923077,
+      "perfect_recall_seed_count": 3,
+      "zero_hit_seed_count": 0
+    },
+    "top5": {
+      "mean_precision": 0.39193548387096777,
+      "mean_recall": 0.22092638544251447,
+      "median_precision": 0.4,
+      "median_recall": 0.15384615384615385,
+      "perfect_recall_seed_count": 1,
+      "zero_hit_seed_count": 4
+    }
+  },
+  "historical_seed_evaluations": 31,
+  "historical_seed_samples": [
+    {
+      "cochanged_targets": 10,
+      "commit": "faa68e573c4fbf268b774ff32061e421133ec112",
+      "commit_subject": "Import full tailnet capability and benchmark routing evidence",
+      "context_plan_10p10e": {
+        "expansion": [],
+        "hits": [
+          "src/assistx/api_router.py"
+        ],
+        "precision": 0.1,
+        "predicted_neighbors": 10,
+        "primary": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/config.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/intent_orchestrator.py",
+          "src/assistx/jobs.py",
+          "src/assistx/kg_harvester.py"
+        ],
+        "recall": 0.1
+      },
+      "context_plan_6p6e": {
+        "expansion": [],
+        "hits": [
+          "src/assistx/api_router.py"
+        ],
+        "precision": 0.16666666666666666,
+        "predicted_neighbors": 6,
+        "primary": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/config.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/durable_harvester.py"
+        ],
+        "recall": 0.1
+      },
+      "context_plan_8p8e": {
+        "expansion": [],
+        "hits": [
+          "src/assistx/api_router.py"
+        ],
+        "precision": 0.125,
+        "predicted_neighbors": 8,
+        "primary": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/config.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/intent_orchestrator.py"
+        ],
+        "recall": 0.1
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/api_router.py",
+          "src/assistx/runtime_projection_v2.py",
+          "src/assistx/task_family_routing.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.10810810810810811,
+        "predicted_neighbors": 37,
+        "recall": 0.4
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "src/assistx/fleet_routing_projection.py",
+          "src/assistx/runtime_projection_v2.py",
+          "src/assistx/task_family_routing.py",
+          "tests/test_fleet_routing_matrix_import.py",
+          "tests/test_task_family_routing.py"
+        ],
+        "precision": 0.06870229007633588,
+        "predicted_neighbors": 131,
+        "recall": 0.9
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/api_router.py"
+        ],
+        "precision": 0.1,
+        "predicted_neighbors": 10,
+        "recall": 0.1
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/api_router.py",
+          "src/assistx/runtime_projection_v2.py",
+          "src/assistx/task_family_routing.py"
+        ],
+        "precision": 0.15,
+        "predicted_neighbors": 20,
+        "recall": 0.3
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/api_router.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 5,
+        "recall": 0.1
+      },
+      "seed": "src/assistx/__init__.py"
+    },
+    {
+      "cochanged_targets": 10,
+      "commit": "faa68e573c4fbf268b774ff32061e421133ec112",
+      "commit_subject": "Import full tailnet capability and benchmark routing evidence",
+      "context_plan_10p10e": {
+        "expansion": [],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/benchmark_allocation_policy.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 10,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/degraded_control_plane.py",
+          "src/assistx/degraded_router_gate.py",
+          "src/assistx/executor_security.py"
+        ],
+        "recall": 0.2
+      },
+      "context_plan_6p6e": {
+        "expansion": [],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/benchmark_allocation_policy.py"
+        ],
+        "precision": 0.3333333333333333,
+        "predicted_neighbors": 6,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py"
+        ],
+        "recall": 0.2
+      },
+      "context_plan_8p8e": {
+        "expansion": [],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/benchmark_allocation_policy.py"
+        ],
+        "precision": 0.25,
+        "predicted_neighbors": 8,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/degraded_control_plane.py"
+        ],
+        "recall": 0.2
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "src/assistx/runtime_projection_v2.py"
+        ],
+        "precision": 0.15151515151515152,
+        "predicted_neighbors": 33,
+        "recall": 0.5
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "src/assistx/fleet_routing_projection.py",
+          "src/assistx/runtime_projection_v2.py",
+          "src/assistx/task_family_routing.py",
+          "tests/test_benchmark_allocation_quality_floor.py",
+          "tests/test_fleet_routing_matrix_import.py",
+          "tests/test_task_family_routing.py"
+        ],
+        "precision": 0.07692307692307693,
+        "predicted_neighbors": 130,
+        "recall": 1.0
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/benchmark_allocation_policy.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 10,
+        "recall": 0.2
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 20,
+        "recall": 0.4
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/benchmark_allocation_policy.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 5,
+        "recall": 0.2
+      },
+      "seed": "src/assistx/api_router.py"
+    },
+    {
+      "cochanged_targets": 10,
+      "commit": "faa68e573c4fbf268b774ff32061e421133ec112",
+      "commit_subject": "Import full tailnet capability and benchmark routing evidence",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/degraded_control_plane.py",
+          "src/assistx/degraded_router_gate.py",
+          "src/assistx/executor_security.py",
+          "src/assistx/fleet_context_projection.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "tests/test_benchmark_allocation_quality_floor.py"
+        ],
+        "precision": 0.35714285714285715,
+        "predicted_neighbors": 14,
+        "primary": [
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "tests/test_benchmark_allocation_quality_floor.py",
+          "src/assistx/allocation_engine.py"
+        ],
+        "recall": 0.5
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py",
+          "src/assistx/degraded_control_hardening.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "tests/test_benchmark_allocation_quality_floor.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 10,
+        "primary": [
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "tests/test_benchmark_allocation_quality_floor.py",
+          "src/assistx/allocation_engine.py"
+        ],
+        "recall": 0.4
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/degraded_control_plane.py",
+          "src/assistx/degraded_router_gate.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "tests/test_benchmark_allocation_quality_floor.py"
+        ],
+        "precision": 0.3333333333333333,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "tests/test_benchmark_allocation_quality_floor.py",
+          "src/assistx/allocation_engine.py"
+        ],
+        "recall": 0.4
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "tests/test_benchmark_allocation_quality_floor.py"
+        ],
+        "precision": 0.75,
+        "predicted_neighbors": 4,
+        "recall": 0.3
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "src/assistx/runtime_projection_v2.py",
+          "tests/test_benchmark_allocation_quality_floor.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.18421052631578946,
+        "predicted_neighbors": 38,
+        "recall": 0.7
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "tests/test_benchmark_allocation_quality_floor.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 10,
+        "recall": 0.4
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "tests/test_benchmark_allocation_quality_floor.py"
+        ],
+        "precision": 0.25,
+        "predicted_neighbors": 20,
+        "recall": 0.5
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "tests/test_benchmark_allocation_quality_floor.py"
+        ],
+        "precision": 0.8,
+        "predicted_neighbors": 5,
+        "recall": 0.4
+      },
+      "seed": "src/assistx/benchmark_allocation_policy.py"
+    },
+    {
+      "cochanged_targets": 10,
+      "commit": "faa68e573c4fbf268b774ff32061e421133ec112",
+      "commit_subject": "Import full tailnet capability and benchmark routing evidence",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/degraded_control_plane.py",
+          "src/assistx/degraded_router_gate.py",
+          "src/assistx/executor_security.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.3333333333333333,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/api_router.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "recall": 0.4
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.5,
+        "predicted_neighbors": 8,
+        "primary": [
+          "src/assistx/api_router.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "recall": 0.4
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/degraded_control_plane.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 10,
+        "primary": [
+          "src/assistx/api_router.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "recall": 0.4
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/api_router.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 2,
+        "recall": 0.2
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "src/assistx/runtime_projection_v2.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.17647058823529413,
+        "predicted_neighbors": 34,
+        "recall": 0.6
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 10,
+        "recall": 0.4
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.25,
+        "predicted_neighbors": 20,
+        "recall": 0.5
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.8,
+        "predicted_neighbors": 5,
+        "recall": 0.4
+      },
+      "seed": "src/assistx/fleet_context_projection.py"
+    },
+    {
+      "cochanged_targets": 10,
+      "commit": "faa68e573c4fbf268b774ff32061e421133ec112",
+      "commit_subject": "Import full tailnet capability and benchmark routing evidence",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/degraded_control_plane.py",
+          "src/assistx/degraded_router_gate.py",
+          "src/assistx/executor_security.py",
+          "src/assistx/fleet_context_projection.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_context_projection.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.38461538461538464,
+        "predicted_neighbors": 13,
+        "primary": [
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "recall": 0.5
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py",
+          "src/assistx/degraded_control_hardening.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.4444444444444444,
+        "predicted_neighbors": 9,
+        "primary": [
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "recall": 0.4
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/degraded_control_plane.py",
+          "src/assistx/degraded_router_gate.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.36363636363636365,
+        "predicted_neighbors": 11,
+        "primary": [
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "recall": 0.4
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 3,
+        "recall": 0.3
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/runtime_projection_v2.py",
+          "tests/test_benchmark_allocation_quality_floor.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.19444444444444445,
+        "predicted_neighbors": 36,
+        "recall": 0.7
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 10,
+        "recall": 0.4
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_context_projection.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.25,
+        "predicted_neighbors": 20,
+        "recall": 0.5
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.8,
+        "predicted_neighbors": 5,
+        "recall": 0.4
+      },
+      "seed": "src/assistx/fleet_routing_matrix.py"
+    },
+    {
+      "cochanged_targets": 10,
+      "commit": "faa68e573c4fbf268b774ff32061e421133ec112",
+      "commit_subject": "Import full tailnet capability and benchmark routing evidence",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/runtime_projection.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/runtime_projection_v2.py"
+        ],
+        "precision": 0.75,
+        "predicted_neighbors": 4,
+        "primary": [
+          "src/assistx/runtime_projection_v2.py"
+        ],
+        "recall": 0.3
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/runtime_projection.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/runtime_projection_v2.py"
+        ],
+        "precision": 0.75,
+        "predicted_neighbors": 4,
+        "primary": [
+          "src/assistx/runtime_projection_v2.py"
+        ],
+        "recall": 0.3
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/runtime_projection.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/runtime_projection_v2.py"
+        ],
+        "precision": 0.75,
+        "predicted_neighbors": 4,
+        "primary": [
+          "src/assistx/runtime_projection_v2.py"
+        ],
+        "recall": 0.3
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/runtime_projection_v2.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 1,
+        "recall": 0.1
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/runtime_projection_v2.py"
+        ],
+        "precision": 0.75,
+        "predicted_neighbors": 4,
+        "recall": 0.3
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/runtime_projection_v2.py"
+        ],
+        "precision": 0.75,
+        "predicted_neighbors": 4,
+        "recall": 0.3
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/runtime_projection_v2.py"
+        ],
+        "precision": 0.75,
+        "predicted_neighbors": 4,
+        "recall": 0.3
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/runtime_projection_v2.py"
+        ],
+        "precision": 0.75,
+        "predicted_neighbors": 4,
+        "recall": 0.3
+      },
+      "seed": "src/assistx/fleet_routing_projection.py"
+    },
+    {
+      "cochanged_targets": 10,
+      "commit": "faa68e573c4fbf268b774ff32061e421133ec112",
+      "commit_subject": "Import full tailnet capability and benchmark routing evidence",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/config.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/degraded_control_plane.py",
+          "src/assistx/degraded_router_gate.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_routing_projection.py"
+        ],
+        "precision": 0.2857142857142857,
+        "predicted_neighbors": 14,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_routing_projection.py",
+          "src/assistx/runtime_projection.py"
+        ],
+        "recall": 0.4
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/config.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_routing_projection.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 10,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_routing_projection.py",
+          "src/assistx/runtime_projection.py"
+        ],
+        "recall": 0.4
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/config.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py",
+          "src/assistx/degraded_control_hardening.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_routing_projection.py"
+        ],
+        "precision": 0.3333333333333333,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_routing_projection.py",
+          "src/assistx/runtime_projection.py"
+        ],
+        "recall": 0.4
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_routing_projection.py"
+        ],
+        "precision": 0.75,
+        "predicted_neighbors": 4,
+        "recall": 0.3
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "src/assistx/fleet_routing_projection.py",
+          "src/assistx/task_family_routing.py",
+          "tests/test_fleet_routing_matrix_import.py"
+        ],
+        "precision": 0.11267605633802817,
+        "predicted_neighbors": 71,
+        "recall": 0.8
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_routing_projection.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 10,
+        "recall": 0.4
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "src/assistx/fleet_routing_projection.py"
+        ],
+        "precision": 0.3,
+        "predicted_neighbors": 20,
+        "recall": 0.6
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_routing_projection.py"
+        ],
+        "precision": 0.6,
+        "predicted_neighbors": 5,
+        "recall": 0.3
+      },
+      "seed": "src/assistx/runtime_projection_v2.py"
+    },
+    {
+      "cochanged_targets": 10,
+      "commit": "faa68e573c4fbf268b774ff32061e421133ec112",
+      "commit_subject": "Import full tailnet capability and benchmark routing evidence",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/config.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/intent_orchestrator.py",
+          "src/assistx/jobs.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "tests/test_task_family_routing.py"
+        ],
+        "precision": 0.1875,
+        "predicted_neighbors": 16,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/executor_security.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/kg_harvester.py",
+          "src/assistx/repo_task_generator.py",
+          "tests/test_task_family_routing.py"
+        ],
+        "recall": 0.3
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/config.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/degraded_control_hardening.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "tests/test_task_family_routing.py"
+        ],
+        "precision": 0.25,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/executor_security.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/kg_harvester.py",
+          "src/assistx/repo_task_generator.py",
+          "tests/test_task_family_routing.py"
+        ],
+        "recall": 0.3
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/config.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "tests/test_task_family_routing.py"
+        ],
+        "precision": 0.21428571428571427,
+        "predicted_neighbors": 14,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/executor_security.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/kg_harvester.py",
+          "src/assistx/repo_task_generator.py",
+          "tests/test_task_family_routing.py"
+        ],
+        "recall": 0.3
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "tests/test_task_family_routing.py"
+        ],
+        "precision": 0.3333333333333333,
+        "predicted_neighbors": 6,
+        "recall": 0.2
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/runtime_projection_v2.py",
+          "tests/test_fleet_routing_matrix_import.py",
+          "tests/test_task_family_routing.py"
+        ],
+        "precision": 0.1,
+        "predicted_neighbors": 50,
+        "recall": 0.5
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "tests/test_task_family_routing.py"
+        ],
+        "precision": 0.3,
+        "predicted_neighbors": 10,
+        "recall": 0.3
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "tests/test_task_family_routing.py"
+        ],
+        "precision": 0.15,
+        "predicted_neighbors": 20,
+        "recall": 0.3
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/__init__.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 5,
+        "recall": 0.1
+      },
+      "seed": "src/assistx/task_family_routing.py"
+    },
+    {
+      "cochanged_targets": 10,
+      "commit": "faa68e573c4fbf268b774ff32061e421133ec112",
+      "commit_subject": "Import full tailnet capability and benchmark routing evidence",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "hits": [
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 3,
+        "primary": [
+          "src/assistx/benchmark_allocation_policy.py"
+        ],
+        "recall": 0.3
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "hits": [
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 3,
+        "primary": [
+          "src/assistx/benchmark_allocation_policy.py"
+        ],
+        "recall": 0.3
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/api_router.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "hits": [
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 3,
+        "primary": [
+          "src/assistx/benchmark_allocation_policy.py"
+        ],
+        "recall": 0.3
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/benchmark_allocation_policy.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 1,
+        "recall": 0.1
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "precision": 0.75,
+        "predicted_neighbors": 4,
+        "recall": 0.3
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 3,
+        "recall": 0.3
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 3,
+        "recall": 0.3
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 3,
+        "recall": 0.3
+      },
+      "seed": "tests/test_benchmark_allocation_quality_floor.py"
+    },
+    {
+      "cochanged_targets": 10,
+      "commit": "faa68e573c4fbf268b774ff32061e421133ec112",
+      "commit_subject": "Import full tailnet capability and benchmark routing evidence",
+      "context_plan_10p10e": {
+        "expansion": [
+          "tests/test_benchmark_controller.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_control_room.py",
+          "tests/test_control_room_runtime.py",
+          "tests/test_draft_model.py",
+          "tests/test_fleet_node_kv_cache.py",
+          "tests/test_fleet_node_recovery.py",
+          "tests/test_fleet_node_shell_gate.py",
+          "tests/test_intent_orchestrator.py",
+          "tests/test_kg_harvester_backlog.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "precision": 0.23076923076923078,
+        "predicted_neighbors": 13,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "recall": 0.3
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "tests/test_benchmark_controller.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_control_room.py",
+          "tests/test_control_room_runtime.py",
+          "tests/test_draft_model.py",
+          "tests/test_fleet_node_kv_cache.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "precision": 0.3333333333333333,
+        "predicted_neighbors": 9,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "recall": 0.3
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "tests/test_benchmark_controller.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_control_room.py",
+          "tests/test_control_room_runtime.py",
+          "tests/test_draft_model.py",
+          "tests/test_fleet_node_kv_cache.py",
+          "tests/test_fleet_node_recovery.py",
+          "tests/test_fleet_node_shell_gate.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "precision": 0.2727272727272727,
+        "predicted_neighbors": 11,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "recall": 0.3
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 3,
+        "recall": 0.3
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py",
+          "src/assistx/runtime_projection_v2.py",
+          "src/assistx/task_family_routing.py"
+        ],
+        "precision": 0.175,
+        "predicted_neighbors": 40,
+        "recall": 0.7
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "precision": 0.3,
+        "predicted_neighbors": 10,
+        "recall": 0.3
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "precision": 0.15,
+        "predicted_neighbors": 20,
+        "recall": 0.3
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_context_projection.py",
+          "src/assistx/fleet_routing_matrix.py"
+        ],
+        "precision": 0.6,
+        "predicted_neighbors": 5,
+        "recall": 0.3
+      },
+      "seed": "tests/test_fleet_routing_matrix_import.py"
+    },
+    {
+      "cochanged_targets": 10,
+      "commit": "faa68e573c4fbf268b774ff32061e421133ec112",
+      "commit_subject": "Import full tailnet capability and benchmark routing evidence",
+      "context_plan_10p10e": {
+        "expansion": [
+          "tests/test_executor_claim_status.py",
+          "tests/test_executor_security.py",
+          "tests/test_fleet_executor_concurrency.py",
+          "tests/test_fleet_ui_freshness.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/kg_harvester.py",
+          "src/assistx/neo4j_client.py"
+        ],
+        "hits": [
+          "src/assistx/api_router.py",
+          "src/assistx/task_family_routing.py"
+        ],
+        "precision": 0.15384615384615385,
+        "predicted_neighbors": 13,
+        "primary": [
+          "src/assistx/executor_security.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/task_family_routing.py"
+        ],
+        "recall": 0.2
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "tests/test_executor_claim_status.py",
+          "tests/test_executor_security.py",
+          "tests/test_fleet_executor_concurrency.py",
+          "tests/test_fleet_ui_freshness.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py"
+        ],
+        "hits": [
+          "src/assistx/api_router.py",
+          "src/assistx/task_family_routing.py"
+        ],
+        "precision": 0.2222222222222222,
+        "predicted_neighbors": 9,
+        "primary": [
+          "src/assistx/executor_security.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/task_family_routing.py"
+        ],
+        "recall": 0.2
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "tests/test_executor_claim_status.py",
+          "tests/test_executor_security.py",
+          "tests/test_fleet_executor_concurrency.py",
+          "tests/test_fleet_ui_freshness.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/fleet_executor_compat.py"
+        ],
+        "hits": [
+          "src/assistx/api_router.py",
+          "src/assistx/task_family_routing.py"
+        ],
+        "precision": 0.18181818181818182,
+        "predicted_neighbors": 11,
+        "primary": [
+          "src/assistx/executor_security.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/task_family_routing.py"
+        ],
+        "recall": 0.2
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/task_family_routing.py"
+        ],
+        "precision": 0.3333333333333333,
+        "predicted_neighbors": 3,
+        "recall": 0.1
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/task_family_routing.py"
+        ],
+        "precision": 0.15789473684210525,
+        "predicted_neighbors": 19,
+        "recall": 0.3
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/api_router.py",
+          "src/assistx/task_family_routing.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 10,
+        "recall": 0.2
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/api_router.py",
+          "src/assistx/task_family_routing.py"
+        ],
+        "precision": 0.16666666666666666,
+        "predicted_neighbors": 18,
+        "recall": 0.3
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/task_family_routing.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 5,
+        "recall": 0.1
+      },
+      "seed": "tests/test_task_family_routing.py"
+    },
+    {
+      "cochanged_targets": 13,
+      "commit": "b52a158b840e8f7d0a5e984e50b009cf9fc30540",
+      "commit_subject": "Make continuous fleet execution claim-fenced and capacity-aware",
+      "context_plan_10p10e": {
+        "expansion": [],
+        "hits": [
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 10,
+        "primary": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/config.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/intent_orchestrator.py",
+          "src/assistx/jobs.py",
+          "src/assistx/kg_harvester.py"
+        ],
+        "recall": 0.15384615384615385
+      },
+      "context_plan_6p6e": {
+        "expansion": [],
+        "hits": [
+          "src/assistx/durable_harvester.py"
+        ],
+        "precision": 0.16666666666666666,
+        "predicted_neighbors": 6,
+        "primary": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/config.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/durable_harvester.py"
+        ],
+        "recall": 0.07692307692307693
+      },
+      "context_plan_8p8e": {
+        "expansion": [],
+        "hits": [
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py"
+        ],
+        "precision": 0.25,
+        "predicted_neighbors": 8,
+        "primary": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/config.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/intent_orchestrator.py"
+        ],
+        "recall": 0.15384615384615385
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/strict_claims.py",
+          "src/assistx/work_supply.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_safe_fleet_executor.py"
+        ],
+        "precision": 0.1891891891891892,
+        "predicted_neighbors": 37,
+        "recall": 0.5384615384615384
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/durable_harvester.py",
+          "src/assistx/executor_security.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/strict_claims.py",
+          "src/assistx/work_supply.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_safe_fleet_executor.py"
+        ],
+        "precision": 0.07633587786259542,
+        "predicted_neighbors": 131,
+        "recall": 0.7692307692307693
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 10,
+        "recall": 0.15384615384615385
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/strict_claims.py",
+          "src/assistx/work_supply.py"
+        ],
+        "precision": 0.25,
+        "predicted_neighbors": 20,
+        "recall": 0.38461538461538464
+      },
+      "reranked_top5": {
+        "hits": [],
+        "precision": 0.0,
+        "predicted_neighbors": 5,
+        "recall": 0.0
+      },
+      "seed": "src/assistx/__init__.py"
+    },
+    {
+      "cochanged_targets": 13,
+      "commit": "b52a158b840e8f7d0a5e984e50b009cf9fc30540",
+      "commit_subject": "Make continuous fleet execution claim-fenced and capacity-aware",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/auto_assign_client.py",
+          "src/assistx/cli.py",
+          "src/assistx/config.py",
+          "src/assistx/degraded_control_hardening.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/work_supply.py"
+        ],
+        "precision": 0.13333333333333333,
+        "predicted_neighbors": 15,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/kg_harvester.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/work_supply.py"
+        ],
+        "recall": 0.15384615384615385
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/work_supply.py"
+        ],
+        "precision": 0.18181818181818182,
+        "predicted_neighbors": 11,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/kg_harvester.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/work_supply.py"
+        ],
+        "recall": 0.15384615384615385
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/auto_assign_client.py",
+          "src/assistx/cli.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/work_supply.py"
+        ],
+        "precision": 0.15384615384615385,
+        "predicted_neighbors": 13,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/kg_harvester.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/work_supply.py"
+        ],
+        "recall": 0.15384615384615385
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/work_supply.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 5,
+        "recall": 0.15384615384615385
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/strict_claims.py",
+          "src/assistx/work_supply.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_safe_fleet_executor.py"
+        ],
+        "precision": 0.1323529411764706,
+        "predicted_neighbors": 68,
+        "recall": 0.6923076923076923
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/work_supply.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 10,
+        "recall": 0.15384615384615385
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/work_supply.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 20,
+        "recall": 0.3076923076923077
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/work_supply.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 5,
+        "recall": 0.15384615384615385
+      },
+      "seed": "src/assistx/durable_harvester.py"
+    },
+    {
+      "cochanged_targets": 13,
+      "commit": "b52a158b840e8f7d0a5e984e50b009cf9fc30540",
+      "commit_subject": "Make continuous fleet execution claim-fenced and capacity-aware",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/degraded_control_plane.py",
+          "src/assistx/degraded_router_gate.py",
+          "src/assistx/fleet_context_projection.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "tests/test_executor_claim_status.py"
+        ],
+        "precision": 0.125,
+        "predicted_neighbors": 16,
+        "primary": [
+          "src/assistx/api_router.py",
+          "src/assistx/task_family_routing.py",
+          "tests/test_executor_claim_status.py",
+          "tests/test_executor_security.py",
+          "tests/test_task_family_routing.py",
+          "src/assistx/operational_journal.py"
+        ],
+        "recall": 0.15384615384615385
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "tests/test_executor_claim_status.py"
+        ],
+        "precision": 0.16666666666666666,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/api_router.py",
+          "src/assistx/task_family_routing.py",
+          "tests/test_executor_claim_status.py",
+          "tests/test_executor_security.py",
+          "tests/test_task_family_routing.py",
+          "src/assistx/operational_journal.py"
+        ],
+        "recall": 0.15384615384615385
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/benchmark_allocation_policy.py",
+          "src/assistx/control_room.py",
+          "src/assistx/control_room_runtime.py",
+          "src/assistx/degraded_activation.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/degraded_control_plane.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "tests/test_executor_claim_status.py"
+        ],
+        "precision": 0.14285714285714285,
+        "predicted_neighbors": 14,
+        "primary": [
+          "src/assistx/api_router.py",
+          "src/assistx/task_family_routing.py",
+          "tests/test_executor_claim_status.py",
+          "tests/test_executor_security.py",
+          "tests/test_task_family_routing.py",
+          "src/assistx/operational_journal.py"
+        ],
+        "recall": 0.15384615384615385
+      },
+      "depth1": {
+        "hits": [
+          "tests/test_executor_claim_status.py"
+        ],
+        "precision": 0.16666666666666666,
+        "predicted_neighbors": 6,
+        "recall": 0.07692307692307693
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/repo_task_generator.py",
+          "tests/test_executor_claim_status.py"
+        ],
+        "precision": 0.08888888888888889,
+        "predicted_neighbors": 45,
+        "recall": 0.3076923076923077
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "tests/test_executor_claim_status.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 10,
+        "recall": 0.15384615384615385
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py",
+          "tests/test_executor_claim_status.py"
+        ],
+        "precision": 0.15,
+        "predicted_neighbors": 20,
+        "recall": 0.23076923076923078
+      },
+      "reranked_top5": {
+        "hits": [
+          "tests/test_executor_claim_status.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 5,
+        "recall": 0.07692307692307693
+      },
+      "seed": "src/assistx/executor_security.py"
+    },
+    {
+      "cochanged_targets": 13,
+      "commit": "b52a158b840e8f7d0a5e984e50b009cf9fc30540",
+      "commit_subject": "Make continuous fleet execution claim-fenced and capacity-aware",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/allocation_engine.py",
+          "src/assistx/answers_store.py",
+          "src/assistx/api_router.py",
+          "src/assistx/auto_assign_client.py",
+          "src/assistx/benchmark_controller.py",
+          "src/assistx/capacity_forecast.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/work_supply.py",
+          "tests/test_fleet_executor_concurrency.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 20,
+        "primary": [
+          "src/assistx/api.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/runtime_projection.py",
+          "src/assistx/task_family_routing.py",
+          "src/assistx/work_supply.py",
+          "tests/test_fleet_executor_concurrency.py",
+          "tests/test_fleet_ui_freshness.py",
+          "tests/test_task_family_routing.py"
+        ],
+        "recall": 0.3076923076923077
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/allocation_engine.py",
+          "src/assistx/answers_store.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor_compat.py"
+        ],
+        "precision": 0.16666666666666666,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/api.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/runtime_projection.py",
+          "src/assistx/task_family_routing.py"
+        ],
+        "recall": 0.15384615384615385
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/allocation_engine.py",
+          "src/assistx/answers_store.py",
+          "src/assistx/api_router.py",
+          "src/assistx/auto_assign_client.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/work_supply.py",
+          "tests/test_fleet_executor_concurrency.py"
+        ],
+        "precision": 0.25,
+        "predicted_neighbors": 16,
+        "primary": [
+          "src/assistx/api.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/runtime_projection.py",
+          "src/assistx/task_family_routing.py",
+          "src/assistx/work_supply.py",
+          "tests/test_fleet_executor_concurrency.py"
+        ],
+        "recall": 0.3076923076923077
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/work_supply.py",
+          "tests/test_fleet_executor_concurrency.py",
+          "tests/test_safe_fleet_executor.py"
+        ],
+        "precision": 0.36363636363636365,
+        "predicted_neighbors": 11,
+        "recall": 0.3076923076923077
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/executor_security.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/strict_claims.py",
+          "src/assistx/work_supply.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_fleet_executor_concurrency.py",
+          "tests/test_safe_fleet_executor.py"
+        ],
+        "precision": 0.10989010989010989,
+        "predicted_neighbors": 91,
+        "recall": 0.7692307692307693
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/work_supply.py",
+          "tests/test_fleet_executor_concurrency.py"
+        ],
+        "precision": 0.3,
+        "predicted_neighbors": 10,
+        "recall": 0.23076923076923078
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/work_supply.py",
+          "tests/test_fleet_executor_concurrency.py",
+          "tests/test_safe_fleet_executor.py"
+        ],
+        "precision": 0.25,
+        "predicted_neighbors": 20,
+        "recall": 0.38461538461538464
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/fleet_executor_compat.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 5,
+        "recall": 0.07692307692307693
+      },
+      "seed": "src/assistx/fleet_executor.py"
+    },
+    {
+      "cochanged_targets": 13,
+      "commit": "b52a158b840e8f7d0a5e984e50b009cf9fc30540",
+      "commit_subject": "Make continuous fleet execution claim-fenced and capacity-aware",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/config.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/intent_orchestrator.py",
+          "src/assistx/jobs.py",
+          "src/assistx/kg_harvester.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py"
+        ],
+        "precision": 0.25,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py"
+        ],
+        "recall": 0.23076923076923078
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/config.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/degraded_control_hardening.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py"
+        ],
+        "precision": 0.25,
+        "predicted_neighbors": 8,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py"
+        ],
+        "recall": 0.15384615384615385
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/config.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/intent_orchestrator.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py"
+        ],
+        "precision": 0.3,
+        "predicted_neighbors": 10,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py"
+        ],
+        "recall": 0.23076923076923078
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 2,
+        "recall": 0.15384615384615385
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/strict_claims.py",
+          "src/assistx/work_supply.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_fleet_executor_concurrency.py",
+          "tests/test_safe_fleet_executor.py"
+        ],
+        "precision": 0.20454545454545456,
+        "predicted_neighbors": 44,
+        "recall": 0.6923076923076923
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py"
+        ],
+        "precision": 0.3,
+        "predicted_neighbors": 10,
+        "recall": 0.23076923076923078
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/repository_path_policy.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 20,
+        "recall": 0.3076923076923077
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 5,
+        "recall": 0.15384615384615385
+      },
+      "seed": "src/assistx/fleet_executor_compat.py"
+    },
+    {
+      "cochanged_targets": 13,
+      "commit": "b52a158b840e8f7d0a5e984e50b009cf9fc30540",
+      "commit_subject": "Make continuous fleet execution claim-fenced and capacity-aware",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/allocation_engine.py",
+          "src/assistx/answers_store.py",
+          "src/assistx/api_router.py",
+          "src/assistx/auto_assign_client.py",
+          "src/assistx/benchmark_controller.py",
+          "src/assistx/capacity_forecast.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/work_supply.py",
+          "tests/test_repo_task_generator.py"
+        ],
+        "precision": 0.23529411764705882,
+        "predicted_neighbors": 17,
+        "primary": [
+          "src/assistx/api.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/task_family_routing.py",
+          "src/assistx/work_supply.py",
+          "tests/test_repo_task_generator.py"
+        ],
+        "recall": 0.3076923076923077
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/allocation_engine.py",
+          "src/assistx/answers_store.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/work_supply.py"
+        ],
+        "precision": 0.25,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/api.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/task_family_routing.py",
+          "src/assistx/work_supply.py"
+        ],
+        "recall": 0.23076923076923078
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/allocation_engine.py",
+          "src/assistx/answers_store.py",
+          "src/assistx/api_router.py",
+          "src/assistx/auto_assign_client.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/work_supply.py",
+          "tests/test_repo_task_generator.py"
+        ],
+        "precision": 0.26666666666666666,
+        "predicted_neighbors": 15,
+        "primary": [
+          "src/assistx/api.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/task_family_routing.py",
+          "src/assistx/work_supply.py",
+          "tests/test_repo_task_generator.py"
+        ],
+        "recall": 0.3076923076923077
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/work_supply.py",
+          "tests/test_repo_task_generator.py"
+        ],
+        "precision": 0.42857142857142855,
+        "predicted_neighbors": 7,
+        "recall": 0.23076923076923078
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/executor_security.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/strict_claims.py",
+          "src/assistx/work_supply.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_repo_task_generator.py"
+        ],
+        "precision": 0.10843373493975904,
+        "predicted_neighbors": 83,
+        "recall": 0.6923076923076923
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/work_supply.py",
+          "tests/test_repo_task_generator.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 10,
+        "recall": 0.3076923076923077
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/work_supply.py",
+          "tests/test_repo_task_generator.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 20,
+        "recall": 0.3076923076923077
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/repository_path_policy.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 5,
+        "recall": 0.07692307692307693
+      },
+      "seed": "src/assistx/repo_task_generator.py"
+    },
+    {
+      "cochanged_targets": 13,
+      "commit": "b52a158b840e8f7d0a5e984e50b009cf9fc30540",
+      "commit_subject": "Make continuous fleet execution claim-fenced and capacity-aware",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/config.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/intent_orchestrator.py",
+          "src/assistx/jobs.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/repo_task_generator.py"
+        ],
+        "precision": 0.3333333333333333,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/repo_task_generator.py"
+        ],
+        "recall": 0.3076923076923077
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/config.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/degraded_control_hardening.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/repo_task_generator.py"
+        ],
+        "precision": 0.25,
+        "predicted_neighbors": 8,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/repo_task_generator.py"
+        ],
+        "recall": 0.15384615384615385
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/config.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/repo_task_generator.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 10,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/repo_task_generator.py"
+        ],
+        "recall": 0.3076923076923077
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/repo_task_generator.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 2,
+        "recall": 0.15384615384615385
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/strict_claims.py",
+          "src/assistx/work_supply.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_repo_task_generator.py",
+          "tests/test_safe_fleet_executor.py"
+        ],
+        "precision": 0.21951219512195122,
+        "predicted_neighbors": 41,
+        "recall": 0.6923076923076923
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/repo_task_generator.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 10,
+        "recall": 0.3076923076923077
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/strict_claims.py"
+        ],
+        "precision": 0.25,
+        "predicted_neighbors": 20,
+        "recall": 0.38461538461538464
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/repo_task_generator.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 5,
+        "recall": 0.15384615384615385
+      },
+      "seed": "src/assistx/repository_path_policy.py"
+    },
+    {
+      "cochanged_targets": 13,
+      "commit": "b52a158b840e8f7d0a5e984e50b009cf9fc30540",
+      "commit_subject": "Make continuous fleet execution claim-fenced and capacity-aware",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/cli.py",
+          "src/assistx/config.py",
+          "src/assistx/degraded_control_hardening.py",
+          "src/assistx/durable_harvester.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py"
+        ],
+        "precision": 0.16666666666666666,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/neo4j_client.py"
+        ],
+        "recall": 0.15384615384615385
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py"
+        ],
+        "precision": 0.125,
+        "predicted_neighbors": 8,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/neo4j_client.py"
+        ],
+        "recall": 0.07692307692307693
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/cli.py",
+          "src/assistx/config.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py"
+        ],
+        "precision": 0.1,
+        "predicted_neighbors": 10,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/neo4j_client.py"
+        ],
+        "recall": 0.07692307692307693
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/__init__.py"
+        ],
+        "precision": 0.5,
+        "predicted_neighbors": 2,
+        "recall": 0.07692307692307693
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/work_supply.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_safe_fleet_executor.py"
+        ],
+        "precision": 0.14516129032258066,
+        "predicted_neighbors": 62,
+        "recall": 0.6923076923076923
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py"
+        ],
+        "precision": 0.1,
+        "predicted_neighbors": 10,
+        "recall": 0.07692307692307693
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/fleet_executor_compat.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 20,
+        "recall": 0.3076923076923077
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/__init__.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 5,
+        "recall": 0.07692307692307693
+      },
+      "seed": "src/assistx/strict_claims.py"
+    },
+    {
+      "cochanged_targets": 13,
+      "commit": "b52a158b840e8f7d0a5e984e50b009cf9fc30540",
+      "commit_subject": "Make continuous fleet execution claim-fenced and capacity-aware",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/auto_assign_client.py",
+          "src/assistx/cli.py",
+          "src/assistx/config.py",
+          "src/assistx/degraded_control_hardening.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/repo_task_generator.py"
+        ],
+        "precision": 0.23529411764705882,
+        "predicted_neighbors": 17,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/runtime_projection.py"
+        ],
+        "recall": 0.3076923076923077
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/repo_task_generator.py"
+        ],
+        "precision": 0.3333333333333333,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/repo_task_generator.py"
+        ],
+        "recall": 0.3076923076923077
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/api.py",
+          "src/assistx/api_router.py",
+          "src/assistx/auto_assign_client.py",
+          "src/assistx/cli.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/repo_task_generator.py"
+        ],
+        "precision": 0.26666666666666666,
+        "predicted_neighbors": 15,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/runtime_projection.py"
+        ],
+        "recall": 0.3076923076923077
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/repo_task_generator.py"
+        ],
+        "precision": 0.5714285714285714,
+        "predicted_neighbors": 7,
+        "recall": 0.3076923076923077
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/strict_claims.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_fleet_executor_concurrency.py",
+          "tests/test_repo_task_generator.py",
+          "tests/test_safe_fleet_executor.py"
+        ],
+        "precision": 0.14473684210526316,
+        "predicted_neighbors": 76,
+        "recall": 0.8461538461538461
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/repo_task_generator.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 10,
+        "recall": 0.3076923076923077
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/repo_task_generator.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 20,
+        "recall": 0.3076923076923077
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py"
+        ],
+        "precision": 0.6,
+        "predicted_neighbors": 5,
+        "recall": 0.23076923076923078
+      },
+      "seed": "src/assistx/work_supply.py"
+    },
+    {
+      "cochanged_targets": 13,
+      "commit": "b52a158b840e8f7d0a5e984e50b009cf9fc30540",
+      "commit_subject": "Make continuous fleet execution claim-fenced and capacity-aware",
+      "context_plan_10p10e": {
+        "expansion": [
+          "tests/conftest.py",
+          "tests/test_benchmark_controller.py",
+          "tests/test_control_room.py",
+          "tests/test_control_room_runtime.py",
+          "tests/test_draft_model.py",
+          "tests/test_fleet_node_kv_cache.py",
+          "tests/test_fleet_node_recovery.py",
+          "tests/test_fleet_node_shell_gate.py",
+          "tests/test_fleet_routing_matrix_import.py",
+          "tests/test_intent_orchestrator.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py"
+        ],
+        "precision": 0.08333333333333333,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/neo4j_client.py"
+        ],
+        "recall": 0.07692307692307693
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "tests/conftest.py",
+          "tests/test_benchmark_controller.py",
+          "tests/test_control_room.py",
+          "tests/test_control_room_runtime.py",
+          "tests/test_draft_model.py",
+          "tests/test_fleet_node_kv_cache.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py"
+        ],
+        "precision": 0.125,
+        "predicted_neighbors": 8,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/neo4j_client.py"
+        ],
+        "recall": 0.07692307692307693
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "tests/conftest.py",
+          "tests/test_benchmark_controller.py",
+          "tests/test_control_room.py",
+          "tests/test_control_room_runtime.py",
+          "tests/test_draft_model.py",
+          "tests/test_fleet_node_kv_cache.py",
+          "tests/test_fleet_node_recovery.py",
+          "tests/test_fleet_node_shell_gate.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py"
+        ],
+        "precision": 0.1,
+        "predicted_neighbors": 10,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/neo4j_client.py"
+        ],
+        "recall": 0.07692307692307693
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/__init__.py"
+        ],
+        "precision": 0.5,
+        "predicted_neighbors": 2,
+        "recall": 0.07692307692307693
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/strict_claims.py",
+          "src/assistx/work_supply.py",
+          "tests/test_safe_fleet_executor.py"
+        ],
+        "precision": 0.14516129032258066,
+        "predicted_neighbors": 62,
+        "recall": 0.6923076923076923
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py"
+        ],
+        "precision": 0.1,
+        "predicted_neighbors": 10,
+        "recall": 0.07692307692307693
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "tests/test_safe_fleet_executor.py"
+        ],
+        "precision": 0.1,
+        "predicted_neighbors": 20,
+        "recall": 0.15384615384615385
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/__init__.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 5,
+        "recall": 0.07692307692307693
+      },
+      "seed": "tests/test_continuous_work_safety.py"
+    },
+    {
+      "cochanged_targets": 13,
+      "commit": "b52a158b840e8f7d0a5e984e50b009cf9fc30540",
+      "commit_subject": "Make continuous fleet execution claim-fenced and capacity-aware",
+      "context_plan_10p10e": {
+        "expansion": [
+          "tests/test_executor_security.py",
+          "tests/test_task_family_routing.py",
+          "tests/test_degraded_activation.py",
+          "tests/test_degraded_control_plane.py",
+          "tests/test_degraded_disaster_canary.py",
+          "tests/test_migration_api.py",
+          "tests/test_overlay_contract.py",
+          "tests/test_runtime_contract.py",
+          "tests/test_swarm_phase2.py",
+          "src/assistx/api_router.py"
+        ],
+        "hits": [
+          "src/assistx/executor_security.py"
+        ],
+        "precision": 0.09090909090909091,
+        "predicted_neighbors": 11,
+        "primary": [
+          "src/assistx/executor_security.py"
+        ],
+        "recall": 0.07692307692307693
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "tests/test_executor_security.py",
+          "tests/test_task_family_routing.py",
+          "tests/test_degraded_activation.py",
+          "tests/test_degraded_control_plane.py",
+          "tests/test_degraded_disaster_canary.py",
+          "tests/test_migration_api.py"
+        ],
+        "hits": [
+          "src/assistx/executor_security.py"
+        ],
+        "precision": 0.14285714285714285,
+        "predicted_neighbors": 7,
+        "primary": [
+          "src/assistx/executor_security.py"
+        ],
+        "recall": 0.07692307692307693
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "tests/test_executor_security.py",
+          "tests/test_task_family_routing.py",
+          "tests/test_degraded_activation.py",
+          "tests/test_degraded_control_plane.py",
+          "tests/test_degraded_disaster_canary.py",
+          "tests/test_migration_api.py",
+          "tests/test_overlay_contract.py",
+          "tests/test_runtime_contract.py"
+        ],
+        "hits": [
+          "src/assistx/executor_security.py"
+        ],
+        "precision": 0.1111111111111111,
+        "predicted_neighbors": 9,
+        "primary": [
+          "src/assistx/executor_security.py"
+        ],
+        "recall": 0.07692307692307693
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/executor_security.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 1,
+        "recall": 0.07692307692307693
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/executor_security.py"
+        ],
+        "precision": 0.16666666666666666,
+        "predicted_neighbors": 6,
+        "recall": 0.07692307692307693
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/executor_security.py"
+        ],
+        "precision": 0.1,
+        "predicted_neighbors": 10,
+        "recall": 0.07692307692307693
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/executor_security.py"
+        ],
+        "precision": 0.09090909090909091,
+        "predicted_neighbors": 11,
+        "recall": 0.07692307692307693
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/executor_security.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 5,
+        "recall": 0.07692307692307693
+      },
+      "seed": "tests/test_executor_claim_status.py"
+    },
+    {
+      "cochanged_targets": 13,
+      "commit": "b52a158b840e8f7d0a5e984e50b009cf9fc30540",
+      "commit_subject": "Make continuous fleet execution claim-fenced and capacity-aware",
+      "context_plan_10p10e": {
+        "expansion": [
+          "tests/test_fleet_ui_freshness.py",
+          "tests/test_task_family_routing.py",
+          "src/assistx/api.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/runtime_projection.py",
+          "src/assistx/task_family_routing.py",
+          "src/assistx/work_supply.py",
+          "tests/test_safe_fleet_executor.py"
+        ],
+        "hits": [
+          "src/assistx/fleet_executor.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/work_supply.py",
+          "tests/test_safe_fleet_executor.py"
+        ],
+        "precision": 0.36363636363636365,
+        "predicted_neighbors": 11,
+        "primary": [
+          "src/assistx/fleet_executor.py"
+        ],
+        "recall": 0.3076923076923077
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "tests/test_fleet_ui_freshness.py",
+          "tests/test_task_family_routing.py",
+          "src/assistx/api.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/neo4j_client.py"
+        ],
+        "hits": [
+          "src/assistx/fleet_executor.py",
+          "src/assistx/fleet_executor_compat.py"
+        ],
+        "precision": 0.2857142857142857,
+        "predicted_neighbors": 7,
+        "primary": [
+          "src/assistx/fleet_executor.py"
+        ],
+        "recall": 0.15384615384615385
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "tests/test_fleet_ui_freshness.py",
+          "tests/test_task_family_routing.py",
+          "src/assistx/api.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/runtime_projection.py",
+          "src/assistx/task_family_routing.py"
+        ],
+        "hits": [
+          "src/assistx/fleet_executor.py",
+          "src/assistx/fleet_executor_compat.py"
+        ],
+        "precision": 0.2222222222222222,
+        "predicted_neighbors": 9,
+        "primary": [
+          "src/assistx/fleet_executor.py"
+        ],
+        "recall": 0.15384615384615385
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/fleet_executor.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 1,
+        "recall": 0.07692307692307693
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/fleet_executor.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/work_supply.py",
+          "tests/test_safe_fleet_executor.py"
+        ],
+        "precision": 0.36363636363636365,
+        "predicted_neighbors": 11,
+        "recall": 0.3076923076923077
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/fleet_executor.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/work_supply.py"
+        ],
+        "precision": 0.3,
+        "predicted_neighbors": 10,
+        "recall": 0.23076923076923078
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/fleet_executor.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/work_supply.py",
+          "tests/test_safe_fleet_executor.py"
+        ],
+        "precision": 0.36363636363636365,
+        "predicted_neighbors": 11,
+        "recall": 0.3076923076923077
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/fleet_executor.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 5,
+        "recall": 0.07692307692307693
+      },
+      "seed": "tests/test_fleet_executor_concurrency.py"
+    },
+    {
+      "cochanged_targets": 13,
+      "commit": "b52a158b840e8f7d0a5e984e50b009cf9fc30540",
+      "commit_subject": "Make continuous fleet execution claim-fenced and capacity-aware",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/api.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/task_family_routing.py",
+          "src/assistx/work_supply.py"
+        ],
+        "hits": [
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/work_supply.py"
+        ],
+        "precision": 0.42857142857142855,
+        "predicted_neighbors": 7,
+        "primary": [
+          "src/assistx/repo_task_generator.py"
+        ],
+        "recall": 0.23076923076923078
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/api.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/task_family_routing.py",
+          "src/assistx/work_supply.py"
+        ],
+        "hits": [
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/work_supply.py"
+        ],
+        "precision": 0.42857142857142855,
+        "predicted_neighbors": 7,
+        "primary": [
+          "src/assistx/repo_task_generator.py"
+        ],
+        "recall": 0.23076923076923078
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/api.py",
+          "src/assistx/controller_runtime.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/task_family_routing.py",
+          "src/assistx/work_supply.py"
+        ],
+        "hits": [
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/work_supply.py"
+        ],
+        "precision": 0.42857142857142855,
+        "predicted_neighbors": 7,
+        "primary": [
+          "src/assistx/repo_task_generator.py"
+        ],
+        "recall": 0.23076923076923078
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/repo_task_generator.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 1,
+        "recall": 0.07692307692307693
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/work_supply.py"
+        ],
+        "precision": 0.42857142857142855,
+        "predicted_neighbors": 7,
+        "recall": 0.23076923076923078
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/work_supply.py"
+        ],
+        "precision": 0.42857142857142855,
+        "predicted_neighbors": 7,
+        "recall": 0.23076923076923078
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/work_supply.py"
+        ],
+        "precision": 0.42857142857142855,
+        "predicted_neighbors": 7,
+        "recall": 0.23076923076923078
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/repo_task_generator.py",
+          "src/assistx/repository_path_policy.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 5,
+        "recall": 0.15384615384615385
+      },
+      "seed": "tests/test_repo_task_generator.py"
+    },
+    {
+      "cochanged_targets": 13,
+      "commit": "b52a158b840e8f7d0a5e984e50b009cf9fc30540",
+      "commit_subject": "Make continuous fleet execution claim-fenced and capacity-aware",
+      "context_plan_10p10e": {
+        "expansion": [
+          "tests/test_benchmark_controller.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_control_room.py",
+          "tests/test_control_room_runtime.py",
+          "tests/test_draft_model.py",
+          "tests/test_fleet_node_kv_cache.py",
+          "tests/test_fleet_node_recovery.py",
+          "tests/test_fleet_node_shell_gate.py",
+          "tests/test_fleet_routing_matrix_import.py",
+          "tests/test_intent_orchestrator.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py",
+          "tests/test_continuous_work_safety.py"
+        ],
+        "precision": 0.25,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py"
+        ],
+        "recall": 0.23076923076923078
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "tests/test_benchmark_controller.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_control_room.py",
+          "tests/test_control_room_runtime.py",
+          "tests/test_draft_model.py",
+          "tests/test_fleet_node_kv_cache.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py",
+          "tests/test_continuous_work_safety.py"
+        ],
+        "precision": 0.375,
+        "predicted_neighbors": 8,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py"
+        ],
+        "recall": 0.23076923076923078
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "tests/test_benchmark_controller.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_control_room.py",
+          "tests/test_control_room_runtime.py",
+          "tests/test_draft_model.py",
+          "tests/test_fleet_node_kv_cache.py",
+          "tests/test_fleet_node_recovery.py",
+          "tests/test_fleet_node_shell_gate.py"
+        ],
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py",
+          "tests/test_continuous_work_safety.py"
+        ],
+        "precision": 0.3,
+        "predicted_neighbors": 10,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py"
+        ],
+        "recall": 0.23076923076923078
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 2,
+        "recall": 0.15384615384615385
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/fleet_executor.py",
+          "src/assistx/fleet_executor_compat.py",
+          "src/assistx/repository_path_policy.py",
+          "src/assistx/strict_claims.py",
+          "src/assistx/work_supply.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_fleet_executor_concurrency.py"
+        ],
+        "precision": 0.20454545454545456,
+        "predicted_neighbors": 44,
+        "recall": 0.6923076923076923
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py",
+          "tests/test_continuous_work_safety.py"
+        ],
+        "precision": 0.3,
+        "predicted_neighbors": 10,
+        "recall": 0.23076923076923078
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_fleet_executor_concurrency.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 20,
+        "recall": 0.3076923076923077
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/__init__.py",
+          "src/assistx/fleet_executor.py",
+          "tests/test_continuous_work_safety.py"
+        ],
+        "precision": 0.6,
+        "predicted_neighbors": 5,
+        "recall": 0.23076923076923078
+      },
+      "seed": "tests/test_safe_fleet_executor.py"
+    },
+    {
+      "cochanged_targets": 1,
+      "commit": "4e477257bac59dc1116f5e47d747ff38595770b9",
+      "commit_subject": "Bound and recover continuous knowledge harvesting (#20)",
+      "context_plan_10p10e": {
+        "expansion": [
+          "scripts/build-runtime-projection-candidate.py",
+          "scripts/code_iteration_generator.py",
+          "scripts/coordination_check.py",
+          "scripts/reconciliation-discover-tailnet.py",
+          "scripts/swarm_warmup.py",
+          "scripts/validate-reconciliation-state.py",
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/hermes_agent_adapter.py",
+          "src/assistx/agents/orchestrator.py"
+        ],
+        "hits": [
+          "tests/test_kg_harvester_backlog.py"
+        ],
+        "precision": 0.0625,
+        "predicted_neighbors": 16,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/task_family_routing.py",
+          "tests/test_kg_harvester_backlog.py"
+        ],
+        "recall": 1.0
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "scripts/build-runtime-projection-candidate.py",
+          "scripts/code_iteration_generator.py",
+          "scripts/coordination_check.py",
+          "scripts/reconciliation-discover-tailnet.py",
+          "scripts/swarm_warmup.py",
+          "scripts/validate-reconciliation-state.py"
+        ],
+        "hits": [
+          "tests/test_kg_harvester_backlog.py"
+        ],
+        "precision": 0.08333333333333333,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/task_family_routing.py",
+          "tests/test_kg_harvester_backlog.py"
+        ],
+        "recall": 1.0
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "scripts/build-runtime-projection-candidate.py",
+          "scripts/code_iteration_generator.py",
+          "scripts/coordination_check.py",
+          "scripts/reconciliation-discover-tailnet.py",
+          "scripts/swarm_warmup.py",
+          "scripts/validate-reconciliation-state.py",
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py"
+        ],
+        "hits": [
+          "tests/test_kg_harvester_backlog.py"
+        ],
+        "precision": 0.07142857142857142,
+        "predicted_neighbors": 14,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/api.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/task_family_routing.py",
+          "tests/test_kg_harvester_backlog.py"
+        ],
+        "recall": 1.0
+      },
+      "depth1": {
+        "hits": [
+          "tests/test_kg_harvester_backlog.py"
+        ],
+        "precision": 0.16666666666666666,
+        "predicted_neighbors": 6,
+        "recall": 1.0
+      },
+      "depth2": {
+        "hits": [
+          "tests/test_kg_harvester_backlog.py"
+        ],
+        "precision": 0.009900990099009901,
+        "predicted_neighbors": 101,
+        "recall": 1.0
+      },
+      "reranked_top10": {
+        "hits": [
+          "tests/test_kg_harvester_backlog.py"
+        ],
+        "precision": 0.1,
+        "predicted_neighbors": 10,
+        "recall": 1.0
+      },
+      "reranked_top20": {
+        "hits": [
+          "tests/test_kg_harvester_backlog.py"
+        ],
+        "precision": 0.05,
+        "predicted_neighbors": 20,
+        "recall": 1.0
+      },
+      "reranked_top5": {
+        "hits": [],
+        "precision": 0.0,
+        "predicted_neighbors": 5,
+        "recall": 0.0
+      },
+      "seed": "src/assistx/kg_harvester.py"
+    },
+    {
+      "cochanged_targets": 1,
+      "commit": "4e477257bac59dc1116f5e47d747ff38595770b9",
+      "commit_subject": "Bound and recover continuous knowledge harvesting (#20)",
+      "context_plan_10p10e": {
+        "expansion": [
+          "tests/test_benchmark_controller.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_control_room.py",
+          "tests/test_control_room_runtime.py",
+          "tests/test_draft_model.py",
+          "tests/test_fleet_node_kv_cache.py",
+          "tests/test_fleet_node_recovery.py",
+          "tests/test_fleet_node_shell_gate.py",
+          "tests/test_fleet_routing_matrix_import.py",
+          "tests/test_intent_orchestrator.py"
+        ],
+        "hits": [
+          "src/assistx/kg_harvester.py"
+        ],
+        "precision": 0.08333333333333333,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/kg_harvester.py"
+        ],
+        "recall": 1.0
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "tests/test_benchmark_controller.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_control_room.py",
+          "tests/test_control_room_runtime.py",
+          "tests/test_draft_model.py",
+          "tests/test_fleet_node_kv_cache.py"
+        ],
+        "hits": [
+          "src/assistx/kg_harvester.py"
+        ],
+        "precision": 0.125,
+        "predicted_neighbors": 8,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/kg_harvester.py"
+        ],
+        "recall": 1.0
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "tests/test_benchmark_controller.py",
+          "tests/test_continuous_work_safety.py",
+          "tests/test_control_room.py",
+          "tests/test_control_room_runtime.py",
+          "tests/test_draft_model.py",
+          "tests/test_fleet_node_kv_cache.py",
+          "tests/test_fleet_node_recovery.py",
+          "tests/test_fleet_node_shell_gate.py"
+        ],
+        "hits": [
+          "src/assistx/kg_harvester.py"
+        ],
+        "precision": 0.1,
+        "predicted_neighbors": 10,
+        "primary": [
+          "src/assistx/__init__.py",
+          "src/assistx/kg_harvester.py"
+        ],
+        "recall": 1.0
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/kg_harvester.py"
+        ],
+        "precision": 0.5,
+        "predicted_neighbors": 2,
+        "recall": 1.0
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/kg_harvester.py"
+        ],
+        "precision": 0.02631578947368421,
+        "predicted_neighbors": 38,
+        "recall": 1.0
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/kg_harvester.py"
+        ],
+        "precision": 0.1,
+        "predicted_neighbors": 10,
+        "recall": 1.0
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/kg_harvester.py"
+        ],
+        "precision": 0.05,
+        "predicted_neighbors": 20,
+        "recall": 1.0
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/kg_harvester.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 5,
+        "recall": 1.0
+      },
+      "seed": "tests/test_kg_harvester_backlog.py"
+    },
+    {
+      "cochanged_targets": 3,
+      "commit": "adf52f177f642a92136aa03f858f38615ed57a72",
+      "commit_subject": "Unify Sophia voice ingestion behind a canonical auth boundary (#13)",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/hermes_memory_provider.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/allocation_engine.py",
+          "src/assistx/answers_store.py",
+          "src/assistx/api_router.py",
+          "src/assistx/auto_assign_client.py",
+          "src/assistx/auto_ingest_client.py"
+        ],
+        "hits": [
+          "src/assistx/voice_routes.py"
+        ],
+        "precision": 0.05555555555555555,
+        "predicted_neighbors": 18,
+        "primary": [
+          "src/assistx/api.py",
+          "src/assistx/contracts/event_envelope.py",
+          "src/assistx/draft_model.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/outbox_client.py",
+          "src/assistx/swarm_core.py",
+          "src/assistx/voice_routes.py",
+          "tests/test_swarm_phase2.py"
+        ],
+        "recall": 0.3333333333333333
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/hermes_memory_provider.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/allocation_engine.py"
+        ],
+        "hits": [],
+        "precision": 0.0,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/api.py",
+          "src/assistx/contracts/event_envelope.py",
+          "src/assistx/draft_model.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/outbox_client.py",
+          "src/assistx/swarm_core.py"
+        ],
+        "recall": 0.0
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/__init__.py",
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/hermes_memory_provider.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/allocation_engine.py",
+          "src/assistx/answers_store.py",
+          "src/assistx/api_router.py"
+        ],
+        "hits": [
+          "src/assistx/voice_routes.py"
+        ],
+        "precision": 0.0625,
+        "predicted_neighbors": 16,
+        "primary": [
+          "src/assistx/api.py",
+          "src/assistx/contracts/event_envelope.py",
+          "src/assistx/draft_model.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/outbox_client.py",
+          "src/assistx/swarm_core.py",
+          "src/assistx/voice_routes.py",
+          "tests/test_swarm_phase2.py"
+        ],
+        "recall": 0.3333333333333333
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/voice_routes.py"
+        ],
+        "precision": 0.125,
+        "predicted_neighbors": 8,
+        "recall": 0.3333333333333333
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/voice_contract.py",
+          "src/assistx/voice_routes.py"
+        ],
+        "precision": 0.023255813953488372,
+        "predicted_neighbors": 86,
+        "recall": 0.6666666666666666
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/voice_routes.py"
+        ],
+        "precision": 0.1,
+        "predicted_neighbors": 10,
+        "recall": 0.3333333333333333
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/voice_routes.py"
+        ],
+        "precision": 0.05,
+        "predicted_neighbors": 20,
+        "recall": 0.3333333333333333
+      },
+      "reranked_top5": {
+        "hits": [],
+        "precision": 0.0,
+        "predicted_neighbors": 5,
+        "recall": 0.0
+      },
+      "seed": "src/assistx/swarm_routes.py"
+    },
+    {
+      "cochanged_targets": 3,
+      "commit": "adf52f177f642a92136aa03f858f38615ed57a72",
+      "commit_subject": "Unify Sophia voice ingestion behind a canonical auth boundary (#13)",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/intent_classifier.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/paperclip_client.py",
+          "src/assistx/swarm_core.py",
+          "src/assistx/swarm_routes.py",
+          "src/assistx/api.py",
+          "src/assistx/routers/devices.py",
+          "src/assistx/routers/dispatch.py",
+          "src/assistx/routers/feeds.py",
+          "src/assistx/routers/intents.py"
+        ],
+        "hits": [
+          "src/assistx/swarm_routes.py",
+          "src/assistx/voice_routes.py",
+          "tests/test_voice_contract.py"
+        ],
+        "precision": 0.25,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/voice_routes.py",
+          "tests/test_voice_contract.py"
+        ],
+        "recall": 1.0
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/intent_classifier.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/paperclip_client.py",
+          "src/assistx/swarm_core.py",
+          "src/assistx/swarm_routes.py",
+          "src/assistx/api.py"
+        ],
+        "hits": [
+          "src/assistx/swarm_routes.py",
+          "src/assistx/voice_routes.py",
+          "tests/test_voice_contract.py"
+        ],
+        "precision": 0.375,
+        "predicted_neighbors": 8,
+        "primary": [
+          "src/assistx/voice_routes.py",
+          "tests/test_voice_contract.py"
+        ],
+        "recall": 1.0
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/intent_classifier.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/paperclip_client.py",
+          "src/assistx/swarm_core.py",
+          "src/assistx/swarm_routes.py",
+          "src/assistx/api.py",
+          "src/assistx/routers/devices.py",
+          "src/assistx/routers/dispatch.py"
+        ],
+        "hits": [
+          "src/assistx/swarm_routes.py",
+          "src/assistx/voice_routes.py",
+          "tests/test_voice_contract.py"
+        ],
+        "precision": 0.3,
+        "predicted_neighbors": 10,
+        "primary": [
+          "src/assistx/voice_routes.py",
+          "tests/test_voice_contract.py"
+        ],
+        "recall": 1.0
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/voice_routes.py",
+          "tests/test_voice_contract.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 2,
+        "recall": 0.6666666666666666
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/swarm_routes.py",
+          "src/assistx/voice_routes.py",
+          "tests/test_voice_contract.py"
+        ],
+        "precision": 0.375,
+        "predicted_neighbors": 8,
+        "recall": 1.0
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/swarm_routes.py",
+          "src/assistx/voice_routes.py",
+          "tests/test_voice_contract.py"
+        ],
+        "precision": 0.3,
+        "predicted_neighbors": 10,
+        "recall": 1.0
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/swarm_routes.py",
+          "src/assistx/voice_routes.py",
+          "tests/test_voice_contract.py"
+        ],
+        "precision": 0.1875,
+        "predicted_neighbors": 16,
+        "recall": 1.0
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/voice_routes.py",
+          "tests/test_voice_contract.py"
+        ],
+        "precision": 0.4,
+        "predicted_neighbors": 5,
+        "recall": 0.6666666666666666
+      },
+      "seed": "src/assistx/voice_contract.py"
+    },
+    {
+      "cochanged_targets": 3,
+      "commit": "adf52f177f642a92136aa03f858f38615ed57a72",
+      "commit_subject": "Unify Sophia voice ingestion behind a canonical auth boundary (#13)",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/auto_assign_client.py",
+          "src/assistx/cli.py",
+          "src/assistx/contracts/event_envelope.py",
+          "src/assistx/coordination_metadata.py",
+          "src/assistx/draft_model.py",
+          "src/assistx/durable_harvester.py",
+          "src/assistx/exporter.py"
+        ],
+        "hits": [
+          "src/assistx/swarm_routes.py",
+          "src/assistx/voice_contract.py"
+        ],
+        "precision": 0.11764705882352941,
+        "predicted_neighbors": 17,
+        "primary": [
+          "src/assistx/intent_classifier.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/paperclip_client.py",
+          "src/assistx/swarm_core.py",
+          "src/assistx/swarm_routes.py",
+          "src/assistx/voice_contract.py",
+          "src/assistx/api.py"
+        ],
+        "recall": 0.6666666666666666
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/auto_assign_client.py",
+          "src/assistx/cli.py",
+          "src/assistx/contracts/event_envelope.py"
+        ],
+        "hits": [
+          "src/assistx/swarm_routes.py",
+          "src/assistx/voice_contract.py"
+        ],
+        "precision": 0.16666666666666666,
+        "predicted_neighbors": 12,
+        "primary": [
+          "src/assistx/intent_classifier.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/paperclip_client.py",
+          "src/assistx/swarm_core.py",
+          "src/assistx/swarm_routes.py",
+          "src/assistx/voice_contract.py"
+        ],
+        "recall": 0.6666666666666666
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/acceptance.py",
+          "src/assistx/agents/executor.py",
+          "src/assistx/agents/orchestrator.py",
+          "src/assistx/auto_assign_client.py",
+          "src/assistx/cli.py",
+          "src/assistx/contracts/event_envelope.py",
+          "src/assistx/coordination_metadata.py",
+          "src/assistx/draft_model.py"
+        ],
+        "hits": [
+          "src/assistx/swarm_routes.py",
+          "src/assistx/voice_contract.py"
+        ],
+        "precision": 0.13333333333333333,
+        "predicted_neighbors": 15,
+        "primary": [
+          "src/assistx/intent_classifier.py",
+          "src/assistx/neo4j_client.py",
+          "src/assistx/paperclip_client.py",
+          "src/assistx/swarm_core.py",
+          "src/assistx/swarm_routes.py",
+          "src/assistx/voice_contract.py",
+          "src/assistx/api.py"
+        ],
+        "recall": 0.6666666666666666
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/swarm_routes.py",
+          "src/assistx/voice_contract.py"
+        ],
+        "precision": 0.2857142857142857,
+        "predicted_neighbors": 7,
+        "recall": 0.6666666666666666
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/swarm_routes.py",
+          "src/assistx/voice_contract.py",
+          "tests/test_voice_contract.py"
+        ],
+        "precision": 0.03571428571428571,
+        "predicted_neighbors": 84,
+        "recall": 1.0
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/swarm_routes.py",
+          "src/assistx/voice_contract.py"
+        ],
+        "precision": 0.2,
+        "predicted_neighbors": 10,
+        "recall": 0.6666666666666666
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/swarm_routes.py",
+          "src/assistx/voice_contract.py"
+        ],
+        "precision": 0.1,
+        "predicted_neighbors": 20,
+        "recall": 0.6666666666666666
+      },
+      "reranked_top5": {
+        "hits": [],
+        "precision": 0.0,
+        "predicted_neighbors": 5,
+        "recall": 0.0
+      },
+      "seed": "src/assistx/voice_routes.py"
+    },
+    {
+      "cochanged_targets": 3,
+      "commit": "adf52f177f642a92136aa03f858f38615ed57a72",
+      "commit_subject": "Unify Sophia voice ingestion behind a canonical auth boundary (#13)",
+      "context_plan_10p10e": {
+        "expansion": [
+          "src/assistx/voice_routes.py"
+        ],
+        "hits": [
+          "src/assistx/voice_contract.py",
+          "src/assistx/voice_routes.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 2,
+        "primary": [
+          "src/assistx/voice_contract.py"
+        ],
+        "recall": 0.6666666666666666
+      },
+      "context_plan_6p6e": {
+        "expansion": [
+          "src/assistx/voice_routes.py"
+        ],
+        "hits": [
+          "src/assistx/voice_contract.py",
+          "src/assistx/voice_routes.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 2,
+        "primary": [
+          "src/assistx/voice_contract.py"
+        ],
+        "recall": 0.6666666666666666
+      },
+      "context_plan_8p8e": {
+        "expansion": [
+          "src/assistx/voice_routes.py"
+        ],
+        "hits": [
+          "src/assistx/voice_contract.py",
+          "src/assistx/voice_routes.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 2,
+        "primary": [
+          "src/assistx/voice_contract.py"
+        ],
+        "recall": 0.6666666666666666
+      },
+      "depth1": {
+        "hits": [
+          "src/assistx/voice_contract.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 1,
+        "recall": 0.3333333333333333
+      },
+      "depth2": {
+        "hits": [
+          "src/assistx/voice_contract.py",
+          "src/assistx/voice_routes.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 2,
+        "recall": 0.6666666666666666
+      },
+      "reranked_top10": {
+        "hits": [
+          "src/assistx/voice_contract.py",
+          "src/assistx/voice_routes.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 2,
+        "recall": 0.6666666666666666
+      },
+      "reranked_top20": {
+        "hits": [
+          "src/assistx/voice_contract.py",
+          "src/assistx/voice_routes.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 2,
+        "recall": 0.6666666666666666
+      },
+      "reranked_top5": {
+        "hits": [
+          "src/assistx/voice_contract.py",
+          "src/assistx/voice_routes.py"
+        ],
+        "precision": 1.0,
+        "predicted_neighbors": 2,
+        "recall": 0.6666666666666666
+      },
+      "seed": "tests/test_voice_contract.py"
+    }
+  ],
+  "isolated_nodes": 2,
+  "max_depth1_neighborhood_size": 199,
+  "mean_cochange_precision": 0.6330052612310677,
+  "mean_cochange_recall": 0.2987593052109181,
+  "mean_depth1_neighborhood_size": 7.74,
+  "median_cochange_precision": 0.5714285714285714,
+  "median_cochange_recall": 0.23076923076923078,
+  "median_depth1_neighborhood_size": 4.0,
+  "mode": "code-only",
+  "nodes": 3641,
+  "perfect_recall_seed_count": 2,
+  "python_file_coverage": 1.0,
+  "relations": [
+    [
+      "calls",
+      2753
+    ],
+    [
+      "contains",
+      2071
+    ],
+    [
+      "references",
+      1311
+    ],
+    [
+      "method",
+      561
+    ],
+    [
+      "imports",
+      447
+    ],
+    [
+      "imports_from",
+      435
+    ],
+    [
+      "rationale_for",
+      361
+    ],
+    [
+      "uses",
+      228
+    ],
+    [
+      "inherits",
+      115
+    ],
+    [
+      "indirect_call",
+      86
+    ],
+    [
+      "re_exports",
+      22
+    ],
+    [
+      "defines",
+      9
+    ]
+  ],
+  "repository": "scottjoyner/auto-assist",
+  "represented_python_files": 302,
+  "sampled_neighborhoods": 100,
+  "schema_version": "assistx.graphify-repository-evidence.v5",
+  "top_files_by_node_count": [
+    [
+      "src/assistx/api.py",
+      255
+    ],
+    [
+      "src/assistx/llm/client.py",
+      106
+    ],
+    [
+      "src/assistx/neo4j_client.py",
+      89
+    ],
+    [
+      "src/assistx/fleet.py",
+      77
+    ],
+    [
+      "src/assistx/agents/hermes_agent_adapter.py",
+      57
+    ],
+    [
+      "src/assistx/fleet_executor.py",
+      50
+    ],
+    [
+      "src/assistx/swarm_core.py",
+      50
+    ],
+    [
+      "src/assistx/compat.py",
+      49
+    ],
+    [
+      "src/assistx/kg_harvester.py",
+      41
+    ],
+    [
+      "src/scripts/summarize_from_segments.py",
+      40
+    ],
+    [
+      "tests/test_migration_api.py",
+      39
+    ],
+    [
+      "src/assistx/paperclip_client.py",
+      33
+    ],
+    [
+      "src/assistx/recovery_island.py",
+      33
+    ],
+    [
+      "src/assistx/swarm_routes.py",
+      31
+    ],
+    [
+      "src/assistx/executor_security.py",
+      30
+    ],
+    [
+      "tests/test_degraded_control_plane.py",
+      27
+    ],
+    [
+      "src/assistx/answers_store.py",
+      26
+    ],
+    [
+      "src/assistx/recovery_runbooks.py",
+      25
+    ],
+    [
+      "src/assistx/contracts/tests/fake_neo4j.py",
+      25
+    ],
+    [
+      "src/assistx/repo_task_generator.py",
+      25
+    ]
+  ],
+  "tracked_python_files": 302,
+  "upstream_log_lines": 15,
+  "zero_hit_seed_count": 0
+}
