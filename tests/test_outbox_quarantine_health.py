@@ -28,6 +28,7 @@ EXPECTED_KEYS = {
     "delivered",
     "dead",
     "quarantined",
+    "claimable_pending",
     "total",
     "oldest_pending_at",
     "oldest_pending_age_s",

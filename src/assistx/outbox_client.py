@@ -136,6 +136,9 @@ def read_queue_health(
         # Operator holds: rows labelled quarantine:* in claim_owner. Additive
         # key, independent of the status buckets (and of ``total``).
         "quarantined": 0,
+        # Pending rows that are not held by an operator quarantine marker. Purely
+        # additive: same read-only connection, independent of the buckets above.
+        "claimable_pending": 0,
         "total": 0,
         "oldest_pending_at": None,
         "oldest_pending_age_s": None,
@@ -165,6 +168,19 @@ def read_queue_health(
                 # Legacy schema predating claim_owner: no markers can exist.
                 # A health probe must stay non-fatal on such a queue.
                 quarantined = None
+            try:
+                # Same connection as the status buckets above. A pending row is
+                # claimable unless its claim_owner carries a quarantine marker
+                # (the same guard the claim path uses). Read-only, never writes.
+                claimable_pending = conn.execute(
+                    "SELECT count(*) FROM outbox WHERE status='pending' "
+                    f"AND {_QUARANTINE_CLAIM_GUARD}"
+                ).fetchone()
+            except sqlite3.Error:
+                # Legacy schema predating claim_owner: no marker can exclude a
+                # pending row, so every pending row is claimable. Fall back to
+                # the pending bucket computed from this same connection below.
+                claimable_pending = None
         finally:
             conn.close()
     except sqlite3.Error as exc:
@@ -181,6 +197,11 @@ def read_queue_health(
         health[status] = int(count)
         health["total"] += int(count)
     health["quarantined"] = int(quarantined[0]) if quarantined else 0
+    # Legacy schemas fall back to the pending bucket (no markers can exist),
+    # so claimable_pending == pending there, with no error. Additive only.
+    health["claimable_pending"] = (
+        int(claimable_pending[0]) if claimable_pending else int(health["pending"])
+    )
     oldest_at = oldest[0] if oldest else None
     health["oldest_pending_at"] = oldest_at
     oldest_dt = _parse_iso(oldest_at)
