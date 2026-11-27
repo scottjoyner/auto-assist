@@ -121,9 +121,15 @@ def issue_executor_token(request_payload: dict[str, Any]) -> str:
         min(int(os.getenv("ASSISTX_EXECUTOR_TOKEN_TTL_SECONDS", "600")), 1800),
     )
     lease_ttl = max(30, int(os.getenv("FLEET_TASK_LEASE_SECONDS", "720")) - 5)
+    # Mirror the request-side ceiling from _install_executor_policy(): a token
+    # may not grant a larger output allowance than the request it scopes.
+    output_ceiling = max(
+        128,
+        min(int(os.getenv("ASSISTX_EXECUTOR_MAX_OUTPUT_TOKENS", "8192")), 32768),
+    )
     max_output = max(
-        int(request_payload.get("max_tokens") or 1),
-        max(128, int(os.getenv("ASSISTX_EXECUTOR_MAX_OUTPUT_TOKENS", "8192"))),
+        1,
+        min(int(request_payload.get("max_tokens") or 1), output_ceiling),
     )
     claims = {
         "iss": "assistx",
