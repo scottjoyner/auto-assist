@@ -92,14 +92,17 @@ def merge_nodes(
             continue
         # Tailnet evidence enriches a pre-existing service node without erasing
         # service endpoints or stronger component-specific capabilities.
+        # Operator-declared routing/security fields stay authoritative: a
+        # discovered row must not relabel a lane, unblock a node, grant free-API
+        # use or code execution, or replace operator metadata on collision.
         capabilities = sorted(
             set(previous.get("capabilities") or [])
             | set(node.get("capabilities") or [])
         )
         services = list(previous.get("services") or []) + list(node.get("services") or [])
         merged[node_id] = {
-            **previous,
             **node,
+            **previous,
             "capabilities": capabilities,
             "services": services,
             "running": bool(previous.get("running") or node.get("running")),
