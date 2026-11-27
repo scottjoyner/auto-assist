@@ -1015,6 +1015,10 @@ def select(model: str, task: Optional[dict] = None,
     return full
 
 
+class ReservationFileError(RuntimeError):
+    """The fleet reservation file exists but cannot be trusted."""
+
+
 def select_any(models, task: Optional[dict] = None,
                prefer_nodes: Optional[list] = None, selftask: bool = False):
     """Return (bare_model, full_id) of the BEST live candidate across the fleet.
@@ -1034,7 +1038,14 @@ def select_any(models, task: Optional[dict] = None,
     """
     _ensure_refresh_thread()  # also kicks off the metrics server + probing
     discover()
-    reservations = _load_reservations()
+    try:
+        reservations = _load_reservations()
+    except ReservationFileError as exc:
+        # Fail closed: without a trustworthy reservation snapshot we cannot
+        # prove a node is free, so do not auto-dispatch at all rather than
+        # risking a swarm/self task on a node reserved for a human session.
+        logger.warning("fleet dispatch suppressed: %s", exc)
+        return None, None
     now = time.time()
 
     def _is_reserved(node: str) -> bool:
@@ -1087,12 +1098,25 @@ def select_any(models, task: Optional[dict] = None,
 
 
 def _load_reservations() -> dict:
-    """Read fleet_reservations.json (written by fleet_reserve.py)."""
+    """Read fleet_reservations.json (written by fleet_reserve.py).
+
+    A missing file means "no reservations yet" and is fine. Every other reason
+    we cannot obtain a trustworthy snapshot fails closed: the previous broad
+    ``except Exception: return {}`` silently dropped *all* live reservations,
+    which could route a background task onto a node reserved for an interactive
+    Hermes session.
+    """
+    path = os.path.join(os.path.dirname(__file__), "fleet_reservations.json")
     try:
-        with open(os.path.join(os.path.dirname(__file__), "fleet_reservations.json")) as f:
-            return json.load(f)
-    except Exception:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError) as exc:
+        raise ReservationFileError(f"cannot read fleet reservations from {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ReservationFileError(f"fleet reservations at {path} must be a JSON object")
+    return data
 
 
 def list_models() -> list:
