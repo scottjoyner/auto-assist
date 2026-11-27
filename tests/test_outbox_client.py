@@ -90,3 +90,85 @@ def test_outbox_purges_terminal_rows_older_than_ttl(tmp_path, monkeypatch):
 
     client._purge_expired()
     assert client.get_stats()["total"] == 0
+
+
+def test_outbox_oversized_ack_is_not_accepted(tmp_path):
+    import io
+    from unittest.mock import patch
+
+    import assistx.outbox_client as oc
+
+    client = oc.OutboxClient(
+        db_path=str(tmp_path / "outbox.sqlite"),
+        api_url="http://assistx.invalid",
+        auto_flush=False,
+    )
+    entry = client.enqueue({"event_id": "evt-oversized-ack"})
+    raw = b'{"accepted":true,"extra":"' + (b"x" * oc.MAX_ACK_BYTES) + b'"}'
+    with patch.object(oc, "urlopen", return_value=io.BytesIO(raw)):
+        assert client._deliver(entry) is False
+
+
+def test_outbox_duplicate_ack_field_is_not_accepted(tmp_path):
+    import io
+    from unittest.mock import patch
+
+    import assistx.outbox_client as oc
+
+    client = oc.OutboxClient(
+        db_path=str(tmp_path / "outbox.sqlite"),
+        api_url="http://assistx.invalid",
+        auto_flush=False,
+    )
+    entry = client.enqueue({"event_id": "evt-dup-ack"})
+    with patch.object(
+        oc, "urlopen", return_value=io.BytesIO(b'{"accepted":false,"accepted":true}')
+    ):
+        assert client._deliver(entry) is False
+
+
+def test_outbox_accepted_must_be_boolean_true(tmp_path):
+    import io
+    from unittest.mock import patch
+
+    import assistx.outbox_client as oc
+
+    client = oc.OutboxClient(
+        db_path=str(tmp_path / "outbox.sqlite"),
+        api_url="http://assistx.invalid",
+        auto_flush=False,
+    )
+    entry = client.enqueue({"event_id": "evt-accepted-type"})
+    for raw in (
+        b'{"accepted":"true"}',
+        b'{"accepted":1}',
+        b'{"accepted":[]}',
+        b'{"accepted":null}',
+        b"[]",
+    ):
+        with patch.object(oc, "urlopen", return_value=io.BytesIO(raw)):
+            assert client._deliver(entry) is False
+    with patch.object(oc, "urlopen", return_value=io.BytesIO(b'{"accepted":true}')):
+        assert client._deliver(entry) is True
+
+
+def test_outbox_release_without_claim_owner_is_noop(tmp_path):
+    client = OutboxClient(
+        db_path=str(tmp_path / "outbox.sqlite"), api_url="", auto_flush=False
+    )
+    entry = client.enqueue({"event_id": "evt-no-owner"})
+    assert entry.claim_owner is None
+    assert client._release(entry, "delivered", 1) is False
+    assert client.get_stats()["pending"] == 1
+
+
+def test_outbox_release_requires_claimed_status(tmp_path):
+    client = OutboxClient(
+        db_path=str(tmp_path / "outbox.sqlite"), api_url="", auto_flush=False
+    )
+    entry = client.enqueue({"event_id": "evt-status-guard"})
+    entry.claim_owner = "stale-token"
+    assert client._release(entry, "delivered", 1) is False
+    stats = client.get_stats()
+    assert stats["pending"] == 1
+    assert stats["delivered"] == 0
