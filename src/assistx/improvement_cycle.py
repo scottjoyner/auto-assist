@@ -332,7 +332,18 @@ def evaluate_completion(
         for item in verification:
             if not isinstance(item, dict) or not isinstance(item.get("command"), list):
                 continue
-            observed[json.dumps(item["command"])] = int(item.get("returncode", -1))
+            returncode = item.get("returncode", -1)
+            # bool is an int subclass; require an exact integer exit status.
+            # Coercing floats or numeric strings silently turned malformed
+            # verification evidence into a successful check, and int("abc")
+            # raised out of the checker instead of failing the task.
+            if type(returncode) is not int:
+                reasons.append(
+                    "verification_returncode_invalid:"
+                    + " ".join(str(part) for part in item["command"])
+                )
+                continue
+            observed[json.dumps(item["command"])] = returncode
     else:
         reasons.append("missing_verification")
     for command in required_commands:
