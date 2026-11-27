@@ -37,6 +37,27 @@ def _list_of_strings(value: Any) -> list[str]:
     return sorted({str(item).strip() for item in value if str(item).strip()})
 
 
+def _admission_bool(document: Mapping[str, Any], field: str, default: bool) -> bool:
+    """Normalize an admission verdict without turning a denial into an approval.
+
+    ``bool("false")``, ``bool("0")`` and ``bool("no")`` are all ``True``. An
+    explicitly supplied non-boolean verdict is therefore rejected rather than
+    coerced. An omitted field keeps its historical default, and an explicit
+    null keeps the legacy ``bool(None) -> False`` behaviour, so neither case is
+    changed by this fence.
+    """
+    if field not in document:
+        return default
+    value = document[field]
+    if value is None:
+        return False
+    if type(value) is not bool:
+        raise FleetRoutingMatrixError(
+            f"routing matrix {field} must be a boolean"
+        )
+    return value
+
+
 def validate_matrix(document: Mapping[str, Any]) -> dict[str, Any]:
     value = dict(document)
     if value.get("schema_version") != SCHEMA_VERSION:
@@ -68,10 +89,10 @@ def validate_matrix(document: Mapping[str, Any]) -> dict[str, Any]:
         node["tailscale_ips"] = _list_of_strings(node.get("tailscale_ips"))
         node["tags"] = _list_of_strings(node.get("tags"))
         node["worker_mode"] = str(node.get("worker_mode") or "observer_only")
-        node["tailnet_discovered"] = bool(node.get("tailnet_discovered", True))
-        node["allow_agent_runtime"] = bool(node.get("allow_agent_runtime", False))
-        node["allow_code_execution"] = bool(node.get("allow_code_execution", False))
-        node["online"] = bool(node.get("online", False))
+        node["tailnet_discovered"] = _admission_bool(node, "tailnet_discovered", True)
+        node["allow_agent_runtime"] = _admission_bool(node, "allow_agent_runtime", False)
+        node["allow_code_execution"] = _admission_bool(node, "allow_code_execution", False)
+        node["online"] = _admission_bool(node, "online", False)
         node["max_concurrent"] = max(0, int(node.get("max_concurrent") or 0))
         normalized_nodes.append(node)
 
@@ -109,7 +130,9 @@ def validate_matrix(document: Mapping[str, Any]) -> dict[str, Any]:
                 ) from exc
         tps = profile.get("tokens_per_second")
         profile["tokens_per_second"] = float(tps) if tps is not None else None
-        profile["quality_floor_passed"] = bool(profile.get("quality_floor_passed", False))
+        profile["quality_floor_passed"] = _admission_bool(
+            profile, "quality_floor_passed", False
+        )
         profile["roles"] = _list_of_strings(profile.get("roles"))
         normalized_profiles.append(profile)
 
