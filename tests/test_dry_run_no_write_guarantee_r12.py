@@ -180,14 +180,11 @@ def _run_job(monkeypatch, neo, dry_run=True, passed=False):
     return jobs_mod.execute_task_job("t6", dry_run=dry_run)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="KNOWN FAIL-OPEN r12: execute_task_job(dry_run=True) writes RUNNING and final Task statuses",
-)
 def test_dry_run_job_must_not_write_task_status(monkeypatch):
     neo = RecordingNeo(tasks=[{"id": "t6", "model": "synthetic"}])
     result = _run_job(monkeypatch, neo, dry_run=True)
-    assert result["status"] == "DONE"
+    # dry_run does not force DONE: with failed acceptance the job reports FAILED.
+    assert result["status"] == "FAILED"
     assert "update_task_status" not in neo.names()
 
 
