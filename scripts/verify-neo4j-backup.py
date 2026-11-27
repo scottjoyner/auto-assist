@@ -16,9 +16,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Inspect a Neo4j Enterprise backup chain and optionally run consistency checks.",
     )
     parser.add_argument("path")
-    parser.add_argument("--database", default="neo4j")
+    parser.add_argument("--database", required=True)
     parser.add_argument("--max-age-seconds", type=int, default=3600)
     parser.add_argument("--require-recovered", action="store_true")
+    parser.add_argument("--expected-database-id",
+                        help="Optional owner-attested live database ID; required for pinned identity")
     parser.add_argument("--consistency-check", action="store_true")
     return parser
 
@@ -32,6 +34,7 @@ def main() -> int:
             args.database,
             max_age_seconds=args.max_age_seconds,
             require_recovered=args.require_recovered,
+            expected_database_id=args.expected_database_id,
         )
         if args.consistency_check:
             result["consistency"] = verifier.run_consistency_check(
