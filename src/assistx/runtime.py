@@ -196,8 +196,13 @@ def _check_redis() -> Dict[str, Any]:
             close = getattr(client, "close", None)
             if callable(close):
                 close()
-        if ping is False:
-            return {"status": "down", "url": redis_url, "reason": "ping returned false"}
+        # A liveness verdict needs an affirmative confirmation: redis-py's
+        # ping() returns bool True on success (or raises).  Treating any other
+        # value -- None/0/""/"PONG" from a wrapper or stub -- as healthy let an
+        # unconfirmed Redis read as ok in the runtime health snapshot and keep
+        # readiness green with zero liveness evidence.
+        if ping is not True:
+            return {"status": "down", "url": redis_url, "reason": "ping did not confirm liveness"}
         return {"status": "ok", "url": redis_url}
     except Exception as exc:
         return {"status": "down", "url": os.getenv("REDIS_URL", "redis://redis:6379/0"), "reason": str(exc)[:500]}
