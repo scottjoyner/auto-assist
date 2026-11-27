@@ -1,6 +1,8 @@
 
 from __future__ import annotations
 from typing import Dict, Any, List
+import contextvars
+from contextlib import contextmanager
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel
 from ..ollama_llm import json_chat
@@ -17,6 +19,25 @@ import json, time
 from datetime import datetime, date, time as dtime
 
 logger = get_logger()
+
+# ``dry_run`` (preview) must be side-effect free.  A ContextVar scopes the
+# "record but never dispatch tools" guard to the preview call without changing
+# decide()'s signature (its callers/tests monkeypatch it with a one-arg fake).
+_NO_TOOL_DISPATCH = contextvars.ContextVar("assistx_dry_run_no_tool_dispatch", default=False)
+
+
+@contextmanager
+def _dry_run_preview():
+    """Within this context, tool decisions are recorded but never executed."""
+    token = _NO_TOOL_DISPATCH.set(True)
+    try:
+        yield
+    finally:
+        _NO_TOOL_DISPATCH.reset(token)
+
+
+# Local, non-persisted label for previews.  No AgentRun node is created.
+_DRY_RUN_RUN_ID = "dry-run-preview"
 
 
 def _json_safe(value: Any) -> Any:
@@ -98,6 +119,10 @@ def decide(state: AgentState) -> AgentState:
         if not tool:
             state.history.append({"error": f"unknown tool {tname}"})
             state.done = True
+        elif _NO_TOOL_DISPATCH.get():
+            # dry_run preview: record the would-be call, never run the tool.
+            state.history.append({"preview_tool": tname, "input": args, "skipped": "dry_run"})
+            state.done = True
         else:
             t0 = time.time()
             out = tool["func"](args)
@@ -128,19 +153,22 @@ def build_graph():
 
 def run_task(neo: Neo4jClient, task: Dict[str, Any], dry_run: bool = False) -> Dict[str, Any]:
     import os as _os
-    graph = build_graph()
     state = AgentState(task=task)
+    if dry_run:
+        # Side-effect-free preview.  This branch runs *before* any graph write:
+        # no AgentRun node, no ToolCall/result logging, no graph invocation, and
+        # no execution of side-effecting tools.  The run id is a local label.
+        with _dry_run_preview():
+            preview = decide(state)
+        out = preview.model_dump()
+        out["run_id"] = _DRY_RUN_RUN_ID
+        return out
+    graph = build_graph()
     rid = neo.create_run(task_id=task["id"], agent="LangGraphExecutor", model="ollama:" + task.get("model", "auto"), manifest={"begin": task})
     # Hard wall-clock guard so a single task can never wedge a worker forever.
     task_budget_s = float(_os.getenv("TASK_WALLCLOCK_S", "600"))
     deadline = time.time() + task_budget_s
     try:
-        if dry_run:
-            preview = decide(state)
-            neo.log_tool_call(run_id=rid, tool="preview", input_json=task, output_json=preview.model_dump(), ok=True)
-            neo.complete_run(rid, "DONE", result_json={"history": state.history, "result": state.result})
-            out = preview.model_dump(); out["run_id"] = rid
-            return out
         max_steps = 8
         while True:
             last_len = len(state.history)
