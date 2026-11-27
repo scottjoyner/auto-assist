@@ -63,8 +63,13 @@ class RateLimiter:
             pipe.execute()
             return True, max(0, self.max_requests - int(count) - 1), 0
         except redis_module.RedisError as e:
-            logger.warning("Rate limiter Redis error: %s", e)
-            return True, self.max_requests, 0
+            # The counter could not be read, so no request can be admitted on
+            # evidence. Returning allowed=True here would turn an unavailable
+            # backend into an unlimited-request green light on the rate-limited
+            # dispatch/ask/intents/event routes. Let the caller answer 429 with
+            # a retry window instead.
+            logger.warning("Rate limiter backend unavailable; failing closed: %s", e)
+            return False, 0, max(1, self.window_seconds)
 
 
 DISPATCH_LIMITER = RateLimiter("dispatch", max_requests=60, window_seconds=60)
