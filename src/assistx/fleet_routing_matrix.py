@@ -68,7 +68,11 @@ def validate_matrix(document: Mapping[str, Any]) -> dict[str, Any]:
         node["tailscale_ips"] = _list_of_strings(node.get("tailscale_ips"))
         node["tags"] = _list_of_strings(node.get("tags"))
         node["worker_mode"] = str(node.get("worker_mode") or "observer_only")
-        node["tailnet_discovered"] = bool(node.get("tailnet_discovered", True))
+        # A missing field is absent discovery evidence, not a discovery claim.
+        # Keep this consistent with fleet_context_projection, which reads rows
+        # with coalesce(n.tailnet_discovered, false) = true, and with the other
+        # verdict booleans below (all default closed).
+        node["tailnet_discovered"] = bool(node.get("tailnet_discovered", False))
         node["allow_agent_runtime"] = bool(node.get("allow_agent_runtime", False))
         node["allow_code_execution"] = bool(node.get("allow_code_execution", False))
         node["online"] = bool(node.get("online", False))
