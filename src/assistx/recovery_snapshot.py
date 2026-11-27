@@ -121,9 +121,15 @@ def verify_projection(document: dict[str, Any], secret: str) -> None:
     except (TypeError, ValueError) as exc:
         raise ValueError("runtime projection lease is invalid") from exc
     if algorithm == "ED25519":
-        from .runtime_projection_v2 import verify_projection_v2
-
-        verify_projection_v2(document)
+        # Use the verifier already defined in this module. The former import of
+        # ``runtime_projection_v2.verify_projection_v2`` could never resolve on
+        # this lineage, so every Ed25519 projection failed with ImportError.
+        try:
+            _verify_ed25519_projection(document)
+        except Exception as exc:
+            raise ValueError(
+                f"runtime projection Ed25519 verification failed: {exc}"
+            ) from exc
         bridge = os.getenv("ASSISTX_REPLICATION_LEGACY_BRIDGE", "")
         if bridge.strip().lower() in {"1", "true", "yes"}:
             document["signature"] = projection_signature(
