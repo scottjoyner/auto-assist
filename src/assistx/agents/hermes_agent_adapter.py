@@ -783,7 +783,8 @@ def run_hermes_delegated(
 
 
 def call_self_task_llm(prompt: str, model: str, max_tokens: int = SELFTASK_MAX_TOKENS,
-                       timeout: int = 450) -> Dict[str, Any]:
+                       timeout: int = 450, *, claim_token: Optional[str] = None,
+                       allowed_model_aliases: Optional[List[str]] = None) -> Dict[str, Any]:
     """Direct router chat call for background self-tasks.
 
     Hermes is not used here: small/tiny models are slow and Hermes sends no
@@ -795,25 +796,35 @@ def call_self_task_llm(prompt: str, model: str, max_tokens: int = SELFTASK_MAX_T
     # Fail *before* preparing an HTTP request or invoking a model when no
     # executor claim exists. The router must STILL verify JWT signature,
     # issuer, expiry and lease/resource status for every actual request.
-    claim_token = os.getenv("HERMES_EXECUTOR_TOKEN", "").strip()
+    # In strict worker mode the token and model grant are passed directly from
+    # the authenticated claim response; the long-lived parent has no JWT env.
+    # Never fall back to the internal-service credential.
+    claim_token = (
+        claim_token if claim_token is not None else
+        os.getenv("HERMES_EXECUTOR_TOKEN", "")
+    ).strip()
     if claim_token.count(".") != 2:
         return {
             "success": False, "output": "", "error": "claim_scoped_executor_token_required",
             "elapsed": 0.0,
         }
     try:
-        import base64 as _b64
-        import binascii as _binascii
-        _body = claim_token.split(".")[1]
-        _claims = json.loads(_b64.urlsafe_b64decode(
-            _body + "=" * (-len(_body) % 4)
-        ))
-        _allowed = _claims.get("allowed_model_aliases")
+        if allowed_model_aliases is not None:
+            # Claims came from the trusted AssistX token-issuance response.
+            # The actual router still verifies the JWT signature and claim.
+            _allowed = allowed_model_aliases
+        else:
+            import base64 as _b64
+            _body = claim_token.split(".")[1]
+            _claims = json.loads(_b64.urlsafe_b64decode(
+                _body + "=" * (-len(_body) % 4)
+            ))
+            _allowed = _claims.get("allowed_model_aliases")
         if not isinstance(_allowed, list) or not _allowed or not all(
             isinstance(alias, str) and alias.strip() for alias in _allowed
         ):
             raise ValueError("missing_claim_scoped_model_allowlist")
-    except (ValueError, TypeError, AttributeError, UnicodeError, _binascii.Error):
+    except (ValueError, TypeError, AttributeError, UnicodeError, KeyError):
         return {
             "success": False, "output": "", "error": "invalid_executor_claim_scope",
             "elapsed": 0.0,

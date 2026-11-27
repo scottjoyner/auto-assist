@@ -442,6 +442,32 @@ def install_strict_executor_adapter(adapter: Any) -> None:
                 "output": "",
                 "elapsed": 0.0,
             }
+        claims = getattr(client, "task_claims", None)
+        try:
+            expires_at = int(claims.get("exp") or 0) if isinstance(claims, dict) else 0
+        except (TypeError, ValueError):
+            expires_at = 0
+        if not isinstance(claims, dict) or (
+            not client._active_task_id
+            or not client._active_claim_id
+            or claims.get("task_id") != client._active_task_id
+            or claims.get("claim_id") != client._active_claim_id
+            or claims.get("agent_id") != adapter.AGENT_ID
+            or expires_at <= int(time.time())
+            or not isinstance(client.task_token, str)
+            or client.task_token.count(".") != 2
+            or not isinstance(claims.get("allowed_model_aliases"), list)
+            or not claims["allowed_model_aliases"]
+        ):
+            return {
+                "success": False,
+                "error": "self_task_invalid_active_claim_scope",
+                "output": "",
+                "elapsed": 0.0,
+            }
+        # Override any user-supplied options with the authoritative claim.
+        kwargs["claim_token"] = client.task_token
+        kwargs["allowed_model_aliases"] = list(claims["allowed_model_aliases"])
         return original_self_task_call(*args, **kwargs)
 
     with _PATCH_LOCK:
