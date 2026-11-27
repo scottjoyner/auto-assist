@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
+import stat
 from pathlib import Path
 import time
 import uuid
@@ -127,6 +129,24 @@ def _tailnet_identity(request: Request) -> tuple[str, str] | None:
     return login, display_name
 
 
+def _require_evidence_peer(request: Request) -> None:
+    """The evidence lane must originate at an explicitly provisioned proxy peer."""
+    configured = os.getenv("KIPNERTER_EVIDENCE_PROXY_PEERS", "").strip()
+    if not configured:
+        state = Path(os.getenv("ASSISTX_FLEET_STATE_DIR", "/app/fleet-state"))
+        try:
+            configured = (state / "kipnerter-evidence-proxy-peers.txt").read_text(encoding="utf-8")
+        except OSError:
+            configured = ""
+    try:
+        peers = {ipaddress.ip_address(v.strip()) for v in configured.replace("\n", ",").split(",") if v.strip()}
+        observed = ipaddress.ip_address(request.client.host) if request.client else None
+    except ValueError:
+        peers, observed = set(), None
+    if observed not in peers or not peers:
+        raise HTTPException(status_code=403, detail={"error": "evidence_proxy_peer_required"})
+
+
 def _account_id(login: str) -> str:
     digest = hashlib.sha256(login.strip().lower().encode("utf-8")).hexdigest()[:24]
     return f"tailscale:{digest}"
@@ -186,6 +206,12 @@ def _mobile_agent_failure_code(result: dict[str, Any]) -> str:
     )
     if any(marker in diagnostic for marker in projection_markers):
         return "runtime_projection_unavailable"
+    if result.get("error") == "executor_task_token_missing" or any(marker in diagnostic for marker in (
+        "executor_task_token_missing", "invalid executor bootstrap token",
+        "executor token must contain three segments", "executor token expired",
+        "executor token invalid", "invalid executor token",
+    )):
+        return "executor_authentication_failed"
     return str(result.get("error") or "hermes_execution_failed")[:240]
 
 
@@ -223,6 +249,38 @@ def _sse_chunks(output: str, model: str, session_id: str, chunk_size: int = 256)
 
 
 
+_DEFAULT_MOBILE_HANDLE_SECRET_FILE = "/run/secrets/kipnerter_mobile_model_handle"
+
+
+def _configured_mobile_handle_secret() -> str:
+    """Use explicit environment configuration or a private mounted secret file.
+
+    Do not create or rotate a key on read. Missing, insecure, or malformed
+    files leave model handles unavailable rather than minting unstable IDs.
+    """
+    configured = os.getenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET", "").strip()
+    if configured:
+        return configured
+    path = os.getenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET_FILE", _DEFAULT_MOBILE_HANDLE_SECRET_FILE).strip()
+    if not path or not os.path.isabs(path):
+        return ""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as handle:
+            metadata = os.fstat(handle.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
+                return ""
+            if not 1 <= metadata.st_size <= 4096:
+                return ""
+            raw = handle.read(4097)
+            if len(raw) > 4096:
+                return ""
+            secret = raw.decode("utf-8").strip()
+            return secret if len(secret) >= 32 and not any(ch.isspace() or ord(ch) < 33 for ch in secret) else ""
+    except (OSError, UnicodeError):
+        return ""
+
+
 def _mobile_model_handle(
     model: dict[str, Any],
     *,
@@ -243,7 +301,7 @@ def _mobile_model_handle(
     handle_secret = (
         secret
         if secret is not None
-        else os.getenv("KIPNERTER_MOBILE_MODEL_HANDLE_SECRET", "")
+        else _configured_mobile_handle_secret()
     ).strip()
     if not handle_secret:
         return None
@@ -253,6 +311,16 @@ def _mobile_model_handle(
         hashlib.sha256,
     ).hexdigest()[:32]
     return f"model:v1:{digest}"
+
+
+def _mobile_model_display_name(value: Any) -> str:
+    # Artifact aliases sometimes originate from a local filename rather than
+    # a presentation label. Never disclose the parent directory to a phone.
+    name = str(value or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
+    name = "".join(ch for ch in name if ch.isprintable()).strip()
+    if name.lower().endswith(".gguf"):
+        name = name[:-5].strip()
+    return name[:160] if name not in {"", ".", ".."} else "Fleet model"
 
 
 def _sanitize_runtime_projection_for_mobile(
@@ -328,7 +396,7 @@ def _sanitize_runtime_projection_for_mobile(
                 # artifact identity. If an older/incomplete record slips through,
                 # keep aggregate visibility but do not mint an unstable handle.
                 continue
-            display_name = str(model.get("alias") or "").strip()
+            display_name = _mobile_model_display_name(model.get("alias"))
             if not display_name:
                 continue
             accumulator = model_accumulators.setdefault(
@@ -489,7 +557,7 @@ def _resolve_mobile_model_handle(
             matches.append(
                 {
                     "artifact_fingerprint": fingerprint,
-                    "display_name": str(model.get("alias") or "").strip(),
+                    "display_name": _mobile_model_display_name(model.get("alias")),
                     "capabilities": {
                         str(value)
                         for value in (model.get("capabilities") or [])
@@ -533,6 +601,41 @@ def _mobile_router_config() -> tuple[str, str]:
     return base_url, token
 
 
+def _mobile_model_upstream_failure(response: Any) -> str:
+    """Map router failures to a fixed mobile-safe vocabulary, never raw text."""
+    status = response.status_code
+    if status in (401, 403):
+        return "fleet_model_router_authentication_failed"
+    if status == 429:
+        return "fleet_model_capacity_unavailable"
+    if status == 504:
+        return "fleet_model_router_timeout"
+    if status == 503:
+        try:
+            detail = response.json().get("detail")
+        except (ValueError, TypeError, AttributeError):
+            detail = None
+        if isinstance(detail, dict):
+            error = detail.get("error")
+            if error == "executor_claim_status_unavailable":
+                return "fleet_model_claim_status_unavailable"
+            if error == "executor_claim_unavailable":
+                return "fleet_model_claim_unavailable"
+            if error == "no provider satisfies required capabilities":
+                return "fleet_model_no_eligible_runtime"
+            if error == "all providers failed" and detail.get("details") == []:
+                return "fleet_model_no_eligible_runtime"
+            if error == "all providers failed":
+                reasons = detail.get("details")
+                if isinstance(reasons, list) and reasons:
+                    # Only classify the exact known internal claim-status failure;
+                    # never pass provider diagnostics, credentials or addresses through.
+                    marker = "AssistX claim-status check returned HTTP "
+                    if all(isinstance(reason, str) and any(marker + code in reason for code in ("401", "403")) for reason in reasons):
+                        return "fleet_model_claim_status_authentication_failed"
+    return "fleet_model_unavailable"
+
+
 def _mobile_model_router_payload(
     body: MobileModelChatIn,
     resolved: dict[str, Any],
@@ -548,6 +651,12 @@ def _mobile_model_router_payload(
     }
     if mobile_request_id:
         metadata["assistx_mobile_request_id"] = mobile_request_id
+        # The external request ID is opaque; durable router receipts require a UUID.
+        if mobile_request_id.startswith("kmr:"):
+            try:
+                metadata["correlation_id"] = str(uuid.UUID(mobile_request_id[4:]))
+            except ValueError:
+                pass
     return {
         "model": "auto/local",
         "messages": [
@@ -618,7 +727,10 @@ async def _sanitized_router_stream(
         await client.aclose()
 
 
-def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..., str]) -> None:
+def register_mobile_agent_routes(
+    router: APIRouter, auth_dependency: Callable[..., str],
+    *, fleet_evidence_factory: Callable[..., Any] | None = None,
+) -> None:
     def mobile_auth(
         request: Request,
         credentials: HTTPBasicCredentials | None = Depends(_mobile_security),
@@ -756,7 +868,8 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
                 if response.status_code >= 400:
                     raise HTTPException(
                         status_code=503,
-                        detail={"error": "fleet_model_unavailable"},
+                        detail={"error": _mobile_model_upstream_failure(response)},
+                        headers=response_headers,
                     )
                 decoded = response.json()
                 if not isinstance(decoded, dict):
@@ -789,12 +902,18 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
                 detail={"error": "fleet_model_unavailable"},
             ) from exc
         if response.status_code >= 400:
-            await response.aread()
-            await stream_context.__aexit__(None, None, None)
-            await client.aclose()
+            try:
+                await response.aread()
+                error = _mobile_model_upstream_failure(response)
+            except httpx.HTTPError:
+                error = "fleet_model_unavailable"
+            finally:
+                await stream_context.__aexit__(None, None, None)
+                await client.aclose()
             raise HTTPException(
                 status_code=503,
-                detail={"error": "fleet_model_unavailable"},
+                detail={"error": error},
+                headers=response_headers,
             )
         return StreamingResponse(
             _sanitized_router_stream(
@@ -805,6 +924,20 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
             ),
             media_type="text/event-stream",
             headers=response_headers,
+        )
+
+    @router.get("/api/v1/agent/capabilities", tags=["kipnerter-mobile"])
+    def mobile_agent_capabilities(
+        request: Request,
+        user: str = Depends(mobile_auth),
+    ):
+        if _tailnet_identity(request) is None:
+            raise HTTPException(status_code=403, detail={"error": "tailnet_identity_required"})
+        _require_evidence_peer(request)
+        from .mobile_agent_evidence import capability_profile
+        return JSONResponse(
+            content=capability_profile(evidence_configured=fleet_evidence_factory is not None),
+            headers={"Cache-Control": "no-store"},
         )
 
     @router.post("/api/v1/agent/chat/completions", tags=["kipnerter-mobile"])
@@ -819,6 +952,72 @@ def register_mobile_agent_routes(router: APIRouter, auth_dependency: Callable[..
         # enforce the optional Kipnerter login allowlist here as well. Basic
         # auth remains available as an explicit legacy operator fallback.
         _tailnet_identity(request)
+
+        # Only the explicitly allowlisted Tailnet identity can access the
+        # aggregate fleet tool. Legacy Basic and generic chat remain unchanged.
+        from .mobile_agent_evidence import (
+            is_fleet_status, fleet_status, render_fleet_status,
+            is_inference_status, inference_status, render_inference_status,
+            is_gateway_status, gateway_health, render_gateway_health,
+            is_workflow_status, workflow_status, render_workflow_status,
+            is_handbook_query, render_handbook, overview_sections, render_overview,
+        )
+        fleet_intent = is_fleet_status(body.messages)
+        inference_intent = is_inference_status(body.messages)
+        gateway_intent = is_gateway_status(body.messages)
+        workflow_intent = is_workflow_status(body.messages)
+        handbook_intent = is_handbook_query(body.messages)
+        overview = overview_sections(body.messages)
+        if fleet_evidence_factory is not None and (fleet_intent or inference_intent or gateway_intent or workflow_intent or handbook_intent or overview):
+            if _tailnet_identity(request) is None:
+                raise HTTPException(status_code=403, detail={"error": "tailnet_identity_required"})
+            _require_evidence_peer(request)
+            try:
+                if overview:
+                    output = await asyncio.to_thread(render_overview, overview, neo_factory=fleet_evidence_factory, projection_factory=_current_runtime_projection, gateway_url=os.getenv("AUTO_ROUTER_BASE_URL", ""))
+                elif fleet_intent:
+                    evidence = await asyncio.to_thread(fleet_status, fleet_evidence_factory)
+                    output = render_fleet_status(evidence)
+                elif inference_intent:
+                    projection = await asyncio.to_thread(_current_runtime_projection)
+                    output = render_inference_status(inference_status(projection))
+                elif workflow_intent:
+                    evidence = await asyncio.to_thread(workflow_status, fleet_evidence_factory)
+                    output = render_workflow_status(evidence)
+                elif handbook_intent:
+                    output = render_handbook(body.messages)
+                else:
+                    evidence = await asyncio.to_thread(gateway_health, os.getenv("AUTO_ROUTER_BASE_URL", ""))
+                    output = render_gateway_health(evidence)
+            except Exception:
+                raise HTTPException(status_code=503, detail={"error": "fleet_evidence_unavailable"}) from None
+            session_id = f"fleet-evidence:{uuid.uuid4().hex}"
+            response_model = "kipnerter-agent-v1"
+            headers = {
+                "X-Kipnerter-Agent-Executor": "fleet-evidence",
+                "X-Hermes-Session-Id": session_id,
+                "Cache-Control": "no-store",
+            }
+            if not body.stream:
+                return JSONResponse(content=_openai_response(output, response_model, session_id), headers=headers)
+            return StreamingResponse(_sse_chunks(output, response_model, session_id),
+                                     media_type="text/event-stream", headers=headers)
+
+        # The mobile route must respect the same runtime admission view it
+        # publishes to clients. Do not start Hermes when no agent runtime is
+        # admitted, and never interpret catalog failure as permission to run.
+        try:
+            catalog = await asyncio.to_thread(_mobile_runtime_catalog)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "runtime_projection_unavailable", "executor": "hermes"},
+            ) from exc
+        if catalog.get("agent_auto_available") is not True:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "agent_runtime_unavailable", "executor": "hermes"},
+            )
 
         prompt = _prompt_from_messages(body.messages)
         model_override = _requested_hermes_model(body.model)
