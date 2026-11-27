@@ -54,6 +54,19 @@ def _rescore_runs(chain_id: str, runs: list[dict[str, Any]]) -> list[dict[str, A
     return valid
 
 
+def _trace_gate_flag(
+    dataset: dict[str, Any], key: str, failure: str, failures: list[str]
+) -> None:
+    """Require one trace-first provenance claim to be an explicit boolean True.
+
+    Truthiness is unsafe here: a non-empty string such as ``"false"`` / ``"0"``
+    or an integer such as ``1`` would otherwise satisfy the gate, turning a
+    malformed provenance claim into a fine-tune promotion approval.
+    """
+    if dataset.get(key) is not True:
+        failures.append(failure)
+
+
 def dataset_trace_gate(dataset: dict[str, Any] | None) -> tuple[bool, list[str]]:
     """Trace-first dataset gate. Required before any fine-tune promotion:
     extraction from real sessions, redaction, trajectory dedupe, held-out
@@ -65,12 +78,9 @@ def dataset_trace_gate(dataset: dict[str, Any] | None) -> tuple[bool, list[str]]
         failures.append("dataset ref missing")
     if not dataset.get("source_session_ids"):
         failures.append("not extracted from real sessions (no source session ids)")
-    if not dataset.get("redacted"):
-        failures.append("secrets not redacted")
-    if not dataset.get("deduplicated"):
-        failures.append("trajectories not deduplicated")
-    if not dataset.get("held_out_split"):
-        failures.append("no disjoint held-out split")
+    _trace_gate_flag(dataset, "redacted", "secrets not redacted", failures)
+    _trace_gate_flag(dataset, "deduplicated", "trajectories not deduplicated", failures)
+    _trace_gate_flag(dataset, "held_out_split", "no disjoint held-out split", failures)
     return not failures, failures
 
 
