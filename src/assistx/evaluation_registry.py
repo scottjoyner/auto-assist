@@ -186,20 +186,28 @@ def _parse_harness_env(raw: str) -> list[HarnessSuiteDef]:
     for item in parsed:
         if not isinstance(item, dict):
             continue
-        suite_id = str(item.get("id") or "").strip()
-        if not suite_id:
+        try:
+            suite_id = str(item.get("id") or "").strip()
+            if not suite_id:
+                continue
+            families = item.get("task_families") or ()
+            if isinstance(families, str):
+                families = [families]
+            family_tuple = tuple(
+                str(f).strip().lower() for f in families if str(f).strip()
+            )
+            min_trials = max(1, int(item.get("min_trials") or 1))
+        except (TypeError, ValueError, OverflowError):
+            # A malformed typed field makes this an invalid override entry;
+            # skip it so get_harness_suites() honours its documented fallback
+            # instead of raising out of the registry lookup.
             continue
-        families = item.get("task_families") or ()
-        if isinstance(families, str):
-            families = [families]
         out.append(
             HarnessSuiteDef(
                 id=suite_id,
                 schema_version=str(item.get("schema_version") or ""),
-                task_families=tuple(
-                    str(f).strip().lower() for f in families if str(f).strip()
-                ),
-                min_trials=max(1, int(item.get("min_trials") or 1)),
+                task_families=family_tuple,
+                min_trials=min_trials,
                 source_repo=str(item.get("source_repo") or ""),
                 source_path=str(item.get("source_path") or ""),
                 description=str(item.get("description") or ""),
