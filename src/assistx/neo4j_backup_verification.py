@@ -113,7 +113,13 @@ class Neo4jBackupVerifier:
         artifacts = sorted(artifacts, key=lambda item: item.timestamp_ms)
         if not artifacts[0].full:
             raise BackupVerificationError("backup chain does not begin with a full backup")
-        database_ids = {item.database_id for item in artifacts if item.database_id}
+        database_ids = {
+            item.database_id.strip()
+            for item in artifacts
+            if str(item.database_id or "").strip()
+        }
+        if not database_ids:
+            raise BackupVerificationError("backup chain carries no database identity")
         if len(database_ids) > 1:
             raise BackupVerificationError("backup chain contains multiple database IDs")
         previous_high = artifacts[0].highest_tx
