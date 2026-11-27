@@ -245,7 +245,11 @@ def readiness_failures(
         check = checks.get(check_id)
         if not check:
             failures.append(f"readiness check {check_id} is missing")
-        elif not check.get("ready"):
+        elif check.get("ready") is not True:
+            # Only a genuine JSON boolean `true` satisfies an expected check.
+            # Python truthiness would certify malformed evidence -- strings
+            # like "false"/"0"/"off", integers, lists or dicts -- as ready,
+            # silently opening the staged deployment canary gate. Fail closed.
             failures.append(
                 f"{check_id}: {check.get('detail') or 'not ready'}"
             )
