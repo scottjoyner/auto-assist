@@ -42,13 +42,16 @@ def build_voice_identity_router(
             raise HTTPException(status_code=422, detail="source_id is required")
         neo = neo_factory()
         try:
-            record = upsert_speaker_verification(
-                neo,
-                source=str(payload.get("source") or "sophia-voice-agent"),
-                source_id=source_id,
-                confidence=payload.get("confidence"),
-                metadata=payload.get("metadata") or {},
-            )
+            try:
+                record = upsert_speaker_verification(
+                    neo,
+                    source=str(payload.get("source") or "sophia-voice-agent"),
+                    source_id=source_id,
+                    confidence=payload.get("confidence"),
+                    metadata=payload.get("metadata") or {},
+                )
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=422, detail="invalid confidence") from exc
             return {"registered": True, "speaker": record}
         finally:
             neo.close()

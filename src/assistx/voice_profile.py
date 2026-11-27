@@ -73,12 +73,33 @@ def _speaker_key(source: str, source_id: str) -> str:
 
 
 
+def _coerce_confidence(confidence: Any) -> float:
+    """Clamp a verification confidence into [0, 1], rejecting non-finite input.
+
+    ``min(1.0, nan)`` returns ``1.0`` and ``min(1.0, inf)`` also returns
+    ``1.0``, so the old clamp silently turned NaN/infinity into *full* trust.
+    Reject anything that is not a finite real number before clamping: a
+    verification with an unusable confidence must never be recorded.
+    """
+    if confidence is None:
+        return 1.0
+    if isinstance(confidence, bool):
+        raise ValueError("confidence must be a finite number")
+    try:
+        value = float(confidence)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("confidence must be a finite number") from exc
+    if not math.isfinite(value):
+        raise ValueError("confidence must be a finite number")
+    return max(0.0, min(1.0, value))
+
+
 def upsert_speaker_verification(neo, *, source: str, source_id: str,
                                 confidence: float | None = None,
                                 metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     """Record a successful third-party speaker verification in the graph."""
     key = _speaker_key(source, source_id)
-    conf = max(0.0, min(1.0, float(confidence if confidence is not None else 1.0)))
+    conf = _coerce_confidence(confidence)
     with neo._session() as s:
         rec = s.run(
             """
