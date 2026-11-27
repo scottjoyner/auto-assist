@@ -10,11 +10,34 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from .outbox_client import OutboxClient
 
 logger = logging.getLogger(__name__)
+
+
+def _contract_correlation_id(correlation_id: str | None) -> str:
+    """Return a correlation id the canonical EventEnvelope accepts.
+
+    The canonical ``EventEnvelope`` requires ``correlation_id`` to parse as a
+    UUID (see ``assistx.contracts.event_envelope``). A blank or malformed value
+    forwarded to the sink would be rejected at the boundary (422), after which
+    the outbox can only retry it into the dead-letter state. Treat a blank or
+    malformed caller value like a missing one and mint a fresh UUID instead.
+    """
+    candidate = str(correlation_id or "").strip()
+    if candidate:
+        try:
+            UUID(candidate)
+        except (ValueError, AttributeError, TypeError):
+            logger.warning(
+                "replacing malformed correlation_id %r with a fresh UUID", correlation_id
+            )
+        else:
+            return candidate
+    return str(uuid4())
+
 
 _outbox = OutboxClient(
     db_path=os.getenv("ASSISTX_OUTBOX_DB", os.path.expanduser("~/.assistx_outbox.db")),
@@ -27,7 +50,7 @@ _outbox = OutboxClient(
 
 
 def _enqueue(event_type: str, payload: dict, correlation_id: str | None = None) -> bool:
-    cid = correlation_id or str(uuid4())
+    cid = _contract_correlation_id(correlation_id)
     event_id = f"evt_{uuid4().hex}"
     node_id = str(payload.get("node_id") or os.getenv("ASSISTX_NODE_ID", "auto-ingest"))
     links = []
@@ -70,6 +93,12 @@ def notify_evidence_linked(
     correlation_id: str | None = None,
 ) -> bool:
     """Emit ``ingest.evidence.linked`` — auto-ingest linked evidence to a graph node."""
+    # Both endpoints are the event's only identity links. Without them _enqueue
+    # would build a body with an empty `links` list and a fabricated fallback
+    # node_id from the environment — a "linked" event that points at nothing.
+    if not str(node_id or "").strip() or not str(evidence_ref or "").strip():
+        logger.warning("refusing ingest.evidence.linked without a node_id and evidence_ref")
+        return False
     return _enqueue(
         "ingest.evidence.linked",
         {
@@ -87,6 +116,11 @@ def notify_context_available(
     correlation_id: str | None = None,
 ) -> bool:
     """Emit ``context.available`` — a new enrichment/context packet is ready for consumers."""
+    # The context packet is the event's only REFERENCES link. Emitting without
+    # it would leave consumers with no way to find the packet being announced.
+    if not str(context_packet_id or "").strip():
+        logger.warning("refusing context.available without a context_packet_id")
+        return False
     return _enqueue(
         "context.available",
         {
