@@ -82,6 +82,8 @@ def _nonnegative_float(value: Any, label: str) -> float:
 
 
 def _private_url(value: Any) -> bool:
+    import ipaddress
+
     parsed = urlparse(str(value or "").strip())
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         return False
@@ -94,21 +96,37 @@ def _private_url(value: Any) -> bool:
         return True
     if host.endswith((".lan", ".local", ".internal", ".ts.net")):
         return True
+
+    def _is_private_address(address: Any) -> bool:
+        tailscale = ipaddress.ip_network("100.64.0.0/10")
+        return bool(
+            address.is_loopback
+            or address.is_private
+            or address.is_link_local
+            or address in tailscale
+        )
+
     if "." not in host and ":" not in host:
+        # A dotless, entirely numeric host is IPv4 integer notation, not a
+        # single-label hostname: 134744072 and 0x08080808 are both 8.8.8.8.
+        # Resolve it before trusting it as a private access path (sweep23).
+        prefix = "0x" if host.startswith("0x") else ""
+        digits = host[len(prefix) :]
+        alphabet = "0123456789abcdef" if prefix else "0123456789"
+        if digits and all(char in alphabet for char in digits):
+            try:
+                address = ipaddress.IPv4Address(
+                    int(digits, 16 if prefix else 10)
+                )
+            except ValueError:
+                return False
+            return _is_private_address(address)
         return True
     try:
-        import ipaddress
-
         address = ipaddress.ip_address(host)
     except ValueError:
         return False
-    tailscale = ipaddress.ip_network("100.64.0.0/10")
-    return bool(
-        address.is_loopback
-        or address.is_private
-        or address.is_link_local
-        or address in tailscale
-    )
+    return _is_private_address(address)
 
 
 def _runtime_kind_key(value: Any) -> str:
