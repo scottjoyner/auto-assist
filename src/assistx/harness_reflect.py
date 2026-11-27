@@ -237,13 +237,16 @@ def validate_reflection(
             continue
         prompt = _text(pair.get("prompt"))
         completion = _text(pair.get("completion"), MAX_COMPLETION_CHARS)
+        error_count = len(errors)
         if not prompt:
             errors.append(f"{where} is missing prompt")
         if not completion:
             errors.append(f"{where} is missing completion")
         elif len(str(pair.get("completion") or "")) > MAX_COMPLETION_CHARS:
             errors.append(f"{where} completion exceeds {MAX_COMPLETION_CHARS} chars")
-        else:
+        # Coverage is only earned by a pair that produced no validation error;
+        # reporting an error and marking the fail as covered is contradictory.
+        if len(errors) == error_count:
             covered.add(fail_id)
     for index, proposal in enumerate(proposals):
         where = f"harness_fix_proposals[{index}]"
