@@ -1332,7 +1332,10 @@ def collect_fleet_nodes(neo_factory: NeoFactory | None = None) -> list[dict[str,
                 cleaned = [m for m in (_clean_model_name(m) for m in live_entry["models"]) if m]
                 entry["loaded_models"] = cleaned
                 entry["model_source"] = "live"
-                entry["model_online"] = live_entry.get("online", True)
+                # Fail closed: an observation entry whose online fact is
+                # missing, null, or non-boolean is not evidence that the
+                # model is online.  Never default that verdict to True.
+                entry["model_online"] = live_entry.get("online") is True
                 entry["model_observed_at"] = live_entry.get("observed_at")
             else:
                 entry["loaded_models"] = []
