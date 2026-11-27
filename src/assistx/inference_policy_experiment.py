@@ -182,6 +182,29 @@ def validate_cases(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def _strict_enabled(value: Any, label: Any) -> bool:
+    """Resolve a policy's ``enabled`` flag without Python truthiness.
+
+    A JSON/YAML policy can legitimately carry the *string* ``"false"``; plain
+    ``bool()`` treats every non-empty string as True, silently re-enabling an
+    explicitly disabled policy.  Accept only real booleans or a small explicit
+    textual vocabulary, and reject anything else so malformed evidence can
+    never become permission to compile a live trial.  A missing flag keeps the
+    documented opt-out default (True).
+    """
+    if value is True or value is False:
+        return value
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"true", "1", "yes", "on"}:
+            return True
+        if token in {"false", "0", "no", "off"}:
+            return False
+    raise ValueError(
+        f"{label}: enabled must be a boolean, got {type(value).__name__}"
+    )
+
+
 def validate_policy(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("policy must be an object")
@@ -300,7 +323,7 @@ def validate_policy(raw: Any) -> dict[str, Any]:
             if raw.get("expected_launch_config_sha256_env")
             else None
         ),
-        "enabled": bool(raw.get("enabled", True)),
+        "enabled": _strict_enabled(raw.get("enabled", True), raw.get("policy_id")),
         "allow_model_load": False,
         "execution_mode": "observe_only",
         "authority": dict(DEFAULT_AUTHORITY),
@@ -324,7 +347,9 @@ def compile_trials(
     policies = [
         policy
         for policy in matrix.get("policies") or []
-        if policy.get("enabled", True)
+        if _strict_enabled(
+            policy.get("enabled", True), policy.get("policy_id", "policy")
+        )
     ]
     for case in cases:
         for policy in policies:
