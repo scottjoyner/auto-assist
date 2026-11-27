@@ -25,8 +25,13 @@ def _parse_registry_env(raw: str) -> List[FeedConnector]:
             continue
         enabled = parts[3].lower() in {"1", "true", "yes", "on"}
         health = parts[4].lower()
-        if health not in {"healthy", "degraded", "down"}:
-            health = "degraded"
+        endpoint = parts[5].strip()
+        # Match the /api/feeds POST admission invariant: a connector whose
+        # health status is outside the enum, or which has no endpoint, is
+        # malformed. Coercing it here (and then syncing it into Neo4j via
+        # GET /api/feeds) would admit a phantom feed, so skip the entry.
+        if health not in {"healthy", "degraded", "down"} or not endpoint:
+            continue
         out.append(
             FeedConnector(
                 id=parts[0] or f"feed-{idx}",
@@ -34,7 +39,7 @@ def _parse_registry_env(raw: str) -> List[FeedConnector]:
                 category=parts[2] or "general",
                 enabled=enabled,
                 health_status=health,
-                endpoint=parts[5],
+                endpoint=endpoint,
             )
         )
     return out
