@@ -74,13 +74,19 @@ def run_identity(run: dict[str, Any]) -> str:
 
 
 def fail_set_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
-    """Failed tasks from a run artifact, bounded for a reflect payload."""
+    """Failed/unproven tasks from a run artifact, bounded for a reflect payload.
+
+    Only an affirmative boolean ``True`` is a confirmed pass.  Every other
+    ``passed`` value (False, 0, "false", None, or a missing key) is unproven
+    and stays in the fail set so a malformed or unlabeled run cannot silently
+    drop a real failure from the reflect prompt.
+    """
     results = run.get("results")
     if not isinstance(results, list):
         raise ValueError("run artifact must carry a results list")
     fails: list[dict[str, Any]] = []
     for entry in results:
-        if not isinstance(entry, dict) or entry.get("passed") is not False:
+        if not isinstance(entry, dict) or entry.get("passed") is True:
             continue
         task_id = _text(entry.get("task_id") or entry.get("id"), 64)
         if not task_id:
