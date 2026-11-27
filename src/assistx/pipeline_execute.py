@@ -10,13 +10,16 @@ logger = get_logger()
 def execute_ready(neo: Neo4jClient, limit: int = 5, dry_run: bool = False):
     tasks = neo.get_ready_tasks(limit=limit)
     for t in tasks:
-        neo.update_task_status(t["id"], "RUNNING")
+        if not dry_run:
+            neo.update_task_status(t["id"], "RUNNING")
         state = run_task(neo, dict(t), dry_run=dry_run)
         rid = state.get('run_id')
         result = state.get('result')
         acc = evaluate_acceptance(neo, t, rid) if rid else {"passed": bool(result)}
-        final_status = "DONE" if (acc.get('passed') or dry_run) else "FAILED"
-        if rid:
+        # dry_run must not force DONE: the status still reflects acceptance.
+        final_status = "DONE" if acc.get('passed') else "FAILED"
+        if rid and not dry_run:
             neo.log_tool_call(rid, 'acceptance', {'task_id': t['id'], 'acceptance': t.get('acceptance')}, acc, final_status=='DONE')
-        neo.update_task_status(t["id"], final_status)
+        if not dry_run:
+            neo.update_task_status(t["id"], final_status)
         logger.info(f"Executed {t['id']} -> {final_status}; acceptance: {acc}")

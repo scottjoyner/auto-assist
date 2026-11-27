@@ -81,7 +81,10 @@ class RecordingNeo:
         self.calls.append(("close",))
 
     def _session(self):
-        return _Session([{"t": dict(t)} for t in self.tasks])
+        # Emulate a Neo4j Record: rec[0] is the bound task node. The previous
+        # {"t": ...} shape raised KeyError before any assertion ran, so the
+        # job-path sentinels never actually exercised execute_task_job.
+        return _Session([[dict(t)] for t in self.tasks])
 
     def names(self):
         return [c[0] for c in self.calls]
@@ -110,7 +113,8 @@ def test_dry_run_preview_uses_single_decision_and_skips_graph_invoke(monkeypatch
     out = orch.run_task(neo, {"id": "t1", "model": "synthetic"}, dry_run=True)
     assert out["done"] is True
     assert out["result"] == {"summary": "preview-only"}
-    assert out["run_id"] == _RUN_ID
+    # dry_run no longer creates an AgentRun node; the id is a local preview label.
+    assert out["run_id"] == orch._DRY_RUN_RUN_ID
 
 
 def test_dry_run_final_decision_does_not_dispatch_tools(monkeypatch):
@@ -147,20 +151,12 @@ def test_dry_run_malformed_decision_fails_closed_without_tools(monkeypatch):
     assert dispatched == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="KNOWN FAIL-OPEN r12: run_task(dry_run=True) writes create_run/log_tool_call/complete_run to the graph",
-)
 def test_dry_run_must_not_mutate_graph_state(safe_decide):
     neo = RecordingNeo()
     orch.run_task(neo, {"id": "t4"}, dry_run=True)
     assert neo.calls == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="KNOWN FAIL-OPEN r12: dry_run calls decide(), which may dispatch side-effecting tools (write_text/python/web_search)",
-)
 def test_dry_run_must_not_dispatch_side_effecting_tools(monkeypatch):
     dispatched = []
     for name in ("web_search", "python", "write_text"):
@@ -195,20 +191,12 @@ def test_dry_run_job_must_not_write_task_status(monkeypatch):
     assert "update_task_status" not in neo.names()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="KNOWN FAIL-OPEN r12: dry_run forces final_status=DONE even when acceptance fails",
-)
 def test_dry_run_job_must_not_force_done_when_acceptance_fails(monkeypatch):
     neo = RecordingNeo(tasks=[{"id": "t6", "model": "synthetic"}])
     result = _run_job(monkeypatch, neo, dry_run=True, passed=False)
     assert result["status"] == "FAILED"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="KNOWN FAIL-OPEN r12: execute_ready(dry_run=True) writes RUNNING/DONE Task statuses",
-)
 def test_dry_run_execute_ready_must_not_write_task_status(monkeypatch):
     neo = RecordingNeo(tasks=[{"id": "t7", "model": "synthetic"}])
     monkeypatch.setattr(pipeline_mod, "run_task", lambda _neo, _task, dry_run=False: {"run_id": _RUN_ID})
