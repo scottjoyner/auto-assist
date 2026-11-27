@@ -326,6 +326,19 @@ def verify_source_binding(
             SourceBindingState.DIRTY_STATE_MISMATCH,
             ["bound worktree was required to be clean but has local modifications"],
         )
+    # CLEAN_REQUIRED is the strict member of the shared expectation enum (the
+    # contracts verifier's build_source_binding uses it by default). Sharing the
+    # enum is not enough: this verifier must honour it too. ``None`` means the
+    # dirty state could not be read, which is not evidence of a clean tree, so
+    # it fails closed along with a known-dirty tree.
+    if (binding.expected_dirty is DirtyStateExpectation.CLEAN_REQUIRED
+            and observed.dirty is not False):
+        return _verdict(
+            binding,
+            observed,
+            SourceBindingState.DIRTY_STATE_MISMATCH,
+            ["bound worktree requires a clean tree but is dirty or unreadable"],
+        )
     if binding.expected_dirty is DirtyStateExpectation.DIRTY and not observed.dirty:
         return _verdict(
             binding,
