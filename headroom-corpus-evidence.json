@@ -1,0 +1,89 @@
+{
+  "authoritative_behavior_changed": false,
+  "case_count": 3,
+  "cases": [
+    {
+      "case_id": "exact-identifiers",
+      "headroom_duration_ms": 168.30983298132196,
+      "headroom_missing_required_markers": [],
+      "headroom_reduction_ratio": 0.654025974025974,
+      "headroom_tokens": 2664,
+      "hybrid_duration_ms": 21.18217700626701,
+      "hybrid_missing_required_markers": [],
+      "hybrid_reduction_ratio": 0.6693776121088897,
+      "hybrid_strategy": "headroom",
+      "hybrid_tokens": 2927,
+      "raw_tokens": 8853,
+      "required_markers": [
+        "9d4db0ee-f3d4-4b7f-8cb9-992cdbe24c91",
+        "a7d9f2936ae1352b040d3388f98d35bd9b7680f9fd1b7b8fbb81464557b855a6",
+        "2026-08-17T20:54:13-04:00",
+        "/mnt/SSD_4TB/neo4j/backups/neo4j-20260817.dump",
+        "100.91.22.14"
+      ],
+      "stdlib_reduction_ratio": 0.45419631763244095,
+      "stdlib_tokens": 4832,
+      "transforms_applied": [
+        "router:protected:user_message",
+        "router:mixed:0.36"
+      ]
+    },
+    {
+      "case_id": "warning-selection",
+      "headroom_duration_ms": 97.34174597542733,
+      "headroom_missing_required_markers": [],
+      "headroom_reduction_ratio": 0.6709850892202396,
+      "headroom_tokens": 2692,
+      "hybrid_duration_ms": 41.180975997122005,
+      "hybrid_missing_required_markers": [],
+      "hybrid_reduction_ratio": 0.6919202518363063,
+      "hybrid_strategy": "headroom",
+      "hybrid_tokens": 2936,
+      "raw_tokens": 9530,
+      "required_markers": [
+        "service-5",
+        "service-7",
+        "service-3"
+      ],
+      "stdlib_reduction_ratio": 0.4857292759706191,
+      "stdlib_tokens": 4901,
+      "transforms_applied": [
+        "router:protected:user_message",
+        "router:mixed:0.35"
+      ]
+    },
+    {
+      "case_id": "escaped-string",
+      "headroom_duration_ms": 48.68560002068989,
+      "headroom_missing_required_markers": [],
+      "headroom_reduction_ratio": 0.6792270531400966,
+      "headroom_tokens": 664,
+      "hybrid_duration_ms": 0.19220099784433842,
+      "hybrid_missing_required_markers": [],
+      "hybrid_reduction_ratio": 0.5076804915514592,
+      "hybrid_strategy": "lossless_json_fallback",
+      "hybrid_tokens": 1282,
+      "raw_tokens": 2604,
+      "required_markers": [
+        "literal\\nnot-newline:\"quoted\""
+      ],
+      "stdlib_reduction_ratio": 0.5076804915514592,
+      "stdlib_tokens": 1282,
+      "transforms_applied": [
+        "router:protected:user_message",
+        "router:mixed:0.41"
+      ]
+    }
+  ],
+  "fidelity_check": "decoded-semantic-string-values",
+  "headroom_fidelity_failure_count": 0,
+  "headroom_version": "0.32.1",
+  "hybrid_fidelity_failure_count": 0,
+  "mean_headroom_reduction_ratio": 0.66807937212877,
+  "mean_hybrid_reduction_ratio": 0.6229927851655518,
+  "mean_stdlib_reduction_ratio": 0.4825353617181731,
+  "median_headroom_duration_ms": 97.34174597542733,
+  "median_hybrid_duration_ms": 21.18217700626701,
+  "schema_version": "assistx.headroom-corpus-evidence.v2",
+  "tokenizer_model": "gpt-4o"
+}
