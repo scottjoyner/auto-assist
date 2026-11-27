@@ -488,19 +488,30 @@ def export_sessions(db_path: pathlib.Path) -> list[dict[str, Any]]:
             # Extract and classify free model information
             pricing = model.get("pricing")
             pricing = pricing if isinstance(pricing, dict) else {}
-            
-            # Create model record for free model classification
-            model_record = {
-                "id": model.get("id") or model.get("modelID"),
-                "provider": provider,
-                "pricing": pricing,
-                "variant": model.get("variant"),
-                "tags": model.get("tags", []),
-                "resolvedID": model.get("resolvedID") or model.get("resolved_id"),
-            }
+            requested_model = model.get("id") or model.get("modelID")
+            # Check for explicit :free in model ID first (highest priority for trace receipt)
+            if ":free" in str(requested_model or ""):
+                free_model_type = "opencode-native-free"
+            else:
+                # Create model record for free model classification
+                model_record = {
+                    "id": requested_model,
+                    "provider": provider,
+                    "pricing": pricing,
+                    "variant": model.get("variant"),
+                    "tags": model.get("tags", []),
+                    "resolvedID": model.get("resolvedID") or model.get("resolved_id"),
+                }
             
             # Use supervisor's free model classification
             free_model_type = _classify_free_model(model_record)
+            
+            # Determine if this is a free provider
+            is_free_provider = free_model_type in (
+                "opencode-native-free", "kilo-anonymous", "openrouter-account-free",
+                "zai-zero-cost", "cohere-zero-cost", "lmstudio-zero-cost",
+                "unknown-free"
+            )
             
             # Determine if this is a free provider
             is_free_provider = free_model_type in (
