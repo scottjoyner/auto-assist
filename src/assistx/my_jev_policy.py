@@ -41,7 +41,10 @@ def _coerce_bool(
         }
     if value is None:
         return default
-    return bool(value)
+    # A list, object or number is not Boolean evidence. bool(value) would turn
+    # any non-empty container or nonzero number into an affirmative policy
+    # signal (e.g. speaker_verified) from untrusted intent metadata.
+    return False
 
 
 def shadow_enabled() -> bool:
