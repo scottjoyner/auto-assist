@@ -278,7 +278,12 @@ def canonicalize_legacy_sophia_event(
         "user_id": body.speaker_identity,
         "auth_state": normalize_auth_state(body.auth_state),
     }
-    auto_dispatch = bool(body.payload.get("auto_dispatch", True))
+    # Dispatch is an authority grant: honour only an explicit boolean. A
+    # missing claim or a truthy non-boolean ("false", 1, ...) must not be
+    # upgraded into an approval at the legacy boundary -- the canonical bool
+    # field already parses "false" as False.
+    claimed_dispatch = body.payload.get("auto_dispatch", False)
+    auto_dispatch = claimed_dispatch if type(claimed_dispatch) is bool else False
     return CanonicalVoiceEventIn(
         event_id=body.event_id,
         event_type=body.event_type,
