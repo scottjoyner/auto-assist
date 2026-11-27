@@ -15,15 +15,39 @@ def execute_diagnostic_probes(
 ) -> dict[str, Any]:
     """Execute only the diagnosis-declared probe allowlist within a deadline."""
     started = time.monotonic()
-    node = next(
-        (
-            row for row in snapshot.get("nodes") or []
-            if str(row.get("hostname") or row.get("id")) == str(diagnosis.get("node_id"))
-        ),
-        {},
-    )
+    requested = list(diagnosis.get("bounded_probes") or [])
+    raw_target = diagnosis.get("node_id")
+    target_id = "" if raw_target is None else str(raw_target).strip()
+    node = None
+    if target_id:
+        for row in snapshot.get("nodes") or []:
+            candidate = row.get("hostname") or row.get("id")
+            if candidate is not None and str(candidate).strip() == target_id:
+                node = row
+                break
+    if node is None:
+        # No identified target in the snapshot. Running probes against an empty
+        # stub would manufacture "successes" (e.g. capacity from its defaults)
+        # and let a diagnosis be persisted as measured evidence. Fail closed.
+        results = [
+            {"probe": probe, "ok": False, "reason": "target_node_missing"}
+            for probe in requested
+        ]
+        return {
+            **diagnosis,
+            "probe_results": results,
+            "probe_summary": {
+                "requested": len(results),
+                "completed": 0,
+                "successful": 0,
+                "deadline_seconds": deadline_seconds,
+            },
+            "confidence": 0.0,
+            "evidence_status": "target_node_missing",
+            "mutated": False,
+        }
     results = []
-    for probe in diagnosis.get("bounded_probes") or []:
+    for probe in requested:
         if time.monotonic() - started >= deadline_seconds:
             results.append({"probe": probe, "ok": False, "reason": "diagnostic_deadline_exceeded"})
             continue
@@ -64,7 +88,10 @@ def execute_diagnostic_probes(
             result = {"ok": False, "reason": "probe_adapter_unavailable"}
         results.append({"probe": probe, **result})
 
-    completed = [row for row in results if row.get("reason") != "probe_adapter_unavailable"]
+    # A skipped adapter or a deadline skip never executed a probe; neither may
+    # inflate evidence coverage or turn the verdict into "measured".
+    incomplete = {"probe_adapter_unavailable", "diagnostic_deadline_exceeded"}
+    completed = [row for row in results if row.get("reason") not in incomplete]
     successes = sum(1 for row in completed if row.get("ok"))
     evidence_coverage = len(completed) / max(len(results), 1)
     confidence = min(
@@ -84,6 +111,6 @@ def execute_diagnostic_probes(
             "deadline_seconds": deadline_seconds,
         },
         "confidence": round(confidence, 2),
-        "evidence_status": "measured",
+        "evidence_status": "measured" if completed else "unavailable",
         "mutated": False,
     }
