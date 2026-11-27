@@ -44,9 +44,14 @@ def _merge_metadata(
     def _merge_section(key: str, derived: Mapping[str, Any] | None) -> None:
         if derived is None:
             return
-        merged = dict(derived)
         existing_section = _json_dict(out.get(key))
-        merged.update(existing_section)
+        # Both call sites pass the producer's *own* pre-existing metadata, which
+        # may be stale or self-asserted. The values just derived from the
+        # authoritative top-level fields (privacy, local_only, allow_cloud,
+        # request_id / event_id, ...) must win; retaining an unknown custom key is fine, but
+        # letting a stale value overwrite a freshly recomputed one is not.
+        merged = dict(existing_section)
+        merged.update(derived)
         out[key] = merged
 
     _merge_section("request", request)
