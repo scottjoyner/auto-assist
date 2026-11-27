@@ -7,7 +7,8 @@ from typing import Any
 
 def _json_list(value: Any) -> list[str]:
     if isinstance(value, list):
-        return sorted({str(item) for item in value if str(item).strip()})
+        normalized = (str(item).strip() for item in value)
+        return sorted({item for item in normalized if item})
     if isinstance(value, str) and value.strip():
         try:
             parsed = json.loads(value)
