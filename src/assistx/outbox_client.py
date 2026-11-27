@@ -30,6 +30,12 @@ STALE_READINESS_S = int(os.environ.get("ASSISTX_OUTBOX_STALE_S", "86400"))
 # the rows keep their original status, but no flusher may claim or recover them.
 # Applied to both the claim SELECT and its guarded UPDATE.
 _QUARANTINE_CLAIM_GUARD = "(claim_owner IS NULL OR claim_owner NOT LIKE 'quarantine:%')"
+# Optional caller-supplied claim owner (r23). Kept short and printable so a
+# label supplied by an external caller (e.g. an MCP session id) cannot smuggle
+# control characters or impersonate an operator quarantine hold. A claim with
+# no owner keeps minting the uuid4 token that fences release.
+MAX_CLAIM_OWNER_LEN = 128
+_QUARANTINE_OWNER_PREFIX = "quarantine:"
 
 STATUSES = ("pending", "failed", "claimed", "delivered", "dead")
 MAX_ACK_BYTES = 65536
@@ -41,6 +47,27 @@ def _unique_ack_fields(pairs):
             raise ValueError("duplicate acknowledgement field")
         result[key] = value
     return result
+
+
+def _validate_claim_owner(owner: str) -> str:
+    """Validate an optional caller-supplied claim owner label.
+
+    Conservative by design: a short, printable, non-blank string with no
+    control characters and no ``quarantine:`` prefix. The prefix is rejected
+    case-insensitively because SQLite's LIKE is ASCII-case-insensitive, so a
+    value such as ``QUARANTINE:hold`` would otherwise be treated as an operator
+    hold by ``_QUARANTINE_CLAIM_GUARD``. The guard logic itself is untouched;
+    this only constrains what a caller may write into ``claim_owner``.
+    """
+    if not isinstance(owner, str):
+        raise ValueError("claim owner must be a string")
+    if not owner or len(owner) > MAX_CLAIM_OWNER_LEN:
+        raise ValueError(f"claim owner must be 1..{MAX_CLAIM_OWNER_LEN} characters")
+    if not owner.isprintable() or owner != owner.strip():
+        raise ValueError("claim owner must be printable with no control characters or surrounding whitespace")
+    if owner.lower().startswith(_QUARANTINE_OWNER_PREFIX):
+        raise ValueError("claim owner may not use the quarantine: prefix")
+    return owner
 
 
 class OutboxEntry:
@@ -436,6 +463,7 @@ class OutboxClient:
         *,
         exclude: Optional[Sequence[str]] = None,
         lease_s: Optional[int] = None,
+        owner: Optional[str] = None,
     ) -> Optional[OutboxEntry]:
         """Atomically claim the oldest deliverable row, or return None.
 
@@ -445,12 +473,21 @@ class OutboxClient:
         The returned entry carries the token in ``claim_owner``; every later
         write must present it so a recovered row cannot be clobbered by the
         flusher that lost it.
+
+        ``owner`` is optional. When omitted (the default, and the only path
+        public callers use), a fresh uuid4 token is minted exactly as before.
+        When supplied, the validated label is written into ``claim_owner`` and
+        returned, so an external caller (e.g. an MCP session) can correlate a
+        claim with its own identity. It is still the release fence: presenting
+        anything that is not this exact value remains fenced out.
         """
         lease = self.claim_lease_s if lease_s is None else int(lease_s)
         now = datetime.now(timezone.utc)
         stale_cutoff = (now - timedelta(seconds=max(1, lease))).isoformat()
         claimed_at = now.isoformat()
         token = uuid.uuid4().hex
+        if owner is not None:
+            token = _validate_claim_owner(owner)
         exclude = list(exclude or ())
 
         where = [

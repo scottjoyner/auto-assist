@@ -112,8 +112,11 @@ def test_doc_invariants_match_real_sources():
     assert "token = uuid.uuid4().hex" in claim_src
     assert "rowcount" in claim_src
     assert "claimed_at < ?" in claim_src
-    # The doc says there is no caller-supplied owner: the AST confirms it.
-    assert not _claim_next_args(src) & {"owner", "claim_owner", "session_id"}
+    # r23 closed the r22 doc's "no caller-supplied owner" gap with an optional
+    # owner parameter; see docs/session-claim-owner-r23.md. The gap assertion
+    # must therefore track the current API rather than the historical doc.
+    assert "owner" in _claim_next_args(src)
+    assert not _claim_next_args(src) & {"claim_owner", "session_id"}
     release_src = src[src.index("    def _release(") : src.index("    def _backoff_remaining_s(")]
     assert "AND status='claimed' AND claim_owner=?" in release_src
     assert 'ASSISTX_OUTBOX_CLAIM_LEASE_S", "90"' in src
