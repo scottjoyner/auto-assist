@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -15,6 +16,18 @@ def _json_list(value: Any) -> list[str]:
             return []
         return _json_list(parsed)
     return []
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 def benchmark_projection_index(
@@ -98,6 +111,55 @@ def benchmark_projection_index(
                         "loadout_fingerprint"
                     ),
                 }
+            probe_rows = session.run(
+                """
+                MATCH (e:ToolCallProbeEvidence)
+                WHERE coalesce(e.expires_at_ts, 0) > $now_ms
+                RETURN properties(e) AS evidence
+                ORDER BY coalesce(e.observed_at_ts, 0) DESC
+                """,
+                {"now_ms": int(time.time() * 1000)},
+            )
+            probe_seen: set[tuple[str, str]] = set()
+            for row in probe_rows:
+                evidence = dict(row["evidence"])
+                node_id = str(evidence.get("node_id") or "")
+                model_id = str(evidence.get("model_id") or "")
+                key = (node_id, model_id)
+                if not node_id or not model_id or key in probe_seen:
+                    continue
+                probe_seen.add(key)
+                policy = node_policy.get(
+                    node_id,
+                    {
+                        "routing_roles": [],
+                        "worker_mode": "observer_only",
+                        "allow_agent_runtime": False,
+                        "allow_code_execution": False,
+                    },
+                )
+                entry = grouped.setdefault(
+                    key,
+                    {**policy, "task_family_scores": {}},
+                )
+                entry["tool_call_probe_evidence"] = {
+                    "quality_score": evidence.get("quality_score"),
+                    "quality_floor_passed": evidence.get(
+                        "quality_floor_passed"
+                    ),
+                    "tool_call_probe": _json_object(
+                        evidence.get("evidence_json")
+                    ),
+                    "model_identity_fingerprint": evidence.get(
+                        "model_identity_fingerprint"
+                    ),
+                    "not_before_generation": evidence.get(
+                        "not_before_generation"
+                    ),
+                    "expires_at_ts": evidence.get("expires_at_ts"),
+                    "observed_at_ts": evidence.get("observed_at_ts"),
+                }
+
             # Models with no profile are attached later by node policy in
             # runtime_projection_v2. This map contains exact model evidence only.
             for entry in grouped.values():

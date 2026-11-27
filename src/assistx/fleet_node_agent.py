@@ -30,7 +30,6 @@ FLEET_CAPABILITIES (comma-separated extra caps), FLEET_NODE_ID (override).
 from __future__ import annotations
 
 import argparse
-import uuid
 import json
 import os
 import platform
@@ -40,6 +39,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,6 +47,7 @@ from typing import Any
 
 from .kv_cache import runtime_capabilities
 from .recovery_runbooks import RecoveryRunbookExecutor
+from .tool_call_reliability import build_tool_use_probe_evidence
 
 DEFAULT_CAPS = ["script"]
 
@@ -240,6 +241,82 @@ def execute_task(
     }
 
 
+def _run_tool_call_probes(
+    payload: dict[str, Any],
+    lmstudio_url: str | None,
+) -> dict[str, Any]:
+    observations: list[dict[str, Any]] = []
+    probes = (
+        payload.get("tool_call_probes")
+        if isinstance(payload.get("tool_call_probes"), list)
+        else []
+    )
+    for probe in probes:
+        if not isinstance(probe, dict):
+            continue
+        status, body = _http(
+            "POST",
+            f"{(lmstudio_url or '').rstrip('/')}/v1/chat/completions",
+            data={
+                "model": payload.get("model"),
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": str(probe.get("prompt") or ""),
+                    }
+                ],
+                "temperature": 0,
+                "max_tokens": int(
+                    payload.get("max_tokens_per_case") or 256
+                ),
+                "tools": probe.get("tools") or [],
+                "tool_choice": "auto",
+            },
+            timeout=min(
+                300, int(payload.get("deadline_seconds") or 900)
+            ),
+        )
+        message: dict[str, Any] = {}
+        if status == 200 and isinstance(body, dict):
+            choices = body.get("choices") or [{}]
+            if choices and isinstance(choices[0], dict):
+                candidate = choices[0].get("message")
+                if isinstance(candidate, dict):
+                    message = candidate
+        calls: list[dict[str, Any]] = []
+        for call in message.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function")
+            if not isinstance(function, dict):
+                continue
+            calls.append(
+                {
+                    "name": str(function.get("name") or ""),
+                    "arguments": function.get("arguments"),
+                }
+            )
+        raw_output = "\n".join(
+            str(message.get(field) or "")
+            for field in ("content", "reasoning_content")
+            if message.get(field)
+        )
+        observations.append(
+            {
+                "probe_id": str(probe.get("probe_id") or ""),
+                "tool_calls": calls,
+                "raw_output": raw_output,
+                "expected_tools": probe.get("expected_tools") or [],
+                "forbidden_tools": probe.get("forbidden_tools") or [],
+                "expects_no_tool": bool(
+                    probe.get("expects_no_tool")
+                ),
+                "transport_ok": status == 200,
+            }
+        )
+    return build_tool_use_probe_evidence(observations)
+
+
 def _run_benchmark_cases(
     task: dict[str, Any],
     payload: dict[str, Any],
@@ -301,18 +378,50 @@ def _run_benchmark_cases(
         scores.append(score)
         case_results.append({"ok": score >= 0.7, "score": round(score, 3), "latency_ms": int(elapsed * 1000)})
     quality = sum(scores) / len(scores) if scores else 0.0
+    tool_call_probe: dict[str, Any] | None = None
+    if payload.get("task_family") == "tool_use":
+        tool_call_probe = _run_tool_call_probes(payload, lmstudio_url)
+    probes_passed = (
+        tool_call_probe is None or tool_call_probe.get("passed") is True
+    )
+    is_tool_use = payload.get("task_family") == "tool_use"
+    if is_tool_use and tool_call_probe is not None:
+        probe_results = tool_call_probe.get("results") or []
+        reported_quality = (
+            sum(bool(row.get("passed")) for row in probe_results)
+            / max(len(probe_results), 1)
+        )
+        validation_passed = bool(probes_passed)
+    else:
+        reported_quality = quality
+        validation_passed = bool(cases and quality >= 0.7)
+    result = {
+        "quality_score": round(reported_quality, 3),
+        "validation_passed": validation_passed,
+        "tokens_per_second": round(
+            token_total / max(elapsed_total, 0.001), 3
+        ),
+        "case_count": len(cases),
+        "cases": case_results,
+        "model": payload.get("model"),
+        "task_family": payload.get("task_family"),
+    }
+    if is_tool_use:
+        result["legacy_text_quality_score"] = round(quality, 3)
+    if tool_call_probe is not None:
+        result["tool_call_probe"] = tool_call_probe
     return {
-        "status": "DONE" if cases and quality >= 0.5 else "FAILED",
+        "status": (
+            "DONE"
+            if (
+                probes_passed
+                if is_tool_use
+                else cases and quality >= 0.5
+            )
+            else "FAILED"
+        ),
         "summary": f"benchmark quality={quality:.3f}",
-        "result": {
-            "quality_score": round(quality, 3),
-            "validation_passed": bool(cases and quality >= 0.7),
-            "tokens_per_second": round(token_total / max(elapsed_total, 0.001), 3),
-            "case_count": len(cases),
-            "cases": case_results,
-            "model": payload.get("model"),
-            "task_family": payload.get("task_family"),
-        },
+        "result": result,
     }
 
 

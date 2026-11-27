@@ -29,7 +29,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from .deps import load_aioredis_module, load_prometheus_client, load_queue_class, load_redis_module, multipart_available
 from .logging_utils import install_logging_middleware, setup_logging
 from .runtime import build_runtime_health, runtime_profile, validate_runtime_configuration
-from .benchmark_controller import BenchmarkController, publish_benchmark_outcome
+from .benchmark_controller import (
+    BenchmarkController,
+    publish_benchmark_outcome,
+    record_tool_call_probe_evidence,
+)
 from .controller_runtime import Neo4jControllerStore
 from .loadout_control import LoadoutControlPlane, Neo4jLoadoutStore
 from .capacity_forecast import build_capacity_forecast
@@ -4410,6 +4414,25 @@ def api_complete_task(
                 "reasons": improvement_evaluation["reasons"],
                 "recording_error": str(exc)[:240],
             }
+    try:
+        tool_call_probe_outcome = record_tool_call_probe_evidence(
+            neo,
+            task_before,
+            body.agent_id,
+            effective_status,
+            completion_result,
+        )
+    except Exception as exc:
+        _lifespan_logger.warning(
+            "Tool-call probe evidence recording failed for %s: %s",
+            task_id,
+            exc,
+        )
+        tool_call_probe_outcome = {
+            "recorded": False,
+            "reason": "recording_error",
+            "detail": str(exc)[:240],
+        }
     benchmark_outcome = publish_benchmark_outcome(
         task_before,
         body.agent_id,
@@ -4427,6 +4450,7 @@ def api_complete_task(
         "task": task,
         "dead_letter_incident_id": dead_letter_incident_id,
         "benchmark_outcome": benchmark_outcome,
+        "tool_call_probe_outcome": tool_call_probe_outcome,
         "recovery_outcome": recovery_outcome,
         "improvement_outcome": improvement_outcome,
     }
