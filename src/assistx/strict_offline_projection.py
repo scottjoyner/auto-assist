@@ -23,7 +23,11 @@ _TAILSCALE = ipaddress.ip_network("100.64.0.0/10")
 def _private_url(value: Any) -> bool:
     text = str(value or "").strip()
     if not text:
-        return True
+        # An absent endpoint cannot be proven private: fail closed, as
+        # runtime_admission._private_url already does.  Otherwise a provider,
+        # node or service with an empty/missing URL survives the strict-offline
+        # allowlist with an unverifiable destination.
+        return False
     parsed = urlparse(text)
     if parsed.scheme not in {"http", "https", "bolt", "redis"}:
         return False
