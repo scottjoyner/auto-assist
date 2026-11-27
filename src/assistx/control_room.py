@@ -228,7 +228,13 @@ def _probe_router() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     admission: dict[str, Any] = {}
     try:
         health, latency = _http_json(base_url, "/health")
-        healthy = bool(health.get("ok", True))
+        # Fail closed: a health response that is not a JSON object, or that
+        # omits the verdict entirely, is not evidence that the router is
+        # reachable.  Never default a missing verdict to healthy.  A
+        # non-boolean verdict ("false", 1, ...) is likewise not ok=true.
+        if not isinstance(health, dict) or "ok" not in health:
+            raise ValueError("router health response omitted an ok verdict")
+        healthy = health["ok"] is True
         results.append(
             _dependency(
                 "auto-router",
