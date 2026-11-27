@@ -26,17 +26,37 @@ _outbox = OutboxClient(
 )
 
 
+def _clean_id(value: object) -> str:
+    """Stringify an identifier and strip surrounding whitespace for emission."""
+    return str(value or "").strip()
+
+
 def _enqueue(event_type: str, payload: dict, correlation_id: str | None = None) -> bool:
     cid = correlation_id or str(uuid4())
     event_id = f"evt_{uuid4().hex}"
-    node_id = str(payload.get("node_id") or os.getenv("ASSISTX_NODE_ID", "auto-ingest"))
+    # The notify_* guards validate identifiers with ``.strip()`` but previously
+    # emitted the raw padded values. Normalize each identifier once so the
+    # envelope's node_id, every link target_id, and the payload all carry the
+    # same value the guard actually accepted.
+    raw_node_id = _clean_id(payload.get("node_id"))
+    node_id = raw_node_id or _clean_id(os.getenv("ASSISTX_NODE_ID", "auto-ingest"))
+    evidence_ref = _clean_id(payload.get("evidence_ref"))
+    context_packet_id = _clean_id(payload.get("context_packet_id"))
+    emitted_payload = dict(payload)
+    for key, clean in (
+        ("node_id", node_id),
+        ("evidence_ref", evidence_ref),
+        ("context_packet_id", context_packet_id),
+    ):
+        if key in emitted_payload:
+            emitted_payload[key] = clean
     links = []
-    if payload.get("node_id"):
-        links.append({"rel": "FOR_NODE", "target_type": "Node", "target_id": str(payload["node_id"])})
-    if payload.get("evidence_ref"):
-        links.append({"rel": "REFERENCES", "target_type": "Evidence", "target_id": str(payload["evidence_ref"])})
-    if payload.get("context_packet_id"):
-        links.append({"rel": "REFERENCES", "target_type": "ContextPacket", "target_id": str(payload["context_packet_id"])})
+    if raw_node_id:
+        links.append({"rel": "FOR_NODE", "target_type": "Node", "target_id": raw_node_id})
+    if evidence_ref:
+        links.append({"rel": "REFERENCES", "target_type": "Evidence", "target_id": evidence_ref})
+    if context_packet_id:
+        links.append({"rel": "REFERENCES", "target_type": "ContextPacket", "target_id": context_packet_id})
     body = {
         "event_id": event_id,
         "event_type": event_type,
@@ -47,7 +67,7 @@ def _enqueue(event_type: str, payload: dict, correlation_id: str | None = None) 
         "idempotency_key": f"{event_type}:{cid}",
         "schema_version": "2026-08.v1",
         "subject": {"kind": "event", "id": event_id},
-        "payload": payload,
+        "payload": emitted_payload,
         "artifact_refs": [],
         "metadata": {},
         "privacy": {"pii": False, "privacy_class": "internal", "retention_class": "keep"},
