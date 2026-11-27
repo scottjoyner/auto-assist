@@ -28,8 +28,28 @@ def _clean_str(value: Any, default: str = "") -> str:
     return text if text else default
 
 
-def _clean_bool(value: Any) -> bool:
-    return bool(value)
+_TRUE_FLAG_TOKENS = frozenset({"true", "1", "yes", "on"})
+_FALSE_FLAG_TOKENS = frozenset({"false", "0", "no", "off"})
+
+
+def _clean_bool(value: Any, *, default: bool) -> bool:
+    """Decode a producer-supplied safety flag without ``bool()`` coercion.
+
+    Legacy producers sometimes serialize booleans as strings, and
+    ``bool("false") is True``. Decode the canonical spellings explicitly and
+    fall back to the caller's restrictive default for anything malformed, so
+    a denial can never be silently upgraded to an approval in derived
+    privacy/routing metadata.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _TRUE_FLAG_TOKENS:
+            return True
+        if text in _FALSE_FLAG_TOKENS:
+            return False
+    return default
 
 
 def _merge_metadata(
@@ -72,7 +92,7 @@ def build_event_request_metadata(event: Mapping[str, Any]) -> dict[str, Any]:
         "schema_version": _clean_str(event.get("schema_version"), "1.0"),
         "subject_kind": _clean_str(subject.get("kind"), "unknown"),
         "subject_id": _clean_str(subject.get("id"), event_id),
-        "pii": _clean_bool(privacy.get("pii")),
+        "pii": _clean_bool(privacy.get("pii"), default=True),
         "privacy_class": _clean_str(privacy.get("privacy_class"), "unknown"),
         "retention_class": _clean_str(privacy.get("retention_class"), "unknown"),
     }
@@ -96,9 +116,9 @@ def build_task_candidate_request_metadata(task: Mapping[str, Any]) -> dict[str, 
         "priority": _clean_str(task.get("priority"), "background"),
         "queue": _clean_str(task.get("queue"), "background"),
         "model": _clean_str(task.get("model"), "auto/backlog-burn"),
-        "local_only": _clean_bool(task.get("local_only")),
-        "allow_cloud": _clean_bool(task.get("allow_cloud")),
-        "sensitive": _clean_bool(task.get("sensitive")),
+        "local_only": _clean_bool(task.get("local_only"), default=True),
+        "allow_cloud": _clean_bool(task.get("allow_cloud"), default=False),
+        "sensitive": _clean_bool(task.get("sensitive"), default=True),
         "status": _clean_str(task.get("status"), "unknown"),
         "max_completion_tokens": int(task.get("max_completion_tokens") or 700),
     }
@@ -112,9 +132,9 @@ def build_task_candidate_task_metadata(task: Mapping[str, Any]) -> dict[str, Any
         "prompt": _clean_str(task.get("prompt") or task.get("description"), _clean_str(task.get("title"), "AssistX task")),
         "model": _clean_str(task.get("model"), "auto/backlog-burn"),
         "priority": _clean_str(task.get("priority"), "background"),
-        "local_only": _clean_bool(task.get("local_only")),
-        "allow_cloud": _clean_bool(task.get("allow_cloud")),
-        "sensitive": _clean_bool(task.get("sensitive")),
+        "local_only": _clean_bool(task.get("local_only"), default=True),
+        "allow_cloud": _clean_bool(task.get("allow_cloud"), default=False),
+        "sensitive": _clean_bool(task.get("sensitive"), default=True),
         "max_completion_tokens": int(task.get("max_completion_tokens") or 700),
         "status": _clean_str(task.get("status"), "unknown"),
         "queue": _clean_str(task.get("queue"), "background"),
