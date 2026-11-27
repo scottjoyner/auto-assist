@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterable
 from typing import Any
 
@@ -70,9 +71,9 @@ def build_allocation_plan(
                     ),
                     {},
                 )
-                quality = float(value.get("quality_score") or 0.5)
-                confidence = float(value.get("confidence") or 0.25)
-                throughput = min(1.0, float(value.get("tokens_per_second") or 0) / 50.0)
+                quality = _ranking_evidence(value.get("quality_score"), 0.5)
+                confidence = _ranking_evidence(value.get("confidence"), 0.25)
+                throughput = min(1.0, _ranking_evidence(value.get("tokens_per_second"), 0.0) / 50.0)
                 urgency = PRIORITY_WEIGHT.get(str(task.get("priority") or "MEDIUM").upper(), 0.55)
                 queue_class = str(payload.get("queue_class") or "interactive")
                 displacement = load * (0.35 if queue_class == "batch" else 0.2)
@@ -103,13 +104,10 @@ def build_allocation_plan(
                     {"node_id": node_id, "model_id": model},
                     cache_catalog,
                 )
+                prefill_rate = _evidence_rate(value)
                 cache_economics = cache_value(
                     cache,
-                    tokens_per_second=float(
-                        value.get("prefill_tokens_per_second")
-                        or value.get("tokens_per_second")
-                        or 1
-                    ),
+                    tokens_per_second=prefill_rate,
                     transfer_mib_per_second=float(
                         node.get("cache_transfer_mib_per_second") or 100
                     ),
@@ -124,11 +122,7 @@ def build_allocation_plan(
                 )
                 packet_bonus = context_packet_bonus(
                     packet_match,
-                    tokens_per_second=float(
-                        value.get("prefill_tokens_per_second")
-                        or value.get("tokens_per_second")
-                        or 1
-                    ),
+                    tokens_per_second=prefill_rate,
                 )
                 affinity_node = str(
                     cache_request.get("affinity_node_id") or ""
@@ -222,6 +216,42 @@ def build_allocation_plan(
             "preserve_interactive_capacity": True,
         },
     }
+
+
+def _ranking_evidence(value: Any, default: float) -> float:
+    """Parse ranking evidence without crediting zeroed or unusable values.
+
+    A present zero is a deliberate fail-closed signal (a benchmark policy
+    zeroes quality evidence when the quality floor fails), so it must stay
+    zero rather than fall back to a favorable default. Malformed, boolean and
+    non-finite evidence is unmeasurable and contributes no credit. Only a
+    genuinely absent value keeps the historical default.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return parsed if math.isfinite(parsed) else 0.0
+
+
+def _evidence_rate(value: dict[str, Any]) -> float:
+    """Resolve the prefill rate with legacy precedence, but fail closed.
+
+    The prefill rate wins when present, then the observed rate, then 1.0 —
+    the same source choice as before — except an unusable source now yields
+    no rate instead of a NaN/Infinity or a crash.
+    """
+    for candidate in (
+        value.get("prefill_tokens_per_second"),
+        value.get("tokens_per_second"),
+    ):
+        if candidate:
+            return _ranking_evidence(candidate, 1.0)
+    return 1.0
 
 
 def _payload(task: dict[str, Any]) -> dict[str, Any]:
