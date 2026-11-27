@@ -41,6 +41,9 @@ class StartupAbortTests(unittest.TestCase):
         ready=Mock(return_value=None)
         if where=='readiness':ready.side_effect=OSError('synthetic')
         if where=='poller':pollers.side_effect=RuntimeError('synthetic')
+        if where=='readiness_value':ready.side_effect=ValueError('synthetic')
+        if where=='poller_value':pollers.side_effect=ValueError('synthetic')
+        if where=='pipe_close':writer.close.side_effect=OSError('synthetic')
         with patch.object(w.mp,'get_context',return_value=ctx),patch.object(w,'settings',SimpleNamespace(execution_backend='direct')),patch.dict('os.environ',{'WORKER_CONCURRENCY':'1'}),patch.object(s,'launch_children',return_value=([child],None)),patch.object(s,'wait_child_readiness',ready),patch.object(s,'supervise',side_effect=supervise),patch.object(w,'_start_execution_pollers',pollers),patch.object(w,'_start_recovery_island_controller') as recovery:
             self.assertEqual(w._run_worker_group(lambda:False),70)
             self.assertEqual(owned,[child])
@@ -50,6 +53,10 @@ class StartupAbortTests(unittest.TestCase):
 
     def test_readiness_exception_drains_owned_children(self):self.exercise_failed_group('readiness')
     def test_poller_exception_drains_owned_children(self):self.exercise_failed_group('poller')
+
+    def test_readiness_value_error_drains_children(self):self.exercise_failed_group('readiness_value')
+    def test_poller_value_error_drains_children(self):self.exercise_failed_group('poller_value')
+    def test_pipe_close_error_drains_children(self):self.exercise_failed_group('pipe_close')
 
     def test_validation_failure_is_not_success(self):
         with patch.object(w,'validate_runtime_configuration',side_effect=ValueError('synthetic')),patch.object(w,'_warm_parent') as warm,patch.object(w,'_run_worker_group') as group:

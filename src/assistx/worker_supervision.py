@@ -44,7 +44,7 @@ def launch_children(ctx,count,target,args_for_index,stopping):
                           args=(target,args_for_index(i),old_mask),daemon=False)
             p.start()
             processes.append(p)
-        except (OSError,RuntimeError) as exc:
+        except Exception as exc:
             if p is not None and p.pid is not None and p not in processes:
                 processes.append(p)
             return processes,type(exc).__name__

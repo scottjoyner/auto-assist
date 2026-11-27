@@ -309,12 +309,15 @@ def _run_worker_group(stopping):
                     )
                     if startup_error == "shutdown_requested":
                         startup_error = None
-        except (OSError, RuntimeError) as exc:
+        except Exception as exc:
             startup_error = type(exc).__name__
         finally:
             for reader, writer in channels:
-                reader.close()
-                writer.close()
+                for channel in (reader, writer):
+                    try:
+                        channel.close()
+                    except Exception as exc:
+                        startup_error = startup_error or type(exc).__name__
         if startup_error:
             logger.error("worker startup failed: %s", startup_error)
             stop_event.set()
@@ -349,7 +352,7 @@ def _run_worker_group(stopping):
                             or not open_group_admission(startup_gate, processes, concurrency, startup_stopping)):
                         startup_error = "group_admission_not_opened"
                         stop_event.set()
-        except (OSError, RuntimeError) as exc:
+        except Exception as exc:
             startup_error = type(exc).__name__
             stop_event.set()
         exit_code = supervise(

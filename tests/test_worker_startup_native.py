@@ -33,6 +33,24 @@ class StartupTests(unittest.TestCase):
         ctx.Process.side_effect=[first,Child(fail)]
         children,error=s.launch_children(ctx,32,lambda:None,lambda i:(),lambda:False)
         self.assertEqual(children,[first]);self.assertEqual(error,'OSError')
+    def test_non_os_spawn_error_preserves_prior_children(self):
+        ctx=Mock()
+        first=Child()
+        def fail():raise ValueError('synthetic argument failure')
+        ctx.Process.side_effect=[first,Child(fail)]
+        children,error=s.launch_children(ctx,2,lambda:None,lambda i:(),lambda:False)
+        self.assertEqual(children,[first]);self.assertEqual(error,'ValueError')
+
+    def test_start_error_after_pid_assignment_retains_child(self):
+        ctx=Mock();child=Child()
+        def fail():
+            child.pid=123
+            raise ValueError('synthetic post-start failure')
+        child.action=fail
+        ctx.Process.return_value=child
+        children,error=s.launch_children(ctx,1,lambda:None,lambda i:(),lambda:False)
+        self.assertEqual(children,[child]);self.assertEqual(error,'ValueError')
+
     def test_parent_mask_restored_after_start_failure(self):
         ctx=Mock()
         def fail():raise RuntimeError('synthetic start failure')
