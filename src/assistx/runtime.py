@@ -135,11 +135,13 @@ def _check_outbox() -> Dict[str, Any]:
     path = os.getenv("ASSISTX_OUTBOX_DB", DEFAULT_DB_PATH)
     try:
         health = read_queue_health(path)
-    except Exception as exc:  # noqa: BLE001 - health must answer
+    except Exception as exc:  # noqa: BLE001 - health must answer, but must not lie
+        # An unreadable queue is unverified, not verified: fail readiness closed
+        # while still returning a complete, diagnostic health payload.
         health = {
             "db_path": path,
             "status": "error",
-            "ok": True,
+            "ok": False,
             "reason": f"outbox probe failed: {str(exc)[:200]}",
         }
     health["readiness_enforced"] = _outbox_readiness_enforced()
