@@ -131,7 +131,11 @@ class LoadoutControlPlane:
         observed = verify(base_url)
         loaded = set(observed.get("loaded_models") or observed.get("models") or [])
         expected_loaded = action["action"] == "replicate_candidate"
-        verified = bool(operation.get("ok")) and ((model in loaded) == expected_loaded)
+        # Only a genuine boolean true from the runtime operation certifies a
+        # mutation. Python truthiness would accept malformed "ok" evidence
+        # (strings like "false"/"error", ints, lists or dicts) and silently
+        # skip the rollback for a failed load/unload. Fail closed.
+        verified = operation.get("ok") is True and ((model in loaded) == expected_loaded)
         if verified:
             final = store.transition(proposal_id, "EXECUTING", "COMPLETED", actor, {"operation": operation, "verification": observed})
             return {"executed": True, "verified": True, "proposal": final}
