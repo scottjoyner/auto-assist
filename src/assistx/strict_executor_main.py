@@ -7,8 +7,12 @@ from assistx.strict_executor_adapter import install_strict_executor_adapter
 
 
 def main() -> None:
-    install_strict_executor_adapter(hermes_agent_adapter)
-    hermes_agent_adapter.run_loop()
+    from assistx.worker_supervision import shutdown_flag
+
+    with shutdown_flag() as stopping:
+        install_strict_executor_adapter(hermes_agent_adapter)
+        if not stopping():
+            hermes_agent_adapter.run_loop(stopping=stopping)
 
 
 if __name__ == "__main__":
