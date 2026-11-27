@@ -119,7 +119,11 @@ def action_requires_approval(auth_state: Optional[str], action: Optional[str], r
     state = (auth_state or "unknown_speaker").strip().lower()
     action_name = (action or "").strip().lower()
     risk = (risk_level or "low").strip().lower()
-    if risk == "high":
+    # Fail closed: only an explicitly recognized low-risk level may be
+    # auto-approved. Any other label (including an unknown or malformed
+    # value such as "critical") must require approval instead of silently
+    # inheriting the low-risk auto-approve path.
+    if risk != "low":
         return True
     if state in SCOTT_AUTO_APPROVE_STATES and (not action_name or action_name in LOW_RISK_ACTIONS):
         return False
