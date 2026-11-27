@@ -65,7 +65,7 @@ from enum import Enum
 from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 HEAD_SHA_PATTERN = r"^[0-9a-f]{40}$"
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -93,6 +93,8 @@ def _validate_canonical_path(value: str, *, field: str) -> str:
         raise ValueError(f"{field} must not contain '..' traversal segments")
     if text != os.path.normpath(text):
         raise ValueError(f"{field} must be canonical, not {text!r}")
+    if text == "/":
+        raise ValueError(f"{field} must not be the filesystem root")
     try:
         home = os.path.normpath(os.path.realpath(os.path.expanduser("~")))
     except (OSError, RuntimeError):
@@ -115,6 +117,7 @@ class DirtyStateExpectation(str, Enum):
     CLEAN = "clean"
     CLEAN_REQUIRED = "clean_required"
     DIRTY = "dirty"
+    DIRTY_ALLOWED = "dirty_allowed"
     ANY = "any"
 
 
@@ -128,9 +131,11 @@ class SourceBindingState(str, Enum):
     MATCH = "MATCH"
     REPOSITORY_MISMATCH = "REPOSITORY_MISMATCH"
     WORKTREE_MISMATCH = "WORKTREE_MISMATCH"
+    BRANCH_MISMATCH = "BRANCH_MISMATCH"
     HEAD_MISMATCH = "HEAD_MISMATCH"
     DIRTY_STATE_MISMATCH = "DIRTY_STATE_MISMATCH"
     SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
+    UNBOUND = "UNBOUND"
 
 
 class RepositorySourceBinding(BaseModel):
@@ -159,17 +164,29 @@ class RepositorySourceBinding(BaseModel):
         ...,
         description="Canonical realpath of the exact worktree to be examined.",
     )
-    branch: str = Field(..., min_length=1, max_length=512)
+    branch: str | None = Field(default=None, max_length=512)
     head_sha: str = Field(..., pattern=HEAD_SHA_PATTERN)
     expected_dirty: DirtyStateExpectation = DirtyStateExpectation.CLEAN
-    task_id: str = Field(..., min_length=1, max_length=256)
-    work_id: str = Field(
-        ...,
+    task_id: str | None = Field(default=None, min_length=1, max_length=256)
+    work_id: str | None = Field(
+        default=None,
         min_length=1,
         max_length=256,
         description="Attempt/execution identifier the binding is scoped to.",
     )
     source_manifest_sha256: str | None = Field(default=None, pattern=SHA256_PATTERN)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_compatible_contract_field_names(cls, value):
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        if "repository_realpath" in normalized and "repo_realpath" not in normalized:
+            normalized["repo_realpath"] = normalized.pop("repository_realpath")
+        if "dirty_expectation" in normalized and "expected_dirty" not in normalized:
+            normalized["expected_dirty"] = normalized.pop("dirty_expectation")
+        return normalized
 
     @field_validator("authority_source")
     @classmethod
@@ -204,10 +221,36 @@ class RepositorySourceBinding(BaseModel):
 
     @field_validator("task_id", "work_id")
     @classmethod
-    def _identifier_is_clean(cls, value: str) -> str:
-        if _CONTROL.search(str(value or "")):
+    def _identifier_is_clean(cls, value: str | None) -> str | None:
+        if value is not None and _CONTROL.search(str(value)):
             raise ValueError("task_id/work_id must not contain control characters")
         return value
+
+    @property
+    def repository_realpath(self) -> str:
+        return self.repo_realpath
+
+    @property
+    def dirty_expectation(self) -> DirtyStateExpectation:
+        return self.expected_dirty
+
+    def to_contract_payload(self) -> dict[str, object]:
+        payload = self.model_dump(mode="json", exclude_none=True)
+        payload["repository_realpath"] = payload.pop("repo_realpath")
+        payload["dirty_expectation"] = payload.pop("expected_dirty")
+        return payload
+
+    @classmethod
+    def from_contract_payload(cls, payload):
+        if payload is None:
+            return None
+        if isinstance(payload, cls):
+            return payload
+        if not isinstance(payload, dict):
+            raise ValueError("source binding must be an object")
+        if not payload:
+            return None
+        return cls.model_validate(payload)
 
     def provenance(self) -> dict[str, object]:
         """Compact payload safe to embed in a task or result."""
