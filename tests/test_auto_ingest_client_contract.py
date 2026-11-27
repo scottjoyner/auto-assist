@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from unittest.mock import patch
+from uuid import UUID
 
 from assistx import auto_ingest_client as client
 
@@ -88,3 +89,28 @@ def test_padded_context_packet_id_is_normalized_in_emitted_link() -> None:
         {"rel": "REFERENCES", "target_type": "ContextPacket", "target_id": "context-789"}
     ]
     assert body["payload"]["context_packet_id"] == "context-789"
+
+
+def test_blank_correlation_id_is_replaced_with_a_contract_uuid() -> None:
+    """Whitespace-only ids are truthy, so the old `or` fallback let them through."""
+    with patch.object(client._outbox, "enqueue") as enqueue:
+        assert client.notify_evidence_linked(
+            node_id="dashcam-123", evidence_ref="evidence-456", correlation_id="   "
+        ) is True
+
+    body = enqueue.call_args.args[0]
+    assert str(UUID(body["correlation_id"])) == body["correlation_id"]
+    assert body["idempotency_key"] == f"ingest.evidence.linked:{body['correlation_id']}"
+
+
+def test_malformed_correlation_id_is_replaced_for_context_event() -> None:
+    """A non-UUID correlation is a 422 at the sink, not a retriable event."""
+    with patch.object(client._outbox, "enqueue") as enqueue:
+        assert client.notify_context_available(
+            context_packet_id="context-789", correlation_id="not-a-uuid"
+        ) is True
+
+    body = enqueue.call_args.args[0]
+    assert UUID(body["correlation_id"])
+    assert body["correlation_id"] != "not-a-uuid"
+    assert body["idempotency_key"].endswith(f":{body['correlation_id']}")

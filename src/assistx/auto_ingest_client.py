@@ -10,11 +10,34 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from .outbox_client import OutboxClient
 
 logger = logging.getLogger(__name__)
+
+
+def _contract_correlation_id(correlation_id: str | None) -> str:
+    """Return a correlation id the canonical EventEnvelope accepts.
+
+    The canonical ``EventEnvelope`` requires ``correlation_id`` to parse as a
+    UUID (see ``assistx.contracts.event_envelope``). A blank or malformed value
+    forwarded to the sink would be rejected at the boundary (422), after which
+    the outbox can only retry it into the dead-letter state. Treat a blank or
+    malformed caller value like a missing one and mint a fresh UUID instead.
+    """
+    candidate = str(correlation_id or "").strip()
+    if candidate:
+        try:
+            UUID(candidate)
+        except (ValueError, AttributeError, TypeError):
+            logger.warning(
+                "replacing malformed correlation_id %r with a fresh UUID", correlation_id
+            )
+        else:
+            return candidate
+    return str(uuid4())
+
 
 _outbox = OutboxClient(
     db_path=os.getenv("ASSISTX_OUTBOX_DB", os.path.expanduser("~/.assistx_outbox.db")),
@@ -32,7 +55,7 @@ def _clean_id(value: object) -> str:
 
 
 def _enqueue(event_type: str, payload: dict, correlation_id: str | None = None) -> bool:
-    cid = correlation_id or str(uuid4())
+    cid = _contract_correlation_id(correlation_id)
     event_id = f"evt_{uuid4().hex}"
     # The notify_* guards validate identifiers with ``.strip()`` but previously
     # emitted the raw padded values. Normalize each identifier once so the
