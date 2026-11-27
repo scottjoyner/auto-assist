@@ -3,8 +3,8 @@
 sync_configs_to_assistx.py — DYNAMIC bridge (Hybrid A, evolved).
 
 Reads the Hermes config + opencode config from every reachable node and pushes
-the resulting model fleet into AssistX as swarm ModelEndpoints, then refreshes
-auto-router's live-model projection. Re-run on a cron (or file-watch) so the
+the resulting model fleet into AssistX as swarm ModelEndpoints. A privileged
+auto-router live-model refresh is optional and must be explicitly authorized. Re-run on a cron (or file-watch) so the
 AssistX/auto-router universe always mirrors the real local-fleet configs — not
 a one-shot snapshot.
 
@@ -25,6 +25,7 @@ Env:
   ASSISTX_URL       default http://100.64.43.123:8000
   ASSISTX_USER      default admin
   ASSISTX_PASS      *** (required — real AssistX admin pass)
+  AUTO_ROUTER_ADMIN_TOKEN  required only with --refresh-router (never echoed)
   AUTO_ROUTER_URL   default http://100.64.43.123:8088
   X1_MIRROR         default /media/scott/SSD_4TB/hermes-home/home_scott_.config
   OPENCODE_CONFIG   default ~/.config/opencode/opencode.local-fleet.json
@@ -32,17 +33,20 @@ Env:
 Usage:
   ASSISTX_PASS=*** python3 sync_configs_to_assistx.py
   ASSISTX_PASS=*** python3 sync_configs_to_assistx.py --dry-run   # print plan, no network
+  # Separate, explicitly approved router refresh:
+  ASSISTX_PASS=*** AUTO_ROUTER_ADMIN_TOKEN=*** python3 sync_configs_to_assistx.py --refresh-router
 """
 from __future__ import annotations
+
 import argparse
+import base64
+import ipaddress
 import json
 import os
 import sys
-import time
-import urllib.request
 import urllib.error
-import base64
-from urllib.parse import urlparse
+import urllib.request
+from urllib.parse import urlsplit
 
 DEFAULT_OPENCODE = os.path.expanduser("~/.config/opencode/opencode.local-fleet.json")
 DEFAULT_X1_MIRROR = "/media/scott/SSD_4TB/hermes-home/home_scott_.config"
@@ -99,6 +103,89 @@ def _post(url, payload, user, password, timeout=30):
         return {}
 
 
+class RouterAdminRefreshError(RuntimeError):
+    """Sanitized error; never includes the admin token, URL or response body."""
+
+
+class _NoAdminRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow credential-bearing redirects, including same-origin."""
+
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
+
+
+def _validated_router_refresh_url(base_url: str) -> str:
+    """Allow authenticated router refresh only on TLS or explicit local/Tailnet IP."""
+    try:
+        parsed = urlsplit(base_url.strip())
+        host = parsed.hostname
+        port = parsed.port  # validates malformed/non-numeric/out-of-range ports
+        if (parsed.scheme not in ("http", "https")
+                or not host or port is None or not 1 <= port <= 65535
+                or parsed.username is not None or parsed.password is not None
+                or parsed.path not in ("", "/")
+                or parsed.query or parsed.fragment):
+            raise ValueError
+        if parsed.scheme == "http":
+            try:
+                addr = ipaddress.ip_address(host)
+                # A Tailscale IP is in shared-address space, but this alone is
+                # not evidence of Tailnet enrollment. Operators must verify
+                # actual Tailnet transport before supplying admin credentials.
+                tailnet = isinstance(addr, ipaddress.IPv4Address) and addr in ipaddress.ip_network(
+                    "100.64.0.0/10"
+                )
+                if not (addr.is_loopback or tailnet):
+                    raise ValueError
+            except ValueError:
+                if host != "localhost":
+                    raise
+    except (AttributeError, ValueError, TypeError):
+        raise RouterAdminRefreshError("router_admin_transport_not_approved") from None
+    return f"{parsed.scheme}://{parsed.netloc}/admin/live-models/refresh"
+
+
+def _authenticated_router_refresh(url: str, admin_token: str) -> None:
+    """Single opt-in privileged POST; reject redirects, proxies, large/bad responses."""
+    if not isinstance(admin_token, str) or not admin_token.strip():
+        raise RouterAdminRefreshError("router_admin_token_required")
+    request = urllib.request.Request(
+        url,
+        data=b"{}",
+        headers={
+            "Content-Type": "application/json",
+            "X-Admin-Token": admin_token,
+        },
+        method="POST",
+    )
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), _NoAdminRedirect(),
+    )
+    try:
+        with opener.open(request, timeout=8) as response:
+            if response.status != 200:
+                raise RouterAdminRefreshError("router_admin_refresh_non_200")
+            raw = response.read(8193)
+            if len(raw) > 8192:
+                raise RouterAdminRefreshError("router_admin_refresh_oversized_response")
+            try:
+                body = json.loads(raw)
+            except (UnicodeError, json.JSONDecodeError):
+                raise RouterAdminRefreshError("router_admin_refresh_invalid_response") from None
+            if not isinstance(body, dict):
+                raise RouterAdminRefreshError("router_admin_refresh_invalid_response")
+    except RouterAdminRefreshError:
+        raise
+    except urllib.error.HTTPError as exc:
+        # Even if a faulty server returns secrets in an error body/location,
+        # do not read or print it. 3xx is refused, never redirected.
+        if 300 <= exc.code < 400:
+            raise RouterAdminRefreshError("router_admin_redirect_denied") from None
+        raise RouterAdminRefreshError(f"router_admin_http_{exc.code}") from None
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError):
+        raise RouterAdminRefreshError("router_admin_transport_failed") from None
+
+
 def load_json(path):
     try:
         with open(path) as f:
@@ -152,7 +239,9 @@ def run_sync(dry_run: bool = False, password: str = "",
              user: str = "admin",
              auto_router_url: str = "http://100.64.43.123:8088",
              opencode_config: str = DEFAULT_OPENCODE,
-             x1_mirror: str = DEFAULT_X1_MIRROR) -> int:
+             x1_mirror: str = DEFAULT_X1_MIRROR,
+             refresh_router: bool = False,
+             admin_token: str = "") -> int:
     """Sync opencode + Hermes configs into AssistX (Hybrid A). Returns # endpoints."""
     # 1) Hermes fleet topology (node names <-> tailnet hosts)
     hermes = load_yaml(HERMES_CONFIG) or {}
@@ -198,6 +287,14 @@ def run_sync(dry_run: bool = False, password: str = "",
         print("ERROR: ASSISTX_PASS required.", file=sys.stderr)
         sys.exit(2)
 
+    # This preflight runs before ANY registration, probe, or privileged POST.
+    # A missing/unsafe router admin credential must not cause partial sync.
+    refresh_url = None
+    if refresh_router:
+        if not admin_token or not admin_token.strip():
+            raise RouterAdminRefreshError("router_admin_token_required")
+        refresh_url = _validated_router_refresh_url(auto_router_url)
+
     registered = []
     for node, eid, base, disp in plan:
         payload = {
@@ -218,9 +315,12 @@ def run_sync(dry_run: bool = False, password: str = "",
               user, password)
         registered.append(eid)
 
-    # refresh auto-router live-model projection
-    print(f"[router] refresh {auto_router_url}/admin/live-models/refresh")
-    _post(f"{auto_router_url}/admin/live-models/refresh", {}, "", "")
+    # Admin refresh is a separate, explicitly requested privileged operation.
+    if refresh_url is not None:
+        _authenticated_router_refresh(refresh_url, admin_token)
+        print("[router] authenticated refresh completed")
+    else:
+        print("[router] admin refresh skipped (requires --refresh-router)")
 
     print(f"\nSynced {len(registered)} endpoints. Re-run on change to keep AssistX in sync.")
     return len(registered)
@@ -233,19 +333,28 @@ def main():
     ap.add_argument("--user", default=os.environ.get("ASSISTX_USER", "admin"))
     ap.add_argument("--password", default=os.environ.get("ASSISTX_PASS", ""))
     ap.add_argument("--auto-router-url", default=os.environ.get("AUTO_ROUTER_URL", "http://100.64.43.123:8088"))
+    ap.add_argument("--refresh-router", action="store_true",
+                    help="separately authorize a fail-closed router admin refresh")
+
     ap.add_argument("--opencode-config", default=os.environ.get("OPENCODE_CONFIG", DEFAULT_OPENCODE))
     ap.add_argument("--x1-mirror", default=os.environ.get("X1_MIRROR", DEFAULT_X1_MIRROR))
     args = ap.parse_args()
 
-    run_sync(
-        dry_run=args.dry_run,
-        password=args.password,
-        assistx_url=args.assistx_url,
-        user=args.user,
-        auto_router_url=args.auto_router_url,
-        opencode_config=args.opencode_config,
-        x1_mirror=args.x1_mirror,
-    )
+    try:
+        run_sync(
+            dry_run=args.dry_run,
+            password=args.password,
+            assistx_url=args.assistx_url,
+            user=args.user,
+            auto_router_url=args.auto_router_url,
+            opencode_config=args.opencode_config,
+            x1_mirror=args.x1_mirror,
+            refresh_router=args.refresh_router,
+            admin_token=os.environ.get("AUTO_ROUTER_ADMIN_TOKEN", ""),
+        )
+    except RouterAdminRefreshError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(3) from None
 
 
 if __name__ == "__main__":
