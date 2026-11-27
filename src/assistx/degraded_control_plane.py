@@ -76,7 +76,10 @@ def _bounded_ttl(value: Any, default: int = 60) -> int:
 def _is_local_provider(provider: Mapping[str, Any]) -> bool:
     quota = str(provider.get("quota_class") or "local").strip().lower()
     provider_type = str(provider.get("type") or "").strip().lower()
-    urls = provider.get("access_urls") or [provider.get("base_url")]
+    urls = [
+        str(url or "").strip()
+        for url in (provider.get("access_urls") or [provider.get("base_url")])
+    ]
     return bool(
         provider.get("enabled", True)
         and quota in {"local", "private"}
@@ -87,11 +90,8 @@ def _is_local_provider(provider: Mapping[str, Any]) -> bool:
             "sglang",
             "openai_compatible",
         }
-        and all(
-            str(url or "").startswith(("http://", "https://"))
-            for url in urls
-            if url
-        )
+        and urls
+        and all(url.startswith(("http://", "https://")) for url in urls)
     )
 
 
