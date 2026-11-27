@@ -77,8 +77,13 @@ def _is_local_provider(provider: Mapping[str, Any]) -> bool:
     quota = str(provider.get("quota_class") or "local").strip().lower()
     provider_type = str(provider.get("type") or "").strip().lower()
     urls = provider.get("access_urls") or [provider.get("base_url")]
+    # ``enabled`` is an admission decision, not a truthy config value. A string
+    # such as "false" (from JSON/YAML) is truthy in Python and used to admit an
+    # explicitly disabled provider. Only a real bool True admits; an absent key
+    # keeps the legacy default.
+    enabled = provider.get("enabled", True)
     return bool(
-        provider.get("enabled", True)
+        enabled is True
         and quota in {"local", "private"}
         and provider_type in {
             "lmstudio",

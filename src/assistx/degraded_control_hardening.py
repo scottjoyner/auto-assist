@@ -25,8 +25,13 @@ def _private_local_provider(provider: Mapping[str, Any]) -> bool:
         )
         if str(value or "").strip()
     ]
+    # ``enabled`` is an admission decision, not a truthy config value. Strings
+    # like "false" are truthy in Python and would admit a disabled provider to
+    # degraded delegation. Only a real bool True admits; absent keeps the
+    # legacy default.
+    enabled = provider.get("enabled", True)
     return bool(
-        provider.get("enabled", True)
+        enabled is True
         and quota in {"local", "private"}
         and provider_type
         in {
