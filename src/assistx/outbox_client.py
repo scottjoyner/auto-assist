@@ -26,6 +26,10 @@ FLUSH_BATCH = int(os.environ.get("ASSISTX_OUTBOX_FLUSH_BATCH", "50"))
 # Readiness rule: a deliverable row older than this means the queue is not
 # draining. Default 24 h.
 STALE_READINESS_S = int(os.environ.get("ASSISTX_OUTBOX_STALE_S", "86400"))
+# Operator quarantine markers (2026-11 outbox incident) are holds, not claims:
+# the rows keep their original status, but no flusher may claim or recover them.
+# Applied to both the claim SELECT and its guarded UPDATE.
+_QUARANTINE_CLAIM_GUARD = "(claim_owner IS NULL OR claim_owner NOT LIKE 'quarantine:%')"
 
 STATUSES = ("pending", "failed", "claimed", "delivered", "dead")
 MAX_ACK_BYTES = 65536
@@ -401,9 +405,11 @@ class OutboxClient:
         """Atomically claim the oldest deliverable row, or return None.
 
         Deliverable = pending, failed, or claimed by someone whose lease has
-        expired. The returned entry carries the token in ``claim_owner``;
-        every later write must present it so a recovered row cannot be
-        clobbered by the flusher that lost it.
+        expired, except rows carrying an operator quarantine marker in
+        ``claim_owner`` -- those stay put even when their lease has expired.
+        The returned entry carries the token in ``claim_owner``; every later
+        write must present it so a recovered row cannot be clobbered by the
+        flusher that lost it.
         """
         lease = self.claim_lease_s if lease_s is None else int(lease_s)
         now = datetime.now(timezone.utc)
@@ -414,7 +420,8 @@ class OutboxClient:
 
         where = [
             "(status IN ('pending', 'failed')"
-            " OR (status = 'claimed' AND (claimed_at IS NULL OR claimed_at < ?)))"
+            " OR (status = 'claimed' AND (claimed_at IS NULL OR claimed_at < ?)))",
+            _QUARANTINE_CLAIM_GUARD,
         ]
         params: List[Any] = [stale_cutoff]
         if exclude:
@@ -437,11 +444,14 @@ class OutboxClient:
                     return None
                 # Guarded update: the WHERE clause re-asserts deliverability so
                 # this can only ever claim a row nobody else holds a live claim
-                # on, even if run outside BEGIN IMMEDIATE.
+                # on, even if run outside BEGIN IMMEDIATE. It also re-checks the
+                # quarantine marker, so a row marked between select and update
+                # cannot be claimed.
                 updated = conn.execute(
                     "UPDATE outbox SET status='claimed', claim_owner=?, claimed_at=? "
                     "WHERE outbox_id=? AND (status IN ('pending', 'failed')"
-                    " OR (status = 'claimed' AND (claimed_at IS NULL OR claimed_at < ?)))",
+                    " OR (status = 'claimed' AND (claimed_at IS NULL OR claimed_at < ?))) "
+                    f"AND {_QUARANTINE_CLAIM_GUARD}",
                     (token, claimed_at, row[0], stale_cutoff),
                 ).rowcount
                 if not updated:
