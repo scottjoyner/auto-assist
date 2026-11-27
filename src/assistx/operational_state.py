@@ -286,6 +286,18 @@ class OperationalStateStore:
         normalized_state = str(final_state).upper()
         if normalized_state not in FINAL_STATES:
             raise ValueError(f"unsupported final state: {normalized_state}")
+        # ``record`` is a snapshot taken when the caller held the fence. A
+        # delayed finalizer can reach this point after the lease expired and a
+        # different owner (or a higher epoch) took over. Without this guard the
+        # un-fenced ``upsert`` below would overwrite the authoritative record,
+        # silently regressing owner/epoch and advertising a stale final state.
+        current = self.get(record.kind, record.logical_id)
+        if (
+            current is None
+            or current.owner != record.owner
+            or current.epoch != record.epoch
+        ):
+            raise RuntimeError("operational record fence moved before finalization")
         commit_id = _commit_identity(record, normalized_state, evidence)
         envelope = record.as_dict()
         envelope.update(
@@ -299,15 +311,29 @@ class OperationalStateStore:
         # Durable commit first. A retry produces the same commit_id, allowing
         # Neo4j MERGE semantics to make replay idempotent.
         result = neo4j_commit(envelope)
-        self.upsert(
-            kind=record.kind,
-            logical_id=record.logical_id,
-            state=normalized_state,
-            owner=record.owner,
-            epoch=record.epoch,
-            payload={"durable_commit_id": commit_id},
-            ttl_seconds=60,
-        )
+        # Make the final write fence-aware as well, so a takeover racing between
+        # the pre-check and this write cannot be clobbered. Unowned/volatile
+        # kinds keep the original un-fenced write.
+        if record.kind in FENCED_KINDS and record.owner:
+            self.upsert_fenced(
+                kind=record.kind,
+                logical_id=record.logical_id,
+                state=normalized_state,
+                owner=record.owner,
+                epoch=record.epoch,
+                payload={"durable_commit_id": commit_id},
+                ttl_seconds=60,
+            )
+        else:
+            self.upsert(
+                kind=record.kind,
+                logical_id=record.logical_id,
+                state=normalized_state,
+                owner=record.owner,
+                epoch=record.epoch,
+                payload={"durable_commit_id": commit_id},
+                ttl_seconds=60,
+            )
         return result
 
     def _record_parameters(
