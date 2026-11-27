@@ -4,9 +4,9 @@ The types in this module intentionally reject likely secret material. They are f
 inventory and policy planning; a backend resolver is deliberately not implemented.
 """
 
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
-import re
 from typing import Any
 
 
@@ -25,7 +25,13 @@ class SecretExposureState(StrEnum):
     REMEDIATED = "remediated"
 
 
-_SENSITIVE_FIELD = re.compile(r"^(password|passwd|secret_value|token_value|api[_-]?key|private[_-]?key|credential_value|bearer)$", re.I)
+_SENSITIVE_FIELD = re.compile(
+    r"^(password|passwd|secret_value|token_value|api[_-]?key|private[_-]?key|credential_value|bearer)$", re.I
+)
+# HTTP auth schemes are case-insensitive (RFC 7235). The old upper-case-only
+# "Bearer " marker let "bearer <token>" through into metadata().
+_BEARER_SCHEME = re.compile(r"bearer\s", re.I)
+_EMBEDDED_SECRET = re.compile(r"^\s*(?:password|passwd|token|secret|bearer)\s*[:=]", re.I)
 
 
 def _reject_secret_material(value: Any, field_name: str) -> None:
@@ -36,7 +42,7 @@ def _reject_secret_material(value: Any, field_name: str) -> None:
     text = str(value)
     if _SENSITIVE_FIELD.search(field_name) and len(text) > 0:
         raise ValueError(f"{field_name} must not contain secret material")
-    if any(marker in text for marker in ("-----BEGIN", "Bearer ", "ghp_", "sk-")):
+    if any(marker in text for marker in ("-----BEGIN", "ghp_", "sk-")) or _BEARER_SCHEME.search(text):
         raise ValueError(f"{field_name} resembles secret material")
 
 
@@ -58,7 +64,7 @@ class SecretBinding:
             _reject_secret_material(value, key)
         if not self.secret_ref.strip():
             raise ValueError("secret_ref must be a non-empty opaque reference")
-        if self.secret_ref.startswith(("password=", "token=", "secret=", "Bearer ")):
+        if _EMBEDDED_SECRET.search(self.secret_ref):
             raise ValueError("secret_ref must not embed a secret value")
 
     def metadata(self) -> dict[str, Any]:
@@ -82,7 +88,10 @@ class SecretInventory:
     bindings: list[SecretBinding] = field(default_factory=list)
 
     def add(self, binding: SecretBinding) -> None:
-        if any(existing.secret_ref == binding.secret_ref and existing.consumer == binding.consumer for existing in self.bindings):
+        if any(
+            existing.secret_ref == binding.secret_ref and existing.consumer == binding.consumer
+            for existing in self.bindings
+        ):
             return
         self.bindings.append(binding)
 
