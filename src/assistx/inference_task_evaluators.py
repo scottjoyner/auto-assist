@@ -50,6 +50,10 @@ def validate_task_evaluator_spec(raw: Any) -> dict[str, Any]:
         allowed = spec.get("allowed_keys")
         if allowed is not None and not isinstance(allowed, list):
             raise ValueError("structured_json.allowed_keys must be a list")
+        forbidden_true = spec.get("forbidden_true_fields", [])
+        if not isinstance(forbidden_true, list):
+            raise ValueError("structured_json.forbidden_true_fields must be a list")
+        spec["forbidden_true_fields"] = [str(key) for key in forbidden_true]
     elif kind == "review_findings":
         expected = _require_list(spec, "expected_ids")
         if not expected:
@@ -155,9 +159,7 @@ def _evaluate_structured_json(
         unexpected = sorted(
             str(key) for key in parsed if str(key) not in allowed_set
         )
-    forbidden_true = [
-        str(key) for key in spec.get("forbidden_true_fields", [])
-    ]
+    forbidden_true = spec["forbidden_true_fields"]
     forbidden_true_observed = [
         key for key in forbidden_true if parsed.get(key) is True
     ]
