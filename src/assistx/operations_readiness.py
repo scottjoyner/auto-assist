@@ -13,6 +13,23 @@ def _mapping(env: Mapping[str, str], name: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _active_key_pair_ready(
+    signing_keys: dict[str, Any],
+    verify_keys: dict[str, Any],
+    active_key: str,
+) -> bool:
+    """The active signing key and its node-side verify key must be the same
+    non-empty secret. A mismatched pair cannot verify a signed runbook, so it
+    must never make the control plane look ready to dispatch."""
+    signing = signing_keys.get(active_key)
+    verifying = verify_keys.get(active_key)
+    if not active_key or not isinstance(signing, str) or not isinstance(verifying, str):
+        return False
+    if not signing.strip() or not verifying.strip():
+        return False
+    return signing == verifying
+
+
 def build_operations_readiness(env: Mapping[str, str]) -> dict[str, Any]:
     signing_keys = _mapping(env, "ASSISTX_RUNBOOK_SIGNING_KEYS")
     verify_keys = _mapping(env, "FLEET_RUNBOOK_VERIFY_KEYS")
@@ -22,6 +39,7 @@ def build_operations_readiness(env: Mapping[str, str]) -> dict[str, Any]:
     repository_roots = _mapping(env, "ASSISTX_REPOSITORY_ROOTS_JSON")
     improvement_keys = _mapping(env, "ASSISTX_IMPROVEMENT_VERIFY_KEYS")
     active_key = env.get("ASSISTX_RUNBOOK_ACTIVE_KEY_ID", "").strip()
+    keys_ready = _active_key_pair_ready(signing_keys, verify_keys, active_key)
     checks = [
         {
             "id": "control_execution",
@@ -40,14 +58,14 @@ def build_operations_readiness(env: Mapping[str, str]) -> dict[str, Any]:
         {
             "id": "signing_key",
             "label": "Active signing key",
-            "ready": bool(active_key and signing_keys.get(active_key)),
+            "ready": keys_ready,
             "detail": f"Active key ID: {active_key or 'not configured'}",
         },
         {
             "id": "verification_key",
             "label": "Runbook verification key",
-            "ready": bool(active_key and verify_keys.get(active_key)),
-            "detail": "The active signing key ID must exist on nodes.",
+            "ready": keys_ready,
+            "detail": "The active signing key ID must exist on nodes with matching material.",
         },
         {
             "id": "node_identity",
