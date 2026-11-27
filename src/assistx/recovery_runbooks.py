@@ -20,6 +20,9 @@ ALLOWED_ACTIONS = {
     "redeploy_service",
     "reload_model",
 }
+# Only these verification names have a measurement behind them. Any other name
+# (or an empty/unparseable verification list) must not yield a green verdict.
+_MEASURABLE_VERIFICATION = frozenset({"service_online", "report_fresh"})
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_.@-]{1,128}$")
 
 
@@ -384,10 +387,26 @@ class RecoveryRunbookExecutor:
 
     def _verify(self, runbook: dict[str, Any]) -> dict[str, Any]:
         checks = runbook.get("verification") or []
-        if any(check in {"service_online", "report_fresh"} for check in checks):
-            health = self._health_check()
-            return {"ok": health["ok"], "checks": checks, "health": health, "reason": health.get("reason", "")}
-        return {"ok": True, "checks": checks, "reason": ""}
+        if not isinstance(checks, (list, tuple)):
+            checks = []
+        checks = list(checks)
+        measurable = [
+            check for check in checks
+            if isinstance(check, str) and check in _MEASURABLE_VERIFICATION
+        ]
+        if not measurable:
+            return {
+                "ok": False,
+                "checks": checks,
+                "reason": "no_measurable_verification",
+            }
+        health = self._health_check()
+        return {
+            "ok": health["ok"],
+            "checks": checks,
+            "health": health,
+            "reason": health.get("reason", ""),
+        }
 
     def _rollback(self, steps: Any) -> list[dict[str, Any]]:
         return [{"action": step["action"], **self._execute_step(step)} for step in steps]
