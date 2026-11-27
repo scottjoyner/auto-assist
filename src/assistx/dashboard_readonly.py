@@ -42,7 +42,14 @@ def derive_dashboard_health(nodes: list[dict[str, Any]]) -> dict[str, Any]:
         "metric": "Fresh reported nodes online",
         "current": online if fresh else None,
         "trend": "insufficient_history",
-        "severity": "warning" if not fresh else ("critical" if online == 0 else "stable"),
+        # Trend severity must mirror the component status: a partial outage is
+        # degraded/warning, never stable. Deriving it from `state` prevents drift.
+        "severity": {
+            "healthy": "stable",
+            "degraded": "warning",
+            "critical": "critical",
+            "unknown": "warning",
+        }[state],
         "historical_evidence": False,
     }
     return {
