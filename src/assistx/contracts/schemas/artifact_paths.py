@@ -10,7 +10,7 @@ class ArtifactPaths(BaseModel):
 
     task_id: str = Field(...)
     base_dir: str = Field(..., description="Root directory for the task artifacts.")
-    transcript_path: Optional[str] = None
-    output_path: Optional[str] = None
-    log_path: Optional[str] = None
+    transcript_path: str | None = None
+    output_path: str | None = None
+    log_path: str | None = None
     extra: dict = Field(default_factory=dict)
