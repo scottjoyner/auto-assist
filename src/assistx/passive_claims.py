@@ -110,7 +110,14 @@ def claim_passive_task(neo_factory: Callable[[], Any], body: PassiveClaimIn) -> 
         return _blocked("not_claimed", "task was not claimable; it may be missing, already claimed, or not in READY/REVIEW")
     task = dict(row.get("task") or {})
     candidate = _normalize_idle_candidate(task, now_ms=now_ms)
-    if not _is_passive_safe(candidate):
+    # The claim transaction has already flipped status to CLAIMED_PASSIVE and
+    # kept the original status in previous_status. Safety must be judged on the
+    # pre-claim status; evaluating the post-claim status rejects every claim.
+    pre_claim_candidate = _normalize_idle_candidate(
+        {**task, "status": task.get("previous_status") or task.get("status")},
+        now_ms=now_ms,
+    )
+    if not _is_passive_safe(pre_claim_candidate):
         _rollback_claim(neo_factory, body.task_id, claim_id, reason="safety_rejected")
         return _blocked("safety_rejected", "task is not passive-safe", {"candidate": candidate})
     if not _capabilities_match(candidate, body.capabilities):
