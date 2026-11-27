@@ -1,0 +1,21 @@
+[Unit]
+Description=AssistX sanitized Tailnet ingress (pinned Caddy-only fallback)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=ASSISTX_TAILNET_IP=100.64.43.123
+ExecStartPre=/usr/bin/sha256sum --check /home/scott/.config/assistx-tailnet-sanitizer/caddy-binary.sha256
+ExecStartPre=/usr/bin/sha256sum --check /home/scott/.config/assistx-tailnet-sanitizer/fallback.Caddyfile.sha256
+ExecStartPre=/usr/bin/caddy validate --config /home/scott/.config/assistx-tailnet-sanitizer/fallback.Caddyfile --adapter caddyfile
+ExecStart=/usr/bin/caddy run --config /home/scott/.config/assistx-tailnet-sanitizer/fallback.Caddyfile --adapter caddyfile
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0077
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target
