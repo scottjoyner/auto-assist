@@ -397,9 +397,14 @@ class RecoveryIslandExecutor:
         prepared = self._read_json(self._prepared_path(deployment))
         active = self._read_json(self._active_path(deployment))
         verification = self._verify(deployment, config) if active else None
+        # An active deployment runs real health probes; their verdict is the
+        # only evidence for "ok". A failed or non-boolean verdict must not be
+        # published as a healthy island just because the activation file exists.
+        healthy = True if verification is None else verification.get("ok") is True
         return {
-            "ok": True,
+            "ok": healthy,
             "status": "active" if active else "prepared" if prepared else "empty",
+            "reason": "" if healthy else "recovery_island_health_check_failed",
             "node_id": self.node_id,
             "deployment": deployment,
             "prepared": prepared,
