@@ -1,8 +1,27 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter
 from typing import Any, Iterable
+
+
+def _finite_tps(value: Any) -> float | None:
+    """A measured tokens/second rate, or ``None`` when there is no measurement.
+
+    The value matrix is fetched from a router JSON endpoint, and Python's
+    ``json.loads`` accepts ``NaN``/``Infinity`` as floats; a producer can also
+    spell those words inside a numeric string. Neither is a measurement. Letting
+    them through fabricated a tasks/hour rate and, for ``+inf``, reported the
+    ready queue as zero hours with no bottleneck at all - a capacity fail-open
+    that told an operator there was no backlog when the input was corrupt.
+    A negative rate is not a measurement either.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
 
 
 def task_family(task: dict[str, Any]) -> str:
@@ -47,9 +66,10 @@ def build_capacity_forecast(
         for node in node_rows if node.get("online") or node.get("service_ok")
     )
     tps_values = [
-        float(row["tokens_per_second"])
+        measurement
         for row in value_matrix.get("entries") or []
         if row.get("loaded") and row.get("online") and row.get("tokens_per_second")
+        if (measurement := _finite_tps(row.get("tokens_per_second"))) is not None
     ]
     aggregate_tps = sum(tps_values)
     tasks_per_hour = aggregate_tps * 3600.0 / max(target_tokens, 1)
