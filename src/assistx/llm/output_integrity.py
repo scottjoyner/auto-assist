@@ -30,6 +30,7 @@ by an editor or a patch tool -- precisely the failure it exists to catch.
 
 from __future__ import annotations
 
+import unicodedata
 from typing import Any
 
 # --- reason codes ------------------------------------------------------------
@@ -38,6 +39,7 @@ from typing import Any
 OK = "ok"
 EMPTY_CONTENT = "empty_content"
 WHITESPACE_ONLY = "whitespace_only"
+INVISIBLE_ONLY = "invisible_only"
 NON_TEXT_CONTENT = "non_text_content"
 UNDECODABLE_TEXT = "undecodable_text"
 MOJIBAKE_TEXT = "mojibake_text"
@@ -46,6 +48,7 @@ PLACEHOLDER_RUN = "placeholder_run"
 DEFECT_REASONS = frozenset({
     EMPTY_CONTENT,
     WHITESPACE_ONLY,
+    INVISIBLE_ONLY,
     NON_TEXT_CONTENT,
     UNDECODABLE_TEXT,
     MOJIBAKE_TEXT,
@@ -92,6 +95,22 @@ def _is_placeholder_run(stripped: str) -> bool:
     return len(stripped) >= 4 and all(ch in (_QUESTION, _REPLACEMENT) for ch in stripped)
 
 
+def _is_invisible_only(stripped: str) -> bool:
+    """True when the answer has no visible content at all.
+
+    Unicode format characters (category Cf: zero-width space, word joiner,
+    zero-width non-joiner, BOM, soft hyphen, ...) carry no glyph and no width.
+    ``str.strip()`` does not remove them, so a run of them used to be classified
+    ``ok`` and earn healthy-success credit even though a human cannot read it.
+
+    Conservative by design: only an answer made *entirely* of format characters
+    is rejected.  An inline format character in otherwise real text stays usable.
+    """
+    return bool(stripped) and all(
+        unicodedata.category(ch) == "Cf" for ch in stripped
+    )
+
+
 def classify_text(value: Any) -> str:
     """Classify a provider's content field.  Returns one of the reason codes.
 
@@ -107,6 +126,8 @@ def classify_text(value: Any) -> str:
     stripped = value.strip()
     if not stripped:
         return WHITESPACE_ONLY
+    if _is_invisible_only(stripped):
+        return INVISIBLE_ONLY
     if _REPLACEMENT in value:
         return UNDECODABLE_TEXT
     if _is_double_encoded(value):
