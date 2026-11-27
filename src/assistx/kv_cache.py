@@ -348,10 +348,14 @@ def context_packet_match(
     best = None
     for packet in packets:
         p_prefix = str(packet.get("prefix_id") or "").strip()
+        p_hash = str(packet.get("query_hash") or "").strip()
         if prefix_id:
-            if p_prefix and p_prefix != prefix_id:
+            if p_prefix:
+                if p_prefix != prefix_id:
+                    continue
+            elif not (query_hash and p_hash == query_hash):
                 continue
-        elif not (query_hash and str(packet.get("query_hash") or "") == query_hash):
+        elif not (query_hash and p_hash == query_hash):
             continue
         if str(packet.get("privacy_scope") or "private") != privacy_scope:
             continue
