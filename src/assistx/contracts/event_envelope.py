@@ -16,6 +16,29 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+_NIL_UUID = uuid.UUID(int=0)
+
+
+def _valid_correlation_uuid(v: str, message: str) -> str:
+    """Validate a correlation UUID and reject the all-zeros (nil) sentinel.
+
+    ``uuid.UUID`` treats the nil UUID as syntactically valid, but a nil value
+    identifies no trace: accepting it lets malformed events silently collapse
+    into one shared TraceGroup.  The original string is returned unchanged so
+    existing emitters (canonical, braced, urn and bare-hex spellings) keep
+    working -- only the nil value is refused.
+    """
+    try:
+        parsed = uuid.UUID(v)
+    except (ValueError, AttributeError, TypeError):
+        raise ValueError(message)
+    if parsed == _NIL_UUID:
+        raise ValueError(
+            "correlation_id must not be the nil UUID; it cannot identify a trace."
+        )
+    return v
+
+
 class AuthState(str, Enum):
     """Speaker/actor authentication taxonomy (Sophia §5.6)."""
 
@@ -76,13 +99,9 @@ class EventEnvelope(BaseModel):
     @field_validator("correlation_id")
     @classmethod
     def _valid_correlation_id(cls, v: str) -> str:
-        try:
-            uuid.UUID(v)
-        except (ValueError, AttributeError, TypeError):
-            raise ValueError(
-                "correlation_id must be a valid UUID; trace linkage requires it."
-            )
-        return v
+        return _valid_correlation_uuid(
+            v, "correlation_id must be a valid UUID; trace linkage requires it."
+        )
 
 
 class TraceEvent(BaseModel):
@@ -103,11 +122,7 @@ class TraceEvent(BaseModel):
     @field_validator("correlation_id")
     @classmethod
     def _valid_correlation_id(cls, v: str) -> str:
-        try:
-            uuid.UUID(v)
-        except (ValueError, AttributeError, TypeError):
-            raise ValueError("correlation_id must be a valid UUID.")
-        return v
+        return _valid_correlation_uuid(v, "correlation_id must be a valid UUID.")
 
 
 class TraceGroup(BaseModel):
@@ -123,8 +138,4 @@ class TraceGroup(BaseModel):
     @field_validator("correlation_id")
     @classmethod
     def _valid_correlation_id(cls, v: str) -> str:
-        try:
-            uuid.UUID(v)
-        except (ValueError, AttributeError, TypeError):
-            raise ValueError("correlation_id must be a valid UUID.")
-        return v
+        return _valid_correlation_uuid(v, "correlation_id must be a valid UUID.")
