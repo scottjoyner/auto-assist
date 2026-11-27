@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass
 
@@ -92,8 +93,14 @@ def _parse_env(raw: str) -> list[EvaluationSuiteDef]:
         enabled = parts[2].lower() in {"1", "true", "yes", "on"}
         try:
             threshold = float(parts[4])
-        except Exception:
-            threshold = 0.8
+        except (TypeError, ValueError):
+            # Never fabricate a gate floor from unparseable configuration: a
+            # typo must not silently become a *weaker* enabled threshold.
+            return []
+        if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+            # NaN/inf/out-of-range thresholds cannot be enforced; reject the
+            # whole override so get_evaluation_suites() uses the safe built-ins.
+            return []
         out.append(
             EvaluationSuiteDef(
                 name=parts[0],
