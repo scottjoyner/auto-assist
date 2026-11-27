@@ -62,3 +62,29 @@ def test_context_available_refuses_empty_packet_id_without_enqueueing() -> None:
     with patch.object(client._outbox, "enqueue") as enqueue:
         assert client.notify_context_available(context_packet_id="") is False
         enqueue.assert_not_called()
+
+
+def test_padded_identifiers_are_normalized_in_emitted_links_and_node_id() -> None:
+    """Guards strip to validate, so emission must strip too — no padded IDs."""
+    with patch.object(client._outbox, "enqueue") as enqueue:
+        assert client.notify_evidence_linked(
+            node_id="  dashcam-123  ",
+            evidence_ref="\t evidence-456 \n",
+        ) is True
+
+    body = enqueue.call_args.args[0]
+    assert body["node_id"] == "dashcam-123"
+    assert {link["target_id"] for link in body["links"]} == {"dashcam-123", "evidence-456"}
+    assert body["payload"]["node_id"] == "dashcam-123"
+    assert body["payload"]["evidence_ref"] == "evidence-456"
+
+
+def test_padded_context_packet_id_is_normalized_in_emitted_link() -> None:
+    with patch.object(client._outbox, "enqueue") as enqueue:
+        assert client.notify_context_available(context_packet_id="  context-789\t") is True
+
+    body = enqueue.call_args.args[0]
+    assert body["links"] == [
+        {"rel": "REFERENCES", "target_type": "ContextPacket", "target_id": "context-789"}
+    ]
+    assert body["payload"]["context_packet_id"] == "context-789"
