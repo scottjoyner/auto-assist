@@ -13,7 +13,10 @@ def task_family(task: dict[str, Any]) -> str:
         except Exception:
             payload = {}
     value = str(payload.get("task_family") or task.get("kind") or "general").lower()
-    for family in ("coding", "reasoning", "extraction", "summarization", "tool_use", "long_context"):
+    # Keep this taxonomy in step with task_family_routing._VIRTUAL_MODELS;
+    # ``compression`` is a first-class router family with its own virtual model.
+    # Omitting it here silently folded compression demand into ``general``.
+    for family in ("coding", "reasoning", "extraction", "summarization", "tool_use", "long_context", "compression"):
         if family in value:
             return family
     return "general"
