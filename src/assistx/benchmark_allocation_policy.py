@@ -121,6 +121,20 @@ def _profile_for(
     return None
 
 
+def _quality_floor_passed(profile: dict[str, Any] | None) -> bool:
+    """Certify a benchmark quality-floor pass only for a genuine boolean True.
+
+    ``quality_floor_passed`` is evidence supplied by a benchmark profile, not a
+    trusted Python boolean. ``bool()`` truthiness would upgrade malformed flags
+    ("false", "0", 1, non-empty lists or dicts) into a green pass, admitting a
+    model or node that never met the floor into the allocation plan and inflating
+    its value-matrix score. Fail closed on anything but the boolean singleton.
+    """
+    if not isinstance(profile, dict):
+        return False
+    return profile.get("quality_floor_passed") is True
+
+
 def _node_allows(node: dict[str, Any], family: str) -> bool:
     worker_mode = str(node.get("worker_mode") or "observer_only")
     if worker_mode in {"observer_only", "benchmark_only"}:
@@ -176,9 +190,7 @@ def _enrich_nodes(
             rejected_models: list[str] = []
             for model in loaded_models:
                 profile = _profile_for(evidence, node_id, model, family)
-                if profile is not None and not bool(
-                    profile.get("quality_floor_passed", False)
-                ):
+                if profile is not None and not _quality_floor_passed(profile):
                     rejected_models.extend(sorted(_model_candidates(model)))
                     continue
                 permitted_models.append(model)
@@ -197,8 +209,7 @@ def _enrich_nodes(
                 if profile_node == node_id and profile_family == family
             ]
             if node_profiles and not any(
-                bool(profile.get("quality_floor_passed", False))
-                for profile in node_profiles
+                _quality_floor_passed(profile) for profile in node_profiles
             ):
                 node["is_blocked"] = True
                 node["control_mode"] = "benchmark_quality_floor_failed"
@@ -221,9 +232,7 @@ def _family_value_matrix(
             continue
         row["benchmark_task_family"] = family
         row["benchmark_profile_present"] = True
-        row["benchmark_quality_floor_passed"] = bool(
-            profile.get("quality_floor_passed", False)
-        )
+        row["benchmark_quality_floor_passed"] = _quality_floor_passed(profile)
         row["quality_score"] = float(profile.get("quality_score") or 0.0)
         row["confidence"] = float(profile.get("quality_confidence") or 0.0)
         row["success_rate"] = float(profile.get("reliability") or 0.0)
