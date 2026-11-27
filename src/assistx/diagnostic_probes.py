@@ -84,6 +84,9 @@ def execute_diagnostic_probes(
             "deadline_seconds": deadline_seconds,
         },
         "confidence": round(confidence, 2),
-        "evidence_status": "measured",
+        # A diagnosis whose declared probes never produced a result (empty
+        # allowlist, or probes with no adapter) must not be labelled as
+        # measured evidence. Gate the label on at least one completed probe.
+        "evidence_status": "measured" if completed else "unmeasured",
         "mutated": False,
     }
