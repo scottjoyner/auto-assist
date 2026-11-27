@@ -896,15 +896,44 @@ def upsert_memory_candidate(neo: Neo4jClient, payload: Dict[str, Any], event: Di
     return candidate_id
 
 
-def fail_task(neo: Neo4jClient, task_id: str, agent_id: str, error_summary: str, retryable: bool = True, session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def fail_task(neo: Neo4jClient, task_id: str, agent_id: str, error_summary: str,
+              retryable: bool = True, session_id: Optional[str] = None,
+              claim_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Report failure for the current claim, or a genuinely unowned READY task.
+
+    Lock the task before checking ownership. A rejected report rolls back the
+    lock counter; no current lease is modified by a stale reporter.
+    """
     status = "READY" if retryable else "FAILED"
-    with neo._session() as s:
-        rec = s.run(
+    with neo._session() as s, s.begin_transaction(timeout=10) as tx:
+        rec = tx.run(
             """
             MATCH (t:Task {id:$task_id})
+            SET t.failure_fence_sequence=coalesce(t.failure_fence_sequence,0)+1
+            WITH t
+            WHERE t.passive_claim_id IS NULL
+              AND (
+                ($claim_id IS NULL AND t.status='READY'
+                  AND t.claim_id IS NULL AND t.claimed_by IS NULL
+                  AND coalesce(t.lease_expires_at_ts,0) <= timestamp())
+                OR
+                ($claim_id IS NOT NULL AND t.status IN ['CLAIMED','RUNNING']
+                  AND t.claimed_by=$agent_id AND t.claim_id=$claim_id
+                  AND (t.agent_session_id=$session_id OR
+                    (t.agent_session_id IS NULL AND $session_id IS NULL))
+                  AND t.lease_expires_at_ts > timestamp())
+              )
             SET t.status=$status,
                 t.failed_by=$agent_id,
-                t.agent_session_id=coalesce($session_id, t.agent_session_id),
+                t.last_failed_claim_id=$claim_id,
+                t.last_failed_session_id=$session_id,
+                t.claimed_by=null,
+                t.claim_id=null,
+                t.agent_session_id=null,
+                t.lease_expires_at_ts=null,
+                t.claimed_at_ts=null,
+                t.last_heartbeat_at_ts=null,
+                t.last_heartbeat_ts=null,
                 t.error_summary=$error_summary,
                 t.failure_count=coalesce(t.failure_count, 0) + 1,
                 t.last_failed_at=datetime(),
@@ -913,9 +942,14 @@ def fail_task(neo: Neo4jClient, task_id: str, agent_id: str, error_summary: str,
                 t.updated_at_ts=timestamp()
             RETURN t
             """,
-            {"task_id": task_id, "status": status, "agent_id": agent_id, "session_id": session_id, "error_summary": error_summary},
+            {"task_id": task_id, "status": status, "agent_id": agent_id,
+             "session_id": session_id, "claim_id": claim_id, "error_summary": error_summary},
         ).single()
-        return dict(rec["t"]) if rec else None
+        if not rec:
+            return None
+        task = dict(rec["t"])
+        tx.commit()
+        return task
 
 
 def set_task_lease(neo: Neo4jClient, task_id: str, lease_seconds: int = 900) -> None:
@@ -935,22 +969,38 @@ def set_task_lease(neo: Neo4jClient, task_id: str, lease_seconds: int = 900) -> 
 
 
 def release_expired_task_leases(neo: Neo4jClient, now_ms: Optional[int] = None) -> int:
-    now = int(now_ms or _now_ms())
+    """Bounded direct-lease sweep. A caller may narrow, never advance, expiry."""
+    if now_ms is not None and (type(now_ms) is not int or now_ms < 0):
+        raise ValueError("lease sweep cutoff must be a nonnegative integer")
     with neo._session() as s:
         rec = s.run(
             """
+            WITH CASE WHEN $now IS NULL OR $now > timestamp() THEN timestamp() ELSE $now END AS cutoff
             MATCH (t:Task)
-            WHERE t.status IN ['CLAIMED','RUNNING'] AND coalesce(t.lease_expires_at_ts, 0) < $now
+            WHERE t.status IN ['CLAIMED','RUNNING']
+              AND t.passive_claim_id IS NULL
+              AND t.lease_expires_at_ts < cutoff
+            WITH t, cutoff ORDER BY t.id LIMIT 2000
+            SET t.failure_fence_sequence=coalesce(t.failure_fence_sequence,0)+1
+            WITH t, cutoff
+            WHERE t.status IN ['CLAIMED','RUNNING']
+              AND t.passive_claim_id IS NULL
+              AND t.lease_expires_at_ts < cutoff
             SET t.status='READY',
+                t.last_released_claim_id=t.claim_id,
                 t.claimed_by=null,
                 t.agent_session_id=null,
                 t.claim_id=null,
+                t.lease_expires_at_ts=null,
+                t.claimed_at_ts=null,
+                t.last_heartbeat_at_ts=null,
+                t.last_heartbeat_ts=null,
                 t.lease_released_reason='expired',
                 t.updated_at=datetime(),
                 t.updated_at_ts=timestamp()
             RETURN count(t) AS released
             """,
-            {"now": now},
+            {"now": now_ms},
         ).single()
         return int(rec["released"] if rec else 0)
 
