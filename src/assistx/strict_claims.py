@@ -11,14 +11,21 @@ logger = logging.getLogger(__name__)
 
 _INSTALLED = False
 
+# Only explicit opt-out and the documented narrow default may weaken the fence.
+_DISABLED_VALUES = frozenset({"0", "false", "no", "off", "disabled"})
+_MODERN_VALUES = frozenset({"", "modern"})
+
 
 def _mode() -> str:
     value = os.getenv("ASSISTX_REQUIRE_WORKER_CLAIM_ID", "modern").strip().lower()
-    if value in {"0", "false", "no", "off", "disabled"}:
+    if value in _DISABLED_VALUES:
         return "disabled"
-    if value in {"all", "strict"}:
-        return "all"
-    return "modern"
+    if value in _MODERN_VALUES:
+        return "modern"
+    # Affirmative spellings ("true", "1", "enabled", ...) and misspellings of
+    # "strict"/"all" must not silently downgrade an intended fleet-wide
+    # enforcement request to the narrow default. Fail closed instead.
+    return "all"
 
 
 def _required_agents() -> set[str]:
