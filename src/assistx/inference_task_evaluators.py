@@ -405,13 +405,34 @@ safe_builtins = {
 namespace = {"__builtins__": safe_builtins}
 exec(compile(payload["code"], "<candidate>", "exec"), namespace, namespace)
 fn = namespace[payload["function_name"]]
+
+def same_evidence(observed, expected):
+    # Python equates True with 1 and False with 0. A boolean result is not the
+    # same kind of pass evidence as a number, at any nesting depth, so require
+    # the two sides to agree on boolean-ness before comparing values.
+    if isinstance(observed, bool) or isinstance(expected, bool):
+        return (
+            isinstance(observed, bool)
+            and isinstance(expected, bool)
+            and observed == expected
+        )
+    if isinstance(observed, list) and isinstance(expected, list):
+        return len(observed) == len(expected) and all(
+            same_evidence(a, b) for a, b in zip(observed, expected)
+        )
+    if isinstance(observed, dict) and isinstance(expected, dict):
+        return observed.keys() == expected.keys() and all(
+            same_evidence(observed[key], expected[key]) for key in observed
+        )
+    return observed == expected
+
 rows = []
 passed_tests = 0
 for index, test in enumerate(payload["tests"]):
     try:
         observed = fn(*test.get("args", []), **test.get("kwargs", {}))
         expected = test["expected"]
-        passed = observed == expected
+        passed = same_evidence(observed, expected)
         if passed:
             passed_tests += 1
         rows.append({
