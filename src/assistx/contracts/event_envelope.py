@@ -8,12 +8,28 @@ envelope. See docs/LLD_UNIFIED_FLEET.md §1 and §2 (Trace Observability).
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# ``rel`` and ``target_type`` are interpolated into Cypher as a relationship
+# type and a node label (see swarm_core.record_trace_event). Restrict them to
+# simple identifiers so an inbound envelope cannot inject Cypher syntax.
+_CYPHER_IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def _valid_cypher_identifier(value: str, field: str) -> str:
+    text = str(value).strip()
+    if not _CYPHER_IDENTIFIER_RE.fullmatch(text):
+        raise ValueError(
+            f"{field} must be a simple Cypher identifier (letters, digits, "
+            "underscore; must start with a letter)."
+        )
+    return text
 
 
 class AuthState(str, Enum):
@@ -44,6 +60,16 @@ class EventLink(BaseModel):
     rel: str = Field(..., description="Relationship name, e.g. FOR_TASK.")
     target_type: str = Field(..., description="Entity label, e.g. Task, Dispatch.")
     target_id: str = Field(..., description="Entity id the event is about.")
+
+    @field_validator("rel")
+    @classmethod
+    def _valid_rel(cls, v: str) -> str:
+        return _valid_cypher_identifier(v, "rel")
+
+    @field_validator("target_type")
+    @classmethod
+    def _valid_target_type(cls, v: str) -> str:
+        return _valid_cypher_identifier(v, "target_type")
 
 
 class EventEnvelope(BaseModel):

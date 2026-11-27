@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -25,6 +27,18 @@ LOW_RISK_ACTIONS = {
     "local_model_analysis",
 }
 SCOTT_AUTO_APPROVE_STATES = {"authenticated_scott", "admin_override"}
+
+logger = logging.getLogger(__name__)
+
+# Trace links are interpolated into Cypher as a relationship type and a node
+# label. Direct callers of record_trace_event are not required to build a
+# canonical EventEnvelope, so fence those identifiers here as well.
+_CYPHER_IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def _safe_cypher_identifier(value: object) -> Optional[str]:
+    text = str(value or "").strip()
+    return text if _CYPHER_IDENTIFIER_RE.fullmatch(text) else None
 
 
 class EventValidationError(ValueError):
@@ -1066,13 +1080,17 @@ def record_trace_event(
             },
         ).consume()
 
-        # Link to the domain nodes this event is about.
+        # Link to the domain nodes this event is about. ``rel`` and
+        # ``target_type`` are spliced into Cypher (relationship type / label),
+        # so refuse anything that is not a simple identifier.
         for link in resolved_links:
-            rel = str(link.get("rel") or "FOR_TASK").upper()
-            target_type = str(link.get("target_type") or "Task")
-            target_id = str(link.get("target_id") or "")
-            if not target_id:
+            rel = _safe_cypher_identifier(link.get("rel") or "FOR_TASK")
+            target_type = _safe_cypher_identifier(link.get("target_type") or "Task")
+            target_id = str(link.get("target_id") or "").strip()
+            if rel is None or target_type is None or not target_id:
+                logger.warning("skipping trace link with unsafe identifier: %r", link)
                 continue
+            rel = rel.upper()
             s.run(
                 f"""
                 MATCH (t:TraceEvent {{event_id:$event_id}})
