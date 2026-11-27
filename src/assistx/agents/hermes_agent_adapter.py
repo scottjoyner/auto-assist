@@ -1052,40 +1052,59 @@ def _selftask_worker(assistx: "AssistXClient", archetype: str) -> None:
             _SELFTASK_ACTIVE.pop(threading.current_thread(), None)
 
 
-def _launch_selftasks(assistx: "AssistXClient", max_n: int) -> int:
-    """Launch up to ``max_n`` self-tasks on distinct archetypes, respecting the
-    concurrency cap. Returns how many were actually started.
-
-    Concurrency is also clamped to the number of *healthy* nodes: when part of
-    the fleet is down/crashed, we fire fewer background tasks so the surviving
-    nodes aren't overloaded (the laptops crashed from exactly this)."""
+def _launch_selftasks(assistx: "AssistXClient", max_n: int, *, stopping=None) -> int:
+    """Reserve and start self-tasks atomically; zero healthy nodes means no work."""
+    stopping = stopping or (lambda: False)
+    if stopping():
+        return 0
     healthy = fleet.healthy_node_count() if fleet is not None else SELFTASK_CONCURRENCY
-    effective_cap = max(1, min(max_n, SELFTASK_CONCURRENCY, healthy))
+    effective_cap = max(0, min(max_n, SELFTASK_CONCURRENCY, healthy))
+    launched = 0
     with _SELFTASK_ACTIVE_LOCK:
+        if stopping() or not _SELFTASK_ARCHETYPES:
+            return 0
         running = set(_SELFTASK_ACTIVE.values())
         slots = max(0, effective_cap - len(_SELFTASK_ACTIVE))
-    if slots <= 0:
-        return 0
-    free = [a for a in _SELFTASK_ARCHETYPES if a not in running]
-    # If we still have slots after exhausting distinct archetypes, allow repeats
-    # (the per-archetype write lock serialises same-archetype file writes, so two
-    # runs of the same archetype just write the same artifact last-wins). This is
-    # what lets concurrency exceed the archetype count and spill onto big nodes.
-    i = 0
-    while len(free) < slots:
-        free.append(_SELFTASK_ARCHETYPES[i % len(_SELFTASK_ARCHETYPES)])
-        i += 1
-    launched = 0
-    for arch in free[:slots]:
-        t = threading.Thread(
-            target=_selftask_worker, args=(assistx, arch),
-            name=f"selftask-{arch}", daemon=True,
-        )
-        with _SELFTASK_ACTIVE_LOCK:
+        free = [a for a in _SELFTASK_ARCHETYPES if a not in running]
+        i = 0
+        while len(free) < slots:
+            free.append(_SELFTASK_ARCHETYPES[i % len(_SELFTASK_ARCHETYPES)])
+            i += 1
+        for arch in free[:slots]:
+            if stopping():
+                break
+            t = threading.Thread(
+                target=_selftask_worker, args=(assistx, arch),
+                name=f"selftask-{arch}", daemon=True,
+            )
             _SELFTASK_ACTIVE[t] = arch
-        t.start()
-        launched += 1
+            try:
+                t.start()
+            except BaseException:
+                _SELFTASK_ACTIVE.pop(t, None)
+                raise
+            launched += 1
     return launched
+
+
+def _drain_selftasks() -> None:
+    """Wait for admitted tasks without holding their completion lock."""
+    while True:
+        with _SELFTASK_ACTIVE_LOCK:
+            active = list(_SELFTASK_ACTIVE)
+        if not active:
+            return
+        for thread in active:
+            thread.join(timeout=0.2)
+
+
+def _poll_delay(seconds: float, stopping) -> None:
+    deadline = time.monotonic() + max(0, seconds)
+    while not stopping():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(0.2, remaining))
 
 
 def process_self_task(assistx: AssistXClient, archetype: Optional[str] = None) -> None:
@@ -1441,7 +1460,11 @@ def process_task(assistx: AssistXClient, task: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # Loop
 # ---------------------------------------------------------------------------
-def run_loop(once: bool = False) -> None:
+def run_loop(once: bool = False, *, stopping=None) -> None:
+    """Cooperatively stop new claims; wait for admitted self-tasks on shutdown."""
+    stopping = stopping or (lambda: False)
+    if stopping():
+        return
     logger.info(
         "Hermes agent adapter starting (agent=%s, capabilities=%s, poll_interval=%ds, bulk_models=%s)",
         AGENT_ID,
@@ -1459,54 +1482,62 @@ def run_loop(once: bool = False) -> None:
     assistx = AssistXClient()
     consecutive_empty = 0
 
-    while True:
-        try:
-            tasks = assistx.poll_tasks(limit=MAX_TASKS_PER_LOOP)
+    try:
+        while not stopping():
+            try:
+                tasks = assistx.poll_tasks(limit=MAX_TASKS_PER_LOOP)
+                if stopping():
+                    break
 
-            if not tasks:
-                consecutive_empty += 1
-                if consecutive_empty >= SELFTASK_INTERVAL and consecutive_empty % SELFTASK_INTERVAL == 0:
-                    logger.info("No tasks available (poll %d); self-task pool running", consecutive_empty)
-                if SELFTASK_BULK_MODELS:
-                    # Pipeline the self-task pool: top up free slots every idle
-                    # cycle instead of one batch per SELFTASK_INTERVAL. This keeps
-                    # the whole fleet saturated (worker-bee utilisation) so no node
-                    # -- e.g. a slower 3B like beelink -- sits idle between batches.
-                    # _launch_selftasks only fills free slots (respects the cap).
-                    launched = _launch_selftasks(assistx, SELFTASK_CONCURRENCY)
-                    if launched:
-                        logger.info("Topped up %d self-task(s)", launched)
-            else:
-                consecutive_empty = 0
-                logger.info("Found %d available task(s)", len(tasks))
+                if not tasks:
+                    consecutive_empty += 1
+                    if consecutive_empty >= SELFTASK_INTERVAL and consecutive_empty % SELFTASK_INTERVAL == 0:
+                        logger.info("No tasks available (poll %d); self-task pool running", consecutive_empty)
+                    if SELFTASK_BULK_MODELS:
+                        # Pipeline the self-task pool: top up free slots every idle
+                        # cycle instead of one batch per SELFTASK_INTERVAL. This keeps
+                        # the whole fleet saturated (worker-bee utilisation) so no node
+                        # -- e.g. a slower 3B like beelink -- sits idle between batches.
+                        # _launch_selftasks only fills free slots (respects the cap).
+                        launched = _launch_selftasks(assistx, SELFTASK_CONCURRENCY, stopping=stopping)
+                        if launched:
+                            logger.info("Topped up %d self-task(s)", launched)
+                else:
+                    consecutive_empty = 0
+                    logger.info("Found %d available task(s)", len(tasks))
 
-            for task in tasks:
-                try:
-                    process_task(assistx, task)
-                except requests.HTTPError as e:
-                    logger.error("API error on task %s: %s", task.get("id"), e)
-                except Exception as e:
-                    logger.exception("Unexpected error processing task %s: %s", task.get("id"), e)
+                for task in tasks:
+                    if stopping():
+                        break
+                    try:
+                        process_task(assistx, task)
+                    except requests.HTTPError as e:
+                        logger.error("API error on task %s: %s", task.get("id"), e)
+                    except Exception as e:
+                        logger.exception("Unexpected error processing task %s: %s", task.get("id"), e)
 
-            if once:
-                logger.info("Single run complete")
+                if once:
+                    logger.info("Single run complete")
+                    return
+
+                _poll_delay(POLL_INTERVAL, stopping)
+
+            except requests.ConnectionError:
+                logger.warning("Cannot connect to AssistX at %s (retry in %ds)", ASSISTX_URL, POLL_INTERVAL)
+                if once:
+                    return
+                _poll_delay(POLL_INTERVAL, stopping)
+            except KeyboardInterrupt:
+                logger.info("Shutting down")
                 return
-
-            time.sleep(POLL_INTERVAL)
-
-        except requests.ConnectionError:
-            logger.warning("Cannot connect to AssistX at %s (retry in %ds)", ASSISTX_URL, POLL_INTERVAL)
-            if once:
-                return
-            time.sleep(POLL_INTERVAL)
-        except KeyboardInterrupt:
-            logger.info("Shutting down")
-            return
-        except Exception as e:
-            logger.exception("Poll loop error: %s", e)
-            if once:
-                raise
-            time.sleep(POLL_INTERVAL * 2)
+            except Exception as e:
+                logger.exception("Poll loop error: %s", e)
+                if once:
+                    raise
+                _poll_delay(POLL_INTERVAL * 2, stopping)
+    finally:
+        if stopping():
+            _drain_selftasks()
 
 
 def main() -> None:
@@ -1515,7 +1546,9 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     once = "--once" in sys.argv
-    run_loop(once=once)
+    from assistx.worker_supervision import shutdown_flag
+    with shutdown_flag() as stopping:
+        run_loop(once=once, stopping=stopping)
 
 
 if __name__ == "__main__":
