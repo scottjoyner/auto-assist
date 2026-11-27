@@ -103,8 +103,9 @@ def read_queue_health(
     so it never creates, migrates or purges a live queue. A missing database
     reads as ``absent`` and healthy — no queue is not a broken queue.
 
-    ``ok`` is False only when the oldest deliverable row is older than
-    ``stale_after_s`` (default 24 h): depth alone is not a fault, age is.
+    ``ok`` is False when the oldest deliverable row is older than
+    ``stale_after_s`` (default 24 h) or when an existing queue cannot be read
+    at all: depth alone is not a fault, but unverifiable depth is not green.
     """
     now = now or datetime.now(timezone.utc)
     threshold = STALE_READINESS_S if stale_after_s is None else int(stale_after_s)
@@ -145,7 +146,11 @@ def read_queue_health(
         health.update(
             {
                 "status": "error",
-                "ok": True,  # unreadable queue must not fail readiness by itself
+                # Fail closed: a corrupt/locked queue cannot prove it is
+                # draining. The r39 runtime guard only covers a probe that
+                # raises; sqlite3.Error is swallowed here, so the old True
+                # default kept readiness green with zero queue evidence.
+                "ok": False,
                 "reason": f"outbox unreadable: {str(exc)[:200]}",
             }
         )
