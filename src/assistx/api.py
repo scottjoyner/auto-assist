@@ -2834,14 +2834,19 @@ def api_fleet_models(user: str = Depends(auth)):
                 models[model] = {"nodes": [], "best_node": None, "best_composite": 0}
             
             perf = routing.get_model_perf(hn, model)
-            composite = perf.get("composite_score", 0) if perf else 0
+            # An unverified or malformed perf record is not a clean verdict.
+            # Treat anything that is not a mapping as absent, and require the
+            # explicit boolean True before reporting the benchmark as ok.
+            if not isinstance(perf, dict):
+                perf = {}
+            composite = perf.get("composite_score", 0)
             
             models[model]["nodes"].append({
                 "hostname": hn,
-                "tps_med": perf.get("tps_med", 0) if perf else 0,
-                "eval_score": perf.get("eval_score", 0) if perf else 0,
+                "tps_med": perf.get("tps_med", 0),
+                "eval_score": perf.get("eval_score", 0),
                 "composite": composite,
-                "ok": perf.get("ok", True) if perf else False,
+                "ok": perf.get("ok") is True,
             })
             
             if composite > models[model]["best_composite"]:
