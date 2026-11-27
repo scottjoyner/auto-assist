@@ -10,12 +10,10 @@ LLM decision is a deterministic fake, and tool functions are replaced with
 recorders.  No LLM, network, Docker, Neo4j, outbox DB or filesystem write is
 performed.
 
-Current fail-open (documented, not introduced here): ``dry_run=True`` still
-creates/complets Run nodes, logs tool calls, writes Task statuses and can
-dispatch side-effecting tools.  The desired no-write invariant is pinned with
-``strict=True`` xfails so it remains visible as a known gap without adding a
-hard failure; removing an xfail is the signal that the matching source fix has
-landed.
+The source fix has landed: ``dry_run=True`` runs a side-effect-free preview
+before any graph write (no AgentRun node, no tool dispatch, no Task status
+updates).  Every invariant below is asserted directly; the former
+``strict=True`` xfail sentinels were retired as each fix landed.
 """
 
 from __future__ import annotations
