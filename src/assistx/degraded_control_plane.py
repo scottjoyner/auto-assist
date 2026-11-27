@@ -76,7 +76,12 @@ def _bounded_ttl(value: Any, default: int = 60) -> int:
 def _is_local_provider(provider: Mapping[str, Any]) -> bool:
     quota = str(provider.get("quota_class") or "local").strip().lower()
     provider_type = str(provider.get("type") or "").strip().lower()
-    urls = provider.get("access_urls") or [provider.get("base_url")]
+    raw_urls = provider.get("access_urls")
+    if raw_urls is None:
+        raw_urls = [provider.get("base_url")]
+    elif isinstance(raw_urls, str):
+        raw_urls = [raw_urls]
+    urls = [str(url or "").strip() for url in raw_urls]
     return bool(
         provider.get("enabled", True)
         and quota in {"local", "private"}
@@ -87,10 +92,12 @@ def _is_local_provider(provider: Mapping[str, Any]) -> bool:
             "sglang",
             "openai_compatible",
         }
+        # A provider with no usable endpoint cannot be proven local: fail closed,
+        # as degraded_control_hardening._private_local_provider already does.
+        # The old `if url` filter let an all-empty list satisfy `all()`.
+        and urls
         and all(
-            str(url or "").startswith(("http://", "https://"))
-            for url in urls
-            if url
+            url.startswith(("http://", "https://")) for url in urls
         )
     )
 
