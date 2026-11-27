@@ -9,6 +9,42 @@ from fastapi import APIRouter, Query, Request
 
 from .coordination_metadata import build_task_candidate_metadata
 
+_TRUE_SAFETY_FLAGS = frozenset({"true", "1", "yes", "on"})
+_FALSE_SAFETY_FLAGS = frozenset({"false", "0", "no", "off"})
+_FLAG_MISSING = object()
+
+
+def _safety_flag(value: Any, *, default: bool) -> bool:
+    """Coerce a JSON safety flag without treating truthy junk as consent.
+
+    Legacy producers sometimes serialize booleans as strings, and
+    ``bool("false")`` is ``True``. Decode the known spellings explicitly and
+    fall back to the caller's restrictive default for anything unrecognized.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _TRUE_SAFETY_FLAGS:
+            return True
+        if text in _FALSE_SAFETY_FLAGS:
+            return False
+    return default
+
+
+def _first_flag(*sources: Any) -> Any:
+    """Pick the first explicit flag, skipping absent/falsey scalar sentinels.
+
+    Empty containers are intentionally *not* skipped: a present but invalid
+    value must be coerced to the restrictive default rather than treated as if
+    the producer had omitted the flag.
+    """
+    for value in sources:
+        if value is None or value is False or value == "" or value == 0:
+            continue
+        return value
+    return _FLAG_MISSING
+
 
 def build_router_integration_router(neo_factory: Callable[[], Any]) -> APIRouter:
     """Read-only AssistX endpoints consumed by auto-router.
@@ -321,9 +357,38 @@ def _normalize_task_candidate(task: dict[str, Any]) -> dict[str, Any]:
     privacy = str(task.get("privacy") or task.get("privacy_label") or payload.get("privacy") or metadata.get("privacy") or "").lower()
     queue_class = str(payload.get("queue_class") or task.get("queue_class") or metadata.get("queue_class") or "background")
     priority = _priority_for_queue(queue_class, task.get("priority") or payload.get("priority"))
-    local_only = bool(task.get("local_only") or payload.get("local_only") or metadata.get("local_only") or privacy in {"local_only", "private", "secret"})
-    sensitive = bool(task.get("sensitive") or payload.get("sensitive") or metadata.get("sensitive") or privacy in {"private", "secret", "voice_auth", "enrollment", "enrollment_sample"})
-    allow_cloud = False if local_only else bool(payload.get("allow_cloud", metadata.get("allow_cloud", True)))
+    local_flag = _first_flag(
+        task.get("local_only"),
+        payload.get("local_only"),
+        metadata.get("local_only"),
+    )
+    sensitive_flag = _first_flag(
+        task.get("sensitive"),
+        payload.get("sensitive"),
+        metadata.get("sensitive"),
+    )
+    local_only = (
+        privacy in {"local_only", "private", "secret"}
+        if local_flag is _FLAG_MISSING
+        else _safety_flag(local_flag, default=True)
+    )
+    sensitive = (
+        privacy
+        in {"private", "secret", "voice_auth", "enrollment", "enrollment_sample"}
+        if sensitive_flag is _FLAG_MISSING
+        else _safety_flag(sensitive_flag, default=True)
+    )
+    cloud_flag = (
+        payload["allow_cloud"]
+        if "allow_cloud" in payload
+        else metadata.get("allow_cloud", _FLAG_MISSING)
+    )
+    if local_only:
+        allow_cloud = False
+    elif cloud_flag is _FLAG_MISSING:
+        allow_cloud = True
+    else:
+        allow_cloud = _safety_flag(cloud_flag, default=False)
     title = str(task.get("title") or payload.get("title") or task.get("id") or "AssistX task")
     prompt = str(payload.get("prompt") or payload.get("description") or task.get("description") or title)
     candidate = {
