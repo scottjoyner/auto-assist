@@ -1,8 +1,37 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter
 from typing import Any, Iterable
+
+
+def _node_capacity(node: dict[str, Any]) -> int:
+    """Resolve an online node's slot count without re-crediting a deliberate zero.
+
+    The routing-matrix producer normalizes an operator-drained node to
+    ``max_concurrent=0`` via ``max(0, ...)``.  That zero is a fail-closed signal
+    and must contribute no capacity: the old ``or`` / ``max(1, ...)`` chain
+    turned it into a phantom slot that could admit batch work into capacity
+    that does not exist.  Only a genuinely absent field falls back to
+    ``weight`` and then 1.  A boolean, negative, non-integral or non-finite
+    value is unmeasurable and contributes no capacity instead of aborting the
+    entire forecast.
+    """
+    value = node.get("max_concurrent")
+    if value is None:
+        value = node.get("weight")
+    if value is None:
+        return 1
+    if isinstance(value, bool):
+        return 0
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    if not math.isfinite(parsed) or not parsed.is_integer():
+        return 0
+    return max(0, int(parsed))
 
 
 def task_family(task: dict[str, Any]) -> str:
@@ -43,7 +72,7 @@ def build_capacity_forecast(
     ready_by_family = Counter(task_family(task) for task in ready)
     ready_by_class = Counter(queue_class(task) for task in ready)
     online_capacity = sum(
-        max(1, int(node.get("max_concurrent") or node.get("weight") or 1))
+        _node_capacity(node)
         for node in node_rows if node.get("online") or node.get("service_ok")
     )
     tps_values = [
