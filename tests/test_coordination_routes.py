@@ -64,10 +64,12 @@ def test_release_requires_owner(client):
     assert r.json()["released"] is True
 
 
-def test_store_survives_corrupt_file(tmp_path):
+def test_store_fails_closed_on_corrupt_file(tmp_path):
+    from fastapi import HTTPException
+
     p = tmp_path / "coord.json"
     p.write_text("{not json")
     store = CoordinationStore(path=str(p))
     assert store.snapshot()["exclusive_ops"] == {}
-    r = store.claim("op", "owner")
-    assert r["claimed"] is True
+    with pytest.raises(HTTPException):
+        store.claim("op", "owner")

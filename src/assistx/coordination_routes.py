@@ -38,6 +38,10 @@ def _parse_ts(value: object) -> datetime | None:
         return None
 
 
+class CoordinationStateError(RuntimeError):
+    """An existing coordination state file cannot be read or is malformed."""
+
+
 class CoordinationStore:
     """JSON-file backed advisory lock store. Safe for concurrent readers."""
 
@@ -45,14 +49,25 @@ class CoordinationStore:
         self.path = Path(path or os.getenv("FLEET_COORDINATION_FILE", DEFAULT_COORDINATION_FILE))
         self._lock = threading.Lock()
 
-    def _read_raw(self) -> dict:
+    def _read_raw(self, *, fail_on_unreadable: bool = False) -> dict:
         try:
             data = json.loads(self.path.read_text())
         except FileNotFoundError:
+            # A state file that does not exist yet is a genuinely empty store.
             return {}
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError) as exc:
+            if fail_on_unreadable:
+                raise CoordinationStateError(
+                    f"coordination state unreadable: {exc}"
+                ) from exc
             return {}
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            if fail_on_unreadable:
+                raise CoordinationStateError(
+                    "coordination state is not a JSON object"
+                )
+            return {}
+        return data
 
     def _write_raw(self, data: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -95,7 +110,29 @@ class CoordinationStore:
         now = _now()
         expires = now + timedelta(minutes=ttl_minutes)
         with self._lock:
-            data = self._prune_expired(self._read_raw())
+            # Never grant an exclusive claim when an existing state file cannot
+            # be parsed: treating it as empty would let a second owner claim an
+            # op that may already be locked (and overwrite the only record of
+            # the first owner). Read-only snapshots stay tolerant.
+            try:
+                data = self._prune_expired(
+                    self._read_raw(fail_on_unreadable=True)
+                )
+                if "exclusive_ops" in data and not isinstance(
+                    data["exclusive_ops"], dict
+                ):
+                    raise CoordinationStateError(
+                        "exclusive_ops is not a JSON object"
+                    )
+            except CoordinationStateError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "coordination state unreadable; refusing claim",
+                        "op": op,
+                        "error": str(exc),
+                    },
+                ) from exc
             ops = data.setdefault("exclusive_ops", {})
             existing = ops.get(op)
             if isinstance(existing, dict) and existing.get("owner") != owner:
