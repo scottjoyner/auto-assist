@@ -15,6 +15,9 @@ def _file_exists(task: Dict[str, Any], args: Dict[str, Any], artifacts: List[Dic
         path = path.replace("{task_id}", task.get("id",""))
         if os.path.exists(path):
             return True, f"file exists: {path}"
+        # A concrete path was explicitly requested: an unrelated artifact must
+        # not silently satisfy this named check (fail closed).
+        return False, f"required path not found: {path}"
     if artifacts:
         return True, "artifact present"
     return False, "no artifact or file not found"
