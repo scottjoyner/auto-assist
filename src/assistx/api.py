@@ -73,7 +73,10 @@ from .metrics import (
     RECOVERY_OUTCOMES,
     RECOVERY_TRANSITIONS,
 )
-from .idempotency_store import save as idemp_save, load as idemp_load
+from .idempotency_store import (
+    save_for as idemp_save_for,
+    load_for as idemp_load_for,
+)
 from .neo4j_client import Neo4jClient  # unified client
 from .paperclip_client import PaperclipClient
 from .rate_limiter import DISPATCH_LIMITER, EVENT_LIMITER, ASK_LIMITER, INTENT_LIMITER
@@ -5473,7 +5476,7 @@ def api_ask_async(body: AskAsyncIn, user: str = Depends(auth)):
     question = _normalize_ask_question(body.question)
     # Idempotency: if key maps to an existing answer, return it
     if body.idempotency_key:
-        hit = idemp_load(body.idempotency_key)
+        hit = idemp_load_for(user, body.idempotency_key)
         if hit:
             # ensure the referenced answer still exists
             existing = answers_store.get_answer(hit.get("answer_id",""))
@@ -5499,7 +5502,7 @@ def api_ask_async(body: AskAsyncIn, user: str = Depends(auth)):
     answers_store.set_status(answer_id, "QUEUED", job_id=job.get_id())
 
     if body.idempotency_key:
-        idemp_save(body.idempotency_key, {"answer_id": answer_id})
+        idemp_save_for(user, body.idempotency_key, {"answer_id": answer_id})
 
     JOBS_ENQUEUED.inc()
     return {"answer_id": answer_id, "job_id": job.get_id(), "status_url": f"/api/answers/{answer_id}", **deliverable}
@@ -5512,13 +5515,13 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
         raise HTTPException(status_code=400, detail="mode must be one of: sync, async, auto")
 
     if body.idempotency_key and mode == "sync":
-        hit = idemp_load(body.idempotency_key)
+        hit = idemp_load_for(user, body.idempotency_key)
         if hit and hit.get("sync_result"):
             return hit["sync_result"]
 
     # Idempotency in auto/async: reuse existing answer if present
     if body.idempotency_key and mode in ("async", "auto"):
-        hit = idemp_load(body.idempotency_key)
+        hit = idemp_load_for(user, body.idempotency_key)
         if hit:
             existing = answers_store.get_answer(hit.get("answer_id",""))
             if existing:
@@ -5551,7 +5554,7 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
             out.update(deliverable)
             out["deliverable_status"] = completed.get("status") if completed else "UNKNOWN"
             if body.idempotency_key:
-                idemp_save(body.idempotency_key, {"sync_result": out})
+                idemp_save_for(user, body.idempotency_key, {"sync_result": out})
             QA_REQUESTS.labels(mode="sync", status="done").inc()
             return out
         except Exception as e:
@@ -5589,7 +5592,7 @@ def api_ask(body: AskIn, user: str = Depends(auth)):
     answers_store.set_status(answer_id, "QUEUED", job_id=job.get_id())
     JOBS_ENQUEUED.inc()
     if body.idempotency_key:
-        idemp_save(body.idempotency_key, {"answer_id": answer_id})
+        idemp_save_for(user, body.idempotency_key, {"answer_id": answer_id})
 
     if mode == "async":
         return JSONResponse(status_code=202, content={"answer_id": answer_id, "job_id": job.get_id(), "status_url": f"/api/answers/{answer_id}", **deliverable})
