@@ -49,6 +49,21 @@ def _timestamp_ms(value: Any) -> int:
     return int(parsed.timestamp() * 1000)
 
 
+def _strict_bool(value: Any) -> bool:
+    """Parse backup flag fields without coercing ambiguous truthy values.
+
+    ``bool("false")`` is True, so a plain bool() on a stringified flag would
+    let a differential backup masquerade as a full one (or an unrecovered
+    chain as recovered).  Only real booleans and the explicit ``"true"``
+    spelling used by the table parser are accepted; everything else is false.
+    """
+    if type(value) is bool:
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return False
+
+
 class Neo4jBackupVerifier:
     """Inspect and validate Neo4j Enterprise backup artifacts.
 
@@ -249,7 +264,7 @@ class Neo4jBackupVerifier:
                         or row.get("timestamp")
                         or row.get("backupTime")
                     ),
-                    full=bool(row.get("full")),
+                    full=_strict_bool(row.get("full")),
                     lowest_tx=int(
                         row.get("lowestTransactionId")
                         or row.get("lowest_tx")
@@ -263,7 +278,7 @@ class Neo4jBackupVerifier:
                     recovered=(
                         None
                         if row.get("recovered") is None
-                        else bool(row.get("recovered"))
+                        else _strict_bool(row.get("recovered"))
                     ),
                 )
             )
