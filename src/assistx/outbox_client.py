@@ -133,6 +133,9 @@ def read_queue_health(
         "claimed": 0,
         "delivered": 0,
         "dead": 0,
+        # Operator holds: rows labelled quarantine:* in claim_owner. Additive
+        # key, independent of the status buckets (and of ``total``).
+        "quarantined": 0,
         "total": 0,
         "oldest_pending_at": None,
         "oldest_pending_age_s": None,
@@ -152,6 +155,16 @@ def read_queue_health(
                 "SELECT MIN(created_at) FROM outbox "
                 "WHERE status IN ('pending', 'failed', 'claimed')"
             ).fetchone()
+            try:
+                # Same connection as the status buckets above: the marker is a
+                # claim_owner label, not a status, so it needs its own count.
+                quarantined = conn.execute(
+                    "SELECT count(*) FROM outbox WHERE claim_owner LIKE 'quarantine:%'"
+                ).fetchone()
+            except sqlite3.Error:
+                # Legacy schema predating claim_owner: no markers can exist.
+                # A health probe must stay non-fatal on such a queue.
+                quarantined = None
         finally:
             conn.close()
     except sqlite3.Error as exc:
@@ -167,6 +180,7 @@ def read_queue_health(
     for status, count in rows:
         health[status] = int(count)
         health["total"] += int(count)
+    health["quarantined"] = int(quarantined[0]) if quarantined else 0
     oldest_at = oldest[0] if oldest else None
     health["oldest_pending_at"] = oldest_at
     oldest_dt = _parse_iso(oldest_at)
