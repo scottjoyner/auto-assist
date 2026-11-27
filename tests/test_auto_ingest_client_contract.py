@@ -19,7 +19,7 @@ def test_auto_ingest_event_matches_assistx_boundary_contract() -> None:
     assert body["event_type"] == "ingest.evidence.linked"
     assert body["source_repo"] == "auto-assist"
     assert body["node_id"] == "dashcam-123"
-    assert body["schema_version"] == "2026-08.v1"
+    assert body["schema_version"] == "2026-06-08.v1"
     assert body["idempotency_key"].endswith(":12345678-1234-4234-8234-123456789abc")
     assert body["subject"] == {"kind": "event", "id": body["event_id"]}
     assert isinstance(body["links"], list)
@@ -114,3 +114,24 @@ def test_malformed_correlation_id_is_replaced_for_context_event() -> None:
     assert UUID(body["correlation_id"])
     assert body["correlation_id"] != "not-a-uuid"
     assert body["idempotency_key"].endswith(f":{body['correlation_id']}")
+
+
+def test_emitted_events_pass_sink_envelope_validation() -> None:
+    """The producer's schema_version must be one the sink will actually persist.
+
+    ``record_event`` (POST /api/events) calls ``validate_event_envelope``,
+    which rejects any schema_version outside SUPPORTED_SCHEMA_VERSIONS with a
+    400. An unlisted version can only retry into the outbox dead-letter state.
+    """
+    from assistx.swarm_core import SUPPORTED_SCHEMA_VERSIONS, validate_event_envelope
+
+    emitters = (
+        lambda: client.notify_evidence_linked(node_id="n-1", evidence_ref="e-1"),
+        lambda: client.notify_context_available(context_packet_id="c-1"),
+    )
+    for emit in emitters:
+        with patch.object(client._outbox, "enqueue") as enqueue:
+            assert emit() is True
+        body = enqueue.call_args.args[0]
+        assert body["schema_version"] in SUPPORTED_SCHEMA_VERSIONS
+        validate_event_envelope(body)  # must not raise EventValidationError

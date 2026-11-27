@@ -88,7 +88,11 @@ def _enqueue(event_type: str, payload: dict, correlation_id: str | None = None) 
         "node_id": node_id,
         "occurred_at": datetime.now(timezone.utc).isoformat(),
         "idempotency_key": f"{event_type}:{cid}",
-        "schema_version": "2026-08.v1",
+        # The sink persists via record_event() -> validate_event_envelope(),
+        # which rejects any schema_version outside SUPPORTED_SCHEMA_VERSIONS
+        # with HTTP 400. Emit the supported canonical version so these events
+        # are accepted instead of retrying into the outbox dead-letter state.
+        "schema_version": "2026-06-08.v1",
         "subject": {"kind": "event", "id": event_id},
         "payload": emitted_payload,
         "artifact_refs": [],
