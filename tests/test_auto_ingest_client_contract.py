@@ -47,3 +47,18 @@ def test_auto_ingest_does_not_use_auto_assign_endpoint_in_source() -> None:
     text = open(source, encoding="utf-8").read()
     assert "settings.auto_assign_base_url" not in text
     assert 'os.getenv("ASSISTX_API_URL", "")' in text
+
+
+def test_evidence_linked_refuses_empty_endpoints_without_enqueueing() -> None:
+    """An empty endpoint would yield a 'linked' event with no links at all."""
+    with patch.object(client._outbox, "enqueue") as enqueue:
+        assert client.notify_evidence_linked(node_id="", evidence_ref="evidence-1") is False
+        assert client.notify_evidence_linked(node_id="node-1", evidence_ref="  ") is False
+        enqueue.assert_not_called()
+
+
+def test_context_available_refuses_empty_packet_id_without_enqueueing() -> None:
+    """The packet id is the event's only target; empty means nothing to consume."""
+    with patch.object(client._outbox, "enqueue") as enqueue:
+        assert client.notify_context_available(context_packet_id="") is False
+        enqueue.assert_not_called()
