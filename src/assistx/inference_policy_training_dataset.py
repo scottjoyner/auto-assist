@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -276,7 +277,12 @@ def _validate_result_row(
     ):
         return False, "telemetry_invalid"
     wall_ms = row.get("wall_ms")
-    if not isinstance(wall_ms, (int, float)) or float(wall_ms) <= 0:
+    if (
+        isinstance(wall_ms, bool)
+        or not isinstance(wall_ms, (int, float))
+        or not math.isfinite(wall_ms)
+        or wall_ms <= 0
+    ):
         return False, "wall_ms_invalid"
     return True, None
 
