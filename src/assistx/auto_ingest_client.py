@@ -70,6 +70,12 @@ def notify_evidence_linked(
     correlation_id: str | None = None,
 ) -> bool:
     """Emit ``ingest.evidence.linked`` — auto-ingest linked evidence to a graph node."""
+    # Both endpoints are the event's only identity links. Without them _enqueue
+    # would build a body with an empty `links` list and a fabricated fallback
+    # node_id from the environment — a "linked" event that points at nothing.
+    if not str(node_id or "").strip() or not str(evidence_ref or "").strip():
+        logger.warning("refusing ingest.evidence.linked without a node_id and evidence_ref")
+        return False
     return _enqueue(
         "ingest.evidence.linked",
         {
@@ -87,6 +93,11 @@ def notify_context_available(
     correlation_id: str | None = None,
 ) -> bool:
     """Emit ``context.available`` — a new enrichment/context packet is ready for consumers."""
+    # The context packet is the event's only REFERENCES link. Emitting without
+    # it would leave consumers with no way to find the packet being announced.
+    if not str(context_packet_id or "").strip():
+        logger.warning("refusing context.available without a context_packet_id")
+        return False
     return _enqueue(
         "context.available",
         {
