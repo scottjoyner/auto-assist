@@ -392,7 +392,10 @@ def verify_derived_source(
             ],
         )
 
-    if observed.dirty:
+    # ``None`` means the dirty state could not be read, which is not evidence
+    # of a clean tree. Treat it like a known-dirty workspace, as the strict
+    # branch of verify_source_binding already does.
+    if observed.dirty is not False:
         return _verdict(
             binding,
             observed,
