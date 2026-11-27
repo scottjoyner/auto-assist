@@ -1200,7 +1200,11 @@ def healthy_node_count() -> int:
     try:
         return sum(1 for h in node_health().values() if h["state"] == "up")
     except Exception:
-        return max(1, len(_nodes))
+        # Unreadable or malformed health is NO DATA, not "all nodes up". The
+        # caller clamps self-task concurrency to this count to protect surviving
+        # nodes; assuming every configured node is healthy is the overload this
+        # guard exists to prevent. Fail closed to a single node's worth of work.
+        return 1
 
 
 def _node_cap(node: str) -> int:
