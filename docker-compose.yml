@@ -180,6 +180,9 @@ services:
       start_period: 15s
 
   worker:
+    # Allow admitted jobs to finish; never use this as proof of drain.
+    stop_signal: SIGTERM
+    stop_grace_period: 35m
     env_file:
       - ${ASSISTX_ENV_FILE:-.env}
     build:
@@ -260,6 +263,9 @@ services:
       start_period: 20s
 
   hermes-adapter:
+    # Allow admitted jobs to finish; never use this as proof of drain.
+    stop_signal: SIGTERM
+    stop_grace_period: 35m
     env_file:
       - ${ASSISTX_ENV_FILE:-.env}
     build:
