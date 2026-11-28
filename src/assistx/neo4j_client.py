@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from neo4j import Driver, GraphDatabase, Session
 
 from .auto_assign_client import notify_task_created
+from .direct_claim_admission import direct_claim_scope
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,7 @@ class Neo4jClient:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (u:Utterance)   REQUIRE u.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (s:Summary)     REQUIRE s.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (t:Task)        REQUIRE t.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (g:DirectClaimAdmission) REQUIRE g.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (r:AgentRun)    REQUIRE r.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (k:ToolCall)    REQUIRE k.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (a:Artifact)    REQUIRE a.id IS UNIQUE",
@@ -1013,14 +1015,27 @@ class Neo4jClient:
         caps = capabilities or []
         claim_id = idempotency_key or uuid.uuid4().hex
         effective_lease = lease_seconds if lease_seconds is not None else 900
-        with self._session() as s:
+        with self._session() as session, direct_claim_scope(session) as (s, admission):
+            if admission == "unavailable":
+                return {"claimed": False, "reason": "direct_claim_admission_unavailable"}
             if idempotency_key:
                 prior = s.run(
-                    "MATCH (t:Task {id:$task_id, claim_id:$claim_id}) RETURN t",
+                    "MATCH (t:Task {id:$task_id, claim_id:$claim_id}) "
+                    "RETURN t, coalesce(t.lease_expires_at_ts > timestamp(), false) AS lease_current",
                     {"task_id": task_id, "claim_id": idempotency_key},
                 ).single()
                 if prior:
-                    return {"claimed": True, "claim_id": claim_id, "idempotent": True, "task": dict(prior["t"])}
+                    task = dict(prior["t"])
+                    if (task.get("claimed_by") != agent_id
+                            or task.get("agent_session_id") != session_id):
+                        return {"claimed": False, "reason": "claim_owner_mismatch"}
+                    if (task.get("status") not in {"CLAIMED", "RUNNING"}
+                            or prior.get("lease_current") is not True):
+                        return {"claimed": False, "reason": "claim_not_current"}
+                    return {"claimed": True, "claim_id": claim_id, "idempotent": True, "task": task}
+
+            if admission == "closed":
+                return {"claimed": False, "reason": "direct_claim_admission_closed"}
 
             rec = s.run(
                 """

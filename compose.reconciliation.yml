@@ -53,6 +53,9 @@ services:
       - ${ASSISTX_RUNTIME_PROJECTION_PRIVATE_KEY_FILE:?set ASSISTX_RUNTIME_PROJECTION_PRIVATE_KEY_FILE}:/run/secrets/assistx_runtime_projection_private_key.pem:ro
 
   worker:
+    # Allow admitted jobs to finish; never use this as proof of drain.
+    stop_signal: SIGTERM
+    stop_grace_period: 35m
     environment:
       - ASSISTX_OVERLAY_MODE=router
       - ASSISTX_STRICT_OFFLINE=true
@@ -89,6 +92,9 @@ services:
       - transcriptions:/app/transcriptions
 
   hermes-adapter:
+    # Allow admitted jobs to finish; never use this as proof of drain.
+    stop_signal: SIGTERM
+    stop_grace_period: 35m
     # The executor never starts during the initial shadow deployment. Enable only
     # after identity, capacity, projection, dependency, containment, and synthetic-task gates pass.
     profiles:

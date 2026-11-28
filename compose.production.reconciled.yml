@@ -93,6 +93,9 @@ services:
       - no-new-privileges:true
 
   worker:
+    # Allow admitted jobs to finish; never use this as proof of drain.
+    stop_signal: SIGTERM
+    stop_grace_period: 35m
     image: ${ASSISTX_API_IMAGE:?set the locally built AssistX image tag or digest}
     pull_policy: never
     container_name: assistx-production-worker
@@ -142,6 +145,9 @@ services:
       - no-new-privileges:true
 
   hermes-adapter:
+    # Allow admitted jobs to finish; never use this as proof of drain.
+    stop_signal: SIGTERM
+    stop_grace_period: 35m
     image: ${ASSISTX_API_IMAGE:?set the locally built AssistX image tag or digest}
     pull_policy: never
     container_name: assistx-production-hermes

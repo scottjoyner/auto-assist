@@ -58,11 +58,12 @@ class DummyFactory:
 def test_work_supply_yields_to_priority_queue(monkeypatch) -> None:
     monkeypatch.setattr(work_supply, "_projection_capacity", lambda factory: (9, 4))
     monkeypatch.setattr(work_supply, "_task_pressure", lambda neo: (1, 2, 0))
+    monkeypatch.setattr(work_supply, "INTERACTIVE_RESERVE_SLOTS", 1)
 
     decision = work_supply.compute_work_supply_decision(DummyFactory())
 
     assert decision.total_slots == 4
-    assert decision.free_slots == 3
+    assert decision.free_slots == 2
     assert decision.allow_background is False
     assert decision.reason == "priority_work_waiting"
 
@@ -71,13 +72,40 @@ def test_work_supply_targets_only_free_capacity(monkeypatch) -> None:
     monkeypatch.setattr(work_supply, "_projection_capacity", lambda factory: (9, 5))
     monkeypatch.setattr(work_supply, "_task_pressure", lambda neo: (3, 0, 1))
     monkeypatch.setattr(work_supply, "BACKGROUND_BACKLOG_PER_FREE_SLOT", 3)
+    monkeypatch.setattr(work_supply, "INTERACTIVE_RESERVE_SLOTS", 1)
 
     decision = work_supply.compute_work_supply_decision(DummyFactory())
 
-    assert decision.free_slots == 2
-    assert decision.target_background_ready == 6
+    assert decision.free_slots == 1
+    assert decision.target_background_ready == 3
     assert decision.allow_background is True
     assert decision.reason == "idle_capacity_available"
+
+
+def test_work_supply_preserves_last_interactive_slot(monkeypatch) -> None:
+    monkeypatch.setattr(work_supply, "_projection_capacity", lambda factory: (9, 4))
+    monkeypatch.setattr(work_supply, "_task_pressure", lambda neo: (3, 0, 0))
+    monkeypatch.setattr(work_supply, "INTERACTIVE_RESERVE_SLOTS", 1)
+
+    decision = work_supply.compute_work_supply_decision(DummyFactory())
+
+    assert decision.free_slots == 0
+    assert decision.target_background_ready == 0
+    assert decision.allow_background is False
+    assert decision.reason == "interactive_capacity_reserved"
+
+
+def test_work_supply_singleton_retains_bounded_capacity(monkeypatch) -> None:
+    monkeypatch.setattr(work_supply, "_projection_capacity", lambda factory: (9, 1))
+    monkeypatch.setattr(work_supply, "_task_pressure", lambda neo: (0, 0, 0))
+    monkeypatch.setattr(work_supply, "INTERACTIVE_RESERVE_SLOTS", 1)
+    monkeypatch.setattr(work_supply, "BACKGROUND_BACKLOG_PER_FREE_SLOT", 3)
+
+    decision = work_supply.compute_work_supply_decision(DummyFactory())
+
+    assert decision.free_slots == 1
+    assert decision.target_background_ready == 3
+    assert decision.allow_background is True
 
 
 def test_repository_scan_refreshes_head_and_skips_unchanged_tree(

@@ -102,12 +102,13 @@ class TaskFailIn(BaseModel):
     error_summary: str
     retryable: bool = True
     session_id: Optional[str] = None
+    claim_id: Optional[str] = None
 
 
 class LeaseSweepIn(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    now_ms: Optional[int] = None
+    now_ms: Optional[int] = Field(default=None, ge=0, strict=True)
 
 
 class ModelEndpointRegisterIn(BaseModel):
@@ -378,9 +379,10 @@ def api_fail_task(
             body.error_summary,
             body.retryable,
             body.session_id,
+            claim_id=body.claim_id,
         )
         if not task:
-            raise HTTPException(status_code=404, detail="Task not found")
+            raise HTTPException(status_code=409, detail="Task missing or failure report not authorized by current claim")
         return {"task": task}
     finally:
         neo.close()
