@@ -132,3 +132,37 @@ def test_claim_status_requires_dedicated_service_token(monkeypatch) -> None:
 
     assert response.status_code == 401
     assert factory.instances == []
+
+
+def test_combined_install_preserves_single_status_route_and_token_contract(monkeypatch) -> None:
+    import warnings
+
+    from assistx.executor_claims import install_live_executor_claims
+
+    monkeypatch.setenv("ASSISTX_EXECUTOR_CLAIM_STATUS_TOKEN", "synthetic-status")
+    monkeypatch.setenv("ASSISTX_EXECUTOR_SERVICE_TOKEN", "synthetic-other")
+    factory = FakeFactory(active_row())
+    app = FastAPI()
+    app.include_router(build_executor_security_router(factory))
+    install_live_executor_claims(app, factory, register_status_route=False)
+    assert app.state.live_executor_claims_installed is True
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="Duplicate Operation ID.*")
+        assert "/api/executor/claims/{task_id}/status" in app.openapi()["paths"]
+    client = TestClient(app)
+    path = "/api/executor/claims/task-1/status"
+    assert client.get(path).status_code == 401
+    assert client.get(path, headers={"Authorization": "Bearer synthetic-other"}).status_code == 401
+    assert factory.instances == []
+    assert client.get(path, headers={"Authorization": "Bearer synthetic-status"}).json()["active"] is True
+
+
+def test_complete_api_has_no_duplicate_claim_status_operation():
+    import warnings
+
+    from assistx import api_router
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="Duplicate Operation ID.*claim_status.*")
+        api_router.app.openapi_schema = None
+        assert "/api/executor/claims/{task_id}/status" in api_router.app.openapi()["paths"]

@@ -315,7 +315,8 @@ def install_work_supply_boundaries() -> None:
             original_executor_start()
 
         def repo_start() -> None:
-            start_work_supply_controller()
+            if repo_task_generator.REPO_TASK_GENERATOR_ENABLED:
+                start_work_supply_controller()
             original_repo_start()
 
         def repo_cycle() -> dict[str, Any]:

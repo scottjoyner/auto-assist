@@ -81,7 +81,9 @@ install_recovery_shadow_mode(api_module)
 install_control_room_runtime(control_room_module)
 install_strict_offline_projection(router_integration_module)
 install_executor_security(app, _neo, api_module)
-install_live_executor_claims(app, _neo)
+# The preceding security router owns the claim-status URL and its token contract.
+# Keep live task-token revalidation middleware without shadowing that endpoint.
+install_live_executor_claims(app, _neo, register_status_route=False)
 _remove_superseded_operator_routes()
 _legacy_recovery_execute = _extract_legacy_recovery_execute()
 app.include_router(build_recovery_mode_router(auth))
