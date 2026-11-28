@@ -42,11 +42,16 @@ def test_repo_work_is_deterministic_and_review_first(tmp_path, monkeypatch):
 
 def test_repo_generator_does_not_start_when_disabled(monkeypatch):
     monkeypatch.setattr(generator, "REPO_TASK_GENERATOR_ENABLED", False)
+    from assistx import work_supply
+
+    calls = []
+    monkeypatch.setattr(work_supply, "start_work_supply_controller", lambda: calls.append(True))
     monkeypatch.setattr(generator, "_started", False)
 
     generator.start_repo_task_generator()
 
     assert generator._started is False
+    assert calls == []
 
 def test_auto_ready_requires_configured_repository_source(tmp_path, monkeypatch):
     """No configured alias -> PROPOSED, never autonomous READY."""

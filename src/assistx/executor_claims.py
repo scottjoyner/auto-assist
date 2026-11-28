@@ -193,9 +193,15 @@ def build_executor_claim_router(neo_factory: Callable[[], Any]) -> APIRouter:
     return router
 
 
-def install_live_executor_claims(app: Any, neo_factory: Callable[[], Any]) -> None:
+def install_live_executor_claims(
+    app: Any,
+    neo_factory: Callable[[], Any],
+    *,
+    register_status_route: bool = True,
+) -> None:
     if getattr(app.state, "live_executor_claims_installed", False):
         return
     app.add_middleware(LiveExecutorClaimMiddleware, neo_factory=neo_factory)
-    app.include_router(build_executor_claim_router(neo_factory))
+    if register_status_route:
+        app.include_router(build_executor_claim_router(neo_factory))
     app.state.live_executor_claims_installed = True
